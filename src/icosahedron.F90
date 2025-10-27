@@ -1,13 +1,3 @@
-!DESCRIPTION
-!===========
-! This module contains subroutines for icosahedron generation
-!
-!REVISION HISTORY
-!----------------
-! 2025.06.11  Zhongwang Wei @ SYSU (revised version)
-! 2025.06.10  Rui Zhang @ SYSU (original version)
-! first version from Fan et al. 2024, modified by Zhongwang Wei @ SYSU
-! initial version from OLAM, modified by Zhongwang Wei @ SYSU
 !===============================================================================
 ! OLAM was originally developed at Duke University by Robert Walko, Martin Otte,
 ! and David Medvigy in the project group headed by Roni Avissar.  Development
@@ -54,15 +44,13 @@ subroutine icosahedron(nxp0)
   use mem_delaunay, only: itab_md, itab_ud, itab_wd, alloc_itabsd, &
                           xemd, yemd, zemd, nmd, nud, nwd
 
-  use mem_grid,     only: impent
-  use consts_coms,  only: pi2, erad, erador5
-
+  ! use mem_grid,     only: impent
+  use consts_coms,  only: pi2, erad, erador5, impent
   implicit none
-
   integer, intent(in) :: nxp0
 
   real, parameter :: pwrd = 0.9  ! 0.9 is close to making uniform-sized triangles
-! real, parameter :: pwrd = 1.0  ! 1.0 is original value
+   !real, parameter :: pwrd = 1.0  ! 1.0 is original value
 
   integer :: ibigd,i,j,idiamond,im_left,iu0,iu1,iu2,iu3,iu4,iw1,iw2,im &
      ,idiamond_top,im_top,im_right,im_bot,nn10,idiamond_right,idiamond_bot &
@@ -360,12 +348,9 @@ subroutine icosahedron(nxp0)
 
   call tri_neighbors(nmd, nud, nwd, itab_md, itab_ud, itab_wd)
 
-
-  call spring_dynamics(3, 1, 1, nxp0, nmd, nud, nwd, xemd, yemd, zemd, &
-                       itab_md, itab_ud, itab_wd)
+  call spring_dynamics1(1, nxp0, nmd, nud, nwd, xemd, yemd, zemd, itab_md, itab_ud, itab_wd)
 
 end subroutine icosahedron
-
 !===============================================================================
 
 subroutine fill_diamond(im_left,im_right,im_top,im_bot,  &
@@ -413,279 +398,188 @@ subroutine fill_diamond(im_left,im_right,im_top,im_bot,  &
   itab_wd(iw2)%ngr = 1
 
 end subroutine fill_diamond
-
-subroutine spring_dynamics( mrows, moveint, ngr, nxp, nma, nua, nwa, &
-   xem, yem, zem, itab_md, itab_ud, itab_wd )
-
-use mem_delaunay, only: itab_md_vars, itab_ud_vars, itab_wd_vars
-
-implicit none
-
-integer, intent(in) :: mrows, moveint, ngr, nxp, nma, nua, nwa
-
-real, intent(inout) :: xem(nma), yem(nma), zem(nma)
-
-type (itab_md_vars), intent(inout) :: itab_md(nma)
-type (itab_ud_vars), intent(inout) :: itab_ud(nua)
-type (itab_wd_vars), intent(inout) :: itab_wd(nwa)
-
-call spring_dynamics1( mrows, moveint, ngr, nxp, nma, nua, nwa, &
-   xem, yem, zem, itab_md, itab_ud, itab_wd )
-
-end subroutine spring_dynamics
-
-subroutine spring_dynamics1( mrows, moveint, ngr, nxp, nma, nua, nwa, &
-   xem, yem, zem, itab_md, itab_ud, itab_wd )
-
-! Subroutine spring_dynamics1 is used only for adjusting grid 1 (i.e.,
-! the quasi-uniform global atm grid) prior to any mesh refinements.
-! Call subroutine spring_dynamics to adjust mesh refinements of either
-! the atm or surface grids.
-
-use mem_delaunay, only: itab_md_vars, itab_ud_vars, itab_wd_vars
-use consts_coms,  only: pi2, erad, r8, piu180
-use consts_coms,    only: io6
-
-implicit none
-
-integer, intent(in) :: mrows, moveint, ngr, nxp, nma, nua, nwa
-
-real, intent(inout) :: xem(nma), yem(nma), zem(nma)
-
-type (itab_md_vars), intent(inout) :: itab_md(nma)
-type (itab_ud_vars), intent(inout) :: itab_ud(nua)
-type (itab_wd_vars), intent(inout) :: itab_wd(nwa)
-
-integer            :: niter
-integer, parameter :: nprnt = 50
-real,    parameter :: relax = .035
-real,    parameter :: beta  = 1.242
-
-! Automatic arrays
-
-real     :: dist(nua), distm
-real     :: ratio(nua), frac_change
-real     :: dx(nua), dy(nua), dz(nua)
-real     :: dirs(7,nma)
-
-integer  :: iu,iu1,iu2,iu3,iu4
-integer  :: im,im1,im2
-integer  :: j
-integer  :: iter
-
-real     :: twocosphi3, twocosphi4
-real     :: dist00, disto61
-real     :: dsm(nma)
-
-real(r8) :: xem8(nma),yem8(nma),zem8(nma)
-real(r8) :: xem0(nma),yem0(nma),zem0(nma)
-real(r8) :: expansion, erad8
-
-
-integer :: iumn(nua,2)
-integer :: iuun(nua,4)
-integer :: imnp(nma), imiu(7,nma)
-
-niter = 5000
-
-! special
-! RETURN
-! end special
-
-erad8 = real(erad,r8)
-
-dsm(1) = 0.0
-
-xem8(:) = real(xem(:),r8)
-yem8(:) = real(yem(:),r8)
-zem8(:) = real(zem(:),r8)
-
-! Compute mean length of coarse mesh U segments
-
-dist00 = beta * pi2 * erad / (5. * real(nxp))
-
-
-disto61 = dist00 / .61
-
-write(io6,'(a,4i9)') "In spring dynamics: ngr,nma,niter = ",1,nma,niter
-
-!$omp parallel private(iter)
-!$omp do
-do iu = 2, nua
-iumn(iu,1) = itab_ud(iu)%im(1)
-iumn(iu,2) = itab_ud(iu)%im(2)
-
-iuun(iu,1) = itab_ud(iu)%iu(1)
-iuun(iu,2) = itab_ud(iu)%iu(2)
-iuun(iu,3) = itab_ud(iu)%iu(3)
-iuun(iu,4) = itab_ud(iu)%iu(4)
-enddo
-!$omp end do nowait
-
-!$omp do private(j,iu)
-do im = 2, nma
-imnp(im) = itab_md(im)%npoly
-
-do j = 1, itab_md(im)%npoly
-iu = itab_md(im)%iu(j)
-
-imiu(j,im) = iu
-
-if (itab_ud(iu)%im(2) == im) then
-dirs(j,im) =  relax
-else
-dirs(j,im) = -relax
-endif
-
-enddo
-enddo
-!$omp end do
-
-! Main iteration loop
-
-do iter = 1, niter
-
-if (iter == 1 .or. mod(iter,nprnt) == 0) then
-
-!$omp do
-do im = 2, nma
-xem0(im) = xem8(im)
-yem0(im) = yem8(im)
-zem0(im) = zem8(im)
-enddo
-!$omp end do nowait
-
-endif
-
-! Compute length of each U segment
-
-!$omp do private(im1,im2)
-do iu = 2, nua
-im1 = iumn(iu,1)
-im2 = iumn(iu,2)
-
-dx(iu) = real( xem8(im2) - xem8(im1) )
-dy(iu) = real( yem8(im2) - yem8(im1) )
-dz(iu) = real( zem8(im2) - zem8(im1) )
-enddo
-!$omp end do nowait
-
-!$omp do
-do iu = 2, nua
-dist(iu) = sqrt( dx(iu) * dx(iu) &
-+ dy(iu) * dy(iu) &
-+ dz(iu) * dz(iu) )
-enddo
-!$omp end do
-
-! Adjustment of dist0 based on opposite angles of triangles
-
-!$omp do private(iu1,iu2,iu3,iu4,twocosphi3,twocosphi4)
-do iu = 2, nua
-iu1 = iuun(iu,1)
-iu2 = iuun(iu,2)
-iu3 = iuun(iu,3)
-iu4 = iuun(iu,4)
-
-! Compute cosine of angles at IM3 and IM4
-
-twocosphi3 = (dist(iu1)**2 + dist(iu2)**2 - dist(iu)**2) / (dist(iu1) * dist(iu2))
-twocosphi4 = (dist(iu3)**2 + dist(iu4)**2 - dist(iu)**2) / (dist(iu3) * dist(iu4))
-
-! Ratio of smaller cosine to limiting value of cos(72 deg)
-
-ratio(iu) = min(twocosphi3,twocosphi4)
-enddo
-!$omp end do nowait
-
-!$omp do private(distm,frac_change)
-do iu = 2, nua
-
-if (ratio(iu) < .61) then
-distm = disto61 * ratio(iu)
-else
-distm = dist00
-endif
-
-! Fractional change to dist that would make it equal dist0
-
-frac_change = (distm - dist(iu)) / dist(iu)
-
-! Compute components of displacement that gives dist0
-
-dx(iu) = dx(iu) * frac_change
-dy(iu) = dy(iu) * frac_change
-dz(iu) = dz(iu) * frac_change
-
-enddo
-!$omp end do
-
-!$omp do private(j,iu)
-do im = 2, nma
-
-! For preventing either polar M point from moving:
-! if (im == impent(1 )) cycle
-! if (im == impent(12)) cycle
-
-! For preventing all pentagonal points from moving:
-! if (any(im == impent(1:12))) cycle
-
-! Apply the displacement components to each M point
-do j = 1, imnp(im)
-iu = imiu(j,im)
-xem8(im) = xem8(im) + dirs(j,im) * dx(iu)
-yem8(im) = yem8(im) + dirs(j,im) * dy(iu)
-zem8(im) = zem8(im) + dirs(j,im) * dz(iu)
-enddo
-
-enddo
-!$omp end do
-
-! Push M point coordinates out to earth radius
-
-
-
-!$omp do private(expansion)
-do im = 2, nma
-expansion = erad8 / sqrt( xem8(im) ** 2 + yem8(im) ** 2 + zem8(im) ** 2 )
-xem8(im) = xem8(im) * expansion
-yem8(im) = yem8(im) * expansion
-zem8(im) = zem8(im) * expansion
-enddo
-!$omp end do
-
-
-! Print iteration status
-
-if (iter == 1 .or. mod(iter,nprnt) == 0) then
-
-!$omp do
-do im = 2, nma
-dsm(im) = real( (xem8(im) - xem0(im))**2 &
-+ (yem8(im) - yem0(im))**2 &
-+ (zem8(im) - zem0(im))**2 )
-enddo
-!$omp end do
-
-!$omp single
-write(*,'(3x,A,I5,A,I5,A,f0.4,A)') &
-"Iteration ", iter, " of ", niter, ",  Max DS = ", &
-sqrt( maxval(dsm) ), " meters."
-!$omp end single
-
-endif
-
-
-
-enddo ! iter
-!$omp end parallel
-
-xem(:) = real(xem8(:))
-yem(:) = real(yem8(:))
-zem(:) = real(zem8(:))
+!===============================================================================
+
+subroutine spring_dynamics1( ngr, nxp, nmd, nud, nwd, xemd, yemd, zemd, itab_md, itab_ud, itab_wd )
+
+   ! Subroutine spring_dynamics1 is used only for adjusting grid 1 (i.e.,
+   ! the quasi-uniform global atm grid) prior to any mesh refinements.
+
+   use mem_delaunay, only: itab_md_vars, itab_ud_vars, itab_wd_vars
+   use consts_coms,  only: pi2_r8, erad8, r8, io6, niter, beta, relax, impent
+   ! use mem_grid,     only: impent
+   implicit none
+   integer, intent(in) :: ngr, nxp, nmd, nud, nwd
+   real, intent(inout) :: xemd(nmd), yemd(nmd), zemd(nmd)
+
+   type (itab_md_vars), intent(inout) :: itab_md(nmd)
+   type (itab_ud_vars), intent(inout) :: itab_ud(nud)
+   type (itab_wd_vars), intent(inout) :: itab_wd(nwd)
+
+   integer, parameter :: nprnt = 100
+
+   real(r8) :: dist(nud), dx(nud), dy(nud), dz(nud)
+   real(r8) :: distm, ratio, frac_change
+   real(r8) :: dirs(7, nmd)
+
+   integer  :: iv, iu, iu1, iu2, iu3, iu4
+   integer  :: im, im1, im2
+   integer  :: j, iter
+
+   real(r8) :: twocosphi3, twocosphi4
+   real(r8) :: dist00, disto12
+   real(r8) :: dsm(nmd)
+
+   real(r8) :: dist0(nmd)
+   real(r8) :: xemd8(nmd), yemd8(nmd), zemd8(nmd)
+   real(r8) :: xemd0(nmd), yemd0(nmd), zemd0(nmd)
+   real(r8) :: expansion
+
+
+   integer :: iumn(nud, 2)
+   integer :: iuun(nud, 4)
+   integer :: imnp(nmd), imiu(7, nmd)
+
+   dsm(1) = 0.0
+   xemd8(:) = real(xemd(:), r8)
+   yemd8(:) = real(yemd(:), r8)
+   zemd8(:) = real(zemd(:), r8)
+
+   ! Compute mean length of coarse mesh U segments
+   dist00 = beta * pi2_r8 * erad8 / (5. * real(nxp))
+   disto12 = dist00 / 1.2 ! in olam-6.4.0
+
+
+   do iu = 2, nud
+      iumn(iu,1) = itab_ud(iu)%im(1)
+      iumn(iu,2) = itab_ud(iu)%im(2)
+
+      iuun(iu,1) = itab_ud(iu)%iu(1)
+      iuun(iu,2) = itab_ud(iu)%iu(2)
+      iuun(iu,3) = itab_ud(iu)%iu(3)
+      iuun(iu,4) = itab_ud(iu)%iu(4)
+   enddo
+
+   do im = 2, nmd
+      imnp(im) = itab_md(im)%npoly
+
+      do j = 1, itab_md(im)%npoly
+         iu = itab_md(im)%iu(j)
+         imiu(j,im) = iu
+
+         if (itab_ud(iu)%im(2) == im) then
+            dirs(j,im) =  relax
+         else
+            dirs(j,im) = -relax
+         endif
+      enddo
+   enddo
+
+   ! Main iteration loop
+   write(io6,'(a,4i9)') "In spring dynamics: ngr, nmd, niter = ",ngr, nmd, niter
+   !$omp PARALLEL private(iter, im, iu, j, iv, im1, im2, iu1, iu2, iu3, iu4, &
+   !$omp&                 twocosphi3, twocosphi4, distm, frac_change, ratio, expansion)
+   do iter = 1, niter
+
+      if (iter == 1 .or. mod(iter,nprnt) == 0) then
+         !$omp do
+         do im = 2, nmd
+            xemd0(im) = xemd8(im)
+            yemd0(im) = yemd8(im)
+            zemd0(im) = zemd8(im)
+         enddo
+         !$omp end do
+      endif
+
+      ! Compute length of each U segment
+      !$omp do
+      do iu = 2, nud
+         im1 = iumn(iu, 1)
+         im2 = iumn(iu, 2)
+         dx(iu) = real( xemd8(im2) - xemd8(im1) )
+         dy(iu) = real( yemd8(im2) - yemd8(im1) )
+         dz(iu) = real( zemd8(im2) - zemd8(im1) )
+         dist(iu) = sqrt( dx(iu) * dx(iu) + dy(iu) * dy(iu)+ dz(iu) * dz(iu) )
+      enddo
+      !$omp end do
+
+      ! Adjustment of dist0 based on opposite angles of triangles
+      !$omp do
+      do iu = 2, nud
+         iu1 = iuun(iu, 1)
+         iu2 = iuun(iu, 2)
+         iu3 = iuun(iu, 3)
+         iu4 = iuun(iu, 4)
+
+         ! Compute cosine of angles at IM3 and IM4
+         twocosphi3 = (dist(iu1)**2 + dist(iu2)**2 - dist(iu)**2) / (dist(iu1) * dist(iu2))
+         twocosphi4 = (dist(iu3)**2 + dist(iu4)**2 - dist(iu)**2) / (dist(iu3) * dist(iu4))
+
+         ! Ratio of smaller cosine to limiting value of cos(72 deg)
+         ratio = max(.15, min(twocosphi3 + twocosphi4, 1.2)) ! in olam-6.4.0
+         distm = disto12 * ratio ! in olam-6.4.0
+
+         ! Fractional change to dist that would make it equal dist0
+         frac_change = (distm - dist(iu)) / dist(iu)
+
+         ! Compute components of displacement that gives dist0
+         dx(iu) = dx(iu) * frac_change
+         dy(iu) = dy(iu) * frac_change
+         dz(iu) = dz(iu) * frac_change
+      enddo
+      !$omp end do
+
+      !$omp do private(j, iv)
+      do im = 2, nmd
+         ! For preventing all pentagonal points from moving:
+         ! if (any(im == impent(1:12))) cycle
+         ! Apply the displacement components to each M point
+         do j = 1, imnp(im)
+            iv = imiu(j,im)
+            xemd8(im) = xemd8(im) + dirs(j,im) * dx(iv)
+            yemd8(im) = yemd8(im) + dirs(j,im) * dy(iv)
+            zemd8(im) = zemd8(im) + dirs(j,im) * dz(iv)
+         enddo
+      enddo
+      !$omp end do
+
+      ! Push M point coordinates out to earth radius
+      !$omp do private(expansion)
+      do im = 2, nmd
+         expansion = erad8 / sqrt( xemd8(im) ** 2 + yemd8(im) ** 2 + zemd8(im) ** 2 )
+         xemd8(im) = xemd8(im) * expansion
+         yemd8(im) = yemd8(im) * expansion
+         zemd8(im) = zemd8(im) * expansion
+      enddo
+      !$omp end do
+
+      ! Print iteration status
+      if (iter == 1 .or. mod(iter,nprnt) == 0) then
+         !$omp do
+         do im = 2, nmd
+            dsm(im) = real( (xemd8(im) - xemd0(im))**2 &
+               + (yemd8(im) - yemd0(im))**2 &
+               + (zemd8(im) - zemd0(im))**2 )
+         enddo
+         !$omp end do
+
+         !$omp single
+         write(*,'(3x,A,I5,A,I5,A,f0.4,A)') &
+         "Iteration ", iter, " of ", niter, ",  Max DS = ", &
+         sqrt( maxval(dsm) ), " meters."
+         !$omp end single
+
+      endif
+
+   enddo ! iter
+   !$omp end parallel
+
+   xemd(:) = real(xemd8(:))
+   yemd(:) = real(yemd8(:))
+   zemd(:) = real(zemd8(:))
 
 end subroutine spring_dynamics1
-
+!===============================================================================
 
 subroutine mdloopf(init,im,j1,j2,j3,j4,j5,j6)
 
@@ -713,10 +607,9 @@ subroutine mdloopf(init,im,j1,j2,j3,j4,j5,j6)
    if (j5 > 0) itab_md(im)%loop(j5) = .true.
    if (j6 > 0) itab_md(im)%loop(j6) = .true.
  
- end subroutine mdloopf
- 
- !===============================================================================
- 
+end subroutine mdloopf
+!===============================================================================
+
  subroutine udloopf(init,iu,j1,j2,j3,j4,j5,j6)
  
    use mem_delaunay, only: itab_ud
@@ -744,7 +637,6 @@ subroutine mdloopf(init,im,j1,j2,j3,j4,j5,j6)
    if (j6 > 0) itab_ud(iu)%loop(j6) = .true.
  
  end subroutine udloopf
- 
  !===============================================================================
  
  subroutine wdloopf(init,iw,j1,j2,j3,j4,j5,j6)
@@ -774,21 +666,19 @@ subroutine mdloopf(init,im,j1,j2,j3,j4,j5,j6)
    if (j6 > 0) itab_wd(iw)%loop(j6) = .true.
  
  end subroutine wdloopf
- 
-
-
 !===============================================================================
-subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
+
+subroutine tri_neighbors(nmd, nud, nwd, itab_md, itab_ud, itab_wd)
 
    use mem_delaunay, only: itab_md_vars, itab_ud_vars, itab_wd_vars
  
    implicit none
  
-   integer, intent(in) :: nma, nua, nwa
+   integer, intent(in) :: nmd, nud, nwd
  
-   type (itab_md_vars), intent(inout) :: itab_md(nma)
-   type (itab_ud_vars), intent(inout) :: itab_ud(nua)
-   type (itab_wd_vars), intent(inout) :: itab_wd(nwa)
+   type (itab_md_vars), intent(inout) :: itab_md(nmd)
+   type (itab_ud_vars), intent(inout) :: itab_ud(nud)
+   type (itab_wd_vars), intent(inout) :: itab_wd(nwd)
  
    integer :: iu,iw
    integer :: iu1,iu2,iu3,iu4
@@ -801,7 +691,7 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
  
    !$omp parallel
    !$omp do private(iu1,iu2,iu3)
-   do iw = 2,nwa
+   do iw = 2, nwd
       itab_wd(iw)%npoly = 0
  
       iu1 = itab_wd(iw)%iu(1)
@@ -856,7 +746,7 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
    ! Fill outer W points for current W point
  
    !$omp do private(iw1,iw2,iw3)
-   do iw = 2,nwa
+   do iw = 2, nwd
       iw1 = itab_wd(iw)%iw(1)
       iw2 = itab_wd(iw)%iw(2)
       iw3 = itab_wd(iw)%iw(3)
@@ -925,7 +815,7 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
  
    !$omp do private(iw1,iw2,iw1_iu1,iw1_iu2,iw1_iu3,iw2_iu1,iw2_iu2,iw2_iu3, &
    !$omp            iu1,iu2,iu3,iu4,iw3,iw4,iw5,iw6)
-   do iu = 2,nua
+   do iu = 2, nud
  
       iw1 = itab_ud(iu)%iw(1)
       iw2 = itab_ud(iu)%iw(2)
@@ -1080,7 +970,7 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
  
    itab_md(:)%npoly = 0
  
-   do iu = 2,nua
+   do iu = 2, nud
       do j = 1,2
          im = itab_ud(iu)%im(j)
          iw = itab_ud(iu)%iw(j)
@@ -1130,11 +1020,12 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
       enddo
    enddo
  
- end subroutine tri_neighbors
- 
- subroutine de_ps(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
+end subroutine tri_neighbors
+!============================================================================
 
-   use consts_coms, only: pio180, erad2
+subroutine de_ps(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
+
+   use consts_coms, only: erad2
    
    implicit none
    
@@ -1184,9 +1075,61 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
    x = xq * t
    y = yq * t
    
-   end subroutine de_ps
+end subroutine de_ps
 
-   subroutine ps_de(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
+subroutine de_ps_r8(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
+
+   use consts_coms, only: r8, erad2_r8
+   implicit none
+   real(r8), intent(in) :: dxe
+   real(r8), intent(in) :: dye
+   real(r8), intent(in) :: dze
+   
+   real(r8), intent(in) :: cosplat
+   real(r8), intent(in) :: sinplat
+   real(r8), intent(in) :: cosplon
+   real(r8), intent(in) :: sinplon
+   
+   real(r8), intent(out) :: x
+   real(r8), intent(out) :: y
+   
+   real(r8) :: xq
+   real(r8) :: yq
+   real(r8) :: zq
+   real(r8) :: t
+
+   ! This subroutine computes coordinates (x,y) of point q projected onto polar
+   ! stereographic plane given the sines and cosines of the pole point
+   ! located at geographic coordinates (polelat,polelon).
+   ! Input vector (dxe,dye,dze) is the distance of point q from the pole point
+   ! in "earth cartesian space", where the origin is the center of the earth,
+   ! the z axis is the north pole, the x axis is the equator and prime meridian,
+   ! and the y axis is the equator and 90 E..
+   
+   ! Transform q point from (xe,ye,ze) coordinates to 3D coordinates relative to
+   ! polar stereographic plane with origin at the pole point, the z axis pointing
+   ! radially outward from the center of the earth, and the y axis pointing
+   ! northward along the local earth meridian from the pole point.
+   
+   xq =                           - sinplon * dxe + cosplon * dye
+   yq =  cosplat * dze - sinplat * (cosplon * dxe + sinplon * dye)
+   zq =  sinplat * dze + cosplat * (cosplon * dxe + sinplon * dye)
+   
+   ! Parametric equation for line from antipodal point at (0,0,-2 erad) in 3D
+   ! coordinates of polar stereographic plane to point q has the following
+   ! parameter (t) value on the polar stereographic plane (zq <= 0):
+   
+   t = erad2_r8 / (erad2_r8 + zq)
+   
+   ! This gives the following x and y coordinates for the projection of point q
+   ! onto the polar stereographic plane:
+   
+   x = xq * t
+   y = yq * t
+   
+end subroutine de_ps_r8
+
+subroutine ps_de(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
 
       use consts_coms, only: erad2, erad2sq
     
@@ -1243,77 +1186,65 @@ subroutine tri_neighbors(nma, nua, nwa, itab_md, itab_ud, itab_wd)
       dye =  cosplon * xq - sinplon * ( sinplat * yq - cosplat * zq)
       dze =  cosplat * yq + sinplat * zq
     
-    end subroutine ps_de
+end subroutine ps_de
 
-    !============================================================================
+subroutine ps_de_r8(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
 
-subroutine e_ps(xeq,yeq,zeq,polelat,polelon,x,y)
+      use consts_coms, only: r8, erad2_r8, erad2sq_r8
+    
+      implicit none
+      real(r8), intent(out) :: dxe
+      real(r8), intent(out) :: dye
+      real(r8), intent(out) :: dze
+    
+      real(r8), intent(in) :: cosplat
+      real(r8), intent(in) :: sinplat
+      real(r8), intent(in) :: cosplon
+      real(r8), intent(in) :: sinplon
+    
+      real(r8), intent(in) :: x
+      real(r8), intent(in) :: y
+    
+      real(r8) :: xq
+      real(r8) :: yq
+      real(r8) :: zq
+      real(r8) :: t
+    ! real :: alpha
+    
+    ! Given coordinates (x,y) of point q projected onto polar stereographic plane
+    ! whose pole point is located at geographic coordinates (polelat,polelon),
+    ! this subroutine computes coordinates (xeq,yeq,zeq) of q on earth spherical
+    ! surface defined in "earth cartesian space", where the origin is the center
+    ! of the earth, the z axis is the north pole, the x axis is the equator and
+    ! prime meridian, and the y axis is the equator and 90 E..
+    
+    ! Parametric equation for line from antipodal point at (0,0,-2 erad) in 3D
+    ! coordinates of polar stereographic plane to point (x,y) on the polar stereographic
+    ! plane has the following parameter (t) value on the earth's surface (zq <= 0):
+    
+    ! alpha = 2._r8 * atan2(sqrt(x**2 + y**2), erad2_r8)
+    ! t     = .5_r8 * (1._r8 + cos(alpha))
+      t     = erad2sq_r8 / (x*x + y*y + erad2sq_r8)
+    
+    ! This gives the following xq, yq, zq coordinates relative to the polar
+    ! stereographic plane for the projection of point q from the polar stereographic
+    ! plane to the earth surface:
+    
+      xq = x * t
+      yq = y * t
+      zq = erad2_r8 * (t - 1._r8)
+    
+    ! Transform q point located on the earth's surface from ps coordinates (xq,yq,zq)
+    ! to earth coordinates (xe,ye,ze).  The polar stereographic plane has its origin
+    ! at the pole point, with the z axis pointing radially outward from the center
+    ! of the earth, and the y axis pointing northward along the local earth meridian
+    ! from the pole point.
+    
+      dxe = -sinplon * xq + cosplon * (-sinplat * yq + cosplat * zq)
+      dye =  cosplon * xq - sinplon * ( sinplat * yq - cosplat * zq)
+      dze =  cosplat * yq + sinplat * zq
+    
+end subroutine ps_de_r8
 
-   use consts_coms, only: pio180, erad, erad2
-   
-   implicit none
-   
-   real, intent(in) :: xeq
-   real, intent(in) :: yeq
-   real, intent(in) :: zeq
-   real, intent(in) :: polelat
-   real, intent(in) :: polelon
-   
-   real, intent(out) :: x
-   real, intent(out) :: y
-   
-   real :: sinplat
-   real :: cosplat
-   real :: sinplon
-   real :: cosplon
-   real :: xep
-   real :: yep
-   real :: zep
-   real :: xq
-   real :: yq
-   real :: zq
-   real :: t
-   
-   ! This subroutine computes coordinates (x,y) of point q projected onto polar
-   ! stereographic plane whose pole point is located at geographic coordinates
-   ! (polelat,polelon).  Input coordinates (xeq,yeq,zeq) of q are defined in
-   ! "earth cartesian space", where the origin is the center of the earth,
-   ! the z axis is the north pole, the x axis is the equator and prime meridian,
-   ! and the y axis is the equator and 90 E..
-   
-   ! Evaluate sine and cosine of latitude and longitude of pole point p
-   
-   sinplat = sin(polelat * pio180)
-   cosplat = cos(polelat * pio180)
-   sinplon = sin(polelon * pio180)
-   cosplon = cos(polelon * pio180)
-   
-   ! Compute (xep,yep,zep) coordinates of the pole point in "earth cartesian space"
-   
-   xep = erad * cosplat * cosplon
-   yep = erad * cosplat * sinplon
-   zep = erad * sinplat
-   
-   ! Transform q point from (xe,ye,ze) coordinates to 3D coordinates relative to
-   ! polar stereographic plane with origin at the pole point, the z axis pointing
-   ! radially outward from the center of the earth, and the y axis pointing
-   ! northward along the local earth meridian from the pole point.
-   
-   xq =                                  - sinplon * (xeq-xep) + cosplon * (yeq-yep)
-   yq =   cosplat * (zeq-zep) - sinplat * (cosplon * (xeq-xep) + sinplon * (yeq-yep))
-   zq =   sinplat * (zeq-zep) + cosplat * (cosplon * (xeq-xep) + sinplon * (yeq-yep))
-   
-   ! Parametric equation for line from antipodal point at (0,0,-2 erad) in 3D
-   ! coordinates of polar stereographic plane to point q has the following
-   ! parameter (t) value on the polar stereographic plane (zq <= 0):
-   
-   t = erad2 / (erad2 + zq)
-   
-   ! This gives the following x and y coordinates for the projection of point q
-   ! onto the polar stereographic plane:
-   
-   x = xq * t
-   y = yq * t
-   
-   end subroutine e_ps
+!============================================================================
    
