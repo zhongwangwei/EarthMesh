@@ -1,0 +1,38 @@
+# =======================================================
+# gfortran - GNU Fortran Compiler
+#
+
+ FF = gfortran
+
+ # Set your NetCDF-Fortran paths
+ # If using conda, you can use: conda install -c conda-forge netcdf-fortran
+ # Then find paths with: nf-config --prefix
+ # Example paths (modify according to your installation):
+ NETCDF_LIB = /opt/homebrew/Cellar/netcdf-fortran/4.6.2/lib
+ NETCDF_INC = /opt/homebrew/Cellar/netcdf-fortran/4.6.2/include
+
+ # GNU Fortran compiler options
+ # -O3: High optimization level
+ # -fopenmp: Enable OpenMP support
+ # -fbacktrace: Produce backtrace on runtime errors (like Intel's -traceback)
+ # -fcheck=bounds: Check array bounds (like Intel's -C)
+ # -frecord-marker=4: Use 4-byte record markers for unformatted I/O (like Intel's -assume byterecl)
+ # -ffree-line-length-none: Remove line length limit for free-form source
+ # -fmax-errors=5: Limit number of error messages
+ # -Wno-unused-dummy-argument: Suppress warnings about unused dummy arguments
+ # -Wno-unused-variable: Suppress warnings about unused variables
+ # -fall-intrinsics: Enable all intrinsic functions
+ # Note: -mcmodel=medium is not supported on macOS gfortran, only on Linux
+
+ FOPTS = -O3 -fopenmp -fbacktrace -fcheck=bounds -frecord-marker=4 \
+         -ffree-line-length-none -fmax-errors=5 \
+         -Wno-unused-dummy-argument -Wno-unused-variable -fall-intrinsics 
+ # For debugging, you can use:
+ # FOPTS = -O0 -g -fopenmp -fbacktrace -fcheck=all -ffpe-trap=invalid,zero,overflow \
+ #         -ffree-line-length-none -Wall -Wextra
+
+
+ NETCDF_C_LIB = /opt/homebrew/Cellar/netcdf/4.9.3/lib
+ LDFLAGS = -L${NETCDF_LIB} -L${NETCDF_C_LIB} -Wl,-rpath,${NETCDF_LIB} -Wl,-rpath,${NETCDF_C_LIB} -lnetcdff -lnetcdf
+ INCLUDE_DIR = -I${NETCDF_INC}
+
