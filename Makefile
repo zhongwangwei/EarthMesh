@@ -1,50 +1,53 @@
-# Makefile for CLM surface data processing
+# Makefile for EarthMesh
 
 include ./Makeoptions
 
 # Suppress macOS deployment version warnings
 export MACOSX_DEPLOYMENT_TARGET = 26.0
 
+# Source directory
+SRCDIR = src
 
-# \
-# name of executable
+# Executable name
 EXECUTABLE = mkgrd.x
 
 ####################################################################
 .DEFAULT :
 
+# Source files
+SRCS = \
+	$(SRCDIR)/consts_coms.F90 \
+	$(SRCDIR)/MOD_file_preprocess.F90 \
+	$(SRCDIR)/icosahedron.F90 \
+	$(SRCDIR)/blas.F90 \
+	$(SRCDIR)/lapack.F90 \
+	$(SRCDIR)/MOD_data_preprocess.F90 \
+	$(SRCDIR)/MOD_Area_judge.F90 \
+	$(SRCDIR)/MOD_grid_preprocess.F90 \
+	$(SRCDIR)/MOD_GetContain.F90 \
+	$(SRCDIR)/MOD_GetRef.F90 \
+	$(SRCDIR)/MOD_refine.F90 \
+	$(SRCDIR)/MOD_mask_postproc.F90 \
+	$(SRCDIR)/mkgrd.F90
 
-OBJS = \
-	consts_coms.o \
-        MOD_file_preprocess.o\
-      	icosahedron.o \
-      	blas.o \
-      	lapack.o\
-        MOD_data_preprocess.o\
-        MOD_Area_judge.o\
-        MOD_grid_preprocess.o\
-	MOD_GetContain.o\
-      	MOD_GetRef.o\
-	MOD_refine.o\
-        MOD_mask_postproc.o\
-	mkgrd.o\
-#        MOD_Threshold_Read.o
-#        MOD_Get_Distance.o
-#        MOD_postprocess.o
-#        MOD_refine_sjx.o
-#        MOD_refine_lbx.o
-#        MOD_refine_lbx_step2.o
-#        MOD_Get_Contain_Patch.o
-		
+# Object files (in current directory)
+OBJS = $(notdir $(SRCS:.F90=.o))
+
 ####################################################################
 
-${EXECUTABLE} : ${OBJS}  
+all: $(EXECUTABLE)
+
+$(EXECUTABLE): $(OBJS)
 	${FF} ${FOPTS} ${OBJS} -o $@ ${LDFLAGS}
-	@echo 'program for making unstructure mesh surface data have been compiled successfully !'
+	@echo 'EarthMesh has been compiled successfully!'
+	@echo 'Executable: $(EXECUTABLE)'
 
-$(OBJS) : %.o : %.F90 
-	${FF} -c ${FOPTS} $(INCLUDE_DIR) -o $@ $< 
+# Pattern rule for compilation
+%.o: $(SRCDIR)/%.F90
+	${FF} -c ${FOPTS} $(INCLUDE_DIR) -o $@ $<
 
-
-clean :
+clean:
 	${RM} -f *.o *.mod ${EXECUTABLE}
+	@echo 'Clean complete!'
+
+.PHONY: all clean
