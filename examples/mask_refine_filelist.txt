@@ -1,2 +1,0 @@
-./input/refine_spc_circle01.nml
-./input/refine_spc_circle02.nml
