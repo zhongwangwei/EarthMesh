@@ -2,17 +2,92 @@ Module MOD_grid_preprocess
     USE NETCDF
     USE consts_coms
     USE refine_vars
-    USE MOD_file_preprocess, only : quality_save_global
+    USE MOD_utilities, only : quality_save_global
     implicit none
+
     Contains
 
+    ! 这是对于初始网格/最终的网格进行全局网格质量检查的通用代码
+    SUBROUTINE Grid_Quality_Check()
+        USE NETCDF
+        USE consts_coms, only : pathlen, r8, nxp, step, file_dir, mode_grid, io6, refine
+        USE refine_vars, only : SpringGlobal_type
+        USE MOD_utilities, only : Unstructured_Mesh_Read, Unstructured_Mesh_Save
+        IMPLICIT NONE
+        integer :: sjx_points, lbx_points, num_edge, set_dis, num_sjx_ref
+        real(r8), allocatable :: mp(:, :), wp(:, :)
+        integer,  allocatable :: ngrmw(:, :), ngrwm(:, :), n_ngrwm(:)
+        character(pathlen) :: lndname, inputfile
+        character(LEN = 5) :: nxpc, stepc
+
+        if ((refine == .true.) .and. (SpringGlobal_type == 0)) then
+            write(io6, *)  "no need to springGlobal in the meshes with refinement regions! exit"
+            return
+        end if
+
+        ! 只有需要全局网格调整的时候才会到这里
+        write(nxpc, '(I4.4)') NXP
+        write(stepc, '(I2.2)') step
+        write(io6, *)  "start to read unstructure mesh data in the SUBROUTINE Grid_Quality_Check"
+        lndname = trim(file_dir) // 'gridfile/gridfile_NXP' // trim(nxpc) // '_'//trim(stepc)// '_' // trim(mode_grid) // '.nc4'
+        write(io6, *)  lndname
+        CALL Unstructured_Mesh_Read(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
+        write(io6, *)  "The unstructured grid data reading have done "
+        write(io6, *)  ""
+        write(io6, *)  "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
+        write(io6, *)  ""
+
+        if (refine == .false.) then ! 如果refine 为 false 就视为初始网格的全局网格质量检测
+            write(io6, *)  "Check Global Grid Quality for basic mesh"
+            write(io6, *)  ""
+            lndname = trim(file_dir) // "result/quality_NXP" // trim(nxpc) // '_' // trim(stepc) // "_global_Quasi.nc4"
+            call Grid_Quality_Check_Global(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
+
+        else ! 如果refine 为 True 则视为最终网格的全局网格质量检测
+            if (step == 1) then
+                write(io6, *)  "Check Global Grid Quality for inital mesh"
+                write(io6, *)  ""
+                lndname = trim(file_dir) // "result/quality_NXP" // trim(nxpc) // '_' // trim(stepc) // "_global_Inital.nc4"
+                call Grid_Quality_Check_Global(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
+            else
+                write(io6, *)  "Check Global Grid Quality for finial variable-resolution mesh"
+                write(io6, *)  ""
+                inputfile = lndname
+                lndname = trim(file_dir) // 'gridfile/gridfile_NXP' // trim(nxpc) // '_'//trim(stepc)// '_' // trim(mode_grid) // '_beforeSpring.nc4'
+                CALL execute_command_line('cp '//trim(inputfile)//' '//trim(lndname))
+
+                write(io6, *)  "need Springjustment and check Global Grid Quality before and after Springjustment"
+                write(io6, *)  "Before Springjustment"
+                lndname = trim(file_dir) // "result/quality_NXP" // trim(nxpc) // '_' // trim(stepc) // "_global_beforeSpring.nc4"
+                write(io6, *)  lndname
+                CALL Grid_Quality_Check_Global(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
+            
+                num_edge = int((sjx_points-1)/2*3 + 1) ! 只适用于全局网格 
+                write(io6, *)  "Springjustment_global start"
+                CALL Springjustment_global(sjx_points, lbx_points, num_edge, mp, wp, ngrmw, ngrwm, n_ngrwm)
+                write(io6, *)  "Springjustment_global finish"
+
+                write(io6, *)  "After Springjustment "
+                lndname = trim(file_dir) // "result/quality_NXP" // trim(nxpc) // '_' // trim(stepc) // "_global.nc4"
+                write(io6, *)  lndname
+                CALL Grid_Quality_Check_Global(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
+
+                ! save unstructure mesh
+                write(io6, *)  "start to save unstructure mesh data after Springjustment"
+                lndname = trim(file_dir) // 'gridfile/gridfile_NXP' // trim(nxpc) // '_'//trim(stepc)// '_' // trim(mode_grid) // '.nc4'
+                write(io6, *)  lndname
+                CALL Unstructured_Mesh_Save(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
+            end if
+        end if 
+
+    END SUBROUTINE Grid_Quality_Check
+
     SUBROUTINE Grid_Quality_Check_Global(inputfile, num_sjx, num_dbx, mp, wp, ngrmw, ngrwm, n_ngrwm)
-        USE consts_coms, only : impent
         IMPLICIT NONE
         ! Extr_*** 指网格的最小角度与最大角度
         ! Eavg_*** 指网格的最小角度与最大角度平均值
         ! Savg_*** 指网格角度与正多边形角度的标准差
-        character(LEN = 256) :: inputfile
+        character(LEN = 256), intent(in) :: inputfile
         integer,  intent(in) :: num_sjx, num_dbx
         integer,  allocatable, intent(in) :: ngrmw(:, :), ngrwm(:, :), n_ngrwm(:)
         real(r8), allocatable, intent(in) :: mp(:, :), wp(:, :)
@@ -45,33 +120,23 @@ Module MOD_grid_preprocess
                 num_qbx = num_qbx + 1
             else
                 if (n_ngrwm(i)<5) then
+                    print*, "i = ", i, "n_ngrwm(i) = ", n_ngrwm(i)
                     num_less = num_less + 1
                 else 
+                    print*, "i = ", i, "n_ngrwm(i) = ", n_ngrwm(i)
                     num_more = num_more + 1
                 end if
             end if
         end do
-        write(io6, *) "num_wbx = ", num_wbx
-        write(io6, *) "num_lbx = ", num_lbx
-        write(io6, *) "num_qbx = ", num_qbx 
+        write(io6, *)  "num_wbx = ", num_wbx
+        write(io6, *)  "num_lbx = ", num_lbx
+        write(io6, *)  "num_qbx = ", num_qbx 
         if (num_dbx-1 /= num_wbx + num_lbx + num_qbx) then
-            write(io6, *) "存在小于五边形的多边形的个数 num_less = ", num_less
-            write(io6, *) "存在大于七边形的多边形的个数 num_more = ", num_more
+            if (num_less /= 0) write(io6, *)  "存在小于五边形的多边形的个数 num_less = ", num_less
+            if (num_more /= 0) write(io6, *)  "存在大于七边形的多边形的个数 num_more = ", num_more
         end if
-        write(io6, *) " "
-
-        if ((num_wbx == 12) .and. (impent(1) == 0)) then
-            write(io6, *) "impent save start" 
-            num_wbx = 0
-            do i = 2, num_dbx, 1
-                if (n_ngrwm(i) == 5) then
-                    num_wbx = num_wbx + 1
-                    impent(num_wbx) = i
-                end if
-            end do
-            write(io6, *) " "
-        end if    
-
+        write(io6, *)  " "
+ 
         allocate(length_sjx(num_sjx, 3));          length_sjx(:, :) = 0. ! for sjx
         allocate(angle_sjx(num_sjx, 3));           angle_sjx(:, :)  = 0. ! for sjx
         allocate(less_sjx(num_sjx));               less_sjx = 0
@@ -105,19 +170,19 @@ Module MOD_grid_preprocess
         Call PolyMeshQuality(6, num_dbx, mp, ngrwm, n_ngrwm, adjust_dbx_flag, length_lbx, angle_lbx, Extr_lbx, Eavg_lbx, Savg_lbx, less_lbx, more_lbx)! 六边形网格质量
         if (num_qbx /= 0) CALL PolyMeshQuality(7, num_dbx, mp, ngrwm, n_ngrwm, adjust_dbx_flag, length_qbx, angle_qbx, Extr_qbx, Eavg_qbx, Savg_qbx, less_qbx, more_qbx)! 七边形网格质量
 
-        write(io6, *) "三角形边长范围：", minval(length_sjx(2:num_sjx, :)), maxval(length_sjx(2:num_sjx, :))
-        write(io6, *) "五边形边长范围：", minval(length_wbx), maxval(length_wbx)
-        write(io6, *) "六边形边长范围：", minval(length_lbx), maxval(length_lbx)
-        if (num_qbx /= 0) write(io6, *) "七边形边长范围：", minval(length_qbx), maxval(length_qbx)
-        write(io6, *) ""
+        write(io6, *)  "三角形边长范围：", minval(length_sjx(2:num_sjx, :)), maxval(length_sjx(2:num_sjx, :))
+        write(io6, *)  "五边形边长范围：", minval(length_wbx), maxval(length_wbx)
+        write(io6, *)  "六边形边长范围：", minval(length_lbx), maxval(length_lbx)
+        if (num_qbx /= 0) write(io6, *)  "七边形边长范围：", minval(length_qbx), maxval(length_qbx)
+        write(io6, *)  ""
 
-        write(io6, *) "三角形角度范围：", Extr_sjx(1), Extr_sjx(2)
-        write(io6, *) "五边形角度范围：", Extr_wbx(1), Extr_wbx(2)
-        write(io6, *) "六边形角度范围：", Extr_lbx(1), Extr_lbx(2)
-        if (num_qbx /= 0) write(io6, *) "七边形角度范围：", Extr_qbx(1), Extr_qbx(2)
-        write(io6, *) ""
+        write(io6, *)  "三角形角度范围：", Extr_sjx(1), Extr_sjx(2)
+        write(io6, *)  "五边形角度范围：", Extr_wbx(1), Extr_wbx(2)
+        write(io6, *)  "六边形角度范围：", Extr_lbx(1), Extr_lbx(2)
+        if (num_qbx /= 0) write(io6, *)  "七边形角度范围：", Extr_qbx(1), Extr_qbx(2)
+        write(io6, *)  ""
 
-        write(io6, *) inputfile
+        write(io6, *)  inputfile
         CALL quality_save_global(inputfile, num_sjx, num_wbx, num_lbx, num_qbx, & 
             length_sjx, angle_sjx, Extr_sjx, Eavg_sjx, Savg_sjx, less_sjx, more_sjx, & 
             length_wbx, angle_wbx, Extr_wbx, Eavg_wbx, Savg_wbx, less_wbx, more_wbx, & 
@@ -133,11 +198,11 @@ Module MOD_grid_preprocess
     END SUBROUTINE Grid_Quality_Check_Global
 
     ! 适用于全局网格平衡长度已知（无论均一还是非均一）
+    ! 但是目前的架构，只有变分辨率网格中使用
     SUBROUTINE Springjustment_global(num_sjx, num_dbx, num_edge, mp, wp, ngrmw, ngrwm, n_ngrwm)
-
         USE NETCDF
         USE consts_coms, only : r8, nxp, step, io6
-        USE MOD_file_preprocess, only : distsOnEdge_save, cellwidth_save
+        USE MOD_utilities, only : distsOnEdge_save, cellwidth_save
         IMPLICIT NONE
         integer, intent(in) :: num_sjx, num_dbx, num_edge
         integer,  allocatable, intent(in) :: ngrmw(:, :), ngrwm(:, :), n_ngrwm(:)
@@ -145,6 +210,7 @@ Module MOD_grid_preprocess
         real(r8), allocatable :: vp(:,:)
         integer :: i
         real(r8) :: centroid(3), centroid_deg(2), circum(3), circum_deg(2)
+        real(r8) :: sjx(3,2), angle_temp(3), length_temp(3)
         integer,  allocatable :: ngrmm(:, :)
         integer,  allocatable :: edgesOnVertex(:,:), cellsOnVertex(:,:)
         integer,  allocatable :: verticesOnCell(:,:), edgesOnCell(:,:)
@@ -157,6 +223,7 @@ Module MOD_grid_preprocess
         real(r8), allocatable :: distsOnEdge(:), cellwidth(:)
         character(LEN = 256) :: lndname
         character(LEN = 5) :: stepc, nxpc
+        logical :: Iscircum
 
         write(stepc, '(I2.2)') step
         write(nxpc,  '(I4.4)') nxp
@@ -164,15 +231,9 @@ Module MOD_grid_preprocess
         ! 构建ngrmm数组
         allocate(ngrmm(3, num_sjx)); ngrmm = 1   ! 反映三角形的相邻三角形的邻域关系(0表示没有相邻三角形)
         CALL set_ngrmm(num_sjx, ngrmw, ngrwm, n_ngrwm, ngrmm)
+        write(io6, *)  "set ngrmm finish"
 
         allocate(cellsOnVertex(3, num_sjx)); cellsOnVertex = ngrmw ! 获取cellsOnVertex
-
-        ! DEBUG: Print cellsOnVertex for vertex 81458 BEFORE orderVertexArrays
-        if (81458 >= 2 .and. 81458 <= num_sjx) then
-            write(io6,*) "=== DEBUG: Vertex 81458 BEFORE orderVertexArrays ==="
-            write(io6,*) "cellsOnVertex (from ngrmw):", cellsOnVertex(:, 81458)
-        end if
-
         ! 获取在Edge相关的变量cellsOnEdge, verticesOnEdge, edgesOnVertex
         allocate(cellsOnEdge(2, num_edge)); cellsOnEdge = 1
         allocate(verticesOnEdge(2, num_edge)); verticesOnEdge = 1
@@ -211,16 +272,17 @@ Module MOD_grid_preprocess
             allocate(cellwidth(num_dbx)); cellwidth = 0.0_r8
             CALL set_distsOnEdge_global(num_sjx, num_dbx, num_edge, ngrwm, n_ngrwm, CellsOnEdge, edgesOnVertex, mp, distsOnEdge, ngrmw, cellwidth)
             lndname = trim(file_dir) // "result/cellwidth_NXP" // trim(nxpc) // "_global.nc4"
-            write(io6, *) lndname
+            write(io6, *)  lndname
             CALL cellwidth_save(lndname, num_dbx, wp, cellwidth)
+            write(io6, *)  "cellwidth save finish"
         end if      
         
         lndname = trim(file_dir) // "result/distsOnEdge_NXP" // trim(nxpc) // '_' // trim(stepc) // "_global.nc4"
-        write(io6, *) lndname
+        write(io6, *)  lndname
         CALL distsOnEdge_save(lndname, num_edge, vp, distsOnEdge)
 
 
-        ! 全局弹性调整，调整w点位置
+        ! 全局弹性调整，调整w点位置(xew8, yew8, zew8)
         CALL spring_dynamics_global(step, num_dbx, num_edge, nEdgesOnCell, edgesOnCell, CellsOnEdge, distsOnEdge, EdgesOnedge_tri, xew8, yew8, zew8)
 
         ! 从笛卡尔坐标调整为经纬度坐标
@@ -231,23 +293,44 @@ Module MOD_grid_preprocess
             wp(i, :) = centroid_deg
         end do
 
-        ! 基于w点获取球面m点的重心经纬度坐标
+        ! Adjust if 计算三角形的球面外心经纬度坐标（基于球面重心经纬度坐标）
+        Iscircum = .TRUE.
+        do i = 2, num_sjx, 1 ! 从2开始，因为第一个不存在
+            sjx = wp(ngrmw(:, i), 1:2)
+            CALL Get_Length_Angle(3, sjx, angle_temp, length_temp)! 计算多边形内角和
+            if (maxval(angle_temp) > 90._r8) then
+                write(io6, *)  ""
+                write(io6, *)  " exising interior angle large than 90 degree!"
+                write(io6, *)  " i = ", i, " angle_temp = ", angle_temp
+                write(io6, *)  " Use centroid instead of circumcenter!"
+                write(io6, *)  ""
+                Iscircum = .False.
+                exit
+            end if
+        end do
+
+        ! 基于w点获取球面m点的重心经纬度坐标 and 笛卡尔坐标
         mp = 0.
         CALL centroid_spherical_calculation(num_sjx, mp, wp, ngrmw)
-
-        ! 计算三角形的球面外心经纬度坐标（基于球面重心经纬度坐标）
         allocate(xem8(num_sjx)); xem8 = 0.0_r8
         allocate(yem8(num_sjx)); yem8 = 0.0_r8
         allocate(zem8(num_sjx)); zem8 = 0.0_r8
         CALL lonlat2xyz(num_sjx, mp(1:num_sjx, 1), mp(1:num_sjx, 2), xem8, yem8, zem8)
         xem8 = xem8 * erad8; yem8 = yem8 * erad8; zem8 = zem8 * erad8 ! 因为原本lonlat2xyz没有乘以erad8
-        CALL circumcenter_spherical_calculation(num_sjx, ngrmw, xem8, yem8, zem8, xew8, yew8, zew8)
-        do i = 2, num_sjx, 1
-            circum(1) = xem8(i); circum(2) = yem8(i); circum(3) = zem8(i);
-            CALL xyz2lonlat(circum, circum_deg)
-            mp(i, :) = circum_deg
-        end do
 
+        if (Iscircum == .TRUE.) then ! adjust xem8, yem8, zem8, mp
+            write(io6, *)  ""
+            write(io6, *)  " calculate circum center start! "
+            CALL circumcenter_spherical_calculation(num_sjx, ngrmw, xem8, yem8, zem8, xew8, yew8, zew8)
+            do i = 2, num_sjx, 1
+                circum(1) = xem8(i); circum(2) = yem8(i); circum(3) = zem8(i); 
+                CALL xyz2lonlat(circum, circum_deg)
+                mp(i, :) = circum_deg
+            end do
+            write(io6, *)  " calculate circum center finish! "
+            write(io6, *)  ""
+        end if
+        
         ! 获取边的笛卡尔坐标（从vp转换）
         allocate(xev8(num_edge)); xev8 = 0.0_r8
         allocate(yev8(num_edge)); yev8 = 0.0_r8
@@ -255,16 +338,9 @@ Module MOD_grid_preprocess
         CALL lonlat2xyz(num_edge, vp(1:num_edge, 1), vp(1:num_edge, 2), xev8, yev8, zev8)
         xev8 = xev8 * erad8; yev8 = yev8 * erad8; zev8 = zev8 * erad8
 
-        ! Order cellsOnVertex and edgesOnVertex counter-clockwise (MPAS-Tools compatible)
+        ! Order edgesOnVertex and cellsOnVertex counter-clockwise (MPAS-Tools compatible)
         CALL orderVertexArrays(num_sjx, xem8, yem8, zem8, xev8, yev8, zev8, &
                                 verticesOnEdge, cellsOnEdge, edgesOnVertex, cellsOnVertex)
-
-        ! DEBUG: Print cellsOnVertex for vertex 81458 AFTER orderVertexArrays
-        if (81458 >= 2 .and. 81458 <= num_sjx) then
-            write(io6,*) "=== DEBUG: Vertex 81458 AFTER orderVertexArrays ==="
-            write(io6,*) "cellsOnVertex:", cellsOnVertex(:, 81458)
-            write(io6,*) "edgesOnVertex:", edgesOnVertex(:, 81458)
-        end if
 
         deallocate(ngrmm)
         deallocate(nEdgesOnCell, edgesOnCell, verticesOnCell)
@@ -275,137 +351,6 @@ Module MOD_grid_preprocess
         deallocate(EdgesOnedge_tri)
 
     END SUBROUTINE Springjustment_global
-
-    SUBROUTINE Springjustment_regional_step(set_dis, num_sjx_ref, num_sjx, num_dbx, num_edge, mp, wp, ngrmw, ngrwm, n_ngrwm)
-
-        USE NETCDF
-        USE consts_coms , only : r8, nxp, step, io6
-        IMPLICIT NONE
-        integer, intent(in) :: set_dis, num_sjx_ref
-        integer, intent(in) :: num_sjx, num_dbx, num_edge
-        integer,  allocatable, intent(in) :: ngrmw(:, :), ngrwm(:, :), n_ngrwm(:)
-        real(r8), allocatable, intent(inout) :: mp(:,:), wp(:, :)
-        integer  :: i
-        real(r8) :: centroid(3), centroid_deg(2), circum(3), circum_deg(2)
-        integer,  allocatable :: ngrmm(:, :)
-        integer,  allocatable :: edgesOnVertex(:,:), cellsOnVertex(:,:)
-        integer,  allocatable :: verticesOnCell(:,:), edgesOnCell(:,:)
-        integer,  allocatable :: nEdgesOnCell(:)
-        integer,  allocatable :: CellsOnEdge(:,:), verticesOnEdge(:,:)
-        integer,  allocatable :: cellsOnCell(:,:), IsdbxMove(:)
-        integer,  allocatable :: IsEdgesMove(:), EdgesOnedge_tri(:,:)
-        real(r8), allocatable :: xem8(:), yem8(:), zem8(:)
-        real(r8), allocatable :: xew8(:), yew8(:), zew8(:)
-
-        ! 构建ngrmm数组
-        allocate(ngrmm(3, num_sjx)); ngrmm = 1   ! 反映三角形的相邻三角形的邻域关系(0表示没有相邻三角形)
-        CALL set_ngrmm(num_sjx, ngrmw, ngrwm, n_ngrwm, ngrmm)
-
-        allocate(cellsOnVertex(3, num_sjx)); cellsOnVertex = ngrmw ! 获取cellsOnVertex
-        ! 获取在Edge相关的变量cellsOnEdge, verticesOnEdge, edgesOnVertex
-        allocate(cellsOnEdge(2, num_edge)); cellsOnEdge = 1
-        allocate(verticesOnEdge(2, num_edge)); verticesOnEdge = 1
-        allocate(edgesOnVertex(3, num_sjx)); edgesOnVertex = 1
-        CALL GetEdge(num_sjx, wp, ngrmm, cellsOnVertex, cellsOnEdge, verticesOnEdge, edgesOnVertex)
-
-        ! verticesOnEdge排序
-        CALL GetSort_verticesOnEdge(num_edge, mp, wp, cellsOnEdge, verticesOnEdge) ! 对verticesOnEdge
-
-        ! NOTE: orderVertexArrays not called here as coordinates (xem8, xev, etc.) not yet computed
-        ! This subroutine (Springjustment_regional_step) may not need CCW ordering
-
-        ! 获取nEdgesOnCell, edgesOnCell, verticesOnCell
-        allocate(nEdgesOnCell(num_dbx)); nEdgesOnCell = n_ngrwm
-        allocate(verticesOnCell(7, num_dbx)); verticesOnCell = ngrwm
-        allocate(edgesOnCell(7, num_dbx)); edgesOnCell = 1
-        allocate(cellsOnCell(7, num_dbx)); cellsOnCell = 1
-        CALL Get_ConnectOnCell(num_dbx, nEdgesOnCell, cellsOnEdge, edgesOnVertex, verticesOnCell, edgesOnCell, cellsOnCell)
-        
-        ! 获取笛卡尔坐标下m/w的坐标
-        allocate(xew8(num_dbx)); xew8 = 0.0_r8 ! real(xew, r8)
-        allocate(yew8(num_dbx)); yew8 = 0.0_r8 ! real(yew, r8)
-        allocate(zew8(num_dbx)); zew8 = 0.0_r8 ! real(zew, r8)
-        CALL lonlat2xyz(num_dbx, wp(1:num_dbx, 1), wp(1:num_dbx, 2), xew8, yew8, zew8)
-        xew8 = xew8 * erad8; yew8 = yew8 * erad8; zew8 = zew8 * erad8 ! 因为原本lonlat2xyz没有乘以erad8
-
-        ! 确定那些顶点可以移动（并对部分顶点进行保护，不允许移动），每次都要重新标记
-        if (num_sjx_ref /= 0) then
-            CALL set_dbxMove_regional_step(set_dis, num_sjx_ref, num_sjx, num_dbx, ngrmw, ngrwm, n_ngrwm, IsdbxMove)
-        else
-            CALL set_dbxMove_regional_step(set_dis, num_sjx_ref, num_sjx, num_dbx, ngrmw, ngrwm, n_ngrwm, IsdbxMove, mp)
-        end if
-
-        ! 局弹性调整，调整w点位置
-        CALL spring_dynamics_regionalv2(step, num_dbx, nEdgesOnCell, cellsOnCell, IsdbxMove, xew8, yew8, zew8)
-        
-        ! 从笛卡尔坐标调整为经纬度坐标
-        wp = 0.
-        do i = 2, num_dbx, 1
-            centroid(1) = xew8(i); centroid(2) = yew8(i); centroid(3) = zew8(i); 
-            call xyz2lonlat(centroid, centroid_deg)
-            wp(i, :) = centroid_deg
-        end do
-
-        ! 基于w点获取球面m点的重心经纬度坐标
-        mp = 0.
-        CALL centroid_spherical_calculation(num_sjx, mp, wp, ngrmw)
-
-        ! 计算三角形的球面外心经纬度坐标（基于球面重心经纬度坐标）
-        allocate(xem8(num_sjx)); xem8 = 0.0_r8
-        allocate(yem8(num_sjx)); yem8 = 0.0_r8
-        allocate(zem8(num_sjx)); zem8 = 0.0_r8
-        CALL lonlat2xyz(num_sjx, mp(1:num_sjx, 1), mp(1:num_sjx, 2), xem8, yem8, zem8)
-        xem8 = xem8 * erad8; yem8 = yem8 * erad8; zem8 = zem8 * erad8 ! 因为原本lonlat2xyz没有乘以erad8
-        CALL circumcenter_spherical_calculation(num_sjx, ngrmw, xem8, yem8, zem8, xew8, yew8, zew8)
-        do i = 2, num_sjx, 1
-            circum(1) = xem8(i); circum(2) = yem8(i); circum(3) = zem8(i); 
-            CALL xyz2lonlat(circum, circum_deg)
-            mp(i, :) = circum_deg
-        end do
-
-        deallocate(ngrmm, IsdbxMove)
-        deallocate(nEdgesOnCell, edgesOnCell, verticesOnCell, cellsOnCell)
-        deallocate(cellsOnVertex, CellsOnEdge, verticesOnEdge)
-        deallocate(xem8, yem8, zem8, xew8, yew8, zew8)
-
-    END SUBROUTINE Springjustment_regional_step
-
-    SUBROUTINE find_frac_index(n, grid, point, frac, index)
-
-        IMPLICIT NONE
-        integer, intent(in) :: n
-        real(r8), intent(in) :: grid(:)
-        real(r8), intent(in) :: point
-        real(r8), intent(out) :: frac
-        integer, intent(out) :: index
-        integer :: i
-        real(r8) :: dx
-        ! 会不会出现跨越180经线的情况呢？？？？是的，不会出现
-        if (grid(1) < grid(n)) then  ! 适用于-180到180
-            do i = 1, n-1
-                if (point >= grid(i) .and. point <= grid(i+1)) then
-                    index = i
-                    exit
-                end if
-            end do
-        else  ! 适用于90到-90
-            do i = 1, n-1
-                if (point <= grid(i) .and. point >= grid(i+1)) then
-                    index = i
-                    exit
-                end if
-            end do
-        end if
-        dx = grid(i+1) - grid(i) ! dx > 0
-        frac = (point - grid(i)) / dx
-        frac = min(1.0_r8, max(0.0_r8, frac))
-        return
-        ! Shouldn't get here if bounds checking passed
-        write(io6, *) "point = ", point
-        write(io6, *) "grid = ", grid
-        error STOP "Point not found in grid"
-
-    END SUBROUTINE find_frac_index
 
     ! 一次性将多层细化的平衡长度都设置好(适用于非均一值)
     SUBROUTINE set_distsOnEdge_global(num_sjx, num_dbx, num_edge, ngrwm, n_ngrwm, CellsOnEdge, edgesOnVertex, mp, distsOnEdge, ngrmw, cellwidth)
@@ -435,7 +380,7 @@ Module MOD_grid_preprocess
             mincellwidth00 =  7680 / NXP
             cellwidth      = mincellwidth00 ! 背景值
         end if
-        write(io6, *) "num_rc = ", num_rc
+        write(io6, *)  "num_rc = ", num_rc
 
         allocate(mrl_bk_orial(num_sjx)) ! 标记是n级细化还是n-1级细化
         do i = 1, max_iter, 1
@@ -449,8 +394,8 @@ Module MOD_grid_preprocess
             ! 设置dist00和mindist00的大小
             dist00 = mindist00 ! 背景值
             mindist00 = dist00 / 2.0_r8
-            write(io6, *) "dist00 = ", dist00
-            write(io6, *) "mindist00 = ", mindist00
+            write(io6, *)  "dist00 = ", dist00
+            write(io6, *)  "mindist00 = ", mindist00
 
             ! 设置dist_layers的大小
             allocate(dist_layers(2*dist_len)); dist_layers = dist00
@@ -460,14 +405,12 @@ Module MOD_grid_preprocess
             CALL distsOnEdge_layers_make(i, num_rc, dist_len, num_sjx, num_dbx, num_edge, ngrwm, n_ngrwm, CellsOnEdge, edgesOnVertex, dist_layers, mrl_bk_orial, distsOnEdge)
             deallocate(dist_layers)
 
-
-
             if ((output_format /= 'MPAS') .and. (output_format /= 'MPAS-Simple')) cycle
             ! 设置cellwidth00 and mincellwidth00
             cellwidth00    = mincellwidth00 ! 背景值
             mincellwidth00 = cellwidth00 / 2.0_r8
-            write(io6, *) "cellwidth00 = ", cellwidth00
-            write(io6, *) "mincellwidth00 = ", mincellwidth00
+            write(io6, *)  "cellwidth00 = ", cellwidth00
+            write(io6, *)  "mincellwidth00 = ", mincellwidth00
 
             ! 设置cellwidth_layers
             allocate(dist_layers(dist_len)); dist_layers = cellwidth00
@@ -483,7 +426,6 @@ Module MOD_grid_preprocess
     END SUBROUTINE set_distsOnEdge_global
 
     SUBROUTINE dist_layers_make(dist_len, dist_select, dist_layers)
-
         USE refine_vars, only : set_dis_type
         IMPLICIT NONE
         integer, intent(in) :: dist_len
@@ -495,7 +437,7 @@ Module MOD_grid_preprocess
         mindist_select = dist_select / 2.0_r8
         if (trim(set_dis_type) == 'linear') then
             ! 线性设置y = a * x + b
-            write(io6, *) "set_dis_type = linear y = a * x + b"
+            write(io6, *)  "set_dis_type = linear y = a * x + b"
             a = mindist_select / (dist_len)
             b = mindist_select - a
             do i = 1, dist_len, 1
@@ -503,7 +445,7 @@ Module MOD_grid_preprocess
             end do
         else if (trim(set_dis_type) == 'nonlinear1') then
             ! 非线性设置1(幂函数形式):y = a * x ^ b
-            write(io6, *) "set_dis_type = nonlinear1 y = a * x ^ b"
+            write(io6, *)  "set_dis_type = nonlinear1 y = a * x ^ b"
             a = mindist_select
             b = log(2.0_r8) / log(real(dist_len+1, r8))
             do i = 1, dist_len, 1
@@ -511,7 +453,7 @@ Module MOD_grid_preprocess
             end do
         else if (trim(set_dis_type) == 'nonlinear2') then
             ! 非线性设置2(指数形式):y = a * b ^ x
-            write(io6, *) "set_dis_type = nonlinear2 y = a * b ^ x"
+            write(io6, *)  "set_dis_type = nonlinear2 y = a * b ^ x"
             b = 2.0_r8 ** (1.0_r8/(dist_len))
             a = mindist_select / b
             do i = 1, dist_len, 1
@@ -519,18 +461,18 @@ Module MOD_grid_preprocess
             end do
         else if (trim(set_dis_type) == 'nonlinear3') then
             ! 非线性设置3(对数形式):y = a * log(x) + b
-            write(io6, *) "set_dis_type = nonlinear3 y = a * log(x) + b"
+            write(io6, *)  "set_dis_type = nonlinear3 y = a * log(x) + b"
             b = mindist_select
             a = b / log(real(dist_len+1, r8))
             do i = 1, dist_len, 1
                 dist_layers(i) = a * log(real(i+1, r8)) + b
             end do
         else
-            write(io6, *) "set_dis_type:", trim(set_dis_type)
+            write(io6, *)  "set_dis_type:", trim(set_dis_type)
             STOP "ERROR! no find set_dis_type in SUBROUTINE dist_layers_make"
         end if
-        write(io6, *) "dist_layers = ", dist_layers
-        write(io6, *) ""
+        write(io6, *)  "dist_layers = ", dist_layers
+        write(io6, *)  ""
 
     END SUBROUTINE dist_layers_make
 
@@ -563,7 +505,7 @@ Module MOD_grid_preprocess
         CALL IsInArea_close_Calculation(type_select, iter, mask_patch_ndm(iter), IsInPaArea_grid)
 
         ! 根据IsInPaArea_grid对mrl_bk_orial进行赋值，判断是否为细化边界内的三角形
-        write(io6, *) "num_mp_step(iter) = ", num_mp_step(iter)
+        ! write(io6, *)  "num_mp_step(iter) = ", num_mp_step(iter)
         do i = num_mp_step(iter), num_sjx, 1
             lonm = mp(i, 1) 
             latm = mp(i, 2)
@@ -793,151 +735,8 @@ Module MOD_grid_preprocess
 
     END SUBROUTINE cellwidth_layers_make
 
-    ! 适用于多层细化逐步调整和多层细化最后一起调整的时候关于那些顶点可以移动的设置
-    SUBROUTINE set_dbxMove_regional_step(set_dis, num_sjx_ref, num_sjx, num_dbx, ngrmw, ngrwm, n_ngrwm, IsdbxMove, mp)
-        USE consts_coms, only : num_vertex, impent
-        USE refine_vars, only : vertex_pretect_layers
-        IMPLICIT NONE
-        integer, intent(in) :: set_dis, num_sjx_ref
-        integer, intent(in) :: num_sjx, num_dbx
-        integer, allocatable, intent(in) :: ngrmw(:,:), ngrwm(:,:), n_ngrwm(:)
-        real(r8),allocatable, intent(in), optional :: mp(:,:)
-        integer, allocatable, intent(out) :: IsdbxMove(:)
-        integer :: i, j, k, m, num_total, num_edges, num, IsOrialVert_refine(12)
-        integer, allocatable :: mrl_bk(:)
-        integer, allocatable :: isbdy_array(:)
-
-        allocate(mrl_bk(num_sjx)); mrl_bk = 0 ! 标记三角形细化情况
-        allocate(isbdy_array(num_dbx)); isbdy_array = 0
-        allocate(IsdbxMove(num_dbx)); IsdbxMove = 0
-
-
-        if (num_sjx_ref /= 0) then ! 用于逐步细化调整的情况
-            num_total = num_vertex + 4*num_sjx_ref
-            mrl_bk(num_vertex + 1:num_total) = 1 ! 标记是由于一分四细化得到的三角形
-        else ! 用于多层细化最后一起调整的情况
-            CALL refine_sjx_regional_make(1, num_sjx, mp, mrl_bk)
-        end if
-
-        ! 标记需要处理的三角形编号
-        m = 0
-        do while(m < set_dis+1)
-
-            ! 先确认边界点位
-            isbdy_array = 0
-            do i = 2, num_dbx, 1
-                num_edges = n_ngrwm(i)
-                num = sum(mrl_bk(ngrwm(1:num_edges, i)))
-                if (num == 0) cycle ! 多边形内没有细化三角形，跳过
-                if (num == num_edges) cycle ! 多边形内全是细化三角形，跳过
-                isbdy_array(i) = 1
-            end do
-            if (m == set_dis) exit
-
-            ! 再确认需要边界外的三角形
-            do i = 2, num_dbx, 1
-                if (isbdy_array(i) /= 1) cycle
-                num_edges = n_ngrwm(i) ! 获取相连的三角形个数
-                do j = 1, num_edges ,1
-                    k = ngrwm(j, i) ! 获取对应的center网格编号
-                    if (mrl_bk(k) == 1) cycle ! 跳过处于细化halo的三角形
-                    mrl_bk(k) = 1 ! 标记halo区域三角形，便于下一次循环
-                end do
-            end do
-
-            m = m + 1
-        end do
-
-        ! 根据mrl_bk标记IsdbxMove
-        do i = 2, num_sjx, 1
-            if (mrl_bk(i) /= 1) cycle ! 跳过不需要处理的三角形 
-            do j = 1, 3, 1
-                k = ngrmw(j, i) ! 获取三角形边的编号
-                IsdbxMove(k) = 1 ! 标记为可以移动
-            end do
-        end do
-
-        ! 根据isbdy_array更新IsdbxMove
-        do i = 2, num_dbx, 1
-            if (isbdy_array(i) == 1) IsdbxMove(i) = 0
-        end do
-
-        ! 暂定12 orial vertices vertex_pretect_layers内的细化顶点不可移动
-        if (vertex_pretect_layers == 0) then
-            deallocate(mrl_bk, isbdy_array)
-            return
-        end if
-
-        IsOrialVert_refine = 0
-        do i = 1, 12, 1
-            j = impent(i)
-            do k = 1, 5, 1
-                if (mrl_bk(ngrwm(k, j)) == 1) then
-                    IsOrialVert_refine(i) = 1 ! 判断12个orial顶点相连三角形是否被细化
-                    exit
-                end if
-            end do
-        end do
-
-        if (sum(IsOrialVert_refine) == 0) then
-            deallocate(mrl_bk, isbdy_array)
-            return
-        else 
-            mrl_bk = 0; isbdy_array = 0
-            do i = 1, 12, 1
-                if (IsOrialVert_refine(i) == 0) cycle ! 跳过12 orial 顶点附近没有相连细化三角形的情况
-                j = impent(i)
-                do k = 1, 5, 1
-                    mrl_bk(ngrwm(k, j)) = 1 ! 标记需要处理的三角形
-                end do
-            end do
-        end if
-
-        ! 如果原始12顶点需要移动，说明位于细化区域内，因此在之前的细化中应该已经将位于保护区内部的三角形都细化了
-        ! 相关内容应该在MOD_refine.F90而且是SpringRegional设定时相匹配
-        m = 0
-        do while(m < vertex_pretect_layers)
-
-            ! 先确认边界点位
-            isbdy_array = 0
-            do i = 2, num_dbx, 1
-                num_edges = n_ngrwm(i)
-                num = sum(mrl_bk(ngrwm(1:num_edges, i)))
-                if (num == 0) cycle ! 多边形内没有细化三角形，跳过
-                if (num == num_edges) cycle ! 多边形内全是细化三角形，跳过
-                isbdy_array(i) = 1
-            end do
-            if (m == vertex_pretect_layers) exit
-
-            ! 再确认需要边界外的三角形
-            do i = 2, num_dbx, 1
-                if (isbdy_array(i) /= 1) cycle
-                num_edges = n_ngrwm(i) ! 获取相连的三角形个数
-                do j = 1, num_edges ,1
-                    k = ngrwm(j, i) ! 获取对应的center网格编号
-                    if (mrl_bk(k) == 1) cycle ! 跳过处于细化halo的三角形
-                    mrl_bk(k) = 1 ! 标记halo区域三角形，便于下一次循环
-                end do
-            end do
-
-            m = m + 1
-        end do
-
-        ! 根据mrl_bk去除12orial顶点周围的IsdbxMove标记
-        do i = 2, num_sjx, 1
-            if (mrl_bk(i) /= 1) cycle ! 跳过不需要处理的三角形 
-            do j = 1, 3, 1
-                k = ngrmw(j, i) ! 获取三角形边的编号
-                IsdbxMove(k) = 0 ! 标记为不可以移动
-            end do
-        end do
-        deallocate(mrl_bk, isbdy_array)
-
-    END SUBROUTINE set_dbxMove_regional_step
-
     ! 适用于给定平衡长度的全局弹性调整（无论平衡长度均一与否）
     SUBROUTINE spring_dynamics_global(ngr, num_dbx, num_edge, nEdgesOnCell, edgesOnCell, CellsOnEdge, distsOnEdge, EdgesOnedge_tri, xew, yew, zew)
-
         USE consts_coms, only : r8, erad8, io6, relax
         USE refine_vars, only : niter_refine
         implicit none
@@ -1086,159 +885,14 @@ Module MOD_grid_preprocess
 
     END SUBROUTINE spring_dynamics_global
 
-    ! 真正局部网格进行调整，并不会全局网格调整
-    SUBROUTINE spring_dynamics_regionalv2(ngr, num_dbx, nEdgesOnCell, cellsOnCell, IsdbxMove, xew, yew, zew)
-
-        USE consts_coms, only : r8, erad8, io6
-        implicit none
-        integer,  intent(in) :: ngr, num_dbx
-        integer,  intent(in) :: nEdgesOnCell(num_dbx), cellsOnCell(7, num_dbx)
-        integer,  intent(in) :: IsdbxMove(num_dbx)
-        real(r8), intent(inout) :: xew(num_dbx), yew(num_dbx), zew(num_dbx)
-
-        integer, parameter :: nprnt = 10
-        integer  :: num_dbx_cal, nummax
-        integer  :: iv, iw, j, iter, n, i
-        real(r8) :: expansion
-        integer,  allocatable :: IsdbxCal(:), dbxCal_reserve(:), IsdbxCal_Move(:)
-        integer,  allocatable :: nEdgesOnCell_Cal(:), cellsOnCell_Cal(:,:)
-        real(r8), allocatable :: dsm(:)
-        real(r8), allocatable :: xew8(:), yew8(:), zew8(:)
-        real(r8), allocatable :: xew0(:), yew0(:), zew0(:)
-
-        allocate(IsdbxCal(num_dbx)); IsdbxCal = 1
-        allocate(dbxCal_reserve(num_dbx)); dbxCal_reserve = 1
-
-        ! 将不需要移动的边界点位也标记上
-        IsdbxCal = IsdbxMove
-        do iw = 2, num_dbx
-            if (IsdbxMove(iw) /= 1) cycle ! 跳过不需要移动的点位
-            n = nEdgesOnCell(iw)
-            do j = 1, n
-                iv = cellsOnCell(j, iw)
-                IsdbxCal(iv) = 1
-            end do
-        end do
-
-        num_dbx_cal = sum(IsdbxCal)
-        nummax = maxval(nEdgesOnCell)
-        allocate(IsdbxCal_Move(num_dbx_cal)); IsdbxCal_Move = 0
-        allocate(nEdgesOnCell_Cal(num_dbx_cal)); nEdgesOnCell_Cal = 0
-        allocate(cellsOnCell_Cal(nummax, num_dbx_cal)); cellsOnCell_Cal = 1
-
-        allocate(dsm(num_dbx_cal)); dsm = -99.
-        allocate(xew8(num_dbx_Cal)); xew8 = 0.0_r8
-        allocate(yew8(num_dbx_Cal)); yew8 = 0.0_r8
-        allocate(zew8(num_dbx_Cal)); zew8 = 0.0_r8
-        allocate(xew0(num_dbx_Cal)); 
-        allocate(yew0(num_dbx_Cal)); 
-        allocate(zew0(num_dbx_Cal)); 
-
-        num_dbx_cal = 0
-        do iw = 2, num_dbx
-            if (IsdbxCal(iw) /= 1) cycle ! 跳过不需要的点位
-            num_dbx_cal = num_dbx_cal + 1
-            dbxCal_reserve(iw) = num_dbx_cal
-
-            if (IsdbxMove(iw) == 1) IsdbxCal_Move(num_dbx_cal) = 1
-            nEdgesOnCell_Cal(num_dbx_Cal) = nEdgesOnCell(iw)
-            cellsOnCell_Cal(:,num_dbx_Cal) = cellsOnCell(:, iw)
-
-            xew8(num_dbx_Cal) = xew(iw)
-            yew8(num_dbx_Cal) = yew(iw)
-            zew8(num_dbx_Cal) = zew(iw)
-        end do
-        xew0 = xew8
-        yew0 = yew8
-        zew0 = zew8
-
-        ! Main iteration loop
-        write(io6,'(a,4i9)') "In spring dynamics: ngr, num_dbx, niter_refine = ", ngr, num_dbx, niter_refine
-
-        !$omp PARALLEL private(iter, i, iw, n, j, iv, expansion)
-        do iter = 1, niter_refine
-            ! 更新 xew0/yew0/zew0（每一步都需要更新）
-            !$omp do
-            do i = 1, num_dbx_Cal
-                if (IsdbxCal_Move(i) /= 1) cycle ! 跳过不需要移动的点位
-                xew0(i) = xew8(i)
-                yew0(i) = yew8(i)
-                zew0(i) = zew8(i)
-            end do
-            !$omp end do
-
-            !$omp do
-            do i = 1, num_dbx_Cal
-                if (IsdbxCal_Move(i) /= 1) cycle ! 跳过不需要移动的点位
-                xew8(i) = 0.0_r8
-                yew8(i) = 0.0_r8
-                zew8(i) = 0.0_r8
-                n = nEdgesOnCell_Cal(i)
-                do j = 1, n
-                    iw = cellsOnCell_Cal(j, i)
-                    iv = dbxCal_reserve(iw)
-                    xew8(i) = xew8(i) + xew0(iv) / n
-                    yew8(i) = yew8(i) + yew0(iv) / n
-                    zew8(i) = zew8(i) + zew0(iv) / n
-                enddo
-            enddo
-            !$omp end do
-
-            ! 标准化坐标
-            !$omp do private(expansion)
-            do i = 1, num_dbx_Cal
-                if (IsdbxCal_Move(i) /= 1) cycle ! 跳过不需要移动的点位
-                expansion = erad8 / sqrt(xew8(i)**2 + yew8(i)**2 + zew8(i)**2)
-                xew8(i) = xew8(i) * expansion
-                yew8(i) = yew8(i) * expansion
-                zew8(i) = zew8(i) * expansion
-            enddo
-            !$omp end do
-
-            ! 输出结果（线程安全）
-            if (iter == 1 .or. mod(iter, nprnt) == 0) then
-                !$omp do
-                do i = 1, num_dbx_Cal
-                    if (IsdbxCal_Move(i) /= 1) cycle ! 跳过不需要移动的点位
-                    dsm(i) = (xew8(i) - xew0(i))**2 &
-                           + (yew8(i) - yew0(i))**2 &
-                           + (zew8(i) - zew0(i))**2 
-                enddo
-                !$omp end do
-
-                !$omp single
-                write(*, '(3x,A,I5,A,I5,A,f0.4,A)') "Iteration ", iter, " of ", niter_refine, ",  Max DS = ", sqrt(maxval(dsm)), " meters."
-                !$omp end single
-            endif
-
-        end do
-        !$omp end parallel
-
-        ! 将数据范围到原始数组中
-        num_dbx_cal = 0
-        do iw = 2, num_dbx
-            if (IsdbxCal(iw) /= 1) cycle ! 跳过不需要的点位
-            num_dbx_cal = num_dbx_cal + 1
-            xew(iw) = xew8(num_dbx_Cal)
-            yew(iw) = yew8(num_dbx_Cal)
-            zew(iw) = zew8(num_dbx_Cal)
-        end do
-
-        deallocate(IsdbxCal, dbxCal_reserve, IsdbxCal_Move, nEdgesOnCell_Cal, cellsOnCell_Cal)
-        deallocate(dsm, xew8, yew8, zew8, xew0, yew0, zew0)
-
-    END SUBROUTINE spring_dynamics_regionalv2
-
     ! 构建ngrmm数组
     SUBROUTINE set_ngrmm(num_sjx, ngrmw, ngrwm, n_ngrwm, ngrmm)
-
         IMPLICIT NONE
         integer, intent(in) :: num_sjx
         integer, allocatable, intent(in) :: ngrmw(:,:), ngrwm(:,:), n_ngrwm(:)
         integer, allocatable, intent(inout) :: ngrmm(:,:)
         integer :: i, j, k, n, mk, ik, wj, num_ngrmm
 
-        write(io6, *) 'ngrmm start'
         do i = 2, num_sjx, 1
             num_ngrmm = 0
             do j = 1, 3, 1
@@ -1256,14 +910,11 @@ Module MOD_grid_preprocess
                 end do
             end do
         end do
-        write(io6, *) 'ngrmm finish'
-        write(io6, *) ''
 
     END SUBROUTINE set_ngrmm
 
     ! 获取对偶三角形非公共边的edge编号
     SUBROUTINE set_edgesOnEdge_tri(num_sjx, num_edge, ngrmm, verticesOnEdge, edgesOnVertex, edgesOnEdge_tri)
-
         IMPLICIT NONE
         integer, intent(in) :: num_sjx, num_edge
         integer, intent(in) :: ngrmm(:,:), verticesOnEdge(:,:), edgesOnVertex(:,:)
@@ -1291,7 +942,6 @@ Module MOD_grid_preprocess
     END SUBROUTINE set_edgesOnEdge_tri
 
     SUBROUTINE edgeIDSort(num_sjx, num_edge, cellsOnEdge_reference, cellsOnEdge, verticesOnEdge, edgesOnVertex, vp)
-
         IMPLICIT NONE
         integer, intent(in) :: num_sjx, num_edge
         integer, allocatable, intent(in) :: cellsOnEdge_reference(:,:)
@@ -1324,7 +974,7 @@ Module MOD_grid_preprocess
             if (SortID(i) == 1) STOP "ERROR! SortID(i) == 1"
         end do
         !!$OMP END PARALLEL DO
-        write(io6, *)"SortID cell finfish"
+        write(io6, *)  "SortID cell finfish"
 
         do i = 2, num_edge, 1
             vp_temp(i, :) = vp(SortID(i), :)
@@ -1351,7 +1001,6 @@ Module MOD_grid_preprocess
 
     ! 计算三角形的球面重心经纬度坐标
     SUBROUTINE centroid_spherical_calculation(sjx_points, mp, wp, ngrmw)
-
         IMPLICIT NONE
         integer, intent(in) :: sjx_points
         integer, intent(in) :: ngrmw(:, :)
@@ -1379,7 +1028,6 @@ Module MOD_grid_preprocess
     ! 适用于单个三角形重心计算的形式,未来可以用于代替在一分四细化中的简单平均
     ! 修改为适用于边求中心点位
     SUBROUTINE centroid_spherical_single(len_temp, lon_deg, lat_deg, centroid_deg)
-
         IMPLICIT NONE
         integer, intent(in) :: len_temp
         real(r8), intent(in) :: lon_deg(len_temp), lat_deg(len_temp)
@@ -1515,7 +1163,7 @@ Module MOD_grid_preprocess
         z = sin(lat_rad)
         ! θ 是极角（范围通常为 0到 π，ϕ是方位角（范围通常为 0 到 2π）。
         ! 请检查角度范围到底对不对，而且MPAS中实际上会除以R
-
+        
     END SUBROUTINE lonlat2xyz
 
     SUBROUTINE xyz2lonlat(v, lonlat_deg)
@@ -1534,8 +1182,7 @@ Module MOD_grid_preprocess
     END SUBROUTINE xyz2lonlat
 
     SUBROUTINE TriMeshQuality(num_sjx, wp_f, ngrmw_f, adjust_sjx_flag, length_sjx_temp, angle_sjx_temp, Extr_sjx_temp, Eavg_sjx_temp, Savg_sjx_temp, angleless_temp, anglemore_temp)
-
-        implicit none ! 定义的顺序最好是只读入的参数，内部参数，需要传出的参数
+        IMPLICIT NONE ! 定义的顺序最好是只读入的参数，内部参数，需要传出的参数
         integer, intent(in) :: num_sjx
         real(r8), dimension(:, :), intent(in) :: wp_f
         integer,  dimension(:, :), intent(in) :: ngrmw_f
@@ -1574,8 +1221,7 @@ Module MOD_grid_preprocess
 
     ! 需要修改，增加length的输入输出
     SUBROUTINE PolyMeshQuality(num_edges, num_dbx, mp_f, ngrwm_f, n_ngrwm_f, adjust_dbx_flag, length_dbx_temp, angle_dbx_temp, Extr_dbx_temp, Eavg_dbx_temp, Savg_dbx_temp, angleless_temp, anglemore_temp)
-
-        implicit none ! 定义的顺序最好是只读入的参数，内部参数，需要传出的参数
+        IMPLICIT NONE ! 定义的顺序最好是只读入的参数，内部参数，需要传出的参数
         integer, intent(in) :: num_edges, num_dbx
         real(r8), dimension(:, :), intent(in) :: mp_f
         integer,  dimension(:, :), intent(in) :: ngrwm_f
@@ -1618,9 +1264,7 @@ Module MOD_grid_preprocess
     END SUBROUTINE PolyMeshQuality   
 
     SUBROUTINE CheckLon(x)
-
-        implicit none
-
+        IMPLICIT NONE
         real(r8), intent(out) :: x
 
         if (x > 180._r8) then
@@ -1677,10 +1321,9 @@ Module MOD_grid_preprocess
 
     end function arc_length
 
-    SUBROUTINE Get_Length_Angle(num_edges, dbx, angle_dbx, length_dbx) 
-        ! 适用于三角形与五六七边形的球面边长和内角计算形式  
-        implicit none
-    
+    ! 适用于三角形与五六七边形的球面边长和内角计算形式  
+    SUBROUTINE Get_Length_Angle(num_edges, dbx, angle_dbx, length_dbx)  
+        IMPLICIT NONE
         integer, intent(in) :: num_edges
         real(r8), intent(in) :: dbx(num_edges, 2) 
         real(r8), intent(out) :: angle_dbx(num_edges)
@@ -1734,12 +1377,6 @@ Module MOD_grid_preprocess
         do i = 2, num_sjx, 1
             xVertex(1) = xem(i); xVertex(2) = yem(i); xVertex(3) = zem(i)
 
-            ! DEBUG: Print debug info for vertex 81458
-            if (i == 81458) then
-                write(io6,*) "=== DEBUG: Processing vertex 81458 ==="
-                write(io6,*) "cellsOnVertex:", cellsOnVertex(:,i)
-                write(io6,*) "edgesOnVertex:", edgesOnVertex(:,i)
-            end if
 
             ! Loop through consecutive edge pairs around this vertex
             do ie = 1, vertexDegree
@@ -1797,24 +1434,10 @@ Module MOD_grid_preprocess
                             ! Assign to correct position in kiteAreasOnVertex
                             kiteAreasOnVertex(icv, i) = tri1_area + tri2_area
 
-                            ! DEBUG: Print kite area details for vertex 81458
-                            if (i == 81458) then
-                                write(io6,*) "  ie=", ie, " edge1=", edge1, " edge2=", edge2
-                                write(io6,*) "  iCell=", iCell, " icv=", icv
-                                write(io6,*) "  tri1_area=", tri1_area
-                                write(io6,*) "  tri2_area=", tri2_area
-                                write(io6,*) "  kiteArea=", tri1_area + tri2_area
-                            end if
                         end if
                     end if
                 end if
             end do
-
-            ! DEBUG: Print final kiteAreasOnVertex for vertex 81458
-            if (i == 81458) then
-                write(io6,*) "Final kiteAreasOnVertex:", kiteAreasOnVertex(:,i)
-                write(io6,*) "=== END DEBUG vertex 81458 ==="
-            end if
         end do
 
         do i = 2, num_sjx, 1
@@ -1865,10 +1488,9 @@ Module MOD_grid_preprocess
 
     end function triangle_signed_area_sphere
 
-    ! vp的计算精度不够
+    ! vp的计算精度可以进一步提高
     SUBROUTINE GetEdge(num_sjx, wp, ngrmm, cellsOnVertex, cellsOnEdge, verticesOnEdge, edgesOnVertex, vp)
-
-        implicit none
+        IMPLICIT NONE
         integer, intent(in) :: num_sjx
         real(r8),allocatable, intent(in) :: wp(:,:)
         integer, allocatable, intent(in) :: ngrmm(:,:), cellsOnVertex(:,:)
@@ -1903,7 +1525,7 @@ Module MOD_grid_preprocess
                 else if (ij == 3) then
                     ii = cellsOnVertex(1, i); jj = cellsOnVertex(2, i) ! 获取多边形中心点的编号
                 else
-                    write(io6, *) "ij = ", ij
+                    write(io6, *)  "ij = ", ij
                     STOP "ERROR!"
                 end if
 
@@ -1934,7 +1556,6 @@ Module MOD_grid_preprocess
     END SUBROUTINE GetEdge
 
     SUBROUTINE GetSort_verticesOnEdge(num_edge, mp, wp, cellsOnEdge, verticesOnEdge)
-
         IMPLICIT NONE
         integer, intent(in) :: num_edge
         integer, allocatable, intent(in) :: cellsOnEdge(:,:)
@@ -1966,7 +1587,7 @@ Module MOD_grid_preprocess
 
     END SUBROUTINE GetSort_verticesOnEdge
 
-    ! Order cellsOnVertex and edgesOnVertex counter-clockwise (matching MPAS-Tools)
+    ! Order edgesOnVertex and cellsOnVertex counter-clockwise (matching MPAS-Tools)
     ! Reference: MPAS-Tools mpas_mesh_converter.cpp orderVertexArrays() lines 1320-1460
     SUBROUTINE orderVertexArrays(num_sjx, xem, yem, zem, xev, yev, zev, &
                                    verticesOnEdge, cellsOnEdge, edgesOnVertex, cellsOnVertex)
@@ -2069,13 +1690,6 @@ Module MOD_grid_preprocess
                 end if
             end do
         end do
-
-        ! Normalize rotation: rotate so minimum cell ID is at position 1
-        ! VERIFIED: MPAS-Tools does NOT do rotation normalization!
-        ! Enabling this makes errors WORSE (64% vs 52%)
-        ! call normalizeRotation(num_sjx, cellsOnVertex, edgesOnVertex)
-
-        write(io6,*) "orderVertexArrays: Completed CCW ordering of edgesOnVertex and cellsOnVertex"
 
     END SUBROUTINE orderVertexArrays
 
@@ -2292,6 +1906,7 @@ Module MOD_grid_preprocess
     END SUBROUTINE standardizeVerticesOnCellRotation
 
     SUBROUTINE Get_ConnectOnCell(num_dbx, nEdgesOnCell, cellsOnEdge, edgesOnVertex, verticesOnCell, edgesOnCell, cellsOnCell)
+        IMPLICIT NONE
         integer, intent(in) :: num_dbx
         integer, allocatable, intent(in) :: nEdgesOnCell(:), cellsOnEdge(:,:)
         integer, allocatable, intent(in) :: edgesOnVertex(:,:), verticesOnCell(:,:)
@@ -2311,11 +1926,11 @@ Module MOD_grid_preprocess
                     if (any(edges_vertex1(k) == edges_vertex2)) exit
                 end do
                 if (k == 4) then
-                    write(io6, *) "i = ", i
-                    write(io6, *) "vertex1 = ", vertex1
-                    write(io6, *) "vertex2 = ", vertex2
-                    write(io6, *) "edges_vertex1 = ", edges_vertex1
-                    write(io6, *) "edges_vertex2 = ", edges_vertex2
+                    write(io6, *)  "i = ", i
+                    write(io6, *)  "vertex1 = ", vertex1
+                    write(io6, *)  "vertex2 = ", vertex2
+                    write(io6, *)  "edges_vertex1 = ", edges_vertex1
+                    write(io6, *)  "edges_vertex2 = ", edges_vertex2
                     STOP "WARNNING! EDGES_VERTEX1 has value 4 which is greater than the upper bound of 3"
                 else
                     edgesOnCell(j, i) = edges_vertex1(k)
@@ -2342,7 +1957,7 @@ Module MOD_grid_preprocess
 
     END SUBROUTINE Get_ConnectOnCell
 
-    ! angleEdge计算精度不够
+    ! angleEdge计算精度可以进一步提高
     SUBROUTINE Get_Edge_DIS_Angle(num_edge, cellsOnEdge, verticesOnEdge, &
                             xem, yem, zem, xew, yew, zew, xev, yev, zev, latVertex, lonEdge, latEdge, dcEdge, dvEdge, angleEdge)
 
@@ -2376,11 +1991,11 @@ Module MOD_grid_preprocess
             dcEdge(iv) = arc_length(x1, y1, z1, x2, y2, z2)
 
             ! 计算angleEdge，传入三角形顶点的经纬度坐标就好了(相同的代码但是在matlab中结果不一样)
-            angle = latVertex(im2) * pio180_r8 - latVertex(im1) * pio180_r8  ! 转为弧度再计算
+            angle = latVertex(im2) * pio180_r8 - latVertex(im1) * pio180_r8  ! 转为弧度再计算 
             angle = angle / dvEdge(iv)
             angle = max(min(angle, 1.0_r8), -1.0_r8)
             angle = acos(angle)
-
+            
             xe = xev(iv);  ye = yev(iv);  ze = zev(iv)
             xv = xem(im2); yv = yem(im2); zv = zem(im2)
             lonn = lonEdge(iv) * pio180_r8
@@ -2441,7 +2056,7 @@ Module MOD_grid_preprocess
         end if
 
     end function planeAngle
-
+    
     ! 计算边上的权重
     ! https://github.com/MPAS-Dev/MPAS-Tools/blob/5985d4f79111ce6b71ad7867f13759296980adf1/mesh_tools/hex_projection/ph_utils.f90#L967
     SUBROUTINE set_weightsOnEdge(num_sjx, num_dbx, num_edge, maxEdges, maxEdges2, vertexDegree, &
@@ -2606,11 +2221,8 @@ Module MOD_grid_preprocess
 
     END SUBROUTINE set_weightsOnEdge
 
-
     SUBROUTINE CheckCrossing(num_edges, points)
-
-        implicit none
-
+        IMPLICIT NONE
         integer, intent(in) :: num_edges
         real(r8), dimension(num_edges, 2), intent(inout) :: points
         ! real, dimension(num_edges, 2), intent(inout) :: points
@@ -2647,7 +2259,6 @@ Module MOD_grid_preprocess
         end if
 
     END FUNCTION IsNgrmm
-
 
     SUBROUTINE GetSortNew(num_dbx, n_ngrwm, ngrmw, mp, ngrwm)
         USE consts_coms, only : pi_r8, pio180_r8
@@ -2714,7 +2325,7 @@ Module MOD_grid_preprocess
                     ngrwm_temp2(j) = ngrwm_temp1(num_inter-j+1)
                 end do
             end if
-            ngrwm(:, i) = ngrwm_temp2 ! 数据更新
+            ngrwm(1:maxnum, i) = ngrwm_temp2 ! 数据更新
         end do
         
         deallocate(Isused, ngrwm_temp1, ngrwm_temp2, lon, lat)
@@ -2749,7 +2360,7 @@ Module MOD_grid_preprocess
     END FUNCTION robust_spherical_area
 
     SUBROUTINE IAP_Mesh_make(inputfile, outputfile)
-        USE MOD_file_preprocess, only : IAP_Mesh_Read, Unstructured_Mesh_Save
+        USE MOD_utilities, only : IAP_Mesh_Read, Unstructured_Mesh_Save
         IMPLICIT NONE
         character(pathlen), intent(in) :: inputfile, outputfile
         integer :: sjx_points, lbx_points
@@ -2792,12 +2403,12 @@ Module MOD_grid_preprocess
         end do
 
         maxnum = maxval(n_ngrwm)
-        write(io6, *) "maxnum = ", maxnum
+        write(io6, *)  "maxnum = ", maxnum
         if (maxnum <= 7) maxnum = 7
         allocate(ngrwm(maxnum, lbx_points)); ngrwm = ngrwm_temp(1:maxnum, :)
         CALL GetSortNew(lbx_points, n_ngrwm, ngrmw, mp, ngrwm)
 
-        write(io6, *) "IAP_Mesh_make finish and save to unstructure file"
+        write(io6, *)  "IAP_Mesh_make finish and save to unstructure file"
         CALL Unstructured_Mesh_Save(outputfile, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
         deallocate(xem8, yem8, zem8, xew8, yew8, zew8)
         deallocate(mp, ngrwm, n_ngrwm)

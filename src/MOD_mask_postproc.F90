@@ -3,7 +3,7 @@ module MOD_mask_postproc
     USE refine_vars
     USE NETCDF
     USE MOD_data_preprocess, only : lon_i, lat_i, lon_vertex, lat_vertex
-    USE MOD_file_preprocess, only : Contain_Read, Unstructured_Mesh_Save, Unstructured_Mesh_Read
+    USE MOD_utilities, only : Contain_Read, Unstructured_Mesh_Save, Unstructured_Mesh_Read, CHECK
     USE MOD_grid_preprocess, only : set_ngrmm
     USE MOD_Area_judge     , only : CheckCrossing, minlon_DmArea, maxlon_DmArea, maxlat_DmArea, minlat_DmArea, nlons_Dm_select, nlats_Dm_select
     implicit none
@@ -22,8 +22,8 @@ module MOD_mask_postproc
             CALL mask_postproc_Ocn()
         else if (mesh_type == 'atmosmesh') then
             CALL mask_postproc_Atmos()
-        else if (mesh_type == 'earthmesh') then
-            CALL mask_postproc_Earth()
+        else if (mesh_type == 'LOCmesh') then
+            CALL mask_postproc_LOC()
         end if
 
     END SUBROUTINE mask_postproc
@@ -46,7 +46,7 @@ module MOD_mask_postproc
         USE MOD_grid_preprocess, only : GetEdge, GetSort_verticesOnEdge, Get_ConnectOnCell, lonlat2xyz, &
             Get_Edge_DIS_Angle, GetArea, set_weightsOnEdge, IsNgrmm, edgeIDSort, orderVerticesOnCell, &
             orderVertexArrays, standardizeVerticesOnCellRotation
-        USE MOD_file_preprocess, only : MPAS_Mesh_Save, MPAS_info_Save, data_read, cellwidth_read
+        USE MOD_utilities, only : MPAS_Mesh_Save, MPAS_info_Save, data_read, cellwidth_read
         implicit none
         integer :: num_sjx, num_dbx, num_edge
         integer,  allocatable :: ngrmw(:, :), ngrwm(:, :), n_ngrwm(:)
@@ -73,20 +73,21 @@ module MOD_mask_postproc
 
         write(nxpc,  '(I4.4)') nxp
         ! read unstructure mesh
-        write(io6, *) "start to read unstructure mesh data in the module MOD_mask_make"
+        write(io6, *)  "start to read unstructure mesh data in the module MOD_mask_make"
         ! 读取未细化初始网格数据
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)//'.nc4'
-        write(io6, *)lndname
+        write(io6, *)  lndname
         ! 读入的数据除了第一个图形，其他图形都是存在的
         call Unstructured_Mesh_Read(lndname, num_sjx, num_dbx, mp, wp, ngrmw, ngrwm, n_ngrwm)
-        write(io6, *) "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Atmos"
-        write(io6, *) ""
-        write(io6, *) "In total, triangular mesh number: ", num_sjx, "polygon mesh number: ", num_dbx
-        write(io6, *) ""
+        write(io6, *)  "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Atmos"
+        write(io6, *)  ""
+        write(io6, *)  "In total, triangular mesh number: ", num_sjx, "polygon mesh number: ", num_dbx
+        write(io6, *)  ""
 
         ! 构建ngrmm数组
         allocate(ngrmm(3, num_sjx)); ngrmm = 1   ! 反映三角形的相邻三角形的邻域关系(0表示没有相邻三角形)
         CALL set_ngrmm(num_sjx, ngrmw, ngrwm, n_ngrwm, ngrmm)
+        write(io6, *)  "set ngrmm finish in SUBROUTINE MPAS_Mesh_Cal"
 
         num_edge = int((num_sjx-1)/2*3 + 1) ! 只适用于全局网格
         allocate(cellsOnVertex(3, num_sjx)); cellsOnVertex = ngrmw
@@ -96,7 +97,8 @@ module MOD_mask_postproc
         allocate(verticesOnEdge(2, num_edge)); verticesOnEdge = 1
         allocate(edgesOnVertex(3, num_sjx)); edgesOnVertex = 1
         CALL GetEdge(num_sjx, wp, ngrmm, cellsOnVertex, cellsOnEdge, verticesOnEdge, edgesOnVertex, vp)
-        
+        write(io6, *)  "GetEdge finish"
+
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 暂时存在，并不会长期存在的内容
         ! lndname = trim(mode_file)
         ! print*, lndname
@@ -118,6 +120,7 @@ module MOD_mask_postproc
         allocate(cellsOnCell(maxEdges, num_dbx)); cellsOnCell = 1
         ! 对cellsOnCell和edgesOnCell进行排序(verticesOnCell, edgesOnCell, cellsOnCell内部自洽)
         CALL Get_ConnectOnCell(num_dbx, nEdgesOnCell, cellsOnEdge, edgesOnVertex, verticesOnCell, edgesOnCell, cellsOnCell)
+        write(io6, *)  "Get ConnectOnCell finish"
 
         allocate(lonVertex(num_sjx)); lonVertex = mp(:, 1)
         allocate(latVertex(num_sjx)); latVertex = mp(:, 2)
@@ -147,32 +150,28 @@ module MOD_mask_postproc
                                 verticesOnEdge, cellsOnEdge, edgesOnVertex, cellsOnVertex)
         write(io6,*) "orderVertexArrays: Completed CCW ordering of cellsOnVertex and edgesOnVertex"
 
-        ! DEBUG: Print cellsOnVertex for vertex 81458 AFTER orderVertexArrays in mask_postproc_Atmos
-        if (81458 >= 2 .and. 81458 <= num_sjx) then
-            write(io6,*) "=== DEBUG: Vertex 81458 AFTER orderVertexArrays (mask_postproc_Atmos) ==="
-            write(io6,*) "cellsOnVertex:", cellsOnVertex(:, 81458)
-            write(io6,*) "edgesOnVertex:", edgesOnVertex(:, 81458)
-        end if
-
         ! 计算获取dcEdge, dvEdge, angleEdge
         allocate(dcEdge(num_edge)); dcEdge = 0.0_r8
         allocate(dvEdge(num_edge)); dvEdge = 0.0_r8
         allocate(angleEdge(num_edge)); angleEdge = 0.0_r8
         CALL Get_Edge_DIS_Angle(num_edge, cellsOnEdge, verticesOnEdge, xem, yem, zem, xew, yew, zew, xev, yev, zev, latVertex, lonEdge, latEdge, dcEdge, dvEdge, angleEdge)
+        write(io6, *)  "Get Edge DIS Angle finish"
 
         ! Order verticesOnCell counter-clockwise (MPAS-Tools compatible)
         ! This is critical for correct weightsOnEdge calculation
         CALL orderVerticesOnCell(num_dbx, xew, yew, zew, xem, yem, zem, &
                                   verticesOnCell, nEdgesOnCell)
+        write(io6, *)  "orderVerticesOnCell finish"
 
         ! Standardize rotation to start with minimum vertex ID
         ! This reduces floating-point error by ensuring consistent accumulation order
         CALL standardizeVerticesOnCellRotation(num_dbx, verticesOnCell, nEdgesOnCell)
+        write(io6, *)  "standardizeVerticesOnCellRotation finish"
 
         ! Rebuild edgesOnCell and cellsOnCell based on newly ordered verticesOnCell
         ! This ensures consistency between verticesOnCell ordering and edgesOnCell/cellsOnCell
         CALL Get_ConnectOnCell(num_dbx, nEdgesOnCell, cellsOnEdge, edgesOnVertex, verticesOnCell, edgesOnCell, cellsOnCell)
-
+        
         ! CRITICAL: Compute kiteAreasOnVertex AFTER ordering to ensure consistent connectivity
         vertexDegree = 3
         allocate(kiteAreasOnVertex(vertexDegree, num_sjx)); kiteAreasOnVertex = 0.0_r8
@@ -180,18 +179,22 @@ module MOD_mask_postproc
         allocate(areaCell(num_dbx)); areaCell = 0.0_r8
         CALL GetArea(num_sjx, num_dbx, num_edge, xem, yem, zem, xew, yew, zew, xev, yev, zev, cellsOnVertex, edgesOnVertex, cellsOnEdge, &
             verticesOnCell, nEdgesOnCell, kiteAreasOnVertex, areaTriangle, areaCell)
+        write(io6, *)  "GetArea finish"
 
         allocate(meshDensity(num_dbx)); meshDensity = 1.0 ! 需要搭配细化地图使用
-        lndname = trim(file_dir) // "result/cellwidth_NXP" // trim(nxpc) // "_global.nc4"
-        CALL cellwidth_read(lndname, cellwidth)
-        mincellWidth = minval(cellWidth(1:num_dbx))
-        meshDensity = (mincellWidth/cellWidth(1:num_dbx)) ** 4
+        if (step > 1) then
+            lndname = trim(file_dir) // "result/cellwidth_NXP" // trim(nxpc) // "_global.nc4"
+            CALL cellwidth_read(lndname, cellwidth)
+            mincellWidth = minval(cellWidth(1:num_dbx))
+            meshDensity = (mincellWidth/cellWidth(1:num_dbx)) ** 4
+        end if
 
         allocate(nEdgesOnEdge(num_edge)); nEdgesOnEdge = 0
         allocate(edgesOnEdge(maxEdges2, num_edge)); edgesOnEdge = 1
         allocate(weightsOnEdge(maxEdges2, num_edge)); weightsOnEdge = 0.0_r8
         CALL set_weightsOnEdge(num_sjx, num_dbx, num_edge, maxEdges, maxEdges2, vertexDegree, areaCell, angleEdge, dcEdge, dvEdge, kiteAreasOnVertex, edgesOnCell, &
             cellsOnVertex, cellsOnEdge, verticesOnCell, verticesOnEdge, nEdgesOnCell, weightsOnEdge, nEdgesOnEdge, edgesOnEdge, error_segment)
+        write(io6, *)  "set weightsOnEdge finish"
 
         latCell = latCell * pio180_r8
         where(lonCell < 0._r8) lonCell = lonCell + 360._r8; lonCell = lonCell * pio180_r8
@@ -199,12 +202,6 @@ module MOD_mask_postproc
         where(lonVertex < 0._r8) lonVertex = lonVertex + 360._r8; lonVertex = lonVertex * pio180_r8
         latEdge = latEdge * pio180_r8
         where(lonEdge < 0._r8) lonEdge = lonEdge + 360._r8; lonEdge = lonEdge * pio180_r8
-
-        ! DEBUG: Print cellsOnVertex BEFORE -1 conversion
-        if (81458 >= 2 .and. 81458 <= num_sjx) then
-            write(io6,*) "=== DEBUG: Vertex 81458 BEFORE -1 conversion ==="
-            write(io6,*) "cellsOnVertex:", cellsOnVertex(:, 81458)
-        end if
 
         cellsOnCell = cellsOnCell - 1
         verticesOnCell = verticesOnCell - 1
@@ -215,23 +212,19 @@ module MOD_mask_postproc
         verticesOnEdge = verticesOnEdge - 1
         edgesOnEdge = edgesOnEdge - 1
         nominalMinDc = 7680 / NXP / (2**(step-1)) / erad8 * 1000 ! NXP=64 == 120km：64 * 120 = 7680
-
-        ! DEBUG: Print cellsOnVertex AFTER -1 conversion, BEFORE MPAS_Mesh_Save
-        if (81458 >= 2 .and. 81458 <= num_sjx) then
-            write(io6,*) "=== DEBUG: Vertex 81458 AFTER -1 conversion, BEFORE save ==="
-            write(io6,*) "cellsOnVertex:", cellsOnVertex(:, 81458)
-        end if
-
+        
         lndname = trim(file_dir) // "result/MPASOUT_NXP" // trim(nxpc) // "_global.nc4"
-        write(io6, *) lndname
+        write(io6, *)  lndname
         CALL MPAS_Mesh_Save(lndname, num_sjx, num_dbx, num_edge, latCell, lonCell, xew, yew, zew, latVertex, lonVertex, xem, yem, zem, &
             latEdge, lonEdge, xev, yev, zev, nEdgesOnCell, cellsOnCell, verticesOnCell, edgesOnCell, cellsOnVertex, edgesOnVertex, &
             cellsOnEdge, verticesOnEdge, nEdgesOnEdge, edgesOnEdge, areaCell, areaTriangle, kiteAreasOnVertex, dvEdge, dcEdge, &
             angleEdge, weightsOnEdge, meshDensity, nominalMinDc, error_segment)
+        write(io6, *)  "MPAS Mesh Save finish"
 
         lndname = trim(file_dir) // "result/MPASOUT_NXP" // trim(nxpc) // "_global.graph.info"
-        write(io6, *) lndname
+        write(io6, *)  lndname
         CALL MPAS_info_Save(lndname, maxEdges, num_dbx, num_edge, cellsOnCell, cellsOnEdge, nEdgesOnCell)
+        write(io6, *)  "MPAS Info Save finish"
 
         deallocate(areaTriangle, areaCell, kiteAreasOnVertex)
         deallocate(dcEdge, dvEdge, angleEdge)
@@ -240,14 +233,15 @@ module MOD_mask_postproc
         deallocate(nEdgesOnCell, edgesOnCell, cellsOnCell, verticesOnCell)
         deallocate(xem, yem, zem, xew, yew, zew, xev, yev, zev)
         deallocate(lonVertex, latVertex, lonCell, latCell, lonEdge, latEdge)
-        deallocate(nEdgesOnEdge, edgesOnEdge, cellwidth, meshDensity, weightsOnEdge)
+        deallocate(nEdgesOnEdge, edgesOnEdge, meshDensity, weightsOnEdge)
+        if (allocated(cellwidth)) deallocate(cellwidth)
 
     END SUBROUTINE MPAS_Mesh_Cal
 
-    ! 只输出 xyzCell, xyzVertex, cellsOnVertex, meshDensity(all one)
+    ! Only xyzCell, xyzVertex, cellsOnVertex, meshDensity
     SUBROUTINE MPAS_Mesh_Cal_Simple()
         USE MOD_grid_preprocess, only : lonlat2xyz
-        USE MOD_file_preprocess, only : MPAS_Mesh_Simple_Save, cellwidth_read
+        USE MOD_utilities, only : MPAS_Mesh_Simple_Save, cellwidth_read
         implicit none
         integer :: num_sjx, num_dbx
         integer,  allocatable :: ngrmw(:, :), ngrwm(:, :), n_ngrwm(:)
@@ -262,23 +256,25 @@ module MOD_mask_postproc
 
         write(nxpc,  '(I4.4)') nxp
         ! read unstructure mesh
-        write(io6, *) "start to read unstructure mesh data in the module MOD_mask_make"
+        write(io6, *)  "start to read unstructure mesh data in the module MOD_mask_make"
         ! 读取未细化初始网格数据
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)//'.nc4'
-        write(io6, *)lndname
+        write(io6, *)  lndname
         ! 读入的数据除了第一个图形，其他图形都是存在的
         call Unstructured_Mesh_Read(lndname, num_sjx, num_dbx, mp, wp, ngrmw, ngrwm, n_ngrwm)
-        write(io6, *) "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Atmos"
-        write(io6, *) ""
-        write(io6, *) "In total, triangular mesh number: ", num_sjx, "polygon mesh number: ", num_dbx
-        write(io6, *) ""
+        write(io6, *)  "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Atmos"
+        write(io6, *)  ""
+        write(io6, *)  "In total, triangular mesh number: ", num_sjx, "polygon mesh number: ", num_dbx
+        write(io6, *)  ""
 
 
         allocate(meshDensity(num_dbx)); meshDensity = 1.0 ! 需要搭配细化地图使用
-        lndname = trim(file_dir) // "result/cellwidth_NXP" // trim(nxpc) // "_global.nc4"
-        CALL cellwidth_read(lndname, cellwidth)
-        mincellWidth = minval(cellWidth(1:num_dbx))
-        meshDensity = (mincellWidth/cellWidth(1:num_dbx)) ** 4
+        if (step > 1) then
+            lndname = trim(file_dir) // "result/cellwidth_NXP" // trim(nxpc) // "_global.nc4"
+            CALL cellwidth_read(lndname, cellwidth)
+            mincellWidth = minval(cellWidth(1:num_dbx))
+            meshDensity = (mincellWidth/cellWidth(1:num_dbx)) ** 4
+        end if
 
         allocate(cellsOnVertex(3, num_sjx)); cellsOnVertex = ngrmw
         allocate(lonVertex(num_sjx)); lonVertex = mp(:, 1)
@@ -298,20 +294,22 @@ module MOD_mask_postproc
         cellsOnVertex = cellsOnVertex - 1
 
         lndname = trim(file_dir) // "result/MPASOUT_NXP" // trim(nxpc) // "_global_Simple.nc4"
-        write(io6, *) lndname
+        write(io6, *)  lndname
         CALL MPAS_Mesh_Simple_Save(lndname, num_sjx, num_dbx, xew, yew, zew, xem, yem, zem, cellsOnVertex, meshDensity)
-    
+        write(io6, *)  "MPAS Mesh Simple Save finish"
+
         deallocate(cellsOnVertex)
         deallocate(xem, yem, zem, xew, yew, zew)
         deallocate(lonVertex, latVertex, lonCell, latCell)
-        deallocate(cellwidth, meshDensity)
+        deallocate(meshDensity)
+        if (allocated(cellwidth)) deallocate(cellwidth)
 
     END SUBROUTINE MPAS_Mesh_Cal_Simple
 
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!   use for earthmesh !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    SUBROUTINE mask_postproc_Earth()
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!   use for LOCmesh !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    SUBROUTINE mask_postproc_LOC()
         ! 进行patchtypes的计算与保存
-        USE MOD_file_preprocess, only : LOCmesh_info_save
+        USE MOD_utilities, only : LOCmesh_info_save
         implicit none
         integer :: i, j, k, ii, jj, kk, id, numpatch, n, sum_land_ustr, sum_sea_ustr
         integer,  dimension(:, :), allocatable :: ustr_id, ustr_ii
@@ -341,14 +339,14 @@ module MOD_mask_postproc
 
         write(nxpc, '(I4.4)') NXP
         lndname = trim(file_dir) // 'contain/contain_'// trim(mesh_type) //'_domain_NXP'//trim(nxpc)//'_'//trim(mode_grid)//'.nc4'
-        write(io6, *) lndname, 'reading in the SUBROUTINE mask_postproc_Earth'
+        write(io6, *)  lndname, 'reading in the SUBROUTINE mask_postproc_LOC'
         CALL Contain_Read(lndname, ustr_points, numpatch, ustr_id, ustr_ii, IsInDmArea_ustr_read)
         allocate(IsInDmArea_ustr(ustr_points)); IsInDmArea_ustr = IsInDmArea_ustr_read
         allocate(seaorland_ustr(ustr_points)); seaorland_ustr = 0 ! 0表示不存在，-1表示海洋，1表示陆地
 
         ! patchtypes make
         ! 可能会出现一个非结构网格含有land pixes 但是占比太少了，而被判定为海洋网格，这部分的pixes是否应该被舍弃
-        write(io6, *) "patchtypes_make start"
+        write(io6, *)  "patchtypes_make start"
         allocate(patchtypes_select(nlons_Dm_select, nlats_Dm_select)); patchtypes_select = 0
         sum_land_ustr = 0
         sum_sea_ustr  = 0
@@ -375,17 +373,17 @@ module MOD_mask_postproc
             end if
         end do
 
-        write(io6, *) "sum_land_ustr = ", sum_land_ustr
-        write(io6, *) "sum_sea_ustr = ", sum_sea_ustr
-        write(io6, *) "patchtypes_make finish"
-        write(io6, *) ""
+        write(io6, *)  "sum_land_ustr = ", sum_land_ustr
+        write(io6, *)  "sum_sea_ustr = ", sum_sea_ustr
+        write(io6, *)  "patchtypes_make finish"
+        write(io6, *)  ""
 
-        write(io6, *) "PatchID_save start"
+        write(io6, *)  "PatchID_save start"
         ! 开始计算mpi模式所需的patchID文件
         outputfile = trim(file_dir) // 'patchtype/patchtype_NXP'//trim(nxpc)//'_'//trim(mode_grid)//'.nc4' ! 这是最终的输出结果
         CALL PatchID_Save(outputfile, patchtypes_select)
-        write(io6, *) "PatchID_save finish"
-        write(io6, *) ""
+        write(io6, *)  "PatchID_save finish"
+        write(io6, *)  ""
 
         ! 对网格进行裁剪
         ! deallocate
@@ -393,19 +391,19 @@ module MOD_mask_postproc
 
         
         ! read unstructure mesh
-        write(io6, *) "start to read unstructure mesh data in the module MOD_mask_make"
+        write(io6, *)  "start to read unstructure mesh data in the module MOD_mask_make"
         ! 读取未细化初始网格数据
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)//'.nc4'
-        write(io6, *)lndname
+        write(io6, *)  lndname
         ! 读入的数据除了第一个图形，其他图形都是存在的
         call Unstructured_Mesh_Read(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
-        write(io6, *) "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Earth"
-        write(io6, *) ""
-        write(io6, *) "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
-        write(io6, *) ""
+        write(io6, *)  "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_LOC"
+        write(io6, *)  ""
+        write(io6, *)  "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
+        write(io6, *)  ""
         
         if (mode_grid == 'tri') then
-            write(io6, *) "开始制作三角形大气网格"
+            write(io6, *)  "开始制作三角形网格"
             ustr_points = sjx_points
             ustr_bounds = lbx_points
             allocate(ustr_center(ustr_points, 2));       ustr_center = mp
@@ -415,7 +413,7 @@ module MOD_mask_postproc
             allocate(n_ustr_ngr_center(ustr_points));    n_ustr_ngr_center = 3
             allocate(n_ustr_ngr_vertex(ustr_bounds));    n_ustr_ngr_vertex = n_ngrwm
         else if (mode_grid == 'hex') then
-            !开始制作六边形大气网格
+            write(io6, *)  "开始制作六边形网格"
             ustr_points = lbx_points
             ustr_bounds = sjx_points
             allocate(ustr_center(ustr_points, 2));       ustr_center = wp
@@ -439,17 +437,17 @@ module MOD_mask_postproc
         ! 根据center顶点，更新vertex中心点与center中心点位连接情况，以及vertex中心点
         ! 由新center中心点指向顶点，再统计顶点个数
         if (mode_grid == 'tri') then
-            write(io6, *) "去除不存在三角形网格前:"
-            write(io6, *) ustr_points, "三角形网格", ustr_bounds, "六边形网格"
-            write(io6, *) "去除不存在三角形网格后:"
-            write(io6, *) ustr_points_new, "三角形网格", ustr_bounds_new, "六边形网格(含虚假六边形)"
-            write(io6, *) ""
+            write(io6, *)  "去除不存在三角形网格前:"
+            write(io6, *)  ustr_points, "三角形网格", ustr_bounds, "六边形网格"
+            write(io6, *)  "去除不存在三角形网格后:"
+            write(io6, *)  ustr_points_new, "三角形网格", ustr_bounds_new, "六边形网格(含虚假六边形)"
+            write(io6, *)  ""
         else if (mode_grid == 'hex') then
-            write(io6, *) "去除不存在六边形网格前:"
-            write(io6, *) ustr_bounds, "三角形网格", ustr_points, "六边形网格"
-            write(io6, *) "去除不存在六边形网格后:"
-            write(io6, *) ustr_bounds_new, "三角形网格(含虚假三角形)", ustr_points_new, "六边形网格"
-            write(io6, *) ""
+            write(io6, *)  "去除不存在六边形网格前:"
+            write(io6, *)  ustr_bounds, "三角形网格", ustr_points, "六边形网格"
+            write(io6, *)  "去除不存在六边形网格后:"
+            write(io6, *)  ustr_bounds_new, "三角形网格(含虚假三角形)", ustr_points_new, "六边形网格"
+            write(io6, *)  ""
         end if
 
         ! 获取最终的六边形信息(from *_new to *_f)
@@ -460,42 +458,42 @@ module MOD_mask_postproc
                             ustr_center_f, ustr_vertex_f, ustr_ngr_center_f, ustr_ngr_vertex_f, n_ustr_ngr_center_f, n_ustr_ngr_vertex_f)
 
 
-        write(io6, *) "n_ustr_ngr_vertex_f range "
-        write(io6, *) minval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)), maxval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)) ! 单独存放   
+        write(io6, *)  "n_ustr_ngr_vertex_f range "
+        write(io6, *)  minval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)), maxval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)) ! 单独存放   
 
         ! 删除部分信息后，会造成数据编号的不连续呢，
         ! ustr_center_f和ustr_vertex_f的顺序都是对的，ustr_ngr_vertex_f的顺序也是对的，但ustr_ngr_center_f却不是
-        write(io6, *) "sort order of ustr_ngr_center_f (step1)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step1)"
         !  步骤1：提取唯一顶点编号
         allocate(unique_vertices(ustr_bounds)) ! 存储一维顶点,最多有ustr_bounds个顶点
         CALL extract_unique_vertices(ustr_ngr_center_f, n_ustr_ngr_center_f, unique_vertices, nvertices)
 
-        write(io6, *) "sort order of ustr_ngr_center_f (step2)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step2)"
         ! 步骤2：排序并重新编号顶点
         allocate(sorted_vertices(nvertices)) ! 排序后的顶点
         allocate(vertex_mapping(ustr_bounds)) ! 顶点的映射数组
         call sort_and_reindex(unique_vertices, nvertices, sorted_vertices, vertex_mapping)
 
-        write(io6, *) "sort order of ustr_ngr_center_f (step3)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step3)"
         ! 步骤3：根据新的顶点编号重新编号中心点
         do j = 2, ustr_points_f, 1
             do i = 1, n_ustr_ngr_center_f(j), 1
                 ustr_ngr_center_f(i, j) = vertex_mapping(ustr_ngr_center_f(i, j))
             end do
         end do
-        write(io6, *) "minval(ustr_ngr_center_f) = ", minval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
-        write(io6, *) "maxval(ustr_ngr_center_f) = ", maxval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
-        write(io6, *) "sort order of ustr_ngr_center_f finish"
+        write(io6, *)  "minval(ustr_ngr_center_f) = ", minval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
+        write(io6, *)  "maxval(ustr_ngr_center_f) = ", maxval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
+        write(io6, *)  "sort order of ustr_ngr_center_f finish"
         
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)// '_' // trim(mesh_type) //'.nc4'
         if (mask_patch_on) lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)// '_' // trim(mesh_type) //'_patch.nc4'
-        write(io6, *) lndname
+        write(io6, *)  lndname
         if (mode_grid == 'tri') then
             CALL Unstructured_Mesh_Save(lndname, ustr_points_f, ustr_bounds_f, ustr_center_f, ustr_vertex_f, ustr_ngr_center_f, ustr_ngr_vertex_f, n_ustr_ngr_vertex_f)
         else if (mode_grid == 'hex') then
             CALL Unstructured_Mesh_Save(lndname, ustr_bounds_f, ustr_points_f, ustr_vertex_f, ustr_center_f, ustr_ngr_vertex_f, ustr_ngr_center_f, n_ustr_ngr_center_f)
         end if
-        write(io6, *) "nc save finish"
+        write(io6, *)  "nc save finish"
 
         ! 保存海陆网格信息
         allocate(seaorland_ustr_f(ustr_points_f)); seaorland_ustr_f = 0
@@ -525,12 +523,12 @@ module MOD_mask_postproc
                 refine_degree_f(k) = kk - 2
             end do
         end if
-        lndname = trim(file_dir) // 'result/earthmesh_info.nc4'
-        write(io6, *) lndname
+        lndname = trim(file_dir) // 'result/LOCmesh_info.nc4'
+        write(io6, *)  lndname
         CALL LOCmesh_info_save(lndname, kk, ustr_points_f, num_step_f, refine_degree_f, seaorland_ustr_f)
-        write(io6, *) "earthmesh_info save finish"
+        write(io6, *)  "LOCmesh_info save finish"
 
-    END SUBROUTINE mask_postproc_Earth
+    END SUBROUTINE mask_postproc_LOC
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!   use for landmesh !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     SUBROUTINE mask_postproc_Lnd()
@@ -563,12 +561,12 @@ module MOD_mask_postproc
 
         write(nxpc, '(I4.4)') NXP
         lndname = trim(file_dir) // 'contain/contain_'// trim(mesh_type) //'_domain_NXP'//trim(nxpc)//'_'//trim(mode_grid)//'.nc4'
-        write(io6, *) lndname, 'reading in the SUBROUTINE mask_postproc_Lnd'
+        write(io6, *)  lndname, 'reading in the SUBROUTINE mask_postproc_Lnd'
         CALL Contain_Read(lndname, ustr_points, numpatch, ustr_id, ustr_ii, IsInDmArea_ustr_read)
         IsInDmArea_ustr = IsInDmArea_ustr_read
 
         ! patchtypes make
-        write(io6, *) "patchtypes_make start"
+        write(io6, *)  "patchtypes_make start"
         allocate(patchtypes_select(nlons_Dm_select, nlats_Dm_select)); patchtypes_select = 0
         do k = 2, ustr_points, 1
             if (IsInDmArea_ustr(k) == 0) cycle ! 跳过不存在的网格
@@ -587,47 +585,37 @@ module MOD_mask_postproc
         ! 确保所有的land pixes与非结构网格都有映射关系，但是一定有必要麻？？多是岛屿
         num_sum = sum(seaorland)
         if (num_sum /= 0) then
-            write(io6, *) "num_sum = ", num_sum
-            write(io6, *) "warning! num_sum /= 0! have some land pixes ignored!" 
-            do j = maxlat_DmArea, minlat_DmArea, 1 ! 影响先内层循环
-                do i = minlon_DmArea, maxlon_DmArea, 1
-                    if (seaorland(i, j) == 0) cycle ! 跳过非陆地pixes
-                    write(io6, *) "i, j = ", i, j
-                    num_sum = num_sum - 1
-                    patchtypes_select(i, j) = patchtypes_select(i, j-1)
-                    seaorland(i, j) = 0
-                end do
-                if (num_sum == 0) exit
-            end do
+            write(io6, *)  "num_sum = ", num_sum
+            write(io6, *)  "warning! num_sum /= 0! have some land pixes ignored!" 
         end if
-        write(io6, *) "patchtypes_make finish"
-        write(io6, *) ""
+        write(io6, *)  "patchtypes_make finish"
+        write(io6, *)  ""
 
-        write(io6, *) "PatchID_save start"
+        write(io6, *)  "PatchID_save start"
         ! 开始计算mpi模式所需的patchID文件
         outputfile = trim(file_dir) // 'patchtype/patchtype_NXP'//trim(nxpc)//'_'//trim(mode_grid)//'.nc4' ! 这是最终的输出结果
         CALL PatchID_Save(outputfile, patchtypes_select)
-        write(io6, *) "PatchID_save finish"
-        write(io6, *) ""
+        write(io6, *)  "PatchID_save finish"
+        write(io6, *)  ""
 
         deallocate(ustr_id, ustr_ii, patchtypes_select, IsInDmArea_ustr_read)
         if (mask_domain_global) return
 
         ! 对网格进行裁剪        
         ! read unstructure mesh
-        write(io6, *) "start to read unstructure mesh data in the module MOD_mask_make"
+        write(io6, *)  "start to read unstructure mesh data in the module MOD_mask_make"
         ! 读取未细化初始网格数据
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)//'.nc4'
-        write(io6, *)lndname
+        write(io6, *)  lndname
         ! 读入的数据除了第一个图形，其他图形都是存在的
         call Unstructured_Mesh_Read(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
-        write(io6, *) "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Lnd"
-        write(io6, *) ""
-        write(io6, *) "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
-        write(io6, *) ""
+        write(io6, *)  "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Lnd"
+        write(io6, *)  ""
+        write(io6, *)  "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
+        write(io6, *)  ""
 
         if (mode_grid == 'tri') then
-            write(io6, *) "开始制作三角形陆地网格"
+            write(io6, *)  "开始制作三角形陆地网格"
             ustr_points = sjx_points
             ustr_bounds = lbx_points
             allocate(ustr_center(ustr_points, 2));       ustr_center = mp
@@ -637,7 +625,7 @@ module MOD_mask_postproc
             allocate(n_ustr_ngr_center(ustr_points));    n_ustr_ngr_center = 3
             allocate(n_ustr_ngr_vertex(ustr_bounds));    n_ustr_ngr_vertex = n_ngrwm
         else if (mode_grid == 'hex') then
-            !开始制作六边形陆地网格
+            write(io6, *)  "开始制作六边形陆地网格"
             ustr_points = lbx_points
             ustr_bounds = sjx_points
             allocate(ustr_center(ustr_points, 2));       ustr_center = wp
@@ -656,17 +644,17 @@ module MOD_mask_postproc
         ! 根据center顶点，更新vertex中心点与center中心点位连接情况，以及vertex中心点
         ! 由新center中心点指向顶点，再统计顶点个数
         if (mode_grid == 'tri') then
-            write(io6, *) "去除不存在三角形网格前:"
-            write(io6, *) ustr_points, "三角形网格", ustr_bounds, "六边形网格"
-            write(io6, *) "去除不存在三角形网格后:"
-            write(io6, *) ustr_points_new, "三角形网格", ustr_bounds_new, "六边形网格(含虚假六边形)"
-            write(io6, *) ""
+            write(io6, *)  "去除不存在三角形网格前:"
+            write(io6, *)  ustr_points, "三角形网格", ustr_bounds, "六边形网格"
+            write(io6, *)  "去除不存在三角形网格后:"
+            write(io6, *)  ustr_points_new, "三角形网格", ustr_bounds_new, "六边形网格(含虚假六边形)"
+            write(io6, *)  ""
         else if (mode_grid == 'hex') then
-            write(io6, *) "去除不存在六边形网格前:"
-            write(io6, *) ustr_bounds, "三角形网格", ustr_points, "六边形网格"
-            write(io6, *) "去除不存在六边形网格后:"
-            write(io6, *) ustr_bounds_new, "三角形网格(含虚假三角形)", ustr_points_new, "六边形网格"
-            write(io6, *) ""
+            write(io6, *)  "去除不存在六边形网格前:"
+            write(io6, *)  ustr_bounds, "三角形网格", ustr_points, "六边形网格"
+            write(io6, *)  "去除不存在六边形网格后:"
+            write(io6, *)  ustr_bounds_new, "三角形网格(含虚假三角形)", ustr_points_new, "六边形网格"
+            write(io6, *)  ""
         end if
 
         ! 获取最终的六边形信息(from *_new to *_f)
@@ -677,36 +665,36 @@ module MOD_mask_postproc
                             ustr_center_f, ustr_vertex_f, ustr_ngr_center_f, ustr_ngr_vertex_f, n_ustr_ngr_center_f, n_ustr_ngr_vertex_f)
 
 
-        write(io6, *) "n_ustr_ngr_vertex_f range "
-        write(io6, *) minval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)), maxval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)) ! 单独存放   
+        write(io6, *)  "n_ustr_ngr_vertex_f range "
+        write(io6, *)  minval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)), maxval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)) ! 单独存放   
 
         ! 删除部分信息后，会造成数据编号的不连续呢，
         ! ustr_center_f和ustr_vertex_f的顺序都是对的，ustr_ngr_vertex_f的顺序也是对的，但ustr_ngr_center_f却不是
-        write(io6, *) "sort order of ustr_ngr_center_f (step1)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step1)"
         !  步骤1：提取唯一顶点编号
         allocate(unique_vertices(ustr_bounds)) ! 存储一维顶点,最多有ustr_bounds个顶点
         CALL extract_unique_vertices(ustr_ngr_center_f, n_ustr_ngr_center_f, unique_vertices, nvertices)
 
-        write(io6, *) "sort order of ustr_ngr_center_f (step2)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step2)"
         ! 步骤2：排序并重新编号顶点
         allocate(sorted_vertices(nvertices)) ! 排序后的顶点
         allocate(vertex_mapping(ustr_bounds)) ! 顶点的映射数组
         call sort_and_reindex(unique_vertices, nvertices, sorted_vertices, vertex_mapping)
 
-        write(io6, *) "sort order of ustr_ngr_center_f (step3)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step3)"
         ! 步骤3：根据新的顶点编号重新编号中心点
         do j = 2, ustr_points_f, 1
             do i = 1, n_ustr_ngr_center_f(j), 1
                 ustr_ngr_center_f(i, j) = vertex_mapping(ustr_ngr_center_f(i, j))
             end do
         end do
-        write(io6, *) "minval(ustr_ngr_center_f) = ", minval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
-        write(io6, *) "maxval(ustr_ngr_center_f) = ", maxval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
-        write(io6, *) "sort order of ustr_ngr_center_f finish"
+        write(io6, *)  "minval(ustr_ngr_center_f) = ", minval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
+        write(io6, *)  "maxval(ustr_ngr_center_f) = ", maxval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
+        write(io6, *)  "sort order of ustr_ngr_center_f finish"
         
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)// '_' // trim(mesh_type) //'.nc4'
         if (mask_patch_on) lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)// '_' // trim(mesh_type) //'_patch.nc4'
-        write(io6, *) lndname
+        write(io6, *)  lndname
         if (mode_grid == 'tri') then
             CALL Unstructured_Mesh_Save(lndname, ustr_points_f, ustr_bounds_f, ustr_center_f, ustr_vertex_f, ustr_ngr_center_f, ustr_ngr_vertex_f)
         else if (mode_grid == 'hex') then
@@ -723,7 +711,7 @@ module MOD_mask_postproc
             CALL Unstructured_Mesh_Save(lndname, ustr_bounds_f, ustr_points_f, ustr_vertex_f, ustr_center_f, ustr_ngr_vertex_f, ustr_ngr_center_f, n_ngrwm_f)
         end if
         deallocate(n_ngrwm_f)
-        write(io6, *) "nc save finish"
+        write(io6, *)  "nc save finish"
 
     END SUBROUTINE mask_postproc_Lnd
 
@@ -743,7 +731,7 @@ module MOD_mask_postproc
         allocate(Dmlons_source(nlons_Dm_select))
         allocate(Dmlats_source(nlats_Dm_select))
         Dmlons_source = [(i, i=minlon_DmArea, maxlon_DmArea)]
-        Dmlats_source = [(i, i=maxlat_DmArea, minlat_DmArea, -1)]        
+        Dmlats_source = [(i, i=maxlat_DmArea, minlat_DmArea)]          
 
         ! 根据目标经纬度分辨率确定变量内存分配
         allocate(lon_e(nlons_Dm_select))
@@ -759,7 +747,7 @@ module MOD_mask_postproc
         lon_select = lon_i(Dmlons_source)
         lat_select = lat_i(Dmlats_source)
 
-        write(io6, *) trim(outputfile)
+        write(io6, *)  trim(outputfile)
         CALL CHECK(NF90_CREATE(trim(outputfile), ior(nf90_clobber, nf90_netcdf4), ncID))
         CALL CHECK(NF90_DEF_DIM(ncID, "nlon", nlons_Dm_select, dimID_lon))
         CALL CHECK(NF90_DEF_DIM(ncID, "nlat", nlats_Dm_select, dimID_lat))
@@ -785,7 +773,7 @@ module MOD_mask_postproc
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!   use for oceanmesh !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     SUBROUTINE mask_postproc_Ocn()
-        USE MOD_file_preprocess, only : FVCOM_Mesh_Save
+        USE MOD_utilities, only : FVCOM_Mesh_Save
         implicit none
         logical :: fexist
         integer :: i, j, k, n, im, ik, hhh
@@ -820,22 +808,22 @@ module MOD_mask_postproc
         ! for orial data to intermediate variable(*_new) to finial data(*_f)
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Read me !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         ! read unstructure mesh
-        write(io6, *) "start to read unstructure mesh data in the module MOD_mask_make"
+        write(io6, *)  "start to read unstructure mesh data in the module MOD_mask_make"
         ! 读取未细化初始网格数据
         write(nxpc, '(I4.4)') NXP
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)//'.nc4'
-        write(io6, *)lndname
+        write(io6, *)  lndname
         ! 读入的数据除了第一个图形，其他图形都是存在的
         call Unstructured_Mesh_Read(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
-        write(io6, *) "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Ocn"
-        write(io6, *) ""
-        write(io6, *) "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
-        write(io6, *) ""
+        write(io6, *)  "The unstructured grid data reading have done in the SUBROUTINE mask_postproc_Ocn"
+        write(io6, *)  ""
+        write(io6, *)  "In total, triangular mesh number: ", sjx_points, "polygon mesh number: ", lbx_points
+        write(io6, *)  ""
 
         ! IsInDmArea_ustr数据引入
         ! 但是如果边界上含有的元素很少怎么办
         lndname = trim(file_dir) // 'contain/contain_'// trim(mesh_type) //'_domain_NXP'//trim(nxpc)//'_'//trim(mode_grid)//'.nc4'
-        write(io6, *) lndname, 'reading in the SUBROUTINE mask_postproc_Ocn'
+        write(io6, *)  lndname, 'reading in the SUBROUTINE mask_postproc_Ocn'
         CALL Contain_Read(lndname, ustr_points, numpatch, ustr_id, ustr_ii, IsInDmArea_ustr_read)
         IsInDmArea_ustr = IsInDmArea_ustr_read
         do i = num_vertex + 1, ustr_points, 1
@@ -846,7 +834,7 @@ module MOD_mask_postproc
         deallocate(ustr_id, ustr_ii, IsInDmArea_ustr_read)
 
         if (mode_grid == 'tri') then
-            write(io6, *) "开始制作三角形海洋网格"
+            write(io6, *)  "开始制作三角形海洋网格"
             ustr_points = sjx_points
             ustr_bounds = lbx_points
             allocate(ustr_center(ustr_points, 2));       ustr_center = mp
@@ -856,7 +844,7 @@ module MOD_mask_postproc
             allocate(n_ustr_ngr_center(ustr_points));    n_ustr_ngr_center = 3
             allocate(n_ustr_ngr_vertex(ustr_bounds));    n_ustr_ngr_vertex = n_ngrwm
         else if (mode_grid == 'hex') then
-            !开始制作六边形海洋网格
+            write(io6, *)  "开始制作六边形海洋网格"
             ustr_points = lbx_points
             ustr_bounds = sjx_points
             allocate(ustr_center(ustr_points, 2));       ustr_center = wp
@@ -874,21 +862,21 @@ module MOD_mask_postproc
         ! 根据center顶点，更新vertex中心点与center中心点位连接情况，以及vertex中心点
         ! 由新center中心点指向顶点，再统计顶点个数
         if (mode_grid == 'tri') then
-            write(io6, *) "去除不存在三角形/陆地三角形网格前:"
-            write(io6, *) ustr_points, "三角形网格", ustr_bounds, "六边形网格"
-            write(io6, *) "去除不存在三角形/陆地三角形网格后:"
-            write(io6, *) ustr_points_new, "三角形网格", ustr_bounds_new, "六边形网格(含虚假六边形)"
-            write(io6, *) ""
+            write(io6, *)  "去除不存在三角形/陆地三角形网格前:"
+            write(io6, *)  ustr_points, "三角形网格", ustr_bounds, "六边形网格"
+            write(io6, *)  "去除不存在三角形/陆地三角形网格后:"
+            write(io6, *)  ustr_points_new, "三角形网格", ustr_bounds_new, "六边形网格(含虚假六边形)"
+            write(io6, *)  ""
         else if (mode_grid == 'hex') then
-            write(io6, *) "去除不存在六边形/陆地六边形网格前:"
-            write(io6, *) ustr_bounds, "三角形网格", ustr_points, "六边形网格"
-            write(io6, *) "去除不存在六边形/陆地六边形网格后:"
-            write(io6, *) ustr_bounds_new, "三角形网格(含虚假三角形)", ustr_points_new, "六边形网格"
-            write(io6, *) ""
+            write(io6, *)  "去除不存在六边形/陆地六边形网格前:"
+            write(io6, *)  ustr_bounds, "三角形网格", ustr_points, "六边形网格"
+            write(io6, *)  "去除不存在六边形/陆地六边形网格后:"
+            write(io6, *)  ustr_bounds_new, "三角形网格(含虚假三角形)", ustr_points_new, "六边形网格"
+            write(io6, *)  ""
         end if
 
         if (mode_grid == 'tri') then
-            write(io6, *) "IsInDmArea_ustr Renew start" ! only use for tri
+            write(io6, *)  "IsInDmArea_ustr Renew start" ! only use for tri
             ! 海陆关系调整(删去弱连接的三角形，增加强连接的三角形)
             CALL IsInDmArea_ustr_Renew(ustr_points, ustr_bounds, ustr_ngr_vertex, ustr_ngr_vertex_new, n_ustr_ngr_vertex, n_ustr_ngr_vertex_new, ustr_points_new)
             ! 重新更新的数据
@@ -896,54 +884,54 @@ module MOD_mask_postproc
             deallocate(ustr_ngr_vertex_new, n_ustr_ngr_vertex_new)
             CALL Data_Renew(ustr_points, ustr_bounds, ustr_ngr_center, n_ustr_ngr_center, ustr_points_new, ustr_bounds_new, &
                             ustr_ngr_center_new, ustr_ngr_vertex_new, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new)
-            write(io6, *) "海陆关系调整后(step1)，", ustr_points_new, "个三角形网格"
-            write(io6, *) "海陆关系调整后(step1)，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
+            write(io6, *)  "海陆关系调整后(step1) ", ustr_points_new, "个三角形网格"
+            write(io6, *)  "海陆关系调整后(step1) ", ustr_bounds_new, "个六边形网格(含虚假六边形)"
 
             ! for connect!'
             hhh = 1
             k = 1
             do while (hhh /= ustr_points_new)
-                write(io6, *) "k= ", k, "hhh = ", hhh, "ustr_points_new = ", ustr_points_new
+                write(io6, *)  "k= ", k, "hhh = ", hhh, "ustr_points_new = ", ustr_points_new
                 CALL IsInDmArea_ustr_Renew_v2(ustr_bounds, ustr_ngr_vertex, n_ustr_ngr_vertex, n_ustr_ngr_vertex_new, ustr_points_new)    
                 ! 重新更新数据
                 deallocate(ustr_ngr_center_new, n_ustr_ngr_center_new)
                 deallocate(ustr_ngr_vertex_new, n_ustr_ngr_vertex_new) 
                 CALL Data_Renew(ustr_points, ustr_bounds, ustr_ngr_center, n_ustr_ngr_center, ustr_points_new, ustr_bounds_new, &
                                 ustr_ngr_center_new, ustr_ngr_vertex_new, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new)
-                write(io6, *) "海陆关系调整后(step2)，", ustr_points_new, "个三角形网格"
-                write(io6, *) "海陆关系调整后(step2)，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
-                write(io6, *) "IsInDmArea_ustr Renew finish"
-                write(io6, *) ""
+                write(io6, *)  "海陆关系调整后(step2)，", ustr_points_new, "个三角形网格"
+                write(io6, *)  "海陆关系调整后(step2)，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
+                write(io6, *)  "IsInDmArea_ustr Renew finish"
+                write(io6, *)  ""
                 hhh = ustr_points_new
-                write(io6, *) "narrow_waterway_widen start"
+                write(io6, *)  "narrow_waterway_widen start"
                 CALL narrow_waterway_widen(ustr_bounds, ustr_points_new, ustr_ngr_vertex, ustr_ngr_center_new, &
                                         n_ustr_ngr_vertex, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new)
                 ! 重新更新数据
                 deallocate(ustr_ngr_center_new, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new)
                 CALL Data_Renew(ustr_points, ustr_bounds, ustr_ngr_center, n_ustr_ngr_center, ustr_points_new, ustr_bounds_new, &
                                 ustr_ngr_center_new, ustr_ngr_vertex_new, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new)
-                write(io6, *) "narrow_waterway_widen后，", ustr_points_new, "个三角形网格"
-                write(io6, *) "narrow_waterway_widen后，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
-                write(io6, *) "narrow_waterway_widen finish"
-                write(io6, *) ""
+                write(io6, *)  "narrow_waterway_widen后，", ustr_points_new, "个三角形网格"
+                write(io6, *)  "narrow_waterway_widen后，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
+                write(io6, *)  "narrow_waterway_widen finish"
+                write(io6, *)  ""
                 k = k + 1
             end do
 
-            write(io6, *) "Isolated oceanmesh Renew start"
+            write(io6, *)  "Isolated oceanmesh Renew start"
             CALL Isolated_Ocean_Renew(ustr_bounds, ustr_points_new, ustr_bounds_new, ustr_ngr_center, n_ustr_ngr_center, n_ustr_ngr_vertex, &
                                     ustr_ngr_center_new, ustr_ngr_vertex_new, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new, num_bdy_long, bdy_long_order)
-            write(io6, *) "Isolated oceanmesh Renew finish"
+            write(io6, *)  "Isolated oceanmesh Renew finish"
             ! 重新更新数据
             deallocate(ustr_ngr_center_new, n_ustr_ngr_center_new)
             deallocate(ustr_ngr_vertex_new, n_ustr_ngr_vertex_new) 
             CALL Data_Renew(ustr_points, ustr_bounds, ustr_ngr_center, n_ustr_ngr_center, ustr_points_new, ustr_bounds_new, &
                             ustr_ngr_center_new, ustr_ngr_vertex_new, n_ustr_ngr_center_new, n_ustr_ngr_vertex_new)
-            write(io6, *) "孤立海洋网格处理后，", ustr_points_new, "个三角形网格"
-            write(io6, *) "孤立海洋网格处理后，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
-            write(io6, *) ""
+            write(io6, *)  "孤立海洋网格处理后，", ustr_points_new, "个三角形网格"
+            write(io6, *)  "孤立海洋网格处理后，", ustr_bounds_new, "个六边形网格(含虚假六边形)"
+            write(io6, *)  ""
         else if (mode_grid == 'hex') then
             ! 六边形的海洋网格还需要进一步的处理
-            write(io6, *) "hex do not have Special treatment now!" 
+            write(io6, *)  "hex do not have Special treatment now!" 
         end if
 
         ! 获取最终的六边形信息(from *_new to *_f)
@@ -954,47 +942,46 @@ module MOD_mask_postproc
                             ustr_center_f, ustr_vertex_f, ustr_ngr_center_f, ustr_ngr_vertex_f, n_ustr_ngr_center_f, n_ustr_ngr_vertex_f)
 
 
-        write(io6, *) "n_ustr_ngr_vertex_f range "
-        write(io6, *) minval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)), maxval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)) ! 单独存放   
+        write(io6, *)  "n_ustr_ngr_vertex_f range "
+        write(io6, *)  minval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)), maxval(n_ustr_ngr_vertex_f(2:ustr_bounds_f)) ! 单独存放   
 
         ! 删除部分信息后，会造成数据编号的不连续呢，
         ! ustr_center_f和ustr_vertex_f的顺序都是对的，ustr_ngr_vertex_f的顺序也是对的，但ustr_ngr_center_f却不是
-        write(io6, *) "sort order of ustr_ngr_center_f (step1)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step1)"
         !  步骤1：提取唯一顶点编号
         allocate(unique_vertices(ustr_bounds)) ! 存储一维顶点,最多有ustr_bounds个顶点
         CALL extract_unique_vertices(ustr_ngr_center_f, n_ustr_ngr_center_f, unique_vertices, nvertices)
 
-        write(io6, *) "sort order of ustr_ngr_center_f (step2)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step2)"
         ! 步骤2：排序并重新编号顶点
         allocate(sorted_vertices(nvertices)) ! 排序后的顶点
         allocate(vertex_mapping(ustr_bounds)) ! 顶点的映射数组
         call sort_and_reindex(unique_vertices, nvertices, sorted_vertices, vertex_mapping)
 
-        write(io6, *) "sort order of ustr_ngr_center_f (step3)"
+        write(io6, *)  "sort order of ustr_ngr_center_f (step3)"
         ! 步骤3：根据新的顶点编号重新编号中心点
         do j = 2, ustr_points_f, 1
             do i = 1, n_ustr_ngr_center_f(j), 1
                 ustr_ngr_center_f(i, j) = vertex_mapping(ustr_ngr_center_f(i, j))
             end do
         end do
-        write(io6, *) "minval(ustr_ngr_center_f) = ", minval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
-        write(io6, *) "maxval(ustr_ngr_center_f) = ", maxval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
-        write(io6, *) "sort order of ustr_ngr_center_f finish"
+        write(io6, *)  "minval(ustr_ngr_center_f) = ", minval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
+        write(io6, *)  "maxval(ustr_ngr_center_f) = ", maxval(ustr_ngr_center_f(1:3, 2:ustr_points_f))
+        write(io6, *)  "sort order of ustr_ngr_center_f finish"
         
         lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)// '_' // trim(mesh_type) //'.nc4'
         if (mask_patch_on) lndname = trim(file_dir) // 'result/gridfile_NXP' // trim(nxpc) // '_'//trim(mode_grid)// '_' // trim(mesh_type) //'_patch.nc4'
-        write(io6, *) lndname
+        write(io6, *)  lndname
         if (mode_grid == 'tri') then
             CALL Unstructured_Mesh_Save(lndname, ustr_points_f, ustr_bounds_f, ustr_center_f, ustr_vertex_f, ustr_ngr_center_f, ustr_ngr_vertex_f)
         else if (mode_grid == 'hex') then
             CALL Unstructured_Mesh_Save(lndname, ustr_bounds_f, ustr_points_f, ustr_vertex_f, ustr_center_f, ustr_ngr_vertex_f, ustr_ngr_center_f)
         end if
-        write(io6, *) "nc save finish"
+        write(io6, *)  "nc save finish"
 
         ! 处理开边界问题(目前之后针对三角形的情况，针对六边形的情况还需要进一步处理)
         if (mode_grid == 'tri') then
-            CALL bdy_calculation(num_bdy_long, bdy_long_order, ustr_ngr_vertex, n_ustr_ngr_vertex, vertex_mapping) 
-            ! if (output_format == 'FVCOM') CALL FVCOM_Mesh_Save(lndname, ustr_points_f, ustr_bounds_f, ustr_vertex_f, ustr_ngr_center_f)
+            if (output_format == 'FVCOM') CALL FVCOM_Mesh_Save(ustr_points_f, ustr_bounds_f, ustr_vertex_f, ustr_ngr_center_f)
         end if       
 
     END SUBROUTINE mask_postproc_Ocn
@@ -1039,9 +1026,9 @@ module MOD_mask_postproc
                 num_diff = num_diff + 2 * n_ustr_ngr_vertex_new(close_curve(j, i)) - n_ustr_ngr_vertex(close_curve(j, i))
             end do
             if (num_diff < 0) then ! 判断为孤立海洋网格
-                write(io6, *) "i = ", i, "为孤立海洋网格需要去除"
-                write(io6, *) "Isolated oceanmesh remove start"
-                write(io6, *) "n_close_curve(i) = ", n_close_curve(i)
+                write(io6, *)  "i = ", i, "为孤立海洋网格需要去除"
+                write(io6, *)  "Isolated oceanmesh remove start"
+                write(io6, *)  "n_close_curve(i) = ", n_close_curve(i)
                 ! 获取起始最外围边界信息
                 num_add = 1
                 do while (num_add /= 0)
@@ -1079,13 +1066,13 @@ module MOD_mask_postproc
 
                     num_add = n_close_curve(i)
                     if (n_close_curve(i) == 1) num_add = 0
-                    write(io6, *) "n_close_curve(i) = ", n_close_curve(i)
+                    write(io6, *)  "n_close_curve(i) = ", n_close_curve(i)
                 end do
-                write(io6, *) "Isolated oceanmesh remove finish"
-                write(io6, *) ""
+                write(io6, *)  "Isolated oceanmesh remove finish"
+                write(io6, *)  ""
             end if
         end do
-        write(io6, *) "sum(n_close_curve) = ", sum(n_close_curve) 
+        write(io6, *)  "sum(n_close_curve) = ", sum(n_close_curve) 
 
     END SUBROUTINE Isolated_Ocean_Renew
 
@@ -1124,8 +1111,8 @@ module MOD_mask_postproc
                 exit
             end do
         end do
-        write(io6, *) "Before handle Narrow waterway bdy_num_in = ", bdy_num_in
-        write(io6, *) "Handle Narrow waterway start"
+        write(io6, *)  "Before handle Narrow waterway bdy_num_in = ", bdy_num_in
+        write(io6, *)  "Handle Narrow waterway start"
         do i = 2, ustr_bounds, 1
             if (n_ngrvv_new(i) /= 4) cycle
             bdy_num_in = bdy_num_in - 1
@@ -1145,9 +1132,9 @@ module MOD_mask_postproc
                 IsInDmArea_ustr(ustr_ngr_vertex(ik, im)) = 1
             end do
         end do
-        write(io6, *) "Handle Narrow waterway finish"
-        write(io6, *) "After handle Narrow waterway bdy_num_in = ", bdy_num_in
-        write(io6, *) ""
+        write(io6, *)  "Handle Narrow waterway finish"
+        write(io6, *)  "After handle Narrow waterway bdy_num_in = ", bdy_num_in
+        write(io6, *)  ""
    
     END SUBROUTINE narrow_waterway_widen
 
@@ -1196,8 +1183,8 @@ module MOD_mask_postproc
         do i = 2, ustr_bounds, 1
             if (n_ngrvv_new(i) == 0) cycle
             if (n_ngrvv_new(i) == 2) cycle
-            write(io6, *) "i = ", i, "n_ngrvv_new(i) = ", n_ngrvv_new(i)
-            write(io6, *) "ngrvv_new(1:4, i) = ", ngrvv_new(1:4, i)
+            write(io6, *)  "i = ", i, "n_ngrvv_new(i) = ", n_ngrvv_new(i)
+            write(io6, *)  "ngrvv_new(1:4, i) = ", ngrvv_new(1:4, i)
             stop "ERROR! n_ngrvv_new(i) must be 0 or 2!"
         end do
    
@@ -1217,7 +1204,7 @@ module MOD_mask_postproc
                 n = n + 1
                 bdy_ngr(n, i) = ngrvv_new(k, i)
             end do
-            ! write(io6, *) "i = ", i, "bdy_ngr(:, i) = ", bdy_ngr(:, i)
+            ! write(io6, *)  "i = ", i, "bdy_ngr(:, i) = ", bdy_ngr(:, i)
         end do
 
         ! 获取num_closed_curve, num_bdy_long信息
@@ -1230,7 +1217,7 @@ module MOD_mask_postproc
         
         lndname = trim(file_dir) // 'result/obcv2.nc4'
         if (mask_patch_on) lndname = trim(file_dir) // 'result/obcv2_patch.nc4'
-        write(io6, *) trim(lndname)
+        write(io6, *)  trim(lndname)
         CALL CHECK(NF90_CREATE(trim(lndname), ior(nf90_clobber, nf90_netcdf4), ncid))
         CALL CHECK(NF90_DEF_DIM(ncid, "num1", num_bdy_long(1), DimID_bdy))
         CALL CHECK(NF90_DEF_DIM(ncid, "num2", num_closed_curve, DimID_bdy2))
@@ -1266,7 +1253,7 @@ module MOD_mask_postproc
                 if (bdy_alternate(j) == 1) then ! the start of queue
                     bdy_queue(num_points) = bdy_order(j)
                     bdy_alternate(j) = 0
-                    ! write(io6, *) "start from : ", bdy_order(j)
+                    ! write(io6, *)  "start from : ", bdy_order(j)
                     exit
                 end if
             end do
@@ -1301,7 +1288,7 @@ module MOD_mask_postproc
             if (present(n_close_curve)) then
                 n_close_curve(num_closed_curve) = num_points
                 close_curve(1:num_points, num_closed_curve) = bdy_queue(1:num_points)
-                write(io6, *) "num_closed_curve = ", num_closed_curve, "闭合曲线长度为 ：", num_points
+                write(io6, *)  "num_closed_curve = ", num_closed_curve, "闭合曲线长度为 ：", num_points
             end if
 
             ! num_bdy_long 更新
@@ -1318,7 +1305,7 @@ module MOD_mask_postproc
             end if
         end do
         num_bdy_long(1:2) = num_bdy_long(1:2) + 1
-        write(io6, *) "num_bdy_long = ", num_bdy_long, "start from one"
+        write(io6, *)  "num_bdy_long = ", num_bdy_long, "start from one"
 
     END SUBROUTINE bdy_connection_closed_curve
 
@@ -1335,7 +1322,7 @@ module MOD_mask_postproc
         integer,  allocatable, intent(out) :: ustr_ngr_center_next(:, :), ustr_ngr_vertex_next(:, :)
         integer,  allocatable, intent(out) :: n_ustr_ngr_center_next(:),  n_ustr_ngr_vertex_next(:)
 
-        write(io6, *) "重新计算并储存ustr_ngr_center and ustr_center_next"
+        write(io6, *)  "重新计算并储存ustr_ngr_center and ustr_center_next"
         ustr_points_next = 1 ! the first is zero-sjxorlbx
         do i = 2, ustr_points, 1 ! 网格总数（含不存在0 /海洋1 /陆地-1）
             if (IsInDmArea_ustr(i) == 1) ustr_points_next = ustr_points_next + 1!  海洋网格总数
@@ -1534,127 +1521,6 @@ module MOD_mask_postproc
 
     END SUBROUTINE IsInDmArea_ustr_Renew_v2
 
-    SUBROUTINE bdy_calculation(num_bdy_long, bdy_long_order, ustr_ngr_vertex, n_ustr_ngr_vertex, vertex_mapping)
-
-        implicit none
-        integer,  intent(in) :: num_bdy_long(3)
-        integer,  allocatable, intent(in) :: bdy_long_order(:) ! 自身有一定的顺序
-        integer,  allocatable, intent(in) :: ustr_ngr_vertex(:, :)
-        integer,  allocatable, intent(in) :: n_ustr_ngr_vertex(:)
-        integer,  allocatable, intent(in) :: vertex_mapping(:)
-        logical :: fexist
-        integer :: i, j, k, num
-        integer :: bdy_num
-        integer :: ncid, dimID_bdy, varid(3)
-        integer,  allocatable :: bdy_order(:), obc_order(:), ibc_order(:), ref_temp(:)
-        character(pathlen) :: lndname
-
-
-        ! 就是对bdy_order进行操作，具体就是这个六边形对应的若干个三角形，该三角形中是否都在DmArea内部
-        bdy_num = num_bdy_long(1)
-        allocate(bdy_order(bdy_num)); bdy_order = bdy_long_order
-        allocate(obc_order(bdy_num)); obc_order = 1 
-        allocate(ibc_order(bdy_num)); ibc_order = 1
-        ! 这部分应该放在外面
-        do i = 2, bdy_num, 1
-            j = bdy_long_order(i) ! 获取对应的vertex编号
-            fexist = .true.
-            do k = 1, n_ustr_ngr_vertex(j), 1
-                if (IsInDmArea_ustr(ustr_ngr_vertex(k, j)) == -1) then ! 如果存在陆地，则这个vertex点位是ibc
-                    fexist = .false.
-                    exit
-                end if
-            end do
-
-            bdy_order(i) = vertex_mapping(bdy_order(i))
-            if (.not. fexist) then
-                obc_order(i) = 1 ! 表示不存在
-                ibc_order(i) = bdy_order(i)
-            else 
-                obc_order(i) = bdy_order(i)
-                ibc_order(i) = 1
-            end if
-        end do
-
-        ! 还要涉及到顺序问题，做完这个才算大功告成！
-        do i = 3, bdy_num-1, 1
-            if (obc_order(i) /= 1) then
-                if ((obc_order(i-1) == 1) .and. (obc_order(i+1) == 1)) then
-                    j = bdy_long_order(i)
-                    write(io6, *) "j = ", j
-                    do k = 1, n_ustr_ngr_vertex(j), 1
-                        write(io6, *) "ustr_ngr_vertex(k, j) = ", ustr_ngr_vertex(k, j) 
-                        write(io6, *) "IsInDmArea_ustr(ustr_ngr_vertex(k, j)) = ", IsInDmArea_ustr(ustr_ngr_vertex(k, j))
-                    end do
-                    write(io6, *) ""
-                    ! turn obc to ibc
-                    ibc_order(i) = obc_order(i)
-                    obc_order(i) = 1
-                end if
-            end if
-        end do
-        deallocate(IsInDmArea_ustr)
-
-        num = 1
-        allocate(ref_temp(bdy_num)); ref_temp = 1
-        do i = 2, bdy_num - 2, 1
-            if (obc_order(i) /= 1) cycle ! 跳过obc点位
-            if ((obc_order(i+1) /= 1) .and. (obc_order(i+2) == 1)) then    
-                num = i
-                write(io6, *) "num = ", num, "需要调整顺序"
-                ! bdy_order
-                ref_temp(2:num) = bdy_order(2:num)
-                ref_temp(num+1:bdy_num) = bdy_order(num+1:bdy_num)
-                do j = num + 1, bdy_num, 1
-                    bdy_order(j-num+1) = ref_temp(j)
-                end do
-                do j = 2, num, 1
-                    bdy_order(1+bdy_num-j+1) = ref_temp(j)
-                end do
-
-                ! obc_order
-                ref_temp(2:num) = obc_order(2:num)
-                ref_temp(num+1:bdy_num) = obc_order(num+1:bdy_num)
-                do j = num + 1, bdy_num, 1
-                    obc_order(j-num+1) = ref_temp(j)
-                end do
-                do j = 2, num, 1
-                    obc_order(1+bdy_num-j+1) = ref_temp(j)
-                end do
-
-                ! ibc_order
-                ref_temp(2:num) = ibc_order(2:num)
-                ref_temp(num+1:bdy_num) = ibc_order(num+1:bdy_num)
-                do j = num + 1, bdy_num, 1
-                    ibc_order(j-num+1) = ref_temp(j)
-                end do
-                do j = 2, num, 1
-                    ibc_order(1+bdy_num-j+1) = ref_temp(j)
-                end do
-                exit
-            end if
-        end do
-        if (num == 1) write(io6, *) "无需调整顺序"
-            
-        
-        lndname = trim(file_dir) // 'result/obc.nc4'
-        if (mask_patch_on) lndname = trim(file_dir) // 'result/obc_patch.nc4'
-        write(io6, *) trim(lndname)
-        CALL CHECK(NF90_CREATE(trim(lndname), ior(nf90_clobber, nf90_netcdf4), ncid))
-        CALL CHECK(NF90_DEF_DIM(ncid, "bdy_num", bdy_num, DimID_bdy))
-        CALL CHECK(NF90_DEF_VAR(ncid, "bdy_order", NF90_INT, (/ DimID_bdy /), varid(1)))
-        CALL CHECK(NF90_DEF_VAR(ncid, "obc_order", NF90_INT, (/ DimID_bdy /), varid(2)))
-        CALL CHECK(NF90_DEF_VAR(ncid, "ibc_order", NF90_INT, (/ DimID_bdy /), varid(3)))
-        CALL CHECK(NF90_ENDDEF(ncid))
-        CALL CHECK(NF90_PUT_VAR(ncid, varid(1), bdy_order))
-        CALL CHECK(NF90_PUT_VAR(ncid, varid(2), obc_order))
-        CALL CHECK(NF90_PUT_VAR(ncid, varid(3), ibc_order))
-        CALL CHECK(NF90_CLOSE(ncid))
-        deallocate(bdy_order, obc_order, ibc_order)
-        write(io6, *) ""
-
-    END SUBROUTINE bdy_calculation
-
     SUBROUTINE extract_unique_vertices(ustr_ngr_center_f, n_ustr_ngr_center_f, unique_vertices, nvertices)
 
         implicit none
@@ -1678,7 +1544,7 @@ module MOD_mask_postproc
             end do
         end do
         deallocate(isselect)
-        write(io6, *) "nvertices = ", nvertices
+        write(io6, *)  "nvertices = ", nvertices
 
     END SUBROUTINE extract_unique_vertices
 
@@ -1691,18 +1557,18 @@ module MOD_mask_postproc
         integer :: i, j, temp
 
         ! 排序唯一顶点
-        write(io6, *) "sorted start"
+        write(io6, *)  "sorted start"
         sorted_vertices = unique_vertices(1:nvertices)
         CALL quicksort_nonrecursive(sorted_vertices, 1, nvertices)
-        write(io6, *) "sorted finish"
+        write(io6, *)  "sorted finish"
 
         ! 为排序后的顶点重新编号
-        write(io6, *) "mapping start"
+        write(io6, *)  "mapping start"
         vertex_mapping = 0
         do i = 1, nvertices, 1
             vertex_mapping(sorted_vertices(i)) = i
         end do
-        write(io6, *) "mapping finish"
+        write(io6, *)  "mapping finish"
     
     END SUBROUTINE sort_and_reindex
 

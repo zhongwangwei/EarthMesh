@@ -1,3 +1,13 @@
+!DESCRIPTION
+!===========
+! This module contains subroutines for icosahedron generation
+!
+!REVISION HISTORY
+!----------------
+! 2025.06.11  Zhongwang Wei @ SYSU (revised version)
+! 2025.06.10  Rui Zhang @ SYSU (original version)
+! first version from Fan et al. 2024, modified by Zhongwang Wei @ SYSU
+! initial version from OLAM, modified by Zhongwang Wei @ SYSU
 !===============================================================================
 ! OLAM was originally developed at Duke University by Robert Walko, Martin Otte,
 ! and David Medvigy in the project group headed by Roni Avissar.  Development
@@ -50,7 +60,7 @@ subroutine icosahedron(nxp0)
   integer, intent(in) :: nxp0
 
   real, parameter :: pwrd = 0.9  ! 0.9 is close to making uniform-sized triangles
-   !real, parameter :: pwrd = 1.0  ! 1.0 is original value
+  ! real, parameter :: pwrd = 1.0  ! 1.0 is original value
 
   integer :: ibigd,i,j,idiamond,im_left,iu0,iu1,iu2,iu3,iu4,iw1,iw2,im &
      ,idiamond_top,im_top,im_right,im_bot,nn10,idiamond_right,idiamond_bot &
@@ -533,6 +543,7 @@ subroutine spring_dynamics1( ngr, nxp, nmd, nud, nwd, xemd, yemd, zemd, itab_md,
       do im = 2, nmd
          ! For preventing all pentagonal points from moving:
          ! if (any(im == impent(1:12))) cycle
+
          ! Apply the displacement components to each M point
          do j = 1, imnp(im)
             iv = imiu(j,im)
@@ -540,6 +551,7 @@ subroutine spring_dynamics1( ngr, nxp, nmd, nud, nwd, xemd, yemd, zemd, itab_md,
             yemd8(im) = yemd8(im) + dirs(j,im) * dy(iv)
             zemd8(im) = zemd8(im) + dirs(j,im) * dz(iv)
          enddo
+         
       enddo
       !$omp end do
 
@@ -608,6 +620,7 @@ subroutine mdloopf(init,im,j1,j2,j3,j4,j5,j6)
    if (j6 > 0) itab_md(im)%loop(j6) = .true.
  
 end subroutine mdloopf
+
 !===============================================================================
 
  subroutine udloopf(init,iu,j1,j2,j3,j4,j5,j6)
@@ -666,8 +679,8 @@ end subroutine mdloopf
    if (j6 > 0) itab_wd(iw)%loop(j6) = .true.
  
  end subroutine wdloopf
-!===============================================================================
 
+!===============================================================================
 subroutine tri_neighbors(nmd, nud, nwd, itab_md, itab_ud, itab_wd)
 
    use mem_delaunay, only: itab_md_vars, itab_ud_vars, itab_wd_vars
@@ -1021,8 +1034,8 @@ subroutine tri_neighbors(nmd, nud, nwd, itab_md, itab_ud, itab_wd)
    enddo
  
 end subroutine tri_neighbors
-!============================================================================
 
+!============================================================================
 subroutine de_ps(dxe,dye,dze,cosplat,sinplat,cosplon,sinplon,x,y)
 
    use consts_coms, only: erad2

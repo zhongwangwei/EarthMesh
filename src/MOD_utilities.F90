@@ -1,10 +1,62 @@
-module MOD_file_preprocess
-   ! 可以考虑把labdtype数据存在这里也是挺好的，还有一个问题
-   USE consts_coms, only: r8, pathlen, nxp, piu180_r8, file_dir, mask_patch_on
-   USE netcdf
-   implicit none
+!DESCRIPTION
+!===========
+! This module contains utility subroutines like CHECK for NetCDF operations
+!
+!REVISION HISTORY
+!----------------
+! 2025.06.11  Zhongwang Wei @ SYSU (revised version)
+! 2025.06.10  Rui Zhang @ SYSU (original version)
 
+MODULE MOD_utilities
+   USE consts_coms, only: r8, pathlen, nxp, piu180_r8, file_dir, mask_patch_on
+   use netcdf ! For NF90_NOERR and NF90_STRERROR
+   implicit none
+   public :: CHECK
    contains
+
+   SUBROUTINE CHECK(STATUS)
+      INTEGER, intent (in) :: STATUS ! Input: Status code from a NetCDF operation
+      if  (STATUS .NE. NF90_NOERR) then ! NF90_NOERR (usually 0) indicates no error
+         print *, NF90_STRERROR(STATUS) ! Print the error message corresponding to the status code
+         stop 'NetCDF operation failed. Stopping.' ! Stop execution
+      endif
+   END SUBROUTINE CHECK
+
+   SUBROUTINE bdy_refine_segment_save(inputfile, set_dis_in, bdy_refine_segment, n_bdy_refine_segment)
+      IMPLICIT NONE
+      character(pathlen), intent(in)  :: inputfile
+      integer, intent(in) :: set_dis_in
+      integer, allocatable, intent(in) :: bdy_refine_segment(:,:), n_bdy_refine_segment(:)
+      integer :: ncid, dimIDa, dimIDb, varid(2)
+ 
+      CALL CHECK(NF90_CREATE(trim(inputfile), ior(nf90_clobber, nf90_netcdf4), ncid))
+      CALL CHECK(NF90_DEF_DIM(ncid, "dima", set_dis_in, DimIDa))
+      CALL CHECK(NF90_DEF_DIM(ncid, "dimb", size(n_bdy_refine_segment), DimIDb))
+      CALL CHECK(NF90_DEF_VAR(ncid, "bdy_refine_segment", NF90_INT, (/ DimIDa, DimIDb/), varid(1)))
+      CALL CHECK(NF90_DEF_VAR(ncid, "n_bdy_refine_segment", NF90_INT, (/ DimIDb /), varid(2)))
+      CALL CHECK(NF90_ENDDEF(ncid))
+      CALL CHECK(NF90_PUT_VAR(ncid, varid(1), bdy_refine_segment))
+      CALL CHECK(NF90_PUT_VAR(ncid, varid(2), n_bdy_refine_segment))
+      CALL CHECK(NF90_CLOSE(ncid))
+
+   END SUBROUTINE bdy_refine_segment_save
+
+   SUBROUTINE ref_sjx_save(inputfile, num_sjx, ref_sjx)
+
+      IMPLICIT NONE
+      character(pathlen), intent(in)  :: inputfile
+      integer, intent(in) :: num_sjx
+      integer, allocatable, intent(in) :: ref_sjx(:)
+      integer :: ncid, dimID_sjx, varid(1)
+ 
+      CALL CHECK(NF90_CREATE(trim(inputfile), ior(nf90_clobber, nf90_netcdf4), ncid))
+      CALL CHECK(NF90_DEF_DIM(ncid, "num_sjx", num_sjx, DimID_sjx))
+      CALL CHECK(NF90_DEF_VAR(ncid, "ref_sjx", NF90_INT, (/ DimID_sjx /), varid(1)))
+      CALL CHECK(NF90_ENDDEF(ncid))
+      CALL CHECK(NF90_PUT_VAR(ncid, varid(1), ref_sjx))
+      CALL CHECK(NF90_CLOSE(ncid))
+      
+   END SUBROUTINE ref_sjx_save
 
    SUBROUTINE distsOnEdge_save(inputfile, num_edge, vp, distsOnEdge)
 
@@ -174,41 +226,17 @@ module MOD_file_preprocess
       deallocate(mp, wp, ngrmw, ngrwm, ngrwm_temp, n_ngrwm)
 
    END SUBROUTINE FVCOM_Mesh_Read
-
+   
    SUBROUTINE FVCOM_Mesh_Save(ustr_points, ustr_bounds, ustr_vertex, ustr_ngr_center)
-      ! 生成用于FVCOMmesh常用的2dm形式，以及对应的dat形式才ok！！！
+      ! 生成用于FVCOMmesh常用的2dm形式，以及对应的dep.dat/grd.dat/cor.dat形式才ok！！！
       IMPLICIT NONE
       integer, intent(in) :: ustr_points, ustr_bounds
       real(r8), allocatable, intent(in) :: ustr_vertex(:, :)
       integer,  allocatable, intent(in) :: ustr_ngr_center(:, :)
-      integer :: i, j, k
-      integer :: ncid, varid, dimID_bdy, bdy_num
-      integer,  allocatable :: obc_order(:), obc_order_use(:)
-      character(pathlen) :: filename, lndname
+      integer :: i
       integer :: unit_number = 10
 
-      ! 读取obc数据
-      lndname = trim(file_dir) // 'result/obc.nc4'
-      if (mask_patch_on) lndname = trim(file_dir) // 'result/obc_patch.nc4'
-      CALL CHECK(NF90_OPEN(trim(lndname), nf90_nowrite, ncid))
-      CALL CHECK(NF90_INQ_DIMID(ncid, "bdy_num", dimID_bdy))
-      CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_bdy, len = bdy_num))
-      allocate(obc_order(bdy_num))
-      CALL CHECK(NF90_INQ_VARID(ncid, "obc_order", varid))
-      CALL CHECK(NF90_GET_VAR(ncid, varid, obc_order))
-      CALL CHECK(NF90_CLOSE(ncid))
-
-      if (obc_order(bdy_num) /= 1) then
-         allocate(obc_order_use(bdy_num+1))
-         obc_order_use(1:bdy_num) = obc_order
-         obc_order_use(1+bdy_num) = 1
-         bdy_num = bdy_num + 1
-      else
-         allocate(obc_order_use(bdy_num))
-         obc_order_use = obc_order
-      end if
-
-      ! 打开文件
+      ! write fvcom.2dm
       open(unit=unit_number, file=trim(file_dir)// 'result/fvcom.2dm', status='replace', action='write')
 
       ! 写入数据
@@ -227,30 +255,36 @@ module MOD_file_preprocess
       do i = 2, ustr_bounds, 1
          write(unit_number, '(A, 1X, I0, 3(1X, F0.6))') 'ND', i - 1, &
                               ustr_vertex(i, 1), ustr_vertex(i, 2), 0.0
-      end do        
+      end do         
 
-      ! 写入 NS 数据
-      ! 当指定 advance='no' 时，write 语句在输出完成后不会换行
-      j = 0 ! 标记obc段的个数
-      k = 0 ! 标记在NS中一行的哪一个位置
-      do i = 2, bdy_num - 1, 1
-         if (obc_order_use(i) == 1) cycle ! jump  because -1 before !!!!!!!
-         if (mod(k, 10) == 0) then
-               if (i < bdy_num) write(unit_number, '(A, 1X)', advance='no') 'NS'
-         end if
-         if (obc_order_use(i+1) == 1) then
-               j = j + 1
-               ! 负数并标记 obc 段号
-               write(unit_number, '(I0, 1X, I0)', advance='yes') -obc_order_use(i) + 1, j
-               k = 0
-         else
-               k = k + 1 ! 每一行写诗歌最多
-               write(unit_number, '(I0, 1X)', advance='no') obc_order_use(i) - 1
-         end if
+      close(unit_number)
 
-      end do     
+      ! write cor.dat
+      open(unit=unit_number, file=trim(file_dir)// 'result/cor.dat', status='replace', action='write')
+      write(unit_number, '(A, I0)') 'Node Number = ', ustr_bounds - 1
+      do i = 2, ustr_bounds, 1
+         write(unit_number, '(3(1X, F0.6))') ustr_vertex(i, 1), ustr_vertex(i, 2), ustr_vertex(i, 2)
+      end do  
+      close(unit_number)
 
-      ! 关闭文件
+      ! write dep.dat
+      open(unit=unit_number, file=trim(file_dir)// 'result/dep.dat', status='replace', action='write')
+      write(unit_number, '(A, I0)') 'Node Number = ', ustr_bounds - 1
+      do i = 2, ustr_bounds, 1
+         write(unit_number, '(3(1X, F0.6))') ustr_vertex(i, 1), ustr_vertex(i, 2), 0.0
+      end do   
+      close(unit_number)
+
+      ! write grd.dat
+      open(unit=unit_number, file=trim(file_dir)// 'result/grd.dat', status='replace', action='write')
+      write(unit_number, '(A, I0)') 'Node Number = ', ustr_bounds - 1
+      write(unit_number, '(A, I0)') 'Cell Number = ', ustr_points - 1
+      do i = 2, ustr_points, 1
+         write(unit_number, '(4(1X, I0))') i - 1, &
+                              ustr_ngr_center(1, i) - 1, &
+                              ustr_ngr_center(2, i) - 1, &
+                              ustr_ngr_center(3, i) - 1
+      end do
       close(unit_number)
 
    END SUBROUTINE FVCOM_Mesh_Save
@@ -294,16 +328,34 @@ module MOD_file_preprocess
 
    END SUBROUTINE IAP_Mesh_Read
 
+   SUBROUTINE EarthMesh_Mesh_Check(inputfile, outputfile)
+      USE consts_coms, only : io6, nxp
+      IMPLICIT NONE
+      character(pathlen), intent(in) :: inputfile, outputfile
+      integer :: ncid, dimID_sjx, sjx_points
+
+      CALL CHECK(NF90_OPEN(trim(inputfile), nf90_nowrite, ncid))
+      CALL CHECK(NF90_INQ_DIMID(ncid, "sjx_points", dimID_sjx))    ! Get dimension ID for triangle/polygon points
+      CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_sjx, len = sjx_points)) ! Get number of points
+      CALL CHECK(NF90_CLOSE(ncid))                                 ! Close the NetCDF file
+      if (int((sjx_points-1)/20) /= int(nxp*nxp)) then             ! Validate NXP consistency
+         write(io6, *)  "nxp read from namelist diff from nxp in the mode_file"
+         stop
+      end if
+      CALL execute_command_line('cp '//trim(inputfile)//' '//trim(outputfile))
+
+   END SUBROUTINE EarthMesh_Mesh_Check
+
    ! 这里应该修改为如果找不到对应的变量就提示！！！
+   ! change MAPS mesh to EarthMesh 需要需要先检查是否是MPAS格式的文件
    SUBROUTINE MPAS_Mesh_Read(inputfile, outputfile)
-      ! change MAPS mesh to EarthMesh 需要需要先检查是否是MPAS格式的文件
       USE consts_coms, only : io6
       IMPLICIT NONE
       character(pathlen), intent(in) :: inputfile, outputfile
       integer :: i, ncid, dimID_sjx, dimID_lbx, DimID_maxEdges
       integer :: spDimID, lpDimID, thDimID, seDimID
       integer :: varid(7), maxnum
-      integer  :: sjx_points, lbx_points, maxEdges
+      integer :: sjx_points, lbx_points, maxEdges
       integer,  dimension(:), allocatable :: n_ngrwm
       integer,  dimension(:, :), allocatable :: ngrmw_temp, ngrwm_temp
       integer,  dimension(:, :), allocatable :: ngrmw, ngrwm
@@ -316,9 +368,9 @@ module MOD_file_preprocess
       CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_sjx, len = sjx_points))! 3. NF90_INQUIRE_DIMENSION获取各维度的长度
       CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_lbx, len = lbx_points))! 三个参数依次是：文件编号，维度ID，维度名
       CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_maxEdges, len = maxEdges))
-      print*, "sjx_points = ", sjx_points
-      print*, "lbx_points = ", lbx_points
-      print*, "maxEdges   = ", maxEdges
+      write(io6, *)  "sjx_points = ", sjx_points
+      write(io6, *)  "lbx_points = ", lbx_points
+      write(io6, *)  "maxEdges   = ", maxEdges
       sjx_points = sjx_points + 1
       lbx_points = lbx_points + 1
       allocate(mp(sjx_points, 2)); mp(1, :) = 0.
@@ -689,14 +741,6 @@ module MOD_file_preprocess
       CALL CHECK(NF90_PUT_VAR(ncid, varid(20), cellsOnCell(:, 2:num_dbx)))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(21), verticesOnCell(:, 2:num_dbx)))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(22), edgesOnCell(:, 2:num_dbx)))
-
-      ! DEBUG: Print cellsOnVertex INSIDE MPAS_Mesh_Save before writing to NetCDF
-      if (81458 >= 2 .and. 81458 <= num_sjx) then
-          write(6,*) "=== DEBUG: INSIDE MPAS_Mesh_Save, vertex 81458 ==="
-          write(6,*) "cellsOnVertex parameter:", cellsOnVertex(:, 81458)
-          write(6,*) "Writing array slice: cellsOnVertex(:, 2:num_sjx)"
-      end if
-
       CALL CHECK(NF90_PUT_VAR(ncid, varid(23), cellsOnVertex(:, 2:num_sjx)))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(24), edgesOnVertex(:, 2:num_sjx)))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(25), cellsOnEdge(:, 2:num_edge)))
@@ -776,64 +820,40 @@ module MOD_file_preprocess
 
       ! netcdf变量ID和文件ID
       integer, parameter :: vertexDegree = 3
-      integer :: ncid, varid(8)
+      integer :: ncid, varid(8), i, j
       integer :: DimID_nCells, DimID_nVertices
       integer :: DimID_vertexDegree
-         
+
       ! 创建NetCDF文件和定义维度
       CALL CHECK(NF90_CREATE(trim(lndname), ior(nf90_clobber, nf90_netcdf4), ncid))
       CALL CHECK(NF90_DEF_DIM(ncid, "nCells", num_dbx-1, DimID_nCells))
       CALL CHECK(NF90_DEF_DIM(ncid, "nVertices", num_sjx-1, DimID_nVertices))
       CALL CHECK(NF90_DEF_DIM(ncid, "vertexDegree", vertexDegree, DimID_vertexDegree))
-      write(io6, *) "NF90_DEF_DIM finish"
+      ! write(io6, *) "NF90_DEF_DIM finish"
 
       ! 定义变量及其属性
-      ! 1. xCell
+      ! Cell
       CALL CHECK(NF90_DEF_VAR(ncid, "xCell", NF90_DOUBLE, (/ DimID_nCells /), varid(1)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(1), 'units', 'm'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(1), 'long_name', 'Cartesian x-coordinate of cells'))
-
-      ! 2. yCell
       CALL CHECK(NF90_DEF_VAR(ncid, "yCell", NF90_DOUBLE, (/ DimID_nCells /), varid(2)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(2), 'units', 'm'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(2), 'long_name', 'Cartesian y-coordinate of cells'))
-
-      ! 3. zCell
       CALL CHECK(NF90_DEF_VAR(ncid, "zCell", NF90_DOUBLE, (/ DimID_nCells /), varid(3)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(3), 'units', 'm'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(3), 'long_name', 'Cartesian z-coordinate of cells'))
 
-      ! 4. xVertex
+      ! Vertex
       CALL CHECK(NF90_DEF_VAR(ncid, "xVertex", NF90_DOUBLE, (/ DimID_nVertices /), varid(4)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(4), 'units', 'm'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(4), 'long_name', 'Cartesian x-coordinate of cells'))
-
-      ! 5. yVertex
       CALL CHECK(NF90_DEF_VAR(ncid, "yVertex", NF90_DOUBLE, (/ DimID_nVertices /), varid(5)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(5), 'units', 'm'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(5), 'long_name', 'Cartesian y-coordinate of cells'))
-
-      ! 6. zVertex
       CALL CHECK(NF90_DEF_VAR(ncid, "zVertex", NF90_DOUBLE, (/ DimID_nVertices /), varid(6)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(6), 'units', 'm'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(6), 'long_name', 'Cartesian z-coordinate of cells'))
-      
+
       ! 7. cellsOnVertex
       CALL CHECK(NF90_DEF_VAR(ncid, "cellsOnVertex", NF90_INT, (/ dimid_vertexDegree, dimid_nVertices /), varid(7)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(7), 'units', '-'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(7), 'long_name', 'IDs of the cells that meet at a vertex'))
 
       ! 8. meshDensity
       CALL CHECK(NF90_DEF_VAR(ncid, "meshDensity", NF90_DOUBLE, (/ dimid_nCells /), varid(8)))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(8), 'units', 'unitless'))
-      CALL CHECK(NF90_PUT_ATT(ncid, varid(8), 'long_name', 'Mesh density function (used when generating the mesh) evaluated at a cell'))
-
 
       ! 添加全局属性
       CALL CHECK(nf90_put_att(ncid, NF90_GLOBAL, "on_a_sphere", "YES"))
       CALL CHECK(nf90_put_att(ncid, NF90_GLOBAL, "sphere_radius", 1.0_r8))
+      CALL CHECK(nf90_put_att(ncid, NF90_GLOBAL, 'history', 'Created by EarthMesh'))
       CALL CHECK(NF90_ENDDEF(ncid))
-      write(io6, *) "NF90_PUT_att finish"
+      ! write(io6, *) "NF90_PUT_att finish"
 
       ! 变量放置
       CALL CHECK(NF90_PUT_VAR(ncid, varid(1),  xCell(2:num_dbx)))
@@ -845,11 +865,12 @@ module MOD_file_preprocess
       CALL CHECK(NF90_PUT_VAR(ncid, varid(7), cellsOnVertex(:, 2:num_sjx)))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(8), meshDensity(2:num_dbx)))
       CALL CHECK(NF90_CLOSE(ncid))
-      write(io6, *) "NF90_PUT_VAR finish"
+      ! write(io6, *) "NF90_PUT_VAR finish"
 
    END SUBROUTINE MPAS_Mesh_Simple_Save
 
-   SUBROUTINE Mode4_Mesh_Read(lndname, bound_points, mode_points, lonlat_bound, ngr_bound, n_ngr)
+   SUBROUTINE lambert_Mesh_Read(lndname, bound_points, mode_points, lonlat_bound, ngr_bound, n_ngr)
+
       IMPLICIT NONE
       integer :: ncid, dimID_bound, dimID_points
       integer, dimension(3) :: varid
@@ -874,12 +895,11 @@ module MOD_file_preprocess
       CALL CHECK(NF90_GET_VAR(ncid, varid(3), n_ngr))
       CALL CHECK(NF90_CLOSE(ncid))! 7. NF90_CLOSE关闭文件
   
-   END SUBROUTINE Mode4_Mesh_Read
+   END SUBROUTINE lambert_Mesh_Read
 
-   SUBROUTINE Mode4_Mesh_Save(lndname, bound_points, mode_points, lonlat_bound, ngr_bound, n_ngr)
+   SUBROUTINE lambert_Mesh_Save(lndname, bound_points, mode_points, lonlat_bound, ngr_bound, n_ngr)
 
       IMPLICIT NONE
-      
       character(pathlen), intent(in) :: lndname
       integer :: ncid, dimID_bound, dimID_points, dimID_two, dimID_four, varid(3)
       integer, intent(in) :: bound_points, mode_points
@@ -900,9 +920,8 @@ module MOD_file_preprocess
       CALL CHECK(NF90_PUT_VAR(ncid, varid(2), ngr_bound))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(3), n_ngr))
       CALL CHECK(NF90_CLOSE(ncid))
-      print*, "mode4 mesh save finish"
 
-   END SUBROUTINE Mode4_Mesh_Save
+   END SUBROUTINE lambert_Mesh_Save
 
    SUBROUTINE Unstructured_Mesh_Read(lndname, sjx_points, lbx_points, mp, wp, ngrmw, ngrwm, n_ngrwm)
       
@@ -1006,7 +1025,6 @@ module MOD_file_preprocess
       CALL CHECK(NF90_INQ_VARID(ncid, 'bbox_points',   varid(1)))
       CALL CHECK(NF90_GET_VAR(ncid, varid(1), bbox_points))
       CALL CHECK(NF90_CLOSE(ncid))! 7. NF90_bbox关闭文件
-      print*, "bbox mesh read finish"
 
    END SUBROUTINE bbox_Mesh_Read
 
@@ -1025,11 +1043,10 @@ module MOD_file_preprocess
       CALL CHECK(NF90_ENDDEF(ncid))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(1), bbox_points))
       CALL CHECK(NF90_CLOSE(ncid))
-      print*, "bbox mesh save finish"
 
    END SUBROUTINE bbox_Mesh_Save
 
-   SUBROUTINE circle_Mesh_Read(lndname, circle_num, circle_points, circle_radius)
+   SUBROUTINE Circle_Mesh_Read(lndname, circle_num, circle_points, circle_radius)
       ! 读取circlemesh数据
       IMPLICIT NONE
       character(pathlen), intent(in) :: lndname
@@ -1049,11 +1066,10 @@ module MOD_file_preprocess
       CALL CHECK(NF90_GET_VAR(ncid, varid(1), circle_points))
       CALL CHECK(NF90_GET_VAR(ncid, varid(2), circle_radius))
       CALL CHECK(NF90_CLOSE(ncid))! 7. NF90_CLOSE关闭文件
-      print*, "circle mesh read finish"
 
-   END SUBROUTINE circle_Mesh_Read
+   END SUBROUTINE Circle_Mesh_Read
 
-   SUBROUTINE circle_Mesh_Save(lndname, circle_num, circle_points, circle_radius)
+   SUBROUTINE Circle_Mesh_Save(lndname, circle_num, circle_points, circle_radius)
       ! 存储circlemesh数据
       IMPLICIT NONE
       character(pathlen), intent(in) :: lndname
@@ -1070,11 +1086,10 @@ module MOD_file_preprocess
       CALL CHECK(NF90_PUT_VAR(ncid, varid(1), circle_points))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(2), circle_radius))
       CALL CHECK(NF90_CLOSE(ncid))
-      print*, "circle mesh save finish"
 
-   END SUBROUTINE circle_Mesh_Save
+   END SUBROUTINE Circle_Mesh_Save
 
-   SUBROUTINE close_Mesh_Read(lndname, close_num, close_points)
+   SUBROUTINE Close_Mesh_Read(lndname, close_num, close_points)
       ! 读取closemesh数据
       IMPLICIT NONE
       character(pathlen), intent(in) :: lndname
@@ -1090,11 +1105,10 @@ module MOD_file_preprocess
       CALL CHECK(NF90_INQ_VARID(ncid, 'close_points',   varid(1)))
       CALL CHECK(NF90_GET_VAR(ncid, varid(1), close_points))
       CALL CHECK(NF90_CLOSE(ncid))! 7. NF90_CLOSE关闭文件
-      print*, "close mesh read finish"
 
-   END SUBROUTINE close_Mesh_Read
+   END SUBROUTINE Close_Mesh_Read
 
-   SUBROUTINE close_Mesh_Save(lndname, close_num, close_points)
+   SUBROUTINE Close_Mesh_Save(lndname, close_num, close_points)
       ! 存储closemesh数据
       IMPLICIT NONE
       character(pathlen), intent(in) :: lndname
@@ -1109,9 +1123,8 @@ module MOD_file_preprocess
       CALL CHECK(NF90_ENDDEF(ncid))
       CALL CHECK(NF90_PUT_VAR(ncid, varid(1), close_points))
       CALL CHECK(NF90_CLOSE(ncid))
-      print*, "close mesh save finish"
 
-   END SUBROUTINE close_Mesh_Save
+   END SUBROUTINE Close_Mesh_Save
 
    ! 这个是应该只有三角形的情况，还需要检查一些
    SUBROUTINE Contain_Read(lndname, num_ustr, num_ii, ustr_id, ustr_ii, IsInArea_ustr)
@@ -1300,4 +1313,36 @@ module MOD_file_preprocess
 
    END SUBROUTINE quality_save_global
 
-END Module MOD_file_preprocess
+   SUBROUTINE Landtype_File_Read(inputfile, byte_data)
+         USE consts_coms, only: io6, gridnum_perdegree, nlons_source, nlats_source
+         IMPLICIT NONE
+         character(LEN = 256), intent(in) :: inputfile
+         integer :: ncid, varid, dimID_lon, dimID_lat
+         integer(kind=1), allocatable :: byte_data(:,:)
+
+         CALL CHECK(NF90_OPEN(trim(inputfile), nf90_nowrite, ncid))
+         if (gridnum_perdegree == 240) then
+            CALL CHECK(NF90_INQ_DIMID(ncid, "lon", dimID_lon))
+            CALL CHECK(NF90_INQ_DIMID(ncid, "lat", dimID_lat))
+         else if (gridnum_perdegree == 120) then
+            CALL CHECK(NF90_INQ_DIMID(ncid, "longitude", dimID_lon))
+            CALL CHECK(NF90_INQ_DIMID(ncid, "latitude", dimID_lat))
+         end if
+
+         CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_lon, len = nlons_source))
+         CALL CHECK(NF90_INQUIRE_DIMENSION(ncid, dimID_lat, len = nlats_source))
+         if (nlons_source /= gridnum_perdegree * 360) then
+            STOP "ERROR! nlons_source from landtype_file /= gridnum_perdegree * 360"
+         end if
+         if (nlats_source /= gridnum_perdegree * 180) then
+            STOP "ERROR! nlons_source from landtype_file /= gridnum_perdegree * 360"
+         end if
+         
+         allocate(byte_data(nlons_source, nlats_source)); byte_data = 0
+         CALL CHECK(NF90_INQ_VARID(ncid, "landtype", varid))
+         CALL CHECK(NF90_GET_VAR(ncid, varid, byte_data))
+         CALL CHECK(NF90_CLOSE(ncid))
+         
+   END SUBROUTINE Landtype_File_Read
+
+END MODULE MOD_utilities

@@ -1,3 +1,22 @@
+!DESCRIPTION
+!===========
+!===============================================================================
+! Constants and common variables for the mesh generation program.
+! This module contains constants and common variables used throughout
+! the mesh generation program. It includes precision types, mathematical
+! constants, and various parameters for the mesh generation process.
+!===============================================================================
+
+
+!REVISION HISTORY
+!----------------
+! 2025.06.11  Zhongwang Wei @ SYSU (revised version)
+! 2025.06.10  Rui Zhang @ SYSU (original version)
+! 2023.02.21  Zhongwang Wei @ SYSU
+! 2021.12.02  Zhongwang Wei @ SYSU 
+! 2020.10.01  Zhongwang Wei @ SYSU
+
+
 !===============================================================================
 ! OLAM was originally developed at Duke University by Robert Walko, Martin Otte,
 ! and David Medvigy in the project group headed by Roni Avissar.  Development
@@ -32,32 +51,41 @@
 Module consts_coms
 
     implicit none
-
+    integer, parameter :: io6 = 6
     ! Single (real*4) and double (real*8) precision real kinds:
     integer, parameter :: r4 = selected_real_kind(6, 37)
     integer, parameter :: r8 = selected_real_kind(13, 300)
+    
+    ! 1 byte, 2 byte, 4 byte, and 8 byte integer (and logical) types
+    integer, parameter :: i1 = selected_int_kind(2)
+    integer, parameter :: i2 = selected_int_kind(4)
+    integer, parameter :: i4 = selected_int_kind(8)
+    integer, parameter :: i8 = selected_int_kind(16)
+
+    real(r4), parameter :: spval_r4 = -1.e36_r4
+
     real, parameter :: pio180 = atan(1.0_r8)/45.0_r8   ! radians per degree
     real, parameter :: piu180 = 45.0_r8/atan(1.0_r8)   ! degrees per radian
     real, parameter :: pi2 = 8.0_r8 * atan(1.0_r8) 
-    
-    real(r8), parameter :: pio180_r8 = atan(1.0_r8)/45.0_r8   ! radians per degree
-    real(r8), parameter :: piu180_r8 = 45.0_r8/atan(1.0_r8)   ! degrees per radian
-    real(r8), parameter :: pi2_r8 = 8.0_r8 * atan(1.0_r8) 
-    real(r8), parameter :: pi_r8  = 4.0_r8 * atan(1.0_r8) 
-    real(r8)  :: erad8 ! Earth radius [m]
-    real(r8)  :: erad2_r8
-    real(r8) :: eradi_r8
-    real(r8) :: erad2sq_r8
     real :: erad                          ! Earth radius [m]
     real :: erad2
     real :: erador5
     real :: eradi
     real :: erad2sq
+    real(r8), parameter :: pio180_r8 = atan(1.0_r8)/45.0_r8   ! radians per degree
+    real(r8), parameter :: piu180_r8 = 45.0_r8/atan(1.0_r8)   ! degrees per radian
+    real(r8), parameter :: pi2_r8 = 8.0_r8 * atan(1.0_r8) 
+    real(r8), parameter :: pi_r8  = 4.0_r8 * atan(1.0_r8) 
+    real(r8) :: erad8 ! Earth radius [m]
+    real(r8) :: erad2_r8
+    real(r8) :: eradi_r8
+    real(r8) :: erad2sq_r8
+    
     integer, parameter :: maxremote = 30   ! Max # of remote send/recv processes
     integer, parameter :: pathlen = 256  ! Max length of character strings for file paths
 
     character(64) :: expnme
-    character(pathlen) :: base_dir
+    character(pathlen) :: case_dir
     character(pathlen) :: file_dir
     character(pathlen) :: mode_file
     character(pathlen) :: landtype_file
@@ -75,7 +103,6 @@ Module consts_coms
     integer :: impent(12) = 0  ! Scratch array for storing 12 pentagonal IM indices
     integer :: iunit = 10
     integer :: step = 1
-    integer :: io6
     integer :: nxp
     integer :: openmp
     integer :: niter
@@ -84,7 +111,6 @@ Module consts_coms
     logical :: refine
     logical :: Isolated_Ocean
     logical :: mask_domain_global
-    logical :: mask_restart
     logical :: mask_patch_on
     integer :: nlons_source
     integer :: nlats_source
@@ -102,7 +128,7 @@ Module consts_coms
         !!    RUNTYPE/NAME
         character(64) :: expnme = '/tmp'
         integer :: nxp = 0
-        character(pathlen) :: base_dir = ' /tmp'
+        character(pathlen) :: case_dir = ' /tmp'
         character(16) :: mesh_type = '/tmp'
         character(16) :: mode_grid = '/tmp'
         character(16) :: mode_file_description = '/tmp'
@@ -115,7 +141,6 @@ Module consts_coms
         real :: beta = 1.2
         real :: relax = 0.04
         logical :: Isolated_Ocean = .FALSE.
-        logical :: mask_restart = .FALSE.
         character(16) :: mask_domain_type = '/tmp'
         character(pathlen) :: landtype_file = '/tmp'
         character(pathlen) :: mask_domain_fprefix = '/tmp'
@@ -127,71 +152,6 @@ Module consts_coms
     End Type oname_vars
     type (oname_vars) :: nl
 
-End Module
-!===============================================================================
-
-! Add by Rui Zhang for lonlatmesh read from namelist
-!===============================================================================
-Module lonlatmesh_coms
-
-    use consts_coms, only : r8 
-    implicit none
-
-    character(16) :: definition
-    real(r8)      :: lon_start
-    real(r8)      :: lon_end
-    real(r8)      :: lon_grid_interval
-    integer       :: lon_points
-    real(r8)      :: lat_start     
-    real(r8)      :: lat_end         
-    real(r8)      :: lat_grid_interval
-    integer       :: lat_points
-
-    Type mesh_vars
-        character(16) :: definition        = 'center'
-        real(r8)      :: lon_start         = 0.
-        real(r8)      :: lon_end           = 359. 
-        real(r8)      :: lon_grid_interval = 0.0625
-        integer       :: lon_points        = 2880
-        real(r8)      :: lat_start         = 0. 
-        real(r8)      :: lat_end           = 0.
-        real(r8)      :: lat_grid_interval = 0.
-        integer       :: lat_points        = 1440
-    End Type mesh_vars
-    type (mesh_vars) :: mesh
-    namelist /lonlatmesh/ mesh
-End Module
-!===============================================================================
-
-! Add by Rui Zhang for fvcommesh_coms
-!===============================================================================
-Module fvcommesh_coms
-
-    use consts_coms, only : r8, pathlen
-    implicit none
-
-    character(pathlen) :: casename
-    character(pathlen) :: Dem_file
-    character(16)      :: lon_name
-    character(16)      :: lat_name
-    character(16)      :: dep_name
-    real(r8)           :: mindepth
-    real(r8)           :: maxdepth 
-    real(r8)           :: limslope
-    integer            :: nlons_Dem
-    integer            :: nlats_Dem
-
-    Type mesh_vars
-        character(pathlen) :: casename = 'CASENAME'
-        character(pathlen) :: Dem_file = '/tmp'
-        character(16)      :: lon_name = '/tmp'
-        character(16)      :: lat_name = '/tmp'
-        character(16)      :: dep_name = '/tmp'
-        real(r8)           :: mindepth = 1.
-        real(r8)           :: maxdepth = 300. 
-        real(r8)           :: limslope = 0.02
-    End Type mesh_vars
-    type (mesh_vars) :: mesh
 End Module
 !===============================================================================
 
@@ -213,8 +173,6 @@ Module mem_grid
             , xew, yew, zew    &  ! XE,YE,ZE coordinates of W point
             , glatm, glonm     &  ! Latitude/longitude at M point
             , glatw, glonw        ! Latitude/longitude at W point
-
-    ! integer :: impent(12)  ! Scratch array for storing 12 pentagonal IM indices
 
 Contains
 
@@ -249,7 +207,7 @@ Contains
     !===============================================================================
 
     subroutine alloc_grid_lonlatmw(lma, lva, lwa)
-
+        
         use consts_coms, only : io6
         implicit none
 
@@ -512,12 +470,11 @@ Module refine_vars
     integer :: max_iter               =  0
     integer :: max_iter_spc           =  0
     integer :: max_iter_cal           =  0
+    integer :: weak_concav_eliminate(10) = 0
     integer :: halo(10)               =  0
     integer :: max_transition_row(10) =  0
     integer :: SpringGlobal_type      =  1
-    integer :: SpringRegional_type    =  1
     integer :: num_rc                 =  0
-    integer :: vertex_pretect_layers     =  1
     integer :: niter_refine           =  100
     integer :: th_num_landtypes       =  12
 
@@ -528,9 +485,7 @@ Module refine_vars
     real(r8) :: th_onelayer_Atmos(2)  =  999.
     real(r8) :: th_twolayer_Lnd(10, 2)=  999.
 
-    logical :: weak_concav_eliminate  = .FALSE.
     logical :: Istransition           = .FALSE.
-    logical :: iterD                  = .FALSE.
     logical :: refine_spc             = .FALSE.
     logical :: refine_cal             = .FALSE.
     logical :: refine_num_landtypes   = .FALSE.
@@ -552,21 +507,18 @@ Module refine_vars
         character(16)  :: set_dis_type             = '/tmp'
         integer  :: max_iter_spc
         integer  :: max_iter_cal
+        integer  :: weak_concav_eliminate(10)
         integer  :: halo(10)
         integer  :: max_transition_row(10)
         integer  :: SpringGlobal_type
-        integer  :: SpringRegional_type
         integer  :: num_rc
-        integer  :: vertex_pretect_layers
         integer  :: niter_refine
         integer  :: th_num_landtypes
-        logical  :: weak_concav_eliminate = .FALSE.  
         logical  :: Istransition          = .FALSE.
-        logical  :: iterD                 = .FALSE.
         logical  :: refine_spc            = .FALSE.
         logical  :: refine_cal            = .FALSE.
 
-        ! use for landmesh
+        ! use for landmesh/LOCmesh
         logical  :: refine_num_landtypes  = .FALSE.
         logical  :: refine_area_mainland  = .FALSE.
         logical  :: refine_lai_m          = .FALSE.
@@ -583,7 +535,8 @@ Module refine_vars
         logical  :: refine_tksatf_s       = .FALSE.
         logical  :: refine_tksatu_m       = .FALSE.
         logical  :: refine_tksatu_s       = .FALSE.
-        ! use for oceanmesh
+
+        ! use for oceanmesh/LOCmesh
         logical  :: refine_sea_ratio      = .FALSE.
         logical  :: refine_sst_m          = .FALSE.
         logical  :: refine_sst_s          = .FALSE.
@@ -594,7 +547,7 @@ Module refine_vars
         logical  :: refine_sea_slope_m    = .FALSE.
         logical  :: refine_sea_slope_s    = .FALSE.
 
-        ! use for earthmesh/airmesh
+        ! use for atmosmesh
         logical  :: refine_typhoon_m      = .FALSE.
         logical  :: refine_typhoon_s      = .FALSE.
 
