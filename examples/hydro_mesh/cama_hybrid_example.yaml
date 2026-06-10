@@ -6,6 +6,11 @@
 hydro_mesh:
   mode: hybrid_river_mesh
   target_dx_km: 10.0
+  bbox:
+    west: 100.0
+    east: 125.0
+    south: 18.0
+    north: 42.0
 
   input:
     cama_map_dir: /path/to/CaMa-Flood/map

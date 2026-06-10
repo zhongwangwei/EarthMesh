@@ -88,3 +88,27 @@ Recommended handling:
 2. For development, extract only a regional window or a small fixture generated from the global binaries.
 3. Implement windowed binary reads instead of loading full global arrays into memory.
 4. Verify the scientific meaning and units of `width.bin` before using it as the final R2/R3 river-width criterion.
+
+## Windowed reader workflow
+
+The current code supports a safe first pass for binary CaMa maps that have already
+been extracted outside the git repository. The intended workflow is:
+
+1. Extract only the required map files to an external scratch directory, not into
+   the EarthMesh repository:
+   - `params.txt`
+   - `nextxy.bin`
+   - `uparea.bin`
+   - `width.bin`
+   - `rivlen.bin`
+2. Create a `CamaGridSpec` from `params.txt` metadata.
+3. Convert a geographic bounding box into `(x_start, y_start, width, height)` with
+   `CamaGridSpec.window_for_bbox(...)`.
+4. Read only that binary window with `read_reach_inventory_window(...)`.
+5. Classify the returned `RiverReach` records with the existing R0/R1/R2/R3
+   classifier.
+
+This deliberately avoids full global-array loading. For the provided 1 arcmin
+global package, one scalar layer is about 933 MB and `nextxy.bin` is about 1.87 GB,
+so full-array reads are unnecessary for regional development and risky for routine
+iteration.
