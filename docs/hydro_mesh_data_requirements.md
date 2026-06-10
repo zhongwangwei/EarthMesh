@@ -64,3 +64,27 @@ Before using the products in an EarthMesh/CoLM2024 workflow, validate that:
 3. R2/R3 classes do not create a mesh-size explosion for the target domain.
 4. Generated masks remain inside the EarthMesh domain.
 5. CoLM2024 receives both land mesh metadata and river-to-land mapping metadata.
+
+## Probe result for `/Users/zhongwangwei/Desktop/glb_01min.tar.gz`
+
+The provided global 1 arcmin CaMa-Flood archive is usable as a cautious next-step
+input, but it is a traditional CaMa binary map package rather than a NetCDF file.
+It should not be fully extracted into the repository.
+
+Observed metadata from the archive:
+
+- Map directory: `glb_01min`.
+- Grid size: `21600 x 10800`.
+- Grid spacing: `0.01666667` degrees.
+- Domain: west `-180`, east `180`, south `-90`, north `90`.
+- Floodplain layers: `10`.
+- Byte order from control files: little endian.
+- Required first-pass binary fields present: `nextxy.bin`, `uparea.bin`, `width.bin`, `rivlen.bin`.
+- Important caveat: `rivwth.ctl` is present, but `rivwth.bin` was not observed in the tar member inventory; the first reader should treat `width.bin` as a river-width candidate and report that assumption explicitly.
+
+Recommended handling:
+
+1. Keep the `.tar.gz` outside the git repository.
+2. For development, extract only a regional window or a small fixture generated from the global binaries.
+3. Implement windowed binary reads instead of loading full global arrays into memory.
+4. Verify the scientific meaning and units of `width.bin` before using it as the final R2/R3 river-width criterion.
