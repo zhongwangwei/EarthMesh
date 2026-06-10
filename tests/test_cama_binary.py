@@ -80,3 +80,28 @@ def test_grid_spec_converts_bbox_to_clipped_window():
 
     assert grid.window_for_bbox(west=100.0, east=102.0, south=20.0, north=22.0) == (280, 110, 2, 2)
     assert grid.window_for_bbox(west=-200.0, east=-179.0, south=-95.0, north=-89.0) == (0, 0, 1, 1)
+
+
+def test_read_binary_window_honors_y_reversed_storage(tmp_path):
+    binary = tmp_path / "uparea.bin"
+    _write_float_grid(binary, nx=3, ny=3)
+    grid = CamaGridSpec(
+        nx=3,
+        ny=3,
+        west=0.0,
+        south=0.0,
+        grid_size_deg=1.0,
+        y_reversed_storage=True,
+    )
+
+    south_row = read_binary_window(
+        binary,
+        grid,
+        x_start=0,
+        y_start=0,
+        width=3,
+        height=1,
+        dtype="float32",
+    )
+
+    assert south_row == [[6.0, 7.0, 8.0]]

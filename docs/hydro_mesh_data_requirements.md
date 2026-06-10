@@ -112,3 +112,29 @@ This deliberately avoids full global-array loading. For the provided 1 arcmin
 global package, one scalar layer is about 933 MB and `nextxy.bin` is about 1.87 GB,
 so full-array reads are unnecessary for regional development and risky for routine
 iteration.
+
+## Verified regional sample command
+
+After extracting the required files to `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/glb_01min`,
+the current sampler can generate classified reach records for a regional bbox without
+loading the full global map:
+
+```bash
+python3 -m util.hydro_mesh.cama_sample \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/glb_01min \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_classified.jsonl \
+  --bbox 118 28 123 33 \
+  --target-dx-km 10
+```
+
+Observed for this first Yangtze-delta-adjacent probe:
+
+- Output records: `13389`.
+- Classification counts with current conservative thresholds: `R0=9988`, `R1=1764`, `R2=876`, `R3=761`.
+- `uparea.bin` is treated as square meters and converted with `--uparea-to-km2 1e-6`.
+- CaMa control files use `yrev`; the sampler defaults to reversed binary row order.
+- Many sampled records have `downstream_x=-9999` and `downstream_y=-9999`; this is preserved in output and should be interpreted carefully before using it as a definitive estuary flag.
+
+This proves the windowed reader path is feasible for regional development. The next
+scientific validation step is to compare sampled river locations/classes against a
+known basin or coastline reference before generating 2D river-corridor masks.

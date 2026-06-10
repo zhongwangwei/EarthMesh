@@ -19,6 +19,7 @@ class CamaGridSpec:
     south: float
     grid_size_deg: float
     little_endian: bool = True
+    y_reversed_storage: bool = False
 
     def lon_center(self, x_index: int) -> float:
         return self.west + (x_index + 0.5) * self.grid_size_deg
@@ -34,6 +35,11 @@ class CamaGridSpec:
         if x1 <= x0 or y1 <= y0:
             raise ValueError("bbox does not overlap grid")
         return x0, y0, x1 - x0, y1 - y0
+
+    def storage_y_index(self, y_index: int) -> int:
+        if self.y_reversed_storage:
+            return self.ny - 1 - y_index
+        return y_index
 
 
 def read_binary_window(
@@ -69,7 +75,7 @@ def read_binary_window(
 
     with Path(binary_path).open("rb") as handle:
         for y_index in range(y_start, y_start + height):
-            handle.seek(y_index * row_stride)
+            handle.seek(grid.storage_y_index(y_index) * row_stride)
             raw = handle.read(row_stride)
             if len(raw) != row_stride:
                 raise ValueError("binary file ended before requested window was read")

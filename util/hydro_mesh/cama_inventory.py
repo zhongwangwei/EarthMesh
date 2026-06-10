@@ -44,6 +44,7 @@ def build_reach_inventory(
     rivlen_m: list[list[float]],
     next_x: list[list[int]],
     next_y: list[list[int]],
+    uparea_to_km2: float = 1.0,
 ) -> list[CamaReachRecord]:
     if not _same_shape(uparea_km2, width_m, rivlen_m, next_x, next_y):
         raise ValueError("all CaMa window arrays must share the same shape")
@@ -63,7 +64,7 @@ def build_reach_inventory(
             is_estuary = downstream_x == 0 and downstream_y == 0
             reach = RiverReach(
                 reach_id=f"cama-{y_index}-{x_index}",
-                upstream_area_km2=float(uparea),
+                upstream_area_km2=float(uparea) * uparea_to_km2,
                 width_m=float(width),
                 floodplain_width_m=0.0,
                 target_dx_km=target_dx_km,
@@ -94,6 +95,7 @@ def read_reach_inventory_window(
     width: int,
     height: int,
     target_dx_km: float,
+    uparea_to_km2: float = 1.0,
 ) -> list[CamaReachRecord]:
     from pathlib import Path
 
@@ -159,4 +161,5 @@ def read_reach_inventory_window(
         rivlen_m=rivlen,
         next_x=next_x,
         next_y=next_y,
+        uparea_to_km2=uparea_to_km2,
     )

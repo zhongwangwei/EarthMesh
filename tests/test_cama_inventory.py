@@ -93,3 +93,21 @@ def test_read_reach_inventory_window_reads_required_binary_fields(tmp_path):
     assert [record.reach.reach_id for record in records] == ["cama-0-1", "cama-1-0"]
     assert records[0].downstream_x == 2
     assert records[0].downstream_y == 0
+
+
+def test_build_reach_inventory_converts_uparea_units_to_km2():
+    grid = CamaGridSpec(nx=1, ny=1, west=0.0, south=0.0, grid_size_deg=1.0)
+    records = build_reach_inventory(
+        grid,
+        x_start=0,
+        y_start=0,
+        target_dx_km=10.0,
+        uparea_km2=[[2_000_000.0]],
+        width_m=[[50.0]],
+        rivlen_m=[[1000.0]],
+        next_x=[[1]],
+        next_y=[[1]],
+        uparea_to_km2=1e-6,
+    )
+
+    assert records[0].reach.upstream_area_km2 == 2.0
