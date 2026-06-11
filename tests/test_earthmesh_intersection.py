@@ -86,6 +86,58 @@ def test_earthmesh_cells_to_corridor_intersections_keeps_cell_geometry_with_frac
     assert feature["properties"]["source_estimated_river_area"] == 1_000_000.0
 
 
+def test_unit_sphere_area_normalization_adds_true_m2_estimate():
+    from util.hydro_mesh.earthmesh_intersection import EARTH_RADIUS_M, earthmesh_cells_to_corridor_intersections
+
+    cells = _feature_collection(
+        [
+            _cell_feature("cell-a", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], area_m2=2.0),
+        ]
+    )
+    corridors = _feature_collection(
+        [
+            _corridor_feature("R3", [[0, 0], [0.25, 0], [0.25, 1], [0, 1], [0, 0]]),
+        ]
+    )
+
+    intersections = earthmesh_cells_to_corridor_intersections(cells, corridors, unit_sphere_area=True)
+
+    feature = intersections["features"][0]
+    assert feature["properties"]["area_normalization"] == "unit_sphere_area_to_m2"
+    assert feature["properties"]["normalized_cell_area_m2"] == 2.0 * EARTH_RADIUS_M * EARTH_RADIUS_M
+    assert feature["properties"]["estimated_river_area_m2"] == 0.5 * EARTH_RADIUS_M * EARTH_RADIUS_M
+
+
+def test_domain_geojson_clips_corridor_before_cell_intersection():
+    from util.hydro_mesh.earthmesh_intersection import earthmesh_cells_to_corridor_intersections
+
+    cells = _feature_collection(
+        [
+            _cell_feature("cell-a", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], area_m2=100.0),
+        ]
+    )
+    corridors = _feature_collection(
+        [
+            _corridor_feature("R3", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]),
+        ]
+    )
+    domain = _feature_collection(
+        [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [0.5, 0], [0.5, 1], [0, 1], [0, 0]]]},
+                "properties": {"domain": "left-half"},
+            }
+        ]
+    )
+
+    intersections = earthmesh_cells_to_corridor_intersections(cells, corridors, domain=domain)
+
+    feature = intersections["features"][0]
+    assert feature["properties"]["river_fraction"] == 0.5
+    assert feature["properties"]["domain_clip_applied"] is True
+
+
 def test_write_earthmesh_intersection_geojson_accepts_cell_geojson(tmp_path):
     from util.hydro_mesh.earthmesh_intersection import write_earthmesh_intersection_geojson
 
@@ -109,3 +161,46 @@ def test_write_earthmesh_intersection_geojson_accepts_cell_geojson(tmp_path):
     assert written["type"] == "FeatureCollection"
     assert written["features"][0]["properties"]["cell_id"] == "cell-a"
     assert written["features"][0]["properties"]["river_class"] == "R2"
+
+
+def test_write_earthmesh_intersection_geojson_accepts_domain_geojson_and_unit_sphere_area(tmp_path):
+    from util.hydro_mesh.earthmesh_intersection import write_earthmesh_intersection_geojson
+
+    cells_path = tmp_path / "cells.geojson"
+    corridors_path = tmp_path / "corridors.geojson"
+    domain_path = tmp_path / "domain.geojson"
+    output_path = tmp_path / "intersection.geojson"
+    cells_path.write_text(
+        json.dumps(
+            _feature_collection(
+                [_cell_feature("cell-a", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], area_m2=1.0)]
+            )
+        )
+    )
+    corridors_path.write_text(json.dumps(_feature_collection([_corridor_feature("R3", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]])])))
+    domain_path.write_text(
+        json.dumps(
+            _feature_collection(
+                [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [0.5, 0], [0.5, 1], [0, 1], [0, 0]]]},
+                        "properties": {},
+                    }
+                ]
+            )
+        )
+    )
+
+    write_earthmesh_intersection_geojson(
+        corridors_path,
+        output_path,
+        cell_geojson=cells_path,
+        domain_geojson=domain_path,
+        unit_sphere_area=True,
+    )
+
+    written = json.loads(output_path.read_text())
+    properties = written["features"][0]["properties"]
+    assert properties["domain_clip_applied"] is True
+    assert properties["area_normalization"] == "unit_sphere_area_to_m2"

@@ -416,3 +416,56 @@ CoLM2024 coupling still needs an explicit geodesic area normalization step.
 This is the first prototype that represents CaMa-Flood river corridors directly on
 real EarthMesh cells. The remaining scientific steps are coastline/domain clipping,
 geodesic overlap areas, and export of stable CoLM2024 river-to-land coupling tables.
+
+## Verified domain-mask interface and normalized area estimate
+
+The EarthMesh cell intersection utility now has two optional safeguards for the
+CoLM2024 coupling path:
+
+1. `--domain-geojson` clips R2/R3 corridor polygons to an external domain or
+   coastline mask before cell intersection. The example below uses a bbox polygon as
+   a placeholder only; replace it with a real land/coastline/domain mask for
+   production.
+2. `--unit-sphere-area` treats source `areaCell` values as unit-sphere areas and
+   adds `normalized_cell_area_m2` plus `estimated_river_area_m2`. This is appropriate
+   for the current sample mesh, where `areaCell` values are near `1e-5`.
+
+Placeholder bbox-domain file used for the first smoke test:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_bbox_domain.geojson
+```
+
+Domain-clipped and area-normalized command:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.earthmesh_intersection \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_domain_area_preview.geojson \
+  --mpas-mesh cases/ATMOS_hex_N64_refine2_global_LOM67_251027/result/MPASOUT_NXP0064_global.nc4 \
+  --bbox 118 28 123 33 \
+  --domain-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_bbox_domain.geojson \
+  --unit-sphere-area \
+  --min-fraction 0.0 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_domain_area_preview.png \
+  --title "Yangtze Delta EarthMesh cells with domain clip and normalized area"
+```
+
+Observed output:
+
+- Domain-area GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_domain_area_preview.geojson`.
+- Domain-area PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_domain_area_preview.png`.
+- Output features: `133`.
+- Class counts: `R2=83`, `R3=50`.
+- River-overlap fraction range: about `1.0e-04` to `0.5501`.
+- Normalized cell area range: about `7.90e8` to `8.02e8 m2`.
+- Estimated river-overlap area range: about `7.93e4` to `4.37e8 m2`.
+- Metadata markers: `domain_clip_applied=True` and
+  `area_normalization=unit_sphere_area_to_m2`.
+
+This step gives CoLM2024 a more realistic metadata shape: each EarthMesh cell can now
+carry a river class, overlap fraction, normalized cell area, and estimated river area.
+The remaining blocker is scientific input quality, not software plumbing: the
+placeholder bbox domain should be replaced with a coastline/domain mask and the
+planar lon/lat overlap fraction should be replaced or validated with a true geodesic
+intersection method before production use.

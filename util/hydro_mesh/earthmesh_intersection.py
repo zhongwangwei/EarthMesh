@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 _INCLUDED_CLASSES = {"R2", "R3"}
+EARTH_RADIUS_M = 6_371_000.0
 
 
 def _require_shapely():
@@ -116,12 +117,49 @@ def _cell_id(feature: dict[str, object]) -> str:
     return str(properties.get("cell_id", ""))
 
 
+def _union_feature_geometries(collection: dict[str, object]) -> object | None:
+    shape, unary_union = _require_shapely()
+    geometries: list[object] = []
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry", {})
+        if not isinstance(geometry, dict) or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+            continue
+        geom = shape(geometry)
+        if not geom.is_empty:
+            geometries.append(geom)
+    if not geometries:
+        return None
+    return unary_union(geometries)
+
+
+def _normalized_area_properties(cell_properties: dict[str, object], river_fraction: float, *, unit_sphere_area: bool) -> dict[str, object]:
+    source_area = cell_properties.get("source_areaCell")
+    if source_area is None:
+        return {}
+    source_area_value = float(source_area)
+    properties: dict[str, object] = {"source_estimated_river_area": source_area_value * river_fraction}
+    if unit_sphere_area:
+        normalized_cell_area_m2 = source_area_value * EARTH_RADIUS_M * EARTH_RADIUS_M
+        properties.update(
+            {
+                "area_normalization": "unit_sphere_area_to_m2",
+                "normalized_cell_area_m2": normalized_cell_area_m2,
+                "estimated_river_area_m2": normalized_cell_area_m2 * river_fraction,
+            }
+        )
+    return properties
+
+
 def earthmesh_cells_to_corridor_intersections(
     cells: dict[str, object],
     corridors: dict[str, object],
     *,
+    domain: dict[str, object] | None = None,
     include_classes: Iterable[str] = _INCLUDED_CLASSES,
     min_fraction: float = 0.0,
+    unit_sphere_area: bool = False,
 ) -> dict[str, object]:
     """Intersect EarthMesh cell polygons with river corridor polygons."""
 
@@ -129,6 +167,7 @@ def earthmesh_cells_to_corridor_intersections(
         raise ValueError("min_fraction must be between 0 and 1")
     shape, unary_union = _require_shapely()
     included = set(include_classes)
+    domain_geometry = _union_feature_geometries(domain) if domain is not None else None
 
     grouped_corridors: dict[str, list[object]] = {}
     for feature in corridors.get("features", []):
@@ -141,6 +180,8 @@ def earthmesh_cells_to_corridor_intersections(
         if river_class not in included:
             continue
         geom = shape(geometry)
+        if domain_geometry is not None:
+            geom = geom.intersection(domain_geometry)
         if not geom.is_empty:
             grouped_corridors.setdefault(river_class, []).append(geom)
 
@@ -166,8 +207,6 @@ def earthmesh_cells_to_corridor_intersections(
             river_fraction = intersection_area_deg2 / cell_area_deg2
             if river_fraction < min_fraction:
                 continue
-            source_area = cell_properties.get("source_areaCell")
-            estimated_area = float(source_area) * river_fraction if source_area is not None else None
             output_properties = dict(cell_properties)
             output_properties.update(
                 {
@@ -178,10 +217,10 @@ def earthmesh_cells_to_corridor_intersections(
                     "cell_area_deg2": cell_area_deg2,
                     "intersection_area_deg2": intersection_area_deg2,
                     "river_fraction": river_fraction,
+                    "domain_clip_applied": domain_geometry is not None,
                 }
             )
-            if estimated_area is not None:
-                output_properties["source_estimated_river_area"] = estimated_area
+            output_properties.update(_normalized_area_properties(cell_properties, river_fraction, unit_sphere_area=unit_sphere_area))
             features.append({"type": "Feature", "geometry": cell_geometry, "properties": output_properties})
     return {"type": "FeatureCollection", "features": features}
 
@@ -192,10 +231,12 @@ def write_earthmesh_intersection_geojson(
     *,
     cell_geojson: str | Path | None = None,
     mpas_mesh: str | Path | None = None,
+    domain_geojson: str | Path | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     include_classes: Iterable[str] = _INCLUDED_CLASSES,
     min_fraction: float = 0.0,
     max_cells: int | None = None,
+    unit_sphere_area: bool = False,
 ) -> dict[str, object]:
     if (cell_geojson is None) == (mpas_mesh is None):
         raise ValueError("provide exactly one of cell_geojson or mpas_mesh")
@@ -204,11 +245,14 @@ def write_earthmesh_intersection_geojson(
         cells = json.loads(Path(cell_geojson).read_text())
     else:
         cells = read_mpas_cell_polygons(mpas_mesh, bbox=bbox, max_cells=max_cells)
+    domain = json.loads(Path(domain_geojson).read_text()) if domain_geojson is not None else None
     intersections = earthmesh_cells_to_corridor_intersections(
         cells,
         corridors,
+        domain=domain,
         include_classes=include_classes,
         min_fraction=min_fraction,
+        unit_sphere_area=unit_sphere_area,
     )
     output_path = Path(output_geojson)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--classes", nargs="+", default=sorted(_INCLUDED_CLASSES), help="River classes to include; default: R2 R3")
     parser.add_argument("--min-fraction", type=float, default=0.0, help="Minimum corridor overlap fraction")
     parser.add_argument("--max-cells", type=int, help="Optional maximum cells to read from MPAS mesh")
+    parser.add_argument("--domain-geojson", help="Optional domain/coastline mask polygon GeoJSON used to clip corridors before cell intersection")
+    parser.add_argument("--unit-sphere-area", action="store_true", help="Treat source areaCell values as unit-sphere areas and add normalized m2 estimates")
     parser.add_argument("--preview-png", help="Optional PNG preview path")
     parser.add_argument("--title", default="EarthMesh river-cell intersection preview", help="Preview PNG title")
     args = parser.parse_args(argv)
@@ -236,10 +282,12 @@ def main(argv: list[str] | None = None) -> int:
         args.output_geojson,
         cell_geojson=args.cell_geojson,
         mpas_mesh=args.mpas_mesh,
+        domain_geojson=args.domain_geojson,
         bbox=tuple(args.bbox) if args.bbox is not None else None,
         include_classes=args.classes,
         min_fraction=args.min_fraction,
         max_cells=args.max_cells,
+        unit_sphere_area=args.unit_sphere_area,
     )
     if args.preview_png:
         from util.hydro_mesh.corridor_preview import write_corridor_preview_png
