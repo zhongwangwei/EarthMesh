@@ -348,6 +348,8 @@ def preview_geometry_label(features: list[dict[str, object]]) -> str:
     }
     if "regular_grid_intersection_preview" in source_geometries:
         return "regular-grid intersection cells"
+    if "earthmesh_cell_intersection_preview" in source_geometries:
+        return "EarthMesh cell intersection polygons"
     if "bbox_clipped_corridor" in source_geometries:
         return "bbox-clipped corridor polygons"
     if "dissolved_corridor" in source_geometries:

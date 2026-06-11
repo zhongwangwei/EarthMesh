@@ -374,3 +374,45 @@ than only as vector masks. The remaining v3 production step is to replace this
 regular lon/lat preview grid with actual EarthMesh cell polygons, compute geodesic
 cell/corridor overlap, and clip against an explicit coastline/domain mask before
 writing CoLM2024 coupling metadata.
+
+## Verified EarthMesh cell intersection preview
+
+The dissolved CaMa corridor can also be intersected with actual MPAS/EarthMesh cell
+polygons from an existing mesh NetCDF. The current reader supports MPAS-style
+variables `lonCell`, `latCell`, `lonVertex`, `latVertex`, `verticesOnCell`,
+`nEdgesOnCell`, and optional `indexToCellID`/`areaCell`. Cells are selected by center
+point inside a bbox, converted to GeoJSON polygons, and intersected against the R2/R3
+corridor polygons.
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.earthmesh_intersection \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_preview.geojson \
+  --mpas-mesh cases/ATMOS_hex_N64_refine2_global_LOM67_251027/result/MPASOUT_NXP0064_global.nc4 \
+  --bbox 118 28 123 33 \
+  --min-fraction 0.0 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_preview.png \
+  --title "Yangtze Delta EarthMesh river-cell intersections preview"
+```
+
+Observed output:
+
+- EarthMesh cell-intersection GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_preview.geojson`.
+- EarthMesh cell-intersection PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_preview.png`.
+- Bbox-selected MPAS/EarthMesh source cells: `333`.
+- Output features with nonzero corridor overlap: `133`.
+- Class counts: `R2=83`, `R3=50`.
+- River-overlap fraction range: about `1.0e-04` to `0.5501`.
+- Geometry source marker: `corridor_source_geometry=earthmesh_cell_intersection_preview`.
+
+Each output feature keeps the original cell polygon and adds overlap metadata:
+`river_class`, `river_fraction`, `intersection_area_deg2`, `cell_area_deg2`,
+`source_areaCell`, `source_areaCell_units`, and `source_estimated_river_area` when
+`areaCell` is available. The `source_areaCell` fields deliberately preserve the mesh
+file's raw area values instead of promising true square meters. In the current sample
+file, `areaCell` is labeled `m^2` but has unit-sphere-scale values, so production
+CoLM2024 coupling still needs an explicit geodesic area normalization step.
+
+This is the first prototype that represents CaMa-Flood river corridors directly on
+real EarthMesh cells. The remaining scientific steps are coastline/domain clipping,
+geodesic overlap areas, and export of stable CoLM2024 river-to-land coupling tables.

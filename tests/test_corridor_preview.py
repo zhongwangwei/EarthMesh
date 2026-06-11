@@ -151,6 +151,10 @@ def test_preview_geometry_label_names_downstream_segments():
 
     assert preview_geometry_label([{"properties": {"corridor_source_geometry": "cama_downstream_segment"}}]) == "CaMa downstream segment buffers"
     assert preview_geometry_label([{"properties": {"corridor_source_geometry": "nearest_neighbor_segment"}}]) == "nearest-neighbor segment buffers"
+    assert (
+        preview_geometry_label([{"properties": {"corridor_source_geometry": "earthmesh_cell_intersection_preview"}}])
+        == "EarthMesh cell intersection polygons"
+    )
 
 
 def test_dissolve_corridor_polygons_by_class_merges_overlapping_features():
