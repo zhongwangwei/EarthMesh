@@ -28,3 +28,22 @@ def test_overlay_result_reports_winning_class_and_fractions():
 
     assert result.covered_fraction == 0.75
     assert result.winning_class == "R3"
+
+from util.v3_core.geometry import polygon_area, polygon_clip_convex
+
+
+def test_polygon_area_handles_triangle_and_hexagon_like_polygon():
+    triangle = [(0.0, 0.0), (2.0, 0.0), (0.0, 2.0)]
+    rectangle = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)]
+
+    assert polygon_area(triangle) == 2.0
+    assert polygon_area(rectangle) == 2.0
+
+
+def test_polygon_clip_convex_returns_intersection_polygon():
+    subject = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
+    clip = [(1.0, 0.0), (3.0, 0.0), (3.0, 2.0), (1.0, 2.0)]
+
+    intersection = polygon_clip_convex(subject, clip)
+
+    assert round(polygon_area(intersection), 6) == 2.0
