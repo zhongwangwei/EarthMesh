@@ -5,6 +5,7 @@ from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, SchemaOnly
 from util.v3_core.geometry import (
     MaskFeature,
     OverlayResult,
+    apply_overlay_to_cell,
     overlay_cell_with_masks,
     polygon_area,
     polygon_clip_convex,
@@ -36,6 +37,7 @@ __all__ = [
     "SchemaOnlyAdapter",
     "V3Recipe",
     "V3RunManifest",
+    "apply_overlay_to_cell",
     "build_legacy_command",
     "default_adapter_registry",
     "get_geometry_backend",

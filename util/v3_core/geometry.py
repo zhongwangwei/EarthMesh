@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-from util.v3_core.schema import CanonicalCell
+from util.v3_core.schema import CanonicalCell, VALID_COAST_CLASSES, VALID_HYDRO_CLASSES, VALID_SURFACE_CLASSES
 
 Point = tuple[float, float]
 Polygon = list[Point]
@@ -172,3 +172,36 @@ def summarize_overlay_results(results: list[OverlayResult]) -> dict[str, object]
         "missing_mask_count": missing_mask_count,
         "quality_flag_counts": quality_flag_counts,
     }
+
+
+def apply_overlay_to_cell(cell: CanonicalCell, result: OverlayResult) -> CanonicalCell:
+    if cell.cell_id != result.cell_id:
+        raise ValueError(f"overlay result cell_id={result.cell_id} does not match cell_id={cell.cell_id}")
+
+    surface_class = cell.surface_class
+    hydro_class = cell.hydro_class
+    coast_class = cell.coast_class
+
+    if result.winning_class in VALID_SURFACE_CLASSES:
+        surface_class = result.winning_class
+    if result.winning_class in VALID_HYDRO_CLASSES:
+        hydro_class = result.winning_class
+    if result.winning_class in VALID_COAST_CLASSES:
+        coast_class = result.winning_class
+
+    source_fractions = dict(result.class_fractions)
+    quality_flags = list(dict.fromkeys([*cell.quality_flags, *result.quality_flags]))
+    fraction_sum = sum(source_fractions.values())
+    if fraction_sum > 1.0 + 1.0e-9:
+        source_fractions = {key: value / fraction_sum for key, value in source_fractions.items()}
+        quality_flags.append("normalized_source_fractions")
+
+    return replace(
+        cell,
+        surface_class=surface_class,
+        hydro_class=hydro_class,
+        coast_class=coast_class,
+        mesh_priority=max(cell.mesh_priority, result.winning_priority),
+        source_fractions=source_fractions,
+        quality_flags=quality_flags,
+    )

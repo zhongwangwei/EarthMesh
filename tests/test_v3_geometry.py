@@ -48,7 +48,7 @@ def test_polygon_clip_convex_returns_intersection_polygon():
 
     assert round(polygon_area(intersection), 6) == 2.0
 
-from util.v3_core.geometry import overlay_cell_with_masks
+from util.v3_core.geometry import apply_overlay_to_cell, overlay_cell_with_masks
 from util.v3_core.schema import CanonicalCell
 
 
@@ -122,3 +122,36 @@ def test_summarize_overlay_results_counts_classes_and_missing_masks():
     assert summary["winning_class_counts"] == {"LAND": 1, "R3": 1, "UNKNOWN": 1}
     assert summary["missing_mask_count"] == 1
     assert summary["quality_flag_counts"] == {"missing_mask": 1}
+
+
+def test_apply_overlay_to_cell_updates_surface_class():
+    cell = CanonicalCell.minimal("ocean-cell", cell_type="POLYGON")
+    result = OverlayResult("ocean-cell", "OCEAN", 1, {"OCEAN": 1.0}, ["ocean"], [])
+
+    updated = apply_overlay_to_cell(cell, result)
+
+    assert updated.surface_class == "OCEAN"
+    assert updated.hydro_class == "NONE"
+    assert updated.coast_class == "NONE"
+    assert updated.source_fractions == {"OCEAN": 1.0}
+
+
+def test_apply_overlay_to_cell_updates_hydro_class():
+    cell = CanonicalCell.minimal("river-cell", cell_type="POLYGON")
+    result = OverlayResult("river-cell", "R3", 30, {"R3": 1.0}, ["river"], [])
+
+    updated = apply_overlay_to_cell(cell, result)
+
+    assert updated.surface_class == "UNKNOWN"
+    assert updated.hydro_class == "R3"
+    assert updated.coast_class == "NONE"
+
+
+def test_apply_overlay_to_cell_updates_coast_class_and_quality_flags():
+    cell = CanonicalCell.minimal("shelf-cell", cell_type="POLYGON")
+    result = OverlayResult("shelf-cell", "SHELF", 20, {"SHELF": 1.0}, ["shelf"], ["coastal_band"])
+
+    updated = apply_overlay_to_cell(cell, result)
+
+    assert updated.coast_class == "SHELF"
+    assert updated.quality_flags == ["coastal_band"]
