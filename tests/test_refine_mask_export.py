@@ -176,3 +176,27 @@ def test_geojson_to_close_mask_specs_can_use_degree_specific_buffers():
     degree1_width = max(lon for lon, _ in degree1.coordinates) - min(lon for lon, _ in degree1.coordinates)
     degree2_width = max(lon for lon, _ in degree2.coordinates) - min(lon for lon, _ in degree2.coordinates)
     assert degree1_width > degree2_width
+
+
+def test_geojson_to_close_mask_specs_accepts_mask_class_for_coast():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]],
+                },
+                "properties": {"mask_class": "COAST"},
+            }
+        ],
+    }
+
+    specs = geojson_to_close_mask_specs(collection, class_refine={"COAST": 1})
+
+    assert len(specs) == 1
+    assert specs[0].river_class == "COAST"
+    assert specs[0].refine_degree == 1

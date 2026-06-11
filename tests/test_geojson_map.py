@@ -80,15 +80,27 @@ def test_render_mesh_leaflet_html_embeds_background_and_river_cell_layers():
             }
         ],
     }
+    coast = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[121.4, 31.4], [121.6, 31.4], [121.6, 31.6], [121.4, 31.6], [121.4, 31.4]]]},
+                "properties": {"mask_class": "COAST", "coastal_side": "land"},
+            }
+        ],
+    }
 
-    html = render_mesh_leaflet_html(background, rivers, title="Mesh Map")
+    html = render_mesh_leaflet_html(background, rivers, coast_cells=coast, title="Mesh Map")
 
     assert "Mesh Map" in html
     assert "const backgroundCells =" in html
     assert "const riverCells =" in html
+    assert "const coastCells =" in html
     assert "land/background cells" in html
     assert "R2 river-overlap cells" in html
     assert "R3 river-overlap cells" in html
+    assert "coastal-band cells" in html
     assert "L.control.layers" in html
     assert "river_fraction" in html
 
@@ -132,3 +144,34 @@ def test_mesh_geojson_to_leaflet_html_writes_two_layer_map(tmp_path):
     assert "Two Layer Mesh" in text
     assert "land-1" in text
     assert "river-1" in text
+
+
+def test_mesh_geojson_to_leaflet_html_writes_optional_coast_layer(tmp_path):
+    background = tmp_path / "background.geojson"
+    rivers = tmp_path / "rivers.geojson"
+    coast = tmp_path / "coast.geojson"
+    html_path = tmp_path / "mesh.html"
+    empty = {"type": "FeatureCollection", "features": []}
+    background.write_text(json.dumps(empty))
+    rivers.write_text(json.dumps(empty))
+    coast.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [[[121, 31], [122, 31], [122, 32], [121, 32], [121, 31]]]},
+                        "properties": {"mask_class": "COAST", "coastal_side": "ocean"},
+                    }
+                ],
+            }
+        )
+    )
+
+    mesh_geojson_to_leaflet_html(background, rivers, html_path, coast_geojson=coast, title="Coast Layer")
+
+    text = html_path.read_text()
+    assert "Coast Layer" in text
+    assert "const coastCells =" in text
+    assert "COAST" in text

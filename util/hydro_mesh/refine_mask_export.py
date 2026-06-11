@@ -69,7 +69,7 @@ def _feature_class(feature: dict[str, object]) -> str:
     properties = feature.get("properties", {})
     if not isinstance(properties, dict):
         return ""
-    return str(properties.get("river_class", ""))
+    return str(properties.get("river_class") or properties.get("mask_class") or "")
 
 
 def _exterior_rings(geometry: dict[str, object]) -> list[list[object]]:

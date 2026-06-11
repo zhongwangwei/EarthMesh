@@ -118,6 +118,7 @@ def render_mesh_leaflet_html(
     background_cells: dict[str, object],
     river_cells: dict[str, object],
     *,
+    coast_cells: dict[str, object] | None = None,
     title: str = "EarthMesh Hydro Cells Map",
 ) -> str:
     """Render a Leaflet QA map with embedded background cells and river-overlap cells."""
@@ -125,8 +126,11 @@ def render_mesh_leaflet_html(
     title_text = html.escape(title)
     background_json = json.dumps(background_cells, sort_keys=True, ensure_ascii=False)
     river_json = json.dumps(river_cells, sort_keys=True, ensure_ascii=False)
+    coast_cells = coast_cells or {"type": "FeatureCollection", "features": []}
+    coast_json = json.dumps(coast_cells, sort_keys=True, ensure_ascii=False)
     background_count = len(background_cells.get("features", [])) if isinstance(background_cells.get("features"), list) else 0
     river_count = len(river_cells.get("features", [])) if isinstance(river_cells.get("features"), list) else 0
+    coast_count = len(coast_cells.get("features", [])) if isinstance(coast_cells.get("features"), list) else 0
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -159,15 +163,17 @@ def render_mesh_leaflet_html(
   <div id=\"map\"></div>
   <aside class=\"panel\">
     <h1>{title_text}</h1>
-    <p>{background_count} land/background cells and {river_count} river-overlap cells embedded in this file.</p>
+    <p>{background_count} land/background cells, {river_count} river-overlap cells, and {coast_count} coastal-band cells embedded in this file.</p>
     <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(148,163,184,0.22)\"></span>land/background cells</div>
     <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(245,158,11,0.55)\"></span>R2 river-overlap cells</div>
     <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(220,38,38,0.62)\"></span>R3 river-overlap cells</div>
+    <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(6,182,212,0.42)\"></span>coastal-band cells</div>
   </aside>
   <script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>
   <script>
     const backgroundCells = {background_json};
     const riverCells = {river_json};
+    const coastCells = {coast_json};
     const colors = {{ R2: \"#f59e0b\", R3: \"#dc2626\" }};
     const defaultRiverColor = \"#2563eb\";
     const map = L.map('map', {{ preferCanvas: true }}).setView([31.0, 121.0], 7);
@@ -194,6 +200,9 @@ def render_mesh_leaflet_html(
         ['cell_index', p.cell_index],
         ['river_class', p.river_class],
         ['river_fraction', p.river_fraction],
+        ['mask_class', p.mask_class],
+        ['coastal_side', p.coastal_side],
+        ['coastal_band_cell_count', p.coastal_band_cell_count],
         ['estimated_river_area_m2', p.estimated_river_area_m2],
         ['normalized_cell_area_m2', p.normalized_cell_area_m2],
         ['source_areaCell', p.source_areaCell]
@@ -234,12 +243,30 @@ def render_mesh_leaflet_html(
       }}
     }}).addTo(map);
 
+    const coastLayer = L.geoJSON(coastCells, {{
+      style: function(feature) {{
+        const p = feature.properties || {{}};
+        const side = p.coastal_side || '';
+        return {{
+          color: side === 'ocean' ? '#0891b2' : '#0e7490',
+          weight: 1.1,
+          opacity: 0.82,
+          fillColor: '#06b6d4',
+          fillOpacity: side === 'ocean' ? 0.26 : 0.38
+        }};
+      }},
+      onEachFeature: function(feature, layer) {{
+        layer.bindPopup(popupHtml(feature));
+      }}
+    }}).addTo(map);
+
     L.control.layers({{ 'OpenStreetMap': base }}, {{
       'land/background cells': backgroundLayer,
+      'coastal-band cells': coastLayer,
       'R2/R3 river-overlap cells': riverLayer
     }}, {{ collapsed: false }}).addTo(map);
 
-    const bounds = L.featureGroup([backgroundLayer, riverLayer]).getBounds();
+    const bounds = L.featureGroup([backgroundLayer, coastLayer, riverLayer]).getBounds();
     if (bounds.isValid()) {{
       map.fitBounds(bounds, {{ padding: [20, 20] }});
     }}
@@ -263,11 +290,13 @@ def mesh_geojson_to_leaflet_html(
     river_geojson: str | Path,
     output_html: str | Path,
     *,
+    coast_geojson: str | Path | None = None,
     title: str = "EarthMesh Hydro Cells Map",
 ) -> str:
     background = json.loads(Path(background_geojson).read_text())
     rivers = json.loads(Path(river_geojson).read_text())
-    rendered = render_mesh_leaflet_html(background, rivers, title=title)
+    coast = json.loads(Path(coast_geojson).read_text()) if coast_geojson is not None else None
+    rendered = render_mesh_leaflet_html(background, rivers, coast_cells=coast, title=title)
     output_path = Path(output_html)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered)
@@ -279,10 +308,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("input_geojson", help="Input GeoJSON FeatureCollection")
     parser.add_argument("output_html", help="Output HTML map file")
     parser.add_argument("--background-geojson", help="Optional land/background cell GeoJSON for a two-layer mesh-cell map")
+    parser.add_argument("--coast-geojson", help="Optional coastal-band GeoJSON for a three-layer mesh-cell map")
     parser.add_argument("--title", default="Hydro Mesh Map", help="Map title")
     args = parser.parse_args(argv)
     if args.background_geojson:
-        mesh_geojson_to_leaflet_html(args.background_geojson, args.input_geojson, args.output_html, title=args.title)
+        mesh_geojson_to_leaflet_html(
+            args.background_geojson,
+            args.input_geojson,
+            args.output_html,
+            coast_geojson=args.coast_geojson,
+            title=args.title,
+        )
+    elif args.coast_geojson:
+        raise ValueError("--coast-geojson requires --background-geojson")
     else:
         geojson_to_leaflet_html(args.input_geojson, args.output_html, title=args.title)
     return 0

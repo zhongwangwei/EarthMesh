@@ -742,3 +742,95 @@ This HTML embeds both layers in the file:
 This is the interactive counterpart to the PNG preview and is the preferred visual
 QA artifact when checking whether river/coastal corridors are actually refined on
 the mesh rather than only present as CaMa point candidates.
+
+## Verified CaMa elevation-derived coastal-band refinement
+
+The previous hydro-refinement smoke cases refined only CaMa river corridors. The
+provided `glb_01min` package also contains `elevtn.bin`, whose valid values mark
+CaMa land/domain cells and whose `-9999` values mark ocean/undefined cells in the
+current window. This can be used to derive a separate land/ocean transition band
+instead of pretending that river corridors also represent the coast.
+
+Generate a dissolved coastal-band mask for EarthMesh close refinement:
+
+```bash
+python3 -m util.hydro_mesh.coastal_band \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/glb_01min \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_coastal_band_radius3.geojson \
+  --bbox 118 28 123 33 \
+  --radius-cells 3
+```
+
+Generate an explicit 1 arcmin coastal-cell layer for visual QA:
+
+```bash
+python3 -m util.hydro_mesh.coastal_band \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/glb_01min \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_coastal_band_radius3_cells.geojson \
+  --bbox 118 28 123 33 \
+  --radius-cells 3 \
+  --no-dissolve
+```
+
+Observed coastal-band statistics for the 118-123E, 28-33N window:
+
+- Coastal-band cells: `8705`.
+- Land-side cells: `4255`.
+- Ocean-side cells: `4450`.
+- Radius: `3` CaMa 1 arcmin cells, so the QA layer preserves the 1min coastline
+  structure while the dissolved layer remains suitable for close-mask export.
+
+The close-mask exporter now accepts `mask_class=COAST` as well as `river_class`.
+Because EarthMesh's current close-mask temporary files are limited to `99` masks
+per refinement degree, the first coast-aware smoke allocates degree-1 capacity as:
+
+- `COAST_d1=20`
+- `R2_d1=60`
+- `R3_d1=19`
+- `R3_d2=19`
+- `R3_d3=19`
+
+The resulting prefix is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro_r3d3_coast20
+```
+
+The successful coast-aware EarthMesh smoke run used:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/Atmos_hex_NXP64_hydro_close_yangtze_r3d3_coast20_smoke.nml
+```
+
+and wrote:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/cases/ATMOS_hex_N64_hydro_close_yangtze_r3d3_coast20_smoke/result/MPASOUT_NXP0064_global.nc4
+```
+
+Smoke-run retained-refinement evidence:
+
+- Level 1 selected `94` triangles and retained `94`.
+- Level 2 selected `185` triangles and retained `94`.
+- Level 3 selected `283` triangles and retained `90`.
+- EarthMesh finished successfully.
+
+Compared with the river-only R3 degree-3 smoke, the coast-aware run changes the
+regional mesh:
+
+- Background/domain cells increase from `438` to `482`.
+- River-overlap records increase from `200` to `204`.
+- Equivalent median cell size decreases from about `18.75 km` to `17.86 km`.
+- Level-2 retained triangles increase from `86` to `94`.
+- Level-3 retained triangles increase from `83` to `90`.
+
+The corresponding three-layer interactive HTML is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_coast20_rivers_and_coast_leaflet.html
+```
+
+It embeds gray background EarthMesh cells, yellow/red R2/R3 river-overlap cells,
+and cyan CaMa `elevtn` coastal-band cells. This is the first visual QA artifact in
+this branch that shows both river refinement and explicit coastline parsing on the
+same basemap.
