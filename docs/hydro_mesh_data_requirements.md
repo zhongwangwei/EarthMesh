@@ -930,10 +930,41 @@ as the verified R3 recipe (`1=1.5,2=1.0,3=0.5`), the composite
 `ranked_coast20` smoke reproduced the old `coast20` metrics exactly:
 `482` bbox cells, median equivalent cell size `17.86 km`, `204` river-overlap
 records, and retained `94/94/90` triangles for levels 1/2/3.  The matching
-interactive map is:
+interactive map with raw 1 arcmin coastal QA cells is:
 
 ```text
 /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_rivers_and_coast_leaflet.html
+```
+
+For user-facing mesh QA, do not overlay the raw CaMa coastal rectangles as the
+final coast layer.  First intersect the CaMa coastal band with the generated
+EarthMesh cells, then render those EarthMesh cells:
+
+```bash
+python3 -m util.hydro_mesh.earthmesh_intersection \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_coastal_band_radius3.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_coastal_earthmesh_cell_intersections_preview.geojson \
+  --mpas-mesh /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/cases/ATMOS_hex_N64_hydro_close_yangtze_r3d3_ranked_coast20_smoke/result/MPASOUT_NXP0064_global.nc4 \
+  --bbox 118 28 123 33 \
+  --classes COAST \
+  --unit-sphere-area
+
+python3 -m util.hydro_mesh.geojson_map \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_earthmesh_cell_intersections_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_rivers_and_integrated_coast_leaflet.html \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --coast-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_coastal_earthmesh_cell_intersections_preview.geojson \
+  --title "Yangtze delta hydro/coast EarthMesh cells"
+```
+
+The integrated coast layer currently contains `84` coastal-overlap EarthMesh
+cells in the 118-123E, 28-33N QA window.  These features keep EarthMesh cell
+geometry and carry `mask_class=COAST`, `overlap_class=COAST`, and
+`coastal_fraction` properties, so they are visibly embedded in the mesh instead
+of appearing as separate 1 arcmin CaMa quadrilaterals.  The integrated map is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_rivers_and_integrated_coast_leaflet.html
 ```
 
 This is now the reproducible control surface for a small recipe sweep such as

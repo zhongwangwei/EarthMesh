@@ -100,7 +100,7 @@ def test_render_mesh_leaflet_html_embeds_background_and_river_cell_layers():
     assert "land/background cells" in html
     assert "R2 river-overlap cells" in html
     assert "R3 river-overlap cells" in html
-    assert "coastal-band cells" in html
+    assert "coastal-overlap EarthMesh cells" in html
     assert "L.control.layers" in html
     assert "river_fraction" in html
 
@@ -175,3 +175,25 @@ def test_mesh_geojson_to_leaflet_html_writes_optional_coast_layer(tmp_path):
     assert "Coast Layer" in text
     assert "const coastCells =" in text
     assert "COAST" in text
+
+
+def test_render_mesh_leaflet_html_labels_coast_as_mesh_cell_overlap():
+    from util.hydro_mesh.geojson_map import render_mesh_leaflet_html
+
+    empty = {"type": "FeatureCollection", "features": []}
+    coast_mesh = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[121, 31], [122, 31], [122, 32], [121, 32], [121, 31]]]},
+                "properties": {"cell_id": "mesh-coast", "mask_class": "COAST", "coastal_fraction": 0.5},
+            }
+        ],
+    }
+
+    html = render_mesh_leaflet_html(empty, empty, coast_cells=coast_mesh, title="Integrated coast")
+
+    assert "coastal-overlap EarthMesh cells" in html
+    assert "coastal_fraction" in html
+    assert "mesh-coast" in html

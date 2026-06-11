@@ -163,11 +163,11 @@ def render_mesh_leaflet_html(
   <div id=\"map\"></div>
   <aside class=\"panel\">
     <h1>{title_text}</h1>
-    <p>{background_count} land/background cells, {river_count} river-overlap cells, and {coast_count} coastal-band cells embedded in this file.</p>
+    <p>{background_count} land/background cells, {river_count} river-overlap cells, and {coast_count} coastal-overlap EarthMesh cells embedded in this file.</p>
     <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(148,163,184,0.22)\"></span>land/background cells</div>
     <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(245,158,11,0.55)\"></span>R2 river-overlap cells</div>
     <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(220,38,38,0.62)\"></span>R3 river-overlap cells</div>
-    <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(6,182,212,0.42)\"></span>coastal-band cells</div>
+    <div class=\"legend-item\"><span class=\"swatch\" style=\"background: rgba(6,182,212,0.42)\"></span>coastal-overlap EarthMesh cells</div>
   </aside>
   <script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>
   <script>
@@ -203,6 +203,8 @@ def render_mesh_leaflet_html(
         ['mask_class', p.mask_class],
         ['coastal_side', p.coastal_side],
         ['coastal_band_cell_count', p.coastal_band_cell_count],
+        ['coastal_fraction', p.coastal_fraction],
+        ['overlap_fraction', p.overlap_fraction],
         ['estimated_river_area_m2', p.estimated_river_area_m2],
         ['normalized_cell_area_m2', p.normalized_cell_area_m2],
         ['source_areaCell', p.source_areaCell]
@@ -262,7 +264,7 @@ def render_mesh_leaflet_html(
 
     L.control.layers({{ 'OpenStreetMap': base }}, {{
       'land/background cells': backgroundLayer,
-      'coastal-band cells': coastLayer,
+      'coastal-overlap EarthMesh cells': coastLayer,
       'R2/R3 river-overlap cells': riverLayer
     }}, {{ collapsed: false }}).addTo(map);
 

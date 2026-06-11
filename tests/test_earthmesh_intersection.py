@@ -245,3 +245,32 @@ def test_write_earthmesh_cell_preview_png_draws_background_cells(tmp_path):
 
     assert png_path.exists()
     assert png_path.read_bytes().startswith(b"\x89PNG")
+
+
+def test_earthmesh_cells_to_corridor_intersections_can_embed_coast_mask_as_mesh_cells():
+    from util.hydro_mesh.earthmesh_intersection import earthmesh_cells_to_corridor_intersections
+
+    cells = _feature_collection(
+        [
+            _cell_feature("coast-cell", [[0, 0], [2, 0], [2, 1], [0, 1], [0, 0]], area_m2=100.0),
+        ]
+    )
+    coast_band = _feature_collection(
+        [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+                "properties": {"mask_class": "COAST", "coastal_side": "land"},
+            }
+        ]
+    )
+
+    intersections = earthmesh_cells_to_corridor_intersections(cells, coast_band, include_classes={"COAST"})
+
+    assert len(intersections["features"]) == 1
+    feature = intersections["features"][0]
+    assert feature["geometry"] == cells["features"][0]["geometry"]
+    assert feature["properties"]["cell_id"] == "coast-cell"
+    assert feature["properties"]["mask_class"] == "COAST"
+    assert feature["properties"]["coastal_fraction"] == 0.5
+    assert "river_class" not in feature["properties"]

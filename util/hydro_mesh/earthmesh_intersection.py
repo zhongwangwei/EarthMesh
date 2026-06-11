@@ -107,7 +107,11 @@ def _feature_class(feature: dict[str, object]) -> str:
     properties = feature.get("properties", {})
     if not isinstance(properties, dict):
         return ""
-    return str(properties.get("river_class", ""))
+    return str(properties.get("river_class") or properties.get("mask_class") or "")
+
+
+def _is_river_class(class_name: str) -> bool:
+    return class_name.upper().startswith("R")
 
 
 def _cell_id(feature: dict[str, object]) -> str:
@@ -211,16 +215,23 @@ def earthmesh_cells_to_corridor_intersections(
             output_properties.update(
                 {
                     "cell_id": _cell_id(cell),
-                    "river_class": river_class,
                     "grid_kind": "earthmesh_cell_preview",
                     "corridor_source_geometry": "earthmesh_cell_intersection_preview",
                     "cell_area_deg2": cell_area_deg2,
                     "intersection_area_deg2": intersection_area_deg2,
-                    "river_fraction": river_fraction,
+                    "overlap_class": river_class,
+                    "overlap_fraction": river_fraction,
                     "domain_clip_applied": domain_geometry is not None,
                 }
             )
-            output_properties.update(_normalized_area_properties(cell_properties, river_fraction, unit_sphere_area=unit_sphere_area))
+            if _is_river_class(river_class):
+                output_properties["river_class"] = river_class
+                output_properties["river_fraction"] = river_fraction
+                output_properties.update(_normalized_area_properties(cell_properties, river_fraction, unit_sphere_area=unit_sphere_area))
+            else:
+                output_properties["mask_class"] = river_class
+                if river_class == "COAST":
+                    output_properties["coastal_fraction"] = river_fraction
             features.append({"type": "Feature", "geometry": cell_geometry, "properties": output_properties})
     return {"type": "FeatureCollection", "features": features}
 
