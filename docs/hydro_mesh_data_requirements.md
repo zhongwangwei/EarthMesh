@@ -1361,6 +1361,11 @@ EarthMesh cell center and writes a compact cell-keyed complete mask, avoiding th
 massive raw LAND/OCEAN surface GeoJSON.  The package manifest and bridge summary
 still reference the external raw river/coast MERIT files for provenance.
 
+`--compress-raw-merit` writes the raw MERIT river/coast/surface layers as
+`.geojson.gz`.  The downstream EarthMesh intersection reader can consume these
+compressed layers directly, so fine MERIT runs no longer need to keep large
+uncompressed raw GeoJSON files between mask generation and package creation.
+
 Example stride-10 Yangtze-delta command:
 
 ```bash
@@ -1448,6 +1453,41 @@ Observed stride-1 artifact paths:
 This closes the Yangtze-delta stride sweep through native MERIT resolution for the
 existing N112 background mesh.  The next scaling step is a China-region package,
 which should use `--skip-raw-surface-mask` from the start.
+
+### Compressed raw MERIT layer smoke
+
+The compact-surface mode can now add `--compress-raw-merit` to reduce raw
+river/coast provenance storage while keeping the delivery package unchanged:
+
+```bash
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_gzip
+python3 -m util.hydro_mesh.merit_package_bridge \
+  --case-name merit_yangtze_N112_stride5_compact_gzip \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 118 28 123 33 \
+  --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log \
+  --output-dir "$OUT/package" \
+  --raw-merit-output-dir "$OUT/raw_merit_source" \
+  --skip-raw-surface-mask \
+  --compress-raw-merit \
+  --title "MERIT Yangtze N112 stride5 compact gzip" \
+  --max-background-cells 3000 \
+  --stride 5
+```
+
+Observed stride-5 compressed output:
+
+- Delivery package size: `18M`.
+- External raw MERIT source size: `2.4M` instead of the previous `62M` uncompressed
+  compact-surface raw river/coast layers.
+- Raw compressed layer sizes: `river=421078 bytes`, `coast=2073750 bytes`.
+- MERIT source masks: `river=8189`, `coast=61717`, `surface=0` because raw surface
+  output was skipped.
+- EarthMesh intersections: `river_intersection_features=2180`,
+  `coast_intersection_features=2008`.
+- CoLM rows: `2574`; `river_cell_count=1673`; `coast_cell_count=1043`.
+- Surface counts: `LAND=2165`, `OCEAN=409`; `surface_source_kind=complete_cell_mask_geojson`.
 
 ### China-region N160 MERIT compact-surface package
 

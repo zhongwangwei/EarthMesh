@@ -274,3 +274,21 @@ def test_earthmesh_cells_to_corridor_intersections_can_embed_coast_mask_as_mesh_
     assert feature["properties"]["mask_class"] == "COAST"
     assert feature["properties"]["coastal_fraction"] == 0.5
     assert "river_class" not in feature["properties"]
+
+
+def test_write_earthmesh_intersection_geojson_reads_gzipped_corridor(tmp_path):
+    import gzip
+
+    from util.hydro_mesh.earthmesh_intersection import write_earthmesh_intersection_geojson
+
+    cells_path = tmp_path / "cells.geojson"
+    corridors_path = tmp_path / "corridors.geojson.gz"
+    output_path = tmp_path / "intersection.geojson"
+    cells_path.write_text(json.dumps(_feature_collection([_cell_feature("cell-a", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], area_m2=10.0)])))
+    with gzip.open(corridors_path, "wt") as handle:
+        json.dump(_feature_collection([_corridor_feature("R2", [[0, 0], [0.5, 0], [0.5, 1], [0, 1], [0, 0]])]), handle)
+
+    write_earthmesh_intersection_geojson(corridors_path, output_path, cell_geojson=cells_path)
+
+    written = json.loads(output_path.read_text())
+    assert written["features"][0]["properties"]["river_class"] == "R2"

@@ -10,6 +10,8 @@ from typing import Sequence
 
 import numpy as np
 
+from util.hydro_mesh.geojson_io import write_json
+
 _TILE_RE = re.compile(r"^([ns])(\d{2})([ew])(\d{3})\.nc$")
 
 
@@ -177,6 +179,7 @@ def write_merit_mask_outputs(
     r3_upa_km2: float = 50000.0,
     write_combined_mask: bool = True,
     write_surface_mask: bool = True,
+    compress_geojson: bool = False,
 ) -> dict[str, Path | None]:
     tiles = select_merit_tiles(merit_root, bbox)
     if not tiles:
@@ -192,18 +195,19 @@ def write_merit_mask_outputs(
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    mask_path = output / "merit_masks.geojson"
-    river_path = output / "merit_river_masks.geojson"
-    coast_path = output / "merit_coast_masks.geojson"
-    surface_path = output / "merit_surface_masks.geojson"
+    suffix = ".geojson.gz" if compress_geojson else ".geojson"
+    mask_path = output / f"merit_masks{suffix}"
+    river_path = output / f"merit_river_masks{suffix}"
+    coast_path = output / f"merit_coast_masks{suffix}"
+    surface_path = output / f"merit_surface_masks{suffix}"
     summary_path = output / "merit_mask_summary.json"
     layers = split_merit_mask_layers(masks)
     if write_combined_mask:
-        mask_path.write_text(json.dumps(masks, indent=2, sort_keys=True) + "\n")
-    river_path.write_text(json.dumps(layers["river"], indent=2, sort_keys=True) + "\n")
-    coast_path.write_text(json.dumps(layers["coast"], indent=2, sort_keys=True) + "\n")
+        write_json(mask_path, masks)
+    write_json(river_path, layers["river"])
+    write_json(coast_path, layers["coast"])
     if write_surface_mask:
-        surface_path.write_text(json.dumps(layers["surface"], indent=2, sort_keys=True) + "\n")
+        write_json(surface_path, layers["surface"])
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return {
         "masks": mask_path if write_combined_mask else None,
@@ -234,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the large raw LAND/OCEAN surface GeoJSON layer while still counting surface classes in the summary.",
     )
+    parser.add_argument("--compress-geojson", action="store_true", help="Write raw MERIT GeoJSON layers as .geojson.gz.")
     args = parser.parse_args(argv)
     write_merit_mask_outputs(
         args.merit_root,
@@ -246,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         r3_upa_km2=args.r3_upa_km2,
         write_combined_mask=not args.skip_combined_mask,
         write_surface_mask=not args.skip_surface_mask,
+        compress_geojson=args.compress_geojson,
     )
     return 0
 

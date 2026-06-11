@@ -7,6 +7,7 @@ from typing import Any, Sequence
 
 from util.hydro_mesh.cell_mask_merge import merge_cell_masks
 from util.hydro_mesh.earthmesh_intersection import write_earthmesh_intersection_geojson
+from util.hydro_mesh.geojson_io import read_json
 from util.hydro_mesh.refinement_package import write_refinement_delivery_package
 from util.v3_components.hydro_merit import read_merit_window, select_merit_tiles, write_merit_mask_outputs
 
@@ -25,6 +26,7 @@ def write_merit_refinement_delivery_package(
     raw_merit_output_dir: str | Path | None = None,
     write_combined_raw_mask: bool = False,
     write_raw_surface_mask: bool = True,
+    compress_raw_merit: bool = False,
     stride: int = 1,
     r2_width_m: float = 50.0,
     r3_width_m: float = 300.0,
@@ -57,6 +59,7 @@ def write_merit_refinement_delivery_package(
         r3_upa_km2=r3_upa_km2,
         write_combined_mask=write_combined_raw_mask,
         write_surface_mask=write_raw_surface_mask,
+        compress_geojson=compress_raw_merit,
     )
 
     river_intersections = directory / f"{case_name}_merit_river_cell_intersections.geojson"
@@ -235,7 +238,7 @@ def _sample_surface_class(windows: list[object], lon: float, lat: float) -> str:
 def _feature_count(path: Path | None) -> int:
     if path is None:
         return 0
-    payload = json.loads(path.read_text())
+    payload = read_json(path)
     features = payload.get("features", [])
     return len(features) if isinstance(features, list) else 0
 
@@ -305,6 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Skip the large raw MERIT surface GeoJSON and write a compact cell-keyed complete mask sampled from MERIT landtype instead.",
     )
+    parser.add_argument("--compress-raw-merit", action="store_true", help="Write raw MERIT river/coast/surface layers as .geojson.gz.")
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--r2-width-m", type=float, default=50.0)
     parser.add_argument("--r3-width-m", type=float, default=300.0)
@@ -326,6 +330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raw_merit_output_dir=args.raw_merit_output_dir,
         write_combined_raw_mask=args.write_combined_raw_mask,
         write_raw_surface_mask=not args.skip_raw_surface_mask,
+        compress_raw_merit=args.compress_raw_merit,
         stride=args.stride,
         r2_width_m=args.r2_width_m,
         r3_width_m=args.r3_width_m,

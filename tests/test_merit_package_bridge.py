@@ -245,3 +245,43 @@ def test_merit_bridge_can_skip_raw_surface_and_write_compact_complete_mask(tmp_p
     coupling = write_colm_package_coupling(result["manifest_path"], tmp_path / "colm_compact_surface")
     assert coupling["summary"]["surface_source_kind"] == "complete_cell_mask_geojson"
     assert coupling["summary"]["surface_class_counts"].get("UNKNOWN", 0) == 0
+
+
+def test_merit_bridge_can_compress_raw_merit_layers_for_compact_surface(tmp_path):
+    from util.hydro_mesh.merit_package_bridge import write_merit_refinement_delivery_package
+
+    merit_root = tmp_path / "merit_compressed"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+    background = tmp_path / "background_compressed.geojson"
+    package_dir = tmp_path / "package_compressed"
+    raw_dir = tmp_path / "raw_merit_compressed"
+    background.write_text(json.dumps(_collection([
+        _cell("west", 110.0, 20.0, 110.003, 20.006, 1),
+        _cell("east", 110.003, 20.0, 110.006, 20.006, 2),
+    ])))
+    log = tmp_path / "mkgrd_compressed.log"
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          2\n")
+
+    result = write_merit_refinement_delivery_package(
+        case_name="fixture_compressed_raw",
+        background_geojson=background,
+        merit_root=merit_root,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        log_path=log,
+        output_dir=package_dir,
+        raw_merit_output_dir=raw_dir,
+        write_raw_surface_mask=False,
+        compress_raw_merit=True,
+        stride=1,
+        unit_sphere_area=False,
+    )
+
+    assert result["surface_masks"] is None
+    assert (raw_dir / "merit_river_masks.geojson.gz").exists()
+    assert (raw_dir / "merit_coast_masks.geojson.gz").exists()
+    assert result["river_intersections"].exists()
+    assert result["coast_intersections"].exists()
+    bridge_summary = json.loads(result["bridge_summary"].read_text())
+    assert bridge_summary["files"]["merit_river_masks"].endswith(".geojson.gz")
+    assert bridge_summary["counts"]["river_intersection_features"] > 0

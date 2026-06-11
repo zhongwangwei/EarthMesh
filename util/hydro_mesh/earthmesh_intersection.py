@@ -6,6 +6,8 @@ import math
 from pathlib import Path
 from typing import Iterable
 
+from util.hydro_mesh.geojson_io import read_json
+
 _INCLUDED_CLASSES = {"R2", "R3"}
 EARTH_RADIUS_M = 6_371_000.0
 
@@ -251,12 +253,12 @@ def write_earthmesh_intersection_geojson(
 ) -> dict[str, object]:
     if (cell_geojson is None) == (mpas_mesh is None):
         raise ValueError("provide exactly one of cell_geojson or mpas_mesh")
-    corridors = json.loads(Path(corridor_geojson).read_text())
+    corridors = read_json(corridor_geojson)
     if cell_geojson is not None:
-        cells = json.loads(Path(cell_geojson).read_text())
+        cells = read_json(cell_geojson)
     else:
         cells = read_mpas_cell_polygons(mpas_mesh, bbox=bbox, max_cells=max_cells)
-    domain = json.loads(Path(domain_geojson).read_text()) if domain_geojson is not None else None
+    domain = read_json(domain_geojson) if domain_geojson is not None else None
     intersections = earthmesh_cells_to_corridor_intersections(
         cells,
         corridors,
@@ -288,7 +290,7 @@ def _polygon_rings_from_geometry(geometry: dict[str, object]) -> list[list[list[
 def _load_feature_collection(path: str | Path | None) -> dict[str, object]:
     if path is None:
         return {"type": "FeatureCollection", "features": []}
-    return json.loads(Path(path).read_text())
+    return read_json(path)
 
 
 def write_earthmesh_cell_preview_png(

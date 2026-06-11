@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import netCDF4
@@ -207,3 +208,30 @@ def _write_merit_coast_fixture(path: Path) -> None:
         landtype = np.ones((6, 6), dtype="i1")
         landtype[3:, :] = 17
         ds.variables["landtype_igbp"][:, :] = landtype
+
+
+def test_write_merit_mask_outputs_can_gzip_geojson_layers(tmp_path):
+    import gzip
+
+    tile = tmp_path / "n20e110.nc"
+    out = tmp_path / "out_gzip"
+    _write_merit_fixture(tile)
+
+    outputs = write_merit_mask_outputs(
+        tmp_path,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        output_dir=out,
+        stride=1,
+        write_combined_mask=False,
+        write_surface_mask=False,
+        compress_geojson=True,
+    )
+
+    assert outputs["masks"] is None
+    assert outputs["surface_masks"] is None
+    assert outputs["river_masks"].name == "merit_river_masks.geojson.gz"
+    assert outputs["coast_masks"].name == "merit_coast_masks.geojson.gz"
+    with gzip.open(outputs["river_masks"], "rt") as handle:
+        payload = json.load(handle)
+    assert payload["type"] == "FeatureCollection"
+    assert outputs["summary"].name == "merit_mask_summary.json"
