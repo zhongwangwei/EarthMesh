@@ -134,3 +134,69 @@ def test_v3_cli_runs_pipeline_from_geojson_inputs(tmp_path):
     projected_cells = json.loads((output_dir / "canonical_cells.json").read_text())
     assert manifest["mask_counts"] == {"LAND": 1}
     assert projected_cells[0]["surface_class"] == "LAND"
+
+
+def test_v3_cli_writes_optional_html_map(tmp_path):
+    cells_path = tmp_path / "cells.geojson"
+    masks_path = tmp_path / "masks.geojson"
+    output_dir = tmp_path / "html_out"
+    html_map = tmp_path / "html_out" / "v3_map.html"
+    cells_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]],
+                        },
+                        "properties": {"cell_id": "land", "cell_type": "TRI", "area_m2": 0.5},
+                    }
+                ],
+            }
+        )
+    )
+    masks_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]],
+                        },
+                        "properties": {"feature_id": "land-mask", "surface_class": "LAND"},
+                    }
+                ],
+            }
+        )
+    )
+
+    exit_code = main(
+        [
+            "--case-name",
+            "html_case",
+            "--recipe-hash",
+            "abc123",
+            "--cells-geojson",
+            str(cells_path),
+            "--masks-geojson",
+            str(masks_path),
+            "--adapters",
+            "colm2024",
+            "--output-dir",
+            str(output_dir),
+            "--html-map",
+            str(html_map),
+        ]
+    )
+
+    assert exit_code == 0
+    text = html_map.read_text()
+    assert "html_case" in text
+    assert "const canonicalCells =" in text
+    assert "LAND" in text

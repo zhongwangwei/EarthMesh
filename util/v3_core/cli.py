@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson, write_cells_geojson
 from util.v3_core.geometry import MaskFeature
+from util.v3_core.map import canonical_cells_geojson_to_leaflet_html
 from util.v3_core.pipeline import build_v3_pipeline_result
 from util.v3_core.schema import CanonicalCell
 
@@ -38,6 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mask_inputs.add_argument("--masks-geojson", help="Path to mask Polygon GeoJSON FeatureCollection.")
     parser.add_argument("--adapters", required=True, help="Comma-separated adapter names, e.g. colm2024,mpas,fvcom.")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--html-map", help="Optional output HTML path for a Leaflet QA map of canonical cells.")
     args = parser.parse_args(argv)
 
     adapter_names = [name.strip() for name in args.adapters.split(",") if name.strip()]
@@ -54,7 +56,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     (output_dir / "canonical_cells.json").write_text(
         json.dumps([asdict(cell) for cell in result.cells], indent=2, sort_keys=True) + "\n"
     )
-    write_cells_geojson(result.cells, output_dir / "canonical_cells.geojson")
+    canonical_geojson = write_cells_geojson(result.cells, output_dir / "canonical_cells.geojson")
+    if args.html_map:
+        canonical_cells_geojson_to_leaflet_html(canonical_geojson, args.html_map, title=args.case_name)
     return 0
 
 

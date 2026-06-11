@@ -22,6 +22,7 @@ from util.v3_core.geojson_io import (
 )
 from util.v3_core.legacy_fortran import LegacyFortranRun, LegacyFortranResult, build_legacy_command
 from util.v3_core.manifest import V3RunManifest
+from util.v3_core.map import canonical_cells_geojson_to_leaflet_html, render_canonical_cells_leaflet_html
 from util.v3_core.pipeline import V3PipelineResult, build_v3_pipeline_result
 from util.v3_core.recipe import ComponentRecipe, MeshRecipe, QARecipe, RegionRecipe, V3Recipe, load_recipe
 from util.v3_core.schema import CanonicalCell, ExchangeLink, validate_cell_collection
@@ -50,6 +51,7 @@ __all__ = [
     "apply_overlay_to_cell",
     "build_v3_pipeline_result",
     "canonical_cells_to_geojson",
+    "canonical_cells_geojson_to_leaflet_html",
     "build_legacy_command",
     "default_adapter_registry",
     "geojson_cells_to_canonical",
@@ -61,6 +63,7 @@ __all__ = [
     "overlay_cell_with_masks",
     "polygon_area",
     "polygon_clip_convex",
+    "render_canonical_cells_leaflet_html",
     "summarize_overlay_results",
     "validate_cell_collection",
     "write_cells_geojson",
