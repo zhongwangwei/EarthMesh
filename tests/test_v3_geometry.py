@@ -89,6 +89,23 @@ def test_overlay_cell_with_masks_prefers_higher_priority_class():
     assert round(result.class_fractions["R3"], 6) == 0.5
     assert result.source_feature_ids == ["coast", "river"]
 
+
+def test_overlay_cell_with_masks_marks_missing_mask_as_unknown():
+    cell = CanonicalCell.minimal("blank-cell", cell_type="POLYGON")
+    outside_mask = MaskFeature(
+        "outside",
+        "LAND",
+        1,
+        [(10.0, 10.0), (11.0, 10.0), (10.0, 11.0)],
+    )
+
+    result = overlay_cell_with_masks(cell, [outside_mask])
+
+    assert result.winning_class == "UNKNOWN"
+    assert result.winning_priority == 0
+    assert result.class_fractions == {"UNKNOWN": 1.0}
+    assert result.quality_flags == ["missing_mask"]
+
 from util.v3_core.geometry import summarize_overlay_results
 
 
@@ -96,12 +113,12 @@ def test_summarize_overlay_results_counts_classes_and_missing_masks():
     results = [
         OverlayResult("a", "LAND", 1, {"LAND": 1.0}, ["land"], []),
         OverlayResult("b", "R3", 30, {"COAST": 1.0, "R3": 0.5}, ["coast", "river"], []),
-        OverlayResult("c", "", 0, {}, [], ["missing_mask"]),
+        OverlayResult("c", "UNKNOWN", 0, {"UNKNOWN": 1.0}, [], ["missing_mask"]),
     ]
 
     summary = summarize_overlay_results(results)
 
     assert summary["cell_count"] == 3
-    assert summary["winning_class_counts"] == {"LAND": 1, "R3": 1, "": 1}
+    assert summary["winning_class_counts"] == {"LAND": 1, "R3": 1, "UNKNOWN": 1}
     assert summary["missing_mask_count"] == 1
     assert summary["quality_flag_counts"] == {"missing_mask": 1}

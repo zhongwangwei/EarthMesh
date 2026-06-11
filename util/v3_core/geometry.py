@@ -134,6 +134,16 @@ def overlay_cell_with_masks(cell: CanonicalCell, masks: list[MaskFeature]) -> Ov
             winning_class = mask.mask_class
             winning_priority = mask.priority
 
+    if not class_fractions:
+        return OverlayResult(
+            cell_id=cell.cell_id,
+            winning_class="UNKNOWN",
+            winning_priority=0,
+            class_fractions={"UNKNOWN": 1.0},
+            source_feature_ids=[],
+            quality_flags=["missing_mask"],
+        )
+
     return OverlayResult(
         cell_id=cell.cell_id,
         winning_class=winning_class,
@@ -151,7 +161,7 @@ def summarize_overlay_results(results: list[OverlayResult]) -> dict[str, object]
 
     for result in results:
         winning_class_counts[result.winning_class] = winning_class_counts.get(result.winning_class, 0) + 1
-        if not result.class_fractions:
+        if not result.class_fractions or "missing_mask" in result.quality_flags:
             missing_mask_count += 1
         for flag in result.quality_flags:
             quality_flag_counts[flag] = quality_flag_counts.get(flag, 0) + 1
