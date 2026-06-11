@@ -469,3 +469,52 @@ The remaining blocker is scientific input quality, not software plumbing: the
 placeholder bbox domain should be replaced with a coastline/domain mask and the
 planar lon/lat overlap fraction should be replaced or validated with a true geodesic
 intersection method before production use.
+
+## Verified CoLM-style coupling table preview
+
+The EarthMesh cell-intersection GeoJSON can now be converted to a stable long-table
+coupling preview for CoLM2024-side experiments. Each row is one
+`EarthMesh cell x river class` overlap record. The table intentionally stays simple:
+it does not yet choose a dominant class, aggregate multiple river classes into one
+cell, or write a final CoLM NetCDF file.
+
+CSV export:
+
+```bash
+python3 -m util.hydro_mesh.colm_coupling \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_domain_area_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_colm_coupling_preview.csv \
+  --format csv \
+  --min-fraction 0.0
+```
+
+JSONL export:
+
+```bash
+python3 -m util.hydro_mesh.colm_coupling \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_earthmesh_cell_intersections_domain_area_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_colm_coupling_preview.jsonl \
+  --format jsonl \
+  --min-fraction 0.0
+```
+
+Observed output:
+
+- CSV path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_colm_coupling_preview.csv`.
+- JSONL path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_colm_coupling_preview.jsonl`.
+- Rows: `133`.
+- Class counts: `R2=83`, `R3=50`.
+- River-overlap fraction range: about `1.0e-04` to `0.5501`.
+- Estimated river-overlap area range: about `7.93e4` to `4.37e8 m2`.
+
+Current stable columns:
+
+```text
+cell_id,cell_index,river_class,river_fraction,estimated_river_area_m2,
+normalized_cell_area_m2,center_lon,center_lat,domain_clip_applied,
+area_normalization
+```
+
+This is not yet a final CoLM2024 input file, but it is the first compact coupling
+artifact that can be inspected, filtered, versioned, and compared across threshold
+or coastline-mask experiments.
