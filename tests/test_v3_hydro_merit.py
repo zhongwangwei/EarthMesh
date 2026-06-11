@@ -59,6 +59,20 @@ def test_build_merit_masks_classifies_rivers_and_surface(tmp_path):
     assert summary["tile_count"] == 1
 
 
+def test_build_merit_masks_marks_land_ocean_adjacency_as_coast(tmp_path):
+    tile = tmp_path / "n20e110.nc"
+    _write_merit_coast_fixture(tile)
+    window = read_merit_window(tile, bbox=(110.0, 20.0, 110.005, 20.005), stride=1)
+
+    masks, summary = build_merit_masks([window])
+
+    classes = [feature["properties"]["mask_class"] for feature in masks["features"]]
+    assert "COAST_LAND" in classes
+    assert "COAST_OCEAN" in classes
+    assert summary["mask_counts"]["COAST_LAND"] > 0
+    assert summary["mask_counts"]["COAST_OCEAN"] > 0
+
+
 def test_write_merit_mask_outputs_writes_geojson_and_summary(tmp_path):
     tile = tmp_path / "n20e110.nc"
     out = tmp_path / "out"
@@ -116,3 +130,22 @@ def _write_merit_fixture(path: Path) -> None:
         )
         ds.variables["elv"][:, :] = 1.0
         ds.variables["landtype_igbp"][:, :] = 1
+
+
+def _write_merit_coast_fixture(path: Path) -> None:
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("longitude", 6)
+        ds.createDimension("latitude", 6)
+        lon = ds.createVariable("longitude", "f8", ("longitude",))
+        lat = ds.createVariable("latitude", "f8", ("latitude",))
+        lon[:] = np.array([110.0, 110.001, 110.002, 110.003, 110.004, 110.005])
+        lat[:] = np.array([20.005, 20.004, 20.003, 20.002, 20.001, 20.0])
+        for name, dtype in [("dir", "i1"), ("upa", "f4"), ("elv", "f4"), ("wth", "f4"), ("landtype_igbp", "i1")]:
+            ds.createVariable(name, dtype, ("longitude", "latitude"))
+        ds.variables["dir"][:, :] = 1
+        ds.variables["upa"][:, :] = 0.0
+        ds.variables["wth"][:, :] = 0.0
+        ds.variables["elv"][:, :] = 1.0
+        landtype = np.ones((6, 6), dtype="i1")
+        landtype[3:, :] = 17
+        ds.variables["landtype_igbp"][:, :] = landtype

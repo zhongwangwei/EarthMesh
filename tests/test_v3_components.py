@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
@@ -38,3 +40,15 @@ def test_component_result_lists_products_and_warnings():
 def test_v3_components_exports_merit_hydro_bridge():
     assert callable(select_merit_tiles)
     assert callable(build_merit_masks)
+
+
+def test_hydro_merit_module_help_runs_without_runtime_warning():
+    result = subprocess.run(
+        [sys.executable, "-m", "util.v3_components.hydro_merit", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "RuntimeWarning" not in result.stderr
+    assert "Build v3 mask GeoJSON from MERIT-Hydro" in result.stdout

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -94,11 +97,6 @@ def _clean_fill(values: np.ndarray) -> np.ndarray:
     cleaned[cleaned <= -9990.0] = np.nan
     return cleaned
 
-import argparse
-import json
-from collections import Counter
-from typing import Any
-
 
 def build_merit_masks(
     windows: list[MeritWindow],
@@ -111,12 +109,14 @@ def build_merit_masks(
     features: list[dict[str, object]] = []
     counts: Counter[str] = Counter()
     for window in windows:
+        land_ocean_adjacency = _land_ocean_adjacency(window.landtype_igbp)
         for i, lon in enumerate(window.lon):
             for j, lat in enumerate(window.lat):
                 mask_class = _classify_cell(
                     float(window.wth[i, j]),
                     float(window.upa[i, j]),
                     int(window.landtype_igbp[i, j]),
+                    adjacent_to_other_surface=bool(land_ocean_adjacency[i, j]),
                     r2_width_m=r2_width_m,
                     r3_width_m=r3_width_m,
                     r2_upa_km2=r2_upa_km2,
@@ -200,6 +200,7 @@ def _classify_cell(
     upa_km2: float,
     landtype_igbp: int,
     *,
+    adjacent_to_other_surface: bool = False,
     r2_width_m: float,
     r3_width_m: float,
     r2_upa_km2: float,
@@ -211,10 +212,44 @@ def _classify_cell(
         if width_m >= r2_width_m or upa_km2 >= r2_upa_km2:
             return "R2"
     if landtype_igbp == 0 or landtype_igbp == 17:
+        if adjacent_to_other_surface:
+            return "COAST_OCEAN"
         return "OCEAN"
     if landtype_igbp > 0:
+        if adjacent_to_other_surface:
+            return "COAST_LAND"
         return "LAND"
     return "UNKNOWN"
+
+
+def _land_ocean_adjacency(landtype: np.ndarray) -> np.ndarray:
+    surface = np.asarray(landtype)
+    is_ocean = (surface == 0) | (surface == 17)
+    is_land = surface > 0
+    is_land = is_land & ~is_ocean
+    adjacency = np.zeros(surface.shape, dtype=bool)
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            if di == 0 and dj == 0:
+                continue
+            shifted_ocean = _shift_bool(is_ocean, di, dj)
+            shifted_land = _shift_bool(is_land, di, dj)
+            adjacency |= (is_land & shifted_ocean) | (is_ocean & shifted_land)
+    return adjacency
+
+
+def _shift_bool(values: np.ndarray, di: int, dj: int) -> np.ndarray:
+    shifted = np.zeros(values.shape, dtype=bool)
+    src_i_start = max(0, -di)
+    src_i_end = values.shape[0] - max(0, di)
+    src_j_start = max(0, -dj)
+    src_j_end = values.shape[1] - max(0, dj)
+    dst_i_start = max(0, di)
+    dst_i_end = values.shape[0] - max(0, -di)
+    dst_j_start = max(0, dj)
+    dst_j_end = values.shape[1] - max(0, -dj)
+    shifted[dst_i_start:dst_i_end, dst_j_start:dst_j_end] = values[src_i_start:src_i_end, src_j_start:src_j_end]
+    return shifted
 
 
 def _mask_feature(window: MeritWindow, i: int, j: int, mask_class: str) -> dict[str, object]:
