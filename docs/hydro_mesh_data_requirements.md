@@ -709,3 +709,36 @@ Observed JSON summary:
 Use this report as the current regression/evaluation artifact for v3 hydro-mesh
 experiments. A better candidate recipe should improve one or more of these metrics
 while keeping mesh growth bounded and preserving river/coastline continuity.
+
+## Verified interactive EarthMesh-cell Leaflet map
+
+The R2/R3 point preview HTML shows CaMa candidates on a web basemap, but it does
+not show the actual refined EarthMesh cells. The same Leaflet workflow can now
+embed the mesh-cell GeoJSON layers directly:
+
+```bash
+python3 -m util.hydro_mesh.geojson_map \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cell_intersections_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cells_leaflet.html \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --title "Yangtze Delta EarthMesh hydro-refined cells"
+```
+
+Observed output:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cells_leaflet.html
+```
+
+This HTML embeds both layers in the file:
+
+- gray `land/background cells`: all selected EarthMesh cells in the bbox;
+- yellow `R2 river-overlap cells`;
+- red `R3 river-overlap cells`;
+- popups with `cell_id`, `river_class`, `river_fraction`, and available area
+  metadata;
+- a Leaflet layer control so background cells and river cells can be toggled.
+
+This is the interactive counterpart to the PNG preview and is the preferred visual
+QA artifact when checking whether river/coastal corridors are actually refined on
+the mesh rather than only present as CaMa point candidates.
