@@ -2,11 +2,47 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 _MASK_PRIORITY = {"LAND": 0, "OCEAN": 0, "BACKGROUND": 0, "COAST": 10, "R2": 20, "R3": 30}
 _SURFACE_CLASSES = {"LAND", "OCEAN"}
+
+
+@dataclass(frozen=True)
+class _SurfaceLookup:
+    geometries: list[object]
+    classes: list[str]
+    tree: object | None = None
+    geometry_id_to_index: dict[int, int] | None = None
+
+    def query(self, geometry: object) -> Iterator[tuple[object, str]]:
+        if self.tree is None:
+            candidates: Iterable[object] = self.geometries
+        else:
+            candidates = self.tree.query(geometry)  # type: ignore[attr-defined]
+        for candidate in candidates:
+            index = self._candidate_index(candidate)
+            if index is None:
+                continue
+            surface_geometry = self.geometries[index]
+            if surface_geometry.intersects(geometry):  # type: ignore[attr-defined]
+                yield surface_geometry, self.classes[index]
+
+    def _candidate_index(self, candidate: object) -> int | None:
+        if isinstance(candidate, Integral):
+            index = int(candidate)
+            return index if 0 <= index < len(self.geometries) else None
+        if self.geometry_id_to_index is not None:
+            index = self.geometry_id_to_index.get(id(candidate))
+            if index is not None:
+                return index
+        for index, geometry in enumerate(self.geometries):
+            if geometry is candidate:
+                return index
+        return None
 
 
 def _features(collection: dict[str, object]) -> list[dict[str, object]]:
@@ -38,6 +74,20 @@ def _feature_mask_class(feature: dict[str, object], *, default: str = "BACKGROUN
     return default
 
 
+def _surface_class_from_coast_feature(feature: dict[str, object] | None) -> str:
+    if feature is None:
+        return "BACKGROUND"
+    properties = feature.get("properties", {})
+    if not isinstance(properties, dict):
+        return "BACKGROUND"
+    value = properties.get("surface_class") or properties.get("mask_class") or properties.get("coast_class")
+    if value == "COAST_LAND":
+        return "LAND"
+    if value == "COAST_OCEAN":
+        return "OCEAN"
+    return "BACKGROUND"
+
+
 def _copy_feature(feature: dict[str, object]) -> dict[str, object]:
     return json.loads(json.dumps(feature, sort_keys=True))
 
@@ -53,8 +103,44 @@ def _index_best_by_cell(features: Iterable[dict[str, object]]) -> dict[str, dict
     return best
 
 
-def _surface_class_for_cell(base: dict[str, object], surface_cells: dict[str, object] | None) -> str:
+def _build_surface_lookup(surface_cells: dict[str, object] | None) -> _SurfaceLookup | None:
     if not surface_cells:
+        return None
+    try:
+        from shapely.geometry import shape
+    except ImportError as exc:  # pragma: no cover - optional dependency missing path
+        raise RuntimeError("surface land/ocean assignment requires shapely") from exc
+    geometries: list[object] = []
+    classes: list[str] = []
+    for feature in _features(surface_cells):
+        properties = feature.get("properties", {})
+        geometry = feature.get("geometry", {})
+        if not isinstance(properties, dict) or not isinstance(geometry, dict):
+            continue
+        surface_class = properties.get("surface_class") or properties.get("mask_class")
+        if surface_class not in _SURFACE_CLASSES:
+            continue
+        surface_shape = shape(geometry)
+        if surface_shape.is_empty:
+            continue
+        geometries.append(surface_shape)
+        classes.append(str(surface_class))
+    if not geometries:
+        return None
+    try:
+        from shapely.strtree import STRtree
+    except ImportError:  # pragma: no cover - old shapely fallback
+        return _SurfaceLookup(geometries=geometries, classes=classes)
+    return _SurfaceLookup(
+        geometries=geometries,
+        classes=classes,
+        tree=STRtree(geometries),
+        geometry_id_to_index={id(geometry): index for index, geometry in enumerate(geometries)},
+    )
+
+
+def _surface_class_for_cell(base: dict[str, object], surface_lookup: _SurfaceLookup | None) -> str:
+    if surface_lookup is None:
         return "BACKGROUND"
     try:
         from shapely.geometry import shape
@@ -70,15 +156,8 @@ def _surface_class_for_cell(base: dict[str, object], surface_cells: dict[str, ob
 
     best_class = "BACKGROUND"
     best_area = 0.0
-    for feature in _features(surface_cells):
-        properties = feature.get("properties", {})
-        geometry = feature.get("geometry", {})
-        if not isinstance(properties, dict) or not isinstance(geometry, dict):
-            continue
-        surface_class = properties.get("surface_class") or properties.get("mask_class")
-        if surface_class not in _SURFACE_CLASSES:
-            continue
-        area = cell_shape.intersection(shape(geometry)).area
+    for surface_shape, surface_class in surface_lookup.query(cell_shape):
+        area = cell_shape.intersection(surface_shape).area
         if area > best_area:
             best_area = area
             best_class = str(surface_class)
@@ -96,6 +175,8 @@ def _merge_properties(
     base_properties = dict(base.get("properties", {}) if isinstance(base.get("properties"), dict) else {})
     merged = dict(base_properties)
     sources: list[str] = []
+    if surface_class not in _SURFACE_CLASSES:
+        surface_class = _surface_class_from_coast_feature(coast)
     if surface_class in _SURFACE_CLASSES:
         merged["surface_class"] = surface_class
         sources.append("surface")
@@ -135,13 +216,14 @@ def merge_cell_masks(
 
     river_by_cell = _index_best_by_cell(_features(river_cells or {"features": []}))
     coast_by_cell = _index_best_by_cell(_features(coast_cells or {"features": []}))
+    surface_lookup = _build_surface_lookup(surface_cells)
 
     output_features: list[dict[str, object]] = []
     for base in _features(background_cells):
         cell_id = _cell_id(base)
         river = river_by_cell.get(cell_id)
         coast = coast_by_cell.get(cell_id)
-        surface_class = _surface_class_for_cell(base, surface_cells)
+        surface_class = _surface_class_for_cell(base, surface_lookup)
         base_class = surface_class if surface_class in _SURFACE_CLASSES else background_mask_class
         candidates: list[tuple[str, dict[str, object] | None]] = [(base_class, None)]
         if coast is not None:

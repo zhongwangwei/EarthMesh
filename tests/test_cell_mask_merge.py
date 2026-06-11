@@ -99,3 +99,58 @@ def test_merge_cell_masks_distinguishes_land_and_ocean_background_cells():
     assert by_id["river"]["properties"]["mask_class"] == "R2"
     assert by_id["river"]["properties"]["surface_class"] == "OCEAN"
     assert by_id["river"]["properties"]["mask_source"] == "surface+river"
+
+
+def test_surface_lookup_queries_only_intersecting_surface_candidates():
+    from shapely.geometry import box
+
+    from util.hydro_mesh.cell_mask_merge import _build_surface_lookup
+
+    surface = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+                "properties": {"mask_class": "LAND"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[10, 10], [11, 10], [11, 11], [10, 11], [10, 10]]]},
+                "properties": {"mask_class": "OCEAN"},
+            },
+        ],
+    }
+
+    lookup = _build_surface_lookup(surface)
+
+    matches = list(lookup.query(box(10.1, 10.1, 10.2, 10.2)))
+    assert len(matches) == 1
+    assert matches[0][1] == "OCEAN"
+
+
+def test_complete_cell_mask_derives_surface_class_from_coast_land_ocean_side_when_surface_missing():
+    from util.hydro_mesh.cell_mask_merge import merge_cell_masks
+
+    background = {
+        "type": "FeatureCollection",
+        "features": [
+            {**_cell("coast_land"), "properties": {"cell_id": "coast_land", "mask_class": "BACKGROUND"}},
+            {**_cell("coast_ocean"), "properties": {"cell_id": "coast_ocean", "mask_class": "BACKGROUND"}},
+        ],
+    }
+    coast = {
+        "type": "FeatureCollection",
+        "features": [
+            {**_cell("coast_land"), "properties": {"cell_id": "coast_land", "mask_class": "COAST_LAND"}},
+            {**_cell("coast_ocean"), "properties": {"cell_id": "coast_ocean", "mask_class": "COAST_OCEAN"}},
+        ],
+    }
+
+    merged = merge_cell_masks(background, coast_cells=coast)
+
+    by_id = {feature["properties"]["cell_id"]: feature["properties"] for feature in merged["features"]}
+    assert by_id["coast_land"]["surface_class"] == "LAND"
+    assert by_id["coast_land"]["mask_class"] == "COAST"
+    assert by_id["coast_ocean"]["surface_class"] == "OCEAN"
+    assert by_id["coast_ocean"]["mask_class"] == "COAST"

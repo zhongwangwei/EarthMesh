@@ -1201,3 +1201,40 @@ This proves the 90m MERIT path can feed the same package/adapter handoff as the 
 path.  A full N112 Yangtze or China run should still be staged carefully because
 MERIT stride-1 windows over multiple 5-degree tiles can produce very large raw mask
 GeoJSON files before the final EarthMesh-cell package is compacted.
+
+### Yangtze-delta N112 MERIT bridge stride-50 smoke
+
+After adding a spatial index for complete surface-mask assignment, the bridge was
+scaled from the 0.2 degree GBA test to the existing N112 Yangtze-delta background
+cell layer over bbox `118 28 123 33` with `--stride 50`:
+
+```bash
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride50
+python3 -m util.hydro_mesh.merit_package_bridge \
+  --case-name merit_yangtze_N112_stride50 \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 118 28 123 33 \
+  --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log \
+  --output-dir "$OUT/package" \
+  --title "MERIT Yangtze N112 bridge stride50 smoke" \
+  --max-background-cells 3000 \
+  --stride 50
+```
+
+Observed output:
+
+- Runtime for package plus CoLM export: about `4` seconds on the local workstation.
+- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride50/package/delivery_manifest.json`.
+- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride50/package/merit_yangtze_N112_stride50_rivers_and_integrated_coast_leaflet.html`.
+- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride50/package/merit_yangtze_N112_stride50_complete_cell_mask.geojson`.
+- MERIT source masks: `river=81`, `coast=2362`, `surface=12198` features.
+- EarthMesh intersections: `river_intersection_features=176`, `coast_intersection_features=1444`.
+- CoLM rows: `2574`; `river_cell_count=171`; `coast_cell_count=908`.
+- Surface counts: `LAND=2257`, `OCEAN=317`, `UNKNOWN=0`.
+
+Implementation note: complete cell-mask generation now builds a shapely `STRtree` for
+surface polygons, so surface assignment queries only intersecting candidates instead
+of scanning every raw MERIT surface polygon for every EarthMesh cell.  MERIT
+`COAST_LAND` and `COAST_OCEAN` intersections also derive `surface_class=LAND/OCEAN`
+for the complete mask while retaining coast as a separate coupling flag.
