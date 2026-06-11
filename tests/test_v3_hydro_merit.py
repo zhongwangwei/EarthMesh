@@ -4,10 +4,12 @@ import netCDF4
 import numpy as np
 
 from util.v3_components.hydro_merit import (
+    build_merit_masks,
     MeritWindow,
     read_merit_window,
     select_merit_tiles,
     tile_bounds_from_name,
+    write_merit_mask_outputs,
 )
 
 
@@ -39,6 +41,44 @@ def test_read_merit_window_reads_bbox_subset(tmp_path):
     assert window.upa.shape == (3, 3)
     assert float(window.wth.max()) > 300.0
     assert float(window.upa.max()) > 50000.0
+
+
+def test_build_merit_masks_classifies_rivers_and_surface(tmp_path):
+    tile = tmp_path / "n20e110.nc"
+    _write_merit_fixture(tile)
+    window = read_merit_window(tile, bbox=(110.0, 20.0, 110.005, 20.005), stride=1)
+
+    masks, summary = build_merit_masks([window], r2_width_m=50.0, r3_width_m=300.0, r2_upa_km2=5000.0, r3_upa_km2=50000.0)
+
+    classes = [feature["properties"]["mask_class"] for feature in masks["features"]]
+    assert "R2" in classes
+    assert "R3" in classes
+    assert "LAND" in classes
+    assert summary["mask_counts"]["R3"] == 1
+    assert summary["mask_counts"]["R2"] >= 1
+    assert summary["tile_count"] == 1
+
+
+def test_write_merit_mask_outputs_writes_geojson_and_summary(tmp_path):
+    tile = tmp_path / "n20e110.nc"
+    out = tmp_path / "out"
+    _write_merit_fixture(tile)
+
+    outputs = write_merit_mask_outputs(
+        tmp_path,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        output_dir=out,
+        stride=1,
+        r2_width_m=50.0,
+        r3_width_m=300.0,
+        r2_upa_km2=5000.0,
+        r3_upa_km2=50000.0,
+    )
+
+    assert outputs["masks"].name == "merit_masks.geojson"
+    assert outputs["summary"].name == "merit_mask_summary.json"
+    assert outputs["masks"].exists()
+    assert outputs["summary"].exists()
 
 
 def _write_merit_fixture(path: Path) -> None:

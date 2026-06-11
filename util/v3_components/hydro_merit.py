@@ -93,3 +93,168 @@ def _clean_fill(values: np.ndarray) -> np.ndarray:
     cleaned = np.asarray(values, dtype=float)
     cleaned[cleaned <= -9990.0] = np.nan
     return cleaned
+
+import argparse
+import json
+from collections import Counter
+from typing import Any
+
+
+def build_merit_masks(
+    windows: list[MeritWindow],
+    *,
+    r2_width_m: float = 50.0,
+    r3_width_m: float = 300.0,
+    r2_upa_km2: float = 5000.0,
+    r3_upa_km2: float = 50000.0,
+) -> tuple[dict[str, object], dict[str, object]]:
+    features: list[dict[str, object]] = []
+    counts: Counter[str] = Counter()
+    for window in windows:
+        for i, lon in enumerate(window.lon):
+            for j, lat in enumerate(window.lat):
+                mask_class = _classify_cell(
+                    float(window.wth[i, j]),
+                    float(window.upa[i, j]),
+                    int(window.landtype_igbp[i, j]),
+                    r2_width_m=r2_width_m,
+                    r3_width_m=r3_width_m,
+                    r2_upa_km2=r2_upa_km2,
+                    r3_upa_km2=r3_upa_km2,
+                )
+                if mask_class == "UNKNOWN":
+                    continue
+                counts[mask_class] += 1
+                features.append(_mask_feature(window, i, j, mask_class))
+    summary = {
+        "tile_count": len(windows),
+        "feature_count": len(features),
+        "mask_counts": dict(sorted(counts.items())),
+        "thresholds": {
+            "r2_width_m": r2_width_m,
+            "r3_width_m": r3_width_m,
+            "r2_upa_km2": r2_upa_km2,
+            "r3_upa_km2": r3_upa_km2,
+        },
+    }
+    return {"type": "FeatureCollection", "features": features}, summary
+
+
+def write_merit_mask_outputs(
+    merit_root: str | Path,
+    *,
+    bbox: tuple[float, float, float, float],
+    output_dir: str | Path,
+    stride: int = 1,
+    r2_width_m: float = 50.0,
+    r3_width_m: float = 300.0,
+    r2_upa_km2: float = 5000.0,
+    r3_upa_km2: float = 50000.0,
+) -> dict[str, Path]:
+    tiles = select_merit_tiles(merit_root, bbox)
+    if not tiles:
+        raise ValueError(f"no MERIT-Hydro tiles intersect bbox={bbox}")
+    windows = [read_merit_window(tile, bbox, stride=stride) for tile in tiles]
+    masks, summary = build_merit_masks(
+        windows,
+        r2_width_m=r2_width_m,
+        r3_width_m=r3_width_m,
+        r2_upa_km2=r2_upa_km2,
+        r3_upa_km2=r3_upa_km2,
+    )
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    mask_path = output / "merit_masks.geojson"
+    summary_path = output / "merit_mask_summary.json"
+    mask_path.write_text(json.dumps(masks, indent=2, sort_keys=True) + "\n")
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    return {"masks": mask_path, "summary": summary_path}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build v3 mask GeoJSON from MERIT-Hydro 90m NetCDF tiles.")
+    parser.add_argument("--merit-root", required=True)
+    parser.add_argument("--bbox", nargs=4, type=float, metavar=("MIN_LON", "MIN_LAT", "MAX_LON", "MAX_LAT"), required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--stride", type=int, default=1, help="Read every Nth MERIT cell; use larger values for smoke tests.")
+    parser.add_argument("--r2-width-m", type=float, default=50.0)
+    parser.add_argument("--r3-width-m", type=float, default=300.0)
+    parser.add_argument("--r2-upa-km2", type=float, default=5000.0)
+    parser.add_argument("--r3-upa-km2", type=float, default=50000.0)
+    args = parser.parse_args(argv)
+    write_merit_mask_outputs(
+        args.merit_root,
+        bbox=tuple(args.bbox),
+        output_dir=args.output_dir,
+        stride=args.stride,
+        r2_width_m=args.r2_width_m,
+        r3_width_m=args.r3_width_m,
+        r2_upa_km2=args.r2_upa_km2,
+        r3_upa_km2=args.r3_upa_km2,
+    )
+    return 0
+
+
+def _classify_cell(
+    width_m: float,
+    upa_km2: float,
+    landtype_igbp: int,
+    *,
+    r2_width_m: float,
+    r3_width_m: float,
+    r2_upa_km2: float,
+    r3_upa_km2: float,
+) -> str:
+    if np.isfinite(width_m) and np.isfinite(upa_km2):
+        if width_m >= r3_width_m or upa_km2 >= r3_upa_km2:
+            return "R3"
+        if width_m >= r2_width_m or upa_km2 >= r2_upa_km2:
+            return "R2"
+    if landtype_igbp == 0 or landtype_igbp == 17:
+        return "OCEAN"
+    if landtype_igbp > 0:
+        return "LAND"
+    return "UNKNOWN"
+
+
+def _mask_feature(window: MeritWindow, i: int, j: int, mask_class: str) -> dict[str, object]:
+    lon = float(window.lon[i])
+    lat = float(window.lat[j])
+    dlon = _cell_delta(window.lon, i)
+    dlat = _cell_delta(window.lat, j)
+    lon0, lon1 = lon - dlon / 2.0, lon + dlon / 2.0
+    lat0, lat1 = lat - dlat / 2.0, lat + dlat / 2.0
+    feature_id = f"{window.tile_path.stem}:{i}:{j}:{mask_class}"
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[lon0, lat0], [lon1, lat0], [lon1, lat1], [lon0, lat1], [lon0, lat0]]],
+        },
+        "properties": {
+            "feature_id": feature_id,
+            "mask_class": mask_class,
+            "source": "MERIT-Hydro",
+            "tile": window.tile_path.name,
+            "width_m": _finite_or_none(float(window.wth[i, j])),
+            "upstream_area_km2": _finite_or_none(float(window.upa[i, j])),
+            "elevation_m": _finite_or_none(float(window.elv[i, j])),
+            "landtype_igbp": int(window.landtype_igbp[i, j]),
+        },
+    }
+
+
+def _cell_delta(values: np.ndarray, index: int) -> float:
+    if len(values) <= 1:
+        return 0.0008333333333333334
+    if index == 0:
+        return abs(float(values[1] - values[0]))
+    return abs(float(values[index] - values[index - 1]))
+
+
+def _finite_or_none(value: float) -> float | None:
+    return value if np.isfinite(value) else None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
