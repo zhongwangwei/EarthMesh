@@ -64,7 +64,13 @@ def test_pipeline_result_writes_manifest_and_adapter_sidecars(tmp_path):
 
     paths = result.write_sidecars(tmp_path)
 
-    assert sorted(paths) == ["adapter_colm2024", "adapter_colm2024_cells", "manifest", "overlay_summary"]
+    assert sorted(paths) == [
+        "adapter_colm2024",
+        "adapter_colm2024_bundle",
+        "adapter_colm2024_cells",
+        "manifest",
+        "overlay_summary",
+    ]
     manifest_payload = json.loads(paths["manifest"].read_text())
     adapter_payload = json.loads(paths["adapter_colm2024"].read_text())
     overlay_payload = json.loads(paths["overlay_summary"].read_text())
@@ -72,9 +78,13 @@ def test_pipeline_result_writes_manifest_and_adapter_sidecars(tmp_path):
     assert adapter_payload["adapter_name"] == "colm2024"
     assert adapter_payload["files"] == {
         "cells": "adapter_colm2024_cells.csv",
+        "bundle": "adapter_colm2024_bundle.json",
         "manifest": "manifest.json",
         "overlay_summary": "overlay_summary.json",
     }
+    bundle_payload = json.loads(paths["adapter_colm2024_bundle"].read_text())
+    assert bundle_payload["readiness_level"] == "coupling_table_contract"
+    assert bundle_payload["files"]["cells"] == "adapter_colm2024_cells.csv"
     assert paths["adapter_colm2024_cells"].read_text().splitlines()[0].startswith("adapter_name,cell_id")
     assert overlay_payload["winning_class_counts"] == {"LAND": 1}
     assert overlay_payload["missing_mask_count"] == 0
@@ -135,6 +145,54 @@ def test_pipeline_sidecars_include_mpas_and_fvcom_mesh_artifacts(tmp_path):
     fvcom_payload = json.loads(paths["adapter_fvcom"].read_text())
     assert mpas_payload["files"]["mesh"] == "adapter_mpas_mesh.nc"
     assert fvcom_payload["files"]["mesh"] == "adapter_fvcom_mesh.dat"
+
+
+def test_pipeline_sidecars_include_adapter_bundle_contracts(tmp_path):
+    result = build_v3_pipeline_result(
+        case_name="adapter_bundle_case",
+        recipe_hash="abc123",
+        cells=[
+            CanonicalCell(
+                cell_id="poly",
+                cell_index=1,
+                cell_type="POLYGON",
+                center_lon=120.0,
+                center_lat=30.0,
+                area_m2=12.0,
+                vertices=[(119.9, 29.9), (120.1, 29.9), (120.0, 30.1)],
+            )
+        ],
+        masks=[],
+        adapter_names=["mpas", "fvcom", "colm20xx"],
+    )
+
+    paths = result.write_sidecars(tmp_path)
+
+    assert paths["adapter_mpas_bundle"].name == "adapter_mpas_bundle.json"
+    assert paths["adapter_fvcom_bundle"].name == "adapter_fvcom_bundle.json"
+    assert paths["adapter_colm20xx_bundle"].name == "adapter_colm20xx_bundle.json"
+
+    mpas_bundle = json.loads(paths["adapter_mpas_bundle"].read_text())
+    fvcom_bundle = json.loads(paths["adapter_fvcom_bundle"].read_text())
+    colm20xx_bundle = json.loads(paths["adapter_colm20xx_bundle"].read_text())
+
+    assert mpas_bundle["kind"] == "earthmesh_v3_adapter_bundle"
+    assert mpas_bundle["adapter_name"] == "mpas"
+    assert mpas_bundle["readiness_level"] == "model_handoff_contract"
+    assert mpas_bundle["files"]["cells"] == "adapter_mpas_cells.csv"
+    assert mpas_bundle["files"]["mesh"] == "adapter_mpas_mesh.nc"
+    assert mpas_bundle["artifact_roles"]["mesh"] == "mpas_unstructured_mesh_netcdf"
+    assert "runtime ingestion is not validated here" in mpas_bundle["limitations"]
+
+    assert fvcom_bundle["artifact_roles"]["mesh"] == "fvcom_unstructured_mesh_dat"
+    assert fvcom_bundle["files"]["mesh"] == "adapter_fvcom_mesh.dat"
+
+    assert colm20xx_bundle["readiness_level"] == "exchange_schema_contract"
+    assert colm20xx_bundle["files"]["exchange"] == "adapter_colm20xx_exchange.nc"
+    assert colm20xx_bundle["artifact_roles"]["exchange"] == "colm20xx_land_ocean_river_exchange_netcdf"
+
+    adapter_payload = json.loads(paths["adapter_colm20xx"].read_text())
+    assert adapter_payload["files"]["bundle"] == "adapter_colm20xx_bundle.json"
 
 
 def test_pipeline_sidecars_include_colm20xx_exchange_artifact(tmp_path):

@@ -8,6 +8,7 @@ from util.v3_core.adapters import (
     AdapterExportPlan,
     AdapterRegistry,
     default_adapter_registry,
+    write_adapter_bundle_manifest,
     write_adapter_cell_table,
     write_adapter_model_artifacts,
 )
@@ -43,6 +44,9 @@ class V3PipelineResult:
             for artifact_name, artifact_path in model_artifacts.items():
                 paths[f"adapter_{adapter_name}_{artifact_name}"] = artifact_path
                 files[artifact_name] = artifact_path.name
+            bundle_path = write_adapter_bundle_manifest(adapter_name, plan, files, directory)
+            paths[f"adapter_{adapter_name}_bundle"] = bundle_path
+            files["bundle"] = bundle_path.name
             sidecar_plan = replace(
                 plan,
                 files=files,

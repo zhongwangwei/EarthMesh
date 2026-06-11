@@ -1,7 +1,14 @@
 """EarthMesh v3 core schemas, recipes, manifests, and adapter boundaries."""
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
-from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, SchemaOnlyAdapter, default_adapter_registry, write_adapter_cell_table
+from util.v3_core.adapters import (
+    AdapterExportPlan,
+    AdapterRegistry,
+    SchemaOnlyAdapter,
+    default_adapter_registry,
+    write_adapter_bundle_manifest,
+    write_adapter_cell_table,
+)
 from util.v3_core.demo import DemoInputs, build_demo_inputs
 from util.v3_core.geometry import (
     MaskFeature,
@@ -77,6 +84,7 @@ __all__ = [
     "render_canonical_cells_leaflet_html",
     "summarize_overlay_results",
     "validate_cell_collection",
+    "write_adapter_bundle_manifest",
     "write_adapter_cell_table",
     "write_bbox_grid_geojson",
     "write_refined_cells_geojson",

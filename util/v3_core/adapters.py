@@ -169,6 +169,77 @@ def write_adapter_mesh_artifact(adapter_name: str, cells: Iterable[CanonicalCell
     return write_adapter_model_artifacts(adapter_name, cells, output_dir).get("mesh")
 
 
+def write_adapter_bundle_manifest(
+    adapter_name: str,
+    plan: AdapterExportPlan,
+    files: dict[str, str],
+    output_dir: str | Path,
+) -> Path:
+    """Write a machine-readable bundle contract for an adapter handoff.
+
+    The bundle is the stable boundary between EarthMesh v3 and downstream model
+    adapters: it groups the canonical cell table, run manifest, overlay summary,
+    and any model-named artifacts with explicit roles and limitations.
+    """
+
+    path = Path(output_dir) / f"adapter_{adapter_name}_bundle.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "kind": "earthmesh_v3_adapter_bundle",
+        "adapter_name": adapter_name,
+        "adapter_version": plan.adapter_version,
+        "output_format": plan.output_format,
+        "readiness_level": _adapter_readiness_level(adapter_name),
+        "supported_cell_types": plan.supported_cell_types,
+        "required_fields": plan.required_fields,
+        "cell_type_counts": plan.cell_type_counts,
+        "warnings": plan.warnings,
+        "files": dict(sorted(files.items())),
+        "artifact_roles": _adapter_artifact_roles(adapter_name, files),
+        "limitations": _adapter_limitations(adapter_name),
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def _adapter_readiness_level(adapter_name: str) -> str:
+    if adapter_name == "colm20xx":
+        return "exchange_schema_contract"
+    if adapter_name in {"mpas", "fvcom"}:
+        return "model_handoff_contract"
+    if adapter_name.startswith("colm"):
+        return "coupling_table_contract"
+    return "schema_contract"
+
+
+def _adapter_artifact_roles(adapter_name: str, files: dict[str, str]) -> dict[str, str]:
+    roles = {
+        "cells": "canonical_adapter_cell_table_csv",
+        "manifest": "earthmesh_v3_run_manifest_json",
+        "overlay_summary": "mask_overlay_summary_json",
+    }
+    if adapter_name == "mpas" and "mesh" in files:
+        roles["mesh"] = "mpas_unstructured_mesh_netcdf"
+    elif adapter_name == "fvcom" and "mesh" in files:
+        roles["mesh"] = "fvcom_unstructured_mesh_dat"
+    elif adapter_name == "colm20xx" and "exchange" in files:
+        roles["exchange"] = "colm20xx_land_ocean_river_exchange_netcdf"
+    return {key: roles[key] for key in sorted(roles) if key in files}
+
+
+def _adapter_limitations(adapter_name: str) -> list[str]:
+    common = ["runtime ingestion is not validated here"]
+    if adapter_name == "mpas":
+        return [*common, "MPAS artifact is an EarthMesh handoff NetCDF, not a complete MPAS init stream"]
+    if adapter_name == "fvcom":
+        return [*common, "FVCOM artifact preserves EarthMesh cells and vertices, not a finalized FVCOM control deck"]
+    if adapter_name == "colm20xx":
+        return [*common, "CoLM20XX exchange fields are reserved schema fields pending final model-side naming"]
+    if adapter_name == "colm2024":
+        return [*common, "CoLM2024 handoff is a coupling table contract, not forcing or restart data"]
+    return common
+
+
 def _write_mpas_mesh_netcdf(cells: list[CanonicalCell], output_path: Path) -> Path:
     try:
         import netCDF4

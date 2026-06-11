@@ -1180,44 +1180,51 @@ not a complete CoLM forcing or restart file, but it gives downstream CoLM2024/Co
 work a typed `cell` dimension with longitude/latitude, class-code variables, river
 fraction, coastal fraction, and area metadata.
 
-## v3 MPAS/FVCOM adapter mesh metadata artifacts
+## v3 MPAS/FVCOM/CoLM adapter bundle contracts
 
-The v3 adapter sidecar writer now emits model-named mesh metadata artifacts for
-MPAS and FVCOM in addition to the stable adapter cell CSV and JSON export plan.
-This closes the earlier schema-only handoff gap for these two adapters without
-claiming that the files are already direct model-runtime inputs.
+The v3 adapter sidecar writer now emits model-named artifacts and a machine-readable
+`adapter_<name>_bundle.json` contract for every requested adapter.  The bundle groups
+the canonical adapter cell CSV, run manifest, overlay summary, and any model-named
+artifact with explicit artifact roles, readiness level, warnings, and limitations.
+This closes the earlier schema/CSV-only handoff gap while still avoiding an unsafe
+claim that the files have been ingested by production model runtimes.
 
 Observed local v3 demo smoke:
 
 ```bash
-OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_mesh_artifact_smoke
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_bundle_smoke
 python3 -m util.v3_core.cli \
   --demo gba \
-  --case-name v3_adapter_mesh_artifact_smoke \
-  --recipe-hash adapter_mesh_smoke \
-  --adapters colm2024,mpas,fvcom \
+  --case-name v3_adapter_bundle_smoke \
+  --recipe-hash adapter_bundle_smoke \
+  --adapters colm2024,mpas,fvcom,colm20xx \
   --output-dir "$OUT" \
   --html-map "$OUT/gba_demo.html"
 ```
 
 Observed adapter artifacts:
 
-- MPAS mesh metadata NetCDF: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_mesh_artifact_smoke/adapter_mpas_mesh.nc`.
-- FVCOM mesh metadata text: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_mesh_artifact_smoke/adapter_fvcom_mesh.dat`.
-- `adapter_mpas.json` records `files.mesh = adapter_mpas_mesh.nc`.
-- `adapter_fvcom.json` records `files.mesh = adapter_fvcom_mesh.dat`.
-- The MPAS NetCDF has `kind=earthmesh_v3_adapter_mesh_metadata`,
-  `adapter_name=mpas`, `cell=4`, and `vertex=4` for this small demo.
+- MPAS mesh NetCDF handoff: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_bundle_smoke/adapter_mpas_mesh.nc`.
+- FVCOM mesh text handoff: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_bundle_smoke/adapter_fvcom_mesh.dat`.
+- CoLM20XX exchange NetCDF handoff: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_bundle_smoke/adapter_colm20xx_exchange.nc`.
+- Bundle manifests: `adapter_mpas_bundle.json`, `adapter_fvcom_bundle.json`,
+  `adapter_colm2024_bundle.json`, and `adapter_colm20xx_bundle.json`.
+- `adapter_mpas_bundle.json` has `readiness_level=model_handoff_contract` and
+  `artifact_roles.mesh=mpas_unstructured_mesh_netcdf`.
+- `adapter_fvcom_bundle.json` has `readiness_level=model_handoff_contract` and
+  `artifact_roles.mesh=fvcom_unstructured_mesh_dat`.
+- `adapter_colm20xx_bundle.json` has `readiness_level=exchange_schema_contract` and
+  `artifact_roles.exchange=colm20xx_land_ocean_river_exchange_netcdf`.
 
-These files are intentionally **metadata-level handoff artifacts**.  They preserve
-cell IDs, centers, areas, vertex coordinates, and v3 surface/hydro/coast class
-codes for downstream adapter development.  They are not yet the complete MPAS
-mesh file or FVCOM grid/depth/open-boundary product expected by production model
-runtimes.
+The MPAS/FVCOM artifacts preserve cell IDs, centers, areas, vertex coordinates, and
+v3 surface/hydro/coast class codes for downstream adapter development.  The bundle
+contracts make their scope explicit: they are EarthMesh model-handoff contracts, not
+validated runtime ingestion files, and they do not yet include model-specific forcing,
+depth/open-boundary/control-deck products.
 
-## CoLM20XX exchange NetCDF reserve
+## CoLM20XX exchange NetCDF schema contract
 
-The `colm20xx` adapter now emits a first formal exchange metadata NetCDF:
+The `colm20xx` adapter now emits a first formal exchange schema NetCDF:
 
 ```text
 adapter_colm20xx_exchange.nc
@@ -1228,12 +1235,13 @@ and `schema_version=0.1`.  It stores one `cell` row per canonical EarthMesh cell
 with center coordinates, area, surface/hydro/coast class codes, land/ocean/river/coast
 fractions, and reserved exchange support flags for `land_ocean`, `river_land`,
 `river_ocean`, `land_atmos`, and `ocean_atmos` coupling.  `adapter_colm20xx.json`
-records this file as `files.exchange`.
+records this file as `files.exchange`, and `adapter_colm20xx_bundle.json` records it as the `colm20xx_land_ocean_river_exchange_netcdf` artifact role.
 
-This is the first concrete CoLM20XX schema artifact.  It is still a v3 adapter
-metadata product, not a complete future CoLM20XX model input file, but it fixes the
-field names and NetCDF boundary that future sea-land-hydro integration work can
-consume.
+This is the first concrete CoLM20XX exchange schema contract.  It is still not a
+validated future CoLM20XX runtime input file, because final model-side naming and
+ingestion are outside the current EarthMesh repository, but it fixes the field names,
+NetCDF boundary, bundle role, and coupling-support flags that future sea-land-hydro
+integration work can consume.
 
 Design note: `docs/superpowers/specs/2026-06-12-colm20xx-exchange-netcdf-design.md`.
 
