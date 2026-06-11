@@ -1459,8 +1459,8 @@ Observed stride-1 artifact paths:
 - Manifest `source_files` has no `surface_geojson`; CoLM uses `surface_source_kind=complete_cell_mask_geojson`.
 
 This closes the Yangtze-delta stride sweep through native MERIT resolution for the
-existing N112 background mesh.  The next scaling step is a China-region package,
-which should use `--skip-raw-surface-mask` from the start.
+existing N112 background mesh.  The China-region scaling step below uses the same
+compact-surface handoff with `--skip-raw-surface-mask`.
 
 ### Compressed raw MERIT layer smoke
 
@@ -1543,9 +1543,9 @@ Observed China-region output:
 This is the first full China-region package generated through the MERIT bridge.  It
 proves that the compact-surface handoff scales from the Yangtze test window to the
 China/Taiwan/surrounding-seas N160 background layer without carrying raw surface
-polygons in the package.  The next China-region refinement step is either a finer
-MERIT stride run (`stride=10`) or a true MERIT-driven close-mask regeneration rather
-than only projecting MERIT masks onto the existing N160 cells.
+polygons in the package.  The separate MERIT-driven regeneration smoke below proves
+the close-mask regeneration loop; applying that regeneration path to the full China
+N160 domain remains a production-scale QA exercise rather than a missing code path.
 
 ### MERIT-driven mesh regeneration loop
 
