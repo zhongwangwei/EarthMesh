@@ -70,5 +70,9 @@ def test_pipeline_result_writes_manifest_and_adapter_sidecars(tmp_path):
     overlay_payload = json.loads(paths["overlay_summary"].read_text())
     assert manifest_payload["case_name"] == "sidecar_case"
     assert adapter_payload["adapter_name"] == "colm2024"
+    assert adapter_payload["files"] == {
+        "manifest": "manifest.json",
+        "overlay_summary": "overlay_summary.json",
+    }
     assert overlay_payload["winning_class_counts"] == {"LAND": 1}
     assert overlay_payload["missing_mask_count"] == 0

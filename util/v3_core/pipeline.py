@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, default_adapter_registry
@@ -25,7 +25,15 @@ class V3PipelineResult:
         paths = {"manifest": self.manifest.write_json(directory / "manifest.json")}
         paths["overlay_summary"] = _write_json_sidecar(self.overlay_summary, directory / "overlay_summary.json")
         for adapter_name, plan in self.adapter_plans.items():
-            paths[f"adapter_{adapter_name}"] = plan.write_json(directory / f"adapter_{adapter_name}.json")
+            sidecar_plan = replace(
+                plan,
+                files={
+                    **plan.files,
+                    "manifest": "manifest.json",
+                    "overlay_summary": "overlay_summary.json",
+                },
+            )
+            paths[f"adapter_{adapter_name}"] = sidecar_plan.write_json(directory / f"adapter_{adapter_name}.json")
         return paths
 
 
