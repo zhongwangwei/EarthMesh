@@ -673,3 +673,39 @@ CaMa-Flood corridor system. It is still a mesh-control experiment rather than fi
 CoLM2024 production input: the wide staged buffers should be calibrated with a real
 coastline/domain mask and the final CoLM coupling table should continue to use the
 unbuffered corridor overlap fractions for river area metadata.
+
+## Verified reusable refinement evaluation report
+
+The R3 degree-3 smoke result can now be reduced to a compact JSON evaluation report.
+This makes future threshold, buffer, coastline-mask, and target-resolution tests
+directly comparable without re-reading large GeoJSON files or manually parsing
+EarthMesh logs.
+
+```bash
+python3 -m util.hydro_mesh.refinement_eval \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cell_intersections_preview.background_cells.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cell_intersections_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_refinement_eval.json \
+  --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_r3d3_smoke.log
+```
+
+Observed report path:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_refinement_eval.json
+```
+
+Observed JSON summary:
+
+- Background/domain cells: `438`.
+- Equivalent cell-size range: `14.9057 km` to `55.0720 km`.
+- Equivalent median cell size: `18.7462 km`.
+- River-overlap records: `200`.
+- River-overlap class counts: `R2=124`, `R3=76`.
+- River-overlap fraction range: `1.84e-06` to `0.7930`, median `0.0592`.
+- Estimated river-overlap area sum: about `7.52e9 m2`.
+- Parsed EarthMesh retained triangles: level 1 `96`, level 2 `86`, level 3 `83`.
+
+Use this report as the current regression/evaluation artifact for v3 hydro-mesh
+experiments. A better candidate recipe should improve one or more of these metrics
+while keeping mesh growth bounded and preserving river/coastline continuity.
