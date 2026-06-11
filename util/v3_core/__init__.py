@@ -12,6 +12,12 @@ from util.v3_core.geometry import (
     summarize_overlay_results,
 )
 from util.v3_core.geometry_backend import PythonGeometryBackend, get_geometry_backend
+from util.v3_core.geojson_io import (
+    geojson_cells_to_canonical,
+    geojson_masks_to_features,
+    load_cells_geojson,
+    load_masks_geojson,
+)
 from util.v3_core.legacy_fortran import LegacyFortranRun, LegacyFortranResult, build_legacy_command
 from util.v3_core.manifest import V3RunManifest
 from util.v3_core.pipeline import V3PipelineResult, build_v3_pipeline_result
@@ -43,7 +49,11 @@ __all__ = [
     "build_v3_pipeline_result",
     "build_legacy_command",
     "default_adapter_registry",
+    "geojson_cells_to_canonical",
+    "geojson_masks_to_features",
     "get_geometry_backend",
+    "load_cells_geojson",
+    "load_masks_geojson",
     "load_recipe",
     "overlay_cell_with_masks",
     "polygon_area",

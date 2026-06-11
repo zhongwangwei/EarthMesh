@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson
 from util.v3_core.geometry import MaskFeature
 from util.v3_core.pipeline import build_v3_pipeline_result
 from util.v3_core.schema import CanonicalCell
@@ -29,8 +30,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the EarthMesh v3 canonical pipeline from JSON cells and masks.")
     parser.add_argument("--case-name", required=True)
     parser.add_argument("--recipe-hash", required=True)
-    parser.add_argument("--cells", required=True, help="Path to canonical cells JSON list.")
-    parser.add_argument("--masks", required=True, help="Path to mask features JSON list.")
+    cell_inputs = parser.add_mutually_exclusive_group(required=True)
+    cell_inputs.add_argument("--cells", help="Path to canonical cells JSON list.")
+    cell_inputs.add_argument("--cells-geojson", help="Path to cell Polygon GeoJSON FeatureCollection.")
+    mask_inputs = parser.add_mutually_exclusive_group(required=True)
+    mask_inputs.add_argument("--masks", help="Path to mask features JSON list.")
+    mask_inputs.add_argument("--masks-geojson", help="Path to mask Polygon GeoJSON FeatureCollection.")
     parser.add_argument("--adapters", required=True, help="Comma-separated adapter names, e.g. colm2024,mpas,fvcom.")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
@@ -39,8 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = build_v3_pipeline_result(
         case_name=args.case_name,
         recipe_hash=args.recipe_hash,
-        cells=load_cells(args.cells),
-        masks=load_masks(args.masks),
+        cells=_load_cells_from_args(args),
+        masks=_load_masks_from_args(args),
         adapter_names=adapter_names,
     )
 
@@ -50,6 +55,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps([asdict(cell) for cell in result.cells], indent=2, sort_keys=True) + "\n"
     )
     return 0
+
+
+def _load_cells_from_args(args: argparse.Namespace) -> list[CanonicalCell]:
+    if args.cells_geojson:
+        return load_cells_geojson(args.cells_geojson)
+    return load_cells(args.cells)
+
+
+def _load_masks_from_args(args: argparse.Namespace) -> list[MaskFeature]:
+    if args.masks_geojson:
+        return load_masks_geojson(args.masks_geojson)
+    return load_masks(args.masks)
 
 
 def _cell_mapping(value: Any) -> dict[str, Any]:

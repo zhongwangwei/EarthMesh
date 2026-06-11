@@ -69,3 +69,66 @@ def test_v3_cli_runs_pipeline_from_json_inputs(tmp_path):
     assert manifest["missing_mask_count"] == 1
     assert adapter["adapter_name"] == "colm2024"
     assert [cell["surface_class"] for cell in projected_cells] == ["LAND", "UNKNOWN"]
+
+
+def test_v3_cli_runs_pipeline_from_geojson_inputs(tmp_path):
+    cells_path = tmp_path / "cells.geojson"
+    masks_path = tmp_path / "masks.geojson"
+    output_dir = tmp_path / "geojson_out"
+    cells_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]],
+                        },
+                        "properties": {"cell_id": "land", "cell_type": "TRI", "area_m2": 0.5},
+                    }
+                ],
+            }
+        )
+    )
+    masks_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]],
+                        },
+                        "properties": {"feature_id": "land-mask", "surface_class": "LAND"},
+                    }
+                ],
+            }
+        )
+    )
+
+    exit_code = main(
+        [
+            "--case-name",
+            "geojson_case",
+            "--recipe-hash",
+            "abc123",
+            "--cells-geojson",
+            str(cells_path),
+            "--masks-geojson",
+            str(masks_path),
+            "--adapters",
+            "colm2024",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    projected_cells = json.loads((output_dir / "canonical_cells.json").read_text())
+    assert manifest["mask_counts"] == {"LAND": 1}
+    assert projected_cells[0]["surface_class"] == "LAND"
