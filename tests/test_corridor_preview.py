@@ -151,3 +151,76 @@ def test_preview_geometry_label_names_downstream_segments():
 
     assert preview_geometry_label([{"properties": {"corridor_source_geometry": "cama_downstream_segment"}}]) == "CaMa downstream segment buffers"
     assert preview_geometry_label([{"properties": {"corridor_source_geometry": "nearest_neighbor_segment"}}]) == "nearest-neighbor segment buffers"
+
+
+def test_dissolve_corridor_polygons_by_class_merges_overlapping_features():
+    from util.hydro_mesh.corridor_preview import dissolve_corridor_polygons_by_class
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+                },
+                "properties": {"river_class": "R3"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0.5, 0], [1.5, 0], [1.5, 1], [0.5, 1], [0.5, 0]]],
+                },
+                "properties": {"river_class": "R3"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[3, 0], [4, 0], [4, 1], [3, 1], [3, 0]]],
+                },
+                "properties": {"river_class": "R2"},
+            },
+        ],
+    }
+
+    dissolved = dissolve_corridor_polygons_by_class(collection)
+
+    assert [feature["properties"]["river_class"] for feature in dissolved["features"]] == ["R2", "R3"]
+    r3 = dissolved["features"][1]
+    assert r3["properties"]["source_feature_count"] == 2
+    assert r3["properties"]["corridor_source_geometry"] == "dissolved_corridor"
+    assert r3["geometry"]["type"] == "Polygon"
+    assert len(r3["geometry"]["coordinates"][0]) > 4
+
+
+def test_write_dissolved_corridor_geojson_writes_collection(tmp_path):
+    from util.hydro_mesh.corridor_preview import write_dissolved_corridor_geojson
+
+    input_geojson = tmp_path / "corridors.geojson"
+    output_geojson = tmp_path / "dissolved.geojson"
+    input_geojson.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+                        },
+                        "properties": {"river_class": "R2"},
+                    }
+                ],
+            }
+        )
+    )
+
+    write_dissolved_corridor_geojson(input_geojson, output_geojson)
+
+    written = json.loads(output_geojson.read_text())
+    assert written["type"] == "FeatureCollection"
+    assert written["features"][0]["properties"]["dissolve_kind"] == "class_union"

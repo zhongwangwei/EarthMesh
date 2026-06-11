@@ -290,3 +290,32 @@ This is now a hydrologic-topology preview rather than a nearest-neighbor fallbac
 but it is still not a final EarthMesh mask. The next step is to union/smooth
 connected segment buffers, clip them against a coastline/domain reference, and then
 rasterize or intersect them with EarthMesh cells for CoLM2024 coupling metadata.
+
+## Verified dissolved corridor preview
+
+The CaMa downstream segment buffers can be dissolved by river class into coarse QA
+mask candidates. This uses Shapely at runtime when available and keeps the output
+marked as a preview product rather than a final EarthMesh mask.
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_downstream_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  --dissolve \
+  --simplify-tolerance-deg 0.0002 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.png \
+  --title "Yangtze Delta dissolved corridor preview"
+```
+
+Observed output:
+
+- Dissolved corridor GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson`.
+- Dissolved corridor PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.png`.
+- Feature count: `2` class-level `MultiPolygon` features: one `R2`, one `R3`.
+- Source segment counts: `R2=761`, `R3=755`.
+- Geometry source marker: `corridor_source_geometry=dissolved_corridor`.
+- Simplification: topology-preserving `0.0002` degrees for visual QA size reduction.
+
+This is the first output that resembles a mask candidate, but it is still missing the
+coastline/domain clip and EarthMesh cell intersection. Use it to inspect whether the
+river corridors are spatially coherent before converting to mesh-cell metadata.

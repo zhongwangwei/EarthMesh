@@ -346,11 +346,106 @@ def preview_geometry_label(features: list[dict[str, object]]) -> str:
         for feature in features
         if isinstance(feature.get("properties", {}), dict)
     }
+    if "dissolved_corridor" in source_geometries:
+        return "dissolved corridor polygons"
     if "cama_downstream_segment" in source_geometries:
         return "CaMa downstream segment buffers"
     if "nearest_neighbor_segment" in source_geometries:
         return "nearest-neighbor segment buffers"
     return "point buffers"
+
+
+def _require_shapely():
+    try:
+        from shapely.geometry import mapping, shape
+        from shapely.ops import unary_union
+    except ImportError as exc:
+        raise RuntimeError("corridor dissolve requires shapely; install shapely or skip --dissolve") from exc
+    return shape, mapping, unary_union
+
+
+def dissolve_corridor_polygons_by_class(
+    collection: dict[str, object],
+    *,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    simplify_tolerance_deg: float = 0.0,
+) -> dict[str, object]:
+    """Union corridor polygon features by river class for coarse mask QA."""
+
+    shape, mapping, unary_union = _require_shapely()
+    included = set(include_classes)
+    grouped: dict[str, list[object]] = {}
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties", {})
+        geometry = feature.get("geometry", {})
+        if not isinstance(properties, dict) or not isinstance(geometry, dict):
+            continue
+        river_class = str(properties.get("river_class", ""))
+        if river_class not in included:
+            continue
+        if geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+            continue
+        geom = shape(geometry)
+        if not geom.is_empty:
+            grouped.setdefault(river_class, []).append(geom)
+
+    features: list[dict[str, object]] = []
+    for river_class in sorted(grouped):
+        dissolved = unary_union(grouped[river_class])
+        if simplify_tolerance_deg > 0:
+            dissolved = dissolved.simplify(simplify_tolerance_deg, preserve_topology=True)
+        if dissolved.is_empty:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": mapping(dissolved),
+                "properties": {
+                    "river_class": river_class,
+                    "corridor_kind": "preview_buffer",
+                    "corridor_source_geometry": "dissolved_corridor",
+                    "dissolve_kind": "class_union",
+                    "source_feature_count": len(grouped[river_class]),
+                    "simplify_tolerance_deg": simplify_tolerance_deg,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+def write_dissolved_corridor_geojson(
+    input_geojson: str | Path,
+    output_geojson: str | Path,
+    *,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    simplify_tolerance_deg: float = 0.0,
+) -> dict[str, object]:
+    collection = json.loads(Path(input_geojson).read_text())
+    dissolved = dissolve_corridor_polygons_by_class(
+        collection,
+        include_classes=include_classes,
+        simplify_tolerance_deg=simplify_tolerance_deg,
+    )
+    output_path = Path(output_geojson)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(dissolved, indent=2, sort_keys=True) + "\n")
+    return dissolved
+
+
+def _polygon_rings_from_geometry(geometry: dict[str, object]) -> list[list[list[float]]]:
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates", [])
+    if geometry_type == "Polygon":
+        return [coordinates[0]] if coordinates else []
+    if geometry_type == "MultiPolygon":
+        rings: list[list[list[float]]] = []
+        for polygon in coordinates:
+            if polygon:
+                rings.append(polygon[0])
+        return rings
+    return []
 
 
 def write_corridor_preview_png(input_geojson: str | Path, output_png: str | Path, *, title: str = "Hydro corridor preview") -> None:
@@ -373,23 +468,21 @@ def write_corridor_preview_png(input_geojson: str | Path, output_png: str | Path
         properties = feature.get("properties", {})
         if not isinstance(geometry, dict) or not isinstance(properties, dict):
             continue
-        if geometry.get("type") != "Polygon":
-            continue
-        rings = geometry.get("coordinates", [])
+        rings = _polygon_rings_from_geometry(geometry)
         if not rings:
             continue
-        ring = rings[0]
         river_class = str(properties.get("river_class", ""))
-        points.extend((float(lon), float(lat)) for lon, lat in ring)
-        patch = MatplotlibPolygon(
-            ring,
-            closed=True,
-            facecolor=colors.get(river_class, (0.15, 0.39, 0.92, 0.25)),
-            edgecolor=edges.get(river_class, "#2563eb"),
-            linewidth=0.25,
-            zorder=2 if river_class == "R2" else 3,
-        )
-        ax.add_patch(patch)
+        for ring in rings:
+            points.extend((float(lon), float(lat)) for lon, lat in ring)
+            patch = MatplotlibPolygon(
+                ring,
+                closed=True,
+                facecolor=colors.get(river_class, (0.15, 0.39, 0.92, 0.25)),
+                edgecolor=edges.get(river_class, "#2563eb"),
+                linewidth=0.25,
+                zorder=2 if river_class == "R2" else 3,
+            )
+            ax.add_patch(patch)
 
     if points:
         lons = [point[0] for point in points]
@@ -445,12 +538,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", default="Hydro corridor preview", help="Preview PNG title")
     parser.add_argument("--neighbor-links", action="store_true", help="Create nearest-neighbor segment corridors instead of point circles")
     parser.add_argument("--downstream-links", action="store_true", help="Create corridors from explicit CaMa downstream indices")
+    parser.add_argument("--dissolve", action="store_true", help="Dissolve an existing corridor polygon GeoJSON by class")
     parser.add_argument("--max-link-distance-km", type=float, default=3.0, help="Maximum distance for nearest-neighbor links")
     parser.add_argument("--max-radius-m", type=float, default=2_500.0, help="Maximum preview corridor radius")
+    parser.add_argument("--simplify-tolerance-deg", type=float, default=0.0, help="Optional topology-preserving simplify tolerance for --dissolve")
     args = parser.parse_args(argv)
-    if args.downstream_links and args.neighbor_links:
-        raise ValueError("choose only one of --downstream-links or --neighbor-links")
-    if args.downstream_links:
+    selected_modes = sum(bool(value) for value in [args.downstream_links, args.neighbor_links, args.dissolve])
+    if selected_modes > 1:
+        raise ValueError("choose only one of --downstream-links, --neighbor-links, or --dissolve")
+    if args.dissolve:
+        write_dissolved_corridor_geojson(
+            args.input_geojson,
+            args.output_geojson,
+            include_classes=args.classes,
+            simplify_tolerance_deg=args.simplify_tolerance_deg,
+        )
+    elif args.downstream_links:
         write_downstream_corridor_geojson(
             args.input_geojson,
             args.output_geojson,
