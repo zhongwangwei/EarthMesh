@@ -121,3 +121,33 @@ def test_geojson_points_to_neighbor_corridors_connects_nearby_same_class_points(
     assert feature["properties"]["corridor_radius_m"] == 2_500.0
     assert feature["geometry"]["type"] == "Polygon"
     assert feature["geometry"]["coordinates"][0][0] == feature["geometry"]["coordinates"][0][-1]
+
+
+def test_geojson_points_to_downstream_corridors_uses_cama_indices():
+    from util.hydro_mesh.corridor_preview import geojson_points_to_downstream_corridors
+
+    upstream = _point_feature("up", "R3", lon=120.0, lat=30.0, width_m=9000.0)
+    upstream["properties"].update({"x_index": 10, "y_index": 20, "downstream_x": 11, "downstream_y": 20})
+    downstream = _point_feature("down", "R3", lon=120.02, lat=30.0, width_m=500.0)
+    downstream["properties"].update({"x_index": 11, "y_index": 20, "downstream_x": 12, "downstream_y": 20})
+    outside = _point_feature("outside", "R3", lon=120.04, lat=30.0, width_m=500.0)
+    outside["properties"].update({"x_index": 12, "y_index": 20, "downstream_x": -9999, "downstream_y": -9999})
+
+    corridors = geojson_points_to_downstream_corridors(
+        {"type": "FeatureCollection", "features": [upstream, downstream, outside]},
+        max_radius_m=2_500.0,
+    )
+
+    assert len(corridors["features"]) == 2
+    first = corridors["features"][0]
+    assert first["properties"]["from_reach_id"] == "up"
+    assert first["properties"]["to_reach_id"] == "down"
+    assert first["properties"]["corridor_source_geometry"] == "cama_downstream_segment"
+    assert first["properties"]["corridor_radius_m"] == 2_500.0
+
+
+def test_preview_geometry_label_names_downstream_segments():
+    from util.hydro_mesh.corridor_preview import preview_geometry_label
+
+    assert preview_geometry_label([{"properties": {"corridor_source_geometry": "cama_downstream_segment"}}]) == "CaMa downstream segment buffers"
+    assert preview_geometry_label([{"properties": {"corridor_source_geometry": "nearest_neighbor_segment"}}]) == "nearest-neighbor segment buffers"

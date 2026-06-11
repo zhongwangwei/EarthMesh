@@ -105,3 +105,33 @@ def test_read_binary_window_honors_y_reversed_storage(tmp_path):
     )
 
     assert south_row == [[6.0, 7.0, 8.0]]
+
+
+def test_read_cama_nextxy_window_converts_planar_yrev_one_based_indices(tmp_path):
+    import struct
+
+    from util.hydro_mesh.cama_binary import read_cama_nextxy_window
+
+    grid = CamaGridSpec(nx=3, ny=2, west=0.0, south=0.0, grid_size_deg=1.0, y_reversed_storage=True)
+    binary = tmp_path / "nextxy.bin"
+    # CaMa/GrADS nextxy is stored as two full int32 planes: varx then vary.
+    # With yrev, storage row 0 is the northern logical row y=1 and raw y values
+    # are one-based storage-row indices. Convert downstream y as ny - raw_y.
+    varx_storage_rows = [
+        [1, 2, 3],
+        [1, 2, 3],
+    ]
+    vary_storage_rows = [
+        [1, 1, 1],
+        [2, 2, 2],
+    ]
+    with binary.open("wb") as handle:
+        for row in varx_storage_rows:
+            handle.write(struct.pack("<3i", *row))
+        for row in vary_storage_rows:
+            handle.write(struct.pack("<3i", *row))
+
+    next_x, next_y = read_cama_nextxy_window(binary, grid, x_start=0, y_start=0, width=3, height=2)
+
+    assert next_x == [[0, 1, 2], [0, 1, 2]]
+    assert next_y == [[0, 0, 0], [1, 1, 1]]

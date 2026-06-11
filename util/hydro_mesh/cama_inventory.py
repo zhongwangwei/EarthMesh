@@ -99,7 +99,7 @@ def read_reach_inventory_window(
 ) -> list[CamaReachRecord]:
     from pathlib import Path
 
-    from util.hydro_mesh.cama_binary import read_binary_window
+    from util.hydro_mesh.cama_binary import read_binary_window, read_cama_nextxy_window
 
     root = Path(map_dir)
     uparea = read_binary_window(
@@ -129,27 +129,13 @@ def read_reach_inventory_window(
         height=height,
         dtype="float32",
     )
-    next_x = read_binary_window(
+    next_x, next_y = read_cama_nextxy_window(
         root / "nextxy.bin",
         grid,
         x_start=x_start,
         y_start=y_start,
         width=width,
         height=height,
-        dtype="int32",
-        components=2,
-        component_index=0,
-    )
-    next_y = read_binary_window(
-        root / "nextxy.bin",
-        grid,
-        x_start=x_start,
-        y_start=y_start,
-        width=width,
-        height=height,
-        dtype="int32",
-        components=2,
-        component_index=1,
     )
     return build_reach_inventory(
         grid,

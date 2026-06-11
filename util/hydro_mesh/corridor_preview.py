@@ -251,6 +251,108 @@ def write_neighbor_corridor_geojson(
     return corridors
 
 
+def _feature_index(feature: dict[str, object]) -> tuple[int, int] | None:
+    properties = feature.get("properties", {})
+    if not isinstance(properties, dict):
+        return None
+    if "x_index" not in properties or "y_index" not in properties:
+        return None
+    return int(properties["x_index"]), int(properties["y_index"])
+
+
+def _feature_downstream_index(feature: dict[str, object]) -> tuple[int, int] | None:
+    properties = feature.get("properties", {})
+    if not isinstance(properties, dict):
+        return None
+    downstream_x = int(properties.get("downstream_x", -9999))
+    downstream_y = int(properties.get("downstream_y", -9999))
+    if downstream_x < 0 or downstream_y < 0:
+        return None
+    return downstream_x, downstream_y
+
+
+def geojson_points_to_downstream_corridors(
+    collection: dict[str, object],
+    *,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    max_radius_m: float = 2_500.0,
+) -> dict[str, object]:
+    """Create corridor polygons from explicit CaMa downstream index links."""
+
+    included = set(include_classes)
+    candidates: dict[tuple[int, int], dict[str, object]] = {}
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        if _feature_class(feature) not in included or _feature_point(feature) is None:
+            continue
+        index = _feature_index(feature)
+        if index is not None:
+            candidates[index] = feature
+
+    corridor_features: list[dict[str, object]] = []
+    for index in sorted(candidates):
+        feature = candidates[index]
+        downstream_index = _feature_downstream_index(feature)
+        if downstream_index is None or downstream_index not in candidates or downstream_index == index:
+            continue
+        start = _feature_point(feature)
+        end = _feature_point(candidates[downstream_index])
+        if start is None or end is None:
+            continue
+        downstream = candidates[downstream_index]
+        radius_m = min(max_radius_m, max(_radius_for_feature(feature), _radius_for_feature(downstream)))
+        feature_class = _feature_class(feature)
+        corridor_features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [_segment_ring(start, end, radius_m)]},
+                "properties": {
+                    "corridor_kind": "preview_buffer",
+                    "corridor_source_geometry": "cama_downstream_segment",
+                    "river_class": feature_class,
+                    "from_reach_id": _feature_reach_id(feature),
+                    "to_reach_id": _feature_reach_id(downstream),
+                    "from_x_index": index[0],
+                    "from_y_index": index[1],
+                    "to_x_index": downstream_index[0],
+                    "to_y_index": downstream_index[1],
+                    "link_distance_km": _distance_km(start, end),
+                    "corridor_radius_m": radius_m,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": corridor_features}
+
+
+def write_downstream_corridor_geojson(
+    input_geojson: str | Path,
+    output_geojson: str | Path,
+    *,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    max_radius_m: float = 2_500.0,
+) -> dict[str, object]:
+    collection = json.loads(Path(input_geojson).read_text())
+    corridors = geojson_points_to_downstream_corridors(collection, include_classes=include_classes, max_radius_m=max_radius_m)
+    output_path = Path(output_geojson)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(corridors, indent=2, sort_keys=True) + "\n")
+    return corridors
+
+
+def preview_geometry_label(features: list[dict[str, object]]) -> str:
+    source_geometries = {
+        str(feature.get("properties", {}).get("corridor_source_geometry", "corridor"))
+        for feature in features
+        if isinstance(feature.get("properties", {}), dict)
+    }
+    if "cama_downstream_segment" in source_geometries:
+        return "CaMa downstream segment buffers"
+    if "nearest_neighbor_segment" in source_geometries:
+        return "nearest-neighbor segment buffers"
+    return "point buffers"
+
+
 def write_corridor_preview_png(input_geojson: str | Path, output_png: str | Path, *, title: str = "Hydro corridor preview") -> None:
     """Render preview corridor polygons as a static PNG for quick QA."""
 
@@ -317,12 +419,7 @@ def write_corridor_preview_png(input_geojson: str | Path, output_png: str | Path
     fig.subplots_adjust(top=0.84, left=0.1, right=0.96, bottom=0.09)
     left = ax.get_position().x0
     fig.text(left, 0.965, title, ha="left", va="top", fontsize=14, fontweight="semibold", color="#1F2430")
-    source_geometries = {
-        str(feature.get("properties", {}).get("corridor_source_geometry", "corridor"))
-        for feature in features
-        if isinstance(feature.get("properties", {}), dict)
-    }
-    geometry_label = "nearest-neighbor segment buffers" if "nearest_neighbor_segment" in source_geometries else "point buffers"
+    geometry_label = preview_geometry_label(features)
     fig.text(
         left,
         0.925,
@@ -347,10 +444,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preview-png", help="Optional PNG preview path for the corridor polygons")
     parser.add_argument("--title", default="Hydro corridor preview", help="Preview PNG title")
     parser.add_argument("--neighbor-links", action="store_true", help="Create nearest-neighbor segment corridors instead of point circles")
+    parser.add_argument("--downstream-links", action="store_true", help="Create corridors from explicit CaMa downstream indices")
     parser.add_argument("--max-link-distance-km", type=float, default=3.0, help="Maximum distance for nearest-neighbor links")
     parser.add_argument("--max-radius-m", type=float, default=2_500.0, help="Maximum preview corridor radius")
     args = parser.parse_args(argv)
-    if args.neighbor_links:
+    if args.downstream_links and args.neighbor_links:
+        raise ValueError("choose only one of --downstream-links or --neighbor-links")
+    if args.downstream_links:
+        write_downstream_corridor_geojson(
+            args.input_geojson,
+            args.output_geojson,
+            include_classes=args.classes,
+            max_radius_m=args.max_radius_m,
+        )
+    elif args.neighbor_links:
         write_neighbor_corridor_geojson(
             args.input_geojson,
             args.output_geojson,

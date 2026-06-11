@@ -23,12 +23,10 @@ def test_sample_cama_window_to_jsonl_writes_classified_records(tmp_path):
     (map_dir / "nextxy.bin").write_bytes(
         struct.pack(
             "<12i",
-            0, 0,
-            2, 0,
-            0, 0,
-            1, 1,
-            0, 0,
-            0, 0,
+            0, 3, 0,
+            1, 0, 0,
+            0, 1, 0,
+            2, 0, 0,
         )
     )
     output = tmp_path / "classified.jsonl"

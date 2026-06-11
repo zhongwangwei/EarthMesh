@@ -66,16 +66,14 @@ def test_read_reach_inventory_window_reads_required_binary_fields(tmp_path):
     (tmp_path / "uparea.bin").write_bytes(struct.pack("<6f", 0.0, 2000.0, 0.0, 12000.0, 0.0, 0.0))
     (tmp_path / "width.bin").write_bytes(struct.pack("<6f", 0.0, 80.0, 0.0, 300.0, 0.0, 0.0))
     (tmp_path / "rivlen.bin").write_bytes(struct.pack("<6f", 0.0, 1000.0, 0.0, 1500.0, 0.0, 0.0))
-    # nextxy stores two int32 components per cell: x, y
+    # CaMa nextxy stores two full int32 planes, varx then vary, as one-based indices.
     (tmp_path / "nextxy.bin").write_bytes(
         struct.pack(
             "<12i",
-            0, 0,
-            2, 0,
-            0, 0,
-            1, 1,
-            0, 0,
-            0, 0,
+            0, 3, 0,
+            1, 0, 0,
+            0, 1, 0,
+            2, 0, 0,
         )
     )
     grid = CamaGridSpec(nx=nx, ny=ny, west=0.0, south=0.0, grid_size_deg=1.0)

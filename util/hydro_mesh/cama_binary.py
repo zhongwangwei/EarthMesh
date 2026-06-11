@@ -86,3 +86,63 @@ def read_binary_window(
             result.append(values)
 
     return result
+
+
+def read_cama_nextxy_window(
+    binary_path: str | Path,
+    grid: CamaGridSpec,
+    *,
+    x_start: int,
+    y_start: int,
+    width: int,
+    height: int,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Read CaMa nextxy.bin planar varx/vary grids into zero-based logical indices.
+
+    CaMa/GrADS ``nextxy.bin`` is described as two variables (``varx`` and
+    ``vary``), not as interleaved per-cell pairs. Values are one-based CaMa grid
+    indices. With ``options yrev``, raw ``vary`` values follow the north-to-south
+    storage row convention, so they are converted back to this module's
+    south-to-north zero-based ``y_index`` convention.
+    """
+
+    if x_start < 0 or y_start < 0 or width < 1 or height < 1:
+        raise ValueError("window indices and shape must be positive")
+    if x_start + width > grid.nx or y_start + height > grid.ny:
+        raise ValueError("requested window is outside grid")
+
+    endian = "<" if grid.little_endian else ">"
+    item_size = struct.calcsize(endian + "i")
+    row_stride = grid.nx * item_size
+    plane_stride = grid.nx * grid.ny * item_size
+    row_fmt = endian + f"{grid.nx}i"
+    next_x: list[list[int]] = []
+    next_y: list[list[int]] = []
+
+    def convert_x(raw_x: int) -> int:
+        if raw_x <= 0:
+            return raw_x
+        return raw_x - 1
+
+    def convert_y(raw_y: int) -> int:
+        if raw_y <= 0:
+            return raw_y
+        if grid.y_reversed_storage:
+            return grid.ny - raw_y
+        return raw_y - 1
+
+    with Path(binary_path).open("rb") as handle:
+        for y_index in range(y_start, y_start + height):
+            storage_y = grid.storage_y_index(y_index)
+            handle.seek(storage_y * row_stride)
+            raw_x_row = handle.read(row_stride)
+            handle.seek(plane_stride + storage_y * row_stride)
+            raw_y_row = handle.read(row_stride)
+            if len(raw_x_row) != row_stride or len(raw_y_row) != row_stride:
+                raise ValueError("binary file ended before requested window was read")
+            full_x = struct.unpack(row_fmt, raw_x_row)
+            full_y = struct.unpack(row_fmt, raw_y_row)
+            next_x.append([convert_x(value) for value in full_x[x_start : x_start + width]])
+            next_y.append([convert_y(value) for value in full_y[x_start : x_start + width]])
+
+    return next_x, next_y

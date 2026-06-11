@@ -133,7 +133,7 @@ Observed for this first Yangtze-delta-adjacent probe:
 - Classification counts with current conservative thresholds: `R0=9988`, `R1=1764`, `R2=876`, `R3=761`.
 - `uparea.bin` is treated as square meters and converted with `--uparea-to-km2 1e-6`.
 - CaMa control files use `yrev`; the sampler defaults to reversed binary row order.
-- Many sampled records have `downstream_x=-9999` and `downstream_y=-9999`; this is preserved in output and should be interpreted carefully before using it as a definitive estuary flag.
+- After interpreting `nextxy.bin` as two planar CaMa variables (`varx`, then `vary`) with `yrev` conversion and one-based index normalization, all `13389` sampled records have valid downstream indices in this regional window.
 
 This proves the windowed reader path is feasible for regional development. The next
 scientific validation step is to compare sampled river locations/classes against a
@@ -223,11 +223,11 @@ EarthMesh mask-generation step.
 
 ## Verified linked corridor fallback
 
-For the current Yangtze-delta sample, every retained R2/R3 record has
-`downstream_x=-9999` and `downstream_y=-9999`, so this subset cannot yet build a
-trustworthy CaMa-topology corridor. The safer v1 fallback is to connect only nearby
-same-class candidates and mark the geometry source explicitly as
-`nearest_neighbor_segment`.
+Before the `nextxy.bin` planar/yrev interpretation was corrected, the safer fallback
+was to connect only nearby same-class candidates and mark the geometry source
+explicitly as `nearest_neighbor_segment`. This mode remains useful when a clipped
+input layer lacks downstream indices, but it is superseded by the CaMa downstream
+segment preview when `downstream_x` and `downstream_y` are available.
 
 ```bash
 MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
@@ -253,3 +253,40 @@ This linked fallback is visually cleaner than the independent point-circle previ
 it is still not a hydrologic topology product. The next scientific correction should
 repair or reinterpret CaMa `nextxy.bin`/downstream indices so segment corridors can be
 built from actual flow direction instead of nearest-neighbor proximity.
+
+
+## Verified CaMa downstream corridor preview
+
+The corrected `nextxy.bin` reader treats the file according to `nextxy.ctl`: two
+planar int32 variables (`varx` followed by `vary`), little endian, `yrev`, and
+one-based CaMa indices. `varx` is converted to zero-based `x_index` by subtracting
+one; `vary` is converted from north-to-south storage coordinates back to EarthMesh's
+south-to-north `y_index` convention.
+
+With that correction, the R2/R3 point layer can be converted into segment buffers
+following explicit CaMa downstream links:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_downstream_corridor_preview.geojson \
+  --downstream-links \
+  --max-radius-m 2500 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_downstream_corridor_preview.png \
+  --title "Yangtze Delta CaMa downstream corridor preview"
+```
+
+Observed output:
+
+- Downstream corridor GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_downstream_corridor_preview.geojson`.
+- Downstream corridor PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_downstream_corridor_preview.png`.
+- Feature count: `1516` CaMa downstream segment polygons.
+- Class counts: `R2=761`, `R3=755`.
+- Link distance range: about `1.56 km` to `5.11 km`.
+- Preview radius range after capping: `700 m` to `2500 m`.
+- Geometry source marker: `corridor_source_geometry=cama_downstream_segment`.
+
+This is now a hydrologic-topology preview rather than a nearest-neighbor fallback,
+but it is still not a final EarthMesh mask. The next step is to union/smooth
+connected segment buffers, clip them against a coastline/domain reference, and then
+rasterize or intersect them with EarthMesh cells for CoLM2024 coupling metadata.
