@@ -610,3 +610,94 @@ Create an implementation plan for Phase 1:
 4. Add a legacy Fortran wrapper boundary.
 5. Add adapter stubs for MPAS, CoLM2024, FVCOM, and CoLM20XX schema validation.
 6. Keep `v3-hydro-mesh-cama` as an existing component candidate and connect it only after the schema boundary is stable.
+
+## CoLM2024 and CoLM20XX Adapter Specification v0.2
+
+This section turns the future-facing CoLM notes above into an adapter contract.
+The key design rule is that CoLM adapters consume canonical v3 polygon products;
+they must not bind EarthMesh v3 to triangular or hexagonal topology.  Triangle,
+hexagon, and mixed coastal polygons are geometry details below the semantic
+handoff layer.
+
+### CoLM2024 adapter: concrete current handoff
+
+CoLM2024 remains the current, concrete land-model target.  The adapter should emit
+land-oriented products that can be validated now:
+
+- canonical all-cell table with stable `cell_id`, `cell_index`, geometry,
+  `surface_class`, `hydro_class`, `coast_class`, `component_roles`,
+  `source_fractions`, and `quality_flags`;
+- land/river/coast mask tables for CoLM preprocessing;
+- river-to-land coupling rows for CaMa/MERIT river cells that intersect CoLM land
+  cells;
+- optional coastal metadata (`COAST_LAND`, `COAST_OCEAN`, `ESTUARY`, `DELTA`) as
+  future-facing fields, while still allowing a land-only CoLM2024 run to ignore
+  them;
+- QA report proving complete cell coverage, no `UNKNOWN` surface class in the
+  promoted package, non-empty river/coast overlays when requested, and row-count
+  consistency with the background mesh.
+
+CoLM2024 should therefore be strict about operational completeness but conservative
+about model coupling: it can carry ocean/coast metadata without requiring the
+current model executable to ingest all future fields.
+
+### CoLM20XX adapter: reserved integrated Earth-system contract
+
+CoLM20XX is a reserved contract for a future land-ocean-hydro CoLM family.  It
+should start as a schema and validation target, not as a claim that the future
+model I/O is finalized.  Its first deliverable is an exchange NetCDF plus manifest
+that makes the following relationships explicit:
+
+```text
+cell_id, cell_index, cell_type
+surface_class: LAND/OCEAN/COAST/LAKE/ICE/WETLAND/UNKNOWN
+hydro_class: NONE/R0/R1/R2/R3/ESTUARY/DELTA
+coast_class: NONE/COAST_LAND/COAST_OCEAN/ESTUARY/DELTA/TIDAL_FLAT/SHELF
+component_roles: colm_land, colm_ocean, colm_coast, cama_river, exchange_cell
+source_fractions: LAND, OCEAN, COAST, R2, R3, ESTUARY, DELTA
+exchange booleans: supports_land_ocean_exchange, supports_river_land_exchange, supports_river_ocean_exchange
+```
+
+The current `colm20xx` adapter artifact is intentionally named as an exchange
+schema (`adapter_colm20xx_exchange.nc`).  It reserves model-facing concepts while
+keeping final variable names and model-side control files outside the current
+scope.
+
+### Shape compatibility requirements
+
+CoLM2024 and CoLM20XX adapters must accept:
+
+- `TRI` cells from FVCOM-style ocean meshes;
+- `HEX` cells from MPAS/EarthMesh dual meshes;
+- `POLYGON` cells from clipped coast, estuary, delta, or exchange-grid products;
+- `MIXED` collections when a case combines multiple source meshes.
+
+Adapter QA should reject missing semantics, not valid topology shapes.  A triangle
+or hexagon with complete surface/hydro/coast roles is acceptable; a hexagon with
+missing mask coverage or an `UNKNOWN` promoted surface class is not.
+
+### Promotion gates
+
+A CoLM2024 or CoLM20XX handoff is promotable only when the run manifest records:
+
+1. complete canonical cell coverage for the target background mesh;
+2. explicit LAND/OCEAN/COAST or documented land-only scope;
+3. no unexpected `UNKNOWN` cells in promoted products;
+4. river/coast overlap counts above the case-specific minimum;
+5. all adapter-required fields present, including `component_roles` and
+   `source_fractions`;
+6. topology bounds appropriate for the target mesh family, for example final
+   EarthMesh hex regeneration should keep `n_ngrwm` within 5-7 before MPAS/CoLM
+   promotion;
+7. reproducible input inventory and adapter bundle manifest paths.
+
+### Near-term implementation order
+
+1. Keep CoLM2024 package export concrete and QA-gated.
+2. Keep CoLM20XX as schema-only plus exchange NetCDF until model-side naming is
+   known.
+3. Add exchange-link tables after canonical cell masks are stable.
+4. Move heavy overlay/intersection/fraction calculations to Rust only after Python
+   parity tests pass.
+5. Preserve MPAS/FVCOM adapters as first-class outputs; CoLM adapters should reuse
+   the same canonical cells rather than introduce a separate mesh core.

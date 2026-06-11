@@ -61,6 +61,7 @@ class SchemaOnlyAdapter:
         "surface_class",
         "hydro_class",
         "coast_class",
+        "component_roles",
         "source_fractions",
         "quality_flags",
     )

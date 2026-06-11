@@ -206,3 +206,11 @@ def test_write_adapter_model_artifacts_writes_colm20xx_exchange_netcdf(tmp_path)
         assert list(ds.variables["supports_land_ocean_exchange"][:]) == [1]
         assert list(ds.variables["supports_river_land_exchange"][:]) == [1]
         assert list(ds.variables["supports_river_ocean_exchange"][:]) == [1]
+
+
+def test_colm20xx_adapter_contract_requires_component_roles_for_exchange_cells():
+    plan = default_adapter_registry().get("colm20xx").plan_export([CanonicalCell.minimal("cell")])
+
+    assert "component_roles" in plan.required_fields
+    assert "source_fractions" in plan.required_fields
+    assert plan.output_format == "colm20xx_mesh_coupling_contract"
