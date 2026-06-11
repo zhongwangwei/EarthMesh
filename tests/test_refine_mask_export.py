@@ -155,3 +155,24 @@ def test_geojson_to_close_mask_specs_can_buffer_refinement_envelope():
     assert min(lats) < 0.0
     assert max(lons) > 1.0
     assert max(lats) > 1.0
+
+
+def test_geojson_to_close_mask_specs_can_use_degree_specific_buffers():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [_polygon_feature("R3", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]])],
+    }
+
+    specs = geojson_to_close_mask_specs(
+        collection,
+        class_refine={"R3": 2},
+        buffer_deg_by_refine_degree={1: 1.0, 2: 0.1},
+    )
+
+    degree1 = next(spec for spec in specs if spec.refine_degree == 1)
+    degree2 = next(spec for spec in specs if spec.refine_degree == 2)
+    degree1_width = max(lon for lon, _ in degree1.coordinates) - min(lon for lon, _ in degree1.coordinates)
+    degree2_width = max(lon for lon, _ in degree2.coordinates) - min(lon for lon, _ in degree2.coordinates)
+    assert degree1_width > degree2_width

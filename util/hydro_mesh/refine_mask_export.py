@@ -42,6 +42,29 @@ def parse_class_refine(values: Sequence[str] | None) -> dict[str, int]:
     return mapping
 
 
+def parse_degree_buffers(values: Sequence[str] | None) -> dict[int, float]:
+    """Parse CLI refinement-degree buffers like ``1=1.0 2=0.2``."""
+
+    if not values:
+        return {}
+    mapping: dict[int, float] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"degree buffer must use DEGREE=BUFFER_DEG, got {value!r}")
+        degree_text, buffer_text = value.split("=", 1)
+        try:
+            degree = int(degree_text)
+            buffer_deg = float(buffer_text)
+        except ValueError as exc:
+            raise ValueError(f"degree buffer must use numeric DEGREE=BUFFER_DEG, got {value!r}") from exc
+        if degree < 1:
+            raise ValueError(f"refinement degree must be >= 1, got {degree}")
+        if buffer_deg < 0.0:
+            raise ValueError(f"buffer_deg must be >= 0, got {buffer_deg}")
+        mapping[degree] = buffer_deg
+    return mapping
+
+
 def _feature_class(feature: dict[str, object]) -> str:
     properties = feature.get("properties", {})
     if not isinstance(properties, dict):
@@ -154,6 +177,7 @@ def geojson_to_close_mask_specs(
     max_masks_per_refine_degree: int | None = 99,
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
+    buffer_deg_by_refine_degree: dict[int, float] | None = None,
 ) -> list[CloseMaskSpec]:
     """Convert corridor polygon GeoJSON into EarthMesh close-mask specs.
 
@@ -179,18 +203,23 @@ def geojson_to_close_mask_specs(
             continue
         for ring_index, ring in enumerate(_exterior_rings(geometry)):
             coordinates = _normalize_ring(ring)
-            for prepared_ring_index, prepared_coordinates in enumerate(
-                _buffer_coordinates(coordinates, buffer_deg=buffer_deg)
-            ):
-                prepared_coordinates = _simplify_coordinates(
-                    prepared_coordinates,
-                    tolerance_deg=simplify_tolerance_deg,
+            target_refine_degree = refine_by_class[river_class]
+            refine_degrees = range(1, target_refine_degree + 1) if cumulative_refine else [target_refine_degree]
+            for refine_degree in refine_degrees:
+                degree_buffer = (
+                    buffer_deg_by_refine_degree.get(refine_degree, buffer_deg)
+                    if buffer_deg_by_refine_degree is not None
+                    else buffer_deg
                 )
-                if len(prepared_coordinates) < 3:
-                    continue
-                target_refine_degree = refine_by_class[river_class]
-                refine_degrees = range(1, target_refine_degree + 1) if cumulative_refine else [target_refine_degree]
-                for refine_degree in refine_degrees:
+                for prepared_ring_index, prepared_coordinates in enumerate(
+                    _buffer_coordinates(coordinates, buffer_deg=degree_buffer)
+                ):
+                    prepared_coordinates = _simplify_coordinates(
+                        prepared_coordinates,
+                        tolerance_deg=simplify_tolerance_deg,
+                    )
+                    if len(prepared_coordinates) < 3:
+                        continue
                     spec = CloseMaskSpec(
                         river_class=river_class,
                         refine_degree=refine_degree,
@@ -263,6 +292,7 @@ def write_close_mask_nmls(
     max_masks_per_refine_degree: int | None = 99,
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
+    buffer_deg_by_refine_degree: dict[int, float] | None = None,
 ) -> list[Path]:
     collection = json.loads(Path(input_geojson).read_text())
     specs = geojson_to_close_mask_specs(
@@ -273,6 +303,7 @@ def write_close_mask_nmls(
         max_masks_per_refine_degree=max_masks_per_refine_degree,
         cumulative_refine=cumulative_refine,
         buffer_deg=buffer_deg,
+        buffer_deg_by_refine_degree=buffer_deg_by_refine_degree,
     )
     return write_close_mask_specs(specs, output_prefix)
 
@@ -303,6 +334,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional lon/lat-degree buffer for a mesh-refinement envelope around each corridor ring.",
     )
     parser.add_argument(
+        "--buffer-deg-by-refine-degree",
+        nargs="+",
+        default=None,
+        metavar="DEGREE=BUFFER_DEG",
+        help="Optional degree-specific buffers, e.g. 1=1.0 2=0.2. Overrides --buffer-deg for those degrees.",
+    )
+    parser.add_argument(
         "--max-rings-per-class",
         type=int,
         default=None,
@@ -330,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         max_masks_per_refine_degree=args.max_masks_per_refine_degree,
         cumulative_refine=not args.non_cumulative_refine,
         buffer_deg=args.buffer_deg,
+        buffer_deg_by_refine_degree=parse_degree_buffers(args.buffer_deg_by_refine_degree),
     )
     summary = {
         "output_prefix": str(args.output_prefix),

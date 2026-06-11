@@ -538,7 +538,7 @@ python3 -m util.hydro_mesh.refine_mask_export \
   /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
   /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro \
   --class-refine R2=1 R3=2 \
-  --buffer-deg 1.0 \
+  --buffer-deg-by-refine-degree 1=1.0 2=0.2 \
   --simplify-tolerance-deg 0.005
 ```
 
@@ -554,6 +554,9 @@ Observed output for the current Yangtze-delta smoke case:
 - `--buffer-deg` is a mesh-generation envelope, not a river-area definition. It
   widens narrow CaMa corridors enough for coarse base triangles and transition/halo
   logic to select connected refinement regions.
+- `--buffer-deg-by-refine-degree` can make that envelope hierarchical. The current
+  smoke case uses a wide `1=1.0` degree level-1 support envelope and a narrower
+  `2=0.2` degree R3 level-2 envelope.
 - Each refinement degree is capped at `99` masks because the current Fortran
   close-mask temporary filename uses a two-digit `I2.2` counter.
 - When the cap is active, higher target-refinement classes such as `R3` are retained
@@ -596,13 +599,14 @@ Smoke-run evidence with
 - EarthMesh read the close masks and completed successfully.
 - With no refinement-envelope buffer, `R3=2` masks were too narrow: level 2 selected
   only `35` triangles and the transition/halo cleanup removed all of them.
-- With cumulative masks and `--buffer-deg 1.0`, level 1 retained `68` refined
-  triangles and level 2 retained `14` refined triangles after cleanup.
+- With cumulative masks and degree-specific buffers `1=1.0 2=0.2`, level 1
+  retained `68` refined triangles and level 2 retained `4` refined triangles after
+  cleanup.
 - The resulting preview image is:
-  `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_buffer1_earthmesh_cells_with_land_background_preview.png`.
-- Bbox cell-size smoke statistics for that mesh: `125` cells in the 118-123E,
-  28-33N bbox, equivalent cell-size range about `29.5 km` to `66.4 km`, median
-  about `44.1 km`.
+  `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_degreebuffer_earthmesh_cells_with_land_background_preview.png`.
+- Bbox cell-size smoke statistics for that mesh: `109` cells in the 118-123E,
+  28-33N bbox, equivalent cell-size range about `29.7 km` to `64.6 km`, median
+  about `49.3 km`.
 
 This proves the close-mask route is executable, but it also shows that final v3
 mesh design should not use raw river width as the only refinement mask. A practical
