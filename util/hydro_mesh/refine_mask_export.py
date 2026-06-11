@@ -4,7 +4,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 DEFAULT_CLASS_REFINE = {"R2": 1, "R3": 2}
 
@@ -62,6 +62,29 @@ def parse_degree_buffers(values: Sequence[str] | None) -> dict[int, float]:
         if buffer_deg < 0.0:
             raise ValueError(f"buffer_deg must be >= 0, got {buffer_deg}")
         mapping[degree] = buffer_deg
+    return mapping
+
+
+def parse_class_caps(values: Sequence[str] | None) -> dict[str, int]:
+    """Parse per-class ring caps like ``R2=80 COAST=20``."""
+
+    if not values:
+        return {}
+    mapping: dict[str, int] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"class cap must use CLASS=COUNT, got {value!r}")
+        class_name, count_text = value.split("=", 1)
+        class_name = class_name.strip()
+        if not class_name:
+            raise ValueError(f"class cap has empty class name: {value!r}")
+        try:
+            count = int(count_text)
+        except ValueError as exc:
+            raise ValueError(f"class cap count must be an integer, got {count_text!r}") from exc
+        if count < 0:
+            raise ValueError(f"class cap count must be >= 0, got {count}")
+        mapping[class_name] = count
     return mapping
 
 
@@ -174,6 +197,7 @@ def geojson_to_close_mask_specs(
     class_refine: dict[str, int] | None = None,
     simplify_tolerance_deg: float = 0.0,
     max_rings_per_class: int | None = None,
+    max_rings_by_class: Mapping[str, int] | None = None,
     max_masks_per_refine_degree: int | None = 999,
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
@@ -240,11 +264,15 @@ def geojson_to_close_mask_specs(
             item[1].ring_index,
         )
     )
-    emitted_by_class: dict[str, int] = {}
+    emitted_rings_by_class: dict[str, set[tuple[int, int]]] = {}
     emitted_by_refine_degree: dict[int, int] = {}
     specs: list[CloseMaskSpec] = []
+    ring_caps = dict(max_rings_by_class or {})
     for _, spec in candidates:
-        if max_rings_per_class is not None and emitted_by_class.get(spec.river_class, 0) >= max_rings_per_class:
+        ring_key = (spec.source_feature_index, spec.ring_index)
+        class_rings = emitted_rings_by_class.setdefault(spec.river_class, set())
+        class_cap = ring_caps.get(spec.river_class, max_rings_per_class)
+        if class_cap is not None and ring_key not in class_rings and len(class_rings) >= class_cap:
             continue
         if (
             max_masks_per_refine_degree is not None
@@ -252,7 +280,7 @@ def geojson_to_close_mask_specs(
         ):
             continue
         specs.append(spec)
-        emitted_by_class[spec.river_class] = emitted_by_class.get(spec.river_class, 0) + 1
+        class_rings.add(ring_key)
         emitted_by_refine_degree[spec.refine_degree] = emitted_by_refine_degree.get(spec.refine_degree, 0) + 1
     specs.sort(key=lambda spec: (spec.river_class, spec.refine_degree, spec.source_feature_index, spec.ring_index))
     return specs
@@ -289,6 +317,7 @@ def write_close_mask_nmls(
     class_refine: dict[str, int] | None = None,
     simplify_tolerance_deg: float = 0.0,
     max_rings_per_class: int | None = None,
+    max_rings_by_class: Mapping[str, int] | None = None,
     max_masks_per_refine_degree: int | None = 999,
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
@@ -300,6 +329,7 @@ def write_close_mask_nmls(
         class_refine=class_refine,
         simplify_tolerance_deg=simplify_tolerance_deg,
         max_rings_per_class=max_rings_per_class,
+        max_rings_by_class=max_rings_by_class,
         max_masks_per_refine_degree=max_masks_per_refine_degree,
         cumulative_refine=cumulative_refine,
         buffer_deg=buffer_deg,
@@ -344,7 +374,14 @@ def main(argv: list[str] | None = None) -> int:
         "--max-rings-per-class",
         type=int,
         default=None,
-        help="Optional smoke-test cap on number of close masks emitted per river class.",
+        help="Optional smoke-test cap on source rings emitted per class.",
+    )
+    parser.add_argument(
+        "--max-rings-by-class",
+        nargs="+",
+        default=None,
+        metavar="CLASS=COUNT",
+        help="Optional per-class source-ring caps, e.g. R2=80 COAST=20. Overrides --max-rings-per-class for listed classes.",
     )
     parser.add_argument(
         "--max-masks-per-refine-degree",
@@ -365,6 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         class_refine=parse_class_refine(args.class_refine),
         simplify_tolerance_deg=args.simplify_tolerance_deg,
         max_rings_per_class=args.max_rings_per_class,
+        max_rings_by_class=parse_class_caps(args.max_rings_by_class),
         max_masks_per_refine_degree=args.max_masks_per_refine_degree,
         cumulative_refine=not args.non_cumulative_refine,
         buffer_deg=args.buffer_deg,

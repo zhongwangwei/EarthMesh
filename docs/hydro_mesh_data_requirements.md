@@ -869,3 +869,88 @@ the transition/weak-concavity cleanup remove more high-level R3 refinement. For
 the current Yangtze-delta smoke, the old `coast20` remains the best visual/metric
 candidate because it adds explicit coastline refinement while preserving or
 improving retained level-2/level-3 refinement.
+
+## Composite river/coast close-mask recipes
+
+The close-mask exporter can now cap source rings independently by class:
+
+```bash
+python3 -m util.hydro_mesh.refine_mask_export \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro_r3d3_river_ranked \
+  --class-refine R2=1 R3=3 \
+  --max-rings-by-class R2=60 R3=19 \
+  --buffer-deg-by-refine-degree 1=1.5 2=1.0 3=0.5 \
+  --simplify-tolerance-deg 0.005
+```
+
+For mixed river/coast tests, use the composite recipe driver instead of hand
+copying `.nml` files.  The recipe schema is intentionally small: each component
+points at one GeoJSON source, declares its `class_refine`, and optionally sets
+`max_rings_by_class`, `buffer_deg`, `buffer_deg_by_refine_degree`,
+`simplify_tolerance_deg`, and `cumulative_refine`.
+
+Example for the current 99-mask degree-1 allocation:
+
+```json
+{
+  "max_masks_per_refine_degree": 999,
+  "components": [
+    {
+      "name": "coastline_support",
+      "input_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_coastal_band_radius3.geojson",
+      "class_refine": {"COAST": 1},
+      "max_rings_by_class": {"COAST": 20},
+      "simplify_tolerance_deg": 0.005
+    },
+    {
+      "name": "ranked_river_corridors",
+      "input_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson",
+      "class_refine": {"R2": 1, "R3": 3},
+      "max_rings_by_class": {"R2": 60, "R3": 19},
+      "buffer_deg_by_refine_degree": {"1": 1.5, "2": 1.0, "3": 0.5},
+      "simplify_tolerance_deg": 0.005
+    }
+  ]
+}
+```
+
+Run it with:
+
+```bash
+python3 -m util.hydro_mesh.composite_refine_mask_export \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_composite_recipe_r3d3_ranked_coast20.json \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro_r3d3_ranked_coast20 \
+  --summary-json /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_composite_recipe_r3d3_ranked_coast20_summary.json
+```
+
+The summary JSON records the actual allocation, for example
+`COAST_d1=20`, `R2_d1=60`, and `R3_d1/d2/d3=19`.  With the same river buffers
+as the verified R3 recipe (`1=1.5,2=1.0,3=0.5`), the composite
+`ranked_coast20` smoke reproduced the old `coast20` metrics exactly:
+`482` bbox cells, median equivalent cell size `17.86 km`, `204` river-overlap
+records, and retained `94/94/90` triangles for levels 1/2/3.  The matching
+interactive map is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_ranked_coast20_rivers_and_coast_leaflet.html
+```
+
+This is now the reproducible control surface for a small recipe sweep such as
+`R2={40,60,80}` by `COAST={10,20,40}`.
+
+Two failed smoke attempts exposed an important geometry lesson:
+
+- A narrow-buffer river recipe (`1=1.0,2=0.2,3=0.08`) completed but degraded the
+  Yangtze-delta subset to `109` bbox cells, median `49.30 km`, and retained only
+  `70/4/0` triangles.  The high-level R3 geometry was too thin for the nested
+  cleanup.
+- `ranked_coast20_cells`, using individual 1 arcmin coastal cells for the 20
+  coast masks, also completed but produced the same degraded `109`-cell subset
+  and retained `68/4/0` triangles.  The 1min cells are valuable for visual QA,
+  but close-mask control needs smoother, hydrologically ranked envelopes.
+
+So the next v3 step should not be "add every 1min object".  It should keep the
+composite recipe driver, rank river/coast source geometries explicitly, and judge
+candidate masks by the retained R2/R3 refinement plus the embedded Leaflet QA
+layer.

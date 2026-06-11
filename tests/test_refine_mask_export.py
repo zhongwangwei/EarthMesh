@@ -200,3 +200,32 @@ def test_geojson_to_close_mask_specs_accepts_mask_class_for_coast():
     assert len(specs) == 1
     assert specs[0].river_class == "COAST"
     assert specs[0].refine_degree == 1
+
+
+def test_geojson_to_close_mask_specs_can_cap_each_class_independently():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    features = []
+    for index in range(4):
+        features.append(
+            _polygon_feature(
+                "R2",
+                [[index, 0], [index + 1, 0], [index + 1, 1], [index, 1], [index, 0]],
+            )
+        )
+    for index in range(3):
+        features.append(
+            _polygon_feature(
+                "R3",
+                [[10 + index, 0], [11 + index, 0], [11 + index, 1], [10 + index, 1], [10 + index, 0]],
+            )
+        )
+
+    specs = geojson_to_close_mask_specs(
+        {"type": "FeatureCollection", "features": features},
+        class_refine={"R2": 1, "R3": 2},
+        max_rings_by_class={"R2": 2, "R3": 1},
+    )
+
+    assert [spec.river_class for spec in specs if spec.refine_degree == 1] == ["R2", "R2", "R3"]
+    assert [spec.river_class for spec in specs if spec.refine_degree == 2] == ["R3"]
