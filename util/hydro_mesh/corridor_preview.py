@@ -346,6 +346,10 @@ def preview_geometry_label(features: list[dict[str, object]]) -> str:
         for feature in features
         if isinstance(feature.get("properties", {}), dict)
     }
+    if "regular_grid_intersection_preview" in source_geometries:
+        return "regular-grid intersection cells"
+    if "bbox_clipped_corridor" in source_geometries:
+        return "bbox-clipped corridor polygons"
     if "dissolved_corridor" in source_geometries:
         return "dissolved corridor polygons"
     if "cama_downstream_segment" in source_geometries:
@@ -362,6 +366,193 @@ def _require_shapely():
     except ImportError as exc:
         raise RuntimeError("corridor dissolve requires shapely; install shapely or skip --dissolve") from exc
     return shape, mapping, unary_union
+
+
+def _validate_bbox(bbox: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    west, south, east, north = (float(value) for value in bbox)
+    if west >= east:
+        raise ValueError("bbox west must be smaller than east")
+    if south >= north:
+        raise ValueError("bbox south must be smaller than north")
+    return west, south, east, north
+
+
+def _require_shapely_box():
+    try:
+        from shapely.geometry import box
+    except ImportError as exc:
+        raise RuntimeError("corridor clipping and grid intersections require shapely") from exc
+    return box
+
+
+def clip_corridors_to_bbox(
+    collection: dict[str, object],
+    *,
+    bbox: tuple[float, float, float, float],
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+) -> dict[str, object]:
+    """Clip corridor polygons to a lon/lat bounding box for regional mask QA."""
+
+    shape, mapping, _ = _require_shapely()
+    box = _require_shapely_box()
+    west, south, east, north = _validate_bbox(bbox)
+    clip_polygon = box(west, south, east, north)
+    included = set(include_classes)
+    features: list[dict[str, object]] = []
+
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties", {})
+        geometry = feature.get("geometry", {})
+        if not isinstance(properties, dict) or not isinstance(geometry, dict):
+            continue
+        river_class = str(properties.get("river_class", ""))
+        if river_class not in included or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+            continue
+        clipped = shape(geometry).intersection(clip_polygon)
+        if clipped.is_empty:
+            continue
+        output_properties = dict(properties)
+        output_properties.update(
+            {
+                "corridor_source_geometry": "bbox_clipped_corridor",
+                "clip_kind": "bbox",
+                "clip_bbox": [west, south, east, north],
+            }
+        )
+        features.append({"type": "Feature", "geometry": mapping(clipped), "properties": output_properties})
+    return {"type": "FeatureCollection", "features": features}
+
+
+def write_clipped_corridor_geojson(
+    input_geojson: str | Path,
+    output_geojson: str | Path,
+    *,
+    bbox: tuple[float, float, float, float],
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+) -> dict[str, object]:
+    collection = json.loads(Path(input_geojson).read_text())
+    clipped = clip_corridors_to_bbox(collection, bbox=bbox, include_classes=include_classes)
+    output_path = Path(output_geojson)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(clipped, indent=2, sort_keys=True) + "\n")
+    return clipped
+
+
+def corridors_to_regular_grid_intersections(
+    collection: dict[str, object],
+    *,
+    bbox: tuple[float, float, float, float],
+    cell_size_deg: float,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    min_fraction: float = 0.0,
+) -> dict[str, object]:
+    """Represent corridor overlap as regular lon/lat grid-cell features.
+
+    The resulting features are full grid-cell polygons with overlap metadata. Areas
+    are planar degree-square QA values, not final geodesic EarthMesh areas.
+    """
+
+    if cell_size_deg <= 0:
+        raise ValueError("cell_size_deg must be positive")
+    if min_fraction < 0 or min_fraction > 1:
+        raise ValueError("min_fraction must be between 0 and 1")
+
+    shape, _, unary_union = _require_shapely()
+    box = _require_shapely_box()
+    west, south, east, north = _validate_bbox(bbox)
+    domain = box(west, south, east, north)
+    included = set(include_classes)
+    grouped: dict[str, list[object]] = {}
+
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties", {})
+        geometry = feature.get("geometry", {})
+        if not isinstance(properties, dict) or not isinstance(geometry, dict):
+            continue
+        river_class = str(properties.get("river_class", ""))
+        if river_class not in included or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+            continue
+        clipped = shape(geometry).intersection(domain)
+        if not clipped.is_empty:
+            grouped.setdefault(river_class, []).append(clipped)
+
+    nx = math.ceil((east - west) / cell_size_deg)
+    ny = math.ceil((north - south) / cell_size_deg)
+    features: list[dict[str, object]] = []
+    for river_class in sorted(grouped):
+        class_geometry = unary_union(grouped[river_class])
+        for ix in range(nx):
+            cell_west = west + ix * cell_size_deg
+            cell_east = min(east, cell_west + cell_size_deg)
+            for iy in range(ny):
+                cell_south = south + iy * cell_size_deg
+                cell_north = min(north, cell_south + cell_size_deg)
+                cell = box(cell_west, cell_south, cell_east, cell_north)
+                cell_area = cell.area
+                if cell_area <= 0:
+                    continue
+                intersection_area = class_geometry.intersection(cell).area
+                if intersection_area <= 0:
+                    continue
+                river_fraction = intersection_area / cell_area
+                if river_fraction < min_fraction:
+                    continue
+                features.append(
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [cell_west, cell_south],
+                                    [cell_east, cell_south],
+                                    [cell_east, cell_north],
+                                    [cell_west, cell_north],
+                                    [cell_west, cell_south],
+                                ]
+                            ],
+                        },
+                        "properties": {
+                            "cell_id": f"lonlat-{ix}-{iy}-{river_class}",
+                            "river_class": river_class,
+                            "grid_kind": "regular_lonlat_preview",
+                            "corridor_source_geometry": "regular_grid_intersection_preview",
+                            "cell_size_deg": cell_size_deg,
+                            "cell_area_deg2": cell_area,
+                            "intersection_area_deg2": intersection_area,
+                            "river_fraction": river_fraction,
+                            "bbox": [west, south, east, north],
+                        },
+                    }
+                )
+    return {"type": "FeatureCollection", "features": features}
+
+
+def write_grid_intersection_geojson(
+    input_geojson: str | Path,
+    output_geojson: str | Path,
+    *,
+    bbox: tuple[float, float, float, float],
+    cell_size_deg: float,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    min_fraction: float = 0.0,
+) -> dict[str, object]:
+    collection = json.loads(Path(input_geojson).read_text())
+    grid_cells = corridors_to_regular_grid_intersections(
+        collection,
+        bbox=bbox,
+        cell_size_deg=cell_size_deg,
+        include_classes=include_classes,
+        min_fraction=min_fraction,
+    )
+    output_path = Path(output_geojson)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(grid_cells, indent=2, sort_keys=True) + "\n")
+    return grid_cells
 
 
 def dissolve_corridor_polygons_by_class(
@@ -539,14 +730,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--neighbor-links", action="store_true", help="Create nearest-neighbor segment corridors instead of point circles")
     parser.add_argument("--downstream-links", action="store_true", help="Create corridors from explicit CaMa downstream indices")
     parser.add_argument("--dissolve", action="store_true", help="Dissolve an existing corridor polygon GeoJSON by class")
+    parser.add_argument("--clip-bbox", nargs=4, type=float, metavar=("WEST", "SOUTH", "EAST", "NORTH"), help="Clip corridor polygons to a lon/lat bbox")
+    parser.add_argument("--grid-cell-size-deg", type=float, help="Convert corridor polygons to regular lon/lat grid-cell intersections")
+    parser.add_argument("--min-fraction", type=float, default=0.0, help="Minimum corridor overlap fraction for grid-cell output")
     parser.add_argument("--max-link-distance-km", type=float, default=3.0, help="Maximum distance for nearest-neighbor links")
     parser.add_argument("--max-radius-m", type=float, default=2_500.0, help="Maximum preview corridor radius")
     parser.add_argument("--simplify-tolerance-deg", type=float, default=0.0, help="Optional topology-preserving simplify tolerance for --dissolve")
     args = parser.parse_args(argv)
-    selected_modes = sum(bool(value) for value in [args.downstream_links, args.neighbor_links, args.dissolve])
+    grid_mode = args.grid_cell_size_deg is not None
+    clip_only_mode = args.clip_bbox is not None and not grid_mode
+    selected_modes = sum(bool(value) for value in [args.downstream_links, args.neighbor_links, args.dissolve, grid_mode, clip_only_mode])
     if selected_modes > 1:
-        raise ValueError("choose only one of --downstream-links, --neighbor-links, or --dissolve")
-    if args.dissolve:
+        raise ValueError("choose only one of --downstream-links, --neighbor-links, --dissolve, --clip-bbox, or --grid-cell-size-deg")
+    if grid_mode:
+        if args.clip_bbox is None:
+            raise ValueError("--grid-cell-size-deg requires --clip-bbox WEST SOUTH EAST NORTH")
+        write_grid_intersection_geojson(
+            args.input_geojson,
+            args.output_geojson,
+            bbox=tuple(args.clip_bbox),
+            cell_size_deg=args.grid_cell_size_deg,
+            include_classes=args.classes,
+            min_fraction=args.min_fraction,
+        )
+    elif clip_only_mode:
+        write_clipped_corridor_geojson(
+            args.input_geojson,
+            args.output_geojson,
+            bbox=tuple(args.clip_bbox),
+            include_classes=args.classes,
+        )
+    elif args.dissolve:
         write_dissolved_corridor_geojson(
             args.input_geojson,
             args.output_geojson,

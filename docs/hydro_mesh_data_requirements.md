@@ -319,3 +319,58 @@ Observed output:
 This is the first output that resembles a mask candidate, but it is still missing the
 coastline/domain clip and EarthMesh cell intersection. Use it to inspect whether the
 river corridors are spatially coherent before converting to mesh-cell metadata.
+
+## Verified bbox clip and regular-grid river-cell preview
+
+The dissolved corridor mask can now be clipped to a regional lon/lat bounding box
+and intersected with a regular lon/lat grid. This is a bridge product for visual QA
+and metadata prototyping: each output feature is a full grid cell with fractional
+river-overlap metadata. Areas and fractions are computed in planar degree-square
+space, so this is not yet the final geodesic EarthMesh cell intersection.
+
+Bbox-clipped dissolved corridor preview:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_clipped_corridor_preview.geojson \
+  --clip-bbox 118 28 123 33 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_clipped_corridor_preview.png \
+  --title "Yangtze Delta bbox-clipped corridor preview"
+```
+
+Observed output:
+
+- Clipped corridor GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_clipped_corridor_preview.geojson`.
+- Clipped corridor PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_clipped_corridor_preview.png`.
+- Feature count: `2` class-level features, preserving `R2=1` and `R3=1`.
+- Geometry source marker: `corridor_source_geometry=bbox_clipped_corridor`.
+
+Regular-grid river-cell intersection preview:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_grid_intersections_preview.geojson \
+  --grid-cell-size-deg 0.05 \
+  --clip-bbox 118 28 123 33 \
+  --min-fraction 0.0 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_grid_intersections_preview.png \
+  --title "Yangtze Delta regular-grid river cells preview"
+```
+
+Observed output:
+
+- Grid-cell GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_grid_intersections_preview.geojson`.
+- Grid-cell PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_grid_intersections_preview.png`.
+- Feature count: `970` regular lon/lat cells with nonzero corridor overlap.
+- Class counts: `R2=542`, `R3=428`.
+- Cell size: `0.05` degrees.
+- River-overlap fraction range: about `4.85e-05` to `0.9898`.
+- Geometry source marker: `corridor_source_geometry=regular_grid_intersection_preview`.
+
+This proves that the river corridor can be represented as cell-level metadata rather
+than only as vector masks. The remaining v3 production step is to replace this
+regular lon/lat preview grid with actual EarthMesh cell polygons, compute geodesic
+cell/corridor overlap, and clip against an explicit coastline/domain mask before
+writing CoLM2024 coupling metadata.

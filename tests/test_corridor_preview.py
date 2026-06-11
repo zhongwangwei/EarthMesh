@@ -224,3 +224,91 @@ def test_write_dissolved_corridor_geojson_writes_collection(tmp_path):
     written = json.loads(output_geojson.read_text())
     assert written["type"] == "FeatureCollection"
     assert written["features"][0]["properties"]["dissolve_kind"] == "class_union"
+
+
+def _polygon_feature(river_class, coordinates, **properties):
+    merged_properties = {"river_class": river_class}
+    merged_properties.update(properties)
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [coordinates]},
+        "properties": merged_properties,
+    }
+
+
+def test_clip_corridors_to_bbox_trims_polygon_and_preserves_properties():
+    from shapely.geometry import shape
+
+    from util.hydro_mesh.corridor_preview import clip_corridors_to_bbox
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            _polygon_feature("R3", [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]], reach_id="mainstem"),
+        ],
+    }
+
+    clipped = clip_corridors_to_bbox(collection, bbox=(1.0, 0.5, 1.5, 1.5))
+
+    assert len(clipped["features"]) == 1
+    feature = clipped["features"][0]
+    assert feature["properties"]["reach_id"] == "mainstem"
+    assert feature["properties"]["corridor_source_geometry"] == "bbox_clipped_corridor"
+    assert feature["properties"]["clip_bbox"] == [1.0, 0.5, 1.5, 1.5]
+    assert shape(feature["geometry"]).bounds == (1.0, 0.5, 1.5, 1.5)
+
+
+def test_corridors_to_regular_grid_intersections_outputs_fractional_cells():
+    from util.hydro_mesh.corridor_preview import corridors_to_regular_grid_intersections
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            _polygon_feature("R3", [[0.25, 0.25], [1.25, 0.25], [1.25, 1.25], [0.25, 1.25], [0.25, 0.25]]),
+        ],
+    }
+
+    cells = corridors_to_regular_grid_intersections(
+        collection,
+        bbox=(0.0, 0.0, 2.0, 2.0),
+        cell_size_deg=1.0,
+        min_fraction=0.1,
+    )
+
+    assert [feature["properties"]["cell_id"] for feature in cells["features"]] == [
+        "lonlat-0-0-R3",
+        "lonlat-0-1-R3",
+        "lonlat-1-0-R3",
+    ]
+    assert all(feature["geometry"]["type"] == "Polygon" for feature in cells["features"])
+    assert [round(feature["properties"]["river_fraction"], 4) for feature in cells["features"]] == [0.5625, 0.1875, 0.1875]
+    assert all(feature["properties"]["corridor_source_geometry"] == "regular_grid_intersection_preview" for feature in cells["features"])
+
+
+def test_write_grid_intersection_geojson_writes_collection(tmp_path):
+    from util.hydro_mesh.corridor_preview import write_grid_intersection_geojson
+
+    input_geojson = tmp_path / "dissolved.geojson"
+    output_geojson = tmp_path / "cells.geojson"
+    input_geojson.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    _polygon_feature("R2", [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25]]),
+                ],
+            }
+        )
+    )
+
+    write_grid_intersection_geojson(
+        input_geojson,
+        output_geojson,
+        bbox=(0.0, 0.0, 1.0, 1.0),
+        cell_size_deg=1.0,
+    )
+
+    written = json.loads(output_geojson.read_text())
+    assert written["type"] == "FeatureCollection"
+    assert written["features"][0]["properties"]["grid_kind"] == "regular_lonlat_preview"
+    assert written["features"][0]["properties"]["river_class"] == "R2"
