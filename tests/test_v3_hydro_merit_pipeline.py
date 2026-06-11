@@ -29,6 +29,8 @@ def test_run_merit_v3_pipeline_writes_cells_masks_v3_outputs_and_map(tmp_path):
         r3_width_m=300.0,
         r2_upa_km2=5000.0,
         r3_upa_km2=50000.0,
+        refine_classes=["R2", "R3"],
+        refine_factor=2,
     )
 
     assert outputs["cells_geojson"] == output_dir / "cells.geojson"
@@ -46,12 +48,15 @@ def test_run_merit_v3_pipeline_writes_cells_masks_v3_outputs_and_map(tmp_path):
     assert manifest["case_name"] == "fixture_merit_v3"
     assert manifest["adapter_versions"] == {"colm2024": "0.1", "mpas": "0.1"}
     assert manifest["missing_mask_count"] == 0
-    assert sum(manifest["mask_counts"].values()) == 6
+    assert sum(manifest["mask_counts"].values()) > 6
+    cells_payload = json.loads(outputs["cells_geojson"].read_text())
+    assert len(cells_payload["features"]) > 6
 
     summary = json.loads(outputs["pipeline_summary"].read_text())
     assert summary["case_name"] == "fixture_merit_v3"
     assert summary["bbox"] == [110.0, 20.0, 110.005, 20.005]
     assert summary["grid"] == {"nx": 3, "ny": 2, "cell_id_prefix": "fixture"}
+    assert summary["refinement"] == {"enabled": True, "classes": ["R2", "R3"], "factor": 2}
     assert summary["adapters"] == ["colm2024", "mpas"]
     assert summary["files"]["merit_summary"].endswith("merit/merit_mask_summary.json")
     assert summary["files"]["river_masks"].endswith("merit/merit_river_masks.geojson")
@@ -129,6 +134,10 @@ def test_hydro_merit_pipeline_cli_runs_one_command(tmp_path):
             str(output_dir / "map.html"),
             "--cell-id-prefix",
             "fixture_cli",
+            "--refine-classes",
+            "R2,R3",
+            "--refine-factor",
+            "2",
         ]
     )
 
@@ -136,6 +145,8 @@ def test_hydro_merit_pipeline_cli_runs_one_command(tmp_path):
     assert (output_dir / "pipeline_summary.json").exists()
     assert (output_dir / "v3" / "manifest.json").exists()
     assert (output_dir / "map.html").exists()
+    summary = json.loads((output_dir / "pipeline_summary.json").read_text())
+    assert summary["refinement"] == {"enabled": True, "classes": ["R2", "R3"], "factor": 2}
 
 
 def test_run_merit_v3_pipeline_is_available_from_component_package():

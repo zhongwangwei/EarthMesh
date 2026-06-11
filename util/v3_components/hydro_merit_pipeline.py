@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from util.v3_components.hydro_merit import write_merit_mask_outputs
+from util.v3_core.adaptive_grid import write_refined_cells_geojson
 from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson, write_cells_geojson
 from util.v3_core.grid import write_bbox_grid_geojson
 from util.v3_core.map import canonical_cells_geojson_to_leaflet_html
@@ -30,6 +31,8 @@ def run_merit_v3_pipeline(
     r3_width_m: float = 300.0,
     r2_upa_km2: float = 5000.0,
     r3_upa_km2: float = 50000.0,
+    refine_classes: Sequence[str] | None = None,
+    refine_factor: int = 2,
 ) -> dict[str, Path]:
     """Run the bootstrap MERIT-Hydro -> v3 regional pipeline.
 
@@ -57,12 +60,22 @@ def run_merit_v3_pipeline(
         r2_upa_km2=r2_upa_km2,
         r3_upa_km2=r3_upa_km2,
     )
+    masks = load_masks_geojson(merit_outputs["masks"])
+    refined_classes = _normalize_refine_classes(refine_classes)
+    if refined_classes:
+        write_refined_cells_geojson(
+            load_cells_geojson(cells_geojson),
+            masks,
+            refine_classes=set(refined_classes),
+            factor=refine_factor,
+            output_path=cells_geojson,
+        )
 
     result = build_v3_pipeline_result(
         case_name=case_name,
         recipe_hash=recipe_hash,
         cells=load_cells_geojson(cells_geojson),
-        masks=load_masks_geojson(merit_outputs["masks"]),
+        masks=masks,
         adapter_names=list(adapters),
     )
     sidecars = result.write_sidecars(v3_dir)
@@ -110,6 +123,7 @@ def run_merit_v3_pipeline(
             "r2_upa_km2": r2_upa_km2,
             "r3_upa_km2": r3_upa_km2,
         },
+        refinement={"enabled": bool(refined_classes), "classes": refined_classes, "factor": refine_factor},
         files=outputs,
     )
     outputs["pipeline_summary"] = summary_path
@@ -129,6 +143,7 @@ def _write_pipeline_summary(
     adapters: list[str],
     stride: int,
     thresholds: dict[str, float],
+    refinement: dict[str, object],
     files: dict[str, Path],
 ) -> Path:
     payload = {
@@ -140,10 +155,23 @@ def _write_pipeline_summary(
         "adapters": adapters,
         "stride": stride,
         "thresholds": thresholds,
+        "refinement": refinement,
         "files": {name: str(file_path) for name, file_path in sorted(files.items())},
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return path
+
+
+def _normalize_refine_classes(refine_classes: Sequence[str] | None) -> list[str]:
+    if not refine_classes:
+        return []
+    normalized: list[str] = []
+    for item in refine_classes:
+        for value in str(item).split(","):
+            value = value.strip()
+            if value and value not in normalized:
+                normalized.append(value)
+    return normalized
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -163,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--r3-width-m", type=float, default=300.0)
     parser.add_argument("--r2-upa-km2", type=float, default=5000.0)
     parser.add_argument("--r3-upa-km2", type=float, default=50000.0)
+    parser.add_argument("--refine-classes", help="Comma-separated mask classes to refine, e.g. R2,R3,COAST_LAND,COAST_OCEAN.")
+    parser.add_argument("--refine-factor", type=int, default=2)
     args = parser.parse_args(argv)
 
     adapters = [name.strip() for name in args.adapters.split(",") if name.strip()]
@@ -182,6 +212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         r3_width_m=args.r3_width_m,
         r2_upa_km2=args.r2_upa_km2,
         r3_upa_km2=args.r3_upa_km2,
+        refine_classes=_normalize_refine_classes([args.refine_classes] if args.refine_classes else None),
+        refine_factor=args.refine_factor,
     )
     return 0
 

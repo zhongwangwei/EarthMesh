@@ -60,6 +60,7 @@ __all__ = [
     "geojson_cells_to_canonical",
     "geojson_masks_to_features",
     "generate_bbox_grid_cells",
+    "refine_cells_by_masks",
     "get_geometry_backend",
     "load_cells_geojson",
     "load_masks_geojson",
@@ -71,12 +72,15 @@ __all__ = [
     "summarize_overlay_results",
     "validate_cell_collection",
     "write_bbox_grid_geojson",
+    "write_refined_cells_geojson",
     "write_cells_geojson",
 ]
 
 _LAZY_EXPORT_MODULES = {
     "generate_bbox_grid_cells": "util.v3_core.grid",
     "write_bbox_grid_geojson": "util.v3_core.grid",
+    "refine_cells_by_masks": "util.v3_core.adaptive_grid",
+    "write_refined_cells_geojson": "util.v3_core.adaptive_grid",
 }
 
 
