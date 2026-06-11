@@ -32,6 +32,20 @@ def load_masks_geojson(path: str | Path) -> list[MaskFeature]:
     return geojson_masks_to_features(json.loads(Path(path).read_text()))
 
 
+def write_cells_geojson(cells: list[CanonicalCell], path: str | Path) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(canonical_cells_to_geojson(cells), indent=2, sort_keys=True) + "\n")
+    return output_path
+
+
+def canonical_cells_to_geojson(cells: list[CanonicalCell]) -> dict[str, object]:
+    return {
+        "type": "FeatureCollection",
+        "features": [_canonical_cell_to_feature(cell) for cell in cells],
+    }
+
+
 def geojson_cells_to_canonical(collection: Mapping[str, Any]) -> list[CanonicalCell]:
     cells: list[CanonicalCell] = []
     for index, feature in enumerate(_features(collection)):
@@ -59,6 +73,32 @@ def geojson_cells_to_canonical(collection: Mapping[str, Any]) -> list[CanonicalC
             )
         )
     return cells
+
+
+def _canonical_cell_to_feature(cell: CanonicalCell) -> dict[str, object]:
+    ring = [[lon, lat] for lon, lat in cell.vertices]
+    if ring and ring[0] != ring[-1]:
+        ring.append(list(ring[0]))
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+        "properties": {
+            "cell_id": cell.cell_id,
+            "cell_index": cell.cell_index,
+            "cell_type": cell.cell_type,
+            "center_lon": cell.center_lon,
+            "center_lat": cell.center_lat,
+            "area_m2": cell.area_m2,
+            "surface_class": cell.surface_class,
+            "hydro_class": cell.hydro_class,
+            "coast_class": cell.coast_class,
+            "mesh_priority": cell.mesh_priority,
+            "source_fractions": cell.source_fractions,
+            "quality_flags": cell.quality_flags,
+            "geometry_ref": cell.geometry_ref,
+            "source_mesh_type": cell.source_mesh_type,
+        },
+    }
 
 
 def geojson_masks_to_features(collection: Mapping[str, Any]) -> list[MaskFeature]:

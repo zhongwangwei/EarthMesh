@@ -13,10 +13,12 @@ from util.v3_core.geometry import (
 )
 from util.v3_core.geometry_backend import PythonGeometryBackend, get_geometry_backend
 from util.v3_core.geojson_io import (
+    canonical_cells_to_geojson,
     geojson_cells_to_canonical,
     geojson_masks_to_features,
     load_cells_geojson,
     load_masks_geojson,
+    write_cells_geojson,
 )
 from util.v3_core.legacy_fortran import LegacyFortranRun, LegacyFortranResult, build_legacy_command
 from util.v3_core.manifest import V3RunManifest
@@ -47,6 +49,7 @@ __all__ = [
     "V3PipelineResult",
     "apply_overlay_to_cell",
     "build_v3_pipeline_result",
+    "canonical_cells_to_geojson",
     "build_legacy_command",
     "default_adapter_registry",
     "geojson_cells_to_canonical",
@@ -60,4 +63,5 @@ __all__ = [
     "polygon_clip_convex",
     "summarize_overlay_results",
     "validate_cell_collection",
+    "write_cells_geojson",
 ]

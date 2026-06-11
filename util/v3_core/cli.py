@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
-from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson
+from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson, write_cells_geojson
 from util.v3_core.geometry import MaskFeature
 from util.v3_core.pipeline import build_v3_pipeline_result
 from util.v3_core.schema import CanonicalCell
@@ -54,6 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     (output_dir / "canonical_cells.json").write_text(
         json.dumps([asdict(cell) for cell in result.cells], indent=2, sort_keys=True) + "\n"
     )
+    write_cells_geojson(result.cells, output_dir / "canonical_cells.geojson")
     return 0
 
 
