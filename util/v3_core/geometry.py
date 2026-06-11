@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from util.v3_core.schema import CanonicalCell
+
 Point = tuple[float, float]
 Polygon = list[Point]
 
@@ -99,3 +101,44 @@ def polygon_clip_convex(subject: Polygon, clip: Polygon) -> Polygon:
                 output.append(_line_intersection(previous, current, edge_start, edge_end))
             previous = current
     return output
+
+
+def overlay_cell_with_masks(cell: CanonicalCell, masks: list[MaskFeature]) -> OverlayResult:
+    cell_area = polygon_area(cell.vertices)
+    if cell_area <= 0.0:
+        return OverlayResult(
+            cell_id=cell.cell_id,
+            winning_class="",
+            winning_priority=0,
+            class_fractions={},
+            source_feature_ids=[],
+            quality_flags=["zero_area_cell"],
+        )
+
+    class_fractions: dict[str, float] = {}
+    source_feature_ids: list[str] = []
+    winning_class = ""
+    winning_priority = 0
+
+    for mask in masks:
+        intersection = polygon_clip_convex(cell.vertices, mask.polygon)
+        intersection_area = polygon_area(intersection)
+        if intersection_area <= 1.0e-12:
+            continue
+
+        fraction = min(1.0, intersection_area / cell_area)
+        class_fractions[mask.mask_class] = class_fractions.get(mask.mask_class, 0.0) + fraction
+        source_feature_ids.append(mask.feature_id)
+
+        if mask.priority >= winning_priority:
+            winning_class = mask.mask_class
+            winning_priority = mask.priority
+
+    return OverlayResult(
+        cell_id=cell.cell_id,
+        winning_class=winning_class,
+        winning_priority=winning_priority,
+        class_fractions={mask_class: min(1.0, fraction) for mask_class, fraction in class_fractions.items()},
+        source_feature_ids=source_feature_ids,
+        quality_flags=[],
+    )

@@ -47,3 +47,44 @@ def test_polygon_clip_convex_returns_intersection_polygon():
     intersection = polygon_clip_convex(subject, clip)
 
     assert round(polygon_area(intersection), 6) == 2.0
+
+from util.v3_core.geometry import overlay_cell_with_masks
+from util.v3_core.schema import CanonicalCell
+
+
+def test_overlay_cell_with_masks_handles_triangle_cell():
+    cell = CanonicalCell.minimal("tri-cell", cell_type="TRI")
+    mask = MaskFeature(
+        feature_id="land-mask",
+        mask_class="LAND",
+        priority=1,
+        polygon=[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
+    )
+
+    result = overlay_cell_with_masks(cell, [mask])
+
+    assert result.cell_id == "tri-cell"
+    assert result.winning_class == "LAND"
+    assert result.class_fractions == {"LAND": 1.0}
+
+
+def test_overlay_cell_with_masks_prefers_higher_priority_class():
+    cell = CanonicalCell(
+        cell_id="hex-cell",
+        cell_index=1,
+        cell_type="HEX",
+        center_lon=1.0,
+        center_lat=1.0,
+        area_m2=4.0,
+        vertices=[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)],
+    )
+    coast = MaskFeature("coast", "COAST", 10, [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)])
+    river = MaskFeature("river", "R3", 30, [(1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (1.0, 2.0)])
+
+    result = overlay_cell_with_masks(cell, [coast, river])
+
+    assert result.winning_class == "R3"
+    assert result.winning_priority == 30
+    assert round(result.class_fractions["COAST"], 6) == 1.0
+    assert round(result.class_fractions["R3"], 6) == 0.5
+    assert result.source_feature_ids == ["coast", "river"]
