@@ -518,3 +518,66 @@ area_normalization
 This is not yet a final CoLM2024 input file, but it is the first compact coupling
 artifact that can be inspected, filtered, versioned, and compared across threshold
 or coastline-mask experiments.
+
+## Verified EarthMesh close-refinement mask export
+
+The EarthMesh cell-intersection previews above used the existing
+`MPASOUT_NXP0064_global.nc4` mesh. That mesh is useful for overlap/coupling QA, but
+it is not hydro-refined in the Yangtze-delta test window: the selected cells are
+roughly uniform, with normalized areas near `7.9e8 m2` to `8.0e8 m2` (about
+`28 km` equivalent cell size). To make the mesh itself finer around CaMa-Flood river
+corridors, the dissolved corridor polygons must be supplied back to EarthMesh as
+specified-refinement input.
+
+EarthMesh already supports `RL%mask_refine_spc_type = 'close'`. The hydro-mesh
+exporter converts dissolved `R2`/`R3` corridor `Polygon`/`MultiPolygon` features into
+EarthMesh-compatible close-mask `.nml` files:
+
+```bash
+python3 -m util.hydro_mesh.refine_mask_export \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro \
+  --class-refine R2=1 R3=2 \
+  --simplify-tolerance-deg 0.001
+```
+
+Observed output for the current Yangtze-delta smoke case:
+
+- Output prefix for EarthMesh namelists:
+  `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro`.
+- Files written: `118` close-mask `.nml` files.
+- Class counts: `R2=99`, `R3=19`.
+- Total retained vertices: `R2=2086`, `R3=1793`.
+- `R2` is capped at `99` masks because the current Fortran close-mask temporary
+  filename uses a two-digit `I2.2` counter per refinement degree.
+- Each GeoJSON ring is written without its duplicate final closure coordinate;
+  EarthMesh closes each curve internally when it reads the mask.
+- The exporter removes stale files matching the same prefix before writing, so
+  old `_100.nml`-style files are not accidentally consumed by `ls prefix*`.
+- Keep non-mask files away from the same prefix because EarthMesh currently lists
+  inputs with `ls <prefix>*`; for example, do not leave a
+  `refine_spc_hydro_summary.json` beside these `.nml` files.
+
+Example generated file:
+
+```text
+close_num = 1051
+close_refine = 2
+118.00615917 31.17665972
+118.00615917 31.19169091
+...
+```
+
+Use these files from an EarthMesh namelist like:
+
+```fortran
+RL%refine_spc              = .TRUE.
+RL%max_iter_spc            = 2
+RL%mask_refine_spc_type    = 'close'
+RL%mask_refine_spc_fprefix = '/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro'
+```
+
+This step generates the refinement masks only; it does not by itself produce a new
+refined mesh. The next verification step is to run EarthMesh with the close-mask
+namelist and then re-run the EarthMesh cell-size/intersection preview on the newly
+generated mesh to confirm that river/coastal corridors are actually refined.
