@@ -144,12 +144,14 @@ def write_colm_package_coupling(
     background_path = Path(str(source_files["background_geojson"]))
     river_path = Path(str(source_files["river_geojson"]))
     coast_path = Path(str(source_files["coast_geojson"]))
+    surface_path = Path(str(source_files["surface_geojson"])) if source_files.get("surface_geojson") else None
     background = json.loads(background_path.read_text())
     river = json.loads(river_path.read_text())
     coast = json.loads(coast_path.read_text())
+    surface = json.loads(surface_path.read_text()) if surface_path is not None else None
 
     case_name = str(manifest.get("case_name", ""))
-    rows = _package_rows_from_collections(case_name, background, river, coast)
+    rows = _package_rows_from_collections(case_name, background, river, coast, surface=surface)
 
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -159,6 +161,7 @@ def write_colm_package_coupling(
 
     river_by_cell = _index_feature_properties(river)
     coast_by_cell = _index_feature_properties(coast)
+    surface_by_cell = _index_feature_properties(surface) if surface is not None else {}
     summary = {
         "kind": "earthmesh_colm_coupling_summary",
         "case_name": case_name,
@@ -166,11 +169,13 @@ def write_colm_package_coupling(
         "background_geojson": str(background_path),
         "river_geojson": str(river_path),
         "coast_geojson": str(coast_path),
+        **({"surface_geojson": str(surface_path)} if surface_path is not None else {}),
         "background_cell_count": len(_features(background)),
         "river_overlap_record_count": len(_features(river)),
         "river_cell_count": len(river_by_cell),
         "coast_overlap_record_count": len(_features(coast)),
         "coast_cell_count": len(coast_by_cell),
+        "surface_cell_count": len(surface_by_cell),
         "rows_written": len(rows),
         "csv_path": str(csv_path),
     }
@@ -183,9 +188,13 @@ def _package_rows_from_collections(
     background: dict[str, object],
     river: dict[str, object],
     coast: dict[str, object],
+    *,
+    surface: dict[str, object] | None = None,
 ) -> list[dict[str, Any]]:
     river_by_cell = _index_feature_properties(river)
     coast_by_cell = _index_feature_properties(coast)
+    surface_by_cell = _index_feature_properties(surface) if surface is not None else {}
+    surface_by_cell = _index_feature_properties(surface) if surface is not None else {}
     rows: list[dict[str, Any]] = []
     for feature in _features(background):
         properties = feature.get("properties", {})
@@ -196,8 +205,10 @@ def _package_rows_from_collections(
             continue
         river_properties = river_by_cell.get(cell_id, {})
         coast_properties = coast_by_cell.get(cell_id, {})
+        surface_properties = surface_by_cell.get(cell_id, {})
         has_river = bool(river_properties)
         has_coast = bool(coast_properties)
+        surface_class = _surface_class_from_properties(surface_properties) if surface_properties else ("COAST" if has_coast else "UNKNOWN")
         rows.append(
             {
                 "case_name": case_name,
@@ -205,7 +216,7 @@ def _package_rows_from_collections(
                 "cell_index": properties.get("cell_index", ""),
                 "center_lon": properties.get("center_lon", ""),
                 "center_lat": properties.get("center_lat", ""),
-                "surface_class": "COAST" if has_coast else "UNKNOWN",
+                "surface_class": surface_class,
                 "has_river": "true" if has_river else "false",
                 "river_class": river_properties.get("river_class", ""),
                 "river_fraction": river_properties.get("river_fraction", ""),
@@ -283,6 +294,17 @@ def _numeric_sum(left: Any, right: Any) -> float | str:
 def _bounded_sum(left: Any, right: Any) -> float | str:
     total = min(1.0, _as_float(left) + _as_float(right))
     return round(total, 12) if total else ""
+
+
+def _surface_class_from_properties(properties: dict[str, Any]) -> str:
+    value = str(properties.get("surface_class") or properties.get("mask_class") or "UNKNOWN")
+    if value in {"LAND", "OCEAN", "COAST", "UNKNOWN"}:
+        return value
+    if value == "COAST_LAND":
+        return "LAND"
+    if value == "COAST_OCEAN":
+        return "OCEAN"
+    return "UNKNOWN"
 
 
 def _write_package_csv(rows: list[dict[str, Any]], output_csv: str | Path) -> Path:

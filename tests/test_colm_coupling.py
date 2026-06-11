@@ -238,3 +238,29 @@ def test_package_coupling_aggregates_multiple_overlap_records_per_cell(tmp_path)
     assert result["summary"]["river_cell_count"] == 1
     assert result["summary"]["coast_overlap_record_count"] == 2
     assert result["summary"]["coast_cell_count"] == 1
+
+
+def test_package_coupling_uses_optional_surface_geojson_without_losing_coast_flags(tmp_path):
+    from util.hydro_mesh.colm_coupling import write_colm_package_coupling
+
+    manifest = _write_package_fixture(tmp_path)
+    surface = tmp_path / "surface.geojson"
+    surface.write_text(json.dumps(_collection([
+        _feature({"cell_id": "a", "surface_class": "LAND"}),
+        _feature({"cell_id": "b", "mask_class": "OCEAN"}),
+        _feature({"cell_id": "c", "mask_class": "COAST_OCEAN"}),
+    ])))
+    payload = json.loads(manifest.read_text())
+    payload["source_files"]["surface_geojson"] = str(surface)
+    manifest.write_text(json.dumps(payload))
+
+    result = write_colm_package_coupling(manifest, tmp_path / "colm_surface")
+
+    rows = {row["cell_id"]: row for row in csv.DictReader(open(result["csv_path"], newline=""))}
+    assert rows["a"]["surface_class"] == "LAND"
+    assert rows["a"]["has_coast"] == "true"
+    assert rows["b"]["surface_class"] == "OCEAN"
+    assert rows["c"]["surface_class"] == "OCEAN"
+    assert rows["c"]["has_coast"] == "true"
+    assert result["summary"]["surface_cell_count"] == 3
+    assert result["summary"]["surface_geojson"] == str(surface)

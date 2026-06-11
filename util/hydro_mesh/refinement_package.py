@@ -17,6 +17,7 @@ def write_refinement_delivery_package(
     river_geojson: str | Path,
     coast_geojson: str | Path,
     log_path: str | Path,
+    surface_geojson: str | Path | None = None,
     output_dir: str | Path,
     title: str | None = None,
     comparison_reports: Sequence[str | Path] = (),
@@ -32,6 +33,8 @@ def write_refinement_delivery_package(
         "coast_geojson": Path(coast_geojson),
         "log_path": Path(log_path),
     }
+    if surface_geojson is not None:
+        source_paths["surface_geojson"] = Path(surface_geojson)
     for path in [*source_paths.values(), *map(Path, comparison_reports), *map(Path, failed_reports)]:
         if not path.exists():
             raise FileNotFoundError(path)
@@ -145,6 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--background-geojson", required=True)
     parser.add_argument("--river-geojson", required=True)
     parser.add_argument("--coast-geojson", required=True)
+    parser.add_argument("--surface-geojson")
     parser.add_argument("--log-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--title")
@@ -159,6 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         background_geojson=args.background_geojson,
         river_geojson=args.river_geojson,
         coast_geojson=args.coast_geojson,
+        surface_geojson=args.surface_geojson,
         log_path=args.log_path,
         output_dir=args.output_dir,
         title=args.title,

@@ -166,3 +166,63 @@ def test_delivery_manifest_records_optional_ranking_report_inputs(tmp_path):
 
     assert manifest["source_files"]["comparison_reports"] == [str(comparison)]
     assert manifest["source_files"]["failed_reports"] == [str(failed)]
+
+
+def test_refinement_delivery_package_records_optional_surface_geojson(tmp_path):
+    from util.hydro_mesh.refinement_package import write_refinement_delivery_package
+
+    background = tmp_path / "background.geojson"
+    river = tmp_path / "river.geojson"
+    coast = tmp_path / "coast.geojson"
+    surface = tmp_path / "surface.geojson"
+    log = tmp_path / "mkgrd.log"
+    background.write_text(json.dumps(_feature_collection([_cell("a")])))
+    river.write_text(json.dumps(_feature_collection([_river("a", "R3")])))
+    coast.write_text(json.dumps(_feature_collection([_coast("a")])))
+    surface.write_text(json.dumps(_feature_collection([_cell("a")])))
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          7\n")
+
+    manifest = write_refinement_delivery_package(
+        case_name="surface_case",
+        background_geojson=background,
+        river_geojson=river,
+        coast_geojson=coast,
+        surface_geojson=surface,
+        log_path=log,
+        output_dir=tmp_path / "package",
+        unit_sphere_area=False,
+    )
+
+    assert manifest["source_files"]["surface_geojson"] == str(surface)
+    written = json.loads((tmp_path / "package" / "delivery_manifest.json").read_text())
+    assert written["source_files"]["surface_geojson"] == str(surface)
+
+
+def test_refinement_package_cli_accepts_surface_geojson(tmp_path):
+    from util.hydro_mesh.refinement_package import main
+
+    background = tmp_path / "background.geojson"
+    river = tmp_path / "river.geojson"
+    coast = tmp_path / "coast.geojson"
+    surface = tmp_path / "surface.geojson"
+    log = tmp_path / "mkgrd.log"
+    output_dir = tmp_path / "package"
+    background.write_text(json.dumps(_feature_collection([_cell("a")])))
+    river.write_text(json.dumps(_feature_collection([_river("a", "R3")])))
+    coast.write_text(json.dumps(_feature_collection([_coast("a")])))
+    surface.write_text(json.dumps(_feature_collection([_cell("a")])))
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          7\n")
+
+    assert main([
+        "--case-name", "surface_cli",
+        "--background-geojson", str(background),
+        "--river-geojson", str(river),
+        "--coast-geojson", str(coast),
+        "--surface-geojson", str(surface),
+        "--log-path", str(log),
+        "--output-dir", str(output_dir),
+        "--file-area-m2",
+    ]) == 0
+
+    manifest = json.loads((output_dir / "delivery_manifest.json").read_text())
+    assert manifest["source_files"]["surface_geojson"] == str(surface)
