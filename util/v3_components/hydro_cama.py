@@ -47,3 +47,22 @@ def hydro_cama_config_from_recipe(recipe: ComponentRecipe) -> HydroCamaConfig:
         uparea_to_km2=float(options.get("uparea_to_km2", 1.0e-6)),
         y_reversed_storage=bool(options.get("y_reversed_storage", True)),
     )
+
+_HYDRO_PRIORITY = {"R0": 0, "R1": 1, "R2": 2, "R3": 3}
+
+
+def hydro_record_semantics(record: dict[str, object]) -> dict[str, object]:
+    river_class = str(record.get("river_class", "R0"))
+    is_estuary = bool(record.get("is_estuary", False))
+    hydro_class = "ESTUARY" if is_estuary and river_class == "R3" else river_class
+    roles = ["cama_river"]
+    if hydro_class in {"ESTUARY", "DELTA"}:
+        roles.append("exchange_cell")
+    return {
+        "reach_id": str(record.get("reach_id", "")),
+        "hydro_class": hydro_class,
+        "mesh_priority": _HYDRO_PRIORITY.get(river_class, 0),
+        "component_roles": roles,
+        "upstream_area_km2": record.get("upstream_area_km2", ""),
+        "river_width_m": record.get("width_m", ""),
+    }
