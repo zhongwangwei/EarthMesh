@@ -8,8 +8,8 @@
  # If using conda, you can use: conda install -c conda-forge netcdf-fortran
  # Then find paths with: nf-config --prefix
  # Example paths (modify according to your installation):
- NETCDF_LIB = /opt/homebrew/Cellar/netcdf-fortran/4.6.2/lib
- NETCDF_INC = /opt/homebrew/Cellar/netcdf-fortran/4.6.2/include
+ NETCDF_LIB = /opt/homebrew/opt/netcdf-fortran/lib
+ NETCDF_INC = /opt/homebrew/opt/netcdf-fortran/include
 
  # GNU Fortran compiler options
  # -O3: High optimization level
@@ -32,7 +32,6 @@
  #         -ffree-line-length-none -Wall -Wextra
 
 
- NETCDF_C_LIB = /opt/homebrew/Cellar/netcdf/4.9.3/lib
+ NETCDF_C_LIB = /opt/homebrew/opt/netcdf/lib
  LDFLAGS = -L${NETCDF_LIB} -L${NETCDF_C_LIB} -Wl,-rpath,${NETCDF_LIB} -Wl,-rpath,${NETCDF_C_LIB} -lnetcdff -lnetcdf
  INCLUDE_DIR = -I${NETCDF_INC}
-

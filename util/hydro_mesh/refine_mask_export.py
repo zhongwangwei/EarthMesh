@@ -13,6 +13,7 @@ DEFAULT_CLASS_REFINE = {"R2": 1, "R3": 2}
 class CloseMaskSpec:
     river_class: str
     refine_degree: int
+    target_refine_degree: int
     coordinates: list[tuple[float, float]]
     source_feature_index: int
     ring_index: int
@@ -104,6 +105,36 @@ def _simplify_coordinates(
     return simplified_coords
 
 
+def _buffer_coordinates(
+    coordinates: list[tuple[float, float]],
+    *,
+    buffer_deg: float,
+) -> list[list[tuple[float, float]]]:
+    if buffer_deg <= 0.0 or len(coordinates) < 3:
+        return [coordinates]
+    try:
+        from shapely.geometry import MultiPolygon, Polygon
+    except ImportError:
+        return [coordinates]
+
+    polygon = Polygon(coordinates)
+    if polygon.is_empty or not polygon.is_valid:
+        return [coordinates]
+    buffered = polygon.buffer(buffer_deg)
+    if buffered.is_empty:
+        return [coordinates]
+    polygons = list(buffered.geoms) if isinstance(buffered, MultiPolygon) else [buffered]
+    rings: list[list[tuple[float, float]]] = []
+    for buffered_polygon in polygons:
+        if buffered_polygon.is_empty or buffered_polygon.geom_type != "Polygon":
+            continue
+        ring = [(float(lon), float(lat)) for lon, lat in buffered_polygon.exterior.coords]
+        ring = _drop_duplicate_closure(ring)
+        if len(ring) >= 3:
+            rings.append(ring)
+    return rings or [coordinates]
+
+
 def _ring_area(coordinates: Sequence[tuple[float, float]]) -> float:
     if len(coordinates) < 3:
         return 0.0
@@ -121,6 +152,8 @@ def geojson_to_close_mask_specs(
     simplify_tolerance_deg: float = 0.0,
     max_rings_per_class: int | None = None,
     max_masks_per_refine_degree: int | None = 99,
+    cumulative_refine: bool = True,
+    buffer_deg: float = 0.0,
 ) -> list[CloseMaskSpec]:
     """Convert corridor polygon GeoJSON into EarthMesh close-mask specs.
 
@@ -146,19 +179,38 @@ def geojson_to_close_mask_specs(
             continue
         for ring_index, ring in enumerate(_exterior_rings(geometry)):
             coordinates = _normalize_ring(ring)
-            coordinates = _simplify_coordinates(coordinates, tolerance_deg=simplify_tolerance_deg)
-            if len(coordinates) < 3:
-                continue
-            spec = CloseMaskSpec(
-                river_class=river_class,
-                refine_degree=refine_by_class[river_class],
-                coordinates=coordinates,
-                source_feature_index=feature_index,
-                ring_index=ring_index,
-            )
-            candidates.append((_ring_area(coordinates), spec))
+            for prepared_ring_index, prepared_coordinates in enumerate(
+                _buffer_coordinates(coordinates, buffer_deg=buffer_deg)
+            ):
+                prepared_coordinates = _simplify_coordinates(
+                    prepared_coordinates,
+                    tolerance_deg=simplify_tolerance_deg,
+                )
+                if len(prepared_coordinates) < 3:
+                    continue
+                target_refine_degree = refine_by_class[river_class]
+                refine_degrees = range(1, target_refine_degree + 1) if cumulative_refine else [target_refine_degree]
+                for refine_degree in refine_degrees:
+                    spec = CloseMaskSpec(
+                        river_class=river_class,
+                        refine_degree=refine_degree,
+                        target_refine_degree=target_refine_degree,
+                        coordinates=prepared_coordinates,
+                        source_feature_index=feature_index,
+                        ring_index=ring_index * 1000 + prepared_ring_index,
+                    )
+                    candidates.append((_ring_area(prepared_coordinates), spec))
 
-    candidates.sort(key=lambda item: (-item[0], item[1].river_class, item[1].source_feature_index, item[1].ring_index))
+    candidates.sort(
+        key=lambda item: (
+            item[1].refine_degree,
+            -item[1].target_refine_degree,
+            -item[0],
+            item[1].river_class,
+            item[1].source_feature_index,
+            item[1].ring_index,
+        )
+    )
     emitted_by_class: dict[str, int] = {}
     emitted_by_refine_degree: dict[int, int] = {}
     specs: list[CloseMaskSpec] = []
@@ -173,7 +225,7 @@ def geojson_to_close_mask_specs(
         specs.append(spec)
         emitted_by_class[spec.river_class] = emitted_by_class.get(spec.river_class, 0) + 1
         emitted_by_refine_degree[spec.refine_degree] = emitted_by_refine_degree.get(spec.refine_degree, 0) + 1
-    specs.sort(key=lambda spec: (spec.river_class, spec.source_feature_index, spec.ring_index))
+    specs.sort(key=lambda spec: (spec.river_class, spec.refine_degree, spec.source_feature_index, spec.ring_index))
     return specs
 
 
@@ -188,11 +240,14 @@ def write_close_mask_specs(specs: Sequence[CloseMaskSpec], output_prefix: str | 
     prefix.parent.mkdir(parents=True, exist_ok=True)
     for stale_path in prefix.parent.glob(f"{prefix.name}_*.nml"):
         stale_path.unlink()
-    counts_by_class: dict[str, int] = {}
+    counts_by_class_degree: dict[tuple[str, int], int] = {}
     paths: list[Path] = []
     for spec in specs:
-        counts_by_class[spec.river_class] = counts_by_class.get(spec.river_class, 0) + 1
-        path = prefix.with_name(f"{prefix.name}_{spec.river_class}_{counts_by_class[spec.river_class]:03d}.nml")
+        count_key = (spec.river_class, spec.refine_degree)
+        counts_by_class_degree[count_key] = counts_by_class_degree.get(count_key, 0) + 1
+        path = prefix.with_name(
+            f"{prefix.name}_{spec.river_class}_d{spec.refine_degree}_{counts_by_class_degree[count_key]:03d}.nml"
+        )
         path.write_text(_close_mask_text(spec))
         paths.append(path)
     return paths
@@ -206,6 +261,8 @@ def write_close_mask_nmls(
     simplify_tolerance_deg: float = 0.0,
     max_rings_per_class: int | None = None,
     max_masks_per_refine_degree: int | None = 99,
+    cumulative_refine: bool = True,
+    buffer_deg: float = 0.0,
 ) -> list[Path]:
     collection = json.loads(Path(input_geojson).read_text())
     specs = geojson_to_close_mask_specs(
@@ -214,6 +271,8 @@ def write_close_mask_nmls(
         simplify_tolerance_deg=simplify_tolerance_deg,
         max_rings_per_class=max_rings_per_class,
         max_masks_per_refine_degree=max_masks_per_refine_degree,
+        cumulative_refine=cumulative_refine,
+        buffer_deg=buffer_deg,
     )
     return write_close_mask_specs(specs, output_prefix)
 
@@ -238,6 +297,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional Shapely polygon simplification tolerance in degrees before writing rings.",
     )
     parser.add_argument(
+        "--buffer-deg",
+        type=float,
+        default=0.0,
+        help="Optional lon/lat-degree buffer for a mesh-refinement envelope around each corridor ring.",
+    )
+    parser.add_argument(
         "--max-rings-per-class",
         type=int,
         default=None,
@@ -249,6 +314,11 @@ def main(argv: list[str] | None = None) -> int:
         default=99,
         help="Compatibility cap for EarthMesh I2.2 close-mask temp numbering. Default: 99.",
     )
+    parser.add_argument(
+        "--non-cumulative-refine",
+        action="store_true",
+        help="Write each class only at its target degree instead of all degrees up to that target.",
+    )
     args = parser.parse_args(argv)
 
     paths = write_close_mask_nmls(
@@ -258,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         simplify_tolerance_deg=args.simplify_tolerance_deg,
         max_rings_per_class=args.max_rings_per_class,
         max_masks_per_refine_degree=args.max_masks_per_refine_degree,
+        cumulative_refine=not args.non_cumulative_refine,
+        buffer_deg=args.buffer_deg,
     )
     summary = {
         "output_prefix": str(args.output_prefix),

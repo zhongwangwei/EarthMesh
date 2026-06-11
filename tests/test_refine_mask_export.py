@@ -28,11 +28,12 @@ def test_geojson_to_close_mask_specs_omits_duplicate_ring_closure():
 
     specs = geojson_to_close_mask_specs(collection, class_refine={"R2": 1, "R3": 2})
 
-    assert len(specs) == 1
+    assert len(specs) == 2
     spec = specs[0]
     assert spec.river_class == "R3"
-    assert spec.refine_degree == 2
+    assert [spec.refine_degree for spec in specs] == [1, 2]
     assert spec.coordinates == [(120.0, 30.0), (121.0, 30.0), (121.0, 31.0), (120.0, 31.0)]
+    assert specs[1].coordinates == spec.coordinates
 
 
 def test_write_close_mask_nmls_writes_earthmesh_close_format(tmp_path):
@@ -54,7 +55,11 @@ def test_write_close_mask_nmls_writes_earthmesh_close_format(tmp_path):
 
     paths = write_close_mask_nmls(input_geojson, output_prefix, class_refine={"R2": 1, "R3": 2})
 
-    assert [path.name for path in paths] == ["refine_spc_hydro_R2_001.nml", "refine_spc_hydro_R3_001.nml"]
+    assert [path.name for path in paths] == [
+        "refine_spc_hydro_R2_d1_001.nml",
+        "refine_spc_hydro_R3_d1_001.nml",
+        "refine_spc_hydro_R3_d2_001.nml",
+    ]
     assert paths[0].read_text().splitlines() == [
         "close_num = 4",
         "close_refine = 1",
@@ -63,7 +68,8 @@ def test_write_close_mask_nmls_writes_earthmesh_close_format(tmp_path):
         "1.00000000 1.00000000",
         "0.00000000 1.00000000",
     ]
-    assert paths[1].read_text().splitlines()[1] == "close_refine = 2"
+    assert paths[1].read_text().splitlines()[1] == "close_refine = 1"
+    assert paths[2].read_text().splitlines()[1] == "close_refine = 2"
 
 
 def test_write_close_mask_nmls_removes_stale_prefix_files(tmp_path):
@@ -104,3 +110,48 @@ def test_geojson_to_close_mask_specs_caps_each_refinement_degree_at_earthmesh_tw
 
     assert len(specs) == 99
     assert any(spec.source_feature_index == 100 for spec in specs)
+
+
+def test_geojson_to_close_mask_specs_emits_higher_target_classes_cumulatively_and_prioritizes_them():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    features = [
+        _polygon_feature("R3", [[200, 0], [201, 0], [201, 1], [200, 1], [200, 0]]),
+    ]
+    for index in range(100):
+        features.append(
+            _polygon_feature(
+                "R2",
+                [[index, 0], [index + 2, 0], [index + 2, 2], [index, 2], [index, 0]],
+            )
+        )
+
+    specs = geojson_to_close_mask_specs(
+        {"type": "FeatureCollection", "features": features},
+        class_refine={"R2": 1, "R3": 2},
+    )
+
+    degree1 = [spec for spec in specs if spec.refine_degree == 1]
+    degree2 = [spec for spec in specs if spec.refine_degree == 2]
+    assert len(degree1) == 99
+    assert len(degree2) == 1
+    assert any(spec.river_class == "R3" for spec in degree1)
+    assert degree2[0].river_class == "R3"
+
+
+def test_geojson_to_close_mask_specs_can_buffer_refinement_envelope():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [_polygon_feature("R2", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]])],
+    }
+
+    specs = geojson_to_close_mask_specs(collection, class_refine={"R2": 1}, buffer_deg=0.1)
+
+    lons = [lon for lon, _ in specs[0].coordinates]
+    lats = [lat for _, lat in specs[0].coordinates]
+    assert min(lons) < 0.0
+    assert min(lats) < 0.0
+    assert max(lons) > 1.0
+    assert max(lats) > 1.0

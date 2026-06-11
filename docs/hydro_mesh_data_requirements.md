@@ -538,7 +538,8 @@ python3 -m util.hydro_mesh.refine_mask_export \
   /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
   /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro \
   --class-refine R2=1 R3=2 \
-  --simplify-tolerance-deg 0.001
+  --buffer-deg 1.0 \
+  --simplify-tolerance-deg 0.005
 ```
 
 Observed output for the current Yangtze-delta smoke case:
@@ -546,10 +547,17 @@ Observed output for the current Yangtze-delta smoke case:
 - Output prefix for EarthMesh namelists:
   `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro`.
 - Files written: `118` close-mask `.nml` files.
-- Class counts: `R2=99`, `R3=19`.
-- Total retained vertices: `R2=2086`, `R3=1793`.
-- `R2` is capped at `99` masks because the current Fortran close-mask temporary
-  filename uses a two-digit `I2.2` counter per refinement degree.
+- Mask counts: `R2_d1=80`, `R3_d1=19`, `R3_d2=19`.
+- The export is cumulative by default: a class mapped to target degree `2` is
+  emitted at both `close_refine = 1` and `close_refine = 2`, because EarthMesh can
+  only apply a finer refinement level inside the previous level's refined interior.
+- `--buffer-deg` is a mesh-generation envelope, not a river-area definition. It
+  widens narrow CaMa corridors enough for coarse base triangles and transition/halo
+  logic to select connected refinement regions.
+- Each refinement degree is capped at `99` masks because the current Fortran
+  close-mask temporary filename uses a two-digit `I2.2` counter.
+- When the cap is active, higher target-refinement classes such as `R3` are retained
+  before lower target-refinement classes such as `R2`.
 - Each GeoJSON ring is written without its duplicate final closure coordinate;
   EarthMesh closes each curve internally when it reads the mask.
 - The exporter removes stale files matching the same prefix before writing, so
@@ -562,7 +570,7 @@ Example generated file:
 
 ```text
 close_num = 1051
-close_refine = 2
+close_refine = 1
 118.00615917 31.17665972
 118.00615917 31.19169091
 ...
@@ -581,3 +589,23 @@ This step generates the refinement masks only; it does not by itself produce a n
 refined mesh. The next verification step is to run EarthMesh with the close-mask
 namelist and then re-run the EarthMesh cell-size/intersection preview on the newly
 generated mesh to confirm that river/coastal corridors are actually refined.
+
+Smoke-run evidence with
+`/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/Atmos_hex_NXP64_hydro_close_yangtze_smoke.nml`:
+
+- EarthMesh read the close masks and completed successfully.
+- With no refinement-envelope buffer, `R3=2` masks were too narrow: level 2 selected
+  only `35` triangles and the transition/halo cleanup removed all of them.
+- With cumulative masks and `--buffer-deg 1.0`, level 1 retained `68` refined
+  triangles and level 2 retained `14` refined triangles after cleanup.
+- The resulting preview image is:
+  `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_buffer1_earthmesh_cells_with_land_background_preview.png`.
+- Bbox cell-size smoke statistics for that mesh: `125` cells in the 118-123E,
+  28-33N bbox, equivalent cell-size range about `29.5 km` to `66.4 km`, median
+  about `44.1 km`.
+
+This proves the close-mask route is executable, but it also shows that final v3
+mesh design should not use raw river width as the only refinement mask. A practical
+CoLM2024 workflow needs at least two layers: a broad level-1 hydrologic/coastal
+envelope for transition support, and a narrower higher-level R3 river/estuary
+envelope for true 2D corridor detail.
