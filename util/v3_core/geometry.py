@@ -142,3 +142,23 @@ def overlay_cell_with_masks(cell: CanonicalCell, masks: list[MaskFeature]) -> Ov
         source_feature_ids=source_feature_ids,
         quality_flags=[],
     )
+
+
+def summarize_overlay_results(results: list[OverlayResult]) -> dict[str, object]:
+    winning_class_counts: dict[str, int] = {}
+    quality_flag_counts: dict[str, int] = {}
+    missing_mask_count = 0
+
+    for result in results:
+        winning_class_counts[result.winning_class] = winning_class_counts.get(result.winning_class, 0) + 1
+        if not result.class_fractions:
+            missing_mask_count += 1
+        for flag in result.quality_flags:
+            quality_flag_counts[flag] = quality_flag_counts.get(flag, 0) + 1
+
+    return {
+        "cell_count": len(results),
+        "winning_class_counts": winning_class_counts,
+        "missing_mask_count": missing_mask_count,
+        "quality_flag_counts": quality_flag_counts,
+    }
