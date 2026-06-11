@@ -1238,3 +1238,23 @@ surface polygons, so surface assignment queries only intersecting candidates ins
 of scanning every raw MERIT surface polygon for every EarthMesh cell.  MERIT
 `COAST_LAND` and `COAST_OCEAN` intersections also derive `surface_class=LAND/OCEAN`
 for the complete mask while retaining coast as a separate coupling flag.
+
+### Yangtze-delta N112 MERIT stride comparison
+
+After the spatial-index fix, the same N112 Yangtze-delta package bridge was run at
+finer MERIT sampling strides.  All runs use the existing N112 background EarthMesh
+cells and bbox `118 28 123 33`.
+
+| MERIT stride | Runtime | Output size | MERIT river masks | MERIT coast masks | MERIT surface masks | River cells | Coast cells | Surface counts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 50 | ~4 s | small smoke output | 81 | 2362 | 12198 | 171 | 908 | LAND=2257, OCEAN=317, UNKNOWN=0 |
+| 20 | ~10 s | 170M | 526 | 9361 | 80714 | 597 | 942 | LAND=2204, OCEAN=370, UNKNOWN=0 |
+| 10 | ~33 s | 641M | 2033 | 24787 | 334381 | 1139 | 998 | LAND=2184, OCEAN=390, UNKNOWN=0 |
+
+The `stride=10` output is a useful current QA compromise: it substantially increases
+river/coast coverage over `stride=50`, keeps the package/CoLM handoff stable, and
+still completes in under a minute locally.  The raw MERIT source GeoJSON dominates
+output size, so before trying `stride=5` or `stride=1` on the full Yangtze/China
+window, the bridge should add an optional slim-package mode that keeps compact
+EarthMesh-cell outputs while omitting or externally referencing raw MERIT surface
+GeoJSON.
