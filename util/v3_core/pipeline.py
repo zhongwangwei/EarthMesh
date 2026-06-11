@@ -9,7 +9,7 @@ from util.v3_core.adapters import (
     AdapterRegistry,
     default_adapter_registry,
     write_adapter_cell_table,
-    write_adapter_mesh_artifact,
+    write_adapter_model_artifacts,
 )
 from util.v3_core.geometry import MaskFeature, OverlayResult, apply_overlay_to_cell, summarize_overlay_results
 from util.v3_core.geometry_backend import GeometryBackend, get_geometry_backend
@@ -32,7 +32,7 @@ class V3PipelineResult:
         paths["overlay_summary"] = _write_json_sidecar(self.overlay_summary, directory / "overlay_summary.json")
         for adapter_name, plan in self.adapter_plans.items():
             cell_table = write_adapter_cell_table(adapter_name, self.cells, directory)
-            mesh_artifact = write_adapter_mesh_artifact(adapter_name, self.cells, directory)
+            model_artifacts = write_adapter_model_artifacts(adapter_name, self.cells, directory)
             paths[f"adapter_{adapter_name}_cells"] = cell_table
             files = {
                 **plan.files,
@@ -40,9 +40,9 @@ class V3PipelineResult:
                 "manifest": "manifest.json",
                 "overlay_summary": "overlay_summary.json",
             }
-            if mesh_artifact is not None:
-                paths[f"adapter_{adapter_name}_mesh"] = mesh_artifact
-                files["mesh"] = mesh_artifact.name
+            for artifact_name, artifact_path in model_artifacts.items():
+                paths[f"adapter_{adapter_name}_{artifact_name}"] = artifact_path
+                files[artifact_name] = artifact_path.name
             sidecar_plan = replace(
                 plan,
                 files=files,

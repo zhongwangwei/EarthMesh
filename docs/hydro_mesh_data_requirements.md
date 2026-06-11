@@ -1215,6 +1215,28 @@ codes for downstream adapter development.  They are not yet the complete MPAS
 mesh file or FVCOM grid/depth/open-boundary product expected by production model
 runtimes.
 
+## CoLM20XX exchange NetCDF reserve
+
+The `colm20xx` adapter now emits a first formal exchange metadata NetCDF:
+
+```text
+adapter_colm20xx_exchange.nc
+```
+
+The file has `kind=earthmesh_colm20xx_exchange_netcdf`, `adapter_name=colm20xx`,
+and `schema_version=0.1`.  It stores one `cell` row per canonical EarthMesh cell
+with center coordinates, area, surface/hydro/coast class codes, land/ocean/river/coast
+fractions, and reserved exchange support flags for `land_ocean`, `river_land`,
+`river_ocean`, `land_atmos`, and `ocean_atmos` coupling.  `adapter_colm20xx.json`
+records this file as `files.exchange`.
+
+This is the first concrete CoLM20XX schema artifact.  It is still a v3 adapter
+metadata product, not a complete future CoLM20XX model input file, but it fixes the
+field names and NetCDF boundary that future sea-land-hydro integration work can
+consume.
+
+Design note: `docs/superpowers/specs/2026-06-12-colm20xx-exchange-netcdf-design.md`.
+
 ## MERIT-Hydro 90m delivery-package bridge smoke
 
 The current package boundary can now be driven by MERIT-Hydro 90m masks instead of

@@ -150,13 +150,23 @@ def write_adapter_cell_table(adapter_name: str, cells: Iterable[CanonicalCell], 
     return path
 
 
-def write_adapter_mesh_artifact(adapter_name: str, cells: Iterable[CanonicalCell], output_dir: str | Path) -> Path | None:
+def write_adapter_model_artifacts(
+    adapter_name: str,
+    cells: Iterable[CanonicalCell],
+    output_dir: str | Path,
+) -> dict[str, Path]:
     materialized = list(cells)
     if adapter_name == "mpas":
-        return _write_mpas_mesh_netcdf(materialized, Path(output_dir) / "adapter_mpas_mesh.nc")
+        return {"mesh": _write_mpas_mesh_netcdf(materialized, Path(output_dir) / "adapter_mpas_mesh.nc")}
     if adapter_name == "fvcom":
-        return _write_fvcom_mesh_dat(materialized, Path(output_dir) / "adapter_fvcom_mesh.dat")
-    return None
+        return {"mesh": _write_fvcom_mesh_dat(materialized, Path(output_dir) / "adapter_fvcom_mesh.dat")}
+    if adapter_name == "colm20xx":
+        return {"exchange": _write_colm20xx_exchange_netcdf(materialized, Path(output_dir) / "adapter_colm20xx_exchange.nc")}
+    return {}
+
+
+def write_adapter_mesh_artifact(adapter_name: str, cells: Iterable[CanonicalCell], output_dir: str | Path) -> Path | None:
+    return write_adapter_model_artifacts(adapter_name, cells, output_dir).get("mesh")
 
 
 def _write_mpas_mesh_netcdf(cells: list[CanonicalCell], output_path: Path) -> Path:
@@ -220,10 +230,85 @@ def _write_fvcom_mesh_dat(cells: list[CanonicalCell], output_path: Path) -> Path
     return output_path
 
 
+def _write_colm20xx_exchange_netcdf(cells: list[CanonicalCell], output_path: Path) -> Path:
+    try:
+        import netCDF4
+    except ImportError as exc:  # pragma: no cover - dependency is available in test/runtime env
+        raise RuntimeError("CoLM20XX exchange artifact requires netCDF4") from exc
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(output_path, "w", format="NETCDF4") as ds:
+        ds.createDimension("cell", len(cells))
+        ds.setncattr("kind", "earthmesh_colm20xx_exchange_netcdf")
+        ds.setncattr("adapter_name", "colm20xx")
+        ds.setncattr("schema_version", "0.1")
+        ds.setncattr("surface_class_code_meanings", "0=UNKNOWN 1=LAND 2=OCEAN 3=COAST 4=LAKE 5=ICE 6=WETLAND")
+        ds.setncattr("hydro_class_code_meanings", "0=none/R0 1=R1 2=R2 3=R3 4=ESTUARY 5=DELTA")
+        ds.setncattr("coast_class_code_meanings", "0=none 1=COAST 2=COAST_LAND 3=COAST_OCEAN 4=ESTUARY 5=DELTA 6=TIDAL_FLAT 7=SHELF")
+
+        cell_id = ds.createVariable("cell_id", str, ("cell",))
+        cell_index = ds.createVariable("cell_index", "i4", ("cell",))
+        center_lon = ds.createVariable("center_lon", "f8", ("cell",))
+        center_lat = ds.createVariable("center_lat", "f8", ("cell",))
+        area_m2 = ds.createVariable("area_m2", "f8", ("cell",))
+        surface_class_code = ds.createVariable("surface_class_code", "i1", ("cell",))
+        hydro_class_code = ds.createVariable("hydro_class_code", "i1", ("cell",))
+        coast_class_code = ds.createVariable("coast_class_code", "i1", ("cell",))
+        land_fraction = ds.createVariable("land_fraction", "f8", ("cell",))
+        ocean_fraction = ds.createVariable("ocean_fraction", "f8", ("cell",))
+        river_fraction = ds.createVariable("river_fraction", "f8", ("cell",))
+        coastal_fraction = ds.createVariable("coastal_fraction", "f8", ("cell",))
+        supports_land_ocean_exchange = ds.createVariable("supports_land_ocean_exchange", "i1", ("cell",))
+        supports_river_land_exchange = ds.createVariable("supports_river_land_exchange", "i1", ("cell",))
+        supports_river_ocean_exchange = ds.createVariable("supports_river_ocean_exchange", "i1", ("cell",))
+        supports_land_atmos_exchange = ds.createVariable("supports_land_atmos_exchange", "i1", ("cell",))
+        supports_ocean_atmos_exchange = ds.createVariable("supports_ocean_atmos_exchange", "i1", ("cell",))
+
+        center_lon.units = "degrees_east"
+        center_lat.units = "degrees_north"
+        area_m2.units = "m2"
+        land_fraction.units = "1"
+        ocean_fraction.units = "1"
+        river_fraction.units = "1"
+        coastal_fraction.units = "1"
+
+        for index, cell in enumerate(cells):
+            fractions = _colm20xx_fractions(cell)
+            cell_id[index] = cell.cell_id
+            cell_index[index] = cell.cell_index
+            center_lon[index] = cell.center_lon
+            center_lat[index] = cell.center_lat
+            area_m2[index] = cell.area_m2
+            surface_class_code[index] = _SURFACE_CLASS_CODES.get(cell.surface_class, 0)
+            hydro_class_code[index] = _HYDRO_CLASS_CODES.get(cell.hydro_class, 0)
+            coast_class_code[index] = _COAST_CLASS_CODES.get(cell.coast_class, 0)
+            land_fraction[index] = fractions["land"]
+            ocean_fraction[index] = fractions["ocean"]
+            river_fraction[index] = fractions["river"]
+            coastal_fraction[index] = fractions["coast"]
+            supports_land_ocean_exchange[index] = 1 if fractions["land"] > 0.0 and fractions["ocean"] > 0.0 else 0
+            supports_river_land_exchange[index] = 1 if fractions["river"] > 0.0 and fractions["land"] > 0.0 else 0
+            supports_river_ocean_exchange[index] = 1 if fractions["river"] > 0.0 and fractions["ocean"] > 0.0 else 0
+            supports_land_atmos_exchange[index] = 1 if fractions["land"] > 0.0 else 0
+            supports_ocean_atmos_exchange[index] = 1 if fractions["ocean"] > 0.0 else 0
+    return output_path
+
+
+def _colm20xx_fractions(cell: CanonicalCell) -> dict[str, float]:
+    land = float(cell.source_fractions.get("LAND", 1.0 if cell.surface_class == "LAND" else 0.0))
+    ocean = float(cell.source_fractions.get("OCEAN", 1.0 if cell.surface_class == "OCEAN" else 0.0))
+    river = sum(float(cell.source_fractions.get(name, 0.0)) for name in ("R1", "R2", "R3", "ESTUARY", "DELTA"))
+    if river == 0.0 and cell.hydro_class not in {"NONE", "R0"}:
+        river = 1.0
+    coast = float(cell.source_fractions.get("COAST", 0.0))
+    if coast == 0.0 and (cell.surface_class == "COAST" or cell.coast_class != "NONE"):
+        coast = min(1.0, land + ocean) if (land + ocean) > 0.0 else 1.0
+    return {"land": land, "ocean": ocean, "river": river, "coast": coast}
+
+
 _CELL_TYPE_CODES = {"UNKNOWN": 0, "TRI": 1, "HEX": 2, "POLYGON": 3, "MIXED": 4}
-_SURFACE_CLASS_CODES = {"UNKNOWN": 0, "LAND": 1, "OCEAN": 2, "COAST": 3}
-_HYDRO_CLASS_CODES = {"NONE": 0, "R0": 0, "R1": 1, "R2": 2, "R3": 3}
-_COAST_CLASS_CODES = {"NONE": 0, "COAST": 1, "COAST_LAND": 2, "COAST_OCEAN": 3}
+_SURFACE_CLASS_CODES = {"UNKNOWN": 0, "LAND": 1, "OCEAN": 2, "COAST": 3, "LAKE": 4, "ICE": 5, "WETLAND": 6}
+_HYDRO_CLASS_CODES = {"NONE": 0, "R0": 0, "R1": 1, "R2": 2, "R3": 3, "ESTUARY": 4, "DELTA": 5}
+_COAST_CLASS_CODES = {"NONE": 0, "COAST": 1, "COAST_LAND": 2, "COAST_OCEAN": 3, "ESTUARY": 4, "DELTA": 5, "TIDAL_FLAT": 6, "SHELF": 7}
 
 
 def _adapter_cell_row(adapter_name: str, cell: CanonicalCell) -> dict[str, object]:

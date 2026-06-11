@@ -164,3 +164,45 @@ def test_write_adapter_mesh_artifact_writes_fvcom_dat(tmp_path):
     assert lines[1] == "# cell_id cell_index cell_type center_lon center_lat area_m2 vertex_count surface_class hydro_class coast_class vertices"
     assert lines[2].startswith("tri-1 1 TRI 120.0 30.0 50.0 3 OCEAN NONE COAST_OCEAN")
     assert "119.9,29.9;120.1,29.9;120.0,30.1" in lines[2]
+
+
+def test_write_adapter_model_artifacts_writes_colm20xx_exchange_netcdf(tmp_path):
+    import netCDF4
+
+    from util.v3_core.adapters import write_adapter_model_artifacts
+
+    cell = CanonicalCell(
+        cell_id="delta-cell",
+        cell_index=9,
+        cell_type="POLYGON",
+        center_lon=121.0,
+        center_lat=31.0,
+        area_m2=250.0,
+        vertices=[(120.9, 30.9), (121.1, 30.9), (121.1, 31.1), (120.9, 31.1)],
+        surface_class="COAST",
+        hydro_class="R3",
+        coast_class="DELTA",
+        component_roles=["colm_land", "colm_ocean", "cama_river", "exchange_cell"],
+        source_fractions={"LAND": 0.4, "OCEAN": 0.5, "R3": 0.1},
+    )
+
+    artifacts = write_adapter_model_artifacts("colm20xx", [cell], tmp_path)
+
+    assert sorted(artifacts) == ["exchange"]
+    output = artifacts["exchange"]
+    assert output.name == "adapter_colm20xx_exchange.nc"
+    with netCDF4.Dataset(output) as ds:
+        assert ds.getncattr("kind") == "earthmesh_colm20xx_exchange_netcdf"
+        assert ds.getncattr("adapter_name") == "colm20xx"
+        assert ds.getncattr("schema_version") == "0.1"
+        assert ds.dimensions["cell"].size == 1
+        assert list(ds.variables["cell_index"][:]) == [9]
+        assert list(ds.variables["surface_class_code"][:]) == [3]
+        assert list(ds.variables["hydro_class_code"][:]) == [3]
+        assert list(ds.variables["coast_class_code"][:]) == [5]
+        assert list(ds.variables["land_fraction"][:]) == [0.4]
+        assert list(ds.variables["ocean_fraction"][:]) == [0.5]
+        assert list(ds.variables["river_fraction"][:]) == [0.1]
+        assert list(ds.variables["supports_land_ocean_exchange"][:]) == [1]
+        assert list(ds.variables["supports_river_land_exchange"][:]) == [1]
+        assert list(ds.variables["supports_river_ocean_exchange"][:]) == [1]

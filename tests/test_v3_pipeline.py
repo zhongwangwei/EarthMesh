@@ -135,3 +135,34 @@ def test_pipeline_sidecars_include_mpas_and_fvcom_mesh_artifacts(tmp_path):
     fvcom_payload = json.loads(paths["adapter_fvcom"].read_text())
     assert mpas_payload["files"]["mesh"] == "adapter_mpas_mesh.nc"
     assert fvcom_payload["files"]["mesh"] == "adapter_fvcom_mesh.dat"
+
+
+def test_pipeline_sidecars_include_colm20xx_exchange_artifact(tmp_path):
+    result = build_v3_pipeline_result(
+        case_name="colm20xx_exchange_case",
+        recipe_hash="abc123",
+        cells=[
+            CanonicalCell(
+                cell_id="delta-cell",
+                cell_index=9,
+                cell_type="POLYGON",
+                center_lon=121.0,
+                center_lat=31.0,
+                area_m2=250.0,
+                vertices=[(120.9, 30.9), (121.1, 30.9), (121.1, 31.1), (120.9, 31.1)],
+                surface_class="COAST",
+                hydro_class="R3",
+                coast_class="DELTA",
+                component_roles=["colm_land", "colm_ocean", "cama_river", "exchange_cell"],
+                source_fractions={"LAND": 0.4, "OCEAN": 0.5, "R3": 0.1},
+            )
+        ],
+        masks=[],
+        adapter_names=["colm20xx"],
+    )
+
+    paths = result.write_sidecars(tmp_path)
+
+    assert paths["adapter_colm20xx_exchange"].name == "adapter_colm20xx_exchange.nc"
+    payload = json.loads(paths["adapter_colm20xx"].read_text())
+    assert payload["files"]["exchange"] == "adapter_colm20xx_exchange.nc"
