@@ -260,3 +260,31 @@ def test_v3_cli_accepts_geometry_backend_option(tmp_path):
     assert exit_code == 0
     overlay_summary = json.loads((output_dir / "overlay_summary.json").read_text())
     assert overlay_summary["geometry_backend"] == "python_reference"
+
+
+def test_v3_cli_writes_all_core_adapter_bundles(tmp_path):
+    output_dir = tmp_path / "all_adapters"
+
+    exit_code = main(
+        [
+            "--case-name",
+            "all_adapters",
+            "--recipe-hash",
+            "demo",
+            "--demo",
+            "gba",
+            "--adapters",
+            "mpas,fvcom,colm2024,colm20xx",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    for adapter in ["mpas", "fvcom", "colm2024", "colm20xx"]:
+        assert (output_dir / f"adapter_{adapter}.json").exists()
+        assert (output_dir / f"adapter_{adapter}_bundle.json").exists()
+        assert (output_dir / f"adapter_{adapter}_cells.csv").exists()
+    assert (output_dir / "adapter_mpas_mesh.nc").exists()
+    assert (output_dir / "adapter_fvcom_mesh.dat").exists()
+    assert (output_dir / "adapter_colm20xx_exchange.nc").exists()

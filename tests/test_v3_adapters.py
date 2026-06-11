@@ -96,7 +96,7 @@ def test_write_adapter_cell_table_writes_stable_csv(tmp_path):
     assert lines[0] == (
         "adapter_name,cell_id,cell_index,cell_type,center_lon,center_lat,area_m2,"
         "surface_class,hydro_class,coast_class,mesh_priority,source_mesh_type,geometry_ref,"
-        "vertex_count,vertices_json,source_fractions_json,quality_flags_json"
+        "vertex_count,vertices_json,component_roles_json,source_fractions_json,quality_flags_json"
     )
     assert "colm2024,cell-1,7,POLYGON,113.5,22.5,12.0,LAND,R2,COAST_LAND,20,bbox_grid_refined,base-cell,4" in lines[1]
     row = next(csv.DictReader(output.open()))
@@ -214,3 +214,22 @@ def test_colm20xx_adapter_contract_requires_component_roles_for_exchange_cells()
     assert "component_roles" in plan.required_fields
     assert "source_fractions" in plan.required_fields
     assert plan.output_format == "colm20xx_mesh_coupling_contract"
+
+def test_adapter_cell_table_includes_component_roles_json(tmp_path):
+    from util.v3_core.adapters import write_adapter_cell_table
+
+    cell = CanonicalCell(
+        cell_id="exchange",
+        cell_index=3,
+        cell_type="POLYGON",
+        center_lon=120.0,
+        center_lat=30.0,
+        area_m2=10.0,
+        vertices=[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
+        component_roles=["colm_land", "colm_ocean", "exchange_cell"],
+    )
+
+    output = write_adapter_cell_table("colm20xx", [cell], tmp_path)
+
+    row = next(csv.DictReader(output.open()))
+    assert row["component_roles_json"] == '["colm_land", "colm_ocean", "exchange_cell"]'

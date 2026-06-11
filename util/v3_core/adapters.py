@@ -135,6 +135,7 @@ _ADAPTER_CELL_COLUMNS = [
     "geometry_ref",
     "vertex_count",
     "vertices_json",
+    "component_roles_json",
     "source_fractions_json",
     "quality_flags_json",
 ]
@@ -400,6 +401,7 @@ def _adapter_cell_row(adapter_name: str, cell: CanonicalCell) -> dict[str, objec
         "geometry_ref": cell.geometry_ref,
         "vertex_count": len(cell.vertices),
         "vertices_json": json.dumps(cell.vertices, sort_keys=True),
+        "component_roles_json": json.dumps(cell.component_roles, sort_keys=True),
         "source_fractions_json": json.dumps(cell.source_fractions, sort_keys=True),
         "quality_flags_json": json.dumps(cell.quality_flags, sort_keys=True),
     }
