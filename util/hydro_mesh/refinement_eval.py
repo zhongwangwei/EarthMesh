@@ -96,6 +96,49 @@ def summarize_intersections(collection: dict[str, object]) -> dict[str, object]:
     return summary
 
 
+def summarize_coast_intersections(collection: dict[str, object]) -> dict[str, object]:
+    """Summarize EarthMesh cell x coast-class intersection GeoJSON."""
+
+    features = _features(collection)
+    class_counts: Counter[str] = Counter()
+    fractions: list[float] = []
+    coastal_area_sum = 0.0
+    for feature in features:
+        properties = _properties(feature)
+        coast_class = str(
+            properties.get("mask_class")
+            or properties.get("overlap_class")
+            or properties.get("coast_class")
+            or ""
+        )
+        if coast_class:
+            class_counts[coast_class] += 1
+        if "coastal_fraction" in properties:
+            fractions.append(float(properties["coastal_fraction"]))
+        elif "coast_fraction" in properties:
+            fractions.append(float(properties["coast_fraction"]))
+        if "estimated_coastal_area_m2" in properties:
+            coastal_area_sum += float(properties["estimated_coastal_area_m2"])
+        elif "estimated_coast_area_m2" in properties:
+            coastal_area_sum += float(properties["estimated_coast_area_m2"])
+
+    summary: dict[str, object] = {
+        "feature_count": len(features),
+        "class_counts": dict(sorted(class_counts.items())),
+    }
+    if fractions:
+        summary.update(
+            {
+                "coastal_fraction_min": _round(min(fractions)),
+                "coastal_fraction_median": _round(statistics.median(fractions)),
+                "coastal_fraction_max": _round(max(fractions)),
+            }
+        )
+    if coastal_area_sum > 0.0:
+        summary["estimated_coastal_area_m2_sum"] = _round(coastal_area_sum)
+    return summary
+
+
 def parse_refinement_log(log_text: str) -> dict[str, dict[str, int]]:
     """Extract selected/retained triangle counts per specified-refinement level."""
 
@@ -121,6 +164,7 @@ def build_refinement_eval(
     background_cells: dict[str, object],
     intersections: dict[str, object],
     *,
+    coast_intersections: dict[str, object] | None = None,
     log_text: str | None = None,
     unit_sphere_area: bool = True,
 ) -> dict[str, object]:
@@ -129,6 +173,8 @@ def build_refinement_eval(
         "background_cells": summarize_background_cells(background_cells, unit_sphere_area=unit_sphere_area),
         "river_intersections": summarize_intersections(intersections),
     }
+    if coast_intersections is not None:
+        report["coast_intersections"] = summarize_coast_intersections(coast_intersections)
     if log_text is not None:
         report["refinement_log"] = parse_refinement_log(log_text)
     return report
@@ -139,13 +185,25 @@ def write_refinement_eval_json(
     intersections_geojson: str | Path,
     output_json: str | Path,
     *,
+    coast_intersections_geojson: str | Path | None = None,
     log_path: str | Path | None = None,
     unit_sphere_area: bool = True,
 ) -> dict[str, object]:
     background = json.loads(Path(background_geojson).read_text())
     intersections = json.loads(Path(intersections_geojson).read_text())
+    coast_intersections = (
+        json.loads(Path(coast_intersections_geojson).read_text())
+        if coast_intersections_geojson is not None
+        else None
+    )
     log_text = Path(log_path).read_text() if log_path is not None else None
-    report = build_refinement_eval(background, intersections, log_text=log_text, unit_sphere_area=unit_sphere_area)
+    report = build_refinement_eval(
+        background,
+        intersections,
+        coast_intersections=coast_intersections,
+        log_text=log_text,
+        unit_sphere_area=unit_sphere_area,
+    )
     output_path = Path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -157,6 +215,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("background_geojson", help="GeoJSON containing all background/domain EarthMesh cells")
     parser.add_argument("intersections_geojson", help="GeoJSON containing river-overlap EarthMesh cells")
     parser.add_argument("output_json", help="Output evaluation JSON")
+    parser.add_argument(
+        "--coast-intersections-geojson",
+        default=None,
+        help="Optional GeoJSON containing coast-overlap EarthMesh cells",
+    )
     parser.add_argument("--log-path", default=None, help="Optional mkgrd.x log path")
     parser.add_argument(
         "--file-area-m2",
@@ -169,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         args.background_geojson,
         args.intersections_geojson,
         args.output_json,
+        coast_intersections_geojson=args.coast_intersections_geojson,
         log_path=args.log_path,
         unit_sphere_area=not args.file_area_m2,
     )

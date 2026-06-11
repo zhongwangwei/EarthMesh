@@ -29,6 +29,18 @@ def _intersection(cell_id, river_class, fraction, area_m2):
     return feature
 
 
+def _coast_intersection(cell_id, coast_class, fraction, area_m2):
+    feature = _cell(cell_id, 1.0)
+    feature["properties"].update(
+        {
+            "mask_class": coast_class,
+            "coastal_fraction": fraction,
+            "estimated_coastal_area_m2": area_m2,
+        }
+    )
+    return feature
+
+
 def test_summarize_background_cells_reports_equivalent_size_stats():
     from util.hydro_mesh.refinement_eval import summarize_background_cells
 
@@ -60,6 +72,27 @@ def test_summarize_intersections_reports_class_counts_and_fraction_range():
     assert summary["river_fraction_min"] == 0.25
     assert summary["river_fraction_max"] == 0.75
     assert summary["estimated_river_area_m2_sum"] == 60.0
+
+
+def test_summarize_coast_intersections_reports_counts_fraction_and_area():
+    from util.hydro_mesh.refinement_eval import summarize_coast_intersections
+
+    summary = summarize_coast_intersections(
+        _feature_collection(
+            [
+                _coast_intersection("a", "COAST", 0.25, 10.0),
+                _coast_intersection("b", "COAST", 0.5, 20.0),
+                _coast_intersection("c", "COAST_OCEAN", 0.75, 30.0),
+            ]
+        )
+    )
+
+    assert summary["feature_count"] == 3
+    assert summary["class_counts"] == {"COAST": 2, "COAST_OCEAN": 1}
+    assert summary["coastal_fraction_min"] == 0.25
+    assert summary["coastal_fraction_median"] == 0.5
+    assert summary["coastal_fraction_max"] == 0.75
+    assert summary["estimated_coastal_area_m2_sum"] == 60.0
 
 
 def test_parse_refinement_log_extracts_selected_and_retained_by_level():
@@ -104,3 +137,53 @@ def test_write_refinement_eval_json_combines_inputs(tmp_path):
     assert written["background_cells"]["cell_count"] == 1
     assert written["river_intersections"]["class_counts"] == {"R3": 1}
     assert written["refinement_log"]["1"]["retained_triangles"] == 3
+
+
+def test_write_refinement_eval_json_optionally_includes_coast_intersections(tmp_path):
+    from util.hydro_mesh.refinement_eval import write_refinement_eval_json
+
+    background = tmp_path / "background.geojson"
+    intersections = tmp_path / "intersections.geojson"
+    coast = tmp_path / "coast.geojson"
+    output = tmp_path / "eval.json"
+    background.write_text(json.dumps(_feature_collection([_cell("a", 4.0)])))
+    intersections.write_text(json.dumps(_feature_collection([_intersection("a", "R3", 0.5, 20.0)])))
+    coast.write_text(json.dumps(_feature_collection([_coast_intersection("a", "COAST", 0.25, 10.0)])))
+
+    write_refinement_eval_json(
+        background,
+        intersections,
+        output,
+        coast_intersections_geojson=coast,
+        unit_sphere_area=False,
+    )
+
+    written = json.loads(output.read_text())
+    assert written["coast_intersections"]["feature_count"] == 1
+    assert written["coast_intersections"]["class_counts"] == {"COAST": 1}
+    assert written["coast_intersections"]["coastal_fraction_max"] == 0.25
+
+
+def test_refinement_eval_cli_accepts_coast_intersections_geojson(tmp_path):
+    from util.hydro_mesh.refinement_eval import main
+
+    background = tmp_path / "background.geojson"
+    intersections = tmp_path / "intersections.geojson"
+    coast = tmp_path / "coast.geojson"
+    output = tmp_path / "eval.json"
+    background.write_text(json.dumps(_feature_collection([_cell("a", 4.0)])))
+    intersections.write_text(json.dumps(_feature_collection([_intersection("a", "R3", 0.5, 20.0)])))
+    coast.write_text(json.dumps(_feature_collection([_coast_intersection("a", "COAST", 0.25, 10.0)])))
+
+    assert main(
+        [
+            str(background),
+            str(intersections),
+            str(output),
+            "--coast-intersections-geojson",
+            str(coast),
+            "--file-area-m2",
+        ]
+    ) == 0
+
+    assert json.loads(output.read_text())["coast_intersections"]["feature_count"] == 1
