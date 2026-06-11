@@ -1022,3 +1022,22 @@ The matching mesh is:
 This candidate is much heavier than the N64 smoke but is the first one where the
 coastal overlap layer is mostly around 9 km in the QA window while retaining the
 river R3 refinement.
+
+Machine-readable evaluation artifacts were refreshed with the Phase 27 coast metrics and
+ranked with the Phase 26 sweep scorer:
+
+```bash
+python3 -m util.hydro_mesh.refinement_sweep rank \
+  --reports \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N64_r3d3_ranked_coast20_with_coast_eval.json \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N96_r3d3_cst20_with_coast_eval.json \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N112_r3d3_cst20_with_coast_eval.json \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N128_r3d3_cst20_failed_eval.json \
+  --output-json \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_r3d3_cst20_with_coast_sweep_ranking_including_N128_failure.json \
+  --max-background-cells 3000
+```
+
+The ranking report recommends `N112_r3d3_cst20`.  `N128_r3d3_cst20` is kept as a
+failed row with the close-curve error summary so it is not mistaken for a missing
+or merely unscored candidate.
