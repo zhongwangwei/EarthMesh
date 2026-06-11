@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
-from util.v3_components import build_merit_masks, select_merit_tiles
+from util.v3_components import build_merit_masks, select_merit_tiles, split_merit_mask_layers
 
 
 def test_component_run_context_carries_case_paths_and_dry_run_flag(tmp_path):
@@ -40,6 +40,7 @@ def test_component_result_lists_products_and_warnings():
 def test_v3_components_exports_merit_hydro_bridge():
     assert callable(select_merit_tiles)
     assert callable(build_merit_masks)
+    assert callable(split_merit_mask_layers)
 
 
 def test_hydro_merit_module_help_runs_without_runtime_warning():

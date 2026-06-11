@@ -140,6 +140,28 @@ def build_merit_masks(
     return {"type": "FeatureCollection", "features": features}, summary
 
 
+def split_merit_mask_layers(collection: dict[str, object]) -> dict[str, dict[str, object]]:
+    layers = {
+        "river": {"type": "FeatureCollection", "features": []},
+        "coast": {"type": "FeatureCollection", "features": []},
+        "surface": {"type": "FeatureCollection", "features": []},
+    }
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties", {})
+        if not isinstance(properties, dict):
+            continue
+        mask_class = properties.get("mask_class")
+        if mask_class in {"R2", "R3"}:
+            layers["river"]["features"].append(feature)
+        elif mask_class in {"COAST_LAND", "COAST_OCEAN"}:
+            layers["coast"]["features"].append(feature)
+        elif mask_class in {"LAND", "OCEAN"}:
+            layers["surface"]["features"].append(feature)
+    return layers
+
+
 def write_merit_mask_outputs(
     merit_root: str | Path,
     *,
@@ -165,10 +187,23 @@ def write_merit_mask_outputs(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     mask_path = output / "merit_masks.geojson"
+    river_path = output / "merit_river_masks.geojson"
+    coast_path = output / "merit_coast_masks.geojson"
+    surface_path = output / "merit_surface_masks.geojson"
     summary_path = output / "merit_mask_summary.json"
+    layers = split_merit_mask_layers(masks)
     mask_path.write_text(json.dumps(masks, indent=2, sort_keys=True) + "\n")
+    river_path.write_text(json.dumps(layers["river"], indent=2, sort_keys=True) + "\n")
+    coast_path.write_text(json.dumps(layers["coast"], indent=2, sort_keys=True) + "\n")
+    surface_path.write_text(json.dumps(layers["surface"], indent=2, sort_keys=True) + "\n")
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
-    return {"masks": mask_path, "summary": summary_path}
+    return {
+        "masks": mask_path,
+        "river_masks": river_path,
+        "coast_masks": coast_path,
+        "surface_masks": surface_path,
+        "summary": summary_path,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

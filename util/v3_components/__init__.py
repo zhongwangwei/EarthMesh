@@ -7,6 +7,7 @@ _MERIT_EXPORTS = {
     "build_merit_masks",
     "read_merit_window",
     "select_merit_tiles",
+    "split_merit_mask_layers",
     "tile_bounds_from_name",
     "write_merit_mask_outputs",
 }

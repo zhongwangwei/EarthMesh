@@ -8,6 +8,7 @@ from util.v3_components.hydro_merit import (
     MeritWindow,
     read_merit_window,
     select_merit_tiles,
+    split_merit_mask_layers,
     tile_bounds_from_name,
     write_merit_mask_outputs,
 )
@@ -73,6 +74,19 @@ def test_build_merit_masks_marks_land_ocean_adjacency_as_coast(tmp_path):
     assert summary["mask_counts"]["COAST_OCEAN"] > 0
 
 
+def test_split_merit_mask_layers_returns_surface_coast_and_river_layers(tmp_path):
+    tile = tmp_path / "n20e110.nc"
+    _write_merit_fixture(tile)
+    window = read_merit_window(tile, bbox=(110.0, 20.0, 110.005, 20.005), stride=1)
+    masks, _summary = build_merit_masks([window], r2_width_m=50.0, r3_width_m=300.0, r2_upa_km2=5000.0, r3_upa_km2=50000.0)
+
+    layers = split_merit_mask_layers(masks)
+
+    assert sorted(layers) == ["coast", "river", "surface"]
+    assert {feature["properties"]["mask_class"] for feature in layers["river"]["features"]} >= {"R2", "R3"}
+    assert {feature["properties"]["mask_class"] for feature in layers["surface"]["features"]} <= {"LAND", "OCEAN"}
+
+
 def test_write_merit_mask_outputs_writes_geojson_and_summary(tmp_path):
     tile = tmp_path / "n20e110.nc"
     out = tmp_path / "out"
@@ -90,9 +104,11 @@ def test_write_merit_mask_outputs_writes_geojson_and_summary(tmp_path):
     )
 
     assert outputs["masks"].name == "merit_masks.geojson"
+    assert outputs["river_masks"].name == "merit_river_masks.geojson"
+    assert outputs["coast_masks"].name == "merit_coast_masks.geojson"
+    assert outputs["surface_masks"].name == "merit_surface_masks.geojson"
     assert outputs["summary"].name == "merit_mask_summary.json"
-    assert outputs["masks"].exists()
-    assert outputs["summary"].exists()
+    assert all(path.exists() for path in outputs.values())
 
 
 def _write_merit_fixture(path: Path) -> None:
