@@ -985,3 +985,40 @@ So the next v3 step should not be "add every 1min object".  It should keep the
 composite recipe driver, rank river/coast source geometries explicitly, and judge
 candidate masks by the retained R2/R3 refinement plus the embedded Leaflet QA
 layer.
+
+## Finer coastal mesh candidates
+
+The first integrated-coast map was still visually coarse because the coastline
+was embedded into the generated EarthMesh cells, but the underlying global base
+mesh was only `NXP=64`.  Raising the COAST close-mask target alone did not help:
+`COAST=2` and `COAST=3` masks were read, but the final Yangtze-delta subset was
+unchanged from the N64 `ranked_coast20` case.  The effective path is to increase
+the base grid resolution while keeping the same verified hydro/coast mask recipe.
+
+Observed smoke comparison for 118-123E, 28-33N:
+
+| case | status | bbox cells | background median dx | river-overlap cells | retained L1/L2/L3 | coastal EarthMesh cells | coastal median dx |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |
+| `N64 ranked_coast20` | pass | `482` | `17.86 km` | `204` | `94/94/90` | `84` | `27.31 km` |
+| `N96 r3d3 cst20` | pass | `1110` | `10.31 km` | `333` | `183/211/283` | `134` | `20.44 km` |
+| `N112 r3d3 cst20` | pass | `2574` | `8.41 km` | `500` | `246/367/660` | `374` | `8.96 km` |
+| `N128 r3d3 cst20` | failed | n/a | n/a | n/a | n/a | n/a | n/a |
+
+The `N128` smoke hit EarthMesh's close-curve segmentation guard:
+`ERROR! num_sum must same as sum(n_close_curve)-1`.  Do not promote it until the
+segment ordering issue is fixed.  The current finer visual QA candidate is
+therefore `N112 r3d3 cst20`:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_rivers_and_integrated_coast_leaflet.html
+```
+
+The matching mesh is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/cases/ATMOS_hydro_N112_r3d3_cst20/result/MPASOUT_NXP0112_global.nc4
+```
+
+This candidate is much heavier than the N64 smoke but is the first one where the
+coastal overlap layer is mostly around 9 km in the QA window while retaining the
+river R3 refinement.
