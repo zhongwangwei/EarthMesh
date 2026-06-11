@@ -229,3 +229,81 @@ def test_geojson_to_close_mask_specs_can_cap_each_class_independently():
 
     assert [spec.river_class for spec in specs if spec.refine_degree == 1] == ["R2", "R2", "R3"]
     assert [spec.river_class for spec in specs if spec.refine_degree == 2] == ["R3"]
+
+
+def test_geojson_to_close_mask_specs_skips_same_class_rings_with_overlapping_envelopes():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]],
+                },
+                "properties": {"river_class": "R2"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[1, 1], [3, 1], [3, 3], [1, 3], [1, 1]]],
+                },
+                "properties": {"river_class": "R2"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[5, 0], [6, 0], [6, 1], [5, 1], [5, 0]]],
+                },
+                "properties": {"river_class": "R2"},
+            },
+        ],
+    }
+
+    specs = geojson_to_close_mask_specs(
+        collection,
+        class_refine={"R2": 1},
+        max_rings_by_class={"R2": 3},
+        min_ring_separation_deg=0.25,
+    )
+
+    assert [(spec.source_feature_index, spec.refine_degree) for spec in specs] == [(0, 1), (2, 1)]
+
+
+def test_geojson_to_close_mask_specs_applies_ring_separation_across_classes_at_same_degree():
+    from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]],
+                },
+                "properties": {"river_class": "R2"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[1, 1], [3, 1], [3, 3], [1, 3], [1, 1]]],
+                },
+                "properties": {"river_class": "R3"},
+            },
+        ],
+    }
+
+    specs = geojson_to_close_mask_specs(
+        collection,
+        class_refine={"R2": 1, "R3": 3},
+        max_rings_by_class={"R2": 1, "R3": 1},
+        min_ring_separation_deg=0.25,
+    )
+
+    assert [(spec.river_class, spec.refine_degree) for spec in specs] == [("R3", 1), ("R3", 2), ("R3", 3)]

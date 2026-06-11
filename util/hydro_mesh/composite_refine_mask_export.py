@@ -68,6 +68,7 @@ def _component_specs(component: Mapping[str, object]) -> list[CloseMaskSpec]:
         cumulative_refine=bool(component.get("cumulative_refine", True)),
         buffer_deg=float(component.get("buffer_deg", 0.0)),
         buffer_deg_by_refine_degree=_as_degree_float_mapping(component.get("buffer_deg_by_refine_degree")),
+        min_ring_separation_deg=float(component.get("min_ring_separation_deg", 0.0)),
     )
 
 

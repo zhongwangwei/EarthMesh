@@ -2657,15 +2657,18 @@ Module MOD_grid_preprocess
         real(r8),allocatable, intent(in) :: mp(:,:)
         integer, allocatable, intent(inout) :: ngrwm(:,:) ! 顶点w的相邻点m的逆时针排序输出
         integer :: i, j, k, mj, ik, ref_temp, num_inter, maxnum
+        integer :: start_pos, next_pos
         real(r8) :: area 
         logical :: found
         integer, allocatable :: Isused(:), ngrwm_temp1(:), ngrwm_temp2(:)
+        integer, allocatable :: neighbor_degree(:)
         real(r8),allocatable :: lon(:), lat(:)
 
         maxnum = maxval(n_ngrwm) ! 记录多边形最大的顶点个数
         allocate(Isused(maxnum)) ! 用于记录该三角形是否已经被使用
         allocate(ngrwm_temp1(maxnum)) ! 用于临时记录旧ngrwm(i)
         allocate(ngrwm_temp2(maxnum)) ! 用于临时存储新ngrwm(i)
+        allocate(neighbor_degree(maxnum))
         allocate(lon(maxnum))
         allocate(lat(maxnum))
 
@@ -2674,11 +2677,28 @@ Module MOD_grid_preprocess
             ngrwm_temp1 = ngrwm(:,i)
             ngrwm_temp2 = 1
             Isused = 0
+            neighbor_degree = 0
 
-            ref_temp = ngrwm_temp1(1) ! 获取第一个三角形编号
+            do j = 1, num_inter, 1
+                do next_pos = 1, num_inter, 1
+                    if (next_pos == j) cycle
+                    ik = IsNgrmm(ngrmw(1:3, ngrwm_temp1(j)), ngrmw(1:3, ngrwm_temp1(next_pos)))
+                    if (ik /= 0) neighbor_degree(j) = neighbor_degree(j) + 1
+                end do
+            end do
+
+            start_pos = 1
+            do j = 1, num_inter, 1
+                if (neighbor_degree(j) == 1) then
+                    start_pos = j
+                    exit
+                end if
+            end do
+
+            ref_temp = ngrwm_temp1(start_pos) ! 获取第一个三角形编号
             k = 1
             ngrwm_temp2(1) = ref_temp 
-            Isused(1) = 1 ! 对第一个三角形进行标记
+            Isused(start_pos) = 1 ! 对第一个三角形进行标记
 
             do while (k < num_inter)
                 found = .FALSE.
@@ -2697,7 +2717,19 @@ Module MOD_grid_preprocess
                 end do 
 
                 ! 如果从2到num_iter都没有找到符合条件的，则报错
-                if (.not. found) STOP "ERROR! this do-loop must exit when find we want in SUBROUTINE GetSortNew"
+                if (.not. found) then
+                    write(io6, *) "WARNING! incomplete adjacency walk in SUBROUTINE GetSortNew", i, k, num_inter
+                    do j = 1, num_inter, 1
+                        if (Isused(j) == 1) cycle
+                        ref_temp = ngrwm_temp1(j)
+                        k = k + 1
+                        ngrwm_temp2(k) = ref_temp
+                        Isused(j) = 1
+                        found = .TRUE.
+                        exit
+                    end do
+                    if (.not. found) exit
+                end if
             end do
 
             ! 判断ngrwm_temp2的方向是逆时针还是顺时针，并统一为逆时针
@@ -2717,7 +2749,7 @@ Module MOD_grid_preprocess
             ngrwm(:, i) = ngrwm_temp2 ! 数据更新
         end do
         
-        deallocate(Isused, ngrwm_temp1, ngrwm_temp2, lon, lat)
+        deallocate(Isused, ngrwm_temp1, ngrwm_temp2, neighbor_degree, lon, lat)
 
     END SUBROUTINE GetSortNew
 

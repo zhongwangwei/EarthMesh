@@ -1628,3 +1628,59 @@ a bounded smoke, not a promoted China/Yangtze production regeneration.  Before a
 large-domain regenerated mesh is treated as a deliverable, the R2/R3/coast caps,
 buffer distances, and visual/metric QA thresholds should be reviewed on the target
 domain.
+
+### China N160 MERIT regeneration production candidate
+
+For the full China/Taiwan/surrounding-seas domain, the promoted MERIT regeneration
+candidate is the separated-ring run below.  The important production rule is that
+large-domain MERIT close masks must avoid overlapping or near-touching river rings
+at the same refinement degree; otherwise EarthMesh can create >7-edge local
+polygons that are not acceptable for MPAS/CoLM handoff.
+
+```bash
+RUN=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_regeneration_stride20_cap3_sep025_v2
+python3 -m util.hydro_mesh.merit_mesh_regeneration \
+  --case-name ATMOS_merit_china_N160_regen_stride20_cap3_sep025_v2 \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 73 3 136 54 \
+  --output-dir "$RUN" \
+  --template-nml /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/cases/ATMOS_china_region_N160_d3_nowce/result/namelist.save \
+  --case-base-dir "$RUN/cases" \
+  --stride 20 \
+  --r2-cap 3 \
+  --r3-cap 3 \
+  --coast-cap 3 \
+  --min-river-ring-separation-deg 0.25
+
+./mkgrd.x "$RUN/ATMOS_merit_china_N160_regen_stride20_cap3_sep025_v2.mnl" > "$RUN/mkgrd.log" 2>&1
+```
+
+Observed production-candidate evidence:
+
+- Evidence JSON: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_regeneration_stride20_cap3_sep025_v2/regeneration_evidence.json`.
+- mkgrd log: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_regeneration_stride20_cap3_sep025_v2/mkgrd.log`.
+- Success marker: `!! Successfully Make Grid End !!`.
+- Generated MPAS mesh: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_regeneration_stride20_cap3_sep025_v2/cases/ATMOS_merit_china_N160_regen_stride20_cap3_sep025_v2/result/MPASOUT_NXP0160_global.nc4` (`342M`).
+- Generated EarthMesh grid: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_regeneration_stride20_cap3_sep025_v2/cases/ATMOS_merit_china_N160_regen_stride20_cap3_sep025_v2/gridfile/gridfile_NXP0160_04_hex.nc4` (`26M`).
+- Input close-mask split: `COAST_LAND_d1=3`, `COAST_OCEAN_d1=3`, `R2_d1=3`, `R3_d1=3`, `R3_d2=3`, `R3_d3=3`; components `merit_coast=6`, `merit_river=12`.
+- Final topology: `triangular_mesh_number=514613`, `polygon_mesh_number=257309`, `n_ngrwm_min=5`, `n_ngrwm_max=7`, `<5 count=0`, `>7 count=0`, distribution `5=94`, `6=257132`, `7=82`.
+
+Rejected trial runs are also informative:
+
+- `stride20_cap4` reached final topology construction only after weak-concav and
+  dynamic-adjacency fixes, but produced `num_less=2` and `num_more=2` before
+  Spring adjustment.
+- `stride20_cap3` reduced the issue but still produced `num_less=2` and
+  `num_more=1`.
+- `stride20_cap3_sep025` removed the <5 cells but still had one >7 cell because
+  the first separation rule only compared rings within the same class.  The
+  promoted `sep025_v2` rule separates rings across river classes at the same
+  refinement degree, giving priority to higher target refinement such as R3 over
+  nearby R2.
+
+The Fortran side now also handles several large-domain edge cases that the China
+MERIT candidate exposed: sparse weak-concav accounting, missing child adjacency as
+a warning instead of an abort, dynamic final `ngrwm_f` adjacency capacity, and an
+endpoint-start fallback in `GetSortNew` for open local adjacency walks.  These are
+stability guards; the production acceptance criterion remains no `<5` or `>7`
+polygons in the final regenerated grid.

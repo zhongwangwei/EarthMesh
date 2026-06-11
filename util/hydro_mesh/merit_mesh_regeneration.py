@@ -28,6 +28,7 @@ def write_merit_mesh_regeneration_inputs(
     r3_cap: int = 20,
     coast_cap: int = 20,
     simplify_tolerance_deg: float = 0.005,
+    min_river_ring_separation_deg: float = 0.25,
 ) -> dict[str, Any]:
     """Write MERIT-driven EarthMesh close-mask inputs and an optional patched namelist.
 
@@ -62,6 +63,7 @@ def write_merit_mesh_regeneration_inputs(
         r3_cap=r3_cap,
         coast_cap=coast_cap,
         simplify_tolerance_deg=simplify_tolerance_deg,
+        min_river_ring_separation_deg=min_river_ring_separation_deg,
     )
     recipe_path.write_text(json.dumps(recipe, indent=2, sort_keys=True) + "\n")
     close_mask_summary = write_composite_close_mask_nmls(recipe, close_mask_prefix)
@@ -117,6 +119,7 @@ def _merit_close_mask_recipe(
     r3_cap: int,
     coast_cap: int,
     simplify_tolerance_deg: float,
+    min_river_ring_separation_deg: float,
 ) -> dict[str, object]:
     return {
         "kind": "earthmesh_merit_close_mask_recipe",
@@ -136,6 +139,7 @@ def _merit_close_mask_recipe(
                 "max_rings_by_class": {"R2": r2_cap, "R3": r3_cap},
                 "buffer_deg_by_refine_degree": {"1": 1.5, "2": 1.0, "3": 0.5},
                 "simplify_tolerance_deg": simplify_tolerance_deg,
+                "min_ring_separation_deg": min_river_ring_separation_deg,
             },
         ],
     }
@@ -200,6 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--r3-cap", type=int, default=20)
     parser.add_argument("--coast-cap", type=int, default=20)
     parser.add_argument("--simplify-tolerance-deg", type=float, default=0.005)
+    parser.add_argument("--min-river-ring-separation-deg", type=float, default=0.25)
     args = parser.parse_args(argv)
 
     result = write_merit_mesh_regeneration_inputs(
@@ -219,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         r3_cap=args.r3_cap,
         coast_cap=args.coast_cap,
         simplify_tolerance_deg=args.simplify_tolerance_deg,
+        min_river_ring_separation_deg=args.min_river_ring_separation_deg,
     )
     printable = {
         key: str(value)

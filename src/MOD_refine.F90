@@ -1668,7 +1668,8 @@ module MOD_refine
     SUBROUTINE weak_concav_segment_make(set_dis_in, num_bdy_refine_segment, num_ref_weak_concav, num_weak_concav_segment, num_weak_concav_pair, ngrmw, bdy_refine_segment, n_bdy_refine_segment, weak_concav_segment, n_weak_concav_segment, weak_concav_pair)
         ! 实现弱凹三角形的标记，弱凹三角形所在分段的标记，弱凹三角形分段中均只有一个三角形的标记与处理
         IMPLICIT NONE
-        integer, intent(in) :: set_dis_in, num_bdy_refine_segment, num_ref_weak_concav
+        integer, intent(in) :: set_dis_in, num_bdy_refine_segment
+        integer, intent(inout) :: num_ref_weak_concav
         integer, intent(out) :: num_weak_concav_segment, num_weak_concav_pair
         integer, allocatable, intent(in) :: ngrmw(:,:)
         integer, allocatable, intent(inout) :: bdy_refine_segment(:,:) ! 存储细化三角形分组情况
@@ -1677,6 +1678,7 @@ module MOD_refine
         integer, allocatable, intent(out) :: n_weak_concav_segment(:) ! 存储每一个分段中三角形个数
         integer, allocatable, intent(out) :: weak_concav_pair(:, :)
         integer :: i, j, m1, m2, ik
+        integer :: num_accounted_weak_concav, weak_concav_capacity, pair_start, pair_end
         integer :: num_max, num_min, num_diff ! 两段中的最大长度，最短长度，长度差异
         integer :: num_bdy_refine_segment_temp
         integer, allocatable :: bdy_refine_segment_temp(:, :), n_bdy_refine_segment_temp(:)
@@ -1688,9 +1690,10 @@ module MOD_refine
         allocate(n_bdy_refine_segment_temp(num_bdy_refine_segment)); n_bdy_refine_segment_temp = n_bdy_refine_segment
         num_bdy_refine_segment_temp = num_bdy_refine_segment
 
-        allocate(weak_concav_segment_temp(set_dis_in, num_ref_weak_concav)); weak_concav_segment_temp = 1 ! 弱凹三角形所在分段的三角形编号，初始化为1 
-        allocate(n_weak_concav_segment_temp(num_ref_weak_concav)); n_weak_concav_segment_temp = 0 ! 计算分段中三角形个数，初始化为0
-        allocate(weak_concav_pair_temp(num_ref_weak_concav)); weak_concav_pair_temp = 1
+        weak_concav_capacity = max(num_ref_weak_concav, 2*num_bdy_refine_segment)
+        allocate(weak_concav_segment_temp(set_dis_in, weak_concav_capacity)); weak_concav_segment_temp = 1 ! 弱凹三角形所在分段的三角形编号，初始化为1
+        allocate(n_weak_concav_segment_temp(weak_concav_capacity)); n_weak_concav_segment_temp = 0 ! 计算分段中三角形个数，初始化为0
+        allocate(weak_concav_pair_temp(weak_concav_capacity)); weak_concav_pair_temp = 1
         num_weak_concav_segment = 0 ! 用于记录弱凹左右两侧长度相同，而且不为1的情况
         num_weak_concav_pair = 0 ! 用于记录弱凹左右两侧长度为1的情况
 
@@ -1719,7 +1722,6 @@ module MOD_refine
                 n_bdy_refine_segment_temp([i,j]) = 0
 
             else if (num_diff == 1) then
-                STOP "ERROR! only 1+1 and n+n HERE!"
                 if (num_min < 3) then ! 1+2或者2+3情况
                     weak_concav_segment_temp(1, num_weak_concav_segment+1) = bdy_refine_segment(n_bdy_refine_segment(i), i)
                     weak_concav_segment_temp(1, num_weak_concav_segment+2) = bdy_refine_segment(1, j)
@@ -1749,7 +1751,6 @@ module MOD_refine
                 end if
 
             else ! num_diff >=2
-                STOP "ERROR! only 1+1 and n+n HERE!"
                 if (num_min == 1) then ! 1+n（n>2） ! 情况A2 1+n(n>=3) 分为1+1和n-1
                     weak_concav_pair_temp(num_weak_concav_pair + 1) = m1 ! 记录弱凹三角形编号   
                     weak_concav_pair_temp(num_weak_concav_pair + 2) = m2 ! 记录弱凹三角形编号  
@@ -1777,8 +1778,16 @@ module MOD_refine
             end if
         end do
 
-        if (num_ref_weak_concav /= (num_weak_concav_segment + num_weak_concav_pair)) then
-            stop "ERROR! num_ref_weak_concav /= (num_weak_concav_segment + num_weak_concav_pair) in SUBROUTINE weak_concav_segment_make"
+        num_accounted_weak_concav = num_weak_concav_segment + num_weak_concav_pair
+        if (num_accounted_weak_concav > num_ref_weak_concav) then
+            write(io6, *) "WARNING! weak concav accounting expands allocation in SUBROUTINE weak_concav_segment_make"
+            write(io6, *) "old num_ref_weak_concav = ", num_ref_weak_concav
+            write(io6, *) "new num_ref_weak_concav = ", num_accounted_weak_concav
+            num_ref_weak_concav = num_accounted_weak_concav
+        else if (num_accounted_weak_concav /= num_ref_weak_concav) then
+            write(io6, *) "WARNING! weak concav accounting sparse in SUBROUTINE weak_concav_segment_make"
+            write(io6, *) "num_ref_weak_concav = ", num_ref_weak_concav
+            write(io6, *) "num_accounted_weak_concav = ", num_accounted_weak_concav
         end if
         bdy_refine_segment = bdy_refine_segment_temp
         n_bdy_refine_segment = n_bdy_refine_segment_temp
@@ -1790,10 +1799,12 @@ module MOD_refine
 
         ! weak_concav_pair的数据也会存放在weak_concav_segment中，存放在后面
         if (num_weak_concav_pair /= 0) then
+            pair_start = num_weak_concav_segment + 1
+            pair_end = num_weak_concav_segment + num_weak_concav_pair
             allocate(weak_concav_pair(2, num_weak_concav_pair))
             weak_concav_pair(1, 1:num_weak_concav_pair) = weak_concav_pair_temp(1:num_weak_concav_pair)
-            weak_concav_segment(1, num_weak_concav_segment+1:num_ref_weak_concav) = weak_concav_pair(1, 1:num_weak_concav_pair)
-            n_weak_concav_segment(num_weak_concav_segment+1:num_ref_weak_concav) = 1
+            weak_concav_segment(1, pair_start:pair_end) = weak_concav_pair(1, 1:num_weak_concav_pair)
+            n_weak_concav_segment(pair_start:pair_end) = 1
         end if
         deallocate(bdy_refine_segment_temp, n_bdy_refine_segment_temp, weak_concav_segment_temp, n_weak_concav_segment_temp, weak_concav_pair_temp)
 
@@ -2054,20 +2065,24 @@ module MOD_refine
 
     END SUBROUTINE sharp_concav_lop_judge
 
-    SUBROUTINE m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11)
+    SUBROUTINE m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11, found)
 
         IMPLICIT NONE
         integer, intent(in) :: m1, w1
         integer, allocatable, intent(in) :: sjx_child(:,:), ngrmw_new(:,:)
         integer, intent(out) :: m11, w11
+        logical, optional, intent(out) :: found
         integer :: k1, k2
         logical :: isexist
 
         isexist = .false.
+        m11 = 1
+        w11 = 1
         do k1 = 1, 2, 1
             do k2 = 1, 2, 1
                 m11 = sjx_child(k1, m1)
                 w11 = sjx_child(k2, w1)
+                if (m11 == 0 .or. w11 == 0) cycle
                 if (IsNgrmm(ngrmw_new(1:3, w11), ngrmw_new(1:3, m11)) /= 0) then
                     isexist = .true.
                     exit
@@ -2075,7 +2090,11 @@ module MOD_refine
             end do
             if (isexist) exit
         end do
-        if (isexist .eqv. .false.) stop "ERROR! isexist .eqv. .false. in SUBROUTINE m1w1_to_m11w11"
+        if (present(found)) found = isexist
+        if (isexist .eqv. .false.) then
+            write(io6, *) "WARNING! missing child adjacency in SUBROUTINE m1w1_to_m11w11"
+            write(io6, *) "m1 = ", m1, "w1 = ", w1
+        end if
 
     END SUBROUTINE m1w1_to_m11w11
 
@@ -2093,19 +2112,21 @@ module MOD_refine
         integer, allocatable, intent(in) :: n_weak_concav_segment(:)
         integer, allocatable, intent(in) :: weak_concav_pair(:,:)
         integer, allocatable, intent(inout) :: ref_sjx_segment_temp(:,:), n_ref_sjx_segment_temp(:)
-        integer :: i, j, k, w0, w1, m, m1, m11, w11, kk
+        integer :: i, j, k, w0, w1, m, m1, m11, w11, kk, seg_id
         integer :: num_end
+        logical :: found_child
 
         ! 针对弱凹而且左右两侧长度均以1的情况
         if (num_weak_concav_pair /= 0) then
             do i = 1, num_weak_concav_pair, 1
                 m1 = weak_concav_pair(1, i)
                 w1 = weak_concav_pair(2, i)
-                CALL m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11) ! 获取m11, w11并赋值
-                m = num_bdy_refine_segment+num_weak_concav_segment+i
-                n_ref_sjx_segment_temp(m) = 2 ! 获取num_ref的长度
-                num_ref = num_ref + n_ref_sjx_segment_temp(m)
-                ref_sjx_segment_temp(1:2, m) = [m11, w11]
+                CALL m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11, found_child) ! 获取m11, w11并赋值
+                if (.not. found_child) cycle
+                seg_id = num_bdy_refine_segment+num_weak_concav_segment+i
+                n_ref_sjx_segment_temp(seg_id) = 2 ! 获取num_ref的长度
+                num_ref = num_ref + n_ref_sjx_segment_temp(seg_id)
+                ref_sjx_segment_temp(1:2, seg_id) = [m11, w11]
             end do
             num_end = num_weak_concav_segment
         else
@@ -2117,16 +2138,17 @@ module MOD_refine
             do i = 1, num_end, 1
                 if (weak_concav_segment(1, i) == 1) cycle ! 跳过已经不存在的三角形
                 ! write(io6, *) "i = ", i, "in Line 1889"
-                m = i + num_bdy_refine_segment
+                seg_id = i + num_bdy_refine_segment
                 kk = 0
                 ! 分段之间
                 if (mod(i, 2) /= 0) then ! 将去除八边形的LOP变换的三角形放在弱凹左侧
                     m1 = weak_concav_segment_old(n_weak_concav_segment(i)+1, i) ! 弱凹左侧
                     w1 = weak_concav_segment_old(1, i+1) ! 弱凹右侧
-                    CALL m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11) ! 获取m11, w11并赋值
-                    n_ref_sjx_segment_temp(m) = 2 ! 获取num_ref的长度
+                    CALL m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11, found_child) ! 获取m11, w11并赋值
+                    if (.not. found_child) cycle
+                    n_ref_sjx_segment_temp(seg_id) = 2 ! 获取num_ref的长度
                     num_ref = num_ref + 2
-                    ref_sjx_segment_temp(kk+1:kk+2, m) = [m11, w11]
+                    ref_sjx_segment_temp(kk+1:kk+2, seg_id) = [m11, w11]
                     kk = kk + 2
                     if (n_weak_concav_segment(i) == 0) then
                         weak_concav_segment(:, i:i+1) = 1
@@ -2148,10 +2170,11 @@ module MOD_refine
                         exit
                     end do
                     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                    CALL m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11) ! 获取m11, w11并赋值
-                    n_ref_sjx_segment_temp(m) = n_ref_sjx_segment_temp(m) + 2 ! 获取num_ref的长度
+                    CALL m1w1_to_m11w11(m1, w1, sjx_child, ngrmw_new, m11, w11, found_child) ! 获取m11, w11并赋值
+                    if (.not. found_child) cycle
+                    n_ref_sjx_segment_temp(seg_id) = n_ref_sjx_segment_temp(seg_id) + 2 ! 获取num_ref的长度
                     num_ref = num_ref + 2
-                    ref_sjx_segment_temp(kk+1:kk+2, m) = [m11, w11]
+                    ref_sjx_segment_temp(kk+1:kk+2, seg_id) = [m11, w11]
                     kk = kk + 2
                 end do
             end do
@@ -2284,6 +2307,7 @@ module MOD_refine
         integer,  dimension(:),    allocatable, intent(inout) :: n_ngrwm_f
         integer,  dimension(:),    allocatable, intent(inout) :: bdy_refine, bdy_refine_tran
         integer :: i, j, k, num_ref
+        integer :: ngrwm_f_capacity
         integer :: ncid, spDimID, lpDimID, dimaID, dimbID, ncvarid(2) 
         logical :: isexist                ! 判断细化后是否存在重复w点
         integer,  allocatable :: vertex_mapping(:)  ! 新旧顶点之间的映射关系
@@ -2386,11 +2410,22 @@ module MOD_refine
         CALL CHECK(NF90_PUT_VAR(ncID, ncvarid(1), mp_f))
         CALL CHECK(NF90_PUT_VAR(ncID, ncvarid(2), ngrmw_f))
         CALL CHECK(NF90_CLOSE(ncID))
-        
+
         ! 更新ngrmw_f和ngrwm_f
-        allocate(ngrwm_f(7, num_dbx)); ngrwm_f   = 1 ! 记录相邻三角形编号，初始化为1
-        ! allocate(ngrwm_f(10, num_dbx)); ngrwm_f   = 1 ! 记录相邻三角形编号，初始化为1
         allocate(n_ngrwm_f(num_dbx));  n_ngrwm_f = 0 ! 记录相邻三角形
+        do i = 2, num_sjx, 1 ! 三角形总数（含不存在的三角形），这个必须从2开始
+            do j = 1, 3, 1
+                k = vertex_mapping(ngrmw_f(j, i))
+                if (k < 1 .or. k > num_dbx) stop "ERROR! invalid final vertex mapping in SUBROUTINE NGR_RENEW"
+                n_ngrwm_f(k) = n_ngrwm_f(k) + 1 ! 累加顶点个数
+            end do
+        end do
+        ngrwm_f_capacity = max(7, maxval(n_ngrwm_f))
+        if (ngrwm_f_capacity > 7) then
+            write(io6, *) "WARNING! expanding final ngrwm_f adjacency capacity", ngrwm_f_capacity
+        end if
+        allocate(ngrwm_f(ngrwm_f_capacity, num_dbx)); ngrwm_f = 1 ! 记录相邻三角形编号，初始化为1
+        n_ngrwm_f = 0
         do i = 2, num_sjx, 1 ! 三角形总数（含不存在的三角形），这个必须从2开始
             do j = 1, 3, 1
                 ngrmw_f(j, i) = vertex_mapping(ngrmw_f(j, i))

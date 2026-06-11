@@ -202,6 +202,7 @@ def geojson_to_close_mask_specs(
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
     buffer_deg_by_refine_degree: dict[int, float] | None = None,
+    min_ring_separation_deg: float = 0.0,
 ) -> list[CloseMaskSpec]:
     """Convert corridor polygon GeoJSON into EarthMesh close-mask specs.
 
@@ -266,6 +267,7 @@ def geojson_to_close_mask_specs(
     )
     emitted_rings_by_class: dict[str, set[tuple[int, int]]] = {}
     emitted_by_refine_degree: dict[int, int] = {}
+    emitted_specs_by_refine_degree: dict[int, list[CloseMaskSpec]] = {}
     specs: list[CloseMaskSpec] = []
     ring_caps = dict(max_rings_by_class or {})
     for _, spec in candidates:
@@ -279,11 +281,48 @@ def geojson_to_close_mask_specs(
             and emitted_by_refine_degree.get(spec.refine_degree, 0) >= max_masks_per_refine_degree
         ):
             continue
+        if min_ring_separation_deg > 0.0 and _is_too_close_to_emitted_ring(
+            spec,
+            emitted_specs_by_refine_degree.get(spec.refine_degree, []),
+            min_ring_separation_deg=min_ring_separation_deg,
+        ):
+            continue
         specs.append(spec)
+        emitted_specs_by_refine_degree.setdefault(spec.refine_degree, []).append(spec)
         class_rings.add(ring_key)
         emitted_by_refine_degree[spec.refine_degree] = emitted_by_refine_degree.get(spec.refine_degree, 0) + 1
     specs.sort(key=lambda spec: (spec.river_class, spec.refine_degree, spec.source_feature_index, spec.ring_index))
     return specs
+
+
+def _is_too_close_to_emitted_ring(
+    spec: CloseMaskSpec,
+    emitted_specs: Sequence[CloseMaskSpec],
+    *,
+    min_ring_separation_deg: float,
+) -> bool:
+    spec_bbox = _ring_bbox(spec.coordinates)
+    return any(
+        _bbox_distance_deg(spec_bbox, _ring_bbox(emitted.coordinates)) < min_ring_separation_deg
+        for emitted in emitted_specs
+    )
+
+
+def _ring_bbox(coordinates: Sequence[tuple[float, float]]) -> tuple[float, float, float, float]:
+    lon_values = [lon for lon, _ in coordinates]
+    lat_values = [lat for _, lat in coordinates]
+    return min(lon_values), min(lat_values), max(lon_values), max(lat_values)
+
+
+def _bbox_distance_deg(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    left_min_lon, left_min_lat, left_max_lon, left_max_lat = left
+    right_min_lon, right_min_lat, right_max_lon, right_max_lat = right
+    lon_gap = max(0.0, right_min_lon - left_max_lon, left_min_lon - right_max_lon)
+    lat_gap = max(0.0, right_min_lat - left_max_lat, left_min_lat - right_max_lat)
+    return (lon_gap * lon_gap + lat_gap * lat_gap) ** 0.5
 
 
 def _close_mask_text(spec: CloseMaskSpec) -> str:
@@ -322,6 +361,7 @@ def write_close_mask_nmls(
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
     buffer_deg_by_refine_degree: dict[int, float] | None = None,
+    min_ring_separation_deg: float = 0.0,
 ) -> list[Path]:
     collection = json.loads(Path(input_geojson).read_text())
     specs = geojson_to_close_mask_specs(
@@ -334,6 +374,7 @@ def write_close_mask_nmls(
         cumulative_refine=cumulative_refine,
         buffer_deg=buffer_deg,
         buffer_deg_by_refine_degree=buffer_deg_by_refine_degree,
+        min_ring_separation_deg=min_ring_separation_deg,
     )
     return write_close_mask_specs(specs, output_prefix)
 
