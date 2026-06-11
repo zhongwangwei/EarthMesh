@@ -1,3 +1,5 @@
+import json
+
 from util.v3_core.adapters import AdapterRegistry, default_adapter_registry
 from util.v3_core.schema import CanonicalCell
 
@@ -51,3 +53,15 @@ def test_adapter_export_plan_summarizes_topology_and_warnings():
     assert mpas_plan.required_fields[:3] == ["cell_id", "cell_index", "cell_type"]
     assert mpas_plan.warnings == ["mpas does not support cell_type=TRI for cell_id=tri"]
     assert colm_plan.warnings == []
+
+
+def test_adapter_export_plan_writes_deterministic_json(tmp_path):
+    plan = default_adapter_registry().get("fvcom").plan_export([CanonicalCell.minimal("tri", cell_type="TRI")])
+
+    output = plan.write_json(tmp_path / "fvcom_adapter_plan.json")
+    payload = json.loads(output.read_text())
+
+    assert payload["adapter_name"] == "fvcom"
+    assert payload["output_format"] == "fvcom_tri_mesh_contract"
+    assert payload["cell_type_counts"] == {"TRI": 1}
+    assert payload["files"] == {}

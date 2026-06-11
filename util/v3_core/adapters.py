@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
 from typing import Iterable, Protocol
 
 from util.v3_core.schema import CanonicalCell
@@ -16,6 +19,16 @@ class AdapterExportPlan:
     cell_type_counts: dict[str, int]
     warnings: list[str]
     files: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        return json.loads(json.dumps(payload, sort_keys=True))
+
+    def write_json(self, output_path: str | Path) -> Path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n")
+        return path
 
 
 class Adapter(Protocol):
