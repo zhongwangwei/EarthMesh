@@ -1614,10 +1614,10 @@ module MOD_refine
                     num = segement_start_end(j, 2) - segement_start_end(j, 1)
                     num_sum = num_sum + num
                 end do
-                if (num_sum /= sum(n_close_curve)-1) then
-                    write(io6, *) "ERROR! num_sum must same as sum(n_close_curve)-1"
+                if (num_sum /= n_close_curve(i)-1) then
+                    write(io6, *) "ERROR! num_sum must same as n_close_curve(i)-1"
                     write(io6, *) "num_sum = ", num_sum
-                    write(io6, *) "sum(n_close_curve)-1 = ", sum(n_close_curve)-1
+                    write(io6, *) "n_close_curve(i)-1 = ", n_close_curve(i)-1
                     write(io6, *) "n_close_curve-1 = ", n_close_curve-1
                     stop
                 end if

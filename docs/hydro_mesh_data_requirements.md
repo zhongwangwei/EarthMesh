@@ -1002,12 +1002,16 @@ Observed smoke comparison for 118-123E, 28-33N:
 | `N64 ranked_coast20` | pass | `482` | `17.86 km` | `204` | `94/94/90` | `84` | `27.31 km` |
 | `N96 r3d3 cst20` | pass | `1110` | `10.31 km` | `333` | `183/211/283` | `134` | `20.44 km` |
 | `N112 r3d3 cst20` | pass | `2574` | `8.41 km` | `500` | `246/367/660` | `374` | `8.96 km` |
-| `N128 r3d3 cst20` | failed | n/a | n/a | n/a | n/a | n/a | n/a |
+| `N128 r3d3 cst20 guardfix` | pass | `2934` | `7.40 km` | `592` | `307/513/989` | `441` | coast fraction median `0.71` |
 
-The `N128` smoke hit EarthMesh's close-curve segmentation guard:
-`ERROR! num_sum must same as sum(n_close_curve)-1`.  Do not promote it until the
-segment ordering issue is fixed.  The current finer visual QA candidate is
-therefore `N112 r3d3 cst20`:
+The original `N128` smoke hit EarthMesh's close-curve segmentation guard:
+`ERROR! num_sum must same as sum(n_close_curve)-1`.  The failing third refinement
+step had two closed curves with `n_close_curve-1 = 29, 82`; the guard was checking
+the first curve's local segment sum (`29`) against the global total (`112`).  The
+guard now checks each closed curve against `n_close_curve(i)-1`, and the same N128
+namelist completes successfully in an isolated validation case.
+
+The current lighter promoted package remains `N112 r3d3 cst20`:
 
 ```text
 /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_rivers_and_integrated_coast_leaflet.html
@@ -1022,6 +1026,26 @@ The matching mesh is:
 This candidate is much heavier than the N64 smoke but is the first one where the
 coastal overlap layer is mostly around 9 km in the QA window while retaining the
 river R3 refinement.
+
+The finer N128 guardfix validation output is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/n128_guard_fix_validation/cases/ATMOS_hydro_N128_r3d3_cst20_guardfix/result/MPASOUT_NXP0128_global.nc4
+```
+
+The repaired run log contains `!! Successfully Make Grid End !!` and no
+`ERROR! num_sum` guard failure.  Its integrated QA artifacts are:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/n128_guard_fix_validation/yangtze_delta_N128_r3d3_cst20_guardfix_with_coast_eval.json
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/n128_guard_fix_validation/yangtze_delta_N128_guardfix_rivers_and_integrated_coast_leaflet.html
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/n128_guard_fix_validation/package/delivery_manifest.json
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/n128_guard_fix_validation/package/colm_coupling/colm_coupling_cells.nc
+```
+
+The N128 delivery package writes `2934` coupling rows, `427` river cells, `441`
+coast cells, and a CoLM coupling NetCDF.  It is the best current high-resolution
+Yangtze-delta candidate when the extra N128 cost is acceptable.
 
 Machine-readable evaluation artifacts were refreshed with the Phase 27 coast metrics and
 ranked with the Phase 26 sweep scorer:
@@ -1038,9 +1062,15 @@ python3 -m util.hydro_mesh.refinement_sweep rank \
   --max-background-cells 3000
 ```
 
-The ranking report recommends `N112_r3d3_cst20`.  `N128_r3d3_cst20` is kept as a
-failed row with the close-curve error summary so it is not mistaken for a missing
-or merely unscored candidate.
+After replacing the failed N128 row with the guardfix evaluation report, the
+ranking recommends the N128 guardfix candidate under the same `--max-background-cells
+3000` cap:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/n128_guard_fix_validation/yangtze_delta_r3d3_cst20_with_coast_sweep_ranking_guardfix.json
+```
+
+The current rank order is N128 guardfix, N112, N96, then N64.
 
 The recommended N112 candidate can now be promoted into a reproducible delivery
 package with one command:
