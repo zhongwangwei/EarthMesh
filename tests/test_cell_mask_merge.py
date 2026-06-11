@@ -61,3 +61,41 @@ def test_write_complete_cell_mask_geojson_round_trips_files(tmp_path):
 
     written = json.loads(output_path.read_text())
     assert [feature["properties"]["mask_class"] for feature in written["features"]] == ["BACKGROUND", "COAST"]
+
+
+def test_merge_cell_masks_distinguishes_land_and_ocean_background_cells():
+    from util.hydro_mesh.cell_mask_merge import merge_cell_masks
+
+    background = _feature_collection(
+        [
+            {**_cell("land"), "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}},
+            {**_cell("ocean"), "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]]}},
+            {**_cell("river"), "geometry": {"type": "Polygon", "coordinates": [[[2, 0], [3, 0], [3, 1], [2, 1], [2, 0]]]}},
+        ]
+    )
+    surface = _feature_collection(
+        [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[-0.5, -0.5], [1.0, -0.5], [1.0, 1.5], [-0.5, 1.5], [-0.5, -0.5]]]},
+                "properties": {"surface_class": "LAND"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[1.0, -0.5], [3.5, -0.5], [3.5, 1.5], [1.0, 1.5], [1.0, -0.5]]]},
+                "properties": {"surface_class": "OCEAN"},
+            },
+        ]
+    )
+    rivers = _feature_collection([{**_cell("river"), "properties": {"cell_id": "river", "river_class": "R2", "river_fraction": 0.2}}])
+
+    merged = merge_cell_masks(background, river_cells=rivers, surface_cells=surface)
+
+    by_id = {feature["properties"]["cell_id"]: feature for feature in merged["features"]}
+    assert by_id["land"]["properties"]["mask_class"] == "LAND"
+    assert by_id["land"]["properties"]["surface_class"] == "LAND"
+    assert by_id["ocean"]["properties"]["mask_class"] == "OCEAN"
+    assert by_id["ocean"]["properties"]["surface_class"] == "OCEAN"
+    assert by_id["river"]["properties"]["mask_class"] == "R2"
+    assert by_id["river"]["properties"]["surface_class"] == "OCEAN"
+    assert by_id["river"]["properties"]["mask_source"] == "surface+river"
