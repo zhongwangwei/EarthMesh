@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from util.v3_core.demo import build_demo_inputs
 from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson, write_cells_geojson
 from util.v3_core.geometry import MaskFeature
 from util.v3_core.map import canonical_cells_geojson_to_leaflet_html
@@ -31,23 +32,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the EarthMesh v3 canonical pipeline from JSON cells and masks.")
     parser.add_argument("--case-name", required=True)
     parser.add_argument("--recipe-hash", required=True)
-    cell_inputs = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--demo", choices=["gba"], help="Run a built-in synthetic demo instead of reading cells/masks.")
+    cell_inputs = parser.add_mutually_exclusive_group()
     cell_inputs.add_argument("--cells", help="Path to canonical cells JSON list.")
     cell_inputs.add_argument("--cells-geojson", help="Path to cell Polygon GeoJSON FeatureCollection.")
-    mask_inputs = parser.add_mutually_exclusive_group(required=True)
+    mask_inputs = parser.add_mutually_exclusive_group()
     mask_inputs.add_argument("--masks", help="Path to mask features JSON list.")
     mask_inputs.add_argument("--masks-geojson", help="Path to mask Polygon GeoJSON FeatureCollection.")
     parser.add_argument("--adapters", required=True, help="Comma-separated adapter names, e.g. colm2024,mpas,fvcom.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--html-map", help="Optional output HTML path for a Leaflet QA map of canonical cells.")
     args = parser.parse_args(argv)
+    _validate_input_args(parser, args)
 
     adapter_names = [name.strip() for name in args.adapters.split(",") if name.strip()]
+    cells, masks = _load_inputs_from_args(args)
     result = build_v3_pipeline_result(
         case_name=args.case_name,
         recipe_hash=args.recipe_hash,
-        cells=_load_cells_from_args(args),
-        masks=_load_masks_from_args(args),
+        cells=cells,
+        masks=masks,
         adapter_names=adapter_names,
     )
 
@@ -60,6 +64,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.html_map:
         canonical_cells_geojson_to_leaflet_html(canonical_geojson, args.html_map, title=args.case_name)
     return 0
+
+
+def _validate_input_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    has_cell_input = bool(args.cells or args.cells_geojson)
+    has_mask_input = bool(args.masks or args.masks_geojson)
+    if args.demo:
+        if has_cell_input or has_mask_input:
+            parser.error("--demo cannot be combined with explicit cell or mask inputs")
+        return
+    if not has_cell_input or not has_mask_input:
+        parser.error("provide --demo or both cell and mask inputs")
+
+
+def _load_inputs_from_args(args: argparse.Namespace) -> tuple[list[CanonicalCell], list[MaskFeature]]:
+    if args.demo:
+        demo = build_demo_inputs(args.demo)
+        return demo.cells, demo.masks
+    return _load_cells_from_args(args), _load_masks_from_args(args)
 
 
 def _load_cells_from_args(args: argparse.Namespace) -> list[CanonicalCell]:

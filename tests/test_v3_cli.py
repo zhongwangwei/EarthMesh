@@ -200,3 +200,35 @@ def test_v3_cli_writes_optional_html_map(tmp_path):
     assert "html_case" in text
     assert "const canonicalCells =" in text
     assert "LAND" in text
+
+
+def test_v3_cli_runs_builtin_gba_demo(tmp_path):
+    output_dir = tmp_path / "gba_demo"
+    html_map = output_dir / "map.html"
+
+    exit_code = main(
+        [
+            "--case-name",
+            "gba_demo",
+            "--recipe-hash",
+            "demo",
+            "--demo",
+            "gba",
+            "--adapters",
+            "colm2024,mpas",
+            "--output-dir",
+            str(output_dir),
+            "--html-map",
+            str(html_map),
+        ]
+    )
+
+    assert exit_code == 0
+    manifest = json.loads((output_dir / "manifest.json").read_text())
+    cells = json.loads((output_dir / "canonical_cells.json").read_text())
+    html = html_map.read_text()
+    assert manifest["case_name"] == "gba_demo"
+    assert manifest["missing_mask_count"] == 0
+    assert manifest["mask_counts"]["R3"] == 1
+    assert {cell["cell_id"] for cell in cells} >= {"gba_land", "gba_ocean", "gba_coast", "pearl_river"}
+    assert "pearl_river" in html

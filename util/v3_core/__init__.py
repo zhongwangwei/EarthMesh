@@ -2,6 +2,7 @@
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
 from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, SchemaOnlyAdapter, default_adapter_registry
+from util.v3_core.demo import DemoInputs, build_demo_inputs
 from util.v3_core.geometry import (
     MaskFeature,
     OverlayResult,
@@ -35,6 +36,7 @@ __all__ = [
     "ComponentResult",
     "ComponentRunContext",
     "ComponentRecipe",
+    "DemoInputs",
     "ExchangeLink",
     "LegacyFortranResult",
     "LegacyFortranRun",
@@ -53,6 +55,7 @@ __all__ = [
     "canonical_cells_to_geojson",
     "canonical_cells_geojson_to_leaflet_html",
     "build_legacy_command",
+    "build_demo_inputs",
     "default_adapter_registry",
     "geojson_cells_to_canonical",
     "geojson_masks_to_features",
