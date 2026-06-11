@@ -613,3 +613,63 @@ mesh design should not use raw river width as the only refinement mask. A practi
 CoLM2024 workflow needs at least two layers: a broad level-1 hydrologic/coastal
 envelope for transition support, and a narrower higher-level R3 river/estuary
 envelope for true 2D corridor detail.
+
+## Verified R3 degree-3 refinement smoke recipe
+
+The close-mask workflow can now be captured as a small JSON recipe so the mask
+generation command, EarthMesh namelist overrides, and smoke-run command stay
+reproducible:
+
+```bash
+python3 -m util.hydro_mesh.refinement_recipe \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_dissolved_corridor_preview.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro_r3d3 \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_refinement_recipe_r3d3.json \
+  --class-refine R2=1 R3=3 \
+  --buffer-deg-by-refine-degree 1=1.5 2=1.0 3=0.5 \
+  --simplify-tolerance-deg 0.005 \
+  --example-namelist /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/Atmos_hex_NXP64_hydro_close_yangtze_r3d3_smoke.nml
+```
+
+The matching close-mask export uses the command recorded in that JSON recipe. For
+the current Yangtze-delta smoke case it writes `137` `.nml` files:
+
+- `R2_d1=80`
+- `R3_d1=19`
+- `R3_d2=19`
+- `R3_d3=19`
+
+The successful R3 degree-3 EarthMesh smoke run used:
+
+```fortran
+RL%refine_spc              = .TRUE.
+RL%max_iter_spc            = 3
+RL%mask_refine_spc_type    = 'close'
+RL%mask_refine_spc_fprefix = '/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/refine_spc_hydro_r3d3'
+```
+
+Smoke-run retained-refinement evidence:
+
+- Level 1 selected `96` triangles and retained `96` after cleanup.
+- Level 2 selected `185` triangles and retained `86` after cleanup.
+- Level 3 selected `275` triangles and retained `83` after cleanup.
+- EarthMesh finished successfully.
+
+The resulting preview image is:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_r3d3_earthmesh_cells_with_land_background_preview.png
+```
+
+Bbox statistics for the 118-123E, 28-33N window:
+
+- Background/domain cells: `438`.
+- R2/R3 river-overlap cells: `200` (`R2=124`, `R3=76`).
+- Equivalent cell-size range: about `14.9 km` to `55.1 km`.
+- Equivalent median cell size: about `18.7 km`.
+
+This is the first smoke result that visibly creates a finer local mesh around the
+CaMa-Flood corridor system. It is still a mesh-control experiment rather than final
+CoLM2024 production input: the wide staged buffers should be calibrated with a real
+coastline/domain mask and the final CoLM coupling table should continue to use the
+unbuffered corridor overlap fractions for river area metadata.
