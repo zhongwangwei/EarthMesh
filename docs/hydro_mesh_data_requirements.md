@@ -1146,3 +1146,58 @@ Verified N112 CaMa surface-aware smoke output:
 This is still a metadata handoff table, not final CoLM NetCDF, but the surface-aware
 package now gives CoLM2024/CoLM20XX an all-cell LAND/OCEAN base plus independent
 river/coast coupling flags.
+
+## MERIT-Hydro 90m delivery-package bridge smoke
+
+The current package boundary can now be driven by MERIT-Hydro 90m masks instead of
+CaMa 1 arcmin surface masks.  The bridge intentionally reuses the existing package
+and CoLM coupling handoff instead of creating a parallel format:
+
+1. `util.v3_components.hydro_merit.write_merit_mask_outputs()` reads MERIT tiles for
+   a bbox and writes raw `R2/R3`, `COAST_LAND/COAST_OCEAN`, and `LAND/OCEAN` masks.
+2. `util.hydro_mesh.earthmesh_intersection.write_earthmesh_intersection_geojson()`
+   projects MERIT river/coast masks onto a supplied EarthMesh/background cell layer.
+3. `util.hydro_mesh.refinement_package.write_refinement_delivery_package()` writes
+   the same delivery manifest, complete cell mask, surface-aware HTML, and ranking
+   artifacts used by the CaMa package path.
+4. `util.hydro_mesh.colm_coupling package` reads the manifest unchanged.
+
+Small-window local smoke command:
+
+```bash
+SMOKE=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke
+python3 -m util.v3_core.grid \
+  --bbox 113.8 22.2 114.0 22.4 \
+  --nx 8 --ny 8 \
+  --output "$SMOKE/background_cells.geojson" \
+  --cell-id-prefix merit_gba
+
+python3 -m util.hydro_mesh.merit_package_bridge \
+  --case-name merit_gba_90m_bridge_smoke \
+  --background-geojson "$SMOKE/background_cells.geojson" \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 113.8 22.2 114.0 22.4 \
+  --log-path "$SMOKE/mkgrd_placeholder.log" \
+  --output-dir "$SMOKE/package" \
+  --title "MERIT GBA 90m bridge smoke" \
+  --max-background-cells 100
+
+python3 -m util.hydro_mesh.colm_coupling package \
+  --delivery-manifest "$SMOKE/package/delivery_manifest.json" \
+  --output-dir "$SMOKE/package/colm_coupling"
+```
+
+Observed smoke output:
+
+- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/delivery_manifest.json`.
+- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_rivers_and_integrated_coast_leaflet.html`.
+- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_complete_cell_mask.geojson`.
+- MERIT source masks in the smoke: `river=84`, `coast=2986`, `surface=54770` features.
+- EarthMesh intersections: `river_intersection_features=13`, `coast_intersection_features=75`.
+- CoLM rows: `64`; `river_cell_count=10`; `coast_cell_count=38`.
+- Surface counts: `LAND=22`, `OCEAN=42`, `UNKNOWN=0`.
+
+This proves the 90m MERIT path can feed the same package/adapter handoff as the CaMa
+path.  A full N112 Yangtze or China run should still be staged carefully because
+MERIT stride-1 windows over multiple 5-degree tiles can produce very large raw mask
+GeoJSON files before the final EarthMesh-cell package is compacted.

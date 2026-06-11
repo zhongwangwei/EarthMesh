@@ -230,7 +230,7 @@ def earthmesh_cells_to_corridor_intersections(
                 output_properties.update(_normalized_area_properties(cell_properties, river_fraction, unit_sphere_area=unit_sphere_area))
             else:
                 output_properties["mask_class"] = river_class
-                if river_class == "COAST":
+                if river_class == "COAST" or river_class.startswith("COAST_"):
                     output_properties["coastal_fraction"] = river_fraction
             features.append({"type": "Feature", "geometry": cell_geometry, "properties": output_properties})
     return {"type": "FeatureCollection", "features": features}
