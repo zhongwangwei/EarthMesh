@@ -174,7 +174,7 @@ def geojson_to_close_mask_specs(
     class_refine: dict[str, int] | None = None,
     simplify_tolerance_deg: float = 0.0,
     max_rings_per_class: int | None = None,
-    max_masks_per_refine_degree: int | None = 99,
+    max_masks_per_refine_degree: int | None = 999,
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
     buffer_deg_by_refine_degree: dict[int, float] | None = None,
@@ -289,7 +289,7 @@ def write_close_mask_nmls(
     class_refine: dict[str, int] | None = None,
     simplify_tolerance_deg: float = 0.0,
     max_rings_per_class: int | None = None,
-    max_masks_per_refine_degree: int | None = 99,
+    max_masks_per_refine_degree: int | None = 999,
     cumulative_refine: bool = True,
     buffer_deg: float = 0.0,
     buffer_deg_by_refine_degree: dict[int, float] | None = None,
@@ -349,8 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--max-masks-per-refine-degree",
         type=int,
-        default=99,
-        help="Compatibility cap for EarthMesh I2.2 close-mask temp numbering. Default: 99.",
+        default=999,
+        help="Compatibility cap for EarthMesh I3.3 close-mask temp numbering. Default: 999.",
     )
     parser.add_argument(
         "--non-cumulative-refine",

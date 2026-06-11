@@ -1295,7 +1295,7 @@ module MOD_refine
                 close_points(j, :) = wp(close_curve_refine(j, i), :)
             end do
 
-            write(numc, '(I2.2)') i
+            write(numc, '(I3.3)') i
             lndname = trim(file_dir)// 'tmpfile/mask_patch_close_'//trim(refinec)//'_'//trim(numc)//'.nc4'
             CALL close_Mesh_Save(lndname, close_num, close_points)
             deallocate(close_points)

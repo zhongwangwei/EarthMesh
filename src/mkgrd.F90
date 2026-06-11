@@ -1418,13 +1418,13 @@ end program main
             write(refinec, '(I1)') refine_degree
             if (mask_select == 'mask_domain') then
                 mask_domain_ndm = mask_domain_ndm + 1
-                write(numc, '(I2.2)') mask_domain_ndm
+                write(numc, '(I3.3)') mask_domain_ndm
             else if (mask_select == 'mask_refine') then
                 mask_refine_ndm(refine_degree) = mask_refine_ndm(refine_degree) + 1
-                write(numc, '(I2.2)') mask_refine_ndm(refine_degree)
+                write(numc, '(I3.3)') mask_refine_ndm(refine_degree)
             else if (mask_select == 'mask_patch') then
                 mask_patch_ndm(refine_degree) = mask_patch_ndm(refine_degree) + 1
-                write(numc, '(I2.2)') mask_patch_ndm(refine_degree)
+                write(numc, '(I3.3)') mask_patch_ndm(refine_degree)
             end if
             lndname = trim(file_dir)// 'tmpfile/'//trim(mask_select)// '_close_'//trim(refinec)//'_'//trim(numc)//'.nc4'
             CALL close_Mesh_Save(lndname, close_num, close_points)
@@ -1444,13 +1444,13 @@ end program main
             write(refinec, '(I1)') refine_degree
             if (mask_select == 'mask_domain') then
                 mask_domain_ndm = mask_domain_ndm + 1
-                write(numc, '(I2.2)') mask_domain_ndm
+                write(numc, '(I3.3)') mask_domain_ndm
             else if (mask_select == 'mask_refine') then
                 mask_refine_ndm(refine_degree) = mask_refine_ndm(refine_degree) + 1
-                write(numc, '(I2.2)') mask_refine_ndm(refine_degree)
+                write(numc, '(I3.3)') mask_refine_ndm(refine_degree)
             else if (mask_select == 'mask_patch') then
                 mask_patch_ndm(refine_degree) = mask_patch_ndm(refine_degree) + 1
-                write(numc, '(I2.2)') mask_patch_ndm(refine_degree)
+                write(numc, '(I3.3)') mask_patch_ndm(refine_degree)
             end if
             lndname = trim(file_dir)// 'tmpfile/'//trim(mask_select)// '_close_'//trim(refinec)//'_'//trim(numc)//'.nc4'
             CALL execute_command_line('cp '//trim(inputfile)//' '//trim(lndname))

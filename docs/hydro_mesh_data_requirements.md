@@ -557,9 +557,11 @@ Observed output for the current Yangtze-delta smoke case:
 - `--buffer-deg-by-refine-degree` can make that envelope hierarchical. The current
   smoke case uses a wide `1=1.0` degree level-1 support envelope and a narrower
   `2=0.2` degree R3 level-2 envelope.
-- Each refinement degree is capped at `99` masks because the current Fortran
-  close-mask temporary filename uses a two-digit `I2.2` counter.
-- When the cap is active, higher target-refinement classes such as `R3` are retained
+- Each close-mask refinement degree is capped at `999` masks by default. EarthMesh
+  now writes and reads close-mask temporary files with three-digit numbering such
+  as `mask_refine_close_1_100.nc4`, so 1min river/coastline experiments are no
+  longer forced into the old two-digit `99`-mask limit.
+- When a user-specified cap is active, higher target-refinement classes such as `R3` are retained
   before lower target-refinement classes such as `R2`.
 - Each GeoJSON ring is written without its duplicate final closure coordinate;
   EarthMesh closes each curve internally when it reads the mask.
@@ -781,8 +783,8 @@ Observed coastal-band statistics for the 118-123E, 28-33N window:
   structure while the dissolved layer remains suitable for close-mask export.
 
 The close-mask exporter now accepts `mask_class=COAST` as well as `river_class`.
-Because EarthMesh's current close-mask temporary files are limited to `99` masks
-per refinement degree, the first coast-aware smoke allocates degree-1 capacity as:
+The first coast-aware smoke was run while close-mask temporary files still had the
+old `99`-mask per-degree practical limit, so it allocated degree-1 capacity as:
 
 - `COAST_d1=20`
 - `R2_d1=60`
@@ -834,3 +836,36 @@ It embeds gray background EarthMesh cells, yellow/red R2/R3 river-overlap cells,
 and cyan CaMa `elevtn` coastal-band cells. This is the first visual QA artifact in
 this branch that shows both river refinement and explicit coastline parsing on the
 same basemap.
+
+## Verified three-digit close-mask numbering and mask-allocation lesson
+
+EarthMesh close-mask temporary files now use three-digit numbering consistently
+for close masks generated from external masks and from automatic patch boundaries.
+This removes the old `I2.2` bottleneck that prevented degree-1 mask counts above
+`99`.
+
+Validation evidence:
+
+- `mkgrd.x` compiled after changing the close-mask counters.
+- `refine_spc_hydro_r3d3_riverall`, with `123` degree-1 masks, successfully read
+  `mask_refine_close_1_100.nc4`.
+- `refine_spc_hydro_r3d3_coastall`, with `401` degree-1 masks, successfully read
+  `mask_refine_close_1_400.nc4`.
+
+However, more low-level masks are not automatically better. The current smoke
+comparison is:
+
+| recipe | degree-1 masks | bbox cells | median cell size | river-overlap records | retained L1/L2/L3 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `r3d3` river-only | `99` | `438` | `18.75 km` | `200` | `96/86/83` |
+| old `coast20` | `99` | `482` | `17.86 km` | `204` | `94/94/90` |
+| `r2cap80_coast20` | `119` | `438` | `18.75 km` | `200` | `96/86/83` |
+| `riverall` | `123` | not promoted | not promoted | not promoted | `100/72/51` |
+| `coastall` | `401` | `364` | `22.16 km` | `174` | `100/72/51` |
+
+The lesson is that the three-digit numbering is necessary infrastructure, but the
+v3 recipe still needs hydrologic ranking. Full R2 or full coastline masks can make
+the transition/weak-concavity cleanup remove more high-level R3 refinement. For
+the current Yangtze-delta smoke, the old `coast20` remains the best visual/metric
+candidate because it adds explicit coastline refinement while preserving or
+improving retained level-2/level-3 refinement.

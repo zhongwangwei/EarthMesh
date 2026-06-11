@@ -551,7 +551,7 @@ module MOD_Area_judge
         if (present(numpatch)) numpatch = 0
         do n = 1, ndm, 1
             write(refinec, '(I1)') iter
-            write(numc, '(I2.2)') n
+            write(numc, '(I3.3)') n
             lndname = trim(file_dir)// 'tmpfile/'//trim(type_select)//'_close_'//trim(refinec)//'_'//trim(numc)//'.nc4'
             write(io6, *) trim(lndname)
             CALL close_Mesh_Read(lndname, close_num, close_points)

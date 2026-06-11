@@ -93,12 +93,12 @@ def test_write_close_mask_nmls_removes_stale_prefix_files(tmp_path):
     assert not stale_path.exists()
 
 
-def test_geojson_to_close_mask_specs_caps_each_refinement_degree_at_earthmesh_two_digit_limit():
+def test_geojson_to_close_mask_specs_defaults_to_three_digit_close_mask_capacity():
     from util.hydro_mesh.refine_mask_export import geojson_to_close_mask_specs
 
     features = []
-    for index in range(101):
-        size = 2.0 if index == 100 else 1.0
+    for index in range(1001):
+        size = 2.0 if index == 1000 else 1.0
         features.append(
             _polygon_feature(
                 "R2",
@@ -108,8 +108,8 @@ def test_geojson_to_close_mask_specs_caps_each_refinement_degree_at_earthmesh_tw
 
     specs = geojson_to_close_mask_specs({"type": "FeatureCollection", "features": features}, class_refine={"R2": 1})
 
-    assert len(specs) == 99
-    assert any(spec.source_feature_index == 100 for spec in specs)
+    assert len(specs) == 999
+    assert any(spec.source_feature_index == 1000 for spec in specs)
 
 
 def test_geojson_to_close_mask_specs_emits_higher_target_classes_cumulatively_and_prioritizes_them():
@@ -118,7 +118,7 @@ def test_geojson_to_close_mask_specs_emits_higher_target_classes_cumulatively_an
     features = [
         _polygon_feature("R3", [[200, 0], [201, 0], [201, 1], [200, 1], [200, 0]]),
     ]
-    for index in range(100):
+    for index in range(1000):
         features.append(
             _polygon_feature(
                 "R2",
@@ -133,7 +133,7 @@ def test_geojson_to_close_mask_specs_emits_higher_target_classes_cumulatively_an
 
     degree1 = [spec for spec in specs if spec.refine_degree == 1]
     degree2 = [spec for spec in specs if spec.refine_degree == 2]
-    assert len(degree1) == 99
+    assert len(degree1) == 999
     assert len(degree2) == 1
     assert any(spec.river_class == "R3" for spec in degree1)
     assert degree2[0].river_class == "R3"
