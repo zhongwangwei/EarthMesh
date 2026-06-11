@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from util.v3_core.adaptive_grid import refine_cells_by_masks, write_refined_cells_geojson
+from util.v3_core.adaptive_grid import refine_cells_by_mask_factors, refine_cells_by_masks, write_refined_cells_geojson
 from util.v3_core.geometry import MaskFeature
 from util.v3_core.grid import generate_bbox_grid_cells
 
@@ -62,6 +62,37 @@ def test_write_refined_cells_geojson_writes_refined_cell_file(tmp_path):
 
 
 def test_v3_core_lazy_exports_adaptive_grid_helpers():
+    from util.v3_core import refine_cells_by_mask_factors as exported_factor_refine
     from util.v3_core import refine_cells_by_masks as exported_refine
 
     assert exported_refine is refine_cells_by_masks
+    assert exported_factor_refine is refine_cells_by_mask_factors
+
+
+def test_refine_cells_by_mask_factors_uses_max_factor_from_intersecting_classes():
+    cells = generate_bbox_grid_cells((0.0, 0.0, 2.0, 1.0), nx=2, ny=1, cell_id_prefix="multi")
+    coast = MaskFeature("coast-left", "COAST_LAND", 10, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    river = MaskFeature("river-left", "R3", 30, [(0.4, 0.0), (0.6, 0.0), (0.6, 1.0), (0.4, 1.0)])
+    ocean = MaskFeature("ocean-right", "OCEAN", 1, [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)])
+
+    refined = refine_cells_by_mask_factors(
+        cells,
+        [coast, river, ocean],
+        refine_class_factors={"COAST_LAND": 2, "R3": 3},
+    )
+
+    assert len(refined) == 10
+    assert [cell.cell_id for cell in refined[:3]] == [
+        "multi_0000_0000_r00_00",
+        "multi_0000_0000_r01_00",
+        "multi_0000_0000_r02_00",
+    ]
+    assert refined[8].cell_id == "multi_0000_0000_r02_02"
+    assert refined[9].cell_id == "multi_0001_0000"
+
+
+def test_refine_cells_by_mask_factors_rejects_invalid_class_factor():
+    cells = generate_bbox_grid_cells((0.0, 0.0, 1.0, 1.0), nx=1, ny=1)
+
+    with pytest.raises(ValueError, match="refine factor for R3 must be at least 2"):
+        refine_cells_by_mask_factors(cells, [], refine_class_factors={"R3": 1})

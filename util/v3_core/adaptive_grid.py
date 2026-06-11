@@ -18,15 +18,29 @@ def refine_cells_by_masks(
 ) -> list[CanonicalCell]:
     if factor < 2:
         raise ValueError("factor must be at least 2")
-    if not refine_classes:
+    return refine_cells_by_mask_factors(
+        cells,
+        masks,
+        refine_class_factors={mask_class: factor for mask_class in refine_classes},
+    )
+
+
+def refine_cells_by_mask_factors(
+    cells: Iterable[CanonicalCell],
+    masks: list[MaskFeature],
+    *,
+    refine_class_factors: dict[str, int],
+) -> list[CanonicalCell]:
+    _validate_refine_class_factors(refine_class_factors)
+    if not refine_class_factors:
         return list(cells)
 
     refined: list[CanonicalCell] = []
     next_index = 0
     for cell in cells:
         overlay = overlay_cell_with_masks(cell, masks)
-        should_refine = any(mask_class in refine_classes for mask_class in overlay.class_fractions)
-        if should_refine:
+        factor = _factor_for_overlay(overlay.class_fractions, refine_class_factors)
+        if factor:
             children = _split_rectangular_cell(cell, factor=factor, first_index=next_index)
             refined.extend(children)
             next_index += len(children)
@@ -34,6 +48,19 @@ def refine_cells_by_masks(
             refined.append(replace(cell, cell_index=next_index))
             next_index += 1
     return refined
+
+
+def _validate_refine_class_factors(refine_class_factors: dict[str, int]) -> None:
+    for mask_class, factor in refine_class_factors.items():
+        if not mask_class:
+            raise ValueError("refine class names must be non-empty")
+        if factor < 2:
+            raise ValueError(f"refine factor for {mask_class} must be at least 2")
+
+
+def _factor_for_overlay(class_fractions: dict[str, float], refine_class_factors: dict[str, int]) -> int | None:
+    factors = [factor for mask_class, factor in refine_class_factors.items() if mask_class in class_fractions]
+    return max(factors) if factors else None
 
 
 def write_refined_cells_geojson(

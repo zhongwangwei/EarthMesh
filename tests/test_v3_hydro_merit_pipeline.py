@@ -56,7 +56,7 @@ def test_run_merit_v3_pipeline_writes_cells_masks_v3_outputs_and_map(tmp_path):
     assert summary["case_name"] == "fixture_merit_v3"
     assert summary["bbox"] == [110.0, 20.0, 110.005, 20.005]
     assert summary["grid"] == {"nx": 3, "ny": 2, "cell_id_prefix": "fixture"}
-    assert summary["refinement"] == {"enabled": True, "classes": ["R2", "R3"], "factor": 2}
+    assert summary["refinement"] == {"enabled": True, "classes": ["R2", "R3"], "factor": 2, "class_factors": {"R2": 2, "R3": 2}}
     assert summary["adapters"] == ["colm2024", "mpas"]
     assert summary["files"]["merit_summary"].endswith("merit/merit_mask_summary.json")
     assert summary["files"]["river_masks"].endswith("merit/merit_river_masks.geojson")
@@ -146,7 +146,7 @@ def test_hydro_merit_pipeline_cli_runs_one_command(tmp_path):
     assert (output_dir / "v3" / "manifest.json").exists()
     assert (output_dir / "map.html").exists()
     summary = json.loads((output_dir / "pipeline_summary.json").read_text())
-    assert summary["refinement"] == {"enabled": True, "classes": ["R2", "R3"], "factor": 2}
+    assert summary["refinement"] == {"enabled": True, "classes": ["R2", "R3"], "factor": 2, "class_factors": {"R2": 2, "R3": 2}}
 
 
 def test_run_merit_v3_pipeline_is_available_from_component_package():
@@ -154,3 +154,84 @@ def test_run_merit_v3_pipeline_is_available_from_component_package():
     from util.v3_components.hydro_merit_pipeline import run_merit_v3_pipeline
 
     assert exported is run_merit_v3_pipeline
+
+
+def test_run_merit_v3_pipeline_accepts_class_specific_refine_factors(tmp_path):
+    merit_root = tmp_path / "merit_factor"
+    output_dir = tmp_path / "out_factor"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+
+    outputs = run_merit_v3_pipeline(
+        merit_root=merit_root,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        nx=3,
+        ny=2,
+        output_dir=output_dir,
+        case_name="fixture_merit_v3_factor",
+        recipe_hash="fixture_recipe_factor",
+        adapters=["colm2024", "mpas"],
+        stride=1,
+        cell_id_prefix="factor",
+        r2_width_m=50.0,
+        r3_width_m=300.0,
+        r2_upa_km2=5000.0,
+        r3_upa_km2=50000.0,
+        refine_classes=["R2"],
+        refine_factor=2,
+        refine_class_factors={"R2": 2, "R3": 3},
+    )
+
+    summary = json.loads(outputs["pipeline_summary"].read_text())
+    cells_payload = json.loads(outputs["cells_geojson"].read_text())
+    assert summary["refinement"] == {
+        "enabled": True,
+        "classes": ["R2", "R3"],
+        "factor": None,
+        "class_factors": {"R2": 2, "R3": 3},
+    }
+    assert len(cells_payload["features"]) > 6
+
+
+def test_hydro_merit_pipeline_cli_accepts_class_specific_refine_factors(tmp_path):
+    merit_root = tmp_path / "merit_factor_cli"
+    output_dir = tmp_path / "out_factor_cli"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+
+    from util.v3_components.hydro_merit_pipeline import main
+
+    exit_code = main(
+        [
+            "--merit-root",
+            str(merit_root),
+            "--bbox",
+            "110.0",
+            "20.0",
+            "110.005",
+            "20.005",
+            "--nx",
+            "3",
+            "--ny",
+            "2",
+            "--output-dir",
+            str(output_dir),
+            "--case-name",
+            "fixture_merit_v3_factor_cli",
+            "--recipe-hash",
+            "fixture_recipe_factor_cli",
+            "--adapters",
+            "colm2024,mpas",
+            "--refine-class-factors",
+            "R3=3,R2=2",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads((output_dir / "pipeline_summary.json").read_text())
+    assert summary["refinement"] == {
+        "enabled": True,
+        "classes": ["R2", "R3"],
+        "factor": None,
+        "class_factors": {"R2": 2, "R3": 3},
+    }

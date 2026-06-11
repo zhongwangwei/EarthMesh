@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from util.v3_components.hydro_merit import write_merit_mask_outputs
-from util.v3_core.adaptive_grid import write_refined_cells_geojson
+from util.v3_core.adaptive_grid import refine_cells_by_mask_factors
 from util.v3_core.geojson_io import load_cells_geojson, load_masks_geojson, write_cells_geojson
 from util.v3_core.grid import write_bbox_grid_geojson
 from util.v3_core.map import canonical_cells_geojson_to_leaflet_html
@@ -33,6 +33,7 @@ def run_merit_v3_pipeline(
     r3_upa_km2: float = 50000.0,
     refine_classes: Sequence[str] | None = None,
     refine_factor: int = 2,
+    refine_class_factors: dict[str, int] | None = None,
 ) -> dict[str, Path]:
     """Run the bootstrap MERIT-Hydro -> v3 regional pipeline.
 
@@ -61,15 +62,14 @@ def run_merit_v3_pipeline(
         r3_upa_km2=r3_upa_km2,
     )
     masks = load_masks_geojson(merit_outputs["masks"])
-    refined_classes = _normalize_refine_classes(refine_classes)
-    if refined_classes:
-        write_refined_cells_geojson(
+    effective_refine_factors = _effective_refine_factors(refine_classes, refine_factor, refine_class_factors)
+    if effective_refine_factors:
+        refined_cells = refine_cells_by_mask_factors(
             load_cells_geojson(cells_geojson),
             masks,
-            refine_classes=set(refined_classes),
-            factor=refine_factor,
-            output_path=cells_geojson,
+            refine_class_factors=effective_refine_factors,
         )
+        write_cells_geojson(refined_cells, cells_geojson)
 
     result = build_v3_pipeline_result(
         case_name=case_name,
@@ -123,7 +123,7 @@ def run_merit_v3_pipeline(
             "r2_upa_km2": r2_upa_km2,
             "r3_upa_km2": r3_upa_km2,
         },
-        refinement={"enabled": bool(refined_classes), "classes": refined_classes, "factor": refine_factor},
+        refinement=_refinement_summary(effective_refine_factors, refine_class_factors is None, refine_factor),
         files=outputs,
     )
     outputs["pipeline_summary"] = summary_path
@@ -174,6 +174,44 @@ def _normalize_refine_classes(refine_classes: Sequence[str] | None) -> list[str]
     return normalized
 
 
+def _parse_refine_class_factors(value: str | None) -> dict[str, int]:
+    if not value:
+        return {}
+    factors: dict[str, int] = {}
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"refine class factor must use CLASS=FACTOR syntax: {item}")
+        mask_class, factor_text = item.split("=", 1)
+        mask_class = mask_class.strip()
+        if not mask_class:
+            raise ValueError("refine class names must be non-empty")
+        factors[mask_class] = int(factor_text.strip())
+    return factors
+
+
+def _effective_refine_factors(
+    refine_classes: Sequence[str] | None,
+    refine_factor: int,
+    refine_class_factors: dict[str, int] | None,
+) -> dict[str, int]:
+    if refine_class_factors is not None:
+        return dict(sorted(refine_class_factors.items()))
+    return {mask_class: refine_factor for mask_class in _normalize_refine_classes(refine_classes)}
+
+
+def _refinement_summary(refine_class_factors: dict[str, int], uniform_shortcut: bool, refine_factor: int) -> dict[str, object]:
+    classes = sorted(refine_class_factors)
+    return {
+        "enabled": bool(refine_class_factors),
+        "classes": classes,
+        "factor": refine_factor if uniform_shortcut and refine_class_factors else None,
+        "class_factors": {mask_class: refine_class_factors[mask_class] for mask_class in classes},
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a MERIT-Hydro -> EarthMesh v3 regional smoke pipeline.")
     parser.add_argument("--merit-root", required=True)
@@ -193,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--r3-upa-km2", type=float, default=50000.0)
     parser.add_argument("--refine-classes", help="Comma-separated mask classes to refine, e.g. R2,R3,COAST_LAND,COAST_OCEAN.")
     parser.add_argument("--refine-factor", type=int, default=2)
+    parser.add_argument("--refine-class-factors", help="Comma-separated class factors, e.g. R3=4,R2=2,COAST_LAND=2.")
     args = parser.parse_args(argv)
 
     adapters = [name.strip() for name in args.adapters.split(",") if name.strip()]
@@ -214,6 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         r3_upa_km2=args.r3_upa_km2,
         refine_classes=_normalize_refine_classes([args.refine_classes] if args.refine_classes else None),
         refine_factor=args.refine_factor,
+        refine_class_factors=_parse_refine_class_factors(args.refine_class_factors) if args.refine_class_factors else None,
     )
     return 0
 
