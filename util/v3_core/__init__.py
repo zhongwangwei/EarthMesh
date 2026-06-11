@@ -59,6 +59,7 @@ __all__ = [
     "default_adapter_registry",
     "geojson_cells_to_canonical",
     "geojson_masks_to_features",
+    "generate_bbox_grid_cells",
     "get_geometry_backend",
     "load_cells_geojson",
     "load_masks_geojson",
@@ -69,5 +70,20 @@ __all__ = [
     "render_canonical_cells_leaflet_html",
     "summarize_overlay_results",
     "validate_cell_collection",
+    "write_bbox_grid_geojson",
     "write_cells_geojson",
 ]
+
+_LAZY_EXPORT_MODULES = {
+    "generate_bbox_grid_cells": "util.v3_core.grid",
+    "write_bbox_grid_geojson": "util.v3_core.grid",
+}
+
+
+def __getattr__(name: str):
+    module_name = _LAZY_EXPORT_MODULES.get(name)
+    if module_name:
+        from importlib import import_module
+
+        return getattr(import_module(module_name), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
