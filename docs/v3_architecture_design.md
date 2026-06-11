@@ -134,6 +134,45 @@ component_roles = [colm_land, colm_ocean, cama_river, exchange_cell]
 
 This is essential for future CoLM20XX sea-land integration.
 
+
+## Mesh Topology Compatibility
+
+v3 must support triangular, hexagonal, and general polygon cells through the same canonical schema.
+
+The core rule is:
+
+```text
+v3 core operates on polygon cells;
+triangle and hexagon are special cases of polygon topology.
+```
+
+Canonical topology fields should include:
+
+```text
+cell_id
+cell_type        # TRI, HEX, POLYGON, MIXED
+vertices
+edges
+neighbors
+area_m2
+center_lon
+center_lat
+orientation
+source_mesh_type
+```
+
+Topology-specific behavior belongs in kernels and adapters, not in component science logic.
+
+Expected adapter usage:
+
+- `mpas`: primarily hexagonal or general polygon dual meshes.
+- `fvcom`: primarily triangular ocean meshes.
+- `colm2024`: should consume canonical cells plus patch and coupling metadata without assuming tri or hex.
+- `colm20xx`: should consume canonical land, ocean, coast, river, and exchange cells without assuming one fixed cell shape.
+- `generic_esmf`: should handle arbitrary polygon exchange grids.
+
+Hydro, coast, land, ocean, and atmosphere components should therefore emit masks and fractions against general polygon cells. This ensures that river/coast/coupling logic works for both MPAS-style hex meshes and FVCOM-style triangular meshes, and remains usable if future cases contain mixed or clipped coastal polygons.
+
 ## Component Contract
 
 Components generate canonical v3 products. They do not write model-specific final outputs directly.
@@ -296,6 +335,7 @@ Rust should own:
 - Conservative remapping weights.
 - Fast adjacency graph construction.
 - Large regional/global mask operations.
+- Shape-agnostic polygon operations that work for triangular, hexagonal, and mixed cells.
 
 For Python/Rust integration, the preferred interface is:
 
@@ -482,6 +522,7 @@ Required tests:
 6. Python is the orchestration layer.
 7. Rust is introduced first for heavy geometry and mask/coupling computation.
 8. The existing Fortran kernel remains active until replacement is justified by tests and parity evidence.
+9. v3 internal geometry is shape-agnostic polygon topology; triangular and hexagonal meshes are both first-class supported cases.
 
 ## Non-Goals for the First v3 Implementation
 
