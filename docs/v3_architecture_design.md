@@ -173,6 +173,74 @@ Expected adapter usage:
 
 Hydro, coast, land, ocean, and atmosphere components should therefore emit masks and fractions against general polygon cells. This ensures that river/coast/coupling logic works for both MPAS-style hex meshes and FVCOM-style triangular meshes, and remains usable if future cases contain mixed or clipped coastal polygons.
 
+
+## Hydro, Coast, and Coupling Semantics
+
+In v3, hydro, coast, and coupling are canonical product layers rather than mesh-shape-specific features.
+
+### Hydro
+
+Hydro means river and hydrologic network information. The first implementation source is CaMa-Flood, but the schema should not depend on CaMa alone.
+
+Typical hydro fields include:
+
+```text
+reach_id
+hydro_class          # NONE, R0, R1, R2, R3, ESTUARY, DELTA
+upstream_area_km2
+river_width_m
+river_length_m
+downstream_reach_id
+downstream_cell_id
+river_fraction
+river_area_m2
+linked_land_cell_ids
+linked_ocean_cell_ids
+```
+
+Hydro products answer questions such as: which mesh cells contain rivers, how large those rivers are, where they flow next, and how river water maps onto land or ocean cells.
+
+### Coast
+
+Coast means land-ocean transition information. It is not only a line; for Earth-system use it should be treated as a zone with land-side, ocean-side, estuary, delta, tidal-flat, and shelf candidates.
+
+Typical coast fields include:
+
+```text
+surface_class        # LAND, OCEAN, COAST, LAKE, ICE, WETLAND
+coast_class          # NONE, COAST_LAND, COAST_OCEAN, ESTUARY, DELTA, TIDAL_FLAT, SHELF
+land_fraction
+ocean_fraction
+coast_fraction
+coast_source
+coast_distance_m
+```
+
+Coast products answer questions such as: which cells are pure land, pure ocean, mixed coast, estuary, or delta, and where refinement or exchange interfaces should be emphasized.
+
+### Coupling
+
+Coupling means the exchange relationships between model roles or physical components. It is independent of whether the source mesh is triangular, hexagonal, or mixed polygonal.
+
+Typical coupling fields include:
+
+```text
+source_cell_id
+target_cell_id
+source_role          # river, land, ocean, atmosphere, coast
+target_role
+interface_type       # river_land, river_ocean, land_ocean, land_atmos, ocean_atmos
+exchange_area_m2
+exchange_fraction
+weight
+conservative
+quality_flags
+```
+
+Coupling products answer questions such as: which river cell drains to which ocean cell, which land and ocean cells share a coastline interface, and what conservative exchange weight should be used.
+
+For CoLM2024 and CoLM20XX, the adapter should consume these semantic layers instead of assuming a fixed triangle or hexagon shape. The shape matters for geometry calculations, but the model-facing product should be cell metadata plus exchange tables.
+
 ## Component Contract
 
 Components generate canonical v3 products. They do not write model-specific final outputs directly.
