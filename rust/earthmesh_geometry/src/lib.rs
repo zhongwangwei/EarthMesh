@@ -1,3 +1,6 @@
+#[cfg(feature = "extension-module")]
+use pyo3::prelude::*;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f64,
@@ -119,4 +122,35 @@ mod tests {
 
         assert_eq!(intersection_area(&outer, &inner), 1.0);
     }
+}
+
+#[cfg(feature = "extension-module")]
+#[pyfunction(name = "polygon_area")]
+fn py_polygon_area(vertices: Vec<(f64, f64)>) -> f64 {
+    let points = tuples_to_points(vertices);
+    polygon_area(&points)
+}
+
+#[cfg(feature = "extension-module")]
+#[pyfunction(name = "intersection_area")]
+fn py_intersection_area(subject: Vec<(f64, f64)>, clip: Vec<(f64, f64)>) -> f64 {
+    let subject_points = tuples_to_points(subject);
+    let clip_points = tuples_to_points(clip);
+    intersection_area(&subject_points, &clip_points)
+}
+
+#[cfg(feature = "extension-module")]
+fn tuples_to_points(vertices: Vec<(f64, f64)>) -> Vec<Point> {
+    vertices
+        .into_iter()
+        .map(|(x, y)| Point::new(x, y))
+        .collect()
+}
+
+#[cfg(feature = "extension-module")]
+#[pymodule]
+fn earthmesh_geometry(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(py_polygon_area, module)?)?;
+    module.add_function(wrap_pyfunction!(py_intersection_area, module)?)?;
+    Ok(())
 }

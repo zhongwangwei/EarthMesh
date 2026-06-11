@@ -8,3 +8,10 @@ license = "MIT OR Apache-2.0"
 [lib]
 name = "earthmesh_geometry"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+extension-module = ["dep:pyo3", "pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.27", optional = true }

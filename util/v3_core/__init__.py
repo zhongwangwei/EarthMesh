@@ -12,7 +12,11 @@ from util.v3_core.geometry import (
     polygon_clip_convex,
     summarize_overlay_results,
 )
-from util.v3_core.geometry_backend import PythonGeometryBackend, get_geometry_backend
+from util.v3_core.geometry_backend import (
+    PythonGeometryBackend,
+    RustGeometryBackend,
+    get_geometry_backend,
+)
 from util.v3_core.geojson_io import (
     canonical_cells_to_geojson,
     geojson_cells_to_canonical,
@@ -44,6 +48,7 @@ __all__ = [
     "MeshRecipe",
     "OverlayResult",
     "PythonGeometryBackend",
+    "RustGeometryBackend",
     "QARecipe",
     "RegionRecipe",
     "SchemaOnlyAdapter",
