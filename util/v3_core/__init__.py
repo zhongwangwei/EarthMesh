@@ -1,7 +1,7 @@
 """EarthMesh v3 core schemas, recipes, manifests, and adapter boundaries."""
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
-from util.v3_core.adapters import AdapterRegistry, SchemaOnlyAdapter, default_adapter_registry
+from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, SchemaOnlyAdapter, default_adapter_registry
 from util.v3_core.geometry import (
     MaskFeature,
     OverlayResult,
@@ -18,6 +18,7 @@ from util.v3_core.schema import CanonicalCell, ExchangeLink, validate_cell_colle
 
 __all__ = [
     "AdapterRegistry",
+    "AdapterExportPlan",
     "CanonicalCell",
     "ComponentProduct",
     "ComponentResult",
