@@ -1071,3 +1071,33 @@ The package writes `delivery_manifest.json`, a coast-aware eval JSON, the integr
 Leaflet QA map, and a ranking JSON into the package directory.  Treat
 `delivery_manifest.json` as the next stable input boundary for CoLM2024/CoLM20XX
 coupling-table generation.
+
+The delivery package can now be converted into the first CoLM2024/CoLM20XX-style
+all-cell coupling table:
+
+```bash
+python3 -m util.hydro_mesh.colm_coupling package \
+  --delivery-manifest \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/delivery_manifest.json \
+  --output-dir \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/colm_coupling
+```
+
+The smoke output writes:
+
+```text
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/colm_coupling/colm_coupling_cells.csv
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/colm_coupling/colm_coupling_summary.json
+```
+
+Observed summary for the N112 package:
+
+- `rows_written = 2574` all background EarthMesh cells.
+- `river_overlap_record_count = 500`, aggregated to `river_cell_count = 372` unique cells.
+- `coast_overlap_record_count = 374`, aggregated to `coast_cell_count = 374` unique cells.
+- `32` cells carry both river and coast coupling flags.
+
+This is still a metadata handoff table, not final CoLM NetCDF.  It is the first
+stable all-cell boundary for the later CoLM2024/CoLM20XX writer: every background
+cell is present, sparse river/coast overlaps are joined by `cell_id`, and repeated
+overlap records in the same cell are aggregated before export.
