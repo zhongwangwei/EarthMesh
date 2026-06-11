@@ -72,3 +72,35 @@ def test_hydro_record_semantics_maps_r2_to_refinement_role():
     assert semantics["hydro_class"] == "R2"
     assert semantics["mesh_priority"] == 2
     assert semantics["component_roles"] == ["cama_river"]
+
+from util.v3_core.components import ComponentRunContext
+from util.v3_components.hydro_cama import HydroCamaComponent
+
+
+def test_hydro_cama_component_dry_run_reports_expected_products(tmp_path):
+    config = HydroCamaConfig(
+        map_dir=Path("/data/glb_01min"),
+        bbox=(112.0, 20.0, 115.0, 24.0),
+        target_dx_km=5.6,
+        classes=("R2", "R3"),
+        coast_radius_cells=3,
+    )
+    component = HydroCamaComponent(config)
+    context = ComponentRunContext(
+        case_name="gba_hydro",
+        output_dir=tmp_path / "out",
+        work_dir=tmp_path / "work",
+        dry_run=True,
+    )
+
+    result = component.run(context)
+
+    assert result.component_name == "hydro_cama"
+    assert result.product_names == [
+        "hydro_reaches",
+        "hydro_corridors",
+        "surface_mask",
+        "coastal_band",
+        "colm_coupling",
+    ]
+    assert result.warnings == ["dry_run_only"]

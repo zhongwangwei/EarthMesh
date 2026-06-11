@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
 from util.v3_core.recipe import ComponentRecipe
 
 
 @dataclass(frozen=True)
 class HydroCamaConfig:
     map_dir: Path
-    bbox: tuple[float, ...]
+    bbox: tuple[float, float, float, float] | tuple[float, ...]
     target_dx_km: float
     classes: tuple[str, ...] = ("R2", "R3")
     coast_radius_cells: int = 3
@@ -66,3 +67,23 @@ def hydro_record_semantics(record: dict[str, object]) -> dict[str, object]:
         "upstream_area_km2": record.get("upstream_area_km2", ""),
         "river_width_m": record.get("width_m", ""),
     }
+
+
+class HydroCamaComponent:
+    name = "hydro_cama"
+    version = "0.1"
+
+    def __init__(self, config: HydroCamaConfig) -> None:
+        self.config = config
+
+    def run(self, context: ComponentRunContext) -> ComponentResult:
+        base = context.output_dir / "hydro_cama"
+        products = [
+            ComponentProduct("hydro_reaches", "hydro", base / "classified_reaches.jsonl", "Classified CaMa reach records"),
+            ComponentProduct("hydro_corridors", "hydro", base / "river_corridors.geojson", "R2/R3 river corridor polygons"),
+            ComponentProduct("surface_mask", "coast", base / "surface_mask.geojson", "LAND/OCEAN cell mask from CaMa elevation"),
+            ComponentProduct("coastal_band", "coast", base / "coastal_band.geojson", "CaMa elevation-derived coastal band"),
+            ComponentProduct("colm_coupling", "coupling", base / "colm_coupling.csv", "CoLM-oriented river-cell coupling table"),
+        ]
+        warnings = ["dry_run_only"] if context.dry_run else []
+        return ComponentResult(component_name=self.name, products=products, warnings=warnings)
