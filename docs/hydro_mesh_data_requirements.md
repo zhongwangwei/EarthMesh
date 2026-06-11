@@ -1358,3 +1358,52 @@ Observed stride-1 artifact paths:
 This closes the Yangtze-delta stride sweep through native MERIT resolution for the
 existing N112 background mesh.  The next scaling step is a China-region package,
 which should use `--skip-raw-surface-mask` from the start.
+
+### China-region N160 MERIT compact-surface package
+
+The first China-region MERIT package reuses the existing N160 background cell layer
+covering China mainland, Taiwan, and surrounding seas.  The background layer has
+`19737` EarthMesh cells and bbox approximately `72.69E-136.39E`, `2.74N-54.22N`;
+the source refinement domain was bbox `73 3 136 54`.  Use the `nowce` smoke log for
+package metadata because the non-`nowce` and tiled China logs hit a Fortran runtime
+index error during refinement cleanup.
+
+```bash
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface
+python3 -m util.hydro_mesh.merit_package_bridge \
+  --case-name merit_china_N160_stride20_compact_surface \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/china_region_N160_background_cells.geojson \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 73 3 136 54 \
+  --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_china_region_N160_d3_nowce_smoke.log \
+  --output-dir "$OUT/package" \
+  --raw-merit-output-dir "$OUT/raw_merit_source" \
+  --skip-raw-surface-mask \
+  --title "MERIT China N160 bridge stride20 compact surface" \
+  --max-background-cells 25000 \
+  --stride 20
+
+python3 -m util.hydro_mesh.colm_coupling package \
+  --delivery-manifest "$OUT/package/delivery_manifest.json" \
+  --output-dir "$OUT/package/colm_coupling"
+```
+
+Observed China-region output:
+
+- Runtime for package plus CoLM export: about `411` seconds on the local workstation.
+- Delivery package size: `97M`; external raw MERIT source size: `232M`; total output size: `329M`.
+- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/delivery_manifest.json`.
+- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/merit_china_N160_stride20_compact_surface_rivers_and_integrated_coast_leaflet.html`.
+- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/merit_china_N160_stride20_compact_surface_complete_cell_mask.geojson`.
+- Raw river masks: `16M`; raw coast masks: `216M`; raw surface masks: not written.
+- MERIT source masks: `river=18082`, `coast=246213`, `surface=0` because raw surface output was skipped.
+- EarthMesh intersections: `river_intersection_features=8276`, `coast_intersection_features=9085`.
+- CoLM rows: `19737`; `river_cell_count=6518`; `coast_cell_count=4872`.
+- Surface counts: `LAND=11908`, `OCEAN=7829`, `UNKNOWN=0`; `surface_source_kind=complete_cell_mask_geojson`.
+
+This is the first full China-region package generated through the MERIT bridge.  It
+proves that the compact-surface handoff scales from the Yangtze test window to the
+China/Taiwan/surrounding-seas N160 background layer without carrying raw surface
+polygons in the package.  The next China-region refinement step is either a finer
+MERIT stride run (`stride=10`) or a true MERIT-driven close-mask regeneration rather
+than only projecting MERIT masks onto the existing N160 cells.
