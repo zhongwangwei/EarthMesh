@@ -1041,3 +1041,33 @@ python3 -m util.hydro_mesh.refinement_sweep rank \
 The ranking report recommends `N112_r3d3_cst20`.  `N128_r3d3_cst20` is kept as a
 failed row with the close-curve error summary so it is not mistaken for a missing
 or merely unscored candidate.
+
+The recommended N112 candidate can now be promoted into a reproducible delivery
+package with one command:
+
+```bash
+python3 -m util.hydro_mesh.refinement_package \
+  --case-name N112_r3d3_cst20 \
+  --background-geojson \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --river-geojson \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.geojson \
+  --coast-geojson \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_coastal_earthmesh_cell_intersections_preview.geojson \
+  --log-path \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log \
+  --output-dir \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20 \
+  --title "Yangtze delta N112 hydro/coast EarthMesh cells" \
+  --comparison-reports \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N64_r3d3_ranked_coast20_with_coast_eval.json \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N96_r3d3_cst20_with_coast_eval.json \
+  --failed-reports \
+    /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_N128_r3d3_cst20_failed_eval.json \
+  --max-background-cells 3000
+```
+
+The package writes `delivery_manifest.json`, a coast-aware eval JSON, the integrated
+Leaflet QA map, and a ranking JSON into the package directory.  Treat
+`delivery_manifest.json` as the next stable input boundary for CoLM2024/CoLM20XX
+coupling-table generation.
