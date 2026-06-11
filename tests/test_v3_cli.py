@@ -63,11 +63,14 @@ def test_v3_cli_runs_pipeline_from_json_inputs(tmp_path):
 
     assert exit_code == 0
     manifest = json.loads((output_dir / "manifest.json").read_text())
+    overlay_summary = json.loads((output_dir / "overlay_summary.json").read_text())
     adapter = json.loads((output_dir / "adapter_colm2024.json").read_text())
     projected_cells = json.loads((output_dir / "canonical_cells.json").read_text())
     projected_geojson = json.loads((output_dir / "canonical_cells.geojson").read_text())
     assert manifest["case_name"] == "cli_case"
     assert manifest["missing_mask_count"] == 1
+    assert overlay_summary["missing_mask_count"] == 1
+    assert overlay_summary["winning_class_counts"] == {"LAND": 1, "UNKNOWN": 1}
     assert adapter["adapter_name"] == "colm2024"
     assert [cell["surface_class"] for cell in projected_cells] == ["LAND", "UNKNOWN"]
     assert projected_geojson["features"][0]["properties"]["surface_class"] == "LAND"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class V3PipelineResult:
         directory = Path(output_dir)
         directory.mkdir(parents=True, exist_ok=True)
         paths = {"manifest": self.manifest.write_json(directory / "manifest.json")}
+        paths["overlay_summary"] = _write_json_sidecar(self.overlay_summary, directory / "overlay_summary.json")
         for adapter_name, plan in self.adapter_plans.items():
             paths[f"adapter_{adapter_name}"] = plan.write_json(directory / f"adapter_{adapter_name}.json")
         return paths
@@ -74,3 +76,9 @@ def _count_cell_types(cells: list[CanonicalCell]) -> dict[str, int]:
     for cell in cells:
         counts[cell.cell_type] = counts.get(cell.cell_type, 0) + 1
     return counts
+
+
+def _write_json_sidecar(payload: dict[str, object], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return output_path
