@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
+from util.v3_components import build_merit_masks, select_merit_tiles
 
 
 def test_component_run_context_carries_case_paths_and_dry_run_flag(tmp_path):
@@ -32,3 +33,8 @@ def test_component_result_lists_products_and_warnings():
 
     assert result.product_names == ["hydro_reaches"]
     assert result.has_warnings is True
+
+
+def test_v3_components_exports_merit_hydro_bridge():
+    assert callable(select_merit_tiles)
+    assert callable(build_merit_masks)
