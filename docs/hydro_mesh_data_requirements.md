@@ -1538,3 +1538,51 @@ China/Taiwan/surrounding-seas N160 background layer without carrying raw surface
 polygons in the package.  The next China-region refinement step is either a finer
 MERIT stride run (`stride=10`) or a true MERIT-driven close-mask regeneration rather
 than only projecting MERIT masks onto the existing N160 cells.
+
+### MERIT-driven mesh regeneration loop
+
+The MERIT bridge now has a direct regeneration entry point for turning MERIT-Hydro
+features into EarthMesh close-mask refinement inputs, rather than only projecting
+MERIT masks onto an already-generated background mesh:
+
+```bash
+RUN=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_gba_regeneration_smoke
+python3 -m util.hydro_mesh.merit_mesh_regeneration \
+  --case-name ATMOS_merit_gba_regeneration_smoke \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 113.8 22.2 114.0 22.4 \
+  --output-dir "$RUN" \
+  --template-nml /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/cases/ATMOS_hydro_N128_r3d3_cst20/result/namelist.save \
+  --case-base-dir "$RUN/cases" \
+  --stride 1 \
+  --r2-cap 4 \
+  --r3-cap 4 \
+  --coast-cap 4
+
+./mkgrd.x "$RUN/ATMOS_merit_gba_regeneration_smoke.mnl" > "$RUN/mkgrd.log" 2>&1
+```
+
+The utility writes compressed raw MERIT river/coast GeoJSON layers, a
+`merit_close_mask_recipe.json`, EarthMesh close-mask NML files under the
+`refine_spc_merit` prefix, and an optional patched mkgrd namelist with
+`RL%mask_refine_spc_fprefix` and `RL%max_iter_spc` set from the generated masks.
+`composite_refine_mask_export` reads both plain `.geojson` and `.geojson.gz`
+inputs, so the regeneration loop can use the compressed raw MERIT layers
+directly.
+
+Observed GBA bounded smoke result:
+
+- Summary: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_gba_regeneration_smoke/merit_mesh_regeneration_summary.json`.
+- Patched namelist: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_gba_regeneration_smoke/ATMOS_merit_gba_regeneration_smoke.mnl`.
+- Generated mesh: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_gba_regeneration_smoke/cases/ATMOS_merit_gba_regeneration_smoke/result/MPASOUT_NXP0128_global.nc4`.
+- mkgrd log ended with `!! Successfully Make Grid End !!`.
+- Close-mask components: `merit_coast=8`, `merit_river=16`, total close files `24`.
+- Class/degree split: `COAST_LAND_d1=4`, `COAST_OCEAN_d1=4`, `R2_d1=4`, `R3_d1=4`, `R3_d2=4`, `R3_d3=4`.
+- Compressed raw MERIT source size: about `92K` for this bounded smoke.
+
+This proves the first end-to-end MERIT -> compressed raw masks -> close-mask NML
+prefix -> patched mkgrd namelist -> `mkgrd.x` -> MPASOUT mesh loop.  It is still
+a bounded smoke, not a promoted China/Yangtze production regeneration.  Before a
+large-domain regenerated mesh is treated as a deliverable, the R2/R3/coast caps,
+buffer distances, and visual/metric QA thresholds should be reviewed on the target
+domain.

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from util.hydro_mesh.geojson_io import read_json
 from util.hydro_mesh.refine_mask_export import (
     CloseMaskSpec,
     DEFAULT_CLASS_REFINE,
@@ -54,7 +55,7 @@ def _component_specs(component: Mapping[str, object]) -> list[CloseMaskSpec]:
     input_geojson = component.get("input_geojson")
     if not input_geojson:
         raise ValueError("each component requires input_geojson")
-    collection = json.loads(Path(str(input_geojson)).read_text())
+    collection = read_json(str(input_geojson))
     return geojson_to_close_mask_specs(
         collection,
         class_refine=_as_int_mapping(component.get("class_refine"), default=DEFAULT_CLASS_REFINE),
