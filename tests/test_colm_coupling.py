@@ -290,3 +290,22 @@ def test_package_coupling_prefers_manifest_complete_cell_mask_geojson(tmp_path):
     assert result["summary"]["surface_cell_count"] == 3
     assert result["summary"]["surface_geojson"] == str(complete_mask)
     assert result["summary"]["surface_source_kind"] == "complete_cell_mask_geojson"
+
+
+def test_package_coupling_summary_reports_surface_class_counts(tmp_path):
+    from util.hydro_mesh.colm_coupling import write_colm_package_coupling
+
+    manifest = _write_package_fixture(tmp_path)
+    surface = tmp_path / "surface.geojson"
+    surface.write_text(json.dumps(_collection([
+        _feature({"cell_id": "a", "surface_class": "LAND"}),
+        _feature({"cell_id": "b", "surface_class": "OCEAN"}),
+        _feature({"cell_id": "c", "surface_class": "OCEAN"}),
+    ])))
+    payload = json.loads(manifest.read_text())
+    payload["source_files"]["surface_geojson"] = str(surface)
+    manifest.write_text(json.dumps(payload))
+
+    result = write_colm_package_coupling(manifest, tmp_path / "colm_surface_counts")
+
+    assert result["summary"]["surface_class_counts"] == {"LAND": 1, "OCEAN": 2}

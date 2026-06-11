@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +181,7 @@ def write_colm_package_coupling(
         "coast_overlap_record_count": len(_features(coast)),
         "coast_cell_count": len(coast_by_cell),
         "surface_cell_count": len(surface_by_cell),
+        "surface_class_counts": dict(Counter(str(row["surface_class"]) for row in rows)),
         "rows_written": len(rows),
         "csv_path": str(csv_path),
     }
