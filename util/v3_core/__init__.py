@@ -2,6 +2,15 @@
 
 from util.v3_core.components import ComponentProduct, ComponentResult, ComponentRunContext
 from util.v3_core.adapters import AdapterRegistry, SchemaOnlyAdapter, default_adapter_registry
+from util.v3_core.geometry import (
+    MaskFeature,
+    OverlayResult,
+    overlay_cell_with_masks,
+    polygon_area,
+    polygon_clip_convex,
+    summarize_overlay_results,
+)
+from util.v3_core.geometry_backend import PythonGeometryBackend, get_geometry_backend
 from util.v3_core.legacy_fortran import LegacyFortranRun, LegacyFortranResult, build_legacy_command
 from util.v3_core.manifest import V3RunManifest
 from util.v3_core.recipe import ComponentRecipe, MeshRecipe, QARecipe, RegionRecipe, V3Recipe, load_recipe
@@ -17,7 +26,10 @@ __all__ = [
     "ExchangeLink",
     "LegacyFortranResult",
     "LegacyFortranRun",
+    "MaskFeature",
     "MeshRecipe",
+    "OverlayResult",
+    "PythonGeometryBackend",
     "QARecipe",
     "RegionRecipe",
     "SchemaOnlyAdapter",
@@ -25,6 +37,11 @@ __all__ = [
     "V3RunManifest",
     "build_legacy_command",
     "default_adapter_registry",
+    "get_geometry_backend",
     "load_recipe",
+    "overlay_cell_with_masks",
+    "polygon_area",
+    "polygon_clip_convex",
+    "summarize_overlay_results",
     "validate_cell_collection",
 ]
