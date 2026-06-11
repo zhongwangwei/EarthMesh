@@ -160,3 +160,28 @@ Observed output for the same bbox:
 This file is an inspection layer, not yet an EarthMesh refine mask. Use it to verify
 that high-priority river points align with expected rivers, estuaries, and coastal
 features before constructing buffered corridors or 2D river cells.
+
+## Verified HTML map preview
+
+The R2/R3 GeoJSON inspection layer can also be wrapped as a local Leaflet HTML map:
+
+```bash
+python3 -m util.hydro_mesh.geojson_map \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.html \
+  --title "Yangtze Delta CaMa R2/R3 Candidates"
+```
+
+Observed output:
+
+- HTML path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.html`.
+- File size for the current sample: about `755 KB`.
+- The GeoJSON features are embedded directly in the HTML file.
+- Leaflet and OpenStreetMap tiles are loaded from public CDNs when the file is opened;
+  the basemap therefore needs network access unless this preview is later adapted to
+  local/offline tiles.
+
+Use this preview as a visual QA gate before generating buffered river corridors or
+EarthMesh 2D river masks. If the point cloud appears shifted, mirrored, or dominated
+by false coastal outlets, re-check CaMa `yrev`, longitude/latitude center convention,
+width units, and downstream outlet interpretation before proceeding.
