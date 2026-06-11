@@ -14,6 +14,7 @@ from util.v3_core.geometry import (
 from util.v3_core.geometry_backend import PythonGeometryBackend, get_geometry_backend
 from util.v3_core.legacy_fortran import LegacyFortranRun, LegacyFortranResult, build_legacy_command
 from util.v3_core.manifest import V3RunManifest
+from util.v3_core.pipeline import V3PipelineResult, build_v3_pipeline_result
 from util.v3_core.recipe import ComponentRecipe, MeshRecipe, QARecipe, RegionRecipe, V3Recipe, load_recipe
 from util.v3_core.schema import CanonicalCell, ExchangeLink, validate_cell_collection
 
@@ -37,7 +38,9 @@ __all__ = [
     "SchemaOnlyAdapter",
     "V3Recipe",
     "V3RunManifest",
+    "V3PipelineResult",
     "apply_overlay_to_cell",
+    "build_v3_pipeline_result",
     "build_legacy_command",
     "default_adapter_registry",
     "get_geometry_backend",
