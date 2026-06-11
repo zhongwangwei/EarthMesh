@@ -138,3 +138,25 @@ Observed for this first Yangtze-delta-adjacent probe:
 This proves the windowed reader path is feasible for regional development. The next
 scientific validation step is to compare sampled river locations/classes against a
 known basin or coastline reference before generating 2D river-corridor masks.
+
+## Verified R2/R3 GeoJSON export
+
+The classified regional sample can be converted to a lightweight GeoJSON point
+layer for visual inspection against river and coastline references:
+
+```bash
+python3 -m util.hydro_mesh.geojson_export \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_classified.jsonl \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.geojson \
+  --classes R2 R3
+```
+
+Observed output for the same bbox:
+
+- GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.geojson`.
+- Feature count: `1637`.
+- Class counts: `R2=876`, `R3=761`.
+
+This file is an inspection layer, not yet an EarthMesh refine mask. Use it to verify
+that high-priority river points align with expected rivers, estuaries, and coastal
+features before constructing buffered corridors or 2D river cells.
