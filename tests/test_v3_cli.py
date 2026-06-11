@@ -235,3 +235,28 @@ def test_v3_cli_runs_builtin_gba_demo(tmp_path):
     assert manifest["mask_counts"]["R3"] == 1
     assert {cell["cell_id"] for cell in cells} >= {"gba_land", "gba_ocean", "gba_coast", "pearl_river"}
     assert "pearl_river" in html
+
+
+def test_v3_cli_accepts_geometry_backend_option(tmp_path):
+    output_dir = tmp_path / "backend_demo"
+
+    exit_code = main(
+        [
+            "--case-name",
+            "backend_demo",
+            "--recipe-hash",
+            "demo",
+            "--demo",
+            "gba",
+            "--adapters",
+            "colm2024",
+            "--output-dir",
+            str(output_dir),
+            "--geometry-backend",
+            "python_reference",
+        ]
+    )
+
+    assert exit_code == 0
+    overlay_summary = json.loads((output_dir / "overlay_summary.json").read_text())
+    assert overlay_summary["geometry_backend"] == "python_reference"

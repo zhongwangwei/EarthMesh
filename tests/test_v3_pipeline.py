@@ -1,6 +1,6 @@
 import json
 
-from util.v3_core.geometry import MaskFeature
+from util.v3_core.geometry import MaskFeature, OverlayResult
 from util.v3_core.pipeline import build_v3_pipeline_result
 from util.v3_core.schema import CanonicalCell
 
@@ -78,3 +78,31 @@ def test_pipeline_result_writes_manifest_and_adapter_sidecars(tmp_path):
     assert paths["adapter_colm2024_cells"].read_text().splitlines()[0].startswith("adapter_name,cell_id")
     assert overlay_payload["winning_class_counts"] == {"LAND": 1}
     assert overlay_payload["missing_mask_count"] == 0
+
+
+def test_pipeline_records_effective_geometry_backend_name():
+    class FixtureBackend:
+        name = "fixture_backend"
+
+        def overlay_cells(self, cells, masks):
+            return [
+                OverlayResult(
+                    cell_id=cells[0].cell_id,
+                    winning_class="LAND",
+                    winning_priority=1,
+                    class_fractions={"LAND": 1.0},
+                    source_feature_ids=["fixture-mask"],
+                    quality_flags=[],
+                )
+            ]
+
+    result = build_v3_pipeline_result(
+        case_name="backend_case",
+        recipe_hash="abc123",
+        cells=[CanonicalCell.minimal("land", cell_type="TRI")],
+        masks=[],
+        adapter_names=["colm2024"],
+        geometry_backend=FixtureBackend(),
+    )
+
+    assert result.overlay_summary["geometry_backend"] == "fixture_backend"

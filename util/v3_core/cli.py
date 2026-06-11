@@ -42,6 +42,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--adapters", required=True, help="Comma-separated adapter names, e.g. colm2024,mpas,fvcom.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--html-map", help="Optional output HTML path for a Leaflet QA map of canonical cells.")
+    parser.add_argument(
+        "--geometry-backend",
+        default="python_reference",
+        help="Geometry backend name: python_reference, rust, or rust_pyo3.",
+    )
     args = parser.parse_args(argv)
     _validate_input_args(parser, args)
 
@@ -53,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cells=cells,
         masks=masks,
         adapter_names=adapter_names,
+        geometry_backend_name=args.geometry_backend,
     )
 
     output_dir = Path(args.output_dir)

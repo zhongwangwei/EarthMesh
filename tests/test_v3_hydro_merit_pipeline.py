@@ -235,3 +235,66 @@ def test_hydro_merit_pipeline_cli_accepts_class_specific_refine_factors(tmp_path
         "factor": None,
         "class_factors": {"R2": 2, "R3": 3},
     }
+
+
+def test_run_merit_v3_pipeline_records_geometry_backend(tmp_path):
+    merit_root = tmp_path / "merit_backend"
+    output_dir = tmp_path / "out_backend"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+
+    outputs = run_merit_v3_pipeline(
+        merit_root=merit_root,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        nx=3,
+        ny=2,
+        output_dir=output_dir,
+        case_name="fixture_merit_v3_backend",
+        recipe_hash="fixture_recipe_backend",
+        adapters=["colm2024"],
+        geometry_backend="python_reference",
+    )
+
+    overlay_summary = json.loads(outputs["overlay_summary"].read_text())
+    pipeline_summary = json.loads(outputs["pipeline_summary"].read_text())
+    assert overlay_summary["geometry_backend"] == "python_reference"
+    assert pipeline_summary["geometry_backend"] == "python_reference"
+
+
+def test_hydro_merit_pipeline_cli_accepts_geometry_backend(tmp_path):
+    merit_root = tmp_path / "merit_backend_cli"
+    output_dir = tmp_path / "out_backend_cli"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+
+    from util.v3_components.hydro_merit_pipeline import main
+
+    exit_code = main(
+        [
+            "--merit-root",
+            str(merit_root),
+            "--bbox",
+            "110.0",
+            "20.0",
+            "110.005",
+            "20.005",
+            "--nx",
+            "3",
+            "--ny",
+            "2",
+            "--output-dir",
+            str(output_dir),
+            "--case-name",
+            "fixture_merit_v3_backend_cli",
+            "--recipe-hash",
+            "fixture_recipe_backend_cli",
+            "--adapters",
+            "colm2024",
+            "--geometry-backend",
+            "python_reference",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads((output_dir / "pipeline_summary.json").read_text())
+    assert summary["geometry_backend"] == "python_reference"

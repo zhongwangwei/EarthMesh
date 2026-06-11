@@ -34,6 +34,7 @@ def run_merit_v3_pipeline(
     refine_classes: Sequence[str] | None = None,
     refine_factor: int = 2,
     refine_class_factors: dict[str, int] | None = None,
+    geometry_backend: str = "python_reference",
 ) -> dict[str, Path]:
     """Run the bootstrap MERIT-Hydro -> v3 regional pipeline.
 
@@ -77,6 +78,7 @@ def run_merit_v3_pipeline(
         cells=load_cells_geojson(cells_geojson),
         masks=masks,
         adapter_names=list(adapters),
+        geometry_backend_name=geometry_backend,
     )
     sidecars = result.write_sidecars(v3_dir)
     canonical_cells_json = v3_dir / "canonical_cells.json"
@@ -116,6 +118,7 @@ def run_merit_v3_pipeline(
         ny=ny,
         cell_id_prefix=cell_id_prefix,
         adapters=list(adapters),
+        geometry_backend=geometry_backend,
         stride=stride,
         thresholds={
             "r2_width_m": r2_width_m,
@@ -141,6 +144,7 @@ def _write_pipeline_summary(
     ny: int,
     cell_id_prefix: str,
     adapters: list[str],
+    geometry_backend: str,
     stride: int,
     thresholds: dict[str, float],
     refinement: dict[str, object],
@@ -153,6 +157,7 @@ def _write_pipeline_summary(
         "bbox": list(bbox),
         "grid": {"nx": nx, "ny": ny, "cell_id_prefix": cell_id_prefix},
         "adapters": adapters,
+        "geometry_backend": geometry_backend,
         "stride": stride,
         "thresholds": thresholds,
         "refinement": refinement,
@@ -232,6 +237,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--refine-classes", help="Comma-separated mask classes to refine, e.g. R2,R3,COAST_LAND,COAST_OCEAN.")
     parser.add_argument("--refine-factor", type=int, default=2)
     parser.add_argument("--refine-class-factors", help="Comma-separated class factors, e.g. R3=4,R2=2,COAST_LAND=2.")
+    parser.add_argument(
+        "--geometry-backend",
+        default="python_reference",
+        help="Geometry backend name: python_reference, rust, or rust_pyo3.",
+    )
     args = parser.parse_args(argv)
 
     adapters = [name.strip() for name in args.adapters.split(",") if name.strip()]
@@ -254,6 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         refine_classes=_normalize_refine_classes([args.refine_classes] if args.refine_classes else None),
         refine_factor=args.refine_factor,
         refine_class_factors=_parse_refine_class_factors(args.refine_class_factors) if args.refine_class_factors else None,
+        geometry_backend=args.geometry_backend,
     )
     return 0
 

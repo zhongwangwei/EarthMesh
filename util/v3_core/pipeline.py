@@ -49,15 +49,19 @@ def build_v3_pipeline_result(
     adapter_names: list[str],
     registry: AdapterRegistry | None = None,
     geometry_backend: GeometryBackend | None = None,
+    geometry_backend_name: str = "python_reference",
 ) -> V3PipelineResult:
     validated_cells = validate_cell_collection(cells)
-    backend = geometry_backend or get_geometry_backend()
+    backend = geometry_backend or get_geometry_backend(geometry_backend_name)
     adapter_registry = registry or default_adapter_registry()
 
     overlay_results = backend.overlay_cells(validated_cells, masks)
     overlay_by_cell_id = {result.cell_id: result for result in overlay_results}
     updated_cells = [apply_overlay_to_cell(cell, overlay_by_cell_id[cell.cell_id]) for cell in validated_cells]
-    overlay_summary = summarize_overlay_results(overlay_results)
+    overlay_summary = {
+        **summarize_overlay_results(overlay_results),
+        "geometry_backend": backend.name,
+    }
 
     adapter_plans = {name: adapter_registry.get(name).plan_export(updated_cells) for name in adapter_names}
     adapter_versions = {name: plan.adapter_version for name, plan in adapter_plans.items()}
