@@ -197,3 +197,71 @@ def test_render_mesh_leaflet_html_labels_coast_as_mesh_cell_overlap():
     assert "coastal-overlap EarthMesh cells" in html
     assert "coastal_fraction" in html
     assert "mesh-coast" in html
+
+
+def test_render_mesh_leaflet_html_embeds_optional_surface_cell_layer():
+    from util.hydro_mesh.geojson_map import render_mesh_leaflet_html
+
+    empty = {"type": "FeatureCollection", "features": []}
+    background = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[121, 31], [122, 31], [122, 32], [121, 32], [121, 31]]]},
+                "properties": {"cell_id": "land-cell"},
+            }
+        ],
+    }
+    surface = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[121, 31], [122, 31], [122, 32], [121, 32], [121, 31]]]},
+                "properties": {"cell_id": "land-cell", "surface_class": "LAND", "mask_class": "LAND"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[122, 31], [123, 31], [123, 32], [122, 32], [122, 31]]]},
+                "properties": {"cell_id": "ocean-cell", "surface_class": "OCEAN", "mask_class": "OCEAN"},
+            },
+        ],
+    }
+
+    html = render_mesh_leaflet_html(background, empty, surface_cells=surface, title="Surface Mesh")
+
+    assert "const surfaceCells =" in html
+    assert "LAND surface cells" in html
+    assert "OCEAN surface cells" in html
+    assert "complete LAND/OCEAN cell mask" in html
+    assert "surface_class" in html
+    assert "land-cell" in html
+    assert "ocean-cell" in html
+
+
+def test_mesh_geojson_to_leaflet_html_writes_optional_surface_layer(tmp_path):
+    background = tmp_path / "background.geojson"
+    rivers = tmp_path / "rivers.geojson"
+    surface = tmp_path / "surface.geojson"
+    html_path = tmp_path / "mesh.html"
+    empty = {"type": "FeatureCollection", "features": []}
+    background.write_text(json.dumps(empty))
+    rivers.write_text(json.dumps(empty))
+    surface.write_text(json.dumps({
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[121, 31], [122, 31], [122, 32], [121, 32], [121, 31]]]},
+                "properties": {"cell_id": "ocean-cell", "surface_class": "OCEAN"},
+            }
+        ],
+    }))
+
+    mesh_geojson_to_leaflet_html(background, rivers, html_path, surface_geojson=surface, title="Surface Layer")
+
+    text = html_path.read_text()
+    assert "Surface Layer" in text
+    assert "const surfaceCells =" in text
+    assert "ocean-cell" in text

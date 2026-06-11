@@ -1135,6 +1135,8 @@ separate `has_coast/coast_class` fields.
 Verified N112 CaMa surface-aware smoke output:
 
 - Complete mask path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20_surface/N112_r3d3_cst20_complete_cell_mask.geojson`.
+- Surface-aware HTML path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20_surface/N112_r3d3_cst20_rivers_and_integrated_coast_leaflet.html`.
+- The HTML embeds a `surfaceCells` layer, a `complete LAND/OCEAN cell mask` layer toggle, and LAND/OCEAN legend entries.
 - `surface_source_kind = complete_cell_mask_geojson` in `colm_coupling_summary.json`.
 - `surface_cell_count = rows_written = 2574`, so every background cell has a surface row.
 - Surface counts in `colm_coupling_cells.csv`: `LAND=2288`, `OCEAN=286`, `UNKNOWN=0`.

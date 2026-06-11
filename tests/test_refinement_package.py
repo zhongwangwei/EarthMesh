@@ -287,3 +287,51 @@ def test_refinement_delivery_package_writes_complete_cell_mask_when_surface_geoj
     assert by_id["ocean_cell"]["mask_class"] == "COAST"
     written = json.loads((output_dir / "delivery_manifest.json").read_text())
     assert written["files"]["complete_cell_mask_geojson"] == str(complete_path)
+
+
+def test_refinement_delivery_package_embeds_complete_surface_mask_in_html_when_supplied(tmp_path):
+    from util.hydro_mesh.refinement_package import write_refinement_delivery_package
+
+    background = tmp_path / "background.geojson"
+    river = tmp_path / "river.geojson"
+    coast = tmp_path / "coast.geojson"
+    surface = tmp_path / "surface.geojson"
+    log = tmp_path / "mkgrd.log"
+    background.write_text(json.dumps(_feature_collection([
+        _cell_rect("land_cell", 0, 0, 1, 1),
+        _cell_rect("ocean_cell", 1, 0, 2, 1),
+    ])))
+    river.write_text(json.dumps(_feature_collection([_river("land_cell", "R3")])))
+    coast.write_text(json.dumps(_feature_collection([_coast("ocean_cell")])))
+    surface.write_text(json.dumps(_feature_collection([
+        {
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+            "properties": {"mask_class": "LAND"},
+        },
+        {
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]]},
+            "properties": {"mask_class": "OCEAN"},
+        },
+    ])))
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          7\n")
+
+    manifest = write_refinement_delivery_package(
+        case_name="surface_html",
+        background_geojson=background,
+        river_geojson=river,
+        coast_geojson=coast,
+        surface_geojson=surface,
+        log_path=log,
+        output_dir=tmp_path / "package",
+        unit_sphere_area=False,
+    )
+
+    html_text = Path(manifest["files"]["html_map"]).read_text()
+    assert "const surfaceCells =" in html_text
+    assert "complete LAND/OCEAN cell mask" in html_text
+    assert '"surface_class": "LAND"' in html_text
+    assert '"surface_class": "OCEAN"' in html_text
+    assert "land_cell" in html_text
+    assert "ocean_cell" in html_text

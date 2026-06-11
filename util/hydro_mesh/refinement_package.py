@@ -60,14 +60,6 @@ def write_refinement_delivery_package(
     eval_report["status"] = "pass"
     eval_path.write_text(json.dumps(eval_report, indent=2, sort_keys=True) + "\n")
 
-    mesh_geojson_to_leaflet_html(
-        source_paths["background_geojson"],
-        source_paths["river_geojson"],
-        html_path,
-        coast_geojson=source_paths["coast_geojson"],
-        title=title or case_name,
-    )
-
     if complete_cell_mask_path is not None:
         write_complete_cell_mask_geojson(
             source_paths["background_geojson"],
@@ -76,6 +68,15 @@ def write_refinement_delivery_package(
             coast_geojson=source_paths["coast_geojson"],
             surface_geojson=source_paths["surface_geojson"],
         )
+
+    mesh_geojson_to_leaflet_html(
+        source_paths["background_geojson"],
+        source_paths["river_geojson"],
+        html_path,
+        coast_geojson=source_paths["coast_geojson"],
+        surface_geojson=complete_cell_mask_path,
+        title=title or case_name,
+    )
 
     ranking = write_sweep_ranking(
         [eval_path, *map(Path, comparison_reports), *map(Path, failed_reports)],
