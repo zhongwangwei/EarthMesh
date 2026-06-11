@@ -140,11 +140,14 @@ def write_colm_package_coupling(
     source_files = manifest.get("source_files", {})
     if not isinstance(source_files, dict):
         raise ValueError("delivery manifest missing source_files")
+    files = manifest.get("files", {})
+    if not isinstance(files, dict):
+        files = {}
 
     background_path = Path(str(source_files["background_geojson"]))
     river_path = Path(str(source_files["river_geojson"]))
     coast_path = Path(str(source_files["coast_geojson"]))
-    surface_path = Path(str(source_files["surface_geojson"])) if source_files.get("surface_geojson") else None
+    surface_path, surface_source_kind = _resolve_package_surface_path(source_files, files)
     background = json.loads(background_path.read_text())
     river = json.loads(river_path.read_text())
     coast = json.loads(coast_path.read_text())
@@ -170,6 +173,7 @@ def write_colm_package_coupling(
         "river_geojson": str(river_path),
         "coast_geojson": str(coast_path),
         **({"surface_geojson": str(surface_path)} if surface_path is not None else {}),
+        **({"surface_source_kind": surface_source_kind} if surface_source_kind else {}),
         "background_cell_count": len(_features(background)),
         "river_overlap_record_count": len(_features(river)),
         "river_cell_count": len(river_by_cell),
@@ -183,6 +187,14 @@ def write_colm_package_coupling(
     return {"csv_path": str(csv_path), "summary_path": str(summary_path), "summary": summary}
 
 
+def _resolve_package_surface_path(source_files: dict[str, Any], files: dict[str, Any]) -> tuple[Path | None, str]:
+    if files.get("complete_cell_mask_geojson"):
+        return Path(str(files["complete_cell_mask_geojson"])), "complete_cell_mask_geojson"
+    if source_files.get("surface_geojson"):
+        return Path(str(source_files["surface_geojson"])), "surface_geojson"
+    return None, ""
+
+
 def _package_rows_from_collections(
     case_name: str,
     background: dict[str, object],
@@ -193,7 +205,6 @@ def _package_rows_from_collections(
 ) -> list[dict[str, Any]]:
     river_by_cell = _index_feature_properties(river)
     coast_by_cell = _index_feature_properties(coast)
-    surface_by_cell = _index_feature_properties(surface) if surface is not None else {}
     surface_by_cell = _index_feature_properties(surface) if surface is not None else {}
     rows: list[dict[str, Any]] = []
     for feature in _features(background):

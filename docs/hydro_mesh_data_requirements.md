@@ -1102,31 +1102,44 @@ stable all-cell boundary for the later CoLM2024/CoLM20XX writer: every backgroun
 cell is present, sparse river/coast overlaps are joined by `cell_id`, and repeated
 overlap records in the same cell are aggregated before export.
 
-Surface classification is now an optional package/coupling input.  When an
-EarthMesh-cell keyed surface layer is available, add it during packaging:
+Surface classification is now an optional package/coupling input.  The input
+surface mask can be either a raw LAND/OCEAN polygon layer, such as a CaMa
+`elevtn.bin`-derived dissolved mask, or an already EarthMesh-cell keyed layer.  When
+`--surface-geojson` is supplied, the package writer derives an adapter-ready
+`<case>_complete_cell_mask.geojson` with exactly one feature per background
+EarthMesh cell:
 
 ```bash
+python3 -m util.hydro_mesh.cama_surface_mask \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/glb_01min \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_cama_surface_land_ocean.geojson \
+  --bbox 118 28 123 33
+
 python3 -m util.hydro_mesh.refinement_package \
-  --case-name <case> \
+  --case-name N112_r3d3_cst20 \
   --background-geojson <background_cells.geojson> \
   --river-geojson <river_overlap_cells.geojson> \
   --coast-geojson <coast_overlap_cells.geojson> \
-  --surface-geojson <surface_land_ocean_cells.geojson> \
+  --surface-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_cama_surface_land_ocean.geojson \
   --log-path <mkgrd.log> \
-  --output-dir <package_dir>
+  --output-dir /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20_surface
 ```
 
-The surface layer should be keyed by `cell_id` and carry either
-`surface_class=LAND/OCEAN/COAST/UNKNOWN` or `mask_class=LAND/OCEAN/COAST_LAND/COAST_OCEAN`.
-The CoLM coupling export normalizes `COAST_LAND` to `LAND` and `COAST_OCEAN` to
-`OCEAN`, while keeping coast overlap as separate `has_coast/coast_class` fields.
+The delivery manifest keeps the raw input under `source_files.surface_geojson` and
+records the derived cell-keyed product under `files.complete_cell_mask_geojson`.
+The CoLM package coupling export prefers `files.complete_cell_mask_geojson`, falling
+back to legacy `source_files.surface_geojson` only for older packages.  It normalizes
+`COAST_LAND` to `LAND` and `COAST_OCEAN` to `OCEAN`, while keeping coast overlap as
+separate `has_coast/coast_class` fields.
 
-Current N112 CaMa smoke does not yet include a trusted surface layer, so the
-compatibility output remains:
+Verified N112 CaMa surface-aware smoke output:
 
-- `surface_cell_count = 0` in `colm_coupling_summary.json`.
-- `374` cells with `surface_class=COAST` because they have explicit coast overlap.
-- `2200` cells with `surface_class=UNKNOWN` until a MERIT/CoLM land-ocean cell layer is attached.
+- Complete mask path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20_surface/N112_r3d3_cst20_complete_cell_mask.geojson`.
+- `surface_source_kind = complete_cell_mask_geojson` in `colm_coupling_summary.json`.
+- `surface_cell_count = rows_written = 2574`, so every background cell has a surface row.
+- Surface counts in `colm_coupling_cells.csv`: `LAND=2288`, `OCEAN=286`, `UNKNOWN=0`.
+- Hydro flags remain separate: `has_river=372` cells and `has_coast=374` cells.
 
-This keeps the current package reproducible without inventing land/ocean labels,
-but the handoff format is ready for MERIT-derived or CoLM-native LAND/OCEAN masks.
+This is still a metadata handoff table, not final CoLM NetCDF, but the surface-aware
+package now gives CoLM2024/CoLM20XX an all-cell LAND/OCEAN base plus independent
+river/coast coupling flags.

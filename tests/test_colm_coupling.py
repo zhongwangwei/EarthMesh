@@ -264,3 +264,29 @@ def test_package_coupling_uses_optional_surface_geojson_without_losing_coast_fla
     assert rows["c"]["has_coast"] == "true"
     assert result["summary"]["surface_cell_count"] == 3
     assert result["summary"]["surface_geojson"] == str(surface)
+
+
+def test_package_coupling_prefers_manifest_complete_cell_mask_geojson(tmp_path):
+    from util.hydro_mesh.colm_coupling import write_colm_package_coupling
+
+    manifest = _write_package_fixture(tmp_path)
+    complete_mask = tmp_path / "complete_cell_mask.geojson"
+    complete_mask.write_text(json.dumps(_collection([
+        _feature({"cell_id": "a", "surface_class": "LAND", "mask_class": "R3"}),
+        _feature({"cell_id": "b", "surface_class": "OCEAN", "mask_class": "OCEAN"}),
+        _feature({"cell_id": "c", "surface_class": "OCEAN", "mask_class": "COAST"}),
+    ])))
+    payload = json.loads(manifest.read_text())
+    payload["files"] = {"complete_cell_mask_geojson": str(complete_mask)}
+    manifest.write_text(json.dumps(payload))
+
+    result = write_colm_package_coupling(manifest, tmp_path / "colm_complete")
+
+    rows = {row["cell_id"]: row for row in csv.DictReader(open(result["csv_path"], newline=""))}
+    assert rows["a"]["surface_class"] == "LAND"
+    assert rows["b"]["surface_class"] == "OCEAN"
+    assert rows["c"]["surface_class"] == "OCEAN"
+    assert rows["c"]["has_coast"] == "true"
+    assert result["summary"]["surface_cell_count"] == 3
+    assert result["summary"]["surface_geojson"] == str(complete_mask)
+    assert result["summary"]["surface_source_kind"] == "complete_cell_mask_geojson"

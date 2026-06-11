@@ -14,6 +14,14 @@ def _cell(cell_id, area=4.0):
     }
 
 
+def _cell_rect(cell_id, x0, y0, x1, y1, area=1.0):
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]},
+        "properties": {"cell_id": cell_id, "source_areaCell": area},
+    }
+
+
 def _river(cell_id, river_class="R3"):
     feature = _cell(cell_id)
     feature["properties"].update({"river_class": river_class, "river_fraction": 0.5})
@@ -226,3 +234,56 @@ def test_refinement_package_cli_accepts_surface_geojson(tmp_path):
 
     manifest = json.loads((output_dir / "delivery_manifest.json").read_text())
     assert manifest["source_files"]["surface_geojson"] == str(surface)
+
+
+def test_refinement_delivery_package_writes_complete_cell_mask_when_surface_geojson_is_supplied(tmp_path):
+    from util.hydro_mesh.refinement_package import write_refinement_delivery_package
+
+    background = tmp_path / "background.geojson"
+    river = tmp_path / "river.geojson"
+    coast = tmp_path / "coast.geojson"
+    surface = tmp_path / "surface.geojson"
+    log = tmp_path / "mkgrd.log"
+    output_dir = tmp_path / "package"
+    background.write_text(json.dumps(_feature_collection([
+        _cell_rect("land_cell", 0, 0, 1, 1),
+        _cell_rect("ocean_cell", 1, 0, 2, 1),
+    ])))
+    river.write_text(json.dumps(_feature_collection([_river("land_cell", "R3")])))
+    coast.write_text(json.dumps(_feature_collection([_coast("ocean_cell")])))
+    surface.write_text(json.dumps(_feature_collection([
+        {
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+            "properties": {"mask_class": "LAND"},
+        },
+        {
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]]},
+            "properties": {"mask_class": "OCEAN"},
+        },
+    ])))
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          7\n")
+
+    manifest = write_refinement_delivery_package(
+        case_name="surface_cells",
+        background_geojson=background,
+        river_geojson=river,
+        coast_geojson=coast,
+        surface_geojson=surface,
+        log_path=log,
+        output_dir=output_dir,
+        unit_sphere_area=False,
+    )
+
+    complete_path = Path(manifest["files"]["complete_cell_mask_geojson"])
+    assert complete_path.exists()
+    complete = json.loads(complete_path.read_text())
+    assert len(complete["features"]) == 2
+    by_id = {feature["properties"]["cell_id"]: feature["properties"] for feature in complete["features"]}
+    assert by_id["land_cell"]["surface_class"] == "LAND"
+    assert by_id["land_cell"]["mask_class"] == "R3"
+    assert by_id["ocean_cell"]["surface_class"] == "OCEAN"
+    assert by_id["ocean_cell"]["mask_class"] == "COAST"
+    written = json.loads((output_dir / "delivery_manifest.json").read_text())
+    assert written["files"]["complete_cell_mask_geojson"] == str(complete_path)

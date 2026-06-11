@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from util.hydro_mesh.cell_mask_merge import write_complete_cell_mask_geojson
 from util.hydro_mesh.geojson_map import mesh_geojson_to_leaflet_html
 from util.hydro_mesh.refinement_eval import write_refinement_eval_json
 from util.hydro_mesh.refinement_sweep import write_sweep_ranking
@@ -45,6 +46,7 @@ def write_refinement_delivery_package(
     html_path = directory / f"{case_name}_rivers_and_integrated_coast_leaflet.html"
     ranking_path = directory / "refinement_sweep_ranking.json"
     manifest_path = directory / "delivery_manifest.json"
+    complete_cell_mask_path = directory / f"{case_name}_complete_cell_mask.geojson" if surface_geojson is not None else None
 
     eval_report = write_refinement_eval_json(
         source_paths["background_geojson"],
@@ -66,6 +68,15 @@ def write_refinement_delivery_package(
         title=title or case_name,
     )
 
+    if complete_cell_mask_path is not None:
+        write_complete_cell_mask_geojson(
+            source_paths["background_geojson"],
+            complete_cell_mask_path,
+            river_geojson=source_paths["river_geojson"],
+            coast_geojson=source_paths["coast_geojson"],
+            surface_geojson=source_paths["surface_geojson"],
+        )
+
     ranking = write_sweep_ranking(
         [eval_path, *map(Path, comparison_reports), *map(Path, failed_reports)],
         ranking_path,
@@ -83,6 +94,7 @@ def write_refinement_delivery_package(
         html_path=html_path,
         ranking_path=ranking_path,
         manifest_path=manifest_path,
+        complete_cell_mask_path=complete_cell_mask_path,
     )
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
@@ -100,17 +112,21 @@ def _build_manifest(
     html_path: Path,
     ranking_path: Path,
     manifest_path: Path,
+    complete_cell_mask_path: Path | None = None,
 ) -> dict[str, object]:
+    files = {
+        "eval_json": str(eval_path),
+        "html_map": str(html_path),
+        "ranking_json": str(ranking_path),
+        "manifest_json": str(manifest_path),
+    }
+    if complete_cell_mask_path is not None:
+        files["complete_cell_mask_geojson"] = str(complete_cell_mask_path)
     return {
         "kind": "earthmesh_hydro_coast_delivery_package",
         "case_name": case_name,
         "recommended_case": ranking.get("recommended_case"),
-        "files": {
-            "eval_json": str(eval_path),
-            "html_map": str(html_path),
-            "ranking_json": str(ranking_path),
-            "manifest_json": str(manifest_path),
-        },
+        "files": files,
         "source_files": {
             **{name: str(path) for name, path in sorted(source_paths.items())},
             "comparison_reports": [str(path) for path in comparison_reports],
