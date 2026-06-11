@@ -185,3 +185,38 @@ Use this preview as a visual QA gate before generating buffered river corridors 
 EarthMesh 2D river masks. If the point cloud appears shifted, mirrored, or dominated
 by false coastal outlets, re-check CaMa `yrev`, longitude/latitude center convention,
 width units, and downstream outlet interpretation before proceeding.
+
+## Verified corridor preview export
+
+After the point-level visual QA passes, the R2/R3 point layer can be converted into
+approximate preview corridor polygons. This is deliberately a QA product, not the
+final EarthMesh river mask: each retained point is represented by a local circular
+buffer in lon/lat space, without topology-aware unioning, centerline smoothing, or
+coastline clipping.
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_corridor_preview.geojson \
+  --segments 20 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_corridor_preview.png \
+  --title "Yangtze Delta R2/R3 corridor preview"
+```
+
+Observed output for the same bbox:
+
+- Corridor GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_corridor_preview.geojson`.
+- Corridor PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_corridor_preview.png`.
+- Feature count: `1637` polygons, preserving `R2=876` and `R3=761`.
+- Preview radius range: `700 m` to about `15098 m` with the current width-driven rule.
+
+Current v0 radius rule:
+
+- `R2`: at least `700 m`, capped at `1500 m`, with wider source widths allowed to
+  increase the buffer up to that cap.
+- `R3`: at least `1800 m`, otherwise driven by the source `width_m` value.
+
+Large R3 blobs are useful QA signals rather than immediate errors. They may indicate
+true wide estuary/floodplain candidates, but they may also indicate that CaMa `width.bin`
+needs unit, semantic, or threshold calibration before this preview is promoted into an
+EarthMesh mask-generation step.
