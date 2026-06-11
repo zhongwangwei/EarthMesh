@@ -1547,6 +1547,40 @@ polygons in the package.  The separate MERIT-driven regeneration smoke below pro
 the close-mask regeneration loop; applying that regeneration path to the full China
 N160 domain remains a production-scale QA exercise rather than a missing code path.
 
+### Hydro/coast mesh QA gates
+
+Before promoting a hydro/coast delivery package to a production regeneration or
+adapter handoff, run the package-level QA gates.  The gates require a complete
+cell mask for every background cell, explicit LAND/OCEAN classes with no UNKNOWN
+surface cells, non-empty river and coast overlaps, and optional CoLM all-cell row
+count consistency.
+
+```bash
+python3 -m util.hydro_mesh.qa_gates \
+  --delivery-manifest /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/delivery_manifest.json \
+  --colm-summary-json /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/colm_coupling/colm_coupling_summary.json \
+  --output-json /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/hydro_mesh_qa_report.json \
+  --min-river-cells 1 \
+  --min-coast-cells 1
+```
+
+Observed China N160 MERIT package QA result:
+
+- QA report: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/hydro_mesh_qa_report.json`.
+- Status: `pass`.
+- Background cells: `19737`; complete mask cells: `19737`; CoLM rows: `19737`.
+- River overlap cells: `8276`; coast overlap cells: `9085`.
+- Surface class counts: `LAND=11908`, `OCEAN=7829`, `UNKNOWN=0`.
+- Passing checks: `complete_mask_present`, `complete_mask_cell_count_matches_background`,
+  `surface_classes_known`, `land_ocean_both_present`, `river_cells_present`,
+  `coast_cells_present`, `colm_rows_match_background`, and `colm_surface_unknown_zero`.
+
+These gates are the minimum promotion threshold before a large-domain
+MERIT-driven `mkgrd.x` regeneration run.  They do not replace visual inspection or
+river/coast scientific threshold tuning; they prevent the known operational failure
+classes such as missing cell masks, UNKNOWN surface cells, empty river/coast overlays,
+and CoLM row-count drift.
+
 ### MERIT-driven mesh regeneration loop
 
 The MERIT bridge now has a direct regeneration entry point for turning MERIT-Hydro
