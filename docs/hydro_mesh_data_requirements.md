@@ -1150,6 +1150,41 @@ not a complete CoLM forcing or restart file, but it gives downstream CoLM2024/Co
 work a typed `cell` dimension with longitude/latitude, class-code variables, river
 fraction, coastal fraction, and area metadata.
 
+## v3 MPAS/FVCOM adapter mesh metadata artifacts
+
+The v3 adapter sidecar writer now emits model-named mesh metadata artifacts for
+MPAS and FVCOM in addition to the stable adapter cell CSV and JSON export plan.
+This closes the earlier schema-only handoff gap for these two adapters without
+claiming that the files are already direct model-runtime inputs.
+
+Observed local v3 demo smoke:
+
+```bash
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_mesh_artifact_smoke
+python3 -m util.v3_core.cli \
+  --demo gba \
+  --case-name v3_adapter_mesh_artifact_smoke \
+  --recipe-hash adapter_mesh_smoke \
+  --adapters colm2024,mpas,fvcom \
+  --output-dir "$OUT" \
+  --html-map "$OUT/gba_demo.html"
+```
+
+Observed adapter artifacts:
+
+- MPAS mesh metadata NetCDF: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_mesh_artifact_smoke/adapter_mpas_mesh.nc`.
+- FVCOM mesh metadata text: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/v3_adapter_mesh_artifact_smoke/adapter_fvcom_mesh.dat`.
+- `adapter_mpas.json` records `files.mesh = adapter_mpas_mesh.nc`.
+- `adapter_fvcom.json` records `files.mesh = adapter_fvcom_mesh.dat`.
+- The MPAS NetCDF has `kind=earthmesh_v3_adapter_mesh_metadata`,
+  `adapter_name=mpas`, `cell=4`, and `vertex=4` for this small demo.
+
+These files are intentionally **metadata-level handoff artifacts**.  They preserve
+cell IDs, centers, areas, vertex coordinates, and v3 surface/hydro/coast class
+codes for downstream adapter development.  They are not yet the complete MPAS
+mesh file or FVCOM grid/depth/open-boundary product expected by production model
+runtimes.
+
 ## MERIT-Hydro 90m delivery-package bridge smoke
 
 The current package boundary can now be driven by MERIT-Hydro 90m masks instead of

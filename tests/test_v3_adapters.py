@@ -102,3 +102,65 @@ def test_write_adapter_cell_table_writes_stable_csv(tmp_path):
     row = next(csv.DictReader(output.open()))
     assert row["source_fractions_json"] == '{"LAND": 0.5, "R2": 0.5}'
     assert row["quality_flags_json"] == '["refined_from_mask"]'
+
+
+def test_write_adapter_mesh_artifact_writes_mpas_netcdf(tmp_path):
+    import netCDF4
+
+    from util.v3_core.adapters import write_adapter_mesh_artifact
+
+    cells = [
+        CanonicalCell(
+            cell_id="hex-1",
+            cell_index=4,
+            cell_type="HEX",
+            center_lon=120.0,
+            center_lat=30.0,
+            area_m2=100.0,
+            vertices=[(119.9, 29.9), (120.1, 29.9), (120.2, 30.0), (120.1, 30.1), (119.9, 30.1), (119.8, 30.0)],
+            surface_class="LAND",
+            hydro_class="R3",
+            coast_class="NONE",
+        )
+    ]
+
+    output = write_adapter_mesh_artifact("mpas", cells, tmp_path)
+
+    assert output.name == "adapter_mpas_mesh.nc"
+    with netCDF4.Dataset(output) as ds:
+        assert ds.getncattr("adapter_name") == "mpas"
+        assert ds.getncattr("kind") == "earthmesh_v3_adapter_mesh_metadata"
+        assert ds.dimensions["cell"].size == 1
+        assert ds.dimensions["vertex"].size == 6
+        assert list(ds.variables["cell_index"][:]) == [4]
+        assert list(ds.variables["center_lon"][:]) == [120.0]
+        assert list(ds.variables["vertex_count"][:]) == [6]
+        assert list(ds.variables["hydro_class_code"][:]) == [3]
+
+
+def test_write_adapter_mesh_artifact_writes_fvcom_dat(tmp_path):
+    from util.v3_core.adapters import write_adapter_mesh_artifact
+
+    cells = [
+        CanonicalCell(
+            cell_id="tri-1",
+            cell_index=1,
+            cell_type="TRI",
+            center_lon=120.0,
+            center_lat=30.0,
+            area_m2=50.0,
+            vertices=[(119.9, 29.9), (120.1, 29.9), (120.0, 30.1)],
+            surface_class="OCEAN",
+            hydro_class="NONE",
+            coast_class="COAST_OCEAN",
+        )
+    ]
+
+    output = write_adapter_mesh_artifact("fvcom", cells, tmp_path)
+
+    assert output.name == "adapter_fvcom_mesh.dat"
+    lines = output.read_text().splitlines()
+    assert lines[0] == "# EarthMesh v3 FVCOM mesh metadata"
+    assert lines[1] == "# cell_id cell_index cell_type center_lon center_lat area_m2 vertex_count surface_class hydro_class coast_class vertices"
+    assert lines[2].startswith("tri-1 1 TRI 120.0 30.0 50.0 3 OCEAN NONE COAST_OCEAN")
+    assert "119.9,29.9;120.1,29.9;120.0,30.1" in lines[2]

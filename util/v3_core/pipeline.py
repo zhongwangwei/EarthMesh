@@ -4,7 +4,13 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, default_adapter_registry, write_adapter_cell_table
+from util.v3_core.adapters import (
+    AdapterExportPlan,
+    AdapterRegistry,
+    default_adapter_registry,
+    write_adapter_cell_table,
+    write_adapter_mesh_artifact,
+)
 from util.v3_core.geometry import MaskFeature, OverlayResult, apply_overlay_to_cell, summarize_overlay_results
 from util.v3_core.geometry_backend import GeometryBackend, get_geometry_backend
 from util.v3_core.manifest import V3RunManifest
@@ -26,15 +32,20 @@ class V3PipelineResult:
         paths["overlay_summary"] = _write_json_sidecar(self.overlay_summary, directory / "overlay_summary.json")
         for adapter_name, plan in self.adapter_plans.items():
             cell_table = write_adapter_cell_table(adapter_name, self.cells, directory)
+            mesh_artifact = write_adapter_mesh_artifact(adapter_name, self.cells, directory)
             paths[f"adapter_{adapter_name}_cells"] = cell_table
+            files = {
+                **plan.files,
+                "cells": cell_table.name,
+                "manifest": "manifest.json",
+                "overlay_summary": "overlay_summary.json",
+            }
+            if mesh_artifact is not None:
+                paths[f"adapter_{adapter_name}_mesh"] = mesh_artifact
+                files["mesh"] = mesh_artifact.name
             sidecar_plan = replace(
                 plan,
-                files={
-                    **plan.files,
-                    "cells": cell_table.name,
-                    "manifest": "manifest.json",
-                    "overlay_summary": "overlay_summary.json",
-                },
+                files=files,
             )
             paths[f"adapter_{adapter_name}"] = sidecar_plan.write_json(directory / f"adapter_{adapter_name}.json")
         return paths

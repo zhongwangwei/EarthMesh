@@ -106,3 +106,32 @@ def test_pipeline_records_effective_geometry_backend_name():
     )
 
     assert result.overlay_summary["geometry_backend"] == "fixture_backend"
+
+
+def test_pipeline_sidecars_include_mpas_and_fvcom_mesh_artifacts(tmp_path):
+    result = build_v3_pipeline_result(
+        case_name="adapter_mesh_case",
+        recipe_hash="abc123",
+        cells=[
+            CanonicalCell(
+                cell_id="poly",
+                cell_index=1,
+                cell_type="POLYGON",
+                center_lon=120.0,
+                center_lat=30.0,
+                area_m2=12.0,
+                vertices=[(119.9, 29.9), (120.1, 29.9), (120.0, 30.1)],
+            )
+        ],
+        masks=[MaskFeature("ocean", "OCEAN", 1, [(119.8, 29.8), (120.2, 29.8), (120.0, 30.2)])],
+        adapter_names=["mpas", "fvcom"],
+    )
+
+    paths = result.write_sidecars(tmp_path)
+
+    assert paths["adapter_mpas_mesh"].name == "adapter_mpas_mesh.nc"
+    assert paths["adapter_fvcom_mesh"].name == "adapter_fvcom_mesh.dat"
+    mpas_payload = json.loads(paths["adapter_mpas"].read_text())
+    fvcom_payload = json.loads(paths["adapter_fvcom"].read_text())
+    assert mpas_payload["files"]["mesh"] == "adapter_mpas_mesh.nc"
+    assert fvcom_payload["files"]["mesh"] == "adapter_fvcom_mesh.dat"

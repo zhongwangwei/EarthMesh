@@ -150,6 +150,82 @@ def write_adapter_cell_table(adapter_name: str, cells: Iterable[CanonicalCell], 
     return path
 
 
+def write_adapter_mesh_artifact(adapter_name: str, cells: Iterable[CanonicalCell], output_dir: str | Path) -> Path | None:
+    materialized = list(cells)
+    if adapter_name == "mpas":
+        return _write_mpas_mesh_netcdf(materialized, Path(output_dir) / "adapter_mpas_mesh.nc")
+    if adapter_name == "fvcom":
+        return _write_fvcom_mesh_dat(materialized, Path(output_dir) / "adapter_fvcom_mesh.dat")
+    return None
+
+
+def _write_mpas_mesh_netcdf(cells: list[CanonicalCell], output_path: Path) -> Path:
+    try:
+        import netCDF4
+    except ImportError as exc:  # pragma: no cover - dependency is available in test/runtime env
+        raise RuntimeError("MPAS adapter mesh artifact requires netCDF4") from exc
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    max_vertices = max((len(cell.vertices) for cell in cells), default=0)
+    with netCDF4.Dataset(output_path, "w", format="NETCDF4") as ds:
+        ds.createDimension("cell", len(cells))
+        ds.createDimension("vertex", max_vertices)
+        ds.setncattr("kind", "earthmesh_v3_adapter_mesh_metadata")
+        ds.setncattr("adapter_name", "mpas")
+        ds.setncattr("cell_type_code_meanings", "0=UNKNOWN 1=TRI 2=HEX 3=POLYGON 4=MIXED")
+        ds.setncattr("surface_class_code_meanings", "0=UNKNOWN 1=LAND 2=OCEAN 3=COAST")
+        ds.setncattr("hydro_class_code_meanings", "0=NONE 2=R2 3=R3")
+        cell_index = ds.createVariable("cell_index", "i4", ("cell",))
+        center_lon = ds.createVariable("center_lon", "f8", ("cell",))
+        center_lat = ds.createVariable("center_lat", "f8", ("cell",))
+        area_m2 = ds.createVariable("area_m2", "f8", ("cell",))
+        vertex_count = ds.createVariable("vertex_count", "i4", ("cell",))
+        cell_type_code = ds.createVariable("cell_type_code", "i1", ("cell",))
+        surface_class_code = ds.createVariable("surface_class_code", "i1", ("cell",))
+        hydro_class_code = ds.createVariable("hydro_class_code", "i1", ("cell",))
+        coast_class_code = ds.createVariable("coast_class_code", "i1", ("cell",))
+        vertex_lon = ds.createVariable("vertex_lon", "f8", ("cell", "vertex"), fill_value=float("nan"))
+        vertex_lat = ds.createVariable("vertex_lat", "f8", ("cell", "vertex"), fill_value=float("nan"))
+        center_lon.units = "degrees_east"
+        center_lat.units = "degrees_north"
+        vertex_lon.units = "degrees_east"
+        vertex_lat.units = "degrees_north"
+        area_m2.units = "m2"
+        for i, cell in enumerate(cells):
+            cell_index[i] = cell.cell_index
+            center_lon[i] = cell.center_lon
+            center_lat[i] = cell.center_lat
+            area_m2[i] = cell.area_m2
+            vertex_count[i] = len(cell.vertices)
+            cell_type_code[i] = _CELL_TYPE_CODES.get(cell.cell_type, 0)
+            surface_class_code[i] = _SURFACE_CLASS_CODES.get(cell.surface_class, 0)
+            hydro_class_code[i] = _HYDRO_CLASS_CODES.get(cell.hydro_class, 0)
+            coast_class_code[i] = _COAST_CLASS_CODES.get(cell.coast_class, 0)
+            for j, (lon, lat) in enumerate(cell.vertices):
+                vertex_lon[i, j] = lon
+                vertex_lat[i, j] = lat
+    return output_path
+
+
+def _write_fvcom_mesh_dat(cells: list[CanonicalCell], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as stream:
+        stream.write("# EarthMesh v3 FVCOM mesh metadata\n")
+        stream.write("# cell_id cell_index cell_type center_lon center_lat area_m2 vertex_count surface_class hydro_class coast_class vertices\n")
+        for cell in cells:
+            vertices = ";".join(f"{lon},{lat}" for lon, lat in cell.vertices)
+            stream.write(
+                f"{cell.cell_id} {cell.cell_index} {cell.cell_type} {cell.center_lon} {cell.center_lat} "
+                f"{cell.area_m2} {len(cell.vertices)} {cell.surface_class} {cell.hydro_class} {cell.coast_class} {vertices}\n"
+            )
+    return output_path
+
+
+_CELL_TYPE_CODES = {"UNKNOWN": 0, "TRI": 1, "HEX": 2, "POLYGON": 3, "MIXED": 4}
+_SURFACE_CLASS_CODES = {"UNKNOWN": 0, "LAND": 1, "OCEAN": 2, "COAST": 3}
+_HYDRO_CLASS_CODES = {"NONE": 0, "R0": 0, "R1": 1, "R2": 2, "R3": 3}
+_COAST_CLASS_CODES = {"NONE": 0, "COAST": 1, "COAST_LAND": 2, "COAST_OCEAN": 3}
+
+
 def _adapter_cell_row(adapter_name: str, cell: CanonicalCell) -> dict[str, object]:
     return {
         "adapter_name": adapter_name,
