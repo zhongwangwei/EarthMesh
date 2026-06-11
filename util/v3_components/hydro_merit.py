@@ -105,6 +105,7 @@ def build_merit_masks(
     r3_width_m: float = 300.0,
     r2_upa_km2: float = 5000.0,
     r3_upa_km2: float = 50000.0,
+    include_surface_masks: bool = True,
 ) -> tuple[dict[str, object], dict[str, object]]:
     features: list[dict[str, object]] = []
     counts: Counter[str] = Counter()
@@ -125,6 +126,8 @@ def build_merit_masks(
                 if mask_class == "UNKNOWN":
                     continue
                 counts[mask_class] += 1
+                if mask_class in {"LAND", "OCEAN"} and not include_surface_masks:
+                    continue
                 features.append(_mask_feature(window, i, j, mask_class))
     summary = {
         "tile_count": len(windows),
@@ -173,6 +176,7 @@ def write_merit_mask_outputs(
     r2_upa_km2: float = 5000.0,
     r3_upa_km2: float = 50000.0,
     write_combined_mask: bool = True,
+    write_surface_mask: bool = True,
 ) -> dict[str, Path | None]:
     tiles = select_merit_tiles(merit_root, bbox)
     if not tiles:
@@ -184,6 +188,7 @@ def write_merit_mask_outputs(
         r3_width_m=r3_width_m,
         r2_upa_km2=r2_upa_km2,
         r3_upa_km2=r3_upa_km2,
+        include_surface_masks=write_surface_mask,
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -197,13 +202,14 @@ def write_merit_mask_outputs(
         mask_path.write_text(json.dumps(masks, indent=2, sort_keys=True) + "\n")
     river_path.write_text(json.dumps(layers["river"], indent=2, sort_keys=True) + "\n")
     coast_path.write_text(json.dumps(layers["coast"], indent=2, sort_keys=True) + "\n")
-    surface_path.write_text(json.dumps(layers["surface"], indent=2, sort_keys=True) + "\n")
+    if write_surface_mask:
+        surface_path.write_text(json.dumps(layers["surface"], indent=2, sort_keys=True) + "\n")
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return {
         "masks": mask_path if write_combined_mask else None,
         "river_masks": river_path,
         "coast_masks": coast_path,
-        "surface_masks": surface_path,
+        "surface_masks": surface_path if write_surface_mask else None,
         "summary": summary_path,
     }
 
@@ -223,6 +229,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Write only river/coast/surface layers and skip the duplicate combined merit_masks.geojson.",
     )
+    parser.add_argument(
+        "--skip-surface-mask",
+        action="store_true",
+        help="Skip the large raw LAND/OCEAN surface GeoJSON layer while still counting surface classes in the summary.",
+    )
     args = parser.parse_args(argv)
     write_merit_mask_outputs(
         args.merit_root,
@@ -234,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         r2_upa_km2=args.r2_upa_km2,
         r3_upa_km2=args.r3_upa_km2,
         write_combined_mask=not args.skip_combined_mask,
+        write_surface_mask=not args.skip_surface_mask,
     )
     return 0
 

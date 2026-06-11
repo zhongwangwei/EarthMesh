@@ -1250,12 +1250,12 @@ cells and bbox `118 28 123 33`.
 | 50 | ~4 s | small smoke output | 81 | 2362 | 12198 | 171 | 908 | LAND=2257, OCEAN=317, UNKNOWN=0 |
 | 20 | ~10 s | 170M | 526 | 9361 | 80714 | 597 | 942 | LAND=2204, OCEAN=370, UNKNOWN=0 |
 | 10 | ~33 s | 641M | 2033 | 24787 | 334381 | 1139 | 998 | LAND=2184, OCEAN=390, UNKNOWN=0 |
+| 5 | ~97 s | 1.2G | 8189 | 61717 | 1372495 | 1673 | 1043 | LAND=2189, OCEAN=385, UNKNOWN=0 |
 
-The `stride=10` output is a useful current QA compromise: it substantially increases
-river/coast coverage over `stride=50`, keeps the package/CoLM handoff stable, and
-still completes in under a minute locally.  The raw MERIT source GeoJSON dominates
-output size, so use the slim-package option below before trying `stride=5` or
-`stride=1` on the full Yangtze/China window.
+The `stride=5` output is the first finer-than-10 QA run.  It increases river-cell
+coverage from `1139` to `1673` and coast-cell coverage from `998` to `1043`, but the
+raw MERIT surface GeoJSON grows to about `1.2G`.  For `stride=1`, do not write raw
+LAND/OCEAN surface polygons; use the compact-surface package mode below.
 
 ### Slim MERIT package mode
 
@@ -1264,10 +1264,12 @@ this option is supplied, the bridge writes large raw MERIT-derived mask GeoJSON 
 outside the final delivery package while keeping compact EarthMesh-cell artifacts,
 the HTML QA map, the complete LAND/OCEAN cell mask, and the CoLM coupling export
 inside `--output-dir`.  By default the bridge also skips the duplicate combined
-`merit_masks.geojson` total layer and keeps only the river/coast/surface raw layers;
-use `--write-combined-raw-mask` only when forensic debugging needs that redundant
-combined file.  The package manifest and bridge summary still reference the external
-raw MERIT files for provenance.
+`merit_masks.geojson` total layer; use `--write-combined-raw-mask` only when forensic
+debugging needs that redundant combined file.  For fine runs, add
+`--skip-raw-surface-mask`: the bridge then samples MERIT `landtype_igbp` at each
+EarthMesh cell center and writes a compact cell-keyed complete mask, avoiding the
+massive raw LAND/OCEAN surface GeoJSON.  The package manifest and bridge summary
+still reference the external raw river/coast MERIT files for provenance.
 
 Example stride-10 Yangtze-delta command:
 
@@ -1310,3 +1312,49 @@ The package can therefore be handed to model adapters without carrying the raw M
 source polygons in the same directory.  Keep the external raw directory when
 reproducibility or visual forensic QA is needed; archive only the `package/` directory
 when the downstream consumer only needs EarthMesh-cell masks and coupling tables.
+
+### Compact-surface MERIT stride-1 smoke
+
+The compact-surface mode is the required path for fine MERIT sampling.  It keeps raw
+MERIT river/coast masks for provenance, but does not write raw LAND/OCEAN surface
+polygons.  Instead, the package contains the cell-keyed complete mask used by HTML
+and CoLM coupling.
+
+```bash
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride1_compact_surface
+python3 -m util.hydro_mesh.merit_package_bridge \
+  --case-name merit_yangtze_N112_stride1_compact_surface \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 118 28 123 33 \
+  --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log \
+  --output-dir "$OUT/package" \
+  --raw-merit-output-dir "$OUT/raw_merit_source" \
+  --skip-raw-surface-mask \
+  --title "MERIT Yangtze N112 bridge stride1 compact surface smoke" \
+  --max-background-cells 3000 \
+  --stride 1
+
+python3 -m util.hydro_mesh.colm_coupling package \
+  --delivery-manifest "$OUT/package/delivery_manifest.json" \
+  --output-dir "$OUT/package/colm_coupling"
+```
+
+Observed compact-surface results over the same N112 Yangtze-delta window:
+
+| MERIT stride | Runtime | Package size | Raw source size | Raw surface GeoJSON | MERIT river masks | MERIT coast masks | River cells | Coast cells | Surface counts |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 5 | ~16 s | 18M | 62M | skipped | 8189 | 61717 | 1673 | 1043 | LAND=2165, OCEAN=409, UNKNOWN=0 |
+| 1 | ~134 s | 20M | 495M | skipped | 204039 | 358012 | 2143 | 992 | LAND=2173, OCEAN=401, UNKNOWN=0 |
+
+Observed stride-1 artifact paths:
+
+- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride1_compact_surface/package/delivery_manifest.json`.
+- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride1_compact_surface/package/merit_yangtze_N112_stride1_compact_surface_rivers_and_integrated_coast_leaflet.html`.
+- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride1_compact_surface/package/merit_yangtze_N112_stride1_compact_surface_complete_cell_mask.geojson`.
+- Raw river masks: `179M`; raw coast masks: `315M`; raw surface masks: not written.
+- Manifest `source_files` has no `surface_geojson`; CoLM uses `surface_source_kind=complete_cell_mask_geojson`.
+
+This closes the Yangtze-delta stride sweep through native MERIT resolution for the
+existing N112 background mesh.  The next scaling step is a China-region package,
+which should use `--skip-raw-surface-mask` from the start.

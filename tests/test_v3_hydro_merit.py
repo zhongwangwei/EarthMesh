@@ -87,6 +87,27 @@ def test_split_merit_mask_layers_returns_surface_coast_and_river_layers(tmp_path
     assert {feature["properties"]["mask_class"] for feature in layers["surface"]["features"]} <= {"LAND", "OCEAN"}
 
 
+def test_write_merit_mask_outputs_can_skip_surface_geojson(tmp_path):
+    tile = tmp_path / "n20e110.nc"
+    out = tmp_path / "out_skip_surface"
+    _write_merit_fixture(tile)
+
+    outputs = write_merit_mask_outputs(
+        tmp_path,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        output_dir=out,
+        stride=1,
+        write_surface_mask=False,
+    )
+
+    assert outputs["surface_masks"] is None
+    assert not (out / "merit_surface_masks.geojson").exists()
+    assert outputs["masks"].exists()
+    assert outputs["river_masks"].exists()
+    assert outputs["coast_masks"].exists()
+    assert outputs["summary"].exists()
+
+
 def test_write_merit_mask_outputs_can_skip_combined_geojson(tmp_path):
     tile = tmp_path / "n20e110.nc"
     out = tmp_path / "out_skip_combined"

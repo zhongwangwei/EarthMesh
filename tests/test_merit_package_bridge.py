@@ -196,3 +196,52 @@ def test_merit_package_bridge_cli_accepts_external_raw_merit_output_dir(tmp_path
     assert (raw_dir / "merit_surface_masks.geojson").exists()
     assert not (raw_dir / "merit_masks.geojson").exists()
     assert not (package_dir / "merit_source").exists()
+
+
+def test_merit_bridge_can_skip_raw_surface_and_write_compact_complete_mask(tmp_path):
+    from util.hydro_mesh.colm_coupling import write_colm_package_coupling
+    from util.hydro_mesh.merit_package_bridge import write_merit_refinement_delivery_package
+
+    merit_root = tmp_path / "merit_compact_surface"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+    background = tmp_path / "background_compact_surface.geojson"
+    package_dir = tmp_path / "package_compact_surface"
+    raw_dir = tmp_path / "raw_merit_compact_surface"
+    background.write_text(json.dumps(_collection([
+        _cell("west", 110.0, 20.0, 110.003, 20.006, 1),
+        _cell("east", 110.003, 20.0, 110.006, 20.006, 2),
+    ])))
+    log = tmp_path / "mkgrd_compact_surface.log"
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          2\n")
+
+    result = write_merit_refinement_delivery_package(
+        case_name="fixture_compact_surface",
+        background_geojson=background,
+        merit_root=merit_root,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        log_path=log,
+        output_dir=package_dir,
+        raw_merit_output_dir=raw_dir,
+        write_raw_surface_mask=False,
+        stride=1,
+        unit_sphere_area=False,
+    )
+
+    assert result["surface_masks"] is None
+    assert not (raw_dir / "merit_surface_masks.geojson").exists()
+    assert result["complete_cell_mask_geojson"].exists()
+    complete_payload = json.loads(result["complete_cell_mask_geojson"].read_text())
+    assert len(complete_payload["features"]) == 2
+    assert {feature["properties"].get("surface_class") for feature in complete_payload["features"]} <= {"LAND", "OCEAN"}
+
+    manifest = json.loads(result["manifest_path"].read_text())
+    assert "surface_geojson" not in manifest["source_files"]
+    assert manifest["files"]["complete_cell_mask_geojson"] == str(result["complete_cell_mask_geojson"])
+
+    bridge_summary = json.loads(result["bridge_summary"].read_text())
+    assert bridge_summary["files"]["merit_surface_masks"] is None
+
+    coupling = write_colm_package_coupling(result["manifest_path"], tmp_path / "colm_compact_surface")
+    assert coupling["summary"]["surface_source_kind"] == "complete_cell_mask_geojson"
+    assert coupling["summary"]["surface_class_counts"].get("UNKNOWN", 0) == 0

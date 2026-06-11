@@ -335,3 +335,35 @@ def test_refinement_delivery_package_embeds_complete_surface_mask_in_html_when_s
     assert '"surface_class": "OCEAN"' in html_text
     assert "land_cell" in html_text
     assert "ocean_cell" in html_text
+
+
+def test_refinement_package_accepts_precomputed_complete_cell_mask(tmp_path):
+    from util.hydro_mesh.refinement_package import write_refinement_delivery_package
+
+    background = tmp_path / "background_precomputed.geojson"
+    river = tmp_path / "river_precomputed.geojson"
+    coast = tmp_path / "coast_precomputed.geojson"
+    complete = tmp_path / "complete_precomputed.geojson"
+    log = tmp_path / "mkgrd_precomputed.log"
+    package = tmp_path / "package_precomputed"
+
+    background.write_text(json.dumps(_feature_collection([_cell_rect("a", 0, 0, 1, 1, 1)])))
+    river.write_text(json.dumps(_feature_collection([])))
+    coast.write_text(json.dumps(_feature_collection([])))
+    complete.write_text(json.dumps(_feature_collection([{**_cell_rect("a", 0, 0, 1, 1, 1), "properties": {**_cell_rect("a", 0, 0, 1, 1, 1)["properties"], "surface_class": "LAND", "mask_class": "LAND"}}])))
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          1\n")
+
+    manifest = write_refinement_delivery_package(
+        case_name="precomputed_complete",
+        background_geojson=background,
+        river_geojson=river,
+        coast_geojson=coast,
+        complete_cell_mask_geojson=complete,
+        log_path=log,
+        output_dir=package,
+        unit_sphere_area=False,
+    )
+
+    assert manifest["files"]["complete_cell_mask_geojson"] == str(complete)
+    assert "surface_geojson" not in manifest["source_files"]
+    assert Path(manifest["files"]["html_map"]).exists()

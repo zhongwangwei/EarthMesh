@@ -19,6 +19,7 @@ def write_refinement_delivery_package(
     coast_geojson: str | Path,
     log_path: str | Path,
     surface_geojson: str | Path | None = None,
+    complete_cell_mask_geojson: str | Path | None = None,
     output_dir: str | Path,
     title: str | None = None,
     comparison_reports: Sequence[str | Path] = (),
@@ -36,7 +37,13 @@ def write_refinement_delivery_package(
     }
     if surface_geojson is not None:
         source_paths["surface_geojson"] = Path(surface_geojson)
-    for path in [*source_paths.values(), *map(Path, comparison_reports), *map(Path, failed_reports)]:
+    precomputed_complete_cell_mask_path = Path(complete_cell_mask_geojson) if complete_cell_mask_geojson is not None else None
+    for path in [
+        *source_paths.values(),
+        *([precomputed_complete_cell_mask_path] if precomputed_complete_cell_mask_path is not None else []),
+        *map(Path, comparison_reports),
+        *map(Path, failed_reports),
+    ]:
         if not path.exists():
             raise FileNotFoundError(path)
 
@@ -46,7 +53,9 @@ def write_refinement_delivery_package(
     html_path = directory / f"{case_name}_rivers_and_integrated_coast_leaflet.html"
     ranking_path = directory / "refinement_sweep_ranking.json"
     manifest_path = directory / "delivery_manifest.json"
-    complete_cell_mask_path = directory / f"{case_name}_complete_cell_mask.geojson" if surface_geojson is not None else None
+    complete_cell_mask_path = precomputed_complete_cell_mask_path
+    if complete_cell_mask_path is None and surface_geojson is not None:
+        complete_cell_mask_path = directory / f"{case_name}_complete_cell_mask.geojson"
 
     eval_report = write_refinement_eval_json(
         source_paths["background_geojson"],
@@ -60,7 +69,7 @@ def write_refinement_delivery_package(
     eval_report["status"] = "pass"
     eval_path.write_text(json.dumps(eval_report, indent=2, sort_keys=True) + "\n")
 
-    if complete_cell_mask_path is not None:
+    if complete_cell_mask_path is not None and precomputed_complete_cell_mask_path is None:
         write_complete_cell_mask_geojson(
             source_paths["background_geojson"],
             complete_cell_mask_path,
@@ -166,6 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--river-geojson", required=True)
     parser.add_argument("--coast-geojson", required=True)
     parser.add_argument("--surface-geojson")
+    parser.add_argument("--complete-cell-mask-geojson")
     parser.add_argument("--log-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--title")
@@ -181,6 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         river_geojson=args.river_geojson,
         coast_geojson=args.coast_geojson,
         surface_geojson=args.surface_geojson,
+        complete_cell_mask_geojson=args.complete_cell_mask_geojson,
         log_path=args.log_path,
         output_dir=args.output_dir,
         title=args.title,
