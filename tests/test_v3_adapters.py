@@ -1,3 +1,4 @@
+import csv
 import json
 
 from util.v3_core.adapters import AdapterRegistry, default_adapter_registry
@@ -65,3 +66,39 @@ def test_adapter_export_plan_writes_deterministic_json(tmp_path):
     assert payload["output_format"] == "fvcom_tri_mesh_contract"
     assert payload["cell_type_counts"] == {"TRI": 1}
     assert payload["files"] == {}
+
+
+def test_write_adapter_cell_table_writes_stable_csv(tmp_path):
+    from util.v3_core.adapters import write_adapter_cell_table
+
+    cell = CanonicalCell(
+        cell_id="cell-1",
+        cell_index=7,
+        cell_type="POLYGON",
+        center_lon=113.5,
+        center_lat=22.5,
+        area_m2=12.0,
+        vertices=[(113.0, 22.0), (114.0, 22.0), (114.0, 23.0), (113.0, 23.0)],
+        surface_class="LAND",
+        hydro_class="R2",
+        coast_class="COAST_LAND",
+        mesh_priority=20,
+        source_fractions={"R2": 0.5, "LAND": 0.5},
+        quality_flags=["refined_from_mask"],
+        geometry_ref="base-cell",
+        source_mesh_type="bbox_grid_refined",
+    )
+
+    output = write_adapter_cell_table("colm2024", [cell], tmp_path)
+
+    assert output.name == "adapter_colm2024_cells.csv"
+    lines = output.read_text().splitlines()
+    assert lines[0] == (
+        "adapter_name,cell_id,cell_index,cell_type,center_lon,center_lat,area_m2,"
+        "surface_class,hydro_class,coast_class,mesh_priority,source_mesh_type,geometry_ref,"
+        "vertex_count,vertices_json,source_fractions_json,quality_flags_json"
+    )
+    assert "colm2024,cell-1,7,POLYGON,113.5,22.5,12.0,LAND,R2,COAST_LAND,20,bbox_grid_refined,base-cell,4" in lines[1]
+    row = next(csv.DictReader(output.open()))
+    assert row["source_fractions_json"] == '{"LAND": 0.5, "R2": 0.5}'
+    assert row["quality_flags_json"] == '["refined_from_mask"]'

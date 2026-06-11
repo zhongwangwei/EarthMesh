@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,3 +116,57 @@ def default_adapter_registry() -> AdapterRegistry:
     registry.register(SchemaOnlyAdapter("colm20xx", "0.1", any_polygon, "colm20xx_mesh_coupling_contract"))
     registry.register(SchemaOnlyAdapter("generic_esmf", "0.1", any_polygon, "generic_esmf_mesh_contract"))
     return registry
+
+
+_ADAPTER_CELL_COLUMNS = [
+    "adapter_name",
+    "cell_id",
+    "cell_index",
+    "cell_type",
+    "center_lon",
+    "center_lat",
+    "area_m2",
+    "surface_class",
+    "hydro_class",
+    "coast_class",
+    "mesh_priority",
+    "source_mesh_type",
+    "geometry_ref",
+    "vertex_count",
+    "vertices_json",
+    "source_fractions_json",
+    "quality_flags_json",
+]
+
+
+def write_adapter_cell_table(adapter_name: str, cells: Iterable[CanonicalCell], output_dir: str | Path) -> Path:
+    path = Path(output_dir) / f"adapter_{adapter_name}_cells.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=_ADAPTER_CELL_COLUMNS)
+        writer.writeheader()
+        for cell in cells:
+            writer.writerow(_adapter_cell_row(adapter_name, cell))
+    return path
+
+
+def _adapter_cell_row(adapter_name: str, cell: CanonicalCell) -> dict[str, object]:
+    return {
+        "adapter_name": adapter_name,
+        "cell_id": cell.cell_id,
+        "cell_index": cell.cell_index,
+        "cell_type": cell.cell_type,
+        "center_lon": cell.center_lon,
+        "center_lat": cell.center_lat,
+        "area_m2": cell.area_m2,
+        "surface_class": cell.surface_class,
+        "hydro_class": cell.hydro_class,
+        "coast_class": cell.coast_class,
+        "mesh_priority": cell.mesh_priority,
+        "source_mesh_type": cell.source_mesh_type,
+        "geometry_ref": cell.geometry_ref,
+        "vertex_count": len(cell.vertices),
+        "vertices_json": json.dumps(cell.vertices, sort_keys=True),
+        "source_fractions_json": json.dumps(cell.source_fractions, sort_keys=True),
+        "quality_flags_json": json.dumps(cell.quality_flags, sort_keys=True),
+    }

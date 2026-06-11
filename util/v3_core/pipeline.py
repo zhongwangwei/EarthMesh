@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, default_adapter_registry
+from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, default_adapter_registry, write_adapter_cell_table
 from util.v3_core.geometry import MaskFeature, OverlayResult, apply_overlay_to_cell, summarize_overlay_results
 from util.v3_core.geometry_backend import GeometryBackend, get_geometry_backend
 from util.v3_core.manifest import V3RunManifest
@@ -25,10 +25,13 @@ class V3PipelineResult:
         paths = {"manifest": self.manifest.write_json(directory / "manifest.json")}
         paths["overlay_summary"] = _write_json_sidecar(self.overlay_summary, directory / "overlay_summary.json")
         for adapter_name, plan in self.adapter_plans.items():
+            cell_table = write_adapter_cell_table(adapter_name, self.cells, directory)
+            paths[f"adapter_{adapter_name}_cells"] = cell_table
             sidecar_plan = replace(
                 plan,
                 files={
                     **plan.files,
+                    "cells": cell_table.name,
                     "manifest": "manifest.json",
                     "overlay_summary": "overlay_summary.json",
                 },
