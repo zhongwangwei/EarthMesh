@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from util.v3_core.adapters import AdapterExportPlan, AdapterRegistry, default_adapter_registry
 from util.v3_core.geometry import MaskFeature, OverlayResult, apply_overlay_to_cell, summarize_overlay_results
@@ -16,6 +17,14 @@ class V3PipelineResult:
     overlay_summary: dict[str, object]
     adapter_plans: dict[str, AdapterExportPlan]
     manifest: V3RunManifest
+
+    def write_sidecars(self, output_dir: str | Path) -> dict[str, Path]:
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = {"manifest": self.manifest.write_json(directory / "manifest.json")}
+        for adapter_name, plan in self.adapter_plans.items():
+            paths[f"adapter_{adapter_name}"] = plan.write_json(directory / f"adapter_{adapter_name}.json")
+        return paths
 
 
 def build_v3_pipeline_result(

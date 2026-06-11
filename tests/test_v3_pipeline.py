@@ -1,3 +1,5 @@
+import json
+
 from util.v3_core.geometry import MaskFeature
 from util.v3_core.pipeline import build_v3_pipeline_result
 from util.v3_core.schema import CanonicalCell
@@ -49,3 +51,21 @@ def test_pipeline_applies_masks_to_cells_and_builds_manifest():
     assert result.adapter_plans["mpas"].warnings == ["mpas does not support cell_type=TRI for cell_id=land"]
     assert result.manifest.adapter_versions == {"colm2024": "0.1", "mpas": "0.1"}
     assert result.manifest.warnings == ["mpas does not support cell_type=TRI for cell_id=land"]
+
+
+def test_pipeline_result_writes_manifest_and_adapter_sidecars(tmp_path):
+    result = build_v3_pipeline_result(
+        case_name="sidecar_case",
+        recipe_hash="abc123",
+        cells=[CanonicalCell.minimal("land", cell_type="TRI")],
+        masks=[MaskFeature("land-mask", "LAND", 1, [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)])],
+        adapter_names=["colm2024"],
+    )
+
+    paths = result.write_sidecars(tmp_path)
+
+    assert sorted(paths) == ["adapter_colm2024", "manifest"]
+    manifest_payload = json.loads(paths["manifest"].read_text())
+    adapter_payload = json.loads(paths["adapter_colm2024"].read_text())
+    assert manifest_payload["case_name"] == "sidecar_case"
+    assert adapter_payload["adapter_name"] == "colm2024"
