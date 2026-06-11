@@ -309,3 +309,36 @@ def test_package_coupling_summary_reports_surface_class_counts(tmp_path):
     result = write_colm_package_coupling(manifest, tmp_path / "colm_surface_counts")
 
     assert result["summary"]["surface_class_counts"] == {"LAND": 1, "OCEAN": 2}
+
+
+def test_write_colm_package_coupling_writes_netcdf_artifact(tmp_path):
+    import netCDF4
+
+    from util.hydro_mesh.colm_coupling import write_colm_package_coupling
+
+    manifest = _write_package_fixture(tmp_path)
+    surface = tmp_path / "complete_surface.geojson"
+    surface.write_text(json.dumps(_collection([
+        _feature({"cell_id": "a", "surface_class": "LAND"}),
+        _feature({"cell_id": "b", "surface_class": "OCEAN"}),
+        _feature({"cell_id": "c", "surface_class": "OCEAN"}),
+    ])))
+    payload = json.loads(manifest.read_text())
+    payload["files"] = {"complete_cell_mask_geojson": str(surface)}
+    manifest.write_text(json.dumps(payload))
+
+    result = write_colm_package_coupling(manifest, tmp_path / "colm_netcdf")
+
+    nc_path = result["netcdf_path"]
+    assert nc_path.endswith("colm_coupling_cells.nc")
+    with netCDF4.Dataset(nc_path) as ds:
+        assert ds.dimensions["cell"].size == 3
+        assert ds.getncattr("case_name") == "fixture_case"
+        assert ds.getncattr("kind") == "earthmesh_colm_coupling_netcdf"
+        assert list(ds.variables["cell_index"][:]) == [1, 2, 3]
+        assert list(ds.variables["center_lon"][:]) == [120.0, 121.0, 122.0]
+        assert list(ds.variables["surface_class_code"][:]) == [1, 2, 2]
+        assert list(ds.variables["has_river"][:]) == [1, 1, 0]
+        assert list(ds.variables["has_coast"][:]) == [1, 0, 1]
+        assert list(ds.variables["river_class_code"][:]) == [3, 2, 0]
+    assert result["summary"]["netcdf_path"] == nc_path

@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
+
+_SURFACE_CLASS_CODES = {"UNKNOWN": 0, "LAND": 1, "OCEAN": 2, "COAST": 3}
+_RIVER_CLASS_CODES = {"": 0, "R0": 0, "R1": 1, "R2": 2, "R3": 3}
+_COAST_CLASS_CODES = {"": 0, "COAST": 1, "COAST_LAND": 2, "COAST_OCEAN": 3}
 
 PACKAGE_COUPLING_FIELDS = [
     "case_name",
@@ -160,8 +165,10 @@ def write_colm_package_coupling(
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     csv_path = directory / "colm_coupling_cells.csv"
+    netcdf_path = directory / "colm_coupling_cells.nc"
     summary_path = directory / "colm_coupling_summary.json"
     _write_package_csv(rows, csv_path)
+    _write_package_netcdf(rows, netcdf_path, case_name=case_name, delivery_manifest=manifest_path)
 
     river_by_cell = _index_feature_properties(river)
     coast_by_cell = _index_feature_properties(coast)
@@ -184,9 +191,10 @@ def write_colm_package_coupling(
         "surface_class_counts": dict(Counter(str(row["surface_class"]) for row in rows)),
         "rows_written": len(rows),
         "csv_path": str(csv_path),
+        "netcdf_path": str(netcdf_path),
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
-    return {"csv_path": str(csv_path), "summary_path": str(summary_path), "summary": summary}
+    return {"csv_path": str(csv_path), "netcdf_path": str(netcdf_path), "summary_path": str(summary_path), "summary": summary}
 
 
 def _resolve_package_surface_path(source_files: dict[str, Any], files: dict[str, Any]) -> tuple[Path | None, str]:
@@ -319,6 +327,81 @@ def _surface_class_from_properties(properties: dict[str, Any]) -> str:
         return "OCEAN"
     return "UNKNOWN"
 
+
+def _write_package_netcdf(
+    rows: list[dict[str, Any]],
+    output_netcdf: str | Path,
+    *,
+    case_name: str,
+    delivery_manifest: str | Path,
+) -> Path:
+    try:
+        import netCDF4
+    except ImportError as exc:  # pragma: no cover - dependency is available in test/runtime env
+        raise RuntimeError("CoLM package NetCDF export requires netCDF4") from exc
+
+    output_path = Path(output_netcdf)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(output_path, "w", format="NETCDF4") as ds:
+        ds.createDimension("cell", len(rows))
+        ds.setncattr("kind", "earthmesh_colm_coupling_netcdf")
+        ds.setncattr("case_name", case_name)
+        ds.setncattr("delivery_manifest", str(delivery_manifest))
+        ds.setncattr("surface_class_code_meanings", "0=UNKNOWN 1=LAND 2=OCEAN 3=COAST")
+        ds.setncattr("river_class_code_meanings", "0=none/R0 1=R1 2=R2 3=R3")
+        ds.setncattr("coast_class_code_meanings", "0=none 1=COAST 2=COAST_LAND 3=COAST_OCEAN")
+
+        cell_id = ds.createVariable("cell_id", str, ("cell",))
+        cell_index = ds.createVariable("cell_index", "i4", ("cell",))
+        center_lon = ds.createVariable("center_lon", "f8", ("cell",))
+        center_lat = ds.createVariable("center_lat", "f8", ("cell",))
+        surface_class_code = ds.createVariable("surface_class_code", "i1", ("cell",))
+        has_river = ds.createVariable("has_river", "i1", ("cell",))
+        river_class_code = ds.createVariable("river_class_code", "i1", ("cell",))
+        river_fraction = ds.createVariable("river_fraction", "f8", ("cell",))
+        estimated_river_area_m2 = ds.createVariable("estimated_river_area_m2", "f8", ("cell",))
+        has_coast = ds.createVariable("has_coast", "i1", ("cell",))
+        coast_class_code = ds.createVariable("coast_class_code", "i1", ("cell",))
+        coastal_fraction = ds.createVariable("coastal_fraction", "f8", ("cell",))
+        normalized_cell_area_m2 = ds.createVariable("normalized_cell_area_m2", "f8", ("cell",))
+        source_area_cell = ds.createVariable("source_areaCell", "f8", ("cell",))
+
+        center_lon.units = "degrees_east"
+        center_lat.units = "degrees_north"
+        river_fraction.units = "1"
+        coastal_fraction.units = "1"
+        estimated_river_area_m2.units = "m2"
+        normalized_cell_area_m2.units = "m2"
+        source_area_cell.units = "source_areaCell_units from CSV when available"
+
+        for index, row in enumerate(rows):
+            cell_id[index] = str(row.get("cell_id", ""))
+            cell_index[index] = _int_or_default(row.get("cell_index"), 0)
+            center_lon[index] = _float_or_nan(row.get("center_lon"))
+            center_lat[index] = _float_or_nan(row.get("center_lat"))
+            surface_class_code[index] = _SURFACE_CLASS_CODES.get(str(row.get("surface_class", "UNKNOWN")), 0)
+            has_river[index] = 1 if str(row.get("has_river", "")).lower() == "true" else 0
+            river_class_code[index] = _RIVER_CLASS_CODES.get(str(row.get("river_class", "")), 0)
+            river_fraction[index] = _float_or_nan(row.get("river_fraction"))
+            estimated_river_area_m2[index] = _float_or_nan(row.get("estimated_river_area_m2"))
+            has_coast[index] = 1 if str(row.get("has_coast", "")).lower() == "true" else 0
+            coast_class_code[index] = _COAST_CLASS_CODES.get(str(row.get("coast_class", "")), 0)
+            coastal_fraction[index] = _float_or_nan(row.get("coastal_fraction"))
+            normalized_cell_area_m2[index] = _float_or_nan(row.get("normalized_cell_area_m2"))
+            source_area_cell[index] = _float_or_nan(row.get("source_areaCell"))
+    return output_path
+
+
+def _float_or_nan(value: Any) -> float:
+    if value is None or value == "":
+        return math.nan
+    return float(value)
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    return int(value)
 
 def _write_package_csv(rows: list[dict[str, Any]], output_csv: str | Path) -> Path:
     output_path = Path(output_csv)

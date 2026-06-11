@@ -1073,7 +1073,7 @@ Leaflet QA map, and a ranking JSON into the package directory.  Treat
 coupling-table generation.
 
 The delivery package can now be converted into the first CoLM2024/CoLM20XX-style
-all-cell coupling table:
+all-cell coupling table and NetCDF metadata artifact:
 
 ```bash
 python3 -m util.hydro_mesh.colm_coupling package \
@@ -1087,6 +1087,7 @@ The smoke output writes:
 
 ```text
 /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/colm_coupling/colm_coupling_cells.csv
+/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/colm_coupling/colm_coupling_cells.nc
 /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/packages/yangtze_delta_N112_r3d3_cst20/colm_coupling/colm_coupling_summary.json
 ```
 
@@ -1143,9 +1144,11 @@ Verified N112 CaMa surface-aware smoke output:
 - The same counts are present in `colm_coupling_cells.csv` by row-level `surface_class`.
 - Hydro flags remain separate: `has_river=372` cells and `has_coast=374` cells.
 
-This is still a metadata handoff table, not final CoLM NetCDF, but the surface-aware
-package now gives CoLM2024/CoLM20XX an all-cell LAND/OCEAN base plus independent
-river/coast coupling flags.
+The package coupling export now writes both `colm_coupling_cells.csv` and
+`colm_coupling_cells.nc`.  The NetCDF file is still a coupling metadata artifact,
+not a complete CoLM forcing or restart file, but it gives downstream CoLM2024/CoLM20XX
+work a typed `cell` dimension with longitude/latitude, class-code variables, river
+fraction, coastal fraction, and area metadata.
 
 ## MERIT-Hydro 90m delivery-package bridge smoke
 
@@ -1400,6 +1403,7 @@ Observed China-region output:
 - EarthMesh intersections: `river_intersection_features=8276`, `coast_intersection_features=9085`.
 - CoLM rows: `19737`; `river_cell_count=6518`; `coast_cell_count=4872`.
 - Surface counts: `LAND=11908`, `OCEAN=7829`, `UNKNOWN=0`; `surface_source_kind=complete_cell_mask_geojson`.
+- CoLM NetCDF: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_china_N160_bridge_stride20_compact_surface/package/colm_coupling/colm_coupling_cells.nc` (`2.9M`), with `cell=19737`, `kind=earthmesh_colm_coupling_netcdf`, and code variables for surface, river, and coast classes.
 
 This is the first full China-region package generated through the MERIT bridge.  It
 proves that the compact-surface handoff scales from the Yangtze test window to the
