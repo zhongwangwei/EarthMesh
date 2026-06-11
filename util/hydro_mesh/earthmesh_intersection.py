@@ -260,6 +260,128 @@ def write_earthmesh_intersection_geojson(
     return intersections
 
 
+def _polygon_rings_from_geometry(geometry: dict[str, object]) -> list[list[list[float]]]:
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates", [])
+    if geometry_type == "Polygon":
+        return [coordinates[0]] if coordinates else []
+    if geometry_type == "MultiPolygon":
+        rings: list[list[list[float]]] = []
+        for polygon in coordinates:
+            if polygon:
+                rings.append(polygon[0])
+        return rings
+    return []
+
+
+def _load_feature_collection(path: str | Path | None) -> dict[str, object]:
+    if path is None:
+        return {"type": "FeatureCollection", "features": []}
+    return json.loads(Path(path).read_text())
+
+
+def write_earthmesh_cell_preview_png(
+    overlap_geojson: str | Path,
+    output_png: str | Path,
+    *,
+    background_cell_geojson: str | Path | None = None,
+    title: str = "EarthMesh river-cell preview",
+) -> None:
+    """Render all EarthMesh cells in gray and river-overlap cells in class colors."""
+
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+    from matplotlib.patches import Polygon as MatplotlibPolygon
+
+    background = _load_feature_collection(background_cell_geojson)
+    overlap = _load_feature_collection(overlap_geojson)
+    background_features = [feature for feature in background.get("features", []) if isinstance(feature, dict)]
+    overlap_features = [feature for feature in overlap.get("features", []) if isinstance(feature, dict)]
+    colors = {"R2": (0.96, 0.62, 0.04, 0.42), "R3": (0.86, 0.15, 0.15, 0.50)}
+    edges = {"R2": "#92400e", "R3": "#7f1d1d"}
+    points: list[tuple[float, float]] = []
+
+    fig, ax = plt.subplots(figsize=(9.5, 8), dpi=180)
+    for feature in background_features:
+        geometry = feature.get("geometry", {})
+        if not isinstance(geometry, dict):
+            continue
+        for ring in _polygon_rings_from_geometry(geometry):
+            points.extend((float(lon), float(lat)) for lon, lat in ring)
+            ax.add_patch(
+                MatplotlibPolygon(
+                    ring,
+                    closed=True,
+                    facecolor=(0.88, 0.90, 0.94, 0.55),
+                    edgecolor="#AEB7C8",
+                    linewidth=0.22,
+                    zorder=1,
+                )
+            )
+
+    for feature in overlap_features:
+        geometry = feature.get("geometry", {})
+        properties = feature.get("properties", {})
+        if not isinstance(geometry, dict) or not isinstance(properties, dict):
+            continue
+        river_class = str(properties.get("river_class", ""))
+        for ring in _polygon_rings_from_geometry(geometry):
+            points.extend((float(lon), float(lat)) for lon, lat in ring)
+            ax.add_patch(
+                MatplotlibPolygon(
+                    ring,
+                    closed=True,
+                    facecolor=colors.get(river_class, (0.15, 0.39, 0.92, 0.35)),
+                    edgecolor=edges.get(river_class, "#2563eb"),
+                    linewidth=0.35,
+                    zorder=3 if river_class == "R3" else 2,
+                )
+            )
+
+    if points:
+        lons = [point[0] for point in points]
+        lats = [point[1] for point in points]
+        lon_pad = max((max(lons) - min(lons)) * 0.04, 0.02)
+        lat_pad = max((max(lats) - min(lats)) * 0.04, 0.02)
+        ax.set_xlim(min(lons) - lon_pad, max(lons) + lon_pad)
+        ax.set_ylim(min(lats) - lat_pad, max(lats) + lat_pad)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Longitude (degrees east)")
+    ax.set_ylabel("Latitude (degrees north)")
+    ax.grid(True, color="#E6E8F0", linewidth=0.8)
+    ax.set_facecolor("#FFFFFF")
+    fig.patch.set_facecolor("#FCFCFD")
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    ax.legend(
+        handles=[
+            Patch(facecolor=(0.88, 0.90, 0.94, 0.55), edgecolor="#AEB7C8", label="EarthMesh land/domain cell"),
+            Patch(facecolor=colors["R2"], edgecolor=edges["R2"], label="R2 river-overlap cell"),
+            Patch(facecolor=colors["R3"], edgecolor=edges["R3"], label="R3 river-overlap cell"),
+        ],
+        loc="lower left",
+        frameon=True,
+        facecolor="white",
+        edgecolor="#D7DBE7",
+    )
+    fig.subplots_adjust(top=0.84, left=0.1, right=0.96, bottom=0.09)
+    left = ax.get_position().x0
+    fig.text(left, 0.965, title, ha="left", va="top", fontsize=14, fontweight="semibold", color="#1F2430")
+    fig.text(
+        left,
+        0.925,
+        f"Gray background: {len(background_features):,} EarthMesh cells. Overlay: {len(overlap_features):,} R2/R3 river cells.",
+        ha="left",
+        va="top",
+        fontsize=9,
+        color="#6F768A",
+    )
+    output_path = Path(output_png)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Intersect EarthMesh cell polygons with hydro corridor GeoJSON.")
     parser.add_argument("corridor_geojson", help="Input R2/R3 corridor polygon GeoJSON")
@@ -274,10 +396,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--domain-geojson", help="Optional domain/coastline mask polygon GeoJSON used to clip corridors before cell intersection")
     parser.add_argument("--unit-sphere-area", action="store_true", help="Treat source areaCell values as unit-sphere areas and add normalized m2 estimates")
     parser.add_argument("--preview-png", help="Optional PNG preview path")
+    parser.add_argument("--background-cell-geojson", help="Optional all-cell GeoJSON background for preview PNG")
     parser.add_argument("--title", default="EarthMesh river-cell intersection preview", help="Preview PNG title")
     args = parser.parse_args(argv)
 
-    write_earthmesh_intersection_geojson(
+    intersections = write_earthmesh_intersection_geojson(
         args.corridor_geojson,
         args.output_geojson,
         cell_geojson=args.cell_geojson,
@@ -290,9 +413,13 @@ def main(argv: list[str] | None = None) -> int:
         unit_sphere_area=args.unit_sphere_area,
     )
     if args.preview_png:
-        from util.hydro_mesh.corridor_preview import write_corridor_preview_png
-
-        write_corridor_preview_png(args.output_geojson, args.preview_png, title=args.title)
+        background_geojson = args.background_cell_geojson
+        if background_geojson is None and args.mpas_mesh is not None:
+            background_path = Path(args.output_geojson).with_suffix(".background_cells.geojson")
+            background = read_mpas_cell_polygons(args.mpas_mesh, bbox=tuple(args.bbox) if args.bbox is not None else None, max_cells=args.max_cells)
+            background_path.write_text(json.dumps(background, indent=2, sort_keys=True) + "\n")
+            background_geojson = background_path
+        write_earthmesh_cell_preview_png(args.output_geojson, args.preview_png, background_cell_geojson=background_geojson, title=args.title)
     return 0
 
 

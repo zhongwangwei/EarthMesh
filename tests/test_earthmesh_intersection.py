@@ -204,3 +204,44 @@ def test_write_earthmesh_intersection_geojson_accepts_domain_geojson_and_unit_sp
     properties = written["features"][0]["properties"]
     assert properties["domain_clip_applied"] is True
     assert properties["area_normalization"] == "unit_sphere_area_to_m2"
+
+
+def test_write_earthmesh_cell_preview_png_draws_background_cells(tmp_path):
+    from util.hydro_mesh.earthmesh_intersection import write_earthmesh_cell_preview_png
+
+    background_path = tmp_path / "all_cells.geojson"
+    overlap_path = tmp_path / "overlap.geojson"
+    png_path = tmp_path / "preview.png"
+    background_path.write_text(
+        json.dumps(
+            _feature_collection(
+                [
+                    _cell_feature("land", [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]),
+                    _cell_feature("river", [[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]),
+                ]
+            )
+        )
+    )
+    overlap_path.write_text(
+        json.dumps(
+            _feature_collection(
+                    [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]]},
+                        "properties": {
+                            "cell_id": "river",
+                            "river_class": "R3",
+                            "river_fraction": 0.5,
+                            "corridor_source_geometry": "earthmesh_cell_intersection_preview",
+                        },
+                    }
+                ]
+            )
+        )
+    )
+
+    write_earthmesh_cell_preview_png(overlap_path, png_path, background_cell_geojson=background_path, title="With land cells")
+
+    assert png_path.exists()
+    assert png_path.read_bytes().startswith(b"\x89PNG")
