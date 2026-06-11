@@ -1254,7 +1254,54 @@ cells and bbox `118 28 123 33`.
 The `stride=10` output is a useful current QA compromise: it substantially increases
 river/coast coverage over `stride=50`, keeps the package/CoLM handoff stable, and
 still completes in under a minute locally.  The raw MERIT source GeoJSON dominates
-output size, so before trying `stride=5` or `stride=1` on the full Yangtze/China
-window, the bridge should add an optional slim-package mode that keeps compact
-EarthMesh-cell outputs while omitting or externally referencing raw MERIT surface
-GeoJSON.
+output size, so use the slim-package option below before trying `stride=5` or
+`stride=1` on the full Yangtze/China window.
+
+### Slim MERIT package mode
+
+`util.hydro_mesh.merit_package_bridge` now accepts `--raw-merit-output-dir`.  When
+this option is supplied, the bridge writes large raw MERIT-derived mask GeoJSON files
+outside the final delivery package while keeping compact EarthMesh-cell artifacts,
+the HTML QA map, the complete LAND/OCEAN cell mask, and the CoLM coupling export
+inside `--output-dir`.  The package manifest and bridge summary still reference the
+external raw MERIT files for provenance.
+
+Example stride-10 Yangtze-delta command:
+
+```bash
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim
+python3 -m util.hydro_mesh.merit_package_bridge \
+  --case-name merit_yangtze_N112_stride10_slim \
+  --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson \
+  --merit-root /Volumes/Data01/MERIT_Hydro \
+  --bbox 118 28 123 33 \
+  --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log \
+  --output-dir "$OUT/package" \
+  --raw-merit-output-dir "$OUT/raw_merit_source" \
+  --title "MERIT Yangtze N112 bridge stride10 slim smoke" \
+  --max-background-cells 3000 \
+  --stride 10
+
+python3 -m util.hydro_mesh.colm_coupling package \
+  --delivery-manifest "$OUT/package/delivery_manifest.json" \
+  --output-dir "$OUT/package/colm_coupling"
+```
+
+Observed slim stride-10 output:
+
+- Runtime for package plus CoLM export: about `32` seconds on the local workstation.
+- Delivery package size: `15M`.
+- External raw MERIT source size: `626M`.
+- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/package/delivery_manifest.json`.
+- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/package/merit_yangtze_N112_stride10_slim_rivers_and_integrated_coast_leaflet.html`.
+- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/package/merit_yangtze_N112_stride10_slim_complete_cell_mask.geojson`.
+- Raw surface source recorded in the manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/raw_merit_source/merit_surface_masks.geojson`.
+- MERIT source masks: `river=2033`, `coast=24787`, `surface=334381` features.
+- EarthMesh intersections: `river_intersection_features=1350`, `coast_intersection_features=1853`.
+- CoLM rows: `2574`; `river_cell_count=1139`; `coast_cell_count=998`.
+- Surface counts: `LAND=2184`, `OCEAN=390`, `UNKNOWN=0`; `surface_source_kind=complete_cell_mask_geojson`.
+
+The package can therefore be handed to model adapters without carrying the raw MERIT
+source polygons in the same directory.  Keep the external raw directory when
+reproducibility or visual forensic QA is needed; archive only the `package/` directory
+when the downstream consumer only needs EarthMesh-cell masks and coupling tables.

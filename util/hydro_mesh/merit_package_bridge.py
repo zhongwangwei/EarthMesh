@@ -21,6 +21,7 @@ def write_merit_refinement_delivery_package(
     bbox: tuple[float, float, float, float],
     log_path: str | Path,
     output_dir: str | Path,
+    raw_merit_output_dir: str | Path | None = None,
     stride: int = 1,
     r2_width_m: float = 50.0,
     r3_width_m: float = 300.0,
@@ -41,7 +42,7 @@ def write_merit_refinement_delivery_package(
 
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    merit_dir = directory / "merit_source"
+    merit_dir = Path(raw_merit_output_dir) if raw_merit_output_dir is not None else directory / "merit_source"
     merit_outputs = write_merit_mask_outputs(
         merit_root,
         bbox=bbox,
@@ -178,6 +179,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bbox", nargs=4, type=float, metavar=("WEST", "SOUTH", "EAST", "NORTH"), required=True)
     parser.add_argument("--log-path", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--raw-merit-output-dir",
+        help="Optional external directory for large raw MERIT mask GeoJSONs; keeps the delivery package slim.",
+    )
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--r2-width-m", type=float, default=50.0)
     parser.add_argument("--r3-width-m", type=float, default=300.0)
@@ -196,6 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         bbox=tuple(args.bbox),
         log_path=args.log_path,
         output_dir=args.output_dir,
+        raw_merit_output_dir=args.raw_merit_output_dir,
         stride=args.stride,
         r2_width_m=args.r2_width_m,
         r3_width_m=args.r3_width_m,

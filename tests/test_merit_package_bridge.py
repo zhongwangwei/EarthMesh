@@ -117,3 +117,76 @@ def _write_merit_fixture(path: Path) -> None:
         landtype = np.ones((6, 6), dtype="i1")
         landtype[3:, :] = 17
         ds.variables["landtype_igbp"][:, :] = landtype
+
+
+def test_merit_bridge_can_keep_raw_merit_outputs_outside_delivery_package(tmp_path):
+    from util.hydro_mesh.colm_coupling import write_colm_package_coupling
+    from util.hydro_mesh.merit_package_bridge import write_merit_refinement_delivery_package
+
+    merit_root = tmp_path / "merit"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+    background = tmp_path / "background.geojson"
+    package_dir = tmp_path / "package"
+    raw_dir = tmp_path / "raw_merit"
+    background.write_text(json.dumps(_collection([
+        _cell("west", 110.0, 20.0, 110.003, 20.006, 1),
+        _cell("east", 110.003, 20.0, 110.006, 20.006, 2),
+    ])))
+    log = tmp_path / "mkgrd.log"
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          2\n")
+
+    result = write_merit_refinement_delivery_package(
+        case_name="fixture_slim_merit_package",
+        background_geojson=background,
+        merit_root=merit_root,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        log_path=log,
+        output_dir=package_dir,
+        raw_merit_output_dir=raw_dir,
+        stride=1,
+        unit_sphere_area=False,
+    )
+
+    assert result["surface_masks"].is_relative_to(raw_dir)
+    assert not (package_dir / "merit_source" / "merit_surface_masks.geojson").exists()
+    assert (package_dir / "fixture_slim_merit_package_complete_cell_mask.geojson").exists()
+    manifest = json.loads(result["manifest_path"].read_text())
+    assert manifest["source_files"]["surface_geojson"] == str(raw_dir / "merit_surface_masks.geojson")
+    assert manifest["files"]["complete_cell_mask_geojson"].startswith(str(package_dir))
+    bridge_summary = json.loads(result["bridge_summary"].read_text())
+    assert bridge_summary["files"]["merit_surface_masks"] == str(raw_dir / "merit_surface_masks.geojson")
+
+    coupling = write_colm_package_coupling(result["manifest_path"], tmp_path / "colm")
+    assert coupling["summary"]["surface_source_kind"] == "complete_cell_mask_geojson"
+
+
+def test_merit_package_bridge_cli_accepts_external_raw_merit_output_dir(tmp_path):
+    from util.hydro_mesh.merit_package_bridge import main
+
+    merit_root = tmp_path / "merit_cli"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+    background = tmp_path / "background_cli.geojson"
+    package_dir = tmp_path / "package_cli"
+    raw_dir = tmp_path / "raw_merit_cli"
+    background.write_text(json.dumps(_collection([
+        _cell("west", 110.0, 20.0, 110.003, 20.006, 1),
+        _cell("east", 110.003, 20.0, 110.006, 20.006, 2),
+    ])))
+    log = tmp_path / "mkgrd_cli.log"
+    log.write_text(" refine_degree =            3\n 去除孤立细化三角形后，需要细化的三角形：          2\n")
+
+    assert main([
+        "--case-name", "fixture_slim_cli",
+        "--background-geojson", str(background),
+        "--merit-root", str(merit_root),
+        "--bbox", "110.0", "20.0", "110.005", "20.005",
+        "--log-path", str(log),
+        "--output-dir", str(package_dir),
+        "--raw-merit-output-dir", str(raw_dir),
+    ]) == 0
+
+    assert (package_dir / "delivery_manifest.json").exists()
+    assert (raw_dir / "merit_surface_masks.geojson").exists()
+    assert not (package_dir / "merit_source").exists()
