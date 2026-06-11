@@ -58,6 +58,8 @@ def test_write_merit_refinement_delivery_package_builds_package_inputs(tmp_path)
     assert result["river_intersections"].exists()
     assert result["coast_intersections"].exists()
     assert result["surface_masks"].exists()
+    assert result["merit_masks"] is None
+    assert not (tmp_path / "package" / "merit_source" / "merit_masks.geojson").exists()
     assert result["merit_summary"].exists()
     assert result["bridge_summary"].exists()
 
@@ -149,12 +151,15 @@ def test_merit_bridge_can_keep_raw_merit_outputs_outside_delivery_package(tmp_pa
     )
 
     assert result["surface_masks"].is_relative_to(raw_dir)
+    assert result["merit_masks"] is None
+    assert not (raw_dir / "merit_masks.geojson").exists()
     assert not (package_dir / "merit_source" / "merit_surface_masks.geojson").exists()
     assert (package_dir / "fixture_slim_merit_package_complete_cell_mask.geojson").exists()
     manifest = json.loads(result["manifest_path"].read_text())
     assert manifest["source_files"]["surface_geojson"] == str(raw_dir / "merit_surface_masks.geojson")
     assert manifest["files"]["complete_cell_mask_geojson"].startswith(str(package_dir))
     bridge_summary = json.loads(result["bridge_summary"].read_text())
+    assert bridge_summary["files"]["merit_masks"] is None
     assert bridge_summary["files"]["merit_surface_masks"] == str(raw_dir / "merit_surface_masks.geojson")
 
     coupling = write_colm_package_coupling(result["manifest_path"], tmp_path / "colm")
@@ -189,4 +194,5 @@ def test_merit_package_bridge_cli_accepts_external_raw_merit_output_dir(tmp_path
 
     assert (package_dir / "delivery_manifest.json").exists()
     assert (raw_dir / "merit_surface_masks.geojson").exists()
+    assert not (raw_dir / "merit_masks.geojson").exists()
     assert not (package_dir / "merit_source").exists()

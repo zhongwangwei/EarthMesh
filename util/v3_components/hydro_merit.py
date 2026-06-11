@@ -172,7 +172,8 @@ def write_merit_mask_outputs(
     r3_width_m: float = 300.0,
     r2_upa_km2: float = 5000.0,
     r3_upa_km2: float = 50000.0,
-) -> dict[str, Path]:
+    write_combined_mask: bool = True,
+) -> dict[str, Path | None]:
     tiles = select_merit_tiles(merit_root, bbox)
     if not tiles:
         raise ValueError(f"no MERIT-Hydro tiles intersect bbox={bbox}")
@@ -192,13 +193,14 @@ def write_merit_mask_outputs(
     surface_path = output / "merit_surface_masks.geojson"
     summary_path = output / "merit_mask_summary.json"
     layers = split_merit_mask_layers(masks)
-    mask_path.write_text(json.dumps(masks, indent=2, sort_keys=True) + "\n")
+    if write_combined_mask:
+        mask_path.write_text(json.dumps(masks, indent=2, sort_keys=True) + "\n")
     river_path.write_text(json.dumps(layers["river"], indent=2, sort_keys=True) + "\n")
     coast_path.write_text(json.dumps(layers["coast"], indent=2, sort_keys=True) + "\n")
     surface_path.write_text(json.dumps(layers["surface"], indent=2, sort_keys=True) + "\n")
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return {
-        "masks": mask_path,
+        "masks": mask_path if write_combined_mask else None,
         "river_masks": river_path,
         "coast_masks": coast_path,
         "surface_masks": surface_path,
@@ -216,6 +218,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--r3-width-m", type=float, default=300.0)
     parser.add_argument("--r2-upa-km2", type=float, default=5000.0)
     parser.add_argument("--r3-upa-km2", type=float, default=50000.0)
+    parser.add_argument(
+        "--skip-combined-mask",
+        action="store_true",
+        help="Write only river/coast/surface layers and skip the duplicate combined merit_masks.geojson.",
+    )
     args = parser.parse_args(argv)
     write_merit_mask_outputs(
         args.merit_root,
@@ -226,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         r3_width_m=args.r3_width_m,
         r2_upa_km2=args.r2_upa_km2,
         r3_upa_km2=args.r3_upa_km2,
+        write_combined_mask=not args.skip_combined_mask,
     )
     return 0
 

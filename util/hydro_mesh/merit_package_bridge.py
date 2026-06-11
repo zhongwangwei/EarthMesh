@@ -22,6 +22,7 @@ def write_merit_refinement_delivery_package(
     log_path: str | Path,
     output_dir: str | Path,
     raw_merit_output_dir: str | Path | None = None,
+    write_combined_raw_mask: bool = False,
     stride: int = 1,
     r2_width_m: float = 50.0,
     r3_width_m: float = 300.0,
@@ -52,6 +53,7 @@ def write_merit_refinement_delivery_package(
         r3_width_m=r3_width_m,
         r2_upa_km2=r2_upa_km2,
         r3_upa_km2=r3_upa_km2,
+        write_combined_mask=write_combined_raw_mask,
     )
 
     river_intersections = directory / f"{case_name}_merit_river_cell_intersections.geojson"
@@ -137,7 +139,7 @@ def _build_bridge_summary(
     thresholds: dict[str, float],
     min_fraction: float,
     background_geojson: Path,
-    merit_outputs: dict[str, Path],
+    merit_outputs: dict[str, Path | None],
     river_intersections: Path,
     coast_intersections: Path,
     manifest_path: Path,
@@ -152,7 +154,7 @@ def _build_bridge_summary(
         "min_fraction": min_fraction,
         "files": {
             "background_geojson": str(background_geojson),
-            "merit_masks": str(merit_outputs["masks"]),
+            "merit_masks": str(merit_outputs["masks"]) if merit_outputs["masks"] is not None else None,
             "merit_river_masks": str(merit_outputs["river_masks"]),
             "merit_coast_masks": str(merit_outputs["coast_masks"]),
             "merit_surface_masks": str(merit_outputs["surface_masks"]),
@@ -183,6 +185,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--raw-merit-output-dir",
         help="Optional external directory for large raw MERIT mask GeoJSONs; keeps the delivery package slim.",
     )
+    parser.add_argument(
+        "--write-combined-raw-mask",
+        action="store_true",
+        help="Also write the duplicate combined merit_masks.geojson for forensic/debug use.",
+    )
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--r2-width-m", type=float, default=50.0)
     parser.add_argument("--r3-width-m", type=float, default=300.0)
@@ -202,6 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         log_path=args.log_path,
         output_dir=args.output_dir,
         raw_merit_output_dir=args.raw_merit_output_dir,
+        write_combined_raw_mask=args.write_combined_raw_mask,
         stride=args.stride,
         r2_width_m=args.r2_width_m,
         r3_width_m=args.r3_width_m,

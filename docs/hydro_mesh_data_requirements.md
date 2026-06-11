@@ -1263,22 +1263,25 @@ output size, so use the slim-package option below before trying `stride=5` or
 this option is supplied, the bridge writes large raw MERIT-derived mask GeoJSON files
 outside the final delivery package while keeping compact EarthMesh-cell artifacts,
 the HTML QA map, the complete LAND/OCEAN cell mask, and the CoLM coupling export
-inside `--output-dir`.  The package manifest and bridge summary still reference the
-external raw MERIT files for provenance.
+inside `--output-dir`.  By default the bridge also skips the duplicate combined
+`merit_masks.geojson` total layer and keeps only the river/coast/surface raw layers;
+use `--write-combined-raw-mask` only when forensic debugging needs that redundant
+combined file.  The package manifest and bridge summary still reference the external
+raw MERIT files for provenance.
 
 Example stride-10 Yangtze-delta command:
 
 ```bash
-OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim
+OUT=/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim_layers
 python3 -m util.hydro_mesh.merit_package_bridge \
-  --case-name merit_yangtze_N112_stride10_slim \
+  --case-name merit_yangtze_N112_stride10_slim_layers \
   --background-geojson /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson \
   --merit-root /Volumes/Data01/MERIT_Hydro \
   --bbox 118 28 123 33 \
   --log-path /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log \
   --output-dir "$OUT/package" \
   --raw-merit-output-dir "$OUT/raw_merit_source" \
-  --title "MERIT Yangtze N112 bridge stride10 slim smoke" \
+  --title "MERIT Yangtze N112 bridge stride10 slim layers smoke" \
   --max-background-cells 3000 \
   --stride 10
 
@@ -1289,13 +1292,15 @@ python3 -m util.hydro_mesh.colm_coupling package \
 
 Observed slim stride-10 output:
 
-- Runtime for package plus CoLM export: about `32` seconds on the local workstation.
+- Runtime for package plus CoLM export: about `26` seconds on the local workstation.
 - Delivery package size: `15M`.
-- External raw MERIT source size: `626M`.
-- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/package/delivery_manifest.json`.
-- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/package/merit_yangtze_N112_stride10_slim_rivers_and_integrated_coast_leaflet.html`.
-- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/package/merit_yangtze_N112_stride10_slim_complete_cell_mask.geojson`.
-- Raw surface source recorded in the manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim/raw_merit_source/merit_surface_masks.geojson`.
+- External raw MERIT source size: `313M` without the duplicate combined raw mask.
+- Manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim_layers/package/delivery_manifest.json`.
+- HTML: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim_layers/package/merit_yangtze_N112_stride10_slim_layers_rivers_and_integrated_coast_leaflet.html`.
+- Complete mask: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim_layers/package/merit_yangtze_N112_stride10_slim_layers_complete_cell_mask.geojson`.
+- Raw surface source recorded in the manifest: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride10_slim_layers/raw_merit_source/merit_surface_masks.geojson`.
+- Bridge summary records `files.merit_masks = null`, confirming the duplicate combined raw mask was skipped.
+- Raw layer sizes: `river=1.8M`, `coast=22M`, `surface=289M`, `summary=4K`.
 - MERIT source masks: `river=2033`, `coast=24787`, `surface=334381` features.
 - EarthMesh intersections: `river_intersection_features=1350`, `coast_intersection_features=1853`.
 - CoLM rows: `2574`; `river_cell_count=1139`; `coast_cell_count=998`.
