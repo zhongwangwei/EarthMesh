@@ -220,3 +220,36 @@ Large R3 blobs are useful QA signals rather than immediate errors. They may indi
 true wide estuary/floodplain candidates, but they may also indicate that CaMa `width.bin`
 needs unit, semantic, or threshold calibration before this preview is promoted into an
 EarthMesh mask-generation step.
+
+## Verified linked corridor fallback
+
+For the current Yangtze-delta sample, every retained R2/R3 record has
+`downstream_x=-9999` and `downstream_y=-9999`, so this subset cannot yet build a
+trustworthy CaMa-topology corridor. The safer v1 fallback is to connect only nearby
+same-class candidates and mark the geometry source explicitly as
+`nearest_neighbor_segment`.
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib python3 -m util.hydro_mesh.corridor_preview \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_R2R3.geojson \
+  /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_linked_corridor_preview.geojson \
+  --neighbor-links \
+  --max-link-distance-km 3.0 \
+  --max-radius-m 2500 \
+  --preview-png /Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_linked_corridor_preview.png \
+  --title "Yangtze Delta linked corridor preview"
+```
+
+Observed output:
+
+- Linked corridor GeoJSON path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_linked_corridor_preview.geojson`.
+- Linked corridor PNG path: `/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_linked_corridor_preview.png`.
+- Feature count: `1063` nearest-neighbor segment polygons.
+- Class counts: `R2=541`, `R3=522`.
+- Link distance range: about `1.56 km` to `2.48 km` under the `3 km` cap.
+- Preview radius range after capping: `700 m` to `2500 m`.
+
+This linked fallback is visually cleaner than the independent point-circle preview, but
+it is still not a hydrologic topology product. The next scientific correction should
+repair or reinterpret CaMa `nextxy.bin`/downstream indices so segment corridors can be
+built from actual flow direction instead of nearest-neighbor proximity.

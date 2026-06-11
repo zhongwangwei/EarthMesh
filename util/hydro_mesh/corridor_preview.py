@@ -98,6 +98,159 @@ def write_corridor_geojson(
     return corridors
 
 
+def _feature_point(feature: dict[str, object]) -> tuple[float, float] | None:
+    geometry = feature.get("geometry", {})
+    if not isinstance(geometry, dict) or geometry.get("type") != "Point":
+        return None
+    coordinates = geometry.get("coordinates", [])
+    if not isinstance(coordinates, list | tuple) or len(coordinates) < 2:
+        return None
+    return float(coordinates[0]), float(coordinates[1])
+
+
+def _feature_class(feature: dict[str, object]) -> str:
+    properties = feature.get("properties", {})
+    if not isinstance(properties, dict):
+        return ""
+    return str(properties.get("river_class", ""))
+
+
+def _feature_reach_id(feature: dict[str, object]) -> str:
+    properties = feature.get("properties", {})
+    if not isinstance(properties, dict):
+        return ""
+    return str(properties.get("reach_id", ""))
+
+
+def _distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    mid_lat = math.radians((a[1] + b[1]) / 2.0)
+    dx = (b[0] - a[0]) * _METERS_PER_DEGREE_LAT * math.cos(mid_lat)
+    dy = (b[1] - a[1]) * _METERS_PER_DEGREE_LAT
+    return math.hypot(dx, dy) / 1000.0
+
+
+def _segment_ring(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    radius_m: float,
+) -> list[list[float]]:
+    mid_lat = math.radians((start[1] + end[1]) / 2.0)
+    lon_scale = max(math.cos(mid_lat), 1e-6)
+    sx = start[0] * _METERS_PER_DEGREE_LAT * lon_scale
+    sy = start[1] * _METERS_PER_DEGREE_LAT
+    ex = end[0] * _METERS_PER_DEGREE_LAT * lon_scale
+    ey = end[1] * _METERS_PER_DEGREE_LAT
+    dx = ex - sx
+    dy = ey - sy
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return _circle_ring(start[0], start[1], radius_m, segments=12)
+    px = -dy / length * radius_m
+    py = dx / length * radius_m
+
+    def to_lonlat(x: float, y: float) -> list[float]:
+        return [x / (_METERS_PER_DEGREE_LAT * lon_scale), y / _METERS_PER_DEGREE_LAT]
+
+    ring = [
+        to_lonlat(sx + px, sy + py),
+        to_lonlat(ex + px, ey + py),
+        to_lonlat(ex - px, ey - py),
+        to_lonlat(sx - px, sy - py),
+    ]
+    ring.append(ring[0])
+    return ring
+
+
+def geojson_points_to_neighbor_corridors(
+    collection: dict[str, object],
+    *,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    max_link_distance_km: float = 3.0,
+    max_radius_m: float = 2_500.0,
+) -> dict[str, object]:
+    """Create fallback corridor polygons by linking nearest same-class point candidates."""
+
+    included = set(include_classes)
+    candidates: list[dict[str, object]] = []
+    for feature in collection.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        if _feature_class(feature) not in included:
+            continue
+        if _feature_point(feature) is None:
+            continue
+        candidates.append(feature)
+
+    links: set[tuple[str, str]] = set()
+    corridor_features: list[dict[str, object]] = []
+    for feature in candidates:
+        start = _feature_point(feature)
+        if start is None:
+            continue
+        feature_class = _feature_class(feature)
+        reach_id = _feature_reach_id(feature)
+        nearest: tuple[float, dict[str, object], tuple[float, float]] | None = None
+        for other in candidates:
+            other_reach_id = _feature_reach_id(other)
+            if other is feature or other_reach_id == reach_id or _feature_class(other) != feature_class:
+                continue
+            end = _feature_point(other)
+            if end is None:
+                continue
+            distance = _distance_km(start, end)
+            if distance > max_link_distance_km:
+                continue
+            if nearest is None or distance < nearest[0] or (distance == nearest[0] and other_reach_id < _feature_reach_id(nearest[1])):
+                nearest = (distance, other, end)
+        if nearest is None:
+            continue
+        other = nearest[1]
+        end = nearest[2]
+        other_reach_id = _feature_reach_id(other)
+        link_key = tuple(sorted((reach_id, other_reach_id)))
+        if link_key in links:
+            continue
+        links.add(link_key)
+        radius_m = min(max_radius_m, max(_radius_for_feature(feature), _radius_for_feature(other)))
+        corridor_features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [_segment_ring(start, end, radius_m)]},
+                "properties": {
+                    "corridor_kind": "preview_buffer",
+                    "corridor_source_geometry": "nearest_neighbor_segment",
+                    "river_class": feature_class,
+                    "from_reach_id": reach_id,
+                    "to_reach_id": other_reach_id,
+                    "link_distance_km": nearest[0],
+                    "corridor_radius_m": radius_m,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": corridor_features}
+
+
+def write_neighbor_corridor_geojson(
+    input_geojson: str | Path,
+    output_geojson: str | Path,
+    *,
+    include_classes: Iterable[str] = _INCLUDED_CLASSES,
+    max_link_distance_km: float = 3.0,
+    max_radius_m: float = 2_500.0,
+) -> dict[str, object]:
+    collection = json.loads(Path(input_geojson).read_text())
+    corridors = geojson_points_to_neighbor_corridors(
+        collection,
+        include_classes=include_classes,
+        max_link_distance_km=max_link_distance_km,
+        max_radius_m=max_radius_m,
+    )
+    output_path = Path(output_geojson)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(corridors, indent=2, sort_keys=True) + "\n")
+    return corridors
+
+
 def write_corridor_preview_png(input_geojson: str | Path, output_png: str | Path, *, title: str = "Hydro corridor preview") -> None:
     """Render preview corridor polygons as a static PNG for quick QA."""
 
@@ -164,10 +317,16 @@ def write_corridor_preview_png(input_geojson: str | Path, output_png: str | Path
     fig.subplots_adjust(top=0.84, left=0.1, right=0.96, bottom=0.09)
     left = ax.get_position().x0
     fig.text(left, 0.965, title, ha="left", va="top", fontsize=14, fontweight="semibold", color="#1F2430")
+    source_geometries = {
+        str(feature.get("properties", {}).get("corridor_source_geometry", "corridor"))
+        for feature in features
+        if isinstance(feature.get("properties", {}), dict)
+    }
+    geometry_label = "nearest-neighbor segment buffers" if "nearest_neighbor_segment" in source_geometries else "point buffers"
     fig.text(
         left,
         0.925,
-        f"Static QA polygons from {len(features):,} R2/R3 point buffers. This is not a final EarthMesh mask.",
+        f"Static QA polygons from {len(features):,} R2/R3 {geometry_label}. This is not a final EarthMesh mask.",
         ha="left",
         va="top",
         fontsize=9,
@@ -187,8 +346,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--segments", type=int, default=24, help="Circle segments per point; default: 24")
     parser.add_argument("--preview-png", help="Optional PNG preview path for the corridor polygons")
     parser.add_argument("--title", default="Hydro corridor preview", help="Preview PNG title")
+    parser.add_argument("--neighbor-links", action="store_true", help="Create nearest-neighbor segment corridors instead of point circles")
+    parser.add_argument("--max-link-distance-km", type=float, default=3.0, help="Maximum distance for nearest-neighbor links")
+    parser.add_argument("--max-radius-m", type=float, default=2_500.0, help="Maximum preview corridor radius")
     args = parser.parse_args(argv)
-    write_corridor_geojson(args.input_geojson, args.output_geojson, include_classes=args.classes, segments=args.segments)
+    if args.neighbor_links:
+        write_neighbor_corridor_geojson(
+            args.input_geojson,
+            args.output_geojson,
+            include_classes=args.classes,
+            max_link_distance_km=args.max_link_distance_km,
+            max_radius_m=args.max_radius_m,
+        )
+    else:
+        write_corridor_geojson(args.input_geojson, args.output_geojson, include_classes=args.classes, segments=args.segments)
     if args.preview_png:
         write_corridor_preview_png(args.output_geojson, args.preview_png, title=args.title)
     return 0

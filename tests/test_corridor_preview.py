@@ -96,3 +96,28 @@ def test_write_corridor_preview_png_writes_png_file(tmp_path):
 
     assert png_path.exists()
     assert png_path.read_bytes().startswith(b"\x89PNG")
+
+
+def test_geojson_points_to_neighbor_corridors_connects_nearby_same_class_points():
+    from util.hydro_mesh.corridor_preview import geojson_points_to_neighbor_corridors
+
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            _point_feature("a", "R3", lon=120.0, lat=30.0, width_m=10_000.0),
+            _point_feature("b", "R3", lon=120.02, lat=30.0, width_m=10_000.0),
+            _point_feature("far", "R3", lon=121.0, lat=30.0, width_m=10_000.0),
+            _point_feature("small", "R1", lon=120.01, lat=30.0),
+        ],
+    }
+
+    corridors = geojson_points_to_neighbor_corridors(collection, max_link_distance_km=4.0, max_radius_m=2_500.0)
+
+    assert len(corridors["features"]) == 1
+    feature = corridors["features"][0]
+    assert feature["properties"]["from_reach_id"] == "a"
+    assert feature["properties"]["to_reach_id"] == "b"
+    assert feature["properties"]["corridor_source_geometry"] == "nearest_neighbor_segment"
+    assert feature["properties"]["corridor_radius_m"] == 2_500.0
+    assert feature["geometry"]["type"] == "Polygon"
+    assert feature["geometry"]["coordinates"][0][0] == feature["geometry"]["coordinates"][0][-1]
