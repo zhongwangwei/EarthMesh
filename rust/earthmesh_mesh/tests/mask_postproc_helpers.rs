@@ -1,7 +1,8 @@
 use earthmesh_mesh::{
     boundary_closed_curves_fortran_indexed, boundary_connection_fortran_indexed,
     extract_unique_vertices_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
-    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
+    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_data_fortran_indexed,
+    renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -291,4 +292,66 @@ fn boundary_connection_builds_boundary_graph_and_closed_curve_from_center_edges(
     assert_eq!(boundary.curves.num_closed_curve, 1);
     assert_eq!(boundary.curves.num_bdy_long, [5, 1, 1]);
     assert_eq!(boundary.curves.close_curves[1], vec![10, 11, 12, 13]);
+}
+
+#[test]
+fn isolated_ocean_removal_keeps_longest_boundary_and_removes_smaller_ocean_curve() {
+    let center_neighbors_new = vec![
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+        vec![10, 11, 1],
+        vec![11, 12, 1],
+        vec![12, 13, 1],
+        vec![13, 10, 1],
+        vec![20, 21, 1],
+        vec![21, 22, 1],
+        vec![22, 20, 1],
+    ];
+    let center_neighbor_counts_new = vec![0, 0, 2, 2, 2, 2, 2, 2, 2];
+    let mut vertex_neighbor_counts = vec![0; 23];
+    let mut vertex_neighbor_counts_new = vec![0; 23];
+    for vertex_id in 10..=13 {
+        vertex_neighbor_counts[vertex_id] = 3;
+        vertex_neighbor_counts_new[vertex_id] = 1;
+    }
+    for vertex_id in 20..=22 {
+        vertex_neighbor_counts[vertex_id] = 3;
+        vertex_neighbor_counts_new[vertex_id] = 1;
+    }
+    let boundary = boundary_connection_fortran_indexed(
+        &center_neighbors_new,
+        &center_neighbor_counts_new,
+        &vertex_neighbor_counts,
+        &vertex_neighbor_counts_new,
+    )
+    .expect("boundary connection");
+
+    let mut is_in_domain = vec![-1; 31];
+    is_in_domain[30] = 1;
+    let mut center_neighbors = vec![vec![1, 1, 1]; 31];
+    center_neighbors[30] = vec![20, 21, 22];
+    let mut center_neighbor_counts = vec![0; 31];
+    center_neighbor_counts[30] = 3;
+    let mut vertex_neighbors_new = vec![vec![1]; 23];
+    for vertex_id in 20..=22 {
+        vertex_neighbors_new[vertex_id] = vec![30];
+    }
+
+    let renewed = remove_isolated_ocean_fortran_indexed(
+        &mut is_in_domain,
+        &center_neighbors,
+        &center_neighbor_counts,
+        &vertex_neighbors_new,
+        &vertex_neighbor_counts,
+        &mut vertex_neighbor_counts_new,
+        &boundary,
+    )
+    .expect("remove isolated ocean");
+
+    assert_eq!(renewed.bdy_long_order[1..5], [10, 11, 12, 13]);
+    assert_eq!(renewed.removed_curve_ids, vec![2]);
+    assert_eq!(is_in_domain[30], -1);
+    assert_eq!(vertex_neighbor_counts_new[20], 0);
+    assert_eq!(vertex_neighbor_counts_new[21], 0);
+    assert_eq!(vertex_neighbor_counts_new[22], 0);
 }

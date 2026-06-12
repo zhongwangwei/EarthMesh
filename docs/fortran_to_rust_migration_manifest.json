@@ -287,11 +287,12 @@
         "IsInDmArea_ustr_Renew_v2 helper ported to rust/earthmesh_mesh",
         "narrow_waterway_widen helper ported to rust/earthmesh_mesh",
         "bdy_connection_closed_curve helper ported to rust/earthmesh_mesh",
-        "bdy_connection boundary graph helper ported to rust/earthmesh_mesh"
+        "bdy_connection boundary graph helper ported to rust/earthmesh_mesh",
+        "Isolated_Ocean_Renew pure removal helper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O",
-        "isolated-ocean removal helper"
+        "bdy_calculation boundary output helper and obcv2 writer wiring"
       ]
     },
     {
