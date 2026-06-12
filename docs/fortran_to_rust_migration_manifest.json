@@ -33,11 +33,11 @@
         "core mathematical constants PIO180/PIU180/PI2",
         "degree/radian helpers",
         "MPAS-compatible Earth radius and derived radius values from init_consts",
-        "typed EarthmeshConfig defaults mirroring oname_vars"
+        "typed EarthmeshConfig defaults mirroring oname_vars",
+        "typed LonLatMeshConfig defaults mirroring lonlatmesh_coms:mesh_vars",
+        "typed FvcomMeshConfig defaults mirroring fvcommesh_coms:mesh_vars"
       ],
       "remaining_rust_surfaces": [
-        "lonlatmesh_coms typed defaults and parser bridge",
-        "fvcommesh_coms typed defaults and parser bridge",
         "mem_* state replacement modules currently co-located in consts_coms.F90",
         "full namelist read/write compatibility with mkgrd.F90 read_nl"
       ]

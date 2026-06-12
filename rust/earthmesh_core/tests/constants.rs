@@ -61,3 +61,32 @@ fn earth_radius_derivatives_are_initialized_from_single_radius() {
     approx_eq(radii.double_radius_squared_meters, (EARTH_RADIUS_METERS * 2.0).powi(2), 1.0e-3);
     approx_eq(radii.radius_over_sqrt_five_meters, EARTH_RADIUS_METERS / 5.0_f64.sqrt(), 1.0e-9);
 }
+
+#[test]
+fn lonlat_mesh_defaults_match_fortran_lonlatmesh_coms() {
+    let mesh = earthmesh_core::LonLatMeshConfig::default();
+
+    assert_eq!(mesh.definition, "center");
+    approx_eq(mesh.lon_start, 0.0, 0.0);
+    approx_eq(mesh.lon_end, 359.0, 0.0);
+    approx_eq(mesh.lon_grid_interval, 0.0625, 0.0);
+    assert_eq!(mesh.lon_points, 2880);
+    approx_eq(mesh.lat_start, 0.0, 0.0);
+    approx_eq(mesh.lat_end, 0.0, 0.0);
+    approx_eq(mesh.lat_grid_interval, 0.0, 0.0);
+    assert_eq!(mesh.lat_points, 1440);
+}
+
+#[test]
+fn fvcom_mesh_defaults_match_fortran_fvcommesh_coms() {
+    let mesh = earthmesh_core::FvcomMeshConfig::default();
+
+    assert_eq!(mesh.case_name, "CASENAME");
+    assert_eq!(mesh.dem_file, "/tmp");
+    assert_eq!(mesh.lon_name, "/tmp");
+    assert_eq!(mesh.lat_name, "/tmp");
+    assert_eq!(mesh.depth_name, "/tmp");
+    approx_eq(mesh.min_depth, 1.0, 0.0);
+    approx_eq(mesh.max_depth, 300.0, 0.0);
+    approx_eq(mesh.limit_slope, 0.02, 1.0e-15);
+}

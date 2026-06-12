@@ -73,3 +73,7 @@ Added `rust/earthmesh_core` as the first Rust-native replacement surface for `sr
 - Typed `EarthmeshConfig::default()` matching the Fortran `oname_vars` defaults.
 
 Remaining `consts_coms.F90` work is intentionally explicit in the manifest: lon/lat mesh defaults, FVCOM mesh defaults, `mem_*` state modules, and namelist parser compatibility still need separate parity tests before this Fortran file can be considered fully replaced.
+
+### 2026-06-12: lon/lat and FVCOM mesh defaults added
+
+Extended `rust/earthmesh_core` with typed defaults for the co-located `lonlatmesh_coms` and `fvcommesh_coms` modules. These are now covered by Rust tests against the Fortran literal defaults. The remaining `consts_coms.F90` migration risk is no longer basic defaults; it is the larger `mem_*` mutable state layout and full `read_nl` namelist compatibility.
