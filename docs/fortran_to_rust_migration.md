@@ -569,3 +569,7 @@ Added `write_mask_postproc_patchtype_netcdf`, a tested Rust CLI composition help
 ### 2026-06-12: mask_postproc Earth info writer orchestration ported
 
 Added `write_mask_postproc_earth_info_netcdf`, a tested Earth-only composition helper that binds `build_earthmesh_info_fortran_indexed` and `write_earthmesh_info_netcdf` to the legacy `result/earthmesh_info.nc4` path selected from `MaskPostprocDomainIoPlan.file_dir`. It rejects Land/Ocean plans so `earthmesh_info` remains an Earth branch side effect. Remaining work is full Earth branch sequencing from real contain/gridfile reads through patchtype output, final gridfile clipping, and this info writer.
+
+### 2026-06-12: MPAS simple mesh NetCDF writer ported
+
+Added `MpasSimpleMesh` and `write_mpas_simple_mesh_netcdf` in `rust/earthmesh_cli`, a tested Rust writer for `MOD_file_preprocess.F90:MPAS_Mesh_Simple_Save`. The adapter preserves the simple MPAS dimensions (`nCells`, `nVertices`, `vertexDegree`), writes cell/vertex Cartesian coordinates, `cellsOnVertex`, `meshDensity`, and global `on_a_sphere`/`sphere_radius` attributes while applying the Fortran placeholder slicing convention (`2:num_dbx`, `2:num_sjx`). Remaining atmosmesh work is to build this payload from `MPAS_Mesh_Cal_Simple` inputs and then port the full MPAS mesh writer/graph-info path.

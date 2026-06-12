@@ -264,6 +264,19 @@ pub struct EarthmeshInfo {
     pub seaorland_ustr_f: Vec<i32>,
 }
 
+/// Rust data shape written by `MOD_file_preprocess.F90:MPAS_Mesh_Simple_Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MpasSimpleMesh {
+    pub x_cell: Vec<f64>,
+    pub y_cell: Vec<f64>,
+    pub z_cell: Vec<f64>,
+    pub x_vertex: Vec<f64>,
+    pub y_vertex: Vec<f64>,
+    pub z_vertex: Vec<f64>,
+    pub cells_on_vertex: Vec<Vec<i32>>,
+    pub mesh_density: Vec<f64>,
+}
+
 /// Result of the pure `mask_postproc_Earth` patchtypes_make loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EarthPatchtypes {
@@ -327,6 +340,14 @@ pub struct EarthmeshInfoWriteReport {
     pub output: PathBuf,
     pub num_step: usize,
     pub num_ustr: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:MPAS_Mesh_Simple_Save` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MpasSimpleMeshWriteReport {
+    pub output: PathBuf,
+    pub n_cells: usize,
+    pub n_vertices: usize,
 }
 
 /// Evidence report from writing `MOD_mask_postproc.F90:bdy_calculation` output.
@@ -794,6 +815,60 @@ pub fn write_earthmesh_info_netcdf(
         output: output.to_path_buf(),
         num_step,
         num_ustr,
+    })
+}
+
+/// Write the simple MPAS mesh schema produced by
+/// `MOD_file_preprocess.F90:MPAS_Mesh_Simple_Save`.
+pub fn write_mpas_simple_mesh_netcdf(
+    output: impl AsRef<Path>,
+    mesh: &MpasSimpleMesh,
+) -> io::Result<MpasSimpleMeshWriteReport> {
+    validate_mpas_simple_mesh(mesh)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let n_cells = mesh.x_cell.len() - 1;
+    let n_vertices = mesh.x_vertex.len() - 1;
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("nCells", n_cells)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("nVertices", n_vertices)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("vertexDegree", 3)
+        .map_err(netcdf_to_io_error)?;
+
+    write_f64_1d(&mut file, "xCell", "nCells", &mesh.x_cell[1..])?;
+    write_f64_1d(&mut file, "yCell", "nCells", &mesh.y_cell[1..])?;
+    write_f64_1d(&mut file, "zCell", "nCells", &mesh.z_cell[1..])?;
+    write_f64_1d(&mut file, "xVertex", "nVertices", &mesh.x_vertex[1..])?;
+    write_f64_1d(&mut file, "yVertex", "nVertices", &mesh.y_vertex[1..])?;
+    write_f64_1d(&mut file, "zVertex", "nVertices", &mesh.z_vertex[1..])?;
+    {
+        let mut var = file
+            .add_variable::<i32>("cellsOnVertex", &["nVertices", "vertexDegree"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_attribute("units", "-")
+            .map_err(netcdf_to_io_error)?;
+        var.put_attribute("long_name", "IDs of the cells that meet at a vertex")
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&flatten_i32_rows(&mesh.cells_on_vertex[1..]), (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    write_f64_1d(&mut file, "meshDensity", "nCells", &mesh.mesh_density[1..])?;
+
+    file.add_attribute("on_a_sphere", "YES")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("sphere_radius", 1.0_f64)
+        .map_err(netcdf_to_io_error)?;
+
+    Ok(MpasSimpleMeshWriteReport {
+        output: output.to_path_buf(),
+        n_cells,
+        n_vertices,
     })
 }
 
@@ -2644,6 +2719,42 @@ fn validate_earthmesh_info(info: &EarthmeshInfo) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_mpas_simple_mesh(mesh: &MpasSimpleMesh) -> io::Result<()> {
+    if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MPAS simple mesh arrays must include the legacy placeholder row",
+        ));
+    }
+    for (name, actual, required) in [
+        ("y_cell", mesh.y_cell.len(), mesh.x_cell.len()),
+        ("z_cell", mesh.z_cell.len(), mesh.x_cell.len()),
+        ("mesh_density", mesh.mesh_density.len(), mesh.x_cell.len()),
+        ("y_vertex", mesh.y_vertex.len(), mesh.x_vertex.len()),
+        ("z_vertex", mesh.z_vertex.len(), mesh.x_vertex.len()),
+        (
+            "cells_on_vertex",
+            mesh.cells_on_vertex.len(),
+            mesh.x_vertex.len(),
+        ),
+    ] {
+        if actual != required {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} length {actual} must match required {required}"),
+            ));
+        }
+    }
+    let width = matrix_width("cells_on_vertex", &mesh.cells_on_vertex)?;
+    if width != 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("cells_on_vertex width {width} must match vertexDegree 3"),
+        ));
+    }
+    Ok(())
+}
+
 fn matrix_width(name: &str, rows: &[Vec<i32>]) -> io::Result<usize> {
     let width = rows.first().map(Vec::len).unwrap_or(0);
     if rows.iter().any(|row| row.len() != width) {
@@ -2657,6 +2768,18 @@ fn matrix_width(name: &str, rows: &[Vec<i32>]) -> io::Result<usize> {
 
 fn flatten_i32_rows(rows: &[Vec<i32>]) -> Vec<i32> {
     rows.iter().flat_map(|row| row.iter().copied()).collect()
+}
+
+fn write_f64_1d(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    dim: &str,
+    values: &[f64],
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<f64>(name, &[dim])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(values, ..).map_err(netcdf_to_io_error)
 }
 
 fn rows_from_flat_i32(values: &[i32], width: usize) -> Vec<Vec<i32>> {

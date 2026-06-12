@@ -175,7 +175,8 @@
       "completed_rust_surfaces": [
         "Unstructured_Mesh_Read compact gridfile reader ported to rust/earthmesh_cli",
         "Contain_Read/Contain_Save domain file adapters ported to rust/earthmesh_cli",
-        "LOCmesh_info_save earthmesh_info NetCDF writer ported to rust/earthmesh_cli"
+        "LOCmesh_info_save earthmesh_info NetCDF writer ported to rust/earthmesh_cli",
+        "MPAS_Mesh_Simple_Save NetCDF writer ported to rust/earthmesh_cli"
       ]
     },
     {
@@ -310,7 +311,8 @@
         "PatchID_Save selected-domain coordinate mesh builder ported to rust/earthmesh_cli",
         "mask_postproc_Earth earthmesh_info role/refinement payload builder ported to rust/earthmesh_cli",
         "mask_postproc Earth/Lnd patchtype writer orchestration ported to rust/earthmesh_cli",
-        "mask_postproc_Earth earthmesh_info writer orchestration ported to rust/earthmesh_cli"
+        "mask_postproc_Earth earthmesh_info writer orchestration ported to rust/earthmesh_cli",
+        "mask_postproc_Atmos MPAS-Simple output writer dependency ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O"
