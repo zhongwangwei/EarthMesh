@@ -38,12 +38,17 @@ name = "earthmesh_cli"
 version = "0.1.0"
 dependencies = [
  "earthmesh_core",
+ "earthmesh_geometry",
  "earthmesh_mesh",
  "netcdf",
 ]
 
 [[package]]
 name = "earthmesh_core"
+version = "0.1.0"
+
+[[package]]
+name = "earthmesh_geometry"
 version = "0.1.0"
 
 [[package]]

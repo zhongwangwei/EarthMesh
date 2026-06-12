@@ -5,24 +5,27 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
+use earthmesh_geometry::{is_point_in_circle_km, Point as AreaJudgePoint};
 use earthmesh_mesh::{
     area_judge_apply_mask_patch_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
-    boundary_connection_fortran_indexed, centroid_spherical_mesh_fortran_indexed,
-    circumcenter_spherical_mesh_fortran_indexed, classify_boundary_orders_fortran_indexed,
-    connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
-    get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
-    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
+    area_judge_source_find_fortran_indexed, boundary_connection_fortran_indexed,
+    centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
+    classify_boundary_orders_fortran_indexed, connect_on_cell_fortran_indexed,
+    edge_distance_angle_fortran_indexed, get_area_production_fortran_indexed,
+    get_edge_production_fortran_indexed, lonlat_points_to_unit_xyz,
+    order_vertices_on_cell_fortran_indexed, remove_isolated_ocean_fortran_indexed,
+    renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
     standardize_vertices_on_cell_rotation_fortran_indexed,
     triangle_neighbors_from_cell_membership_fortran_indexed, widen_narrow_waterway_fortran_indexed,
-    xyz_to_lonlat_degrees, AreaJudgeSourceBounds, BoundaryConnection, BoundaryOrders,
-    CartesianPoint, DistanceLayerSpacing, GetAreaProductionOutput, GetAreaUnitInput,
-    GetEdgeProductionOutput, GlobalDistanceStep, IsolatedOceanRenewal, LonLatDegrees,
-    MaskPostprocRenewedData, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
-    SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
+    xyz_to_lonlat_degrees, AreaJudgeAxis, AreaJudgeSourceBounds, BoundaryConnection,
+    BoundaryOrders, CartesianPoint, DistanceLayerSpacing, GetAreaProductionOutput,
+    GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep, IsolatedOceanRenewal,
+    LonLatDegrees, MaskPostprocRenewedData, SpringjustmentGlobalCoreInput,
+    SpringjustmentGlobalCoreOutput, SpringjustmentRegionalCoreInput,
+    SpringjustmentRegionalCoreOutput,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -1763,6 +1766,191 @@ pub fn apply_area_judge_bbox_patch_source_fortran_indexed(
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "seaorland or bbox patch mask does not cover selected source bounds",
+            )
+        })?;
+
+    Ok(AreaJudgePatchSourceReport {
+        bounds,
+        patched_cells: report.patched_cells,
+    })
+}
+
+fn area_judge_circle_scan_bounds_fortran(
+    center: LonLatPoint,
+    radius_km: f64,
+) -> io::Result<(f64, f64, f64, f64)> {
+    if !center.lon.is_finite()
+        || !center.lat.is_finite()
+        || !radius_km.is_finite()
+        || radius_km < 0.0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "circle center coordinates and radius must be finite, with non-negative radius",
+        ));
+    }
+    let temp = std::f64::consts::PI / 180.0 * earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+    let cos_lat = center.lat.to_radians().cos();
+    let mut edgew_temp = center.lon - (radius_km / (temp * cos_lat)) * 1.2;
+    let mut edgee_temp = center.lon + (radius_km / (temp * cos_lat)) * 1.2;
+    let mut edgen_temp = center.lat + (radius_km / temp) * 1.2;
+    let mut edges_temp = center.lat - (radius_km / temp) * 1.2;
+
+    if edgee_temp > 180.0 || edgew_temp < -180.0 || edgen_temp > 90.0 || edgen_temp < -90.0 {
+        edgew_temp = -180.0;
+        edgee_temp = 180.0;
+    }
+    if edgen_temp > 90.0 {
+        edges_temp = edges_temp.min(edgen_temp);
+        edgen_temp = 90.0;
+    } else if edges_temp < -90.0 {
+        edgen_temp = edges_temp.max(edgen_temp);
+        edges_temp = -90.0;
+    }
+    Ok((edgew_temp, edgee_temp, edgen_temp, edges_temp))
+}
+
+/// Build the circle `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+pub fn apply_area_judge_circle_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    let mask = read_circle_mask_netcdf(inputfile)?;
+    validate_circle_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid circle patch source: {err}"),
+        )
+    })?;
+    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut merged_bounds = None;
+
+    for (&center, &radius_km) in mask.points.iter().zip(mask.radius_km.iter()) {
+        let (edgew_temp, edgee_temp, edgen_temp, edges_temp) =
+            area_judge_circle_scan_bounds_fortran(center, radius_km)?;
+        let bounds = area_judge_minmax_range_make_fortran_indexed(
+            edgew_temp,
+            edgee_temp,
+            edgen_temp,
+            edges_temp,
+            lon_vertex,
+            lat_vertex,
+            gridnum_perdegree,
+            nlons_source,
+            nlats_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "circle patch scan bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+                ),
+            )
+        })?;
+        let minlon_source = area_judge_source_find_fortran_indexed(
+            edgew_temp,
+            lon_vertex,
+            AreaJudgeAxis::Longitude,
+            gridnum_perdegree,
+            nlons_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing circle min longitude source",
+            )
+        })?;
+        let maxlon_source = area_judge_source_find_fortran_indexed(
+            edgee_temp,
+            lon_vertex,
+            AreaJudgeAxis::Longitude,
+            gridnum_perdegree,
+            nlons_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing circle max longitude source",
+            )
+        })?;
+        let maxlat_source = area_judge_source_find_fortran_indexed(
+            edgen_temp,
+            lat_vertex,
+            AreaJudgeAxis::Latitude,
+            gridnum_perdegree,
+            nlats_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing circle max latitude source",
+            )
+        })?;
+        let minlat_source = area_judge_source_find_fortran_indexed(
+            edges_temp,
+            lat_vertex,
+            AreaJudgeAxis::Latitude,
+            gridnum_perdegree,
+            nlats_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing circle min latitude source",
+            )
+        })?;
+        if minlon_source >= maxlon_source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "circle minlon_source must be smaller than maxlon_source",
+            ));
+        }
+        if maxlat_source >= minlat_source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "circle maxlat_source must be smaller than minlat_source",
+            ));
+        }
+        require_len("circle patch mask", patch_mask.len(), maxlon_source)?;
+        require_len("circle longitude centers", lon_i.len(), maxlon_source)?;
+        require_len("circle latitude centers", lat_i.len(), minlat_source)?;
+        for row in patch_mask.iter().take(maxlon_source).skip(minlon_source) {
+            require_len("circle patch mask row", row.len(), minlat_source)?;
+        }
+
+        for lon_index in minlon_source..maxlon_source {
+            for lat_index in maxlat_source..minlat_source {
+                if patch_mask[lon_index][lat_index] != 0 {
+                    continue;
+                }
+                let point = AreaJudgePoint::new(lon_i[lon_index], lat_i[lat_index]);
+                let center = AreaJudgePoint::new(center.lon, center.lat);
+                if is_point_in_circle_km(point, center, radius_km) {
+                    patch_mask[lon_index][lat_index] = 1;
+                }
+            }
+        }
+        merged_bounds = Some(merge_area_judge_source_bounds(merged_bounds, bounds));
+    }
+
+    let bounds = merged_bounds.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "circle patch source must contain at least one circle",
+        )
+    })?;
+    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seaorland or circle patch mask does not cover selected source bounds",
             )
         })?;
 
@@ -6494,6 +6682,33 @@ pub fn parse_bbox_mask_nml(
     }))
 }
 
+fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
+    if mask.points.len() != mask.radius_km.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "circle points and radius arrays must have the same length",
+        ));
+    }
+    for (index, (point, radius)) in mask.points.iter().zip(mask.radius_km.iter()).enumerate() {
+        if !point.lon.is_finite() || !point.lat.is_finite() || !radius.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "circle point {} coordinates and radius must be finite",
+                    index + 1
+                ),
+            ));
+        }
+        if *radius < 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("circle point {} radius must be non-negative", index + 1),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_bbox_mask(mask: &BBoxMask) -> io::Result<()> {
     for (index, point) in mask.points.iter().enumerate() {
         if point.west > point.east {
@@ -6644,6 +6859,65 @@ pub fn parse_close_mask_nml(
 
 pub fn read_circle_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
     read_nonnegative_refine_netcdf(inputfile, "circle_refine")
+}
+
+pub fn read_circle_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CircleMask> {
+    let inputfile = inputfile.as_ref();
+    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let circle_num = required_dimension_len(&file, "circle_num")?;
+    let two = required_dimension_len(&file, "two")?;
+    if two != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("circle two dimension {two} must equal 2"),
+        ));
+    }
+    let refine_degree = read_circle_refine_netcdf(inputfile)?;
+    let point_values = required_values_f64(&file, "circle_points")?;
+    let expected_points = circle_num.checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("circle_points dimensions {circle_num}x2 overflow"),
+        )
+    })?;
+    if point_values.len() != expected_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "circle_points contains {} values, expected {expected_points}",
+                point_values.len()
+            ),
+        ));
+    }
+    let radius_km = required_values_f64(&file, "circle_radius")?;
+    if radius_km.len() != circle_num {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "circle_radius contains {} values, expected {circle_num}",
+                radius_km.len()
+            ),
+        ));
+    }
+    let points = point_values
+        .chunks_exact(2)
+        .map(|row| LonLatPoint {
+            lon: row[0],
+            lat: row[1],
+        })
+        .collect::<Vec<_>>();
+    let mask = CircleMask {
+        refine_degree,
+        points,
+        radius_km,
+    };
+    validate_circle_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid circle mask NetCDF: {err}"),
+        )
+    })?;
+    Ok(mask)
 }
 
 pub fn read_close_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {

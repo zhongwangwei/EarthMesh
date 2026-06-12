@@ -5,5 +5,6 @@ edition = "2021"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
 netcdf = { version = "0.12.0", default-features = false }
