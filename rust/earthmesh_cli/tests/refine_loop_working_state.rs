@@ -848,6 +848,85 @@ fn working_state_executor_runs_configured_one_into_four_refinement_pipeline() {
 }
 
 #[test]
+fn working_state_executor_runs_configured_one_into_two_transition_pipeline() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_onetwo_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let input_gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
+    let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
+    let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        sources: Vec::new(),
+        refine_loop_input_gridfile: input_gridfile.clone(),
+        refine_loop_original_tmpfile: original_tmpfile.clone(),
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: output_gridfile.clone(),
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 3],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+            point(6.0, 0.0),
+            point(0.0, 6.0),
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4], [3, 4, 5]],
+        w_to_m: vec![vec![1], vec![2], vec![2, 3], vec![2, 3], vec![3], vec![1]],
+        n_w_to_m: vec![1, 1, 2, 2, 1, 1],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input_gridfile, &mesh)
+        .expect("write transition input gridfile");
+
+    let executor = MkgrdRefineLoopWorkingStateExecutor::with_one_into_two_ref_sjx(
+        vec![0, 0, 1, 0],
+        false,
+        1,
+        vec![0, 1, 1, 4],
+    )
+    .with_one_into_two_triangle_neighbors(vec![
+        vec![0, 0, 0],
+        vec![0, 0, 0],
+        vec![3, 3, 3],
+        vec![2, 2, 2],
+        vec![2, 3, 3],
+        vec![2, 3, 3],
+    ]);
+    let report = executor
+        .run_refine_loop_step_report(&step)
+        .expect("run configured one-into-two transition refine-loop step");
+
+    assert!(report.onedivide_four_renew.is_none());
+    assert_eq!(
+        report.onedivide_two.as_ref().unwrap().split_triangles,
+        vec![2]
+    );
+    assert_eq!(
+        report.onedivide_two.as_ref().unwrap().new_triangle_ids,
+        vec![4, 5]
+    );
+    assert_eq!(report.state.wp_new[7], point(3.0, 3.0));
+    assert_eq!(report.state.sjx_child[2], [4, 5]);
+    let output = earthmesh_cli::read_unstructured_mesh_netcdf(&output_gridfile)
+        .expect("read transition output gridfile");
+    assert_eq!(output.m_points.len(), 5);
+    assert_eq!(output.w_points.len(), 7);
+    assert_eq!(output.m_points[3], point(3.0, 1.0));
+    assert_eq!(output.m_points[4], point(1.0, 3.0));
+    assert_eq!(output.m_to_w[3], [2, 3, 7]);
+    assert_eq!(output.m_to_w[4], [2, 4, 7]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn working_state_executor_reads_specified_threshold_file_for_one_into_four_markers() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_refine_loop_working_state_specified_threshold_{}",

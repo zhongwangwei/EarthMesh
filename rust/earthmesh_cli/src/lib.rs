@@ -253,6 +253,7 @@ pub struct MkgrdRefineLoopWorkingStateStepReport {
     pub onedivide_four_connection: Option<OnedivideFourConnectionReport>,
     pub array_length: Option<RefineArrayLengthCalculationRunReport>,
     pub onedivide_four_renew: Option<OnedivideFourRenewReport>,
+    pub onedivide_two: Option<OnedivideTwoReport>,
     pub ngr_renew: Option<NgrRenewReport>,
 }
 
@@ -264,6 +265,10 @@ pub struct MkgrdRefineLoopWorkingStateStepReport {
 #[derive(Debug, Default, Clone)]
 pub struct MkgrdRefineLoopWorkingStateExecutor {
     one_into_four_ref_sjx: Option<Vec<i32>>,
+    one_into_two_ref_sjx: Option<Vec<i32>>,
+    one_into_two_is_reverse: bool,
+    one_into_two_mrl_new: Option<Vec<i32>>,
+    one_into_two_triangle_neighbors: Option<Vec<Vec<usize>>>,
     specified_threshold_file: Option<PathBuf>,
     calculated_threshold_files: Vec<PathBuf>,
     num_vertex: usize,
@@ -1345,11 +1350,42 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     ) -> Self {
         Self {
             one_into_four_ref_sjx: Some(ref_sjx),
+            one_into_two_ref_sjx: None,
+            one_into_two_is_reverse: false,
+            one_into_two_mrl_new: None,
+            one_into_two_triangle_neighbors: None,
             specified_threshold_file: None,
             calculated_threshold_files: Vec::new(),
             num_vertex,
             set_dis_in,
         }
+    }
+
+    pub fn with_one_into_two_ref_sjx(
+        ref_sjx: Vec<i32>,
+        is_reverse: bool,
+        num_vertex: usize,
+        mrl_new: Vec<i32>,
+    ) -> Self {
+        Self {
+            one_into_four_ref_sjx: None,
+            one_into_two_ref_sjx: Some(ref_sjx),
+            one_into_two_is_reverse: is_reverse,
+            one_into_two_mrl_new: Some(mrl_new),
+            one_into_two_triangle_neighbors: None,
+            specified_threshold_file: None,
+            calculated_threshold_files: Vec::new(),
+            num_vertex,
+            set_dis_in: 0,
+        }
+    }
+
+    pub fn with_one_into_two_triangle_neighbors(
+        mut self,
+        triangle_neighbors: Vec<Vec<usize>>,
+    ) -> Self {
+        self.one_into_two_triangle_neighbors = Some(triangle_neighbors);
+        self
     }
 
     pub fn with_specified_threshold_file(
@@ -1359,6 +1395,10 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     ) -> Self {
         Self {
             one_into_four_ref_sjx: None,
+            one_into_two_ref_sjx: None,
+            one_into_two_is_reverse: false,
+            one_into_two_mrl_new: None,
+            one_into_two_triangle_neighbors: None,
             specified_threshold_file: Some(threshold_file.into()),
             calculated_threshold_files: Vec::new(),
             num_vertex,
@@ -1373,6 +1413,10 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     ) -> Self {
         Self {
             one_into_four_ref_sjx: None,
+            one_into_two_ref_sjx: None,
+            one_into_two_is_reverse: false,
+            one_into_two_mrl_new: None,
+            one_into_two_triangle_neighbors: None,
             specified_threshold_file: None,
             calculated_threshold_files: threshold_files.into_iter().collect(),
             num_vertex,
@@ -1390,6 +1434,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         let mut onedivide_four_connection = None;
         let mut array_length = None;
         let mut onedivide_four_renew = None;
+        let mut onedivide_two = None;
         let mut ngr_renew = None;
 
         let ref_sjx = if let Some(ref_sjx) = &self.one_into_four_ref_sjx {
@@ -1414,6 +1459,17 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                     onedivide_four_renew = Some(renew);
                     ngr_renew = Some(ngr);
                 })?;
+        } else if let Some(ref_sjx) = &self.one_into_two_ref_sjx {
+            loaded_ref_sjx = Some(ref_sjx.clone());
+            let mrl_new = self.one_into_two_mrl_new.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "one-into-two transition requires mrl_new markers",
+                )
+            })?;
+            onedivide_two = Some(
+                self.run_configured_one_into_two_transition_pipeline(&mut state, ref_sjx, mrl_new)?,
+            );
         }
 
         let output_mesh = state.to_unstructured_mesh()?;
@@ -1426,8 +1482,76 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             onedivide_four_connection,
             array_length,
             onedivide_four_renew,
+            onedivide_two,
             ngr_renew,
         })
+    }
+
+    fn run_configured_one_into_two_transition_pipeline(
+        &self,
+        state: &mut RefineLoopWorkingState,
+        ref_sjx: &[i32],
+        mrl_new: &[i32],
+    ) -> io::Result<OnedivideTwoReport> {
+        let old_mp = *state
+            .num_mp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
+        let old_wp = *state
+            .num_wp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_wp[1] is required"))?;
+        if ref_sjx.len() <= old_mp || mrl_new.len() <= old_mp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "one-into-two transition requires placeholder plus {old_mp} ref_sjx/mrl_new entries"
+                ),
+            ));
+        }
+
+        state.num_vertex = self.num_vertex;
+        state.ref_sjx = ref_sjx[..=old_mp]
+            .iter()
+            .map(|&marker| if marker > 1 { 1 } else { marker })
+            .collect();
+        state.mrl_new = mrl_new[..=old_mp].to_vec();
+        let marked_triangles = state.ref_sjx[self.num_vertex + 1..=old_mp]
+            .iter()
+            .filter(|&&marker| marker != 0)
+            .count();
+
+        state.iter = 2;
+        if state.num_mp.len() <= state.iter {
+            state.num_mp.resize(state.iter + 1, 0);
+        }
+        if state.num_wp.len() <= state.iter {
+            state.num_wp.resize(state.iter + 1, 0);
+        }
+        state.num_mp[state.iter] = old_mp + marked_triangles * 2;
+        state.num_wp[state.iter] = old_wp + marked_triangles;
+        state.mp_new.resize(
+            state.num_mp[state.iter] + 1,
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+        );
+        state.wp_new.resize(
+            state.num_wp[state.iter] + 1,
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+        );
+        if state.ngrmw_new.len() <= 3 {
+            state.ngrmw_new.resize_with(4, Vec::new);
+        }
+        for row in &mut state.ngrmw_new[1..=3] {
+            row.resize(state.num_mp[state.iter] + 1, 0);
+        }
+        state.sjx_child.resize(old_mp + 1, [0, 0]);
+        if let Some(triangle_neighbors) = &self.one_into_two_triangle_neighbors {
+            state.triangle_neighbors = triangle_neighbors.clone();
+        }
+
+        let report = state.apply_onedivide_two(self.one_into_two_is_reverse)?;
+        refresh_working_vertex_membership_from_ngrmw_new(state)?;
+        Ok(report)
     }
 
     fn run_configured_one_into_four_pipeline(
@@ -1507,6 +1631,50 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         let ngr = state.apply_ngr_renew()?;
         Ok((connection, length, renew, ngr))
     }
+}
+
+fn refresh_working_vertex_membership_from_ngrmw_new(
+    state: &mut RefineLoopWorkingState,
+) -> io::Result<()> {
+    let num_triangles = *state
+        .num_mp
+        .get(state.iter)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "iter must address num_mp"))?;
+    let num_vertices = *state
+        .num_wp
+        .get(state.iter)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "iter must address num_wp"))?;
+    if state.ngrmw_new.len() <= 3
+        || state.ngrmw_new[1..=3]
+            .iter()
+            .any(|row| row.len() <= num_triangles)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ngrmw_new rows must address current working triangles",
+        ));
+    }
+
+    let mut triangles_by_vertex = vec![Vec::<usize>::new(); num_vertices + 1];
+    for triangle in 1..=num_triangles {
+        for row in 1..=3 {
+            let vertex = state.ngrmw_new[row][triangle];
+            if vertex == 0 || vertex > num_vertices {
+                continue;
+            }
+            triangles_by_vertex[vertex].push(triangle);
+        }
+    }
+    let capacity = triangles_by_vertex.iter().map(Vec::len).max().unwrap_or(0);
+    state.ngrwm = vec![vec![0_usize; num_vertices + 1]; capacity + 1];
+    state.n_ngrwm = vec![0_usize; num_vertices + 1];
+    for (vertex, triangles) in triangles_by_vertex.iter().enumerate().skip(1) {
+        state.n_ngrwm[vertex] = triangles.len();
+        for (row, &triangle) in triangles.iter().enumerate() {
+            state.ngrwm[row + 1][vertex] = triangle;
+        }
+    }
+    Ok(())
 }
 
 impl MkgrdRefineLoopExecutor for MkgrdRefineLoopWorkingStateExecutor {
