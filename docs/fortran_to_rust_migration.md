@@ -381,3 +381,7 @@ Added `rust/earthmesh_cli` with `apply_read_nl_workspace_plan`, the first Rust o
 ### 2026-06-12: `Mask_make` prefix discovery ported without shell execution
 
 Extended `rust/earthmesh_cli` with `discover_mask_sources`, the first Rust adapter slice for `mkgrd.F90:Mask_make`. It preserves the Fortran path split and `mask_fprefix*` source-listing behavior without invoking `ls` or writing temporary `*_filelist.txt` files, returning a typed `MaskSourceDiscovery` with parent directory, file prefix, and sorted matching files. Mask-type parsing (`bbox`, `lambert`, `circle`, `close`), NetCDF output generation, and mask-count updates remain separate parity-gated adapter work.
+
+### 2026-06-12: `bbox_mask_make` text input parsing and numbering ported
+
+Extended `rust/earthmesh_cli` with the text `.nml` branch of `mkgrd.F90:bbox_mask_make`. The new `parse_bbox_mask_nml` preserves the Fortran free-format `bbox_num`, `bbox_refine`, and bbox point parsing, validates West/East and North/South orientation, and returns no output plan when `refine_degree > max_iter_spc` just like the Fortran early return. Added `MaskCountState::next_bbox_output` to reproduce `mask_domain_ndm`, `mask_refine_ndm(refine_degree)`, `mask_patch_ndm(refine_degree)`, and the `tmpfile/{mask_select}_bbox_{refine}_{NN}.nc4` output naming. NetCDF bbox copy/write remains pending.

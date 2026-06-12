@@ -114,3 +114,162 @@ pub fn discover_mask_sources(mask_fprefix: impl AsRef<Path>) -> io::Result<MaskS
         files,
     })
 }
+
+/// One `bbox_points(i, :)` row: West, East, North, South.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BBoxPoint {
+    pub west: f64,
+    pub east: f64,
+    pub north: f64,
+    pub south: f64,
+}
+
+/// Parsed `.nml` input for `bbox_mask_make`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BBoxMask {
+    pub refine_degree: usize,
+    pub points: Vec<BBoxPoint>,
+}
+
+/// Parse the text `.nml` branch of `mkgrd.F90:bbox_mask_make`.
+///
+/// Returns `Ok(None)` when `refine_degree > max_iter_spc`, matching the Fortran
+/// early return before any output/count update.
+pub fn parse_bbox_mask_nml(
+    inputfile: impl AsRef<Path>,
+    max_iter_spc: usize,
+) -> io::Result<Option<BBoxMask>> {
+    let content = fs::read_to_string(inputfile)?;
+    let mut lines = content.lines();
+    let bbox_num_line = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing bbox_num line"))?;
+    let refine_line = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing bbox_refine line"))?;
+    let bbox_num = parse_value_after_equals::<usize>(bbox_num_line, "bbox_num")?;
+    let refine_degree = parse_value_after_equals::<usize>(refine_line, "bbox_refine")?;
+    if refine_degree > max_iter_spc {
+        return Ok(None);
+    }
+
+    let mut points = Vec::with_capacity(bbox_num);
+    for index in 0..bbox_num {
+        let line = lines.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing bbox point row {}", index + 1),
+            )
+        })?;
+        let values = line
+            .split_whitespace()
+            .map(|value| {
+                value.parse::<f64>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid bbox coordinate {value}: {err}"),
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if values.len() != 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("bbox point row {} must contain 4 values", index + 1),
+            ));
+        }
+        let point = BBoxPoint {
+            west: values[0],
+            east: values[1],
+            north: values[2],
+            south: values[3],
+        };
+        if point.west > point.east {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bbox west must be <= east like bbox_mask_make",
+            ));
+        }
+        if point.north < point.south {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bbox north must be >= south like bbox_mask_make",
+            ));
+        }
+        points.push(point);
+    }
+
+    Ok(Some(BBoxMask {
+        refine_degree,
+        points,
+    }))
+}
+
+fn parse_value_after_equals<T>(line: &str, field: &str) -> io::Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let (_, value) = line.split_once('=').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{field} line must contain '='"),
+        )
+    })?;
+    value.trim().parse::<T>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {field} value: {err}"),
+        )
+    })
+}
+
+/// Rust-owned mask counters matching `mask_domain_ndm`, `mask_refine_ndm`, and
+/// `mask_patch_ndm` updates in `bbox_mask_make`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MaskCountState {
+    pub mask_domain_ndm: usize,
+    pub mask_refine_ndm: [usize; 10],
+    pub mask_patch_ndm: [usize; 10],
+}
+
+impl MaskCountState {
+    /// Advance counters and return the Fortran bbox output filename.
+    pub fn next_bbox_output(
+        &mut self,
+        mask_select: &str,
+        refine_degree: usize,
+        file_dir: impl AsRef<Path>,
+    ) -> io::Result<PathBuf> {
+        if refine_degree >= self.mask_refine_ndm.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refine_degree must fit mask counter arrays 0:9",
+            ));
+        }
+        let count = match mask_select {
+            "mask_domain" => {
+                self.mask_domain_ndm += 1;
+                self.mask_domain_ndm
+            }
+            "mask_refine" => {
+                self.mask_refine_ndm[refine_degree] += 1;
+                self.mask_refine_ndm[refine_degree]
+            }
+            "mask_patch" => {
+                self.mask_patch_ndm[refine_degree] += 1;
+                self.mask_patch_ndm[refine_degree]
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported mask_select {other}"),
+                ));
+            }
+        };
+        Ok(file_dir
+            .as_ref()
+            .join("tmpfile")
+            .join(format!("{mask_select}_bbox_{refine_degree}_{count:02}.nc4")))
+    }
+}
