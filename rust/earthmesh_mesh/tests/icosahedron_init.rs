@@ -126,3 +126,37 @@ fn icosahedron_w_neighbor_derivation_matches_tri_neighbors_w_loops() {
     assert_eq!(connectivity.w_faces[2].im, [10, 30, 20]);
     assert_eq!(connectivity.w_faces[2].iw, [3, 4, 4, 5, 6, 5, 6, 5, 6]);
 }
+
+#[test]
+fn icosahedron_u_neighbor_derivation_matches_tri_neighbors_u_loop() {
+    let mut connectivity = earthmesh_mesh::IcosahedronDiamondConnectivity {
+        u_edges: vec![earthmesh_mesh::IcosahedronUEdge::default(); 21],
+        w_faces: vec![earthmesh_mesh::IcosahedronWFace::default(); 13],
+    };
+
+    connectivity.u_edges[2].iw[0..2].copy_from_slice(&[3, 4]);
+    connectivity.w_faces[3].iu = [2, 5, 6];
+    connectivity.w_faces[3].mrlw = 9;
+    connectivity.w_faces[4].iu = [7, 2, 8];
+    connectivity.w_faces[4].mrlw = 4;
+
+    connectivity.u_edges[5].iw[0..2].copy_from_slice(&[3, 9]);
+    connectivity.u_edges[6].iw[0..2].copy_from_slice(&[10, 3]);
+    connectivity.u_edges[7].iw[0..2].copy_from_slice(&[4, 11]);
+    connectivity.u_edges[8].iw[0..2].copy_from_slice(&[12, 4]);
+
+    connectivity.w_faces[9].iu = [5, 13, 14];
+    connectivity.w_faces[10].iu = [15, 6, 16];
+    connectivity.w_faces[11].iu = [17, 18, 7];
+    connectivity.w_faces[12].iu = [8, 19, 20];
+
+    earthmesh_mesh::derive_icosahedron_u_neighbors_fortran(&mut connectivity)
+        .expect("valid U-edge neighbor derivation");
+
+    assert_eq!(connectivity.u_edges[2].mrlu, 9);
+    assert_eq!(connectivity.u_edges[2].iw, [3, 4, 9, 10, 11, 12]);
+    assert_eq!(
+        connectivity.u_edges[2].iu,
+        [5, 6, 7, 8, 13, 14, 16, 15, 18, 17, 20, 19]
+    );
+}

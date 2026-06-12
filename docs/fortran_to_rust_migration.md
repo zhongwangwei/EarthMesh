@@ -317,3 +317,7 @@ Extended `rust/earthmesh_mesh` with explicit f32-compatible `CartesianPointF32`,
 ### 2026-06-12: `icosahedron.F90` `tri_neighbors` W-face neighbor derivation ported
 
 Extended `rust/earthmesh_mesh` with `derive_icosahedron_w_neighbors_fortran`, a tested Rust port of the W-face portions of `tri_neighbors`. It fills each active W face's polygon count, surrounding M points, three inner W neighbors, and six outer W neighbors while preserving the Fortran 1-based table convention and overwrite order. Remaining `tri_neighbors` work is U-edge reciprocal connectivity and M-point polygon assembly.
+
+### 2026-06-12: `icosahedron.F90` `tri_neighbors` U-edge neighbor derivation ported
+
+Extended `rust/earthmesh_mesh` with `derive_icosahedron_u_neighbors_fortran`, a tested Rust port of the U-edge portion of `tri_neighbors`. It fills each active U edge's refinement level, four adjacent U edges, four surrounding W faces, and eight second-ring U neighbors from the W-face connectivity tables while preserving the Fortran branch order. Remaining `tri_neighbors` work is M-point polygon assembly.
