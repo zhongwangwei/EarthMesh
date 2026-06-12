@@ -220,3 +220,161 @@ fn write_gridfile_from_state_uses_fortran_output_name() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn gridfile_mesh_from_fortran_indexed_state_uses_one_based_slots() {
+    let grid = GridMemory {
+        nma: 2,
+        nwa: 3,
+        glonm: vec![-999.0, 0.0, 10.0],
+        glatm: vec![-999.0, 0.0, 20.0],
+        glonw: vec![-999.0, 0.0, 30.0, 50.0],
+        glatw: vec![-999.0, 0.0, 40.0, 60.0],
+        ..GridMemory::default()
+    };
+    let tabs = IjTabs {
+        m: vec![
+            ItabM {
+                iw: [9, 9, 9],
+                ..ItabM::default()
+            },
+            ItabM {
+                iw: [1, 1, 1],
+                ..ItabM::default()
+            },
+            ItabM {
+                iw: [2, 3, 1],
+                ..ItabM::default()
+            },
+        ],
+        v: Vec::new(),
+        w: vec![
+            ItabW {
+                im: [9, 9, 9, 9, 9, 9, 9],
+                ..ItabW::default()
+            },
+            ItabW {
+                im: [1, 1, 1, 1, 1, 1, 1],
+                ..ItabW::default()
+            },
+            ItabW {
+                im: [2, 1, 1, 1, 1, 1, 1],
+                ..ItabW::default()
+            },
+            ItabW {
+                im: [2, 1, 1, 1, 1, 2, 1],
+                ..ItabW::default()
+            },
+        ],
+    };
+
+    let mesh = earthmesh_cli::gridfile_mesh_from_fortran_indexed_state(&grid, &tabs)
+        .expect("derive one-based gridfile mesh");
+
+    assert_eq!(
+        mesh.m_points,
+        vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: 10.0,
+                lat: 20.0
+            },
+        ]
+    );
+    assert_eq!(
+        mesh.w_points,
+        vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: 30.0,
+                lat: 40.0
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 50.0,
+                lat: 60.0
+            },
+        ]
+    );
+    assert_eq!(mesh.m_to_w, vec![[1, 1, 1], [2, 3, 1]]);
+    assert_eq!(mesh.w_to_m[0], vec![1, 1, 1, 1, 1, 1, 1]);
+    assert_eq!(mesh.w_to_m[2], vec![2, 1, 1, 1, 1, 2, 1]);
+    assert_eq!(mesh.n_w_to_m, vec![1, 5, 6]);
+}
+
+#[test]
+fn gridfile_mesh_from_fortran_indexed_state_rejects_missing_one_based_tail() {
+    let grid = GridMemory {
+        nma: 2,
+        nwa: 1,
+        glonm: vec![0.0, 10.0],
+        glatm: vec![0.0, 20.0],
+        glonw: vec![0.0, 30.0],
+        glatw: vec![0.0, 40.0],
+        ..GridMemory::default()
+    };
+    let tabs = IjTabs {
+        m: vec![ItabM::default(), ItabM::default()],
+        v: Vec::new(),
+        w: vec![ItabW::default(), ItabW::default()],
+    };
+
+    let err = earthmesh_cli::gridfile_mesh_from_fortran_indexed_state(&grid, &tabs)
+        .expect_err("missing one-based nma slot should fail");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn write_gridfile_from_fortran_indexed_state_uses_fortran_output_name() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_gridfile_fortran_indexed_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+
+    let grid = GridMemory {
+        nma: 1,
+        nwa: 1,
+        glonm: vec![-999.0, 0.0],
+        glatm: vec![-999.0, 0.0],
+        glonw: vec![-999.0, 0.0],
+        glatw: vec![-999.0, 0.0],
+        ..GridMemory::default()
+    };
+    let tabs = IjTabs {
+        m: vec![
+            ItabM {
+                iw: [9, 9, 9],
+                ..ItabM::default()
+            },
+            ItabM {
+                iw: [1, 1, 1],
+                ..ItabM::default()
+            },
+        ],
+        v: Vec::new(),
+        w: vec![
+            ItabW {
+                im: [9, 9, 9, 9, 9, 9, 9],
+                ..ItabW::default()
+            },
+            ItabW {
+                im: [1, 1, 1, 1, 1, 1, 1],
+                ..ItabW::default()
+            },
+        ],
+    };
+
+    let report =
+        earthmesh_cli::write_gridfile_from_fortran_indexed_state(&root, 64, 3, "hex", &grid, &tabs)
+            .expect("write one-based gridfile from state");
+
+    assert_eq!(
+        report.output,
+        root.join("gridfile/gridfile_NXP0064_03_hex.nc4")
+    );
+    assert!(report.output.exists());
+    assert_eq!(report.sjx_points, 1);
+    assert_eq!(report.lbx_points, 1);
+
+    let _ = fs::remove_dir_all(&root);
+}

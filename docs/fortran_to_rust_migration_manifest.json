@@ -110,7 +110,8 @@
         "mode4mesh_make Lambert NetCDF branch and Mode4_Mesh_Save-compatible gridfile writer ported to rust/earthmesh_cli",
         "workspace setup plus Mask_make operation orchestration wired through rust/earthmesh_cli with final mask-count state reporting",
         "gridfile_write unstructured NetCDF writer and Fortran output naming ported to rust/earthmesh_cli",
-        "grid_xyz2lonlat state adapter ported to rust/earthmesh_mesh for gridinit output preparation"
+        "grid_xyz2lonlat state adapter ported to rust/earthmesh_mesh for gridinit output preparation",
+        "Fortran-indexed gridfile adapter boundary added for remaining gridinit/voronoi/pcvt one-based state"
       ],
       "remaining_rust_surfaces": [
         "gridinit/voronoi/pcvt pipeline",

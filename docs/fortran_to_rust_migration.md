@@ -421,3 +421,7 @@ Extended `rust/earthmesh_cli` with `UnstructuredMesh`, `gridfile_mesh_from_state
 ### 2026-06-12: `grid_xyz2lonlat` state adapter ported
 
 Extended `rust/earthmesh_mesh` with `grid_xyz2lonlat_state`, a state-level adapter for `mkgrd.F90:grid_xyz2lonlat`. It validates placeholder-inclusive M/W Cartesian arrays, allocates `GLONM/GLATM/GLONW/GLATW` through `GridMemory::allocate_grid_lonlatmw`, and fills lon/lat values using the already migrated scalar `xyz_to_lonlat_degrees` formula. This gives the remaining `gridinit` pipeline a tested Rust step between `pcvt` Cartesian coordinates and the Rust `gridfile_write` adapter.
+
+### 2026-06-12: Fortran-indexed gridfile boundary locked
+
+Extended `rust/earthmesh_cli` with `gridfile_mesh_from_fortran_indexed_state` and `write_gridfile_from_fortran_indexed_state`, a tested boundary for kernels that keep direct Fortran one-based arrays (`slot 0` unused, valid records in `1..=nma` and `1..=nwa`). This prevents the remaining `gridinit/voronoi/pcvt` migration from forcing an unsafe compact-index conversion before writing `Unstructured_Mesh_Save` gridfiles, while preserving legacy connectivity IDs and `n_ngrwm` rules.

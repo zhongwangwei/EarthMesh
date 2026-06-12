@@ -73,6 +73,62 @@ pub fn gridfile_mesh_from_state(grid: &GridMemory, tabs: &IjTabs) -> io::Result<
     })
 }
 
+/// Build the `Unstructured_Mesh_Save` payload from Fortran-indexed grid state.
+///
+/// Some migrated kernels, especially the remaining `gridinit/voronoi/pcvt`
+/// path, keep a direct Fortran-compatible layout with slot `0` unused and valid
+/// records in `1..=nma` / `1..=nwa`. This adapter deliberately slices those
+/// one-based slots into the compact NetCDF payload written by
+/// `Unstructured_Mesh_Save`, without changing connectivity IDs.
+pub fn gridfile_mesh_from_fortran_indexed_state(
+    grid: &GridMemory,
+    tabs: &IjTabs,
+) -> io::Result<UnstructuredMesh> {
+    let nma = grid.nma;
+    let nwa = grid.nwa;
+    require_len("grid.glonm", grid.glonm.len(), nma + 1)?;
+    require_len("grid.glatm", grid.glatm.len(), nma + 1)?;
+    require_len("grid.glonw", grid.glonw.len(), nwa + 1)?;
+    require_len("grid.glatw", grid.glatw.len(), nwa + 1)?;
+    require_len("itab_m", tabs.m.len(), nma + 1)?;
+    require_len("itab_w", tabs.w.len(), nwa + 1)?;
+
+    let m_points = (1..=nma)
+        .map(|idx| LonLatPoint {
+            lon: f64::from(grid.glonm[idx]),
+            lat: f64::from(grid.glatm[idx]),
+        })
+        .collect();
+    let w_points = (1..=nwa)
+        .map(|idx| LonLatPoint {
+            lon: f64::from(grid.glonw[idx]),
+            lat: f64::from(grid.glatw[idx]),
+        })
+        .collect();
+    let m_to_w = (1..=nma).map(|idx| tabs.m[idx].iw).collect();
+
+    let mut n_w_to_m = Vec::with_capacity(nwa);
+    let mut w_to_m = Vec::with_capacity(nwa);
+    for iw in 1..=nwa {
+        if iw == 1 {
+            n_w_to_m.push(1);
+        } else if tabs.w[iw].im[5] == 1 {
+            n_w_to_m.push(5);
+        } else {
+            n_w_to_m.push(6);
+        }
+        w_to_m.push(tabs.w[iw].im.to_vec());
+    }
+
+    Ok(UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    })
+}
+
 /// Write the compact EarthMesh unstructured gridfile schema used by legacy
 /// refinement and mask post-processing code.
 pub fn write_unstructured_mesh_netcdf(
@@ -164,6 +220,21 @@ pub fn write_gridfile_from_state(
     tabs: &IjTabs,
 ) -> io::Result<UnstructuredMeshWriteReport> {
     let mesh = gridfile_mesh_from_state(grid, tabs)?;
+    let output = gridfile_output_path(file_dir, nxp, step, mode_grid);
+    write_unstructured_mesh_netcdf(output, &mesh)
+}
+
+/// Rust adapter for `mkgrd.F90:gridfile_write` when upstream kernels keep
+/// direct Fortran one-based arrays.
+pub fn write_gridfile_from_fortran_indexed_state(
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    mode_grid: &str,
+    grid: &GridMemory,
+    tabs: &IjTabs,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    let mesh = gridfile_mesh_from_fortran_indexed_state(grid, tabs)?;
     let output = gridfile_output_path(file_dir, nxp, step, mode_grid);
     write_unstructured_mesh_netcdf(output, &mesh)
 }
