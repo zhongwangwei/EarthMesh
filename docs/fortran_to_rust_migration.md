@@ -313,3 +313,7 @@ Extended `rust/earthmesh_mesh` with `apply_icosahedron_loop_flags_fortran`, a sh
 ### 2026-06-12: `icosahedron.F90` single-precision de_ps/ps_de wrappers ported
 
 Extended `rust/earthmesh_mesh` with explicit f32-compatible `CartesianPointF32`, `PlanePointF32`, `PoleBasisF32`, `project_to_polar_stereographic_f32`, and `unproject_from_polar_stereographic_f32` APIs for the Fortran `real` `de_ps`/`ps_de` branches. The existing f64 APIs remain the `*_r8` equivalents; the single-precision wrappers intentionally use f32 arithmetic and document the precision boundary separately from the r8 path. Remaining icosahedron work is reciprocal connectivity derivation, spring relaxation, and post-relaxation NXP parity.
+
+### 2026-06-12: `icosahedron.F90` `tri_neighbors` W-face neighbor derivation ported
+
+Extended `rust/earthmesh_mesh` with `derive_icosahedron_w_neighbors_fortran`, a tested Rust port of the W-face portions of `tri_neighbors`. It fills each active W face's polygon count, surrounding M points, three inner W neighbors, and six outer W neighbors while preserving the Fortran 1-based table convention and overwrite order. Remaining `tri_neighbors` work is U-edge reciprocal connectivity and M-point polygon assembly.

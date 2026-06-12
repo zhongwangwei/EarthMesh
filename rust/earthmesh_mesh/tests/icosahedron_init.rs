@@ -95,3 +95,34 @@ fn icosahedron_loop_flags_match_mdloopf_sign_and_reset_rules() {
         .expect("valid loop toggle flags");
     assert_eq!(flags, [true, false, true, true, true, false, true]);
 }
+
+#[test]
+fn icosahedron_w_neighbor_derivation_matches_tri_neighbors_w_loops() {
+    let mut connectivity = earthmesh_mesh::IcosahedronDiamondConnectivity {
+        u_edges: vec![earthmesh_mesh::IcosahedronUEdge::default(); 7],
+        w_faces: vec![earthmesh_mesh::IcosahedronWFace::default(); 7],
+    };
+
+    connectivity.w_faces[2].iu = [2, 3, 4];
+    connectivity.w_faces[3].iw[0..3].copy_from_slice(&[2, 5, 6]);
+    connectivity.w_faces[4].iw[0..3].copy_from_slice(&[6, 2, 5]);
+
+    connectivity.u_edges[2].im = [10, 20];
+    connectivity.u_edges[2].iw[0] = 2;
+    connectivity.u_edges[2].iw[1] = 3;
+
+    connectivity.u_edges[3].im = [20, 30];
+    connectivity.u_edges[3].iw[0] = 4;
+    connectivity.u_edges[3].iw[1] = 2;
+
+    connectivity.u_edges[4].im = [30, 10];
+    connectivity.u_edges[4].iw[0] = 2;
+    connectivity.u_edges[4].iw[1] = 4;
+
+    earthmesh_mesh::derive_icosahedron_w_neighbors_fortran(&mut connectivity)
+        .expect("valid W-face neighbor derivation");
+
+    assert_eq!(connectivity.w_faces[2].npoly, 3);
+    assert_eq!(connectivity.w_faces[2].im, [10, 30, 20]);
+    assert_eq!(connectivity.w_faces[2].iw, [3, 4, 4, 5, 6, 5, 6, 5, 6]);
+}
