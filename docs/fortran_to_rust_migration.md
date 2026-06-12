@@ -545,3 +545,7 @@ Added `unstructured_mesh_from_mask_postproc_final`, a tested CLI adapter for the
 ### 2026-06-12: mask_postproc finalization pipeline adapter ported
 
 Added `finalize_mask_postproc_layout_to_unstructured_mesh`, a tested composition layer that turns a prepared `MaskPostprocLayout` plus `IsInDmArea_ustr` into the final legacy `UnstructuredMesh` payload. It composes the migrated `Data_Finial`, unique-vertex extraction, sorted vertex remapping, final center-neighbor reindexing, and tri/hex gridfile adapter. Domain-specific mask edits, boundary renewal, patchtype writing, and NetCDF orchestration still remain outside this helper.
+
+### 2026-06-12: mask_postproc final gridfile writer orchestration ported
+
+Added `write_mask_postproc_final_gridfile`, a tested orchestration helper that uses `MaskPostprocDomainIoPlan.result_gridfile`, the finalization pipeline, and the legacy unstructured-grid NetCDF writer to persist a postprocessed domain gridfile. This is the first Rust CLI layer that writes the final `mask_postproc_*` result path from a prepared layout and completed `IsInDmArea_ustr`; the remaining work is to construct that prepared layout and domain mask directly from the full Earth/Lnd/Ocn/Atmos workflows.

@@ -1160,6 +1160,21 @@ pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
     unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)
 }
 
+/// Compose final mask-postprocess grid construction with the legacy NetCDF
+/// result path selected by `plan_mask_postproc_domain_io`.
+pub fn write_mask_postproc_final_gridfile(
+    plan: &MaskPostprocDomainIoPlan,
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+) -> io::Result<UnstructuredMeshWriteReport> {
+    let mesh = finalize_mask_postproc_layout_to_unstructured_mesh(
+        layout,
+        is_in_domain_ustr,
+        &plan.mode_grid,
+    )?;
+    write_unstructured_mesh_netcdf(&plan.result_gridfile, &mesh)
+}
+
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
 pub fn obc_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: bool) -> PathBuf {
     let filename = if mask_patch_on {
