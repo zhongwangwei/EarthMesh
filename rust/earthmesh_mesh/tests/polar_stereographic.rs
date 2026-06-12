@@ -1,7 +1,8 @@
 use earthmesh_core::{deg_to_rad, EARTH_RADIUS_METERS};
 use earthmesh_mesh::{
-    project_to_polar_stereographic, unproject_from_polar_stereographic, CartesianPoint, PlanePoint,
-    PoleBasis,
+    circumcenter_spherical_mesh_fortran_indexed, project_to_polar_stereographic,
+    spherical_circumcenter_from_barycenter, unproject_from_polar_stereographic, CartesianPoint,
+    PlanePoint, PoleBasis,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -48,4 +49,83 @@ fn polar_stereographic_unprojection_matches_icosahedron_ps_de_r8_identity_plane(
         unprojected.x < 0.0,
         "identity-pole ps_de zq should move x below the pole radius"
     );
+}
+
+#[test]
+fn spherical_circumcenter_matches_symmetric_octant_triangle() {
+    let r = EARTH_RADIUS_METERS;
+    let inv_sqrt_3 = 1.0 / 3.0_f64.sqrt();
+    let barycenter = CartesianPoint::new(r * inv_sqrt_3, r * inv_sqrt_3, r * inv_sqrt_3);
+    let vertices = [
+        CartesianPoint::new(r, 0.0, 0.0),
+        CartesianPoint::new(0.0, r, 0.0),
+        CartesianPoint::new(0.0, 0.0, r),
+    ];
+
+    let circumcenter = spherical_circumcenter_from_barycenter(barycenter, vertices)
+        .expect("non-degenerate spherical triangle circumcenter");
+
+    approx_eq(circumcenter.x, barycenter.x, 1.0e-6);
+    approx_eq(circumcenter.y, barycenter.y, 1.0e-6);
+    approx_eq(circumcenter.z, barycenter.z, 1.0e-6);
+    approx_eq(
+        (circumcenter.x.powi(2) + circumcenter.y.powi(2) + circumcenter.z.powi(2)).sqrt(),
+        r,
+        1.0e-6,
+    );
+}
+
+#[test]
+fn circumcenter_spherical_mesh_preserves_fortran_indexing_and_inout_slots() {
+    let r = EARTH_RADIUS_METERS;
+    let inv_sqrt_3 = 1.0 / 3.0_f64.sqrt();
+    let initial_centers = vec![
+        CartesianPoint::new(1.0, 2.0, 3.0),
+        CartesianPoint::new(4.0, 5.0, 6.0),
+        CartesianPoint::new(r * inv_sqrt_3, r * inv_sqrt_3, r * inv_sqrt_3),
+    ];
+    let vertex_points = vec![
+        CartesianPoint::new(-999.0, -999.0, -999.0),
+        CartesianPoint::new(-999.0, -999.0, -999.0),
+        CartesianPoint::new(r, 0.0, 0.0),
+        CartesianPoint::new(0.0, r, 0.0),
+        CartesianPoint::new(0.0, 0.0, r),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
+
+    let centers = circumcenter_spherical_mesh_fortran_indexed(
+        &initial_centers,
+        &vertex_points,
+        &cells_on_triangle,
+    )
+    .expect("valid triangle vertex references");
+
+    assert_eq!(centers[0], initial_centers[0]);
+    assert_eq!(centers[1], initial_centers[1]);
+    approx_eq(centers[2].x, initial_centers[2].x, 1.0e-6);
+    approx_eq(centers[2].y, initial_centers[2].y, 1.0e-6);
+    approx_eq(centers[2].z, initial_centers[2].z, 1.0e-6);
+}
+
+#[test]
+fn circumcenter_spherical_mesh_rejects_out_of_range_vertex_id() {
+    let r = EARTH_RADIUS_METERS;
+    let initial_centers = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(r, 0.0, 0.0),
+    ];
+    let vertex_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(r, 0.0, 0.0),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
+
+    assert!(circumcenter_spherical_mesh_fortran_indexed(
+        &initial_centers,
+        &vertex_points,
+        &cells_on_triangle,
+    )
+    .is_none());
 }

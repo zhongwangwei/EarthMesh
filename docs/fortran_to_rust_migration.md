@@ -181,3 +181,7 @@ Added `edge_midpoints_from_cells_fortran_indexed`, a Rust port of the optional `
 ### 2026-06-12: `MOD_grid_preprocess.F90` centroid batch wrapper ported
 
 Extended `rust/earthmesh_mesh` with `centroid_spherical_mesh_fortran_indexed`, a tested Rust wrapper for `MOD_grid_preprocess:centroid_spherical_calculation`. It resolves three cell-center lon/lat references per triangle, starts at Fortran triangle id `2`, leaves slots `0` and `1` initialized to `(0, 0)`, and rejects out-of-range connectivity before a future Python/Rust runtime boundary can silently propagate bad mesh topology.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` spherical circumcenter workflow ported
+
+Extended `rust/earthmesh_mesh` with `spherical_circumcenter_from_barycenter` and `circumcenter_spherical_mesh_fortran_indexed`, tested Rust ports of `MOD_grid_preprocess:circumcenter_spherical_calculation`. The implementation uses the migrated polar stereographic helpers, preserves the Fortran algebraic 2-D circumcenter solve, updates only triangle ids from `2` onward, preserves unvisited inout slots, validates vertex connectivity, and renormalizes results to the MPAS Earth radius.
