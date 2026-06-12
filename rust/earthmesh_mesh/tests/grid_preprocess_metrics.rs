@@ -1,7 +1,8 @@
 use earthmesh_mesh::{
-    arc_length_unit_sphere, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180,
-    shared_cell_for_edge_pair, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
-    spherical_triangle_area_unit, vertex_cell_position, LonLatDegrees,
+    arc_length_unit_sphere, get_area_unit_fortran_indexed, lonlat_degrees_to_unit_xyz,
+    normalize_lon_m180_180, shared_cell_for_edge_pair, spherical_cell_area_from_vertices_unit,
+    spherical_kite_area_unit, spherical_triangle_area_unit, vertex_cell_position, GetAreaUnitInput,
+    LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -274,4 +275,60 @@ fn vertex_cell_position_matches_fortran_cells_on_vertex_scan() {
     assert_eq!(vertex_cell_position([4, 8, 15], 8), Some(1));
     assert_eq!(vertex_cell_position([4, 8, 15], 15), Some(2));
     assert_eq!(vertex_cell_position([4, 8, 15], 16), None);
+}
+
+#[test]
+fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
+    let zero = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+    let edge1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
+    let edge2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
+    let cell = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.5));
+
+    let vertices = vec![
+        zero, // index 0 unused
+        zero, // index 1 skipped by Fortran loops
+        zero,
+        edge1,
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 1.0)),
+        edge2,
+    ];
+    let edge_points = vec![zero, zero, edge1, edge2];
+    let cell_points = vec![zero, zero, cell];
+    let cells_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [2, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+    ];
+    let edges_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [2, 3, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+    ];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 0], [2, 0]];
+    let vertices_on_cell = vec![vec![], vec![], vec![2, 3, 4, 5]];
+
+    let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
+        vertices: &vertices,
+        edge_points: &edge_points,
+        cell_points: &cell_points,
+        cells_on_vertex: &cells_on_vertex,
+        edges_on_vertex: &edges_on_vertex,
+        cells_on_edge: &cells_on_edge,
+        vertices_on_cell: &vertices_on_cell,
+    })
+    .expect("valid Fortran-indexed area input");
+
+    approx_eq(
+        output.kite_areas_on_vertex[2][0],
+        0.00015230773702390324,
+        1.0e-15,
+    );
+    approx_eq(output.area_triangle[2], 0.00015230773702390324, 1.0e-15);
+    approx_eq(output.area_cell[2], 0.000304609680288118, 1.0e-15);
 }

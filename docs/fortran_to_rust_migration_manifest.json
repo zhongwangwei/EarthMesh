@@ -180,7 +180,8 @@
         "GetArea kite area two-triangle primitive ported to rust/earthmesh_mesh",
         "GetArea areaCell fan triangulation primitive ported to rust/earthmesh_mesh",
         "GetArea shared-cell lookup over consecutive edges ported to rust/earthmesh_mesh",
-        "GetArea cellsOnVertex position scan ported to rust/earthmesh_mesh"
+        "GetArea cellsOnVertex position scan ported to rust/earthmesh_mesh",
+        "GetArea Fortran-indexed unit-area workflow for kiteAreasOnVertex, areaTriangle, and areaCell ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -193,7 +194,7 @@
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
         "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
         "GetEdge and edge connectivity routines",
-        "GetArea connectivity-driven kiteAreasOnVertex and areaTriangle reconstruction workflow"
+        "GetArea full production wrapper over real MPAS mesh arrays and reconstruction error reporting"
       ]
     },
     {
