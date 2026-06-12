@@ -497,3 +497,7 @@ Extended `rust/earthmesh_mesh` with `remove_isolated_ocean_fortran_indexed`, a t
 ### 2026-06-12: mask_postproc boundary classification helper ported
 
 Extended `rust/earthmesh_mesh` with `classify_boundary_orders_fortran_indexed`, a tested pure-data port of the classification and ordering portion of `MOD_mask_postproc.F90:bdy_calculation`. The helper maps longest-boundary vertices through `vertex_mapping`, splits OBC/IBC points from the active mask, converts singleton OBC points to IBC, and preserves the legacy boundary-order rotation rule. Remaining `mask_postproc` work is now the adapter/orchestration layer: Earth/Lnd/Ocn/Atmos NetCDF reads/writes plus `obc.nc4`/`obcv2.nc4` writer wiring around the migrated helpers.
+
+### 2026-06-12: mask_postproc OBC NetCDF writers ported
+
+Extended `rust/earthmesh_cli` with tested adapter-layer writers for `MOD_mask_postproc.F90:bdy_calculation` and `bdy_connection` outputs. The new path helpers preserve the legacy `result/obc.nc4`, `result/obc_patch.nc4`, `result/obcv2.nc4`, and `result/obcv2_patch.nc4` filenames, while `write_obc_boundary_netcdf` writes `bdy_num`, `bdy_order`, `obc_order`, and `ibc_order`, and `write_obcv2_boundary_netcdf` writes `num1`, `num2`, `close_curve`, and `n_close_curve` from the migrated pure boundary helpers. Remaining `mask_postproc` work is full Earth/Lnd/Ocn/Atmos orchestration and NetCDF read/write composition around the migrated helpers.

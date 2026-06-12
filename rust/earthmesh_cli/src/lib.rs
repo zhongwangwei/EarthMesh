@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_mesh::{
     centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
-    lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, CartesianPoint, LonLatDegrees,
+    lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, BoundaryConnection, BoundaryOrders,
+    CartesianPoint, LonLatDegrees,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -221,6 +222,21 @@ pub struct UnstructuredMeshWriteReport {
     pub dimc: usize,
 }
 
+/// Evidence report from writing `MOD_mask_postproc.F90:bdy_calculation` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObcBoundaryWriteReport {
+    pub output: PathBuf,
+    pub boundary_points: usize,
+}
+
+/// Evidence report from writing `MOD_mask_postproc.F90:bdy_connection` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Obcv2BoundaryWriteReport {
+    pub output: PathBuf,
+    pub longest_curve_slots: usize,
+    pub closed_curves: usize,
+}
+
 /// Build the `Unstructured_Mesh_Save` payload from the Rust-owned grid and
 /// connectivity state used by `mkgrd.F90:gridfile_write`.
 pub fn gridfile_mesh_from_state(grid: &GridMemory, tabs: &IjTabs) -> io::Result<UnstructuredMesh> {
@@ -402,6 +418,130 @@ pub fn write_unstructured_mesh_netcdf(
         sjx_points: mesh.m_points.len(),
         lbx_points: mesh.w_points.len(),
         dimc,
+    })
+}
+
+/// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
+pub fn obc_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: bool) -> PathBuf {
+    let filename = if mask_patch_on {
+        "obc_patch.nc4"
+    } else {
+        "obc.nc4"
+    };
+    file_dir.as_ref().join("result").join(filename)
+}
+
+/// Legacy output path for `MOD_mask_postproc.F90:bdy_connection`.
+pub fn obcv2_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: bool) -> PathBuf {
+    let filename = if mask_patch_on {
+        "obcv2_patch.nc4"
+    } else {
+        "obcv2.nc4"
+    };
+    file_dir.as_ref().join("result").join(filename)
+}
+
+/// Write the `obc.nc4`/`obc_patch.nc4` schema produced by
+/// `MOD_mask_postproc.F90:bdy_calculation`.
+pub fn write_obc_boundary_netcdf(
+    output: impl AsRef<Path>,
+    orders: &BoundaryOrders,
+) -> io::Result<ObcBoundaryWriteReport> {
+    let bdy_num = orders.bdy_order.len();
+    require_len("obc_order", orders.obc_order.len(), bdy_num)?;
+    require_len("ibc_order", orders.ibc_order.len(), bdy_num)?;
+
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("bdy_num", bdy_num)
+        .map_err(netcdf_to_io_error)?;
+    {
+        let mut var = file
+            .add_variable::<i32>("bdy_order", &["bdy_num"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&usize_values_to_i32("bdy_order", &orders.bdy_order)?, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("obc_order", &["bdy_num"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&usize_values_to_i32("obc_order", &orders.obc_order)?, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("ibc_order", &["bdy_num"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&usize_values_to_i32("ibc_order", &orders.ibc_order)?, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    Ok(ObcBoundaryWriteReport {
+        output: output.to_path_buf(),
+        boundary_points: bdy_num,
+    })
+}
+
+/// Write the `obcv2.nc4`/`obcv2_patch.nc4` schema produced by
+/// `MOD_mask_postproc.F90:bdy_connection`.
+pub fn write_obcv2_boundary_netcdf(
+    output: impl AsRef<Path>,
+    connection: &BoundaryConnection,
+) -> io::Result<Obcv2BoundaryWriteReport> {
+    let num1 = connection.curves.num_bdy_long[0];
+    let num2 = connection.curves.num_closed_curve;
+    if connection.curves.close_curves.len() < num2 + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "close_curves must include the placeholder plus num_closed_curve records",
+        ));
+    }
+    if connection.curves.n_close_curve.len() < num2 + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "n_close_curve must include the placeholder plus num_closed_curve records",
+        ));
+    }
+
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let close_curve_values =
+        flatten_close_curves_for_netcdf(&connection.curves.close_curves, num1, num2)?;
+    let n_close_curve_values =
+        usize_values_to_i32("n_close_curve", &connection.curves.n_close_curve[1..=num2])?;
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("num1", num1)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("num2", num2)
+        .map_err(netcdf_to_io_error)?;
+    {
+        let mut var = file
+            .add_variable::<i32>("close_curve", &["num2", "num1"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&close_curve_values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("n_close_curve", &["num2"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&n_close_curve_values, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    Ok(Obcv2BoundaryWriteReport {
+        output: output.to_path_buf(),
+        longest_curve_slots: num1,
+        closed_curves: num2,
     })
 }
 
@@ -1142,6 +1282,43 @@ fn flatten_w_to_m(w_to_m: &[Vec<i32>], dimc: usize) -> Vec<i32> {
         values.resize(values.len() + dimc.saturating_sub(row.len().min(dimc)), 0);
     }
     values
+}
+
+fn usize_values_to_i32(name: &str, values: &[usize]) -> io::Result<Vec<i32>> {
+    values
+        .iter()
+        .map(|&value| {
+            i32::try_from(value).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{name} contains value {value} that does not fit NetCDF INT"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn flatten_close_curves_for_netcdf(
+    close_curves: &[Vec<usize>],
+    longest_curve_slots: usize,
+    closed_curves: usize,
+) -> io::Result<Vec<i32>> {
+    let mut values = Vec::with_capacity(longest_curve_slots * closed_curves);
+    for curve_id in 1..=closed_curves {
+        let curve = &close_curves[curve_id];
+        if curve.len() > longest_curve_slots {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "close_curve {curve_id} length {} exceeds num1 {longest_curve_slots}",
+                    curve.len()
+                ),
+            ));
+        }
+        values.extend(usize_values_to_i32("close_curve", curve)?);
+        values.resize(values.len() + longest_curve_slots - curve.len(), 1);
+    }
+    Ok(values)
 }
 
 /// Report for the migrated NetCDF branch of `mkgrd.F90:mode4mesh_make`.
