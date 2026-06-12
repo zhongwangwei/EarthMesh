@@ -96,3 +96,42 @@ fn triangle_mesh_quality_matches_fortran_aggregation_for_single_triangle() {
 fn triangle_mesh_quality_rejects_empty_mesh() {
     assert!(earthmesh_mesh::triangle_mesh_quality(&[]).is_none());
 }
+
+#[test]
+fn polygon_mesh_quality_matches_fortran_thresholds_for_square() {
+    let quality = earthmesh_mesh::polygon_mesh_quality(&[vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(90.0, 45.0),
+        LonLatDegrees::new(0.0, 45.0),
+    ]])
+    .expect("valid polygon quality");
+
+    assert_eq!(quality.cell_metrics.len(), 1);
+    assert_eq!(quality.angle_less_flags.len(), 1);
+    assert_eq!(quality.angle_more_flags.len(), 1);
+    assert!(quality.extreme_angles_degrees.0 > 0.0);
+    assert!(quality.extreme_angles_degrees.1 > quality.extreme_angles_degrees.0);
+
+    // For four-sided cells, Fortran regular angle is 90 degrees and thresholds are 81/99.
+    let expected_stddev = (quality.cell_metrics[0]
+        .angles_degrees
+        .iter()
+        .map(|angle| (angle - 90.0).powi(2))
+        .sum::<f64>()
+        / 4.0)
+        .sqrt();
+    approx_eq(quality.angle_stddev_degrees, expected_stddev, 1.0e-12);
+    assert_eq!(quality.angle_less_flags[0], quality.extreme_angles_degrees.0 < 81.0);
+    assert_eq!(quality.angle_more_flags[0], quality.extreme_angles_degrees.1 > 99.0);
+}
+
+#[test]
+fn polygon_mesh_quality_rejects_empty_mesh_and_degenerate_cells() {
+    assert!(earthmesh_mesh::polygon_mesh_quality(&[]).is_none());
+    assert!(earthmesh_mesh::polygon_mesh_quality(&[vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+    ]])
+    .is_none());
+}

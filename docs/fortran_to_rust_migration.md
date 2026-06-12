@@ -113,3 +113,7 @@ Extended `rust/earthmesh_mesh` with `polygon_length_angle_metrics`, a tested Rus
 ### 2026-06-12: `MOD_grid_preprocess.F90` triangle quality aggregation core ported
 
 Extended `rust/earthmesh_mesh` with `triangle_mesh_quality`, a tested Rust port of the aggregation core in `TriMeshQuality`. It reuses the Rust `polygon_length_angle_metrics` kernel, preserves the Fortran 45/75 degree triangle thresholds, average min/max accumulation, and RMS angle deviation from 60 degrees. The Fortran-style cached array/update wrapper around `adjust_sjx_flag` remains unported.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` polygon quality aggregation core ported
+
+Extended `rust/earthmesh_mesh` with `polygon_mesh_quality`, a tested Rust port of the aggregation core in `PolyMeshQuality`. It preserves the Fortran regular-angle formula `(num_edges - 2) * 180 / num_edges`, 0.9/1.1 threshold bands, RMS angle deviation, and average min/max accumulation. The Fortran-style filtering by `n_ngrwm_f` and cached update arrays remain separate wrapper work.

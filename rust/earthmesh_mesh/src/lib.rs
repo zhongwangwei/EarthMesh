@@ -333,3 +333,19 @@ pub fn triangle_mesh_quality(triangles: &[[LonLatDegrees; 3]]) -> Option<MeshQua
     let cells: Vec<Vec<LonLatDegrees>> = triangles.iter().map(|triangle| triangle.to_vec()).collect();
     polygon_quality_summary(&cells, 60.0, 45.0, 75.0)
 }
+
+/// Port of the aggregation core in `MOD_grid_preprocess:PolyMeshQuality`.
+///
+/// All cells in the input should have the same edge count, matching each
+/// Fortran call for pentagons, hexagons, or heptagons. The regular angle is
+/// `(num_edges - 2) * 180 / num_edges`, with 0.9/1.1 threshold bands.
+pub fn polygon_mesh_quality(cells: &[Vec<LonLatDegrees>]) -> Option<MeshQualitySummary> {
+    let first = cells.first()?;
+    let num_edges = first.len();
+    if num_edges < 3 || cells.iter().any(|cell| cell.len() != num_edges) {
+        return None;
+    }
+
+    let regular_angle = (num_edges as f64 - 2.0) * 180.0 / num_edges as f64;
+    polygon_quality_summary(cells, regular_angle, regular_angle * 0.9, regular_angle * 1.1)
+}
