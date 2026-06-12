@@ -258,3 +258,78 @@ pub fn polygon_length_angle_metrics(points: &[LonLatDegrees]) -> Option<PolygonL
         edge_lengths_meters,
     })
 }
+
+/// Mesh-quality aggregate produced by Fortran `TriMeshQuality`/`PolyMeshQuality`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshQualitySummary {
+    pub cell_metrics: Vec<PolygonLengthAngleMetrics>,
+    pub extreme_angles_degrees: (f64, f64),
+    pub average_min_max_angles_degrees: (f64, f64),
+    pub angle_stddev_degrees: f64,
+    pub angle_less_flags: Vec<bool>,
+    pub angle_more_flags: Vec<bool>,
+}
+
+fn polygon_quality_summary(
+    cells: &[Vec<LonLatDegrees>],
+    regular_angle_degrees: f64,
+    lower_threshold_degrees: f64,
+    upper_threshold_degrees: f64,
+) -> Option<MeshQualitySummary> {
+    if cells.is_empty() {
+        return None;
+    }
+
+    let mut cell_metrics = Vec::with_capacity(cells.len());
+    let mut angle_less_flags = Vec::with_capacity(cells.len());
+    let mut angle_more_flags = Vec::with_capacity(cells.len());
+    let mut global_min = f64::INFINITY;
+    let mut global_max = f64::NEG_INFINITY;
+    let mut sum_min = 0.0;
+    let mut sum_max = 0.0;
+    let mut sum_squared = 0.0;
+    let mut angle_count = 0usize;
+
+    for cell in cells {
+        let metrics = polygon_length_angle_metrics(cell)?;
+        let cell_min = metrics
+            .angles_degrees
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let cell_max = metrics
+            .angles_degrees
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        global_min = global_min.min(cell_min);
+        global_max = global_max.max(cell_max);
+        sum_min += cell_min;
+        sum_max += cell_max;
+        sum_squared += metrics
+            .angles_degrees
+            .iter()
+            .map(|angle| (angle - regular_angle_degrees).powi(2))
+            .sum::<f64>();
+        angle_count += metrics.angles_degrees.len();
+        angle_less_flags.push(cell_min < lower_threshold_degrees);
+        angle_more_flags.push(cell_max > upper_threshold_degrees);
+        cell_metrics.push(metrics);
+    }
+
+    let cell_count = cells.len() as f64;
+    Some(MeshQualitySummary {
+        cell_metrics,
+        extreme_angles_degrees: (global_min, global_max),
+        average_min_max_angles_degrees: (sum_min / cell_count, sum_max / cell_count),
+        angle_stddev_degrees: (sum_squared / angle_count as f64).sqrt(),
+        angle_less_flags,
+        angle_more_flags,
+    })
+}
+
+/// Port of the aggregation core in `MOD_grid_preprocess:TriMeshQuality`.
+pub fn triangle_mesh_quality(triangles: &[[LonLatDegrees; 3]]) -> Option<MeshQualitySummary> {
+    let cells: Vec<Vec<LonLatDegrees>> = triangles.iter().map(|triangle| triangle.to_vec()).collect();
+    polygon_quality_summary(&cells, 60.0, 45.0, 75.0)
+}

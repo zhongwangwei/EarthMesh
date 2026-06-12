@@ -72,3 +72,27 @@ fn polygon_length_angle_rejects_degenerate_polygons() {
         LonLatDegrees::new(1.0, 0.0),
     ]).is_none());
 }
+
+#[test]
+fn triangle_mesh_quality_matches_fortran_aggregation_for_single_triangle() {
+    let quality = earthmesh_mesh::triangle_mesh_quality(&[[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(0.0, 90.0),
+    ]])
+    .expect("valid triangle quality");
+
+    approx_eq(quality.extreme_angles_degrees.0, 90.0, 1.0e-5);
+    approx_eq(quality.extreme_angles_degrees.1, 90.0, 1.0e-5);
+    approx_eq(quality.average_min_max_angles_degrees.0, 90.0, 1.0e-5);
+    approx_eq(quality.average_min_max_angles_degrees.1, 90.0, 1.0e-5);
+    approx_eq(quality.angle_stddev_degrees, 30.0, 1.0e-5);
+    assert_eq!(quality.angle_less_flags, vec![false]);
+    assert_eq!(quality.angle_more_flags, vec![true]);
+    assert_eq!(quality.cell_metrics.len(), 1);
+}
+
+#[test]
+fn triangle_mesh_quality_rejects_empty_mesh() {
+    assert!(earthmesh_mesh::triangle_mesh_quality(&[]).is_none());
+}

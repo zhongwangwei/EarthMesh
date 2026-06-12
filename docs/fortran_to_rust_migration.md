@@ -109,3 +109,7 @@ Extended `rust/earthmesh_mesh` with tested ports of `CheckLon` and `arc_length`.
 ### 2026-06-12: `MOD_grid_preprocess.F90` polygon length/angle helper ported
 
 Extended `rust/earthmesh_mesh` with `polygon_length_angle_metrics`, a tested Rust port of `Get_Length_Angle`. It preserves the Fortran cyclic `(previous, current, next)` triplet, spherical half-angle formula, and Earth-radius scaling of `length(1)`. The helper now gives `TriMeshQuality` and `PolyMeshQuality` a Rust-native numerical kernel to build on.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` triangle quality aggregation core ported
+
+Extended `rust/earthmesh_mesh` with `triangle_mesh_quality`, a tested Rust port of the aggregation core in `TriMeshQuality`. It reuses the Rust `polygon_length_angle_metrics` kernel, preserves the Fortran 45/75 degree triangle thresholds, average min/max accumulation, and RMS angle deviation from 60 degrees. The Fortran-style cached array/update wrapper around `adjust_sjx_flag` remains unported.
