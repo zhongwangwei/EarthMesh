@@ -115,6 +115,51 @@ pub struct MkgrdRefineLoopPlan {
     pub final_mask_postproc_step: usize,
 }
 
+/// File-level contract for one `Area_judge_refine` -> `Get_Contain` ->
+/// `GetRef` source branch inside a `mkgrd.F90` refine-loop step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRefineSourceIoPlan {
+    pub source: MkgrdRefineSource,
+    pub area_judge_iter: usize,
+    pub get_contain_iter: usize,
+    pub getref_iter: usize,
+    pub contain_output: PathBuf,
+    pub threshold_outputs: Vec<PathBuf>,
+    pub specified_threshold_output: Option<PathBuf>,
+}
+
+/// File-level contract for one `refine_loop` call and its scratch/final mesh
+/// paths in `MOD_Refine.F90`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRefineLoopStepIoPlan {
+    pub step: usize,
+    pub sources: Vec<MkgrdRefineSourceIoPlan>,
+    pub refine_loop_input_gridfile: PathBuf,
+    pub refine_loop_original_tmpfile: PathBuf,
+    pub refine_loop_stage2_tmpfile: PathBuf,
+    pub refine_loop_stage5_tmpfile: PathBuf,
+    pub refine_loop_output_gridfile: PathBuf,
+    pub run_refine_loop: bool,
+    pub stop_after_step: bool,
+}
+
+/// Non-destructive file-level I/O schedule for the top-level `mkgrd.F90` refine
+/// loop plus the final `Get_Contain(0)`/`mask_postproc(mesh_type)` handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRefineLoopIoPlan {
+    pub file_dir: PathBuf,
+    pub nxp: usize,
+    pub mesh_type: String,
+    pub mode_grid: String,
+    pub max_iter: usize,
+    pub steps: Vec<MkgrdRefineLoopStepIoPlan>,
+    pub final_mask_postproc_step: usize,
+    pub final_get_contain_iter: usize,
+    pub final_domain_gridfile: PathBuf,
+    pub final_result_gridfile: PathBuf,
+    pub final_domain_contain_output: PathBuf,
+}
+
 /// File-level I/O contract for the domain branches of
 /// `MOD_mask_postproc.F90:mask_postproc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,6 +539,160 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
         steps,
         final_mask_postproc_step,
     })
+}
+
+/// Build a non-destructive legacy file path schedule for the top-level
+/// `mkgrd.F90` refine loop.  This mirrors the active file names in
+/// `Area_judge_refine`, `Get_Contain`, `GetRef`, and `refine_loop` without
+/// executing their heavy geometry kernels.
+pub fn plan_mkgrd_refine_loop_io(
+    config: &EarthmeshConfig,
+    refine: &RefineConfig,
+) -> io::Result<MkgrdRefineLoopIoPlan> {
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be positive for refine loop",
+        ));
+    }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let loop_plan = plan_mkgrd_refine_loop(refine)?;
+    let file_dir = PathBuf::from(config.file_dir());
+    let mesh_type = config.mesh_type.trim().to_string();
+    let mode_grid = config.mode_grid.trim().to_string();
+
+    let mut steps = Vec::with_capacity(loop_plan.steps.len());
+    for step in &loop_plan.steps {
+        let mut sources = Vec::with_capacity(step.sources.len());
+        for source in &step.sources {
+            sources.push(plan_mkgrd_refine_source_io(
+                &file_dir, nxp, &mesh_type, step.step, *source,
+            )?);
+        }
+        steps.push(MkgrdRefineLoopStepIoPlan {
+            step: step.step,
+            sources,
+            refine_loop_input_gridfile: mkgrd_gridfile_path(&file_dir, nxp, step.step, &mode_grid),
+            refine_loop_original_tmpfile: mkgrd_tmpfile_path(&file_dir, nxp, step.step, "ori"),
+            refine_loop_stage2_tmpfile: mkgrd_tmpfile_path(&file_dir, nxp, step.step, "2"),
+            refine_loop_stage5_tmpfile: mkgrd_tmpfile_path(&file_dir, nxp, step.step, "5"),
+            refine_loop_output_gridfile: mkgrd_gridfile_path(
+                &file_dir,
+                nxp,
+                step.step + 1,
+                &mode_grid,
+            ),
+            run_refine_loop: step.run_refine_loop,
+            stop_after_step: step.stop_after_step,
+        });
+    }
+
+    let final_step = loop_plan.final_mask_postproc_step;
+    Ok(MkgrdRefineLoopIoPlan {
+        file_dir: file_dir.clone(),
+        nxp,
+        mesh_type: mesh_type.clone(),
+        mode_grid: mode_grid.clone(),
+        max_iter: loop_plan.max_iter,
+        steps,
+        final_mask_postproc_step: final_step,
+        final_get_contain_iter: 0,
+        final_domain_gridfile: mkgrd_gridfile_path(&file_dir, nxp, final_step, &mode_grid),
+        final_result_gridfile: file_dir
+            .join("result")
+            .join(format!("gridfile_NXP{nxp:04}_{mode_grid}.nc4")),
+        final_domain_contain_output: file_dir.join("contain").join(format!(
+            "contain_{mesh_type}_domain_NXP{nxp:04}_{mode_grid}.nc4"
+        )),
+    })
+}
+
+fn plan_mkgrd_refine_source_io(
+    file_dir: &Path,
+    nxp: usize,
+    mesh_type: &str,
+    step: usize,
+    source: MkgrdRefineSource,
+) -> io::Result<MkgrdRefineSourceIoPlan> {
+    let stepc = format!("{step:02}");
+    match source {
+        MkgrdRefineSource::CalculatedIterZero => Ok(MkgrdRefineSourceIoPlan {
+            source,
+            area_judge_iter: 0,
+            get_contain_iter: 0,
+            getref_iter: 0,
+            contain_output: file_dir.join("contain").join(format!(
+                "contain_{mesh_type}_refine_cal_NXP{nxp:04}_{stepc}_tri.nc4"
+            )),
+            threshold_outputs: mkgrd_calculated_threshold_outputs(file_dir, nxp, step, mesh_type)?,
+            specified_threshold_output: None,
+        }),
+        MkgrdRefineSource::SpecifiedStep => Ok(MkgrdRefineSourceIoPlan {
+            source,
+            area_judge_iter: step,
+            get_contain_iter: step,
+            getref_iter: step,
+            contain_output: file_dir.join("contain").join(format!(
+                "contain_{mesh_type}_refine_spc_NXP{nxp:04}_{stepc}_tri.nc4"
+            )),
+            threshold_outputs: Vec::new(),
+            specified_threshold_output: Some(
+                file_dir
+                    .join("threshold")
+                    .join(format!("threshold_specified_NXP{nxp:04}_{stepc}.nc4")),
+            ),
+        }),
+    }
+}
+
+fn mkgrd_calculated_threshold_outputs(
+    file_dir: &Path,
+    nxp: usize,
+    step: usize,
+    mesh_type: &str,
+) -> io::Result<Vec<PathBuf>> {
+    let stepc = format!("{step:02}");
+    let threshold_dir = file_dir.join("threshold");
+    let mut outputs = Vec::new();
+    match mesh_type {
+        "landmesh" => outputs
+            .push(threshold_dir.join(format!("threshold_calculate_land_NXP{nxp:04}_{stepc}.nc4"))),
+        "oceanmesh" => outputs
+            .push(threshold_dir.join(format!("threshold_calculate_ocean_NXP{nxp:04}_{stepc}.nc4"))),
+        "atmosmesh" => outputs
+            .push(threshold_dir.join(format!("threshold_calculate_atmos_NXP{nxp:04}_{stepc}.nc4"))),
+        "LOCmesh" => {
+            outputs.push(
+                threshold_dir.join(format!("threshold_calculate_land_NXP{nxp:04}_{stepc}.nc4")),
+            );
+            outputs.push(
+                threshold_dir.join(format!("threshold_calculate_ocean_NXP{nxp:04}_{stepc}.nc4")),
+            );
+            outputs.push(
+                threshold_dir.join(format!("threshold_calculate_atmos_NXP{nxp:04}_{stepc}.nc4")),
+            );
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported mesh_type {other} for calculated GetRef outputs"),
+            ));
+        }
+    }
+    Ok(outputs)
+}
+
+fn mkgrd_gridfile_path(file_dir: &Path, nxp: usize, step: usize, mode_grid: &str) -> PathBuf {
+    file_dir
+        .join("gridfile")
+        .join(format!("gridfile_NXP{nxp:04}_{step:02}_{mode_grid}.nc4"))
+}
+
+fn mkgrd_tmpfile_path(file_dir: &Path, nxp: usize, step: usize, suffix: &str) -> PathBuf {
+    file_dir
+        .join("tmpfile")
+        .join(format!("gridfile_NXP{nxp:04}_{step:02}_{suffix}.nc4"))
 }
 
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.

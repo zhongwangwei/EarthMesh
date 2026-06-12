@@ -1,5 +1,7 @@
-use earthmesh_cli::{plan_mkgrd_refine_loop, MkgrdRefineSource};
-use earthmesh_core::RefineConfig;
+use std::path::PathBuf;
+
+use earthmesh_cli::{plan_mkgrd_refine_loop, plan_mkgrd_refine_loop_io, MkgrdRefineSource};
+use earthmesh_core::{EarthmeshConfig, RefineConfig};
 
 fn mixed_refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
@@ -8,6 +10,13 @@ fn mixed_refine_config() -> RefineConfig {
         "hex",
     )
     .expect("parse mixed refine config")
+}
+
+fn mkgrd_config() -> EarthmeshConfig {
+    EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n  NL%EXPNME='case_refine'\n  NL%base_dir='/tmp/earthmesh/'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n/\n",
+    )
+    .expect("parse mkgrd config")
 }
 
 #[test]
@@ -63,4 +72,99 @@ fn refine_loop_plan_models_dynamic_all_steps_exit_before_incrementing_step() {
     assert!(!plan.steps[1].stop_after_step);
     assert!(plan.steps[2].stop_after_step);
     assert_eq!(plan.final_mask_postproc_step, 3);
+}
+
+#[test]
+fn refine_loop_io_plan_maps_fortran_step_files_and_final_postproc_inputs() {
+    let mkgrd = mkgrd_config();
+    let refine = mixed_refine_config();
+
+    let plan = plan_mkgrd_refine_loop_io(&mkgrd, &refine).expect("plan refine loop io");
+
+    let root = PathBuf::from("/tmp/earthmesh/case_refine");
+    assert_eq!(plan.file_dir, root);
+    assert_eq!(plan.nxp, 16);
+    assert_eq!(plan.max_iter, 3);
+    assert_eq!(plan.final_mask_postproc_step, 4);
+    assert_eq!(plan.final_get_contain_iter, 0);
+    assert_eq!(
+        plan.final_domain_contain_output,
+        PathBuf::from("/tmp/earthmesh/case_refine/contain/contain_landmesh_domain_NXP0016_hex.nc4")
+    );
+    assert_eq!(
+        plan.final_result_gridfile,
+        PathBuf::from("/tmp/earthmesh/case_refine/result/gridfile_NXP0016_hex.nc4")
+    );
+
+    let step1 = &plan.steps[0];
+    assert_eq!(step1.step, 1);
+    assert_eq!(
+        step1.refine_loop_input_gridfile,
+        root.join("gridfile/gridfile_NXP0016_01_hex.nc4")
+    );
+    assert_eq!(
+        step1.refine_loop_original_tmpfile,
+        root.join("tmpfile/gridfile_NXP0016_01_ori.nc4")
+    );
+    assert_eq!(
+        step1.refine_loop_stage2_tmpfile,
+        root.join("tmpfile/gridfile_NXP0016_01_2.nc4")
+    );
+    assert_eq!(
+        step1.refine_loop_stage5_tmpfile,
+        root.join("tmpfile/gridfile_NXP0016_01_5.nc4")
+    );
+    assert_eq!(
+        step1.refine_loop_output_gridfile,
+        root.join("gridfile/gridfile_NXP0016_02_hex.nc4")
+    );
+
+    let calculated = &step1.sources[0];
+    assert_eq!(calculated.source, MkgrdRefineSource::CalculatedIterZero);
+    assert_eq!(calculated.area_judge_iter, 0);
+    assert_eq!(calculated.get_contain_iter, 0);
+    assert_eq!(calculated.getref_iter, 0);
+    assert_eq!(
+        calculated.contain_output,
+        root.join("contain/contain_landmesh_refine_cal_NXP0016_01_tri.nc4")
+    );
+    assert_eq!(
+        calculated.threshold_outputs,
+        vec![root.join("threshold/threshold_calculate_land_NXP0016_01.nc4")]
+    );
+    assert_eq!(calculated.specified_threshold_output, None);
+
+    let specified = &step1.sources[1];
+    assert_eq!(specified.source, MkgrdRefineSource::SpecifiedStep);
+    assert_eq!(specified.area_judge_iter, 1);
+    assert_eq!(specified.get_contain_iter, 1);
+    assert_eq!(specified.getref_iter, 1);
+    assert_eq!(
+        specified.contain_output,
+        root.join("contain/contain_landmesh_refine_spc_NXP0016_01_tri.nc4")
+    );
+    assert_eq!(specified.threshold_outputs, Vec::<PathBuf>::new());
+    assert_eq!(
+        specified.specified_threshold_output,
+        Some(root.join("threshold/threshold_specified_NXP0016_01.nc4"))
+    );
+}
+
+#[test]
+fn refine_loop_io_plan_uses_early_exit_step_for_final_domain_postproc() {
+    let mkgrd = mkgrd_config();
+    let mut refine = mixed_refine_config();
+    refine.exit_loop_step[1] = true;
+    refine.exit_loop_step[2] = true;
+    refine.exit_loop_step[3] = true;
+
+    let plan = plan_mkgrd_refine_loop_io(&mkgrd, &refine).expect("plan refine loop io");
+
+    assert_eq!(plan.steps.len(), 3);
+    assert!(plan.steps[2].stop_after_step);
+    assert_eq!(plan.final_mask_postproc_step, 3);
+    assert_eq!(
+        plan.final_domain_gridfile,
+        PathBuf::from("/tmp/earthmesh/case_refine/gridfile/gridfile_NXP0016_03_hex.nc4")
+    );
 }
