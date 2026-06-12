@@ -164,7 +164,22 @@
       "migration_phase": "phase_4",
       "strategy": "port",
       "parity_gate": "Grid-quality, adjacency, edge, ordering, lon/lat/xyz, triangle, polygon, and MPAS-order fixtures match Fortran outputs within tolerance.",
-      "notes": "This is one of the highest-risk business-kernel ports and should be split into small Rust modules with independent tests."
+      "notes": "This is one of the highest-risk business-kernel ports and should be split into small Rust modules with independent tests.",
+      "port_status": "started",
+      "completed_rust_surfaces": [
+        "lonlat2xyz unit-sphere coordinate conversion ported to rust/earthmesh_mesh",
+        "xyz2lonlat-compatible round trip covered through rust/earthmesh_mesh xyz_to_lonlat_degrees"
+      ],
+      "remaining_rust_surfaces": [
+        "Grid_Quality_Check_Global and quality-save orchestration",
+        "Springjustment_global and Springjustment_regional_step",
+        "find_frac_index and layer construction helpers",
+        "edge/cell connectivity construction and MPAS ordering routines",
+        "centroid_spherical_single and circumcenter_spherical_calculation",
+        "TriMeshQuality and PolyMeshQuality metrics",
+        "robust_spherical_area and GetArea/GetEdge routines",
+        "IAP_Mesh_make and NetCDF-backed workflows"
+      ]
     },
     {
       "path": "src/MOD_mask_postproc.F90",

@@ -1,6 +1,6 @@
 //! Rust mesh kernels migrated from EarthMesh Fortran.
 
-use earthmesh_core::rad_to_deg;
+use earthmesh_core::{deg_to_rad, rad_to_deg};
 
 /// Earth-centered Cartesian point using the same axis convention as `mkgrd.F90`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,6 +21,32 @@ impl CartesianPoint {
 pub struct LonLatDegrees {
     pub lon_degrees: f64,
     pub lat_degrees: f64,
+}
+
+impl LonLatDegrees {
+    pub const fn new(lon_degrees: f64, lat_degrees: f64) -> Self {
+        Self { lon_degrees, lat_degrees }
+    }
+}
+
+
+/// Port of `MOD_grid_preprocess:lonlat2xyz` for a single unit-sphere point.
+///
+/// The Fortran routine intentionally returns unit vectors; callers multiply by
+/// `erad8` when Earth-radius-scaled coordinates are required.
+pub fn lonlat_degrees_to_unit_xyz(lonlat: LonLatDegrees) -> CartesianPoint {
+    let lon_rad = deg_to_rad(lonlat.lon_degrees);
+    let lat_rad = deg_to_rad(lonlat.lat_degrees);
+    CartesianPoint::new(
+        lat_rad.cos() * lon_rad.cos(),
+        lat_rad.cos() * lon_rad.sin(),
+        lat_rad.sin(),
+    )
+}
+
+/// Batch port of `MOD_grid_preprocess:lonlat2xyz`, preserving input order.
+pub fn lonlat_points_to_unit_xyz(points: &[LonLatDegrees]) -> Vec<CartesianPoint> {
+    points.iter().copied().map(lonlat_degrees_to_unit_xyz).collect()
 }
 
 /// Convert Earth-centered Cartesian coordinates to lon/lat degrees.

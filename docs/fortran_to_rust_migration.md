@@ -93,3 +93,7 @@ Extended `rust/earthmesh_mesh` with tested Rust ports of `icosahedron.F90:de_ps_
 ### 2026-06-12: `MOD_Area_judge.F90` closed-curve helpers ported
 
 Extended `rust/earthmesh_geometry` with Rust ports of closed-curve helper logic from `MOD_Area_judge`: scanline ray/segment intersection, strict segment intersection, component cross product, and dateline `CheckCrossing` longitude shifting. The Rust API maps the Fortran no-intersection longitude sentinel to `Option::None`, while tests preserve the same branch behavior. The full grid-row polygon fill and source-index boundary logic remain unported.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` lon/lat unit-vector conversion ported
+
+Extended `rust/earthmesh_mesh` with a tested Rust port of `MOD_grid_preprocess:lonlat2xyz`. The function returns unit-sphere Cartesian coordinates, matching the Fortran routine before callers multiply by `erad8`. Round-trip tests use the already migrated Rust `xyz_to_lonlat_degrees` path. Most grid preprocessing remains unported.
