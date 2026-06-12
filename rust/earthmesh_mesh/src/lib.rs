@@ -2,7 +2,7 @@
 
 use std::io;
 
-use earthmesh_core::{deg_to_rad, rad_to_deg, GridMemory};
+use earthmesh_core::{deg_to_rad, rad_to_deg, GridMemory, IjTabs, ItabM, ItabW};
 
 /// Earth-centered Cartesian point using the same axis convention as `mkgrd.F90`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +129,39 @@ pub fn grid_xyz2lonlat_state(grid: &mut GridMemory) -> io::Result<()> {
     Ok(())
 }
 
+/// State-level `grid_xyz2lonlat` for direct Fortran one-based arrays.
+///
+/// Index `0` is kept unused and records `1..=nma` / `1..=nwa` are filled.
+pub fn grid_xyz2lonlat_fortran_indexed_state(grid: &mut GridMemory) -> io::Result<()> {
+    require_grid_coordinate_len("xem", grid.xem.len(), grid.nma + 1)?;
+    require_grid_coordinate_len("yem", grid.yem.len(), grid.nma + 1)?;
+    require_grid_coordinate_len("zem", grid.zem.len(), grid.nma + 1)?;
+    require_grid_coordinate_len("xew", grid.xew.len(), grid.nwa + 1)?;
+    require_grid_coordinate_len("yew", grid.yew.len(), grid.nwa + 1)?;
+    require_grid_coordinate_len("zew", grid.zew.len(), grid.nwa + 1)?;
+
+    grid.allocate_grid_lonlatmw(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
+    for im in 1..=grid.nma {
+        let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
+            f64::from(grid.xem[im]),
+            f64::from(grid.yem[im]),
+            f64::from(grid.zem[im]),
+        ));
+        grid.glonm[im] = lonlat.lon_degrees as f32;
+        grid.glatm[im] = lonlat.lat_degrees as f32;
+    }
+    for iw in 1..=grid.nwa {
+        let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
+            f64::from(grid.xew[iw]),
+            f64::from(grid.yew[iw]),
+            f64::from(grid.zew[iw]),
+        ));
+        grid.glonw[iw] = lonlat.lon_degrees as f32;
+        grid.glatw[iw] = lonlat.lat_degrees as f32;
+    }
+    Ok(())
+}
+
 fn require_grid_coordinate_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
     if actual < required {
         return Err(io::Error::new(
@@ -180,6 +213,123 @@ pub struct IcosahedronRelaxedGrid {
     pub connectivity: IcosahedronDiamondConnectivity,
     pub m_neighbors: Vec<IcosahedronMPointNeighbors>,
     pub spring: IcosahedronSpringDynamicsOutput,
+}
+
+/// One-based grid/connectivity state after `mkgrd.F90:voronoi`, before `pcvt`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoronoiGridState {
+    pub grid: GridMemory,
+    pub tabs: IjTabs,
+}
+
+/// Port the global icosahedron branch of `mkgrd.F90:voronoi`.
+///
+/// The returned vectors intentionally keep Fortran-compatible one-based slots:
+/// index `0` is unused, and valid records live in `1..=nma` and `1..=nwa`.
+pub fn voronoi_grid_from_icosahedron_relaxed(
+    relaxed: &IcosahedronRelaxedGrid,
+    radius: f64,
+) -> io::Result<VoronoiGridState> {
+    require_grid_coordinate_len("relaxed.m_points", relaxed.m_points.len(), relaxed.nmd + 1)?;
+    require_grid_coordinate_len(
+        "relaxed.connectivity.w_faces",
+        relaxed.connectivity.w_faces.len(),
+        relaxed.nwd + 1,
+    )?;
+    require_grid_coordinate_len(
+        "relaxed.m_neighbors",
+        relaxed.m_neighbors.len(),
+        relaxed.nmd + 1,
+    )?;
+
+    let mut grid = GridMemory {
+        nma: relaxed.nwd,
+        nua: relaxed.nud,
+        nva: relaxed.nud,
+        nwa: relaxed.nmd,
+        mma: relaxed.nwd,
+        mua: relaxed.nud,
+        mva: relaxed.nud,
+        mwa: relaxed.nmd,
+        ..GridMemory::default()
+    };
+    grid.allocate_xyzem(grid.nma + 1);
+    grid.allocate_xyzew(grid.nwa + 1);
+
+    for iw in 1..=grid.nwa {
+        let point = relaxed.m_points[iw];
+        grid.xew[iw] = point.x as f32;
+        grid.yew[iw] = point.y as f32;
+        grid.zew[iw] = point.z as f32;
+    }
+
+    for im in 2..=grid.nma {
+        let face = &relaxed.connectivity.w_faces[im];
+        if face
+            .im
+            .iter()
+            .any(|&idx| idx < 2 || idx >= relaxed.m_points.len())
+        {
+            continue;
+        }
+        let p1 = relaxed.m_points[face.im[0]];
+        let p2 = relaxed.m_points[face.im[1]];
+        let p3 = relaxed.m_points[face.im[2]];
+        let barycenter = CartesianPoint::new(
+            (p1.x + p2.x + p3.x) / 3.0,
+            (p1.y + p2.y + p3.y) / 3.0,
+            (p1.z + p2.z + p3.z) / 3.0,
+        );
+        let normalized = normalize_cartesian_to_radius(barycenter, radius)?;
+        grid.xem[im] = normalized.x as f32;
+        grid.yem[im] = normalized.y as f32;
+        grid.zem[im] = normalized.z as f32;
+    }
+
+    let mut tabs = IjTabs::allocate(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
+    for iw in 2..=grid.nwa {
+        let neighbor = &relaxed.m_neighbors[iw];
+        tabs.w[iw] = ItabW {
+            iwp: iw as i32,
+            iwglobe: iw as i32,
+            npoly: neighbor.npoly as i32,
+            im: neighbor.iw.map(|value| value as i32),
+            iv: neighbor.iu.map(|value| value as i32),
+            ..ItabW::default()
+        };
+    }
+    for im in 2..=grid.nma {
+        let face = &relaxed.connectivity.w_faces[im];
+        tabs.m[im] = ItabM {
+            imp: im as i32,
+            imglobe: im as i32,
+            npoly: face.npoly as i32,
+            mrlm: face.mrlw as i32,
+            mrlm_orig: face.mrlw_orig as i32,
+            ngr: face.ngr as i32,
+            iv: face.iu.map(|value| value as i32),
+            iw: face.im.map(|value| value as i32),
+            ..ItabM::default()
+        };
+    }
+
+    Ok(VoronoiGridState { grid, tabs })
+}
+
+fn normalize_cartesian_to_radius(point: CartesianPoint, radius: f64) -> io::Result<CartesianPoint> {
+    let norm = magnitude(point);
+    if norm == 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot normalize a zero-length Cartesian point",
+        ));
+    }
+    let expansion = radius / norm;
+    Ok(CartesianPoint::new(
+        point.x * expansion,
+        point.y * expansion,
+        point.z * expansion,
+    ))
 }
 
 /// Minimal Rust equivalent of the `itab_ud` fields written by

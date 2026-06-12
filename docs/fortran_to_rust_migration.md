@@ -425,3 +425,7 @@ Extended `rust/earthmesh_mesh` with `grid_xyz2lonlat_state`, a state-level adapt
 ### 2026-06-12: Fortran-indexed gridfile boundary locked
 
 Extended `rust/earthmesh_cli` with `gridfile_mesh_from_fortran_indexed_state` and `write_gridfile_from_fortran_indexed_state`, a tested boundary for kernels that keep direct Fortran one-based arrays (`slot 0` unused, valid records in `1..=nma` and `1..=nwa`). This prevents the remaining `gridinit/voronoi/pcvt` migration from forcing an unsafe compact-index conversion before writing `Unstructured_Mesh_Save` gridfiles, while preserving legacy connectivity IDs and `n_ngrwm` rules.
+
+### 2026-06-12: `voronoi` one-based state conversion ported
+
+Extended `rust/earthmesh_mesh` with `VoronoiGridState`, `voronoi_grid_from_icosahedron_relaxed`, and `grid_xyz2lonlat_fortran_indexed_state`. The new path ports the global `mkgrd.F90:voronoi` count swap from Delaunay M/U/W to grid M/U/V/W, moves relaxed icosahedron M coordinates into one-based W arrays, initializes one-based M coordinates as normalized barycenters of Delaunay W faces, and carries M/W connectivity into `IjTabs` for downstream `pcvt` and the one-based gridfile writer. Remaining `gridinit` work is the `pcvt` circumcenter adjustment plus final orchestration around the already migrated lon/lat fill and gridfile write.
