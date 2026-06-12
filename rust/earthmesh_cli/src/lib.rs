@@ -28,8 +28,8 @@ use earthmesh_mesh::{
     xyz_to_lonlat_degrees, AreaJudgeAxis, AreaJudgeSourceBounds, BoundaryConnection,
     BoundaryOrders, CartesianPoint, DistanceLayerSpacing, GetAreaProductionOutput,
     GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep, IsolatedOceanRenewal,
-    LonLatDegrees, MaskPostprocRenewedData, SpringjustmentGlobalCoreInput,
-    SpringjustmentGlobalCoreOutput, SpringjustmentRegionalCoreInput,
+    LonLatDegrees, MaskPostprocRenewedData, RefineArrayLengthCalculation,
+    SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput, SpringjustmentRegionalCoreInput,
     SpringjustmentRegionalCoreOutput,
 };
 
@@ -13145,6 +13145,89 @@ pub fn write_close_mesh_netcdf(output: impl AsRef<Path>, points: &[LonLatPoint])
             .map_err(netcdf_to_io_error)?;
     }
     Ok(())
+}
+
+/// One `MOD_refine.F90:Array_length_calculation` close-curve file written via
+/// the `MOD_file_preprocess.F90:close_Mesh_Save` compatibility schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefineArrayLengthCloseMeshWriteReport {
+    pub output: PathBuf,
+    pub close_num: usize,
+}
+
+/// File-backed side-effect report for `Array_length_calculation` close-mesh
+/// outputs. `mask_patch_ndm` mirrors the Fortran `mask_patch_ndm(step)` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefineArrayLengthCloseMeshesWriteReport {
+    pub mask_patch_ndm: usize,
+    pub outputs: Vec<RefineArrayLengthCloseMeshWriteReport>,
+}
+
+/// Legacy path used by `MOD_refine.F90:Array_length_calculation` for one
+/// refinement close-curve scratch file.
+pub fn refine_array_length_close_mesh_output_path(
+    file_dir: impl AsRef<Path>,
+    step: usize,
+    curve_id: usize,
+) -> PathBuf {
+    file_dir
+        .as_ref()
+        .join("tmpfile")
+        .join(format!("mask_patch_close_{step}_{curve_id:03}.nc4"))
+}
+
+/// Write the close-mesh side effects produced by
+/// `MOD_refine.F90:Array_length_calculation`.
+///
+/// The pure Rust mesh kernel returns closed curves as one-based vertex ids;
+/// this adapter maps those ids through the Fortran-indexed `wp` coordinate table
+/// and writes the same `close_Mesh_Save` schema/path family used by the legacy
+/// refinement loop.
+pub fn write_refine_array_length_close_meshes(
+    file_dir: impl AsRef<Path>,
+    step: usize,
+    calculation: &RefineArrayLengthCalculation,
+    wp: &[LonLatPoint],
+) -> io::Result<RefineArrayLengthCloseMeshesWriteReport> {
+    let num_closed_curve = calculation.boundary.curves.num_closed_curve;
+    if calculation.boundary.curves.close_curves.len() < num_closed_curve + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "close_curves must include the placeholder plus num_closed_curve records",
+        ));
+    }
+
+    let mut outputs = Vec::with_capacity(num_closed_curve);
+    for curve_id in 1..=num_closed_curve {
+        let curve = &calculation.boundary.curves.close_curves[curve_id];
+        if curve.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("close curve {curve_id} must contain at least one vertex"),
+            ));
+        }
+        let mut points = Vec::with_capacity(curve.len());
+        for &vertex_id in curve {
+            let point = wp.get(vertex_id).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("close curve {curve_id} references vertex {vertex_id} without wp coordinate"),
+                )
+            })?;
+            points.push(*point);
+        }
+        let output = refine_array_length_close_mesh_output_path(&file_dir, step, curve_id);
+        write_close_mesh_netcdf(&output, &points)?;
+        outputs.push(RefineArrayLengthCloseMeshWriteReport {
+            output,
+            close_num: points.len(),
+        });
+    }
+
+    Ok(RefineArrayLengthCloseMeshesWriteReport {
+        mask_patch_ndm: num_closed_curve,
+        outputs,
+    })
 }
 
 fn read_nonnegative_refine_netcdf(
