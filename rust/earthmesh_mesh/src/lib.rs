@@ -9235,3 +9235,132 @@ pub fn refine_ngr_renew_core_fortran_indexed(
         vertex_mapping,
     })
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefineArrayLengthHalo {
+    pub expanded_mrl: Vec<i32>,
+    pub initial_boundary_mask: Vec<i32>,
+    pub transition_boundary_mask: Vec<i32>,
+    pub boundary_refine: Vec<usize>,
+    pub boundary_refine_transition: Vec<usize>,
+    pub num_transition_row_triangles: usize,
+}
+
+/// Pure halo-sizing core of `MOD_refine.F90:Array_length_calculation`.
+///
+/// This excludes `bdy_connection_make` close-curve generation and NetCDF side
+/// effects, but preserves the Fortran boundary criterion and outward halo
+/// expansion that updates `num_tranrow_sjx`, `isbdy_refine`, `bdy_refine`, and
+/// `bdy_refine_tran`.
+pub fn refine_array_length_halo_fortran_indexed(
+    set_dis_in: usize,
+    num_center: usize,
+    _sjx_points: usize,
+    lbx_points: usize,
+    mrl_new: &[i32],
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    initial_num_transition_row_triangles: usize,
+) -> io::Result<RefineArrayLengthHalo> {
+    if lbx_points >= triangles_on_cell.len() || lbx_points >= edge_counts.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lbx_points must address triangles_on_cell and edge_counts",
+        ));
+    }
+    if num_center > lbx_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "num_center must not exceed lbx_points",
+        ));
+    }
+    let mut expanded_mrl = mrl_new.to_vec();
+    let mut boundary_mask = refine_boundary_mask_from_mrl(
+        num_center,
+        lbx_points,
+        &expanded_mrl,
+        triangles_on_cell,
+        edge_counts,
+    )?;
+    let initial_boundary_mask = boundary_mask.clone();
+    let mut num_transition_row_triangles = initial_num_transition_row_triangles;
+
+    for _ in 0..set_dis_in {
+        for cell in (num_center + 1)..=lbx_points {
+            if boundary_mask[cell] != 1 {
+                continue;
+            }
+            let num_edges = edge_counts[cell];
+            for &triangle in triangles_on_cell[cell].iter().take(num_edges) {
+                if triangle == 0 || triangle >= expanded_mrl.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("cell {cell} references invalid triangle {triangle}"),
+                    ));
+                }
+                if expanded_mrl[triangle] == 4 {
+                    continue;
+                }
+                expanded_mrl[triangle] = 4;
+                num_transition_row_triangles += 1;
+            }
+        }
+        boundary_mask = refine_boundary_mask_from_mrl(
+            num_center,
+            lbx_points,
+            &expanded_mrl,
+            triangles_on_cell,
+            edge_counts,
+        )?;
+    }
+
+    let boundary_refine = ((num_center + 1)..=lbx_points)
+        .filter(|&cell| initial_boundary_mask[cell] == 1)
+        .collect::<Vec<_>>();
+    let boundary_refine_transition = ((num_center + 1)..=lbx_points)
+        .filter(|&cell| boundary_mask[cell] == 1)
+        .collect::<Vec<_>>();
+
+    Ok(RefineArrayLengthHalo {
+        expanded_mrl,
+        initial_boundary_mask,
+        transition_boundary_mask: boundary_mask,
+        boundary_refine,
+        boundary_refine_transition,
+        num_transition_row_triangles,
+    })
+}
+
+fn refine_boundary_mask_from_mrl(
+    num_center: usize,
+    lbx_points: usize,
+    mrl: &[i32],
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+) -> io::Result<Vec<i32>> {
+    let mut mask = vec![0_i32; lbx_points + 1];
+    for cell in (num_center + 1)..=lbx_points {
+        let num_edges = edge_counts[cell];
+        if triangles_on_cell[cell].len() < num_edges {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("cell {cell} edge count {num_edges} exceeds triangles_on_cell row"),
+            ));
+        }
+        let mut state_sum = 0_i32;
+        for &triangle in triangles_on_cell[cell].iter().take(num_edges) {
+            if triangle == 0 || triangle >= mrl.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("cell {cell} references invalid triangle {triangle}"),
+                ));
+            }
+            state_sum += mrl[triangle];
+        }
+        if state_sum == num_edges as i32 || state_sum == (num_edges as i32) * 4 {
+            continue;
+        }
+        mask[cell] = 1;
+    }
+    Ok(mask)
+}

@@ -429,7 +429,8 @@
         "sharp_concav_lop_judge strong-concavity LOP segment builder ported to rust/earthmesh_mesh with child-pair and mirror fixture coverage",
         "weak_concav_lop_judge weak-concavity LOP segment builder ported to rust/earthmesh_mesh with pair-only, intersegment, and internal fixture coverage",
         "Delaunay_Lop diagonal flip and crossline cleanup ported to rust/earthmesh_mesh with zero-pair and dateline fixture coverage",
-        "NGR_RENEW pure topology core for vertex deduplication, triangle compaction, adjacency rebuild, and boundary remapping ported to rust/earthmesh_mesh with fixture coverage"
+        "NGR_RENEW pure topology core for vertex deduplication, triangle compaction, adjacency rebuild, and boundary remapping ported to rust/earthmesh_mesh with fixture coverage",
+        "Array_length_calculation pure halo sizing and boundary list logic ported to rust/earthmesh_mesh with transition-row fixture coverage"
       ]
     }
   ]
