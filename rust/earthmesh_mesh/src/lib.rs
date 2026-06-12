@@ -188,6 +188,17 @@ impl Default for IcosahedronMPointNeighbors {
     }
 }
 
+/// Precomputed topology tables built at the start of
+/// `icosahedron.F90:spring_dynamics1`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IcosahedronSpringTopology {
+    pub edge_m_points: Vec<[usize; 2]>,
+    pub edge_neighbor_u: Vec<[usize; 4]>,
+    pub m_npoly: Vec<usize>,
+    pub m_u_edges: Vec<[usize; 7]>,
+    pub directions: Vec<[f64; 7]>,
+}
+
 /// Connectivity arrays after the `fill_diamond` calls inside
 /// `icosahedron.F90:icosahedron`, before `tri_neighbors` fills the remaining
 /// reciprocal neighbors.
@@ -849,6 +860,56 @@ pub fn derive_icosahedron_tri_neighbors_fortran(
     derive_icosahedron_w_neighbors_fortran(connectivity)?;
     derive_icosahedron_u_neighbors_fortran(connectivity)?;
     derive_icosahedron_m_neighbors_fortran(nmd, &connectivity.u_edges, &connectivity.w_faces)
+}
+
+/// Port of the setup table construction before the main iteration loop in
+/// `icosahedron.F90:spring_dynamics1`.
+///
+/// It snapshots U-edge endpoint/neighbor ids plus per-M-point polygon edge ids
+/// and direction signs. Fortran stores `+relax` when `itab_ud(iu)%im(2) == im`
+/// and `-relax` otherwise.
+pub fn icosahedron_spring_topology_fortran(
+    nmd: usize,
+    u_edges: &[IcosahedronUEdge],
+    m_neighbors: &[IcosahedronMPointNeighbors],
+    relax: f64,
+) -> Option<IcosahedronSpringTopology> {
+    if m_neighbors.len() <= nmd {
+        return None;
+    }
+
+    let mut edge_m_points = vec![[1usize; 2]; u_edges.len()];
+    let mut edge_neighbor_u = vec![[1usize; 4]; u_edges.len()];
+    for iu in 2..u_edges.len() {
+        let edge = *u_edges.get(iu)?;
+        edge_m_points[iu] = edge.im;
+        edge_neighbor_u[iu] = [edge.iu[0], edge.iu[1], edge.iu[2], edge.iu[3]];
+    }
+
+    let mut m_npoly = vec![0usize; nmd + 1];
+    let mut m_u_edges = vec![[1usize; 7]; nmd + 1];
+    let mut directions = vec![[0.0_f64; 7]; nmd + 1];
+    for im in 2..=nmd {
+        let m_point = *m_neighbors.get(im)?;
+        if m_point.npoly > 7 {
+            return None;
+        }
+        m_npoly[im] = m_point.npoly;
+        for j in 0..m_point.npoly {
+            let iu = m_point.iu[j];
+            let edge = *u_edges.get(iu)?;
+            m_u_edges[im][j] = iu;
+            directions[im][j] = if edge.im[1] == im { relax } else { -relax };
+        }
+    }
+
+    Some(IcosahedronSpringTopology {
+        edge_m_points,
+        edge_neighbor_u,
+        m_npoly,
+        m_u_edges,
+        directions,
+    })
 }
 
 /// Shared Rust port of `icosahedron.F90:mdloopf`, `udloopf`, and `wdloopf`.

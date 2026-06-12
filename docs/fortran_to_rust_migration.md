@@ -329,3 +329,7 @@ Extended `rust/earthmesh_mesh` with `derive_icosahedron_m_neighbors_fortran`, a 
 ### 2026-06-12: `icosahedron.F90` `tri_neighbors` integrated wrapper ported
 
 Extended `rust/earthmesh_mesh` with `derive_icosahedron_tri_neighbors_fortran`, an integrated wrapper that runs the migrated W-face, U-edge, and M-point phases in the same high-level order as `tri_neighbors`. The wrapper mutates the Fortran-indexed U/W connectivity tables and returns the derived M-point neighbor table, making the migrated connectivity derivation usable after `icosahedron_fill_diamonds_fortran`. Remaining icosahedron work is spring relaxation and full NXP fixture parity after relaxation.
+
+### 2026-06-12: `icosahedron.F90` `spring_dynamics1` setup tables ported
+
+Extended `rust/earthmesh_mesh` with `icosahedron_spring_topology_fortran`, a tested Rust port of the pre-iteration setup in `spring_dynamics1`. It snapshots U-edge endpoint ids, first-ring U neighbors, M-point polygon edge ids, and the Fortran direction sign rule (`+relax` when the current M point is the second edge endpoint, otherwise `-relax`). Remaining `spring_dynamics1` work is the edge displacement calculation and multi-iteration coordinate relaxation loop.

@@ -217,3 +217,29 @@ fn icosahedron_tri_neighbors_wrapper_matches_manual_w_u_m_sequence() {
     assert_eq!(wrapped.w_faces[2].npoly, 3);
     assert_eq!(wrapped.u_edges[3].mrlu, 1);
 }
+
+#[test]
+fn icosahedron_spring_topology_matches_spring_dynamics1_setup_tables() {
+    let mut u_edges = vec![earthmesh_mesh::IcosahedronUEdge::default(); 7];
+    let mut m_neighbors = vec![earthmesh_mesh::IcosahedronMPointNeighbors::default(); 21];
+
+    u_edges[2].im = [10, 20];
+    u_edges[2].iu[0..4].copy_from_slice(&[3, 4, 5, 6]);
+    u_edges[3].im = [30, 10];
+
+    m_neighbors[10].npoly = 2;
+    m_neighbors[10].iu[0..2].copy_from_slice(&[2, 3]);
+
+    let topology =
+        earthmesh_mesh::icosahedron_spring_topology_fortran(20, &u_edges, &m_neighbors, 0.25)
+            .expect("valid spring topology setup");
+
+    assert_eq!(topology.edge_m_points[2], [10, 20]);
+    assert_eq!(topology.edge_neighbor_u[2], [3, 4, 5, 6]);
+    assert_eq!(topology.m_npoly[10], 2);
+    assert_eq!(topology.m_u_edges[10], [2, 3, 1, 1, 1, 1, 1]);
+    assert_eq!(
+        topology.directions[10],
+        [-0.25, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
+    );
+}
