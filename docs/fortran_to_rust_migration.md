@@ -613,3 +613,7 @@ Added `global_quality_mesh_from_grid_quality` and `write_grid_quality_global_net
 ### 2026-06-12: Springjustment_global persistence adapter ported
 
 Added `write_springjustment_global_persistence` in `rust/earthmesh_cli`, wiring the pure `earthmesh_mesh::SpringjustmentGlobalCoreOutput` to the migrated `distsOnEdge_save` and `cellwidth_save` NetCDF writers. The adapter preserves legacy `result/distsOnEdge_NXP####_##_global.nc4` and optional `result/cellwidth_NXP####_global.nc4` paths, keeps `distsOnEdge` edge coordinates from the pure kernel, and requires pre-spring cell coordinates for the MPAS cellwidth side effect to match the Fortran `wp` argument. Remaining Springjustment work is full NetCDF loading/orchestration for global runs and regional-step persistence wiring.
+
+### 2026-06-12: GetEdge gridfile adapter ported
+
+Added `get_edge_from_unstructured_gridfile` and `get_edge_from_unstructured_mesh` in `rust/earthmesh_cli`, wiring the migrated `Unstructured_Mesh_Read` gridfile adapter into the pure `earthmesh_mesh::get_edge_production_fortran_indexed` workflow. The adapter validates legacy Fortran-indexed `itab_m%iw`, `itab_w%im`, and `n_ngrwm` ids, reconstructs triangle-neighbor membership through the migrated `set_ngrmm` equivalent, and returns the production `cellsOnEdge`, `verticesOnEdge`, `edgesOnVertex`, `cellsOnVertex`, and edge midpoint payload. Remaining `MOD_grid_preprocess.F90` adapter work is `GetArea` NetCDF integration plus Springjustment global loading/regional persistence.

@@ -281,12 +281,12 @@
         "Springjustment_global cellwidth_save writer dependency ported to rust/earthmesh_cli",
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter dependency ported to rust/earthmesh_cli",
         "Grid_Quality_Check_Global quality output-to-NetCDF adapter integration ported to rust/earthmesh_cli",
-        "Springjustment_global distsOnEdge/cellwidth persistence adapter ported to rust/earthmesh_cli"
+        "Springjustment_global distsOnEdge/cellwidth persistence adapter ported to rust/earthmesh_cli",
+        "GetEdge Unstructured_Mesh_Read NetCDF adapter integration ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Springjustment_global NetCDF adapter loading and Springjustment_regional_step persistence wiring",
-        "GetArea NetCDF adapter integration",
-        "GetEdge NetCDF adapter integration"
+        "GetArea NetCDF adapter integration"
       ]
     },
     {
