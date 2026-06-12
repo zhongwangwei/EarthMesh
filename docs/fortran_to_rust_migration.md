@@ -581,3 +581,7 @@ Added `read_cellwidth_netcdf`, `build_mpas_simple_mesh_from_unstructured_fortran
 ### 2026-06-12: Atmos MPAS-Simple mask-postprocess dispatch ported
 
 Added `write_mask_postproc_atmos_mpas_simple_netcdf` in `rust/earthmesh_cli`, a tested Rust entry point for the `mask_postproc_Atmos` branch when `mesh_type='atmosmesh'` and `output_format='MPAS-Simple'`. The helper preserves the legacy `result/gridfile_NXP####_<mode_grid>.nc4`, `result/cellwidth_NXP####_global.nc4`, and `result/MPASOUT_NXP####_global_Simple.nc4` paths and delegates to the migrated MPAS-Simple file pipeline. Remaining atmosphere work is the full MPAS (non-simple) `MPAS_Mesh_Cal` writer/graph-info path; remaining domain work is Earth/Lnd/Ocn top-level execution composition.
+
+### 2026-06-12: MPAS graph.info writer ported
+
+Added `MpasGraphInfoWriteReport` and `write_mpas_graph_info` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:MPAS_info_Save`. The writer keeps the legacy placeholder row, counts only interior edges with both adjacent cells present, emits Fortran-style width-10 integer rows, and reports cells whose positive neighbor count is lower than `nEdgesOnCell`. This removes one more dependency from the full MPAS atmosphere output path; the large MPAS NetCDF writer and remaining geometry/file orchestration are still separate migration gates.
