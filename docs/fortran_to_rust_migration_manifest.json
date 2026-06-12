@@ -124,7 +124,8 @@
         "mkgrd.x mask_restart oceanmesh immediate mask_postproc execution wiring ported to rust/earthmesh_cli",
         "mkgrd mask_restart patch Mask_make preprocessing and continue-mkgrd action runner ported to rust/earthmesh_cli",
         "mkgrd mask_restart ContinueMkgrd Area_judge restart-grid restoration, patch application, and selected-grid rewrite ported to rust/earthmesh_cli",
-        "mkgrd.x refine-loop max_iter and calculate/specified/mixed step dispatch schedule ported to rust/earthmesh_cli"
+        "mkgrd.x refine-loop max_iter and calculate/specified/mixed step dispatch schedule ported to rust/earthmesh_cli",
+        "mkgrd.x refine-loop all(exit_loop_step) early-exit planning ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"

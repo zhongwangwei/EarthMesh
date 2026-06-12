@@ -103,6 +103,7 @@ pub struct MkgrdRefineLoopStepPlan {
     pub step: usize,
     pub sources: Vec<MkgrdRefineSource>,
     pub run_refine_loop: bool,
+    pub stop_after_step: bool,
 }
 
 /// Non-destructive schedule for the `mkgrd.F90` refine loop after the initial
@@ -438,8 +439,9 @@ pub fn run_mkgrd_mask_restart_ocean_namelist(
 /// Fortran computes `max_iter = max(max_iter_cal, max_iter_spc)`, then for each
 /// `step` runs the calculated `iter=0` threshold branch while `step <=
 /// max_iter_cal`, the specified branch while `step <= max_iter_spc`, and then
-/// calls `refine_loop`.  Dynamic early-exit decisions remain a future execution
-/// surface; this plan captures the deterministic dispatch windows.
+/// calls `refine_loop`.  When `exit_loop_step(step)` is pre-seeded, this plan
+/// also models the Fortran `all(exit_loop_step(1:max_iter))` early-exit check
+/// before incrementing `step`.
 pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLoopPlan> {
     let max_iter_i32 = refine.max_iter_cal.max(refine.max_iter_spc);
     if max_iter_i32 <= 0 {
@@ -456,6 +458,8 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_spc must fit usize"))?;
 
     let mut steps = Vec::with_capacity(max_iter);
+    let mut completed_steps = vec![false; max_iter + 1];
+    let mut final_mask_postproc_step = max_iter + 1;
     for step in 1..=max_iter {
         let mut sources = Vec::with_capacity(2);
         if matches!(refine.refine_setting.as_str(), "calculate" | "mixed") && step <= max_iter_cal {
@@ -464,17 +468,31 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
         if matches!(refine.refine_setting.as_str(), "specified" | "mixed") && step <= max_iter_spc {
             sources.push(MkgrdRefineSource::SpecifiedStep);
         }
+
+        if refine.exit_loop_step.get(step).copied().unwrap_or(false) {
+            completed_steps[step] = true;
+        }
+        let stop_after_step = (1..=max_iter).all(|idx| completed_steps[idx]);
+        if stop_after_step {
+            final_mask_postproc_step = step;
+        }
+
         steps.push(MkgrdRefineLoopStepPlan {
             step,
             sources,
             run_refine_loop: true,
+            stop_after_step,
         });
+
+        if stop_after_step {
+            break;
+        }
     }
 
     Ok(MkgrdRefineLoopPlan {
         max_iter,
         steps,
-        final_mask_postproc_step: max_iter + 1,
+        final_mask_postproc_step,
     })
 }
 

@@ -49,3 +49,18 @@ fn refine_loop_plan_rejects_non_positive_max_iter_like_fortran() {
 
     assert!(err.to_string().contains("max_iter must be more than zero"));
 }
+
+#[test]
+fn refine_loop_plan_models_dynamic_all_steps_exit_before_incrementing_step() {
+    let mut config = mixed_refine_config();
+    config.exit_loop_step[1] = true;
+    config.exit_loop_step[2] = true;
+    config.exit_loop_step[3] = true;
+
+    let plan = plan_mkgrd_refine_loop(&config).expect("plan refine loop exits");
+
+    assert!(!plan.steps[0].stop_after_step);
+    assert!(!plan.steps[1].stop_after_step);
+    assert!(plan.steps[2].stop_after_step);
+    assert_eq!(plan.final_mask_postproc_step, 3);
+}
