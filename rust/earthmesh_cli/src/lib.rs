@@ -1241,7 +1241,12 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
     wp_new: &mut [LonLatPoint],
     ngrmw_new: &mut [Vec<usize>],
 ) -> io::Result<OnedivideFourRenewReport> {
-    if iter >= num_mp.len() || iter >= num_wp.len() || num_mp.len() <= 1 || num_wp.len() <= 1 {
+    if iter == 0
+        || iter >= num_mp.len()
+        || iter >= num_wp.len()
+        || num_mp.len() <= 1
+        || num_wp.len() <= 1
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("iter {iter} requires one-based num_mp/num_wp arrays with slots 1 and iter"),
@@ -1291,6 +1296,7 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
     let mut refined_triangles = Vec::new();
     let mut new_triangle_ids = Vec::new();
     let mut new_vertex_ids = Vec::new();
+    let mut dateline_adjusted = false;
     let mut refed_iter = 0usize;
     for i in (num_vertex + 1)..=old_mp {
         if ref_sjx_segment[i] == 0 {
@@ -1306,18 +1312,17 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
             }
         }
 
-        let sjx = [
+        let mut sjx = [
             wp_new[source_vertices[0]],
             wp_new[source_vertices[1]],
             wp_new[source_vertices[2]],
         ];
         let min_lon = sjx.iter().map(|p| p.lon).fold(f64::INFINITY, f64::min);
         let max_lon = sjx.iter().map(|p| p.lon).fold(f64::NEG_INFINITY, f64::max);
-        if max_lon - min_lon > 180.0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "OnedivideFour_renew dateline CheckCrossing/crossline_check is not yet migrated",
-            ));
+        let crosses_dateline = max_lon - min_lon > 180.0;
+        if crosses_dateline {
+            check_crossing_fortran_points(&mut sjx);
+            dateline_adjusted = true;
         }
 
         let m0 = old_mp + refed_iter * 4;
@@ -1335,17 +1340,21 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
             ));
         }
 
-        let newdbx = [
+        let mut newdbx = [
             midpoint(sjx[1], sjx[2]),
             midpoint(sjx[0], sjx[2]),
             midpoint(sjx[0], sjx[1]),
         ];
-        let newsjx = [
+        let mut newsjx = [
             centroid3(sjx[0], newdbx[1], newdbx[2]),
             centroid3(sjx[1], newdbx[0], newdbx[2]),
             centroid3(sjx[2], newdbx[0], newdbx[1]),
             centroid3(newdbx[2], newdbx[0], newdbx[1]),
         ];
+        if crosses_dateline {
+            check_crossing_fortran_points(&mut newsjx);
+            check_crossing_fortran_points(&mut newdbx);
+        }
 
         for (offset, point) in newdbx.into_iter().enumerate() {
             wp_new[w0 + offset + 1] = point;
@@ -1374,11 +1383,13 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
         refed_iter += 1;
     }
 
+    crossline_check_fortran_points(iter, num_mp, num_wp, mp_new, wp_new)?;
+
     Ok(OnedivideFourRenewReport {
         refined_triangles,
         new_triangle_ids,
         new_vertex_ids,
-        dateline_adjusted: false,
+        dateline_adjusted,
     })
 }
 
@@ -1394,6 +1405,56 @@ fn centroid3(a: LonLatPoint, b: LonLatPoint, c: LonLatPoint) -> LonLatPoint {
         lon: (a.lon + b.lon + c.lon) / 3.0,
         lat: (a.lat + b.lat + c.lat) / 3.0,
     }
+}
+
+fn check_crossing_fortran_points(points: &mut [LonLatPoint]) {
+    for point in points {
+        if point.lon < 0.0 {
+            point.lon += 180.0;
+        } else {
+            point.lon -= 180.0;
+        }
+    }
+}
+
+fn crossline_check_fortran_points(
+    iter: usize,
+    num_mp: &[usize],
+    num_wp: &[usize],
+    mp_new: &mut [LonLatPoint],
+    wp_new: &mut [LonLatPoint],
+) -> io::Result<()> {
+    if iter == 0 || iter >= num_mp.len() || iter >= num_wp.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("iter {iter} must address num_mp/num_wp previous and current slots"),
+        ));
+    }
+    if num_mp[iter] >= mp_new.len() || num_wp[iter] >= wp_new.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "crossline_check range exceeds point storage",
+        ));
+    }
+    for point in mp_new
+        .iter_mut()
+        .take(num_mp[iter] + 1)
+        .skip(num_mp[iter - 1] + 1)
+    {
+        if point.lon == -180.0 {
+            point.lon = 180.0;
+        }
+    }
+    for point in wp_new
+        .iter_mut()
+        .take(num_wp[iter] + 1)
+        .skip(num_wp[iter - 1] + 1)
+    {
+        if point.lon == -180.0 {
+            point.lon = 180.0;
+        }
+    }
+    Ok(())
 }
 
 /// Execute the top-level `mkgrd.F90` refine-loop order using a pluggable kernel
