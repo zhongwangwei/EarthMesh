@@ -1596,6 +1596,17 @@ pub struct RegionalMoveMaskOutput {
     pub protected_triangles: Vec<bool>,
 }
 
+/// Borrowed inputs for the pure classification core of
+/// `MOD_grid_preprocess:refine_sjx_regional_make`.
+#[derive(Debug, Clone, Copy)]
+pub struct RefineRegionalMaskInput<'a> {
+    pub triangle_lonlat: &'a [LonLatDegrees],
+    pub source_lon_vertices: &'a [f64],
+    pub source_lat_vertices: &'a [f64],
+    pub mask_patch: &'a [Vec<bool>],
+    pub first_triangle_id: usize,
+}
+
 /// Borrowed inputs for the pure in-memory calculation side of
 /// `MOD_grid_preprocess:Springjustment_global`.
 #[derive(Debug, Clone, Copy)]
@@ -1995,6 +2006,51 @@ fn expand_triangles_from_boundary_fortran_indexed(
         )?;
     }
     Some((triangle_flags, boundary))
+}
+
+fn source_find_lon_fortran_indexed(source_lon_vertices: &[f64], lon: f64) -> Option<usize> {
+    (1..source_lon_vertices.len()).find(|&index| lon <= source_lon_vertices[index])
+}
+
+fn source_find_lat_fortran_indexed(source_lat_vertices: &[f64], lat: f64) -> Option<usize> {
+    (1..source_lat_vertices.len()).find(|&index| lat >= source_lat_vertices[index])
+}
+
+/// Pure Rust port of the source-mask classification core in
+/// `MOD_grid_preprocess:refine_sjx_regional_make`.
+///
+/// The original routine reads the `mask_patch` NetCDF/file state before this
+/// classification loop. This kernel accepts that mask and the source lon/lat
+/// vertex arrays explicitly, then mirrors the Fortran `Source_Find` lookup and
+/// subsequent `max(1, source - 1)` cell-index shift for each triangle center
+/// from `num_mp_step(iter)` onward.
+pub fn refine_sjx_regional_make_fortran_indexed(
+    input: RefineRegionalMaskInput<'_>,
+) -> Option<Vec<bool>> {
+    if input.source_lon_vertices.len() < 2
+        || input.source_lat_vertices.len() < 2
+        || input.mask_patch.len() < input.source_lon_vertices.len()
+    {
+        return None;
+    }
+
+    let mut refined_triangles = vec![false; input.triangle_lonlat.len()];
+    for triangle_id in input.first_triangle_id..input.triangle_lonlat.len() {
+        let center = input.triangle_lonlat[triangle_id];
+        let lon_source =
+            source_find_lon_fortran_indexed(input.source_lon_vertices, center.lon_degrees)?
+                .saturating_sub(1)
+                .max(1);
+        let lat_source =
+            source_find_lat_fortran_indexed(input.source_lat_vertices, center.lat_degrees)?
+                .saturating_sub(1)
+                .max(1);
+        if *input.mask_patch.get(lon_source)?.get(lat_source)? {
+            refined_triangles[triangle_id] = true;
+        }
+    }
+
+    Some(refined_triangles)
 }
 
 /// Pure Rust port of `MOD_grid_preprocess:set_dbxMove_regional_step`.

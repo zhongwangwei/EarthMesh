@@ -17,8 +17,9 @@ use earthmesh_mesh::{
     springjustment_regional_from_refinement_fortran_indexed, triangle_mesh_quality_fortran_indexed,
     triangle_neighbors_from_cell_membership_fortran_indexed, vertex_cell_position, CartesianPoint,
     DistanceLayerSpacing, GetAreaUnitInput, GlobalDistanceStep, LonLatDegrees,
-    RegionalMoveMaskInput, SetDistsOnEdgeGlobalInput, SpringjustmentGlobalCoreInput,
-    SpringjustmentRegionalCoreInput, SpringjustmentRegionalFromRefinementInput,
+    RefineRegionalMaskInput, RegionalMoveMaskInput, SetDistsOnEdgeGlobalInput,
+    SpringjustmentGlobalCoreInput, SpringjustmentRegionalCoreInput,
+    SpringjustmentRegionalFromRefinementInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -1189,6 +1190,34 @@ fn springjustment_regional_from_refinement_derives_mask_then_runs_core_pipeline(
     assert_eq!(output.mask.move_mask[12], false);
     assert_eq!(output.mask.move_mask[13], false);
     assert_eq!(output.core.regional.moved_cells, vec![10]);
+}
+
+#[test]
+fn refine_sjx_regional_make_classifies_triangle_centers_from_source_mask() {
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(-10.0, 10.0),
+        LonLatDegrees::new(20.0, -10.0),
+        LonLatDegrees::new(20.0, 10.0),
+    ];
+    let source_lon_vertices = vec![0.0, -180.0, 0.0, 180.0];
+    let source_lat_vertices = vec![0.0, 90.0, 0.0, -90.0];
+    let mut mask_patch = vec![vec![false; 4]; 4];
+    mask_patch[1][1] = true;
+    mask_patch[2][2] = true;
+
+    let refined =
+        earthmesh_mesh::refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
+            triangle_lonlat: &triangle_lonlat,
+            source_lon_vertices: &source_lon_vertices,
+            source_lat_vertices: &source_lat_vertices,
+            mask_patch: &mask_patch,
+            first_triangle_id: 3,
+        })
+        .expect("valid source mask classifier input");
+
+    assert_eq!(refined, vec![false, false, false, true, false]);
 }
 
 #[test]
