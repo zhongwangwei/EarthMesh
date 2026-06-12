@@ -565,3 +565,7 @@ Added `EarthmeshInfo`, `write_earthmesh_info_netcdf`, and `build_earthmesh_info_
 ### 2026-06-12: mask_postproc patchtype writer orchestration ported
 
 Added `write_mask_postproc_patchtype_netcdf`, a tested Rust CLI composition helper that connects the selected-domain patchtype grid to the `MaskPostprocDomainIoPlan.patchtype_output` path. The helper reuses `patchid_mesh_from_selected_domain` and `write_patchid_netcdf`, preserving the Earth/Lnd `patchtype/patchtype_NXP####_<mode>.nc4` filename while rejecting Ocean plans that intentionally have no patchtype output. Full Earth/Lnd branch execution still needs to sequence the patchtype writer with contain reads, branch mask edits, final gridfile clipping, and optional Earth info output.
+
+### 2026-06-12: mask_postproc Earth info writer orchestration ported
+
+Added `write_mask_postproc_earth_info_netcdf`, a tested Earth-only composition helper that binds `build_earthmesh_info_fortran_indexed` and `write_earthmesh_info_netcdf` to the legacy `result/earthmesh_info.nc4` path selected from `MaskPostprocDomainIoPlan.file_dir`. It rejects Land/Ocean plans so `earthmesh_info` remains an Earth branch side effect. Remaining work is full Earth branch sequencing from real contain/gridfile reads through patchtype output, final gridfile clipping, and this info writer.

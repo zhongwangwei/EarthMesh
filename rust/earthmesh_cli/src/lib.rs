@@ -1401,6 +1401,36 @@ pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
     unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)
 }
 
+/// Compose the Earth branch role/refinement payload with the legacy
+/// `result/earthmesh_info.nc4` output path.
+pub fn write_mask_postproc_earth_info_netcdf(
+    plan: &MaskPostprocDomainIoPlan,
+    num_mp_step: &[usize],
+    sjx_points: usize,
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+    seaorland_ustr: &[i32],
+) -> io::Result<EarthmeshInfoWriteReport> {
+    if plan.mesh_type != "earthmesh" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "earthmesh_info output is only produced for earthmesh plans, got {}",
+                plan.mesh_type
+            ),
+        ));
+    }
+    let info = build_earthmesh_info_fortran_indexed(
+        &plan.mode_grid,
+        num_mp_step,
+        sjx_points,
+        layout,
+        is_in_domain_ustr,
+        seaorland_ustr,
+    )?;
+    write_earthmesh_info_netcdf(plan.file_dir.join("result/earthmesh_info.nc4"), &info)
+}
+
 /// Compose `PatchID_Save` coordinate construction with the legacy patchtype
 /// output path selected by `plan_mask_postproc_domain_io`.
 pub fn write_mask_postproc_patchtype_netcdf(
