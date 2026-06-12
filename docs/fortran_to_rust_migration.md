@@ -605,3 +605,7 @@ Added `CellwidthMesh`, `CellwidthWriteReport`, and `write_cellwidth_netcdf` in `
 ### 2026-06-12: quality_save_global NetCDF writer ported
 
 Added `QualityClassMetrics`, `GlobalQualityMesh`, and `write_quality_global_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:quality_save_global`. The writer preserves the legacy dimensions (`num_sjx`, `num_wbx`, `num_lbx`, `two`, `thr`, `fiv`, `six`) plus optional `num_qbx`/`sev`, writes the `length_*`, `angle_*`, `Extr_*`, `Eavg_*`, `Savg_*`, `less_*`, and `more_*` variables for each class, and rejects row-width/count mismatches before creating output. This closes the file-writer dependency for `Grid_Quality_Check_Global`; remaining grid-preprocess adapter work is composing quality calculation, Springjustment persistence, and GetArea/GetEdge NetCDF boundaries end-to-end.
+
+### 2026-06-12: Grid_Quality_Check_Global quality adapter composition ported
+
+Added `global_quality_mesh_from_grid_quality` and `write_grid_quality_global_netcdf` in `rust/earthmesh_cli`, wiring the migrated pure `earthmesh_mesh::GridQualityGlobalOutput` into the `quality_save_global` NetCDF writer. The adapter preserves Fortran placeholder triangle rows, compact polygon quality rows, converts boolean less/more angle flags to legacy integer arrays, and omits heptagon/qbx output when no heptagon quality group exists. Remaining `MOD_grid_preprocess.F90` adapter work is now Springjustment persistence plus GetArea/GetEdge NetCDF boundaries.

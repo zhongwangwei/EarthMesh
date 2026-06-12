@@ -279,7 +279,8 @@
         "GetEdge real MPAS mesh fixture parity added for rust/earthmesh_mesh",
         "Springjustment_global distsOnEdge_save writer dependency ported to rust/earthmesh_cli",
         "Springjustment_global cellwidth_save writer dependency ported to rust/earthmesh_cli",
-        "Grid_Quality_Check_Global quality_save_global NetCDF adapter dependency ported to rust/earthmesh_cli"
+        "Grid_Quality_Check_Global quality_save_global NetCDF adapter dependency ported to rust/earthmesh_cli",
+        "Grid_Quality_Check_Global quality output-to-NetCDF adapter integration ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Springjustment_global/Springjustment_regional_step NetCDF adapter loading and persistence wiring",
