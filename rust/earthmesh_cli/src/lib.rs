@@ -1521,6 +1521,16 @@ pub struct AreaJudgeGridPayload {
     pub seaorland_select: Option<Vec<Vec<i32>>>,
 }
 
+/// Full one-based source grids restored from an Area_judge restart payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeExpandedGridReport {
+    pub is_in_domain: Vec<Vec<i32>>,
+    pub seaorland: Vec<Vec<i32>>,
+    pub bounds: AreaJudgeSourceBounds,
+    pub nlons_select: usize,
+    pub nlats_select: usize,
+}
+
 fn validate_area_judge_grid_payload(payload: &AreaJudgeGridPayload) -> io::Result<()> {
     let expected_lon = payload
         .bounds
@@ -3321,6 +3331,56 @@ pub fn read_area_judge_grid_netcdf(input: impl AsRef<Path>) -> io::Result<AreaJu
         )
     })?;
     Ok(payload)
+}
+
+/// Expand `IsInArea_grid_Read` selected arrays back into full source grids.
+pub fn expand_area_judge_grid_payload_fortran_indexed(
+    payload: &AreaJudgeGridPayload,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgeExpandedGridReport> {
+    validate_area_judge_grid_payload(payload)?;
+    let seaorland_select = payload.seaorland_select.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Area_judge restart payload requires seaorland_select",
+        )
+    })?;
+    if payload.bounds.maxlon_source > nlons_source || payload.bounds.minlat_source > nlats_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Area_judge restart bounds lon {}..{} lat {}..{} exceed source dimensions {}x{}",
+                payload.bounds.minlon_source,
+                payload.bounds.maxlon_source,
+                payload.bounds.maxlat_source,
+                payload.bounds.minlat_source,
+                nlons_source,
+                nlats_source
+            ),
+        ));
+    }
+
+    let mut is_in_domain = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut seaorland = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    for (lon_offset, lon_index) in
+        (payload.bounds.minlon_source..=payload.bounds.maxlon_source).enumerate()
+    {
+        for (lat_offset, lat_index) in
+            (payload.bounds.maxlat_source..=payload.bounds.minlat_source).enumerate()
+        {
+            is_in_domain[lon_index][lat_index] = payload.is_in_area_select[lon_offset][lat_offset];
+            seaorland[lon_index][lat_index] = seaorland_select[lon_offset][lat_offset];
+        }
+    }
+
+    Ok(AreaJudgeExpandedGridReport {
+        is_in_domain,
+        seaorland,
+        bounds: payload.bounds,
+        nlons_select: payload.bounds.maxlon_source - payload.bounds.minlon_source + 1,
+        nlats_select: payload.bounds.minlat_source - payload.bounds.maxlat_source + 1,
+    })
 }
 
 /// Write the `patchtype_NXP*.nc4` schema produced by
