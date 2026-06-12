@@ -2,7 +2,8 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
-    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
+    set_weights_on_edge_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
+    CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -268,6 +269,106 @@ fn edge_id_sort_rejects_missing_reference_match() {
         &cells_on_edge,
         &vertices_on_edge,
         &edge_points,
+    )
+    .is_none());
+}
+
+#[test]
+fn set_weights_on_edge_matches_fortran_two_cell_stencil() {
+    let area_cell = vec![0.0, 0.0, 1.0, 1.0];
+    let angle_edge = vec![0.0; 8];
+    let dc_edge = vec![1.0; 8];
+    let dv_edge = vec![1.0; 8];
+    let mut kite_areas_on_vertex = vec![[0.0; 3]; 6];
+    kite_areas_on_vertex[2][0] = 0.25;
+    kite_areas_on_vertex[3][0] = 0.25;
+    kite_areas_on_vertex[4][0] = 0.50;
+    kite_areas_on_vertex[2][1] = 0.20;
+    kite_areas_on_vertex[3][1] = 0.30;
+    kite_areas_on_vertex[5][0] = 0.50;
+
+    let edges_on_cell = vec![vec![], vec![], vec![2, 4, 5], vec![2, 6, 7]];
+    let cells_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [2, 3, 0],
+        [2, 3, 0],
+        [2, 0, 0],
+        [3, 0, 0],
+    ];
+    let cells_on_edge = vec![
+        [0, 0],
+        [0, 0],
+        [2, 3],
+        [0, 0],
+        [2, 10],
+        [2, 11],
+        [3, 12],
+        [3, 13],
+    ];
+    let vertices_on_cell = vec![vec![], vec![], vec![3, 2, 4], vec![2, 3, 5]];
+    let vertices_on_edge = vec![
+        [0, 0],
+        [0, 0],
+        [2, 3],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ];
+    let n_edges_on_cell = vec![0, 0, 3, 3];
+
+    let output = set_weights_on_edge_fortran_indexed(
+        &area_cell,
+        &angle_edge,
+        &dc_edge,
+        &dv_edge,
+        &kite_areas_on_vertex,
+        &edges_on_cell,
+        &cells_on_vertex,
+        &cells_on_edge,
+        &vertices_on_cell,
+        &vertices_on_edge,
+        &n_edges_on_cell,
+    )
+    .expect("valid set_weightsOnEdge inputs");
+
+    assert_eq!(output.n_edges_on_edge[2], 4);
+    assert_eq!(output.edges_on_edge[2], vec![4, 5, 6, 7]);
+    approx_eq(output.weights_on_edge[2][0], 0.25, 1.0e-15);
+    approx_eq(output.weights_on_edge[2][1], 0.0, 1.0e-15);
+    approx_eq(output.weights_on_edge[2][2], -0.30, 1.0e-15);
+    approx_eq(output.weights_on_edge[2][3], 0.0, 1.0e-15);
+    approx_eq(output.error_segment[2], 0.05, 1.0e-15);
+}
+
+#[test]
+fn set_weights_on_edge_rejects_missing_cell_in_vertex_kite_lookup() {
+    let area_cell = vec![0.0, 0.0, 1.0, 1.0];
+    let angle_edge = vec![0.0; 3];
+    let dc_edge = vec![1.0; 3];
+    let dv_edge = vec![1.0; 3];
+    let kite_areas_on_vertex = vec![[0.0; 3]; 4];
+    let edges_on_cell = vec![vec![], vec![], vec![2], vec![2]];
+    let cells_on_vertex = vec![[0, 0, 0]; 4];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3]];
+    let vertices_on_cell = vec![vec![], vec![], vec![2], vec![3]];
+    let vertices_on_edge = vec![[0, 0], [0, 0], [2, 3]];
+    let n_edges_on_cell = vec![0, 0, 1, 1];
+
+    assert!(set_weights_on_edge_fortran_indexed(
+        &area_cell,
+        &angle_edge,
+        &dc_edge,
+        &dv_edge,
+        &kite_areas_on_vertex,
+        &edges_on_cell,
+        &cells_on_vertex,
+        &cells_on_edge,
+        &vertices_on_cell,
+        &vertices_on_edge,
+        &n_edges_on_cell,
     )
     .is_none());
 }

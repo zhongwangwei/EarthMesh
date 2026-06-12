@@ -213,3 +213,7 @@ Extended `rust/earthmesh_mesh` with `plane_angle_signed` and `edge_distance_angl
 ### 2026-06-12: `MOD_grid_preprocess.F90` `edgeIDSort` ported
 
 Extended `rust/earthmesh_mesh` with `edge_id_sort_fortran_indexed`, a tested Rust port of `MOD_grid_preprocess:edgeIDSort`. It reorders current `cellsOnEdge`, `verticesOnEdge`, and edge point coordinates to match a reference `cellsOnEdge` ordering, then rebuilds `edgesOnVertex` from the sorted vertex-edge pairs while preserving Fortran-indexed edge ids from `2`. Remaining MPAS postprocess work is concentrated in `set_weightsOnEdge`.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `set_weightsOnEdge` ported
+
+Extended `rust/earthmesh_mesh` with `set_weights_on_edge_fortran_indexed`, a tested Rust port of `MOD_grid_preprocess:set_weightsOnEdge`. The wrapper preserves Fortran-indexed edge/cell/vertex ids, computes `RivCell` from `kiteAreasOnVertex / areaCell`, uses the same two-sided edge stencil traversal, Kahan compensated cumulative sums, `dvEdge/dcEdge` scaling, inflow sign adjustment from `cellsOnEdge`, and zonal-flow reconstruction `error_segment`. Compact per-edge vectors replace the fixed `maxEdges2 x num_edge` Fortran storage.
