@@ -420,7 +420,8 @@
         "iterF_judge original-vertex protection halo refinement marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
         "iterC_judge weak-concavity and seven-edge transition-cap refinement marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
         "iterD_judge 1+n weak-concavity boundary segment marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
-        "OnedivideFour_connection ref_lbx/mrl_new state update ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage"
+        "OnedivideFour_connection ref_lbx/mrl_new state update ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
+        "OnedivideFour_renew child coordinate/connectivity renewal ported to rust/earthmesh_mesh with dateline and storage fixture coverage"
       ]
     }
   ]
