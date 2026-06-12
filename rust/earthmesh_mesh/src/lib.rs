@@ -319,6 +319,13 @@ pub struct OrderedVertexArrays {
     pub cells_on_vertex: [usize; 3],
 }
 
+/// Array-level output from the Fortran-indexed `orderVertexArrays` port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderedVertexArraysOutput {
+    pub edges_on_vertex: Vec<[usize; 3]>,
+    pub cells_on_vertex: Vec<[usize; 3]>,
+}
+
 /// Port of the per-vertex mutation/rebuild workflow in `MOD_grid_preprocess:orderVertexArrays`.
 ///
 /// This preserves the Fortran algorithm: mutate `edgesOnVertex` by repeatedly
@@ -374,6 +381,43 @@ pub fn order_vertex_arrays_for_vertex(
     }
 
     Some(OrderedVertexArrays {
+        edges_on_vertex: ordered_edges,
+        cells_on_vertex: ordered_cells,
+    })
+}
+
+/// Fortran-indexed array wrapper for `MOD_grid_preprocess:orderVertexArrays`.
+///
+/// Indices `0` and `1` are preserved/skipped so existing Fortran-style ids can
+/// be used directly while the rest of the mesh workflow is migrated.
+pub fn order_vertex_arrays_fortran_indexed(
+    vertex_points: &[CartesianPoint],
+    edge_points: &[CartesianPoint],
+    edges_on_vertex: &[[usize; 3]],
+    vertices_on_edge: &[[usize; 2]],
+    cells_on_edge: &[[usize; 2]],
+) -> Option<OrderedVertexArraysOutput> {
+    if edges_on_vertex.len() < vertex_points.len() {
+        return None;
+    }
+
+    let mut ordered_edges = edges_on_vertex.to_vec();
+    let mut ordered_cells = vec![[0usize; 3]; vertex_points.len()];
+
+    for vertex_id in 2..vertex_points.len() {
+        let ordered = order_vertex_arrays_for_vertex(
+            vertex_id,
+            vertex_points[vertex_id],
+            ordered_edges[vertex_id],
+            edge_points,
+            vertices_on_edge,
+            cells_on_edge,
+        )?;
+        ordered_edges[vertex_id] = ordered.edges_on_vertex;
+        ordered_cells[vertex_id] = ordered.cells_on_vertex;
+    }
+
+    Some(OrderedVertexArraysOutput {
         edges_on_vertex: ordered_edges,
         cells_on_vertex: ordered_cells,
     })

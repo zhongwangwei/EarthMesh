@@ -161,3 +161,7 @@ Added `next_ccw_edge_candidate_slot`, a Rust port of the inner `orderVertexArray
 ### 2026-06-12: `MOD_grid_preprocess.F90` per-vertex `orderVertexArrays` workflow ported
 
 Added `order_vertex_arrays_for_vertex`, a Rust port of the per-vertex `orderVertexArrays` mutation/rebuild workflow. It uses the migrated CCW candidate selector to swap `edgesOnVertex` into order, then rebuilds `cellsOnVertex` from `verticesOnEdge` and `cellsOnEdge` using the same side-of-edge rule as Fortran. Remaining work is an array-level wrapper over all vertices and real mesh fixture parity.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` array-level `orderVertexArrays` wrapper ported
+
+Added `order_vertex_arrays_fortran_indexed`, a Rust array-level wrapper over the per-vertex ordering workflow. It preserves the Fortran indexing convention by skipping indices `0` and `1`, returns ordered `edgesOnVertex`, and rebuilds `cellsOnVertex` for every migrated vertex. Remaining work is real mesh fixture parity and integration with the broader `GetEdge` workflow.
