@@ -385,6 +385,7 @@ pub struct RefineLoopWorkingState {
     pub num_wp: Vec<usize>,
     pub num_sjx: usize,
     pub num_dbx: usize,
+    pub num_tranrow_sjx: usize,
     pub mp_new: Vec<LonLatPoint>,
     pub wp_new: Vec<LonLatPoint>,
     pub ngrmw: Vec<Vec<usize>>,
@@ -1408,6 +1409,7 @@ impl RefineLoopWorkingState {
             num_wp: vec![0, nwa],
             num_sjx: 0,
             num_dbx: 0,
+            num_tranrow_sjx: 0,
             mp_new,
             wp_new,
             ngrmw,
@@ -1479,6 +1481,70 @@ impl RefineLoopWorkingState {
                 &self.n_ngrwm,
             )
         }
+    }
+
+    /// Apply migrated `Array_length_calculation` using the state's base
+    /// connectivity, update transition-row and boundary lists, and write the
+    /// legacy close-mesh scratch files.
+    pub fn apply_array_length_calculation(
+        &mut self,
+        file_dir: impl AsRef<Path>,
+        step: usize,
+        set_dis_in: usize,
+    ) -> io::Result<RefineArrayLengthCalculationRunReport> {
+        let sjx_points = *self
+            .num_mp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
+        let lbx_points = *self
+            .num_wp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_wp[1] is required"))?;
+        let cells_on_triangle = fortran_rows_to_triangle_major(&self.ngrmw, sjx_points)?;
+        if self.n_ngrwm.len() <= lbx_points {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("num_wp[1] {lbx_points} requires one-based n_ngrwm storage"),
+            ));
+        }
+        let mut triangles_on_cell = vec![Vec::<usize>::new(); lbx_points + 1];
+        for (cell, target) in triangles_on_cell
+            .iter_mut()
+            .enumerate()
+            .take(lbx_points + 1)
+            .skip(1)
+        {
+            let count = self.n_ngrwm[cell];
+            if self.ngrwm.len() <= count
+                || self.ngrwm[1..=count].iter().any(|row| row.len() <= cell)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("cell {cell} requires ngrwm rows 1..={count}"),
+                ));
+            }
+            target.extend((1..=count).map(|row| self.ngrwm[row][cell]));
+        }
+        let report = run_refine_array_length_calculation_fortran_indexed(
+            file_dir,
+            step,
+            set_dis_in,
+            self.num_vertex,
+            self.num_vertex,
+            sjx_points,
+            lbx_points,
+            &self.mrl_new,
+            &self.triangle_neighbors,
+            &cells_on_triangle,
+            &triangles_on_cell,
+            &self.n_ngrwm,
+            self.num_tranrow_sjx,
+            &self.wp_new,
+        )?;
+        self.num_tranrow_sjx = report.calculation.halo.num_transition_row_triangles;
+        self.bdy_refine = report.calculation.halo.boundary_refine.clone();
+        self.bdy_refine_tran = report.calculation.halo.boundary_refine_transition.clone();
+        Ok(report)
     }
 
     /// Apply migrated `OnedivideFour_connection` using the state's current

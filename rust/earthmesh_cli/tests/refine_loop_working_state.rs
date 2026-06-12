@@ -658,3 +658,107 @@ fn working_state_executor_runs_file_backed_passthrough_refine_step() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn working_state_applies_array_length_calculation_and_close_mesh_outputs() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_state_array_length_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+
+    let sjx_points = 9;
+    let lbx_points = 13;
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); sjx_points],
+        w_points: vec![point(0.0, 0.0); lbx_points],
+        m_to_w: vec![[1, 2, 3]; sjx_points],
+        w_to_m: vec![vec![1]; lbx_points],
+        n_w_to_m: vec![1; lbx_points],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.num_vertex = 1;
+    state.num_mp = vec![0, sjx_points];
+    state.num_wp = vec![0, lbx_points];
+    state.num_tranrow_sjx = 0;
+    state.mrl_new = vec![0; sjx_points + 1];
+    state.triangle_neighbors = vec![vec![1, 1, 1]; sjx_points + 1];
+    state.ngrmw = vec![vec![0; sjx_points + 1]; 4];
+    state.ngrwm = vec![vec![0; lbx_points + 1]; 4];
+    state.n_ngrwm = vec![0; lbx_points + 1];
+    state.wp_new = vec![point(0.0, 0.0); lbx_points + 1];
+
+    for triangle in 2..=9 {
+        state.mrl_new[triangle] = 1;
+    }
+    for refined in [6, 7, 8, 9] {
+        state.mrl_new[refined] = 4;
+    }
+    state.triangle_neighbors[2] = vec![6, 3, 5];
+    state.triangle_neighbors[3] = vec![7, 4, 2];
+    state.triangle_neighbors[4] = vec![8, 5, 3];
+    state.triangle_neighbors[5] = vec![9, 2, 4];
+    state.ngrmw[1][2] = 10;
+    state.ngrmw[2][2] = 11;
+    state.ngrmw[3][2] = 99;
+    state.ngrmw[1][3] = 11;
+    state.ngrmw[2][3] = 12;
+    state.ngrmw[3][3] = 99;
+    state.ngrmw[1][4] = 12;
+    state.ngrmw[2][4] = 13;
+    state.ngrmw[3][4] = 99;
+    state.ngrmw[1][5] = 13;
+    state.ngrmw[2][5] = 10;
+    state.ngrmw[3][5] = 99;
+    state.ngrmw[1][6] = 10;
+    state.ngrmw[2][6] = 11;
+    state.ngrmw[3][6] = 90;
+    state.ngrmw[1][7] = 11;
+    state.ngrmw[2][7] = 12;
+    state.ngrmw[3][7] = 91;
+    state.ngrmw[1][8] = 12;
+    state.ngrmw[2][8] = 13;
+    state.ngrmw[3][8] = 92;
+    state.ngrmw[1][9] = 13;
+    state.ngrmw[2][9] = 10;
+    state.ngrmw[3][9] = 93;
+    state.ngrwm[1][10] = 5;
+    state.ngrwm[2][10] = 2;
+    state.ngrwm[3][10] = 6;
+    state.ngrwm[1][11] = 2;
+    state.ngrwm[2][11] = 3;
+    state.ngrwm[3][11] = 7;
+    state.ngrwm[1][12] = 3;
+    state.ngrwm[2][12] = 4;
+    state.ngrwm[3][12] = 8;
+    state.ngrwm[1][13] = 4;
+    state.ngrwm[2][13] = 5;
+    state.ngrwm[3][13] = 9;
+    for cell in 10..=13 {
+        state.n_ngrwm[cell] = 3;
+        state.wp_new[cell] = point(100.0 + cell as f64, 20.0 + cell as f64);
+    }
+
+    let report = state
+        .apply_array_length_calculation(&root, 4, 1)
+        .expect("apply Array_length_calculation through state");
+
+    assert_eq!(state.num_tranrow_sjx, 4);
+    assert_eq!(state.bdy_refine, vec![10, 11, 12, 13]);
+    assert_eq!(state.bdy_refine_tran, Vec::<usize>::new());
+    assert_eq!(report.calculation.boundary.curves.num_closed_curve, 1);
+    assert_eq!(report.close_meshes.mask_patch_ndm, 1);
+    assert_eq!(
+        earthmesh_cli::read_close_mesh_netcdf(root.join("tmpfile/mask_patch_close_4_001.nc4"))
+            .expect("read close mesh"),
+        vec![
+            state.wp_new[10],
+            state.wp_new[11],
+            state.wp_new[12],
+            state.wp_new[13]
+        ]
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
