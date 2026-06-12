@@ -185,7 +185,8 @@
         "GetArea areaTriangle reconstruction relative error summary ported to rust/earthmesh_mesh",
         "IsNgrmm triangle-neighbor opposite-edge classifier ported to rust/earthmesh_mesh",
         "GetEdge cellsOnEdge shared-cell mapping primitive ported to rust/earthmesh_mesh",
-        "GetSort_verticesOnEdge cross-product swap predicate ported to rust/earthmesh_mesh"
+        "GetSort_verticesOnEdge cross-product swap predicate ported to rust/earthmesh_mesh",
+        "normalizeRotation single-vertex minimum-cell rotation helper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -198,7 +199,7 @@
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
         "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
         "GetArea full production wrapper over real MPAS mesh arrays and fixture parity",
-        "GetEdge full edge connectivity workflow, edge midpoint calculation, and remaining ordering routines"
+        "GetEdge full edge connectivity workflow, edge midpoint calculation, orderVertexArrays, and remaining ordering routines"
       ]
     },
     {

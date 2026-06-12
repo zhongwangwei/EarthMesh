@@ -215,6 +215,40 @@ pub fn should_swap_vertices_on_edge(
     cross <= 0.0
 }
 
+/// Port of one-vertex rotation logic from `MOD_grid_preprocess:normalizeRotation`.
+///
+/// The minimum positive cell id is rotated into slot 0, and the edge slots are
+/// rotated in lockstep. If no positive cell id exists, arrays are unchanged.
+pub fn normalize_vertex_rotation(
+    cells_on_vertex: [usize; 3],
+    edges_on_vertex: [usize; 3],
+) -> ([usize; 3], [usize; 3]) {
+    let mut min_cell = cells_on_vertex[0];
+    let mut min_pos = 0usize;
+
+    for pos in 1..3 {
+        let cell = cells_on_vertex[pos];
+        if cell > 0 && (min_cell == 0 || cell < min_cell) {
+            min_cell = cell;
+            min_pos = pos;
+        }
+    }
+
+    if min_pos == 1 && min_cell > 0 {
+        (
+            [cells_on_vertex[1], cells_on_vertex[2], cells_on_vertex[0]],
+            [edges_on_vertex[1], edges_on_vertex[2], edges_on_vertex[0]],
+        )
+    } else if min_pos == 2 && min_cell > 0 {
+        (
+            [cells_on_vertex[2], cells_on_vertex[0], cells_on_vertex[1]],
+            [edges_on_vertex[2], edges_on_vertex[0], edges_on_vertex[1]],
+        )
+    } else {
+        (cells_on_vertex, edges_on_vertex)
+    }
+}
+
 /// Port of `MOD_grid_preprocess:arc_length`.
 ///
 /// Computes spherical arc length from Cartesian coordinates using the same

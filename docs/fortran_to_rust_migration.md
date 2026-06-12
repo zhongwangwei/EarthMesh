@@ -149,3 +149,7 @@ Added `is_ngrmm`, a Rust port of the Fortran neighbor classifier that returns wh
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetSort_verticesOnEdge` swap predicate ported
 
 Added `should_swap_vertices_on_edge`, a Rust port of the 2-D cross-product rule used by `GetSort_verticesOnEdge` to decide whether `verticesOnEdge(1:2, i)` should be swapped. The helper preserves the Fortran single-step dateline adjustment for longitude differences. Remaining edge work is the full edge-id workflow, optional midpoint generation, and broader ordering routines.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `normalizeRotation` helper ported
+
+Added `normalize_vertex_rotation`, a Rust port of the per-vertex rotation rule from `normalizeRotation`. It moves the minimum positive `cellsOnVertex` id to the first slot and rotates `edgesOnVertex` in lockstep, preserving the Fortran behavior for zero sentinels. Remaining ordering work is the full `orderVertexArrays` 3-D sorting logic and integration into the edge workflow.
