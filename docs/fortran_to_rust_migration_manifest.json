@@ -228,10 +228,12 @@
       "parity_gate": "Land, ocean, atmosphere, and local refinement target fixtures reproduce Fortran refinement levels and mean/std calculations.",
       "notes": "Keep target calculation decoupled from triangle/hex cell shape.",
       "completed_rust_surfaces": [
-        "GetRef_Lnd refine_num_landtypes and refine_area_mainland basic threshold criteria ported to rust/earthmesh_cli"
+        "GetRef_Lnd refine_num_landtypes and refine_area_mainland basic threshold criteria ported to rust/earthmesh_cli",
+        "GetRef mean_std_cal2d one-layer mean/std threshold helper ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "GetRef one-layer and two-layer mean/std threshold calculations",
+        "GetRef one-layer mean/std integration for land/ocean/atmos threshold reports",
+        "GetRef two-layer mean/std threshold calculations",
         "GetRef land/ocean/atmos/LOC threshold NetCDF writers and top-level aggregation",
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
       ]
