@@ -427,7 +427,8 @@
         "m1w1_to_m11w11 child-adjacency lookup ported to rust/earthmesh_mesh with zero-child and missing-adjacency fixture coverage",
         "weak_concav_pair_special one-cell weak-concavity pair state update ported to rust/earthmesh_mesh with segment and deferred-renewal fixture coverage",
         "sharp_concav_lop_judge strong-concavity LOP segment builder ported to rust/earthmesh_mesh with child-pair and mirror fixture coverage",
-        "weak_concav_lop_judge weak-concavity LOP segment builder ported to rust/earthmesh_mesh with pair-only, intersegment, and internal fixture coverage"
+        "weak_concav_lop_judge weak-concavity LOP segment builder ported to rust/earthmesh_mesh with pair-only, intersegment, and internal fixture coverage",
+        "Delaunay_Lop diagonal flip and crossline cleanup ported to rust/earthmesh_mesh with zero-pair and dateline fixture coverage"
       ]
     }
   ]
