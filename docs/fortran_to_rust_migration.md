@@ -289,3 +289,7 @@ Extended `rust/earthmesh_mesh` with `refine_sjx_regional_make_fortran_indexed`, 
 ### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment_regional_step source-mask composition ported
 
 Extended `rust/earthmesh_mesh` with `springjustment_regional_from_source_mask_fortran_indexed`, a tested pure in-memory adapter for the no-`num_sjx_ref` branch of `Springjustment_regional_step`. It composes source-mask triangle classification, regional move-mask derivation, and the migrated regional spring/circumcenter refresh core while keeping NetCDF mask loading and output persistence outside the deterministic Rust kernel boundary. Remaining Springjustment work is the actual NetCDF adapter layer around these kernels.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` GetArea real MPAS fixture parity added
+
+Added `rust/earthmesh_mesh/tests/mpas_real_fixture.rs`, a compact fixture extracted from `cases/ATMOS_hex_N64_refine2_global_LOM67_251027/result/MPASOUT_NXP0064_global.nc4`. The test validates the migrated `get_area_unit_fortran_indexed` kernel against real MPAS `areaCell` and `areaTriangle` values using x/y/z coordinates and compact reindexed connectivity, without adding a Rust NetCDF dependency. Remaining GetArea work is the NetCDF adapter boundary that loads/persists full production arrays.
