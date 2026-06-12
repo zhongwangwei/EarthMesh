@@ -208,14 +208,15 @@
         "Get_Edge_DIS_Angle dcEdge/dvEdge/angleEdge metrics ported to rust/earthmesh_mesh",
         "edgeIDSort reference edge-id remapping and edgesOnVertex rebuild ported to rust/earthmesh_mesh",
         "set_weightsOnEdge MPAS stencil weights and reconstruction error ported to rust/earthmesh_mesh",
-        "GetArea production wrapper with reconstruction diagnostic ported to rust/earthmesh_mesh"
+        "GetArea production wrapper with reconstruction diagnostic ported to rust/earthmesh_mesh",
+        "GetEdge production wrapper over connectivity, orientation, midpoint, and orderVertexArrays ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
         "Springjustment_global and Springjustment_regional_step",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea real MPAS mesh fixture parity and adapter integration",
-        "GetEdge real-mesh combined edge fixture parity and integration wrapper"
+        "GetEdge real MPAS mesh fixture parity and adapter integration"
       ]
     },
     {

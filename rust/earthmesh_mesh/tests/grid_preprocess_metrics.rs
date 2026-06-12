@@ -2,9 +2,9 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
     cells_on_edge_from_neighbor_cells, edge_midpoints_from_cells_fortran_indexed,
     get_area_production_fortran_indexed, get_area_unit_fortran_indexed,
-    get_edge_connectivity_fortran_indexed, is_ngrmm, lonlat_degrees_to_unit_xyz,
-    next_ccw_edge_candidate_slot, normalize_lon_m180_180, normalize_vertex_rotation,
-    order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
+    get_edge_connectivity_fortran_indexed, get_edge_production_fortran_indexed, is_ngrmm,
+    lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
+    normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
     polygon_mesh_quality_fortran_indexed, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
@@ -614,6 +614,84 @@ fn edge_midpoints_from_cells_fortran_indexed_matches_getedge_optional_vp() {
     approx_eq(midpoints[2].lat_degrees, 0.0, 1.0e-12);
     approx_eq(midpoints[3].lon_degrees.abs(), 180.0, 1.0e-12);
     approx_eq(midpoints[3].lat_degrees, 0.0, 1.0e-12);
+}
+
+#[test]
+fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
+    let cells_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let triangle_neighbors = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [3, 4, 5],
+        [2, 4, 5],
+        [2, 3, 5],
+        [2, 3, 4],
+    ];
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+
+    let output = get_edge_production_fortran_indexed(
+        &triangle_neighbors,
+        &cells_on_vertex,
+        &triangle_lonlat,
+        &cell_lonlat,
+    )
+    .expect("valid production GetEdge input");
+
+    let connectivity = get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_vertex)
+        .expect("valid connectivity");
+    let expected_vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+        &triangle_lonlat,
+        &cell_lonlat,
+        &connectivity.cells_on_edge,
+        &connectivity.vertices_on_edge,
+    )
+    .expect("sorted verticesOnEdge");
+    let expected_edge_points =
+        edge_midpoints_from_cells_fortran_indexed(&connectivity.cells_on_edge, &cell_lonlat)
+            .expect("edge midpoint output");
+    let triangle_points = triangle_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let edge_points_cartesian = expected_edge_points
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let expected_ordered = order_vertex_arrays_fortran_indexed(
+        &triangle_points,
+        &edge_points_cartesian,
+        &connectivity.edges_on_vertex,
+        &expected_vertices_on_edge,
+        &connectivity.cells_on_edge,
+    )
+    .expect("ordered vertex arrays");
+
+    assert_eq!(output.cells_on_edge, connectivity.cells_on_edge);
+    assert_eq!(output.vertices_on_edge, expected_vertices_on_edge);
+    assert_eq!(output.edge_points, expected_edge_points);
+    assert_eq!(output.edges_on_vertex, expected_ordered.edges_on_vertex);
+    assert_eq!(output.cells_on_vertex, expected_ordered.cells_on_vertex);
 }
 
 #[test]

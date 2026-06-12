@@ -221,3 +221,7 @@ Extended `rust/earthmesh_mesh` with `set_weights_on_edge_fortran_indexed`, a tes
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetArea` production wrapper ported
 
 Extended `rust/earthmesh_mesh` with `get_area_production_fortran_indexed`, a tested production-facing wrapper around the migrated `GetArea` unit workflow. It returns the `kiteAreasOnVertex`, `areaTriangle`, and `areaCell` arrays together with the reconstruction relative-error summary previously only printed by the Fortran routine. Real-mesh MPAS parity fixtures remain separate integration work.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetEdge` production wrapper ported
+
+Extended `rust/earthmesh_mesh` with `get_edge_production_fortran_indexed`, a tested production-facing wrapper that composes the migrated `GetEdge` connectivity workflow, `GetSort_verticesOnEdge`, optional `vp` midpoint generation, and `orderVertexArrays`. This provides a single Rust replacement path for sorted `cellsOnEdge`, `verticesOnEdge`, `edgesOnVertex`, `cellsOnVertex`, and edge midpoint coordinates; real MPAS mesh parity fixtures and adapter wiring remain separate integration gates.

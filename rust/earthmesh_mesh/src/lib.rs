@@ -1581,6 +1581,17 @@ pub struct GetEdgeConnectivity {
     pub edges_on_vertex: Vec<[usize; 3]>,
 }
 
+/// Production-facing `GetEdge` output after the same post-processing sequence
+/// used by the global mesh workflow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetEdgeProductionOutput {
+    pub cells_on_edge: Vec<[usize; 2]>,
+    pub vertices_on_edge: Vec<[usize; 2]>,
+    pub edges_on_vertex: Vec<[usize; 3]>,
+    pub cells_on_vertex: Vec<[usize; 3]>,
+    pub edge_points: Vec<LonLatDegrees>,
+}
+
 /// Port of the core connectivity loop in `MOD_grid_preprocess:GetEdge`.
 ///
 /// The optional midpoint calculation is intentionally separate; this function
@@ -1639,6 +1650,54 @@ pub fn get_edge_connectivity_fortran_indexed(
         cells_on_edge,
         vertices_on_edge,
         edges_on_vertex,
+    })
+}
+
+/// Production wrapper for `MOD_grid_preprocess:GetEdge` plus the immediate
+/// post-processing used before MPAS-style mesh outputs are consumed.
+///
+/// The sequence matches the migrated workflow surfaces:
+/// `GetEdge`, `GetSort_verticesOnEdge`, optional `vp` midpoint generation, and
+/// `orderVertexArrays`.
+pub fn get_edge_production_fortran_indexed(
+    triangle_neighbors: &[[usize; 3]],
+    cells_on_vertex: &[[usize; 3]],
+    triangle_lonlat: &[LonLatDegrees],
+    cell_lonlat: &[LonLatDegrees],
+) -> Option<GetEdgeProductionOutput> {
+    let connectivity = get_edge_connectivity_fortran_indexed(triangle_neighbors, cells_on_vertex)?;
+    let vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+        triangle_lonlat,
+        cell_lonlat,
+        &connectivity.cells_on_edge,
+        &connectivity.vertices_on_edge,
+    )?;
+    let edge_points =
+        edge_midpoints_from_cells_fortran_indexed(&connectivity.cells_on_edge, cell_lonlat)?;
+    let triangle_points = triangle_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let edge_points_cartesian = edge_points
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let ordered_vertex_arrays = order_vertex_arrays_fortran_indexed(
+        &triangle_points,
+        &edge_points_cartesian,
+        &connectivity.edges_on_vertex,
+        &vertices_on_edge,
+        &connectivity.cells_on_edge,
+    )?;
+
+    Some(GetEdgeProductionOutput {
+        cells_on_edge: connectivity.cells_on_edge,
+        vertices_on_edge,
+        edges_on_vertex: ordered_vertex_arrays.edges_on_vertex,
+        cells_on_vertex: ordered_vertex_arrays.cells_on_vertex,
+        edge_points,
     })
 }
 
