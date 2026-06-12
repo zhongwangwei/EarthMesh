@@ -553,3 +553,7 @@ Added `write_mask_postproc_final_gridfile`, a tested orchestration helper that u
 ### 2026-06-12: mask_postproc domain input reader orchestration ported
 
 Added `read_mask_postproc_domain_inputs`, a tested Rust CLI helper that loads the source unstructured gridfile and contain-domain NetCDF selected by `MaskPostprocDomainIoPlan`, converts the gridfile into `MaskPostprocLayout`, and carries forward the initial `IsInDmArea_ustr` mask. This covers the common read side of the Earth/Lnd/Ocn domain branches; the remaining orchestration work is applying branch-specific domain edits, patchtype generation, ocean boundary renewal, and final writer calls end-to-end.
+
+### 2026-06-12: PatchID selected-domain coordinate builder ported
+
+Added `patchid_mesh_from_selected_domain`, a tested Rust port of the coordinate-array construction inside `PatchID_Save`. It builds `lon_w/lon_e/lat_n/lat_s/longitude/latitude` from the selected-domain `minlon_DmArea`, `maxlat_DmArea`, `lon_vertex`, `lat_vertex`, `lon_i`, and `lat_i` lookup arrays, so Earth/Lnd patchtype generation can feed the existing NetCDF writer without duplicating Fortran indexing rules.
