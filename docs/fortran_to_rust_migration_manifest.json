@@ -169,7 +169,8 @@
         "Area_judge calculated mask_refine source orchestration and domain containment validation ported to rust/earthmesh_cli",
         "Area_judge specified mask_refine source orchestration and domain containment validation ported to rust/earthmesh_cli",
         "Area_judge non-restart domain, seaorland, patch, and calculated-refine orchestration ported to rust/earthmesh_cli",
-        "Area_judge restart selected-grid payload expansion into full source grids ported to rust/earthmesh_cli"
+        "Area_judge restart selected-grid payload expansion into full source grids ported to rust/earthmesh_cli",
+        "Area_judge_refine iter-zero versus specified-iteration dispatch ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",
