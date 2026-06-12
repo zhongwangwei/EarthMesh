@@ -1967,6 +1967,49 @@ pub struct AreaJudgeNonRestartReport {
     pub calculated_refine: Option<AreaJudgeAreaSourceReport>,
 }
 
+/// Runtime inputs for a non-restart Area_judge grid-file orchestration run.
+#[derive(Debug, Clone, Copy)]
+pub struct AreaJudgeGridRunConfig<'a> {
+    pub file_dir: &'a Path,
+    pub mask_domain_global: bool,
+    pub mask_domain_type: &'a str,
+    pub mask_domain_ndm: usize,
+    pub mask_patch: Option<AreaJudgePatchConfig<'a>>,
+    pub refine: bool,
+    pub calculated_refine: Option<AreaJudgeCalculatedRefineConfig<'a>>,
+    pub landtypes_global: &'a [Vec<i32>],
+    pub mesh_type: &'a str,
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub domain_output: Option<&'a Path>,
+    pub refine_output: Option<&'a Path>,
+}
+
+/// Evidence from writing a selected Area_judge grid payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeGridWriteReport {
+    pub output: PathBuf,
+    pub bounds: AreaJudgeSourceBounds,
+    pub nlons_select: usize,
+    pub nlats_select: usize,
+    pub selected_cells: usize,
+    pub has_seaorland: bool,
+}
+
+/// Evidence from a non-restart Area_judge run that writes selected grid files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeGridRunReport {
+    pub area: AreaJudgeNonRestartReport,
+    pub refine_step: Option<AreaJudgeRefineStepReport>,
+    pub domain_write: Option<AreaJudgeGridWriteReport>,
+    pub refine_write: Option<AreaJudgeGridWriteReport>,
+}
+
 /// Threshold-data reader configuration for the calculated-refine branch of `Area_judge`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AreaJudgeThresholdReadConfig<'a> {
@@ -4907,6 +4950,124 @@ pub fn build_area_judge_non_restart_fortran_indexed(
         patch,
         calculated_refine,
     })
+}
+
+/// Compose the non-restart `Area_judge` branch, activate iter-zero calculated
+/// refine when available, and write selected grid payloads for restart-style
+/// downstream consumers.
+pub fn run_area_judge_non_restart_grids_fortran_indexed(
+    config: AreaJudgeGridRunConfig<'_>,
+) -> io::Result<AreaJudgeGridRunReport> {
+    let area = build_area_judge_non_restart_fortran_indexed(
+        config.file_dir,
+        config.mask_domain_global,
+        config.mask_domain_type,
+        config.mask_domain_ndm,
+        config.mask_patch,
+        config.refine,
+        config.calculated_refine,
+        config.landtypes_global,
+        config.mesh_type,
+        config.lon_vertex,
+        config.lat_vertex,
+        config.lon_i,
+        config.lat_i,
+        config.gridnum_perdegree,
+        config.nlons_source,
+        config.nlats_source,
+    )?;
+
+    let domain_write = config
+        .domain_output
+        .map(|output| {
+            write_area_judge_selected_grid_report(
+                output,
+                &area.domain.is_in_domain,
+                Some(&area.seaorland.seaorland),
+                config.lon_i,
+                config.lat_i,
+                area.domain.bounds,
+            )
+        })
+        .transpose()?;
+
+    let refine_step = if config.refine {
+        area.calculated_refine
+            .as_ref()
+            .map(|calculated| {
+                run_area_judge_refine_fortran_indexed(
+                    config.file_dir,
+                    0,
+                    Some((&calculated.is_in_area, calculated.bounds)),
+                    "",
+                    0,
+                    &area.domain.is_in_domain,
+                    config.lon_vertex,
+                    config.lat_vertex,
+                    config.lon_i,
+                    config.lat_i,
+                    config.gridnum_perdegree,
+                    config.nlons_source,
+                    config.nlats_source,
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+
+    let refine_write = match (config.refine_output, refine_step.as_ref()) {
+        (Some(output), Some(refine)) => Some(write_area_judge_selected_grid_report(
+            output,
+            &refine.is_in_refine,
+            None,
+            config.lon_i,
+            config.lat_i,
+            refine.bounds,
+        )?),
+        (Some(_), None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Area_judge refine output requires calculated iter-zero refine state",
+            ));
+        }
+        (None, _) => None,
+    };
+
+    Ok(AreaJudgeGridRunReport {
+        area,
+        refine_step,
+        domain_write,
+        refine_write,
+    })
+}
+
+fn write_area_judge_selected_grid_report(
+    output: &Path,
+    is_in_area: &[Vec<i32>],
+    seaorland: Option<&[Vec<i32>]>,
+    lon_i: &[f64],
+    lat_i: &[f64],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeGridWriteReport> {
+    let payload =
+        select_area_judge_grid_fortran_indexed(is_in_area, seaorland, lon_i, lat_i, bounds)?;
+    write_area_judge_grid_netcdf(output, &payload)?;
+    Ok(AreaJudgeGridWriteReport {
+        output: output.to_path_buf(),
+        bounds: payload.bounds,
+        nlons_select: payload.longitude.len(),
+        nlats_select: payload.latitude.len(),
+        selected_cells: count_selected_cells_zero_based(&payload.is_in_area_select),
+        has_seaorland: payload.seaorland_select.is_some(),
+    })
+}
+
+fn count_selected_cells_zero_based(grid: &[Vec<i32>]) -> usize {
+    grid.iter()
+        .flat_map(|row| row.iter())
+        .filter(|value| **value != 0)
+        .count()
 }
 
 /// Active refine-grid state produced by `Area_judge_refine(iter=0)`.
