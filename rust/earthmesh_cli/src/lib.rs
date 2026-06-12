@@ -257,6 +257,19 @@ pub struct EarthPatchtypes {
     pub sum_sea_ustr: usize,
 }
 
+/// Working mesh orientation used by `MOD_mask_postproc.F90:mask_postproc_*`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocLayout {
+    pub ustr_points: usize,
+    pub ustr_bounds: usize,
+    pub center_points: Vec<LonLatPoint>,
+    pub vertex_points: Vec<LonLatPoint>,
+    pub center_neighbors: Vec<Vec<usize>>,
+    pub vertex_neighbors: Vec<Vec<usize>>,
+    pub center_neighbor_counts: Vec<usize>,
+    pub vertex_neighbor_counts: Vec<usize>,
+}
+
 /// Evidence report from writing an unstructured gridfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnstructuredMeshWriteReport {
@@ -861,6 +874,41 @@ pub fn build_earth_patchtypes_fortran_indexed(
         sum_land_ustr,
         sum_sea_ustr,
     })
+}
+
+/// Port of the repeated `mode_grid == 'tri'/'hex'` setup in
+/// `MOD_mask_postproc.F90:mask_postproc_Earth/Lnd/Ocn`.
+pub fn mask_postproc_layout_from_unstructured_mesh(
+    mesh: &UnstructuredMesh,
+    mode_grid: &str,
+) -> io::Result<MaskPostprocLayout> {
+    validate_unstructured_mesh(mesh)?;
+    match mode_grid.trim() {
+        "tri" => Ok(MaskPostprocLayout {
+            ustr_points: mesh.m_points.len(),
+            ustr_bounds: mesh.w_points.len(),
+            center_points: mesh.m_points.clone(),
+            vertex_points: mesh.w_points.clone(),
+            center_neighbors: m_to_w_as_usize_rows(&mesh.m_to_w)?,
+            vertex_neighbors: i32_rows_as_usize(&mesh.w_to_m, "itab_w%im")?,
+            center_neighbor_counts: vec![3; mesh.m_points.len()],
+            vertex_neighbor_counts: i32_counts_as_usize(&mesh.n_w_to_m, "n_ngrwm")?,
+        }),
+        "hex" => Ok(MaskPostprocLayout {
+            ustr_points: mesh.w_points.len(),
+            ustr_bounds: mesh.m_points.len(),
+            center_points: mesh.w_points.clone(),
+            vertex_points: mesh.m_points.clone(),
+            center_neighbors: i32_rows_as_usize(&mesh.w_to_m, "itab_w%im")?,
+            vertex_neighbors: m_to_w_as_usize_rows(&mesh.m_to_w)?,
+            center_neighbor_counts: i32_counts_as_usize(&mesh.n_w_to_m, "n_ngrwm")?,
+            vertex_neighbor_counts: vec![3; mesh.m_points.len()],
+        }),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("mask_postproc layout supports tri or hex mode_grid only, got {other}"),
+        )),
+    }
 }
 
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
@@ -1575,6 +1623,33 @@ fn patchtype_indices(
         ));
     }
     Ok((lon_idx as usize, lat_idx as usize))
+}
+
+fn m_to_w_as_usize_rows(rows: &[[i32; 3]]) -> io::Result<Vec<Vec<usize>>> {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|&value| usize_from_i32_connectivity(value, "itab_m%iw"))
+                .collect()
+        })
+        .collect()
+}
+
+fn i32_rows_as_usize(rows: &[Vec<i32>], name: &str) -> io::Result<Vec<Vec<usize>>> {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|&value| usize_from_i32_connectivity(value, name))
+                .collect()
+        })
+        .collect()
+}
+
+fn i32_counts_as_usize(values: &[i32], name: &str) -> io::Result<Vec<usize>> {
+    values
+        .iter()
+        .map(|&value| usize_from_i32_connectivity(value, name))
+        .collect()
 }
 
 fn scale_cartesian_points_by_earth_radius(points: &mut [CartesianPoint]) {

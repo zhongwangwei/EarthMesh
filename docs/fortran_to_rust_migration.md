@@ -525,3 +525,7 @@ Added `apply_ocean_mask_sea_ratio_fortran_indexed` in `rust/earthmesh_cli`, a te
 ### 2026-06-12: mask_postproc_Earth patchtypes_make ported
 
 Added `build_earth_patchtypes_fortran_indexed` in `rust/earthmesh_cli`, a tested pure-data port of the `mask_postproc_Earth` `patchtypes_make` loop. The helper preserves Fortran one-based `ustr_id`/`ustr_ii` row references, land-pixel ratio classification with the strict `> mask_sea_ratio` rule, `seaorland_ustr` values (`0` missing, `-1` sea, `1` land), land/sea counters, and longitude/latitude index remapping into the patchtype grid before the full Earth branch orchestration is wired.
+
+### 2026-06-12: mask_postproc tri/hex layout setup ported
+
+Added `mask_postproc_layout_from_unstructured_mesh` and `MaskPostprocLayout` in `rust/earthmesh_cli`, covering the repeated `mode_grid == 'tri'/'hex'` setup in `mask_postproc_Earth`, `mask_postproc_Lnd`, and `mask_postproc_Ocn`. The helper preserves the Fortran orientation rule: tri uses M points as centers and W points as vertices, while hex swaps W points to centers and M points to vertices, carrying the matching center/vertex connectivity and neighbor-count arrays into the Rust orchestration shape.

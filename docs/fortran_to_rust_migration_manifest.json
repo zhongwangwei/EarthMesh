@@ -298,7 +298,8 @@
         "domain mask_postproc legacy I/O path plan ported to rust/earthmesh_cli",
         "PatchID_Save patchtype NetCDF writer ported to rust/earthmesh_cli",
         "mask_postproc_Ocn contain mask_sea_ratio adjustment ported to rust/earthmesh_cli",
-        "mask_postproc_Earth patchtypes_make classification ported to rust/earthmesh_cli"
+        "mask_postproc_Earth patchtypes_make classification ported to rust/earthmesh_cli",
+        "mask_postproc tri/hex mesh layout setup ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O"
