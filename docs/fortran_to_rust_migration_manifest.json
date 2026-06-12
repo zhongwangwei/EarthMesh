@@ -266,7 +266,6 @@
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
         "Springjustment_global/Springjustment_regional_step NetCDF adapter loading and persistence wiring",
-        "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea NetCDF adapter integration",
         "GetEdge NetCDF adapter integration"
       ]
