@@ -60,3 +60,16 @@ The migration is complete only when:
 ## Current next milestone
 
 The immediate milestone is not to delete Fortran. It is to lock a verified migration map and add parity fixtures module by module. The first gate is `tests/test_fortran_to_rust_migration_manifest.py`, which fails if any `src/*.F90` file is not explicitly tracked with a Rust target, phase, strategy, and parity gate.
+
+## Progress notes
+
+### 2026-06-12: `consts_coms` Rust core started
+
+Added `rust/earthmesh_core` as the first Rust-native replacement surface for `src/consts_coms.F90`. The crate currently covers:
+
+- `PIO180`, `PIU180`, and `PI2` formula parity.
+- Degree/radian helper functions using the migrated constants.
+- MPAS-compatible Earth radius initialization from `mkgrd.F90:init_consts`.
+- Typed `EarthmeshConfig::default()` matching the Fortran `oname_vars` defaults.
+
+Remaining `consts_coms.F90` work is intentionally explicit in the manifest: lon/lat mesh defaults, FVCOM mesh defaults, `mem_*` state modules, and namelist parser compatibility still need separate parity tests before this Fortran file can be considered fully replaced.
