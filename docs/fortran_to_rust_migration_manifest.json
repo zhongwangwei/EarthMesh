@@ -194,12 +194,14 @@
         "GetEdge core connectivity workflow for edgesOnVertex, verticesOnEdge, and cellsOnEdge ported to rust/earthmesh_mesh",
         "GetEdge optional vp edge midpoint calculation ported to rust/earthmesh_mesh",
         "centroid_spherical_calculation Fortran-indexed batch wrapper over triangle connectivity ported to rust/earthmesh_mesh",
-        "circumcenter_spherical_calculation polar-stereographic spherical circumcenter workflow ported to rust/earthmesh_mesh"
+        "circumcenter_spherical_calculation polar-stereographic spherical circumcenter workflow ported to rust/earthmesh_mesh",
+        "find_frac_index monotonic-grid fractional lookup ported to rust/earthmesh_mesh",
+        "dist_layers_make four distance-layer spacing formulas ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
         "Springjustment_global and Springjustment_regional_step",
-        "find_frac_index and layer construction helpers",
+        "distsOnEdge_layers_make and cellwidth_layers_make mesh application wrappers",
         "edge/cell connectivity construction and MPAS ordering routines",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
