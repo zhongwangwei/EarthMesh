@@ -86,7 +86,21 @@
       "migration_phase": "phase_3",
       "strategy": "port",
       "parity_gate": "Area classification fixtures match Fortran land/ocean/river/coast decisions, including self-intersection and polygon-in-area edge cases.",
-      "notes": "Build on the existing earthmesh_geometry crate and avoid duplicating polygon primitives."
+      "notes": "Build on the existing earthmesh_geometry crate and avoid duplicating polygon primitives.",
+      "port_status": "started",
+      "completed_rust_surfaces": [
+        "haversine distance in kilometers using EarthMesh MPAS radius",
+        "is_point_in_circle radius predicate",
+        "2D cross product orientation helper",
+        "convex polygon point-inclusion predicate with boundary-inside behavior"
+      ],
+      "remaining_rust_surfaces": [
+        "Area_judge and Area_judge_refine orchestration over grids and masks",
+        "mask_patch_modify and NetCDF-backed area reads",
+        "closed-curve/ray-crossing polygon handling including dateline crossing",
+        "self-intersection checks and all non-convex area predicates",
+        "fixture parity for land/ocean/river/coast classification decisions"
+      ]
     },
     {
       "path": "src/MOD_data_preprocess.F90",

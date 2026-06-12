@@ -13,6 +13,65 @@ impl Point {
     }
 }
 
+
+/// Earth radius in kilometers used by `MOD_Area_judge:haversine`.
+///
+/// The Fortran routine initializes `erad = 6371229` meters and computes
+/// `erad / 1000 * central_angle`.
+pub const EARTH_RADIUS_KM: f64 = 6_371.229;
+
+/// Port of `MOD_Area_judge:cross_product`.
+#[inline]
+pub fn cross_product_2d(p1: Point, p2: Point, p3: Point) -> f64 {
+    (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x)
+}
+
+/// Port of `MOD_Area_judge:haversine`.
+///
+/// Inputs use the same convention as the Fortran `point_i(2)` arrays:
+/// `x = longitude degrees`, `y = latitude degrees`. The return value is km.
+pub fn haversine_km(point_i: Point, point_c: Point) -> f64 {
+    let px1 = point_i.x.to_radians();
+    let py1 = point_i.y.to_radians();
+    let px2 = point_c.x.to_radians();
+    let py2 = point_c.y.to_radians();
+
+    let v = (py1 / 2.0 - py2 / 2.0).sin().powi(2)
+        + py2.cos() * py1.cos() * (px1 / 2.0 - px2 / 2.0).sin().powi(2);
+    EARTH_RADIUS_KM * 2.0 * v.sqrt().atan2((1.0 - v).sqrt())
+}
+
+/// Port of `MOD_Area_judge:is_point_in_circle`.
+#[inline]
+pub fn is_point_in_circle_km(point: Point, center: Point, center_radius_km: f64) -> bool {
+    haversine_km(point, center) <= center_radius_km
+}
+
+/// Port of `MOD_Area_judge:is_point_in_convex_polygon`.
+///
+/// Boundary points are considered inside, matching the Fortran behavior where
+/// zero cross products do not flip the sign test.
+pub fn is_point_in_convex_polygon(polygon: &[Point], point: Point) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+
+    let mut prev_cross = 0.0;
+    for i in 0..polygon.len() {
+        let p1 = polygon[i];
+        let p2 = polygon[(i + 1) % polygon.len()];
+        let cross = cross_product_2d(p1, p2, point);
+        if cross != 0.0 {
+            if prev_cross == 0.0 {
+                prev_cross = cross;
+            } else if (prev_cross > 0.0) != (cross > 0.0) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub fn polygon_area(polygon: &[Point]) -> f64 {
     if polygon.len() < 3 {
         return 0.0;
