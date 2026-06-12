@@ -309,3 +309,7 @@ Extended `rust/earthmesh_mesh` with `icosahedron_fill_diamonds_fortran`, plus co
 ### 2026-06-12: `icosahedron.F90` mdloopf/udloopf/wdloopf loop flags ported
 
 Extended `rust/earthmesh_mesh` with `apply_icosahedron_loop_flags_fortran`, a shared tested Rust port of the identical loop-flag semantics in `mdloopf`, `udloopf`, and `wdloopf`. The function preserves `mloops=7`, `init='f'` reset behavior, positive id enable, negative id disable, zero-id ignore, and Fortran 1-based loop ids. Remaining icosahedron work is reciprocal connectivity derivation, spring relaxation, single-precision wrapper decision, and post-relaxation NXP parity.
+
+### 2026-06-12: `icosahedron.F90` single-precision de_ps/ps_de wrappers ported
+
+Extended `rust/earthmesh_mesh` with explicit f32-compatible `CartesianPointF32`, `PlanePointF32`, `PoleBasisF32`, `project_to_polar_stereographic_f32`, and `unproject_from_polar_stereographic_f32` APIs for the Fortran `real` `de_ps`/`ps_de` branches. The existing f64 APIs remain the `*_r8` equivalents; the single-precision wrappers intentionally use f32 arithmetic and document the precision boundary separately from the r8 path. Remaining icosahedron work is reciprocal connectivity derivation, spring relaxation, and post-relaxation NXP parity.

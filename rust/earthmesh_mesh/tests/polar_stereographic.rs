@@ -129,3 +129,31 @@ fn circumcenter_spherical_mesh_rejects_out_of_range_vertex_id() {
     )
     .is_none());
 }
+
+#[test]
+fn single_precision_polar_projection_matches_fortran_de_ps_identity_pole() {
+    let pole = earthmesh_mesh::PoleBasisF32::from_lonlat_radians(0.0, 0.0);
+    let projected = earthmesh_mesh::project_to_polar_stereographic_f32(
+        earthmesh_mesh::CartesianPointF32::new(0.0, EARTH_RADIUS_METERS as f32, 0.0),
+        pole,
+    );
+
+    assert!((projected.x - EARTH_RADIUS_METERS as f32).abs() <= 0.5);
+    assert!(projected.y.abs() <= 0.5);
+}
+
+#[test]
+fn single_precision_polar_unprojection_preserves_sphere_radius_like_fortran_ps_de() {
+    let pole = earthmesh_mesh::PoleBasisF32::from_lonlat_radians(0.0, 0.0);
+    let unprojected = earthmesh_mesh::unproject_from_polar_stereographic_f32(
+        earthmesh_mesh::PlanePointF32::new(100_000.0, 200_000.0),
+        pole,
+    );
+    let absolute_x = EARTH_RADIUS_METERS as f32 + unprojected.x;
+    let radius =
+        (absolute_x * absolute_x + unprojected.y * unprojected.y + unprojected.z * unprojected.z)
+            .sqrt();
+
+    assert!((radius - EARTH_RADIUS_METERS as f32).abs() <= 1.0);
+    assert!(unprojected.x < 0.0);
+}
