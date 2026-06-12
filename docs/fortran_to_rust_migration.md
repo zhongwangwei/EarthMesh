@@ -365,3 +365,7 @@ Extended `RefineConfig::from_mkrefine_namelist` with the land, ocean, atmosphere
 ### 2026-06-12: `read_nl` workspace side effects split into a Rust plan
 
 Extended `EarthmeshConfig` with a non-destructive `read_nl_workspace_plan`, plus typed `MkgrdWorkspacePlan` and `MaskOperation` records. This captures the filesystem and mask-preprocess side effects implied by `mkgrd.F90:read_nl`: file-dir reset intent, `contain/gridfile/patchtype/result/tmpfile/threshold` directory creation, `result/namelist.save` destination, domain/patch/refine `Mask_make` calls, and the `mask_restart` short-circuit that avoids directory rebuild while still allowing patch masks. The Rust core still does not execute shell commands or copy files; that remains for the future CLI/Python orchestration adapter.
+
+### 2026-06-12: `mem_grid` and `mem_ijtabs` allocation defaults ported
+
+Extended `rust/earthmesh_core` with Rust-owned `GridMemory` and `IjTabs` state. `GridMemory` now mirrors `mem_grid` zero-filled coordinate and lon/lat allocation routines, while `IjTabs` ports the `mem_ijtabs` loop constants and default M/V/W record initialization (`loop(:)=.false.`, neighbor ids initialized to `1`, rank defaults, and W-direction defaults). Remaining `mem_*` work is focused on `mem_delaunay` copy/original arrays and wiring these typed state containers into production mesh orchestration.

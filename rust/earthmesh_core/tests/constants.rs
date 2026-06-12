@@ -470,3 +470,53 @@ fn earthmesh_config_workspace_plan_preserves_mask_restart_short_circuit() {
         )]
     );
 }
+
+#[test]
+fn grid_memory_allocators_match_mem_grid_zero_initialization() {
+    let mut grid = earthmesh_core::GridMemory::default();
+
+    grid.allocate_xyzem(3);
+    assert_eq!(grid.xem, vec![0.0; 3]);
+    assert_eq!(grid.yem, vec![0.0; 3]);
+    assert_eq!(grid.zem, vec![0.0; 3]);
+
+    grid.allocate_xyzew(2);
+    assert_eq!(grid.xew, vec![0.0; 2]);
+    assert_eq!(grid.yew, vec![0.0; 2]);
+    assert_eq!(grid.zew, vec![0.0; 2]);
+
+    grid.allocate_grid_lonlatmw(3, 99, 2);
+    assert_eq!(grid.glatm, vec![0.0; 3]);
+    assert_eq!(grid.glonm, vec![0.0; 3]);
+    assert_eq!(grid.glatw, vec![0.0; 2]);
+    assert_eq!(grid.glonw, vec![0.0; 2]);
+}
+
+#[test]
+fn ijtab_allocators_match_mem_ijtabs_defaults() {
+    assert_eq!(earthmesh_core::MLOOPS, 7);
+    assert_eq!(
+        earthmesh_core::NLOOPS_M,
+        earthmesh_core::MLOOPS + earthmesh_core::MAX_REMOTE
+    );
+    assert_eq!(earthmesh_core::JTM_VADJ, 7);
+    assert_eq!(earthmesh_core::JTU_WALL, 7);
+
+    let tabs = earthmesh_core::IjTabs::allocate(2, 1, 1);
+
+    assert_eq!(tabs.m.len(), 2);
+    assert_eq!(tabs.v.len(), 1);
+    assert_eq!(tabs.w.len(), 1);
+    assert_eq!(tabs.m[0].loop_flags, vec![false; earthmesh_core::MLOOPS]);
+    assert_eq!(tabs.m[0].npoly, 0);
+    assert_eq!(tabs.m[0].imp, 1);
+    assert_eq!(tabs.m[0].imglobe, 1);
+    assert_eq!(tabs.m[0].mrlm, 0);
+    assert_eq!(tabs.m[0].iv, [1; 3]);
+    assert_eq!(tabs.v[0].ivp, 1);
+    assert_eq!(tabs.v[0].irank, -1);
+    assert_eq!(tabs.v[0].im, [1; 6]);
+    assert_eq!(tabs.w[0].iwp, 1);
+    assert_eq!(tabs.w[0].irank, -1);
+    assert_eq!(tabs.w[0].dirv, [0.0; 7]);
+}
