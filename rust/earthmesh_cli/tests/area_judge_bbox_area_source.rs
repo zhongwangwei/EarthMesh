@@ -1,0 +1,107 @@
+use earthmesh_cli::{
+    build_area_judge_bbox_area_source_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+};
+use earthmesh_mesh::AreaJudgeSourceBounds;
+use std::path::PathBuf;
+
+fn temp_root(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("earthmesh_cli_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("create temp root");
+    path
+}
+
+#[test]
+fn bbox_area_source_builds_is_in_area_grid_and_fortran_numpatch() {
+    let root = temp_root("area_judge_bbox_area_source");
+    let source = root.join("mask_domain_bbox_0_01.nc4");
+    write_bbox_mask_netcdf(
+        &source,
+        &BBoxMask {
+            refine_degree: 0,
+            points: vec![
+                BBoxPoint {
+                    west: -179.5,
+                    east: -176.0,
+                    north: 89.5,
+                    south: 86.0,
+                },
+                BBoxPoint {
+                    west: -176.5,
+                    east: -174.0,
+                    north: 86.5,
+                    south: 84.0,
+                },
+            ],
+        },
+    )
+    .expect("write bbox source");
+
+    let lon_vertex = vec![
+        f64::NAN,
+        -180.0,
+        -179.0,
+        -178.0,
+        -177.0,
+        -176.0,
+        -175.0,
+        -174.0,
+    ];
+    let lat_vertex = vec![f64::NAN, 90.0, 89.0, 88.0, 87.0, 86.0, 85.0, 84.0];
+
+    let report = build_area_judge_bbox_area_source_fortran_indexed(
+        &source,
+        &lon_vertex,
+        &lat_vertex,
+        1,
+        6,
+        6,
+    )
+    .expect("build bbox area source");
+
+    assert_eq!(
+        report.bounds,
+        AreaJudgeSourceBounds {
+            minlon_source: 2,
+            maxlon_source: 6,
+            maxlat_source: 2,
+            minlat_source: 6,
+        }
+    );
+    assert_eq!(report.numpatch, 8);
+    assert_eq!(report.is_in_area[2][2], 1);
+    assert_eq!(report.is_in_area[3][3], 1);
+    assert_eq!(report.is_in_area[5][5], 1);
+    assert_eq!(report.is_in_area[1][1], 0);
+}
+
+#[test]
+fn bbox_area_source_rejects_empty_bbox_file() {
+    let root = temp_root("area_judge_bbox_area_empty");
+    let source = root.join("mask_domain_bbox_0_01.nc4");
+    write_bbox_mask_netcdf(
+        &source,
+        &BBoxMask {
+            refine_degree: 0,
+            points: vec![],
+        },
+    )
+    .expect("write empty bbox source");
+
+    let lon_vertex = vec![f64::NAN, -180.0, -179.0];
+    let lat_vertex = vec![f64::NAN, 90.0, 89.0];
+
+    let err = build_area_judge_bbox_area_source_fortran_indexed(
+        &source,
+        &lon_vertex,
+        &lat_vertex,
+        1,
+        2,
+        2,
+    )
+    .expect_err("empty bbox source should fail");
+
+    assert!(err
+        .to_string()
+        .contains("bbox area source must contain at least one bbox point"));
+}
