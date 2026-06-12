@@ -162,7 +162,8 @@
         "IsInArea_bbox_Calculation area-mask source builder ported to rust/earthmesh_cli",
         "IsInArea_circle_Calculation area-mask source builder ported to rust/earthmesh_cli",
         "IsInArea_close_Calculation area-mask source builder ported to rust/earthmesh_cli",
-        "IsInArea_lambert_Calculation area-mask source builder ported to rust/earthmesh_cli"
+        "IsInArea_lambert_Calculation area-mask source builder ported to rust/earthmesh_cli",
+        "Area_judge file-numbered IsInArea source dispatch for bbox/circle/close/lambert ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",
