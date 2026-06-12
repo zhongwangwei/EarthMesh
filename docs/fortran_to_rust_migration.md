@@ -593,3 +593,7 @@ Added `MpasMesh`, `MpasMeshWriteReport`, and `write_mpas_mesh_netcdf` in `rust/e
 ### 2026-06-12: MPAS edge-reference reader ported
 
 Added `MpasEdgeReference` and `read_mpas_edge_reference_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:data_read`. The reader loads full MPAS `cellsOnEdge`, `lonEdge`, and `latEdge`, restores the legacy placeholder row, applies the Fortran `cellsOnEdge_reference = cellsOnEdge_reference + 1` ID shift, converts edge coordinates from radians to degrees, and preserves the single-step longitude normalization used by the Fortran branch. This removes another file I/O dependency from `MPAS_Mesh_Cal`; remaining work is composing the full payload from geometry outputs and writing `distsOnEdge`/spring-adjustment persistence adapters.
+
+### 2026-06-12: distsOnEdge NetCDF writer ported
+
+Added `DistsOnEdgeMesh`, `DistsOnEdgeWriteReport`, and `write_dists_on_edge_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:distsOnEdge_save`. The writer preserves the legacy `num_edge` dimension and variables `lonv`, `latv`, and `distsOnEdge`, with validation that edge coordinates and distance arrays have matching lengths. This closes another Springjustment/global persistence dependency; remaining grid-preprocess adapter work is composing these file writers/readers around the migrated GetEdge/GetArea/spring kernels.

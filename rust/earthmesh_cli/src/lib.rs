@@ -277,6 +277,13 @@ pub struct MpasSimpleMesh {
     pub mesh_density: Vec<f64>,
 }
 
+/// Rust data shape written by `MOD_file_preprocess.F90:distsOnEdge_save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistsOnEdgeMesh {
+    pub edge_points: Vec<LonLatPoint>,
+    pub dists_on_edge: Vec<f64>,
+}
+
 /// Edge-reference payload read by `MOD_file_preprocess.F90:data_read`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MpasEdgeReference {
@@ -404,6 +411,13 @@ pub struct MpasMeshWriteReport {
     pub n_cells: usize,
     pub n_vertices: usize,
     pub n_edges: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:distsOnEdge_save` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DistsOnEdgeWriteReport {
+    pub output: PathBuf,
+    pub num_edge: usize,
 }
 
 /// Evidence report from writing `MOD_file_preprocess.F90:MPAS_info_Save` graph.info.
@@ -675,6 +689,42 @@ pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<Unst
     };
     validate_unstructured_mesh(&mesh)?;
     Ok(mesh)
+}
+
+/// Write the `distsOnEdge_NXP####_##_global.nc4` schema produced by
+/// `MOD_file_preprocess.F90:distsOnEdge_save`.
+pub fn write_dists_on_edge_netcdf(
+    output: impl AsRef<Path>,
+    mesh: &DistsOnEdgeMesh,
+) -> io::Result<DistsOnEdgeWriteReport> {
+    validate_dists_on_edge_mesh(mesh)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let num_edge = mesh.edge_points.len();
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_edge", num_edge)
+        .map_err(netcdf_to_io_error)?;
+    write_f64_1d(
+        &mut file,
+        "lonv",
+        "num_edge",
+        &lon_values(&mesh.edge_points),
+    )?;
+    write_f64_1d(
+        &mut file,
+        "latv",
+        "num_edge",
+        &lat_values(&mesh.edge_points),
+    )?;
+    write_f64_1d(&mut file, "distsOnEdge", "num_edge", &mesh.dists_on_edge)?;
+
+    Ok(DistsOnEdgeWriteReport {
+        output: output.to_path_buf(),
+        num_edge,
+    })
 }
 
 /// Read the MPAS edge-reference fields consumed by
@@ -3308,6 +3358,20 @@ fn validate_earthmesh_info(info: &EarthmeshInfo) -> io::Result<()> {
                 "refine_degree_f and seaorland_ustr_f must have matching length: {} != {}",
                 info.refine_degree_f.len(),
                 info.seaorland_ustr_f.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_dists_on_edge_mesh(mesh: &DistsOnEdgeMesh) -> io::Result<()> {
+    if mesh.dists_on_edge.len() != mesh.edge_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "dists_on_edge length {} must match edge_points length {}",
+                mesh.dists_on_edge.len(),
+                mesh.edge_points.len()
             ),
         ));
     }
