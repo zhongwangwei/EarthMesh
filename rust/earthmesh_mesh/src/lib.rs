@@ -1445,6 +1445,44 @@ pub fn spring_edge_adjustment_fortran(
     })
 }
 
+/// Port of the `dirs(j, iw)` sign setup in
+/// `MOD_grid_preprocess:spring_dynamics_global`.
+///
+/// For each cell edge, Fortran assigns `+relax` when the current cell is
+/// `CellsOnEdge(2, edge)` and `-relax` otherwise. Rows preserve the compact
+/// `edgesOnCell` row length supplied for each Fortran-indexed cell id.
+pub fn spring_edge_directions_fortran_indexed(
+    n_edges_on_cell: &[usize],
+    edges_on_cell: &[Vec<usize>],
+    cells_on_edge: &[[usize; 2]],
+    relax: f64,
+) -> Option<Vec<Vec<f64>>> {
+    if n_edges_on_cell.len() != edges_on_cell.len() {
+        return None;
+    }
+
+    let mut directions = vec![Vec::<f64>::new(); n_edges_on_cell.len()];
+    for cell_id in 2..n_edges_on_cell.len() {
+        let edge_count = n_edges_on_cell[cell_id];
+        let cell_edges = edges_on_cell.get(cell_id)?;
+        if edge_count > cell_edges.len() {
+            return None;
+        }
+        let mut row = Vec::with_capacity(edge_count);
+        for &edge_id in cell_edges.iter().take(edge_count) {
+            let cells = *cells_on_edge.get(edge_id)?;
+            if cells[1] == cell_id {
+                row.push(relax);
+            } else {
+                row.push(-relax);
+            }
+        }
+        directions[cell_id] = row;
+    }
+
+    Some(directions)
+}
+
 /// Port of the candidate-selection core in `MOD_grid_preprocess:orderVertexArrays`.
 ///
 /// From one reference edge vector, choose the candidate edge with positive CCW

@@ -3,7 +3,8 @@ use earthmesh_mesh::{
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
     set_weights_on_edge_fortran_indexed, spring_edge_adjustment_fortran,
-    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
+    spring_edge_directions_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
+    CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -183,6 +184,26 @@ fn spring_edge_adjustment_matches_fortran_ratio_and_displacement_formula() {
         adjustment.frac_change * adjustment.frac_change,
         1.0e-15,
     );
+}
+
+#[test]
+fn spring_edge_directions_match_fortran_cell_side_sign_rule() {
+    let n_edges_on_cell = vec![0, 0, 2, 2];
+    let edges_on_cell = vec![vec![], vec![], vec![2, 3], vec![2, 4]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [4, 2], [3, 5]];
+
+    let directions = spring_edge_directions_fortran_indexed(
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &cells_on_edge,
+        0.25,
+    )
+    .expect("valid spring direction inputs");
+
+    assert_eq!(directions[0], Vec::<f64>::new());
+    assert_eq!(directions[1], Vec::<f64>::new());
+    assert_eq!(directions[2], vec![-0.25, 0.25]);
+    assert_eq!(directions[3], vec![0.25, -0.25]);
 }
 
 #[test]

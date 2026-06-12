@@ -241,3 +241,7 @@ Extended `rust/earthmesh_mesh` with `set_dists_on_edge_global_fortran_indexed`, 
 ### 2026-06-12: `MOD_grid_preprocess.F90` spring edge adjustment formula ported
 
 Extended `rust/earthmesh_mesh` with `spring_edge_adjustment_fortran`, a tested Rust port of the per-edge correction formula inside `spring_dynamics_global`. It computes the current edge vector length, `twocosphi3/twocosphi4` ratio clamp, target distance, fractional change, displacement vector, and squared fractional change. The full global/regional spring iteration loops and spherical renormalization orchestration remain pending.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` spring edge direction signs ported
+
+Extended `rust/earthmesh_mesh` with `spring_edge_directions_fortran_indexed`, a tested Rust port of the `dirs(j, iw)` setup inside `spring_dynamics_global`. It preserves the Fortran sign rule: `+relax` when the cell is the second endpoint in `CellsOnEdge`, otherwise `-relax`, using compact `edgesOnCell` rows. The remaining spring work is the iterative accumulation loop, spherical renormalization, regional move-mask behavior, and high-level workflow wiring.
