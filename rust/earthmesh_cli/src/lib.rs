@@ -2509,10 +2509,9 @@ fn area_judge_checked_source_index_minus_one(index: usize) -> usize {
     index.saturating_sub(1).max(1)
 }
 
-/// Build the Lambert/mode4 `IsInPaArea_grid` patch mask and apply it to `seaorland`.
-pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
+/// Build the Lambert/mode4 `IsInArea_grid` source mask used by domain/refine/patch paths.
+pub fn build_area_judge_lambert_area_source_fortran_indexed(
     inputfile: impl AsRef<Path>,
-    seaorland: &mut [Vec<i32>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     lon_i: &[f64],
@@ -2520,7 +2519,7 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,
-) -> io::Result<AreaJudgePatchSourceReport> {
+) -> io::Result<AreaJudgeAreaSourceReport> {
     require_len("lon_i", lon_i.len(), nlons_source + 1)?;
     require_len("lat_i", lat_i.len(), nlats_source + 1)?;
 
@@ -2528,7 +2527,7 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
     validate_mode4_mesh_for_area_judge(&mesh).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid lambert patch source: {err}"),
+            format!("invalid lambert area source: {err}"),
         )
     })?;
 
@@ -2576,12 +2575,13 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "lambert patch bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+                "lambert area bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
             ),
         )
     })?;
 
-    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut numpatch = 0_usize;
     for cell_index in 1..mesh.mode_points() {
         if mesh.n_ngr[cell_index] < 4 {
             return Err(io::Error::new(
@@ -2722,22 +2722,59 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
                         lon_index
                     };
                 require_len(
-                    "lambert patch mask",
-                    patch_mask.len(),
+                    "lambert area mask",
+                    is_in_area.len(),
                     restored_lon_index + 1,
                 )?;
                 require_len(
-                    &format!("lambert patch mask[{restored_lon_index}]"),
-                    patch_mask[restored_lon_index].len(),
+                    &format!("lambert area mask[{restored_lon_index}]"),
+                    is_in_area[restored_lon_index].len(),
                     lat_index + 1,
                 )?;
-                patch_mask[restored_lon_index][lat_index] = 1;
+                is_in_area[restored_lon_index][lat_index] = 1;
+                numpatch += 1;
             }
         }
     }
 
-    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
-        .ok_or_else(|| {
+    Ok(AreaJudgeAreaSourceReport {
+        is_in_area,
+        bounds,
+        numpatch,
+    })
+}
+
+/// Build the Lambert/mode4 `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    let source = build_area_judge_lambert_area_source_fortran_indexed(
+        inputfile,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )
+    .map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            err.to_string().replace("lambert area", "lambert patch"),
+        )
+    })?;
+    let report =
+        area_judge_apply_mask_patch_fortran_indexed(seaorland, &source.is_in_area, source.bounds)
+            .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "seaorland or lambert patch mask does not cover selected source bounds",
@@ -2745,7 +2782,7 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
         })?;
 
     Ok(AreaJudgePatchSourceReport {
-        bounds,
+        bounds: source.bounds,
         patched_cells: report.patched_cells,
     })
 }
