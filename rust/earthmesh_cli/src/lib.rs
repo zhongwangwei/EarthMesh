@@ -158,6 +158,31 @@ pub struct MkgrdRefineLoopIoPlan {
     pub final_domain_gridfile: PathBuf,
     pub final_result_gridfile: PathBuf,
     pub final_domain_contain_output: PathBuf,
+    pub final_quality_check: MkgrdFinalQualityCheckIoPlan,
+}
+
+/// Branch selected by `mkgrd.F90:Final_Grid_Quality_Check` before optional
+/// global/regional spring adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MkgrdFinalQualitySpringMode {
+    SkippedBothDisabled,
+    SkippedRegionalEachStep,
+    Global,
+    RegionalFinal,
+}
+
+/// Non-destructive file-level schedule for `Final_Grid_Quality_Check`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdFinalQualityCheckIoPlan {
+    pub step: usize,
+    pub run_quality_check: bool,
+    pub spring_mode: MkgrdFinalQualitySpringMode,
+    pub input_gridfile: PathBuf,
+    pub original_gridfile: Option<PathBuf>,
+    pub quality_before_spring: Option<PathBuf>,
+    pub quality_after_spring: Option<PathBuf>,
+    pub output_gridfile: Option<PathBuf>,
+    pub regional_set_dis: Option<i32>,
 }
 
 /// File-level I/O contract for the domain branches of
@@ -626,6 +651,7 @@ pub fn plan_mkgrd_refine_loop_io(
     }
 
     let final_step = loop_plan.final_mask_postproc_step;
+    let final_quality_check = plan_mkgrd_final_quality_check_io(config, refine, final_step)?;
     Ok(MkgrdRefineLoopIoPlan {
         file_dir: file_dir.clone(),
         nxp,
@@ -642,6 +668,7 @@ pub fn plan_mkgrd_refine_loop_io(
         final_domain_contain_output: file_dir.join("contain").join(format!(
             "contain_{mesh_type}_domain_NXP{nxp:04}_{mode_grid}.nc4"
         )),
+        final_quality_check,
     })
 }
 
@@ -718,6 +745,99 @@ fn mkgrd_calculated_threshold_outputs(
         }
     }
     Ok(outputs)
+}
+
+/// Build the non-destructive I/O plan for `mkgrd.F90:Final_Grid_Quality_Check`.
+pub fn plan_mkgrd_final_quality_check_io(
+    config: &EarthmeshConfig,
+    refine: &RefineConfig,
+    step: usize,
+) -> io::Result<MkgrdFinalQualityCheckIoPlan> {
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be positive for final quality check",
+        ));
+    }
+    if step == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check step must be one-based",
+        ));
+    }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let file_dir = PathBuf::from(config.file_dir());
+    let mode_grid = config.mode_grid.trim();
+    let input_gridfile = mkgrd_gridfile_path(&file_dir, nxp, step, mode_grid);
+
+    if refine.spring_global_type == 0 && refine.spring_regional_type == 0 {
+        return Ok(MkgrdFinalQualityCheckIoPlan {
+            step,
+            run_quality_check: false,
+            spring_mode: MkgrdFinalQualitySpringMode::SkippedBothDisabled,
+            input_gridfile,
+            original_gridfile: None,
+            quality_before_spring: None,
+            quality_after_spring: None,
+            output_gridfile: None,
+            regional_set_dis: None,
+        });
+    }
+
+    if refine.spring_regional_type == 1 {
+        return Ok(MkgrdFinalQualityCheckIoPlan {
+            step,
+            run_quality_check: false,
+            spring_mode: MkgrdFinalQualitySpringMode::SkippedRegionalEachStep,
+            input_gridfile,
+            original_gridfile: None,
+            quality_before_spring: None,
+            quality_after_spring: None,
+            output_gridfile: None,
+            regional_set_dis: None,
+        });
+    }
+
+    let spring_mode = if refine.spring_global_type == 1 {
+        MkgrdFinalQualitySpringMode::Global
+    } else {
+        let set_dis = *refine.halo.get(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Final_Grid_Quality_Check requires halo(1) for regional final spring",
+            )
+        })?;
+        if set_dis <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Final_Grid_Quality_Check regional set_dis halo(1) must be positive",
+            ));
+        }
+        MkgrdFinalQualitySpringMode::RegionalFinal
+    };
+    let regional_set_dis =
+        (spring_mode == MkgrdFinalQualitySpringMode::RegionalFinal).then_some(refine.halo[1]);
+
+    Ok(MkgrdFinalQualityCheckIoPlan {
+        step,
+        run_quality_check: true,
+        spring_mode,
+        input_gridfile: input_gridfile.clone(),
+        original_gridfile: Some(file_dir.join("gridfile").join(format!(
+            "gridfile_NXP{nxp:04}_{step:02}_{mode_grid}_orial.nc4"
+        ))),
+        quality_before_spring: Some(file_dir.join("result").join(format!(
+            "quality_NXP{nxp:04}_{step:02}_global_beforeSpring.nc4"
+        ))),
+        quality_after_spring: Some(
+            file_dir
+                .join("result")
+                .join(format!("quality_NXP{nxp:04}_{step:02}_global.nc4")),
+        ),
+        output_gridfile: Some(input_gridfile),
+        regional_set_dis,
+    })
 }
 
 fn mkgrd_gridfile_path(file_dir: &Path, nxp: usize, step: usize, mode_grid: &str) -> PathBuf {

@@ -127,7 +127,8 @@
         "mkgrd.x refine-loop max_iter and calculate/specified/mixed step dispatch schedule ported to rust/earthmesh_cli",
         "mkgrd.x refine-loop all(exit_loop_step) early-exit planning ported to rust/earthmesh_cli",
         "mkgrd.x refine-loop legacy file-path I/O schedule for Area_judge_refine/Get_Contain/GetRef/refine_loop/final mask_postproc ported to rust/earthmesh_cli",
-        "mkgrd.x refine-loop halo/max_transition_row preflight validation ported to rust/earthmesh_cli"
+        "mkgrd.x refine-loop halo/max_transition_row preflight validation ported to rust/earthmesh_cli",
+        "mkgrd.x Final_Grid_Quality_Check skip/global/regional file I/O planning ported to rust/earthmesh_cli and wired into refine-loop I/O plan"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"

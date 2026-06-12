@@ -95,6 +95,8 @@ fn refine_loop_io_plan_maps_fortran_step_files_and_final_postproc_inputs() {
         plan.final_result_gridfile,
         PathBuf::from("/tmp/earthmesh/case_refine/result/gridfile_NXP0016_hex.nc4")
     );
+    assert!(!plan.final_quality_check.run_quality_check);
+    assert_eq!(plan.final_quality_check.step, 4);
 
     let step1 = &plan.steps[0];
     assert_eq!(step1.step, 1);
@@ -167,6 +169,7 @@ fn refine_loop_io_plan_uses_early_exit_step_for_final_domain_postproc() {
         plan.final_domain_gridfile,
         PathBuf::from("/tmp/earthmesh/case_refine/gridfile/gridfile_NXP0016_03_hex.nc4")
     );
+    assert_eq!(plan.final_quality_check.step, 3);
 }
 
 #[test]
@@ -193,4 +196,82 @@ fn refine_loop_plan_rejects_invalid_halo_transition_controls_like_fortran() {
     assert!(err
         .to_string()
         .contains("max_transition_row(3) must be more than zero"));
+}
+
+#[test]
+fn final_quality_check_io_plan_matches_global_spring_paths() {
+    let mkgrd = mkgrd_config();
+    let mut refine = mixed_refine_config();
+    refine.spring_global_type = 1;
+    refine.spring_regional_type = 0;
+
+    let plan = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect("plan final quality check");
+
+    let root = PathBuf::from("/tmp/earthmesh/case_refine");
+    assert!(plan.run_quality_check);
+    assert_eq!(
+        plan.spring_mode,
+        earthmesh_cli::MkgrdFinalQualitySpringMode::Global
+    );
+    assert_eq!(plan.step, 4);
+    assert_eq!(
+        plan.input_gridfile,
+        root.join("gridfile/gridfile_NXP0016_04_hex.nc4")
+    );
+    assert_eq!(
+        plan.original_gridfile,
+        Some(root.join("gridfile/gridfile_NXP0016_04_hex_orial.nc4"))
+    );
+    assert_eq!(
+        plan.quality_before_spring,
+        Some(root.join("result/quality_NXP0016_04_global_beforeSpring.nc4"))
+    );
+    assert_eq!(
+        plan.quality_after_spring,
+        Some(root.join("result/quality_NXP0016_04_global.nc4"))
+    );
+    assert_eq!(
+        plan.output_gridfile,
+        Some(root.join("gridfile/gridfile_NXP0016_04_hex.nc4"))
+    );
+    assert_eq!(plan.regional_set_dis, None);
+}
+
+#[test]
+fn final_quality_check_io_plan_preserves_fortran_skip_and_regional_final_modes() {
+    let mkgrd = mkgrd_config();
+    let mut refine = mixed_refine_config();
+
+    let skipped = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect("plan skipped final quality check");
+    assert!(!skipped.run_quality_check);
+    assert_eq!(
+        skipped.spring_mode,
+        earthmesh_cli::MkgrdFinalQualitySpringMode::SkippedBothDisabled
+    );
+    assert_eq!(skipped.original_gridfile, None);
+
+    refine.spring_global_type = 0;
+    refine.spring_regional_type = 2;
+    refine.halo[1] = 7;
+    let regional = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect("plan regional final quality check");
+    assert!(regional.run_quality_check);
+    assert_eq!(
+        regional.spring_mode,
+        earthmesh_cli::MkgrdFinalQualitySpringMode::RegionalFinal
+    );
+    assert_eq!(regional.regional_set_dis, Some(7));
+
+    refine.spring_global_type = 1;
+    refine.spring_regional_type = 1;
+    let skipped_regional_each_step =
+        earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+            .expect("plan springregional each-step skip");
+    assert!(!skipped_regional_each_step.run_quality_check);
+    assert_eq!(
+        skipped_regional_each_step.spring_mode,
+        earthmesh_cli::MkgrdFinalQualitySpringMode::SkippedRegionalEachStep
+    );
 }
