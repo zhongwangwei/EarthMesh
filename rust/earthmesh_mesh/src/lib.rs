@@ -249,6 +249,69 @@ pub fn normalize_vertex_rotation(
     }
 }
 
+fn vector_between(from: CartesianPoint, to: CartesianPoint) -> CartesianPoint {
+    CartesianPoint::new(to.x - from.x, to.y - from.y, to.z - from.z)
+}
+
+fn dot(a: CartesianPoint, b: CartesianPoint) -> f64 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn cross(a: CartesianPoint, b: CartesianPoint) -> CartesianPoint {
+    CartesianPoint::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+}
+
+fn magnitude(a: CartesianPoint) -> f64 {
+    (a.x * a.x + a.y * a.y + a.z * a.z).sqrt()
+}
+
+/// Port of the candidate-selection core in `MOD_grid_preprocess:orderVertexArrays`.
+///
+/// From one reference edge vector, choose the candidate edge with positive CCW
+/// orientation around the vertex normal and the smallest angle to the reference
+/// vector. The returned index is the zero-based slot in `candidate_edges`.
+pub fn next_ccw_edge_candidate_slot(
+    vertex: CartesianPoint,
+    reference_edge: CartesianPoint,
+    candidate_edges: &[CartesianPoint],
+) -> Option<usize> {
+    let normal = vertex;
+    let normal_mag = magnitude(normal);
+    let reference_vec = vector_between(vertex, reference_edge);
+    let reference_mag = magnitude(reference_vec);
+    let mut min_angle = std::f64::consts::PI * 2.0;
+    let mut best_slot = None;
+
+    for (slot, candidate_edge) in candidate_edges.iter().copied().enumerate() {
+        let candidate_vec = vector_between(vertex, candidate_edge);
+        let candidate_mag = magnitude(candidate_vec);
+        let cross_prod = cross(reference_vec, candidate_vec);
+        let cross_mag = magnitude(cross_prod);
+
+        if cross_mag > 1.0e-15 && normal_mag > 1.0e-15 {
+            let dot_val = dot(cross_prod, normal) / (cross_mag * normal_mag);
+            if dot_val > 0.0 {
+                let denom = reference_mag * candidate_mag;
+                if denom == 0.0 {
+                    continue;
+                }
+                let cos_angle = (dot(reference_vec, candidate_vec) / denom).clamp(-1.0, 1.0);
+                let angle = cos_angle.acos();
+                if angle < min_angle {
+                    min_angle = angle;
+                    best_slot = Some(slot);
+                }
+            }
+        }
+    }
+
+    best_slot
+}
+
 /// Port of `MOD_grid_preprocess:arc_length`.
 ///
 /// Computes spherical arc length from Cartesian coordinates using the same

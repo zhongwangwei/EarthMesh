@@ -153,3 +153,7 @@ Added `should_swap_vertices_on_edge`, a Rust port of the 2-D cross-product rule 
 ### 2026-06-12: `MOD_grid_preprocess.F90` `normalizeRotation` helper ported
 
 Added `normalize_vertex_rotation`, a Rust port of the per-vertex rotation rule from `normalizeRotation`. It moves the minimum positive `cellsOnVertex` id to the first slot and rotates `edgesOnVertex` in lockstep, preserving the Fortran behavior for zero sentinels. Remaining ordering work is the full `orderVertexArrays` 3-D sorting logic and integration into the edge workflow.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `orderVertexArrays` CCW selector ported
+
+Added `next_ccw_edge_candidate_slot`, a Rust port of the inner `orderVertexArrays` rule that picks the next counter-clockwise edge candidate with the smallest positive angle around the vertex normal. This isolates the 3-D cross-product/dot-product geometry before porting the full stateful edge-slot swapping and `cellsOnVertex` rebuild workflow.
