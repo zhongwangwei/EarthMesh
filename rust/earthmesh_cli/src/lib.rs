@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_mesh::{
     centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
-    get_edge_production_fortran_indexed, lonlat_points_to_unit_xyz,
-    triangle_neighbors_from_cell_membership_fortran_indexed, xyz_to_lonlat_degrees,
-    BoundaryConnection, BoundaryOrders, CartesianPoint, GetEdgeProductionOutput, LonLatDegrees,
+    get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
+    lonlat_points_to_unit_xyz, triangle_neighbors_from_cell_membership_fortran_indexed,
+    xyz_to_lonlat_degrees, BoundaryConnection, BoundaryOrders, CartesianPoint,
+    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, LonLatDegrees,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -986,6 +987,50 @@ pub fn get_edge_from_unstructured_mesh(
         io::Error::new(
             io::ErrorKind::InvalidData,
             "failed to run GetEdge production adapter from unstructured mesh",
+        )
+    })
+}
+
+/// Read an `Unstructured_Mesh_Read` gridfile and run the migrated
+/// `MOD_grid_preprocess.F90:GetArea` production adapter.
+pub fn get_area_from_unstructured_gridfile(
+    gridfile: impl AsRef<Path>,
+) -> io::Result<GetAreaProductionOutput> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    get_area_from_unstructured_mesh(&mesh)
+}
+
+/// Run the migrated `GetArea` production adapter from a Rust unstructured mesh.
+///
+/// This composes the `GetEdge` gridfile adapter with the pure unit-sphere area
+/// workflow. The returned areas are unit-sphere areas, matching the migrated
+/// `earthmesh_mesh` production helper before any caller-specific radius scaling.
+pub fn get_area_from_unstructured_mesh(
+    mesh: &UnstructuredMesh,
+) -> io::Result<GetAreaProductionOutput> {
+    let edge_output = get_edge_from_unstructured_mesh(mesh)?;
+    let cells_on_vertex = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
+    let edge_lonlat = edge_output.edge_points.clone();
+    let vertices = lonlat_points_to_unit_xyz(&triangle_lonlat);
+    let cell_points = lonlat_points_to_unit_xyz(&cell_lonlat);
+    let edge_points = lonlat_points_to_unit_xyz(&edge_lonlat);
+    let vertices_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+
+    get_area_production_fortran_indexed(GetAreaUnitInput {
+        vertices: &vertices,
+        edge_points: &edge_points,
+        cell_points: &cell_points,
+        cells_on_vertex: &cells_on_vertex,
+        edges_on_vertex: &edge_output.edges_on_vertex,
+        cells_on_edge: &edge_output.cells_on_edge,
+        vertices_on_cell: &vertices_on_cell,
+    })
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to run GetArea production adapter from unstructured mesh",
         )
     })
 }

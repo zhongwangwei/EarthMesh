@@ -617,3 +617,7 @@ Added `write_springjustment_global_persistence` in `rust/earthmesh_cli`, wiring 
 ### 2026-06-12: GetEdge gridfile adapter ported
 
 Added `get_edge_from_unstructured_gridfile` and `get_edge_from_unstructured_mesh` in `rust/earthmesh_cli`, wiring the migrated `Unstructured_Mesh_Read` gridfile adapter into the pure `earthmesh_mesh::get_edge_production_fortran_indexed` workflow. The adapter validates legacy Fortran-indexed `itab_m%iw`, `itab_w%im`, and `n_ngrwm` ids, reconstructs triangle-neighbor membership through the migrated `set_ngrmm` equivalent, and returns the production `cellsOnEdge`, `verticesOnEdge`, `edgesOnVertex`, `cellsOnVertex`, and edge midpoint payload. Remaining `MOD_grid_preprocess.F90` adapter work is `GetArea` NetCDF integration plus Springjustment global loading/regional persistence.
+
+### 2026-06-12: GetArea gridfile adapter ported
+
+Added `get_area_from_unstructured_gridfile` and `get_area_from_unstructured_mesh` in `rust/earthmesh_cli`, composing `Unstructured_Mesh_Read`, the migrated `GetEdge` adapter, and `earthmesh_mesh::get_area_production_fortran_indexed`. The adapter validates gridfile connectivity, converts triangle/cell/edge lon-lat rows to unit-sphere Cartesian points, preserves original gridfile `ngrmw`/`cellsOnVertex` ordering for area reconstruction, and returns `kiteAreasOnVertex`, `areaTriangle`, `areaCell`, plus the reconstruction diagnostic. Remaining `MOD_grid_preprocess.F90` adapter work is now Springjustment global NetCDF loading and regional-step persistence/orchestration.
