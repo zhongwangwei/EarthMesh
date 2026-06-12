@@ -186,6 +186,32 @@ pub struct MkgrdFinalQualityCheckIoPlan {
     pub regional_set_dis: Option<i32>,
 }
 
+/// Runtime options for the final `mask_postproc(mesh_type)` call after
+/// `mkgrd.F90` has performed the final `Get_Contain(0)` domain handoff.
+pub enum MkgrdFinalDomainPostprocOptions<'a> {
+    Earth(MaskPostprocEarthRunOptions<'a>),
+    Land(MaskPostprocLandRunOptions<'a>),
+    Ocean(MaskPostprocOceanRunOptions),
+}
+
+/// Evidence from the final `mask_postproc(mesh_type)` call after a refine loop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MkgrdFinalDomainPostprocReport {
+    Earth(MaskPostprocEarthDomainReport),
+    Land(MaskPostprocLandDomainReport),
+    Ocean(MaskPostprocOceanDomainReport),
+}
+
+/// Evidence from executing the final `Get_Contain(0)` gridfile handoff and,
+/// optionally, the already-migrated domain `mask_postproc` branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLoopFinalDomainHandoffReport {
+    pub copied_result_gridfile: PathBuf,
+    pub copied_bytes: u64,
+    pub contain_domain: PathBuf,
+    pub postproc: Option<MkgrdFinalDomainPostprocReport>,
+}
+
 /// File-level I/O contract for the domain branches of
 /// `MOD_mask_postproc.F90:mask_postproc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -568,10 +594,59 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
     })
 }
 
-/// Build a non-destructive legacy file path schedule for the top-level
-/// `mkgrd.F90` refine loop.  This mirrors the active file names in
-/// `Area_judge_refine`, `Get_Contain`, `GetRef`, and `refine_loop` without
-/// executing their heavy geometry kernels.
+/// Execute the final file-backed handoff after the top-level `mkgrd.F90` refine
+/// loop: copy the final step gridfile to `result/gridfile_NXP####_<mode>.nc4`
+/// like `Get_Contain(0)` does before containment calculation, then optionally
+/// run the migrated domain `mask_postproc` branch using the planned files.
+pub fn run_mkgrd_refine_loop_final_domain_handoff(
+    plan: &MkgrdRefineLoopIoPlan,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopFinalDomainHandoffReport> {
+    if let Some(parent) = plan.final_result_gridfile.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let copied_bytes = fs::copy(&plan.final_domain_gridfile, &plan.final_result_gridfile)?;
+
+    let postproc = match postproc_options {
+        None => None,
+        Some(options) => {
+            let postproc_plan = plan.final_mask_postproc_domain.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "final domain mask_postproc plan is unavailable for this mesh_type",
+                )
+            })?;
+            Some(match options {
+                MkgrdFinalDomainPostprocOptions::Earth(options) => {
+                    MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
+                        postproc_plan,
+                        options,
+                    )?)
+                }
+                MkgrdFinalDomainPostprocOptions::Land(options) => {
+                    MkgrdFinalDomainPostprocReport::Land(run_mask_postproc_land_domain(
+                        postproc_plan,
+                        options,
+                    )?)
+                }
+                MkgrdFinalDomainPostprocOptions::Ocean(options) => {
+                    MkgrdFinalDomainPostprocReport::Ocean(run_mask_postproc_ocean_domain(
+                        postproc_plan,
+                        options,
+                    )?)
+                }
+            })
+        }
+    };
+
+    Ok(MkgrdRefineLoopFinalDomainHandoffReport {
+        copied_result_gridfile: plan.final_result_gridfile.clone(),
+        copied_bytes,
+        contain_domain: plan.final_domain_contain_output.clone(),
+        postproc,
+    })
+}
+
 fn validate_mkgrd_refine_loop_controls(refine: &RefineConfig, max_iter: usize) -> io::Result<()> {
     if max_iter >= refine.halo.len() || max_iter >= refine.max_transition_row.len() {
         return Err(io::Error::new(
@@ -608,6 +683,10 @@ fn validate_mkgrd_refine_loop_controls(refine: &RefineConfig, max_iter: usize) -
     Ok(())
 }
 
+/// Build a non-destructive legacy file path schedule for the top-level
+/// `mkgrd.F90` refine loop.  This mirrors the active file names in
+/// `Area_judge_refine`, `Get_Contain`, `GetRef`, and `refine_loop` without
+/// executing their heavy geometry kernels.
 pub fn plan_mkgrd_refine_loop_io(
     config: &EarthmeshConfig,
     refine: &RefineConfig,
