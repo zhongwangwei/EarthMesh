@@ -1,4 +1,7 @@
-use earthmesh_mesh::{distance_layers, find_frac_index_fortran, DistanceLayerSpacing};
+use earthmesh_mesh::{
+    cellwidth_layers_fortran_indexed, distance_layers, dists_on_edge_layers_fortran_indexed,
+    find_frac_index_fortran, DistanceLayerSpacing,
+};
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(
@@ -70,4 +73,110 @@ fn distance_layers_match_fortran_nonlinear_formulas_at_bounds() {
 #[test]
 fn distance_layers_reject_zero_length_output() {
     assert!(distance_layers(0, 100.0, DistanceLayerSpacing::Linear).is_none());
+}
+
+#[test]
+fn dists_on_edge_layers_marks_refined_and_first_halo_edges_like_fortran() {
+    let initial_dists = vec![100.0; 7];
+    let refinement_flags = vec![false, false, true, false, false];
+    let triangles_on_cell = vec![vec![], vec![], vec![2, 3], vec![3, 4], vec![4]];
+    let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [4, 5, 6], [6, 0, 0]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [0, 0], [0, 0], [2, 3], [2, 3], [3, 4]];
+    let dist_layers = vec![40.0, 80.0];
+
+    let updated = dists_on_edge_layers_fortran_indexed(
+        1,
+        1,
+        0,
+        1,
+        &triangles_on_cell,
+        &edges_on_vertex,
+        &cells_on_edge,
+        &dist_layers,
+        &refinement_flags,
+        &initial_dists,
+    )
+    .expect("valid edge layer inputs");
+
+    assert_eq!(updated[0], 100.0);
+    assert_eq!(updated[1], 100.0);
+    assert_eq!(updated[2], 40.0);
+    assert_eq!(updated[3], 40.0);
+    assert_eq!(updated[4], 40.0);
+    assert_eq!(updated[5], 40.0);
+    assert_eq!(updated[6], 80.0);
+}
+
+#[test]
+fn dists_on_edge_layers_rejects_short_dist_layer_array() {
+    let initial_dists = vec![100.0; 3];
+    let refinement_flags = vec![false, false, true];
+    let triangles_on_cell = vec![vec![], vec![], vec![2]];
+    let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 0, 0]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 2]];
+
+    assert!(dists_on_edge_layers_fortran_indexed(
+        1,
+        1,
+        0,
+        1,
+        &triangles_on_cell,
+        &edges_on_vertex,
+        &cells_on_edge,
+        &[40.0],
+        &refinement_flags,
+        &initial_dists,
+    )
+    .is_none());
+}
+
+#[test]
+fn cellwidth_layers_marks_refined_and_first_halo_cells_like_fortran() {
+    let initial_cellwidth = vec![100.0; 7];
+    let refinement_flags = vec![false, false, true, false];
+    let triangles_on_cell = vec![vec![], vec![], vec![2, 3], vec![2], vec![2], vec![], vec![]];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 5, 6]];
+    let dist_layers = vec![40.0];
+
+    let updated = cellwidth_layers_fortran_indexed(
+        1,
+        1,
+        0,
+        1,
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &dist_layers,
+        &refinement_flags,
+        &initial_cellwidth,
+    )
+    .expect("valid cellwidth layer inputs");
+
+    assert_eq!(updated[0], 100.0);
+    assert_eq!(updated[1], 100.0);
+    assert_eq!(updated[2], 20.0);
+    assert_eq!(updated[3], 20.0);
+    assert_eq!(updated[4], 20.0);
+    assert_eq!(updated[5], 40.0);
+    assert_eq!(updated[6], 40.0);
+}
+
+#[test]
+fn cellwidth_layers_rejects_short_dist_layer_array() {
+    let initial_cellwidth = vec![100.0; 3];
+    let refinement_flags = vec![false, false, true];
+    let triangles_on_cell = vec![vec![], vec![], vec![2]];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 2, 2]];
+
+    assert!(cellwidth_layers_fortran_indexed(
+        1,
+        1,
+        0,
+        1,
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &[],
+        &refinement_flags,
+        &initial_cellwidth,
+    )
+    .is_none());
 }

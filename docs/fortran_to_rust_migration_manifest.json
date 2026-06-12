@@ -198,12 +198,13 @@
         "find_frac_index monotonic-grid fractional lookup ported to rust/earthmesh_mesh",
         "dist_layers_make four distance-layer spacing formulas ported to rust/earthmesh_mesh",
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags ported to rust/earthmesh_mesh",
-        "PolyMeshQuality compact array-cache/update wrapper over n_ngrwm filters and Fortran-style adjust flags ported to rust/earthmesh_mesh"
+        "PolyMeshQuality compact array-cache/update wrapper over n_ngrwm filters and Fortran-style adjust flags ported to rust/earthmesh_mesh",
+        "distsOnEdge_layers_make edge transition update wrapper ported to rust/earthmesh_mesh",
+        "cellwidth_layers_make cell transition update wrapper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
         "Springjustment_global and Springjustment_regional_step",
-        "distsOnEdge_layers_make and cellwidth_layers_make mesh application wrappers",
         "edge/cell connectivity construction and MPAS ordering routines",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea full production wrapper over real MPAS mesh arrays and fixture parity",
