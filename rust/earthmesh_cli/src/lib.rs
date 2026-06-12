@@ -395,6 +395,7 @@ pub struct RefineLoopWorkingState {
     pub n_bdy_refine_segment: Vec<usize>,
     pub ref_sjx_segment_temp: Vec<Vec<usize>>,
     pub n_ref_sjx_segment_temp: Vec<usize>,
+    pub ref_sjx_segment: Vec<usize>,
     pub num_ref: usize,
     pub bdy_refine: Vec<usize>,
     pub bdy_refine_tran: Vec<usize>,
@@ -1376,6 +1377,7 @@ impl RefineLoopWorkingState {
             n_bdy_refine_segment: Vec::new(),
             ref_sjx_segment_temp: Vec::new(),
             n_ref_sjx_segment_temp: Vec::new(),
+            ref_sjx_segment: Vec::new(),
             num_ref: 0,
             bdy_refine: Vec::new(),
             bdy_refine_tran: Vec::new(),
@@ -1499,6 +1501,21 @@ impl RefineLoopWorkingState {
             &mut self.ref_sjx,
             &mut self.weak_concav_pair,
             &mut self.weak_concav_segment,
+        )
+    }
+
+    /// Apply migrated `Delaunay_Lop` to the state's queued LOP reference
+    /// segment and renewed geometry/connectivity arrays.
+    pub fn apply_delaunay_lop(&mut self) -> io::Result<DelaunayLopReport> {
+        apply_delaunay_lop_fortran_indexed(
+            self.iter,
+            self.num_ref,
+            &self.num_mp,
+            &self.num_wp,
+            &mut self.mp_new,
+            &mut self.wp_new,
+            &mut self.ngrmw_new,
+            &self.ref_sjx_segment,
         )
     }
 

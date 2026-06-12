@@ -547,3 +547,61 @@ fn working_state_applies_weak_concav_lop_judge_into_ref_segments() {
     assert_eq!(report.num_ref_added, 2);
     assert_eq!(report.written_segments, vec![(2, vec![20, 61])]);
 }
+
+#[test]
+fn working_state_applies_delaunay_lop_into_new_connectivity() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 3],
+        w_points: vec![point(0.0, 0.0); 13],
+        m_to_w: vec![[1, 2, 3]; 3],
+        w_to_m: vec![vec![1]; 13],
+        n_w_to_m: vec![1; 13],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_mp = vec![0, 3, 5];
+    state.num_wp = vec![0, 13, 14];
+    state.mp_new.resize(6, point(0.0, 0.0));
+    state.wp_new.resize(15, point(0.0, 0.0));
+    state.wp_new[10] = point(0.0, 0.0);
+    state.wp_new[11] = point(6.0, 0.0);
+    state.wp_new[12] = point(0.0, 6.0);
+    state.wp_new[13] = point(6.0, 6.0);
+    state.wp_new[14] = point(-180.0, 9.0);
+    state.ngrmw_new = vec![vec![0; 6]; 4];
+    state.ngrmw_new[1][2] = 10;
+    state.ngrmw_new[2][2] = 11;
+    state.ngrmw_new[3][2] = 12;
+    state.ngrmw_new[1][3] = 11;
+    state.ngrmw_new[2][3] = 12;
+    state.ngrmw_new[3][3] = 13;
+    state.ref_sjx_segment = vec![0, 2, 3];
+    state.num_ref = 2;
+
+    let report = state
+        .apply_delaunay_lop()
+        .expect("apply Delaunay LOP through state");
+
+    assert_eq!(report.flipped_pairs, vec![(2, 3)]);
+    assert_eq!(report.new_triangle_ids, vec![4, 5]);
+    assert_eq!(report.dateline_adjusted, false);
+    assert_eq!(
+        [
+            state.ngrmw_new[1][4],
+            state.ngrmw_new[2][4],
+            state.ngrmw_new[3][4]
+        ],
+        [10, 11, 13]
+    );
+    assert_eq!(
+        [
+            state.ngrmw_new[1][5],
+            state.ngrmw_new[2][5],
+            state.ngrmw_new[3][5]
+        ],
+        [10, 12, 13]
+    );
+    assert_eq!(state.mp_new[4], point(4.0, 2.0));
+    assert_eq!(state.mp_new[5], point(2.0, 4.0));
+    assert_eq!(state.wp_new[14], point(180.0, 9.0));
+}
