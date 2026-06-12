@@ -1698,6 +1698,56 @@ pub struct AreaJudgePatchModifyReport {
     pub patched_cells: usize,
 }
 
+/// Result of the `Area_judge` sea/land classification over the domain bounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeSeaOrLandReport {
+    pub seaorland: Vec<Vec<i32>>,
+    pub sum_land_grid: i32,
+}
+
+/// Build `seaorland` from `IsInDmArea_grid` and `landtypes_global`.
+pub fn build_area_judge_seaorland_fortran_indexed(
+    is_in_domain: &[Vec<i32>],
+    landtypes_global: &[Vec<i32>],
+    bounds: AreaJudgeSourceBounds,
+    mesh_type: &str,
+    refine: bool,
+) -> io::Result<AreaJudgeSeaOrLandReport> {
+    grid_covers_area_judge_bounds_fortran_indexed("IsInDmArea_grid", is_in_domain, bounds)?;
+    grid_covers_area_judge_bounds_fortran_indexed("landtypes_global", landtypes_global, bounds)?;
+
+    let nlons_source = is_in_domain.len().saturating_sub(1);
+    let nlats_source = is_in_domain
+        .get(1)
+        .map(|row| row.len().saturating_sub(1))
+        .unwrap_or(0);
+    let mut seaorland = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+
+    if mesh_type == "atmosmesh" && !refine {
+        return Ok(AreaJudgeSeaOrLandReport {
+            seaorland,
+            sum_land_grid: 0,
+        });
+    }
+
+    let mut sum_land_grid = 0_i32;
+    for lat_index in bounds.maxlat_source..=bounds.minlat_source {
+        for lon_index in bounds.minlon_source..=bounds.maxlon_source {
+            if is_in_domain[lon_index][lat_index] != 0
+                && landtypes_global[lon_index][lat_index] != 0
+            {
+                seaorland[lon_index][lat_index] = 1;
+                sum_land_grid += 1;
+            }
+        }
+    }
+
+    Ok(AreaJudgeSeaOrLandReport {
+        seaorland,
+        sum_land_grid,
+    })
+}
+
 fn merge_area_judge_source_bounds(
     current: Option<AreaJudgeSourceBounds>,
     next: AreaJudgeSourceBounds,
