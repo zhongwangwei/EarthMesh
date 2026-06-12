@@ -1,6 +1,8 @@
 //! Rust mesh kernels migrated from EarthMesh Fortran.
 
-use earthmesh_core::{deg_to_rad, rad_to_deg};
+use std::io;
+
+use earthmesh_core::{deg_to_rad, rad_to_deg, GridMemory};
 
 /// Earth-centered Cartesian point using the same axis convention as `mkgrd.F90`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,6 +92,51 @@ pub fn xyz_to_lonlat_degrees(point: CartesianPoint) -> LonLatDegrees {
 /// preserving point order.
 pub fn xyz_points_to_lonlat_degrees(points: &[CartesianPoint]) -> Vec<LonLatDegrees> {
     points.iter().copied().map(xyz_to_lonlat_degrees).collect()
+}
+
+/// State-level port of `mkgrd.F90:grid_xyz2lonlat`.
+///
+/// The legacy routine allocates `GLONM/GLATM/GLONW/GLATW` for the full
+/// one-based grid footprint and fills entries up to `nma` and `nwa`. The Rust
+/// state keeps the same placeholder-inclusive layout using zero-based vectors.
+pub fn grid_xyz2lonlat_state(grid: &mut GridMemory) -> io::Result<()> {
+    require_grid_coordinate_len("xem", grid.xem.len(), grid.nma)?;
+    require_grid_coordinate_len("yem", grid.yem.len(), grid.nma)?;
+    require_grid_coordinate_len("zem", grid.zem.len(), grid.nma)?;
+    require_grid_coordinate_len("xew", grid.xew.len(), grid.nwa)?;
+    require_grid_coordinate_len("yew", grid.yew.len(), grid.nwa)?;
+    require_grid_coordinate_len("zew", grid.zew.len(), grid.nwa)?;
+
+    grid.allocate_grid_lonlatmw(grid.nma, grid.nva, grid.nwa);
+    for im in 0..grid.nma {
+        let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
+            f64::from(grid.xem[im]),
+            f64::from(grid.yem[im]),
+            f64::from(grid.zem[im]),
+        ));
+        grid.glonm[im] = lonlat.lon_degrees as f32;
+        grid.glatm[im] = lonlat.lat_degrees as f32;
+    }
+    for iw in 0..grid.nwa {
+        let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
+            f64::from(grid.xew[iw]),
+            f64::from(grid.yew[iw]),
+            f64::from(grid.zew[iw]),
+        ));
+        grid.glonw[iw] = lonlat.lon_degrees as f32;
+        grid.glatw[iw] = lonlat.lat_degrees as f32;
+    }
+    Ok(())
+}
+
+fn require_grid_coordinate_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
+    if actual < required {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} length {actual} is shorter than required grid length {required}"),
+        ));
+    }
+    Ok(())
 }
 
 /// Count metadata from `icosahedron.F90:icosahedron`.

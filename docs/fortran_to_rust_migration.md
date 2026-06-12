@@ -417,3 +417,7 @@ Extended `rust/earthmesh_cli` with `WorkspaceMaskApplyReport` and `apply_workspa
 ### 2026-06-12: `gridfile_write` unstructured NetCDF writer ported
 
 Extended `rust/earthmesh_cli` with `UnstructuredMesh`, `gridfile_mesh_from_state`, `write_unstructured_mesh_netcdf`, `gridfile_output_path`, and `write_gridfile_from_state`, covering the compact `MOD_file_preprocess.F90:Unstructured_Mesh_Save` schema used by `mkgrd.F90:gridfile_write`. The Rust adapter derives `GLONM/GLATM/GLONW/GLATW`, `itab_m%iw`, `itab_w%im`, and `n_ngrwm` from `GridMemory` plus `IjTabs`, preserves the Fortran `n_ngrwm(1)=1` and pentagon/hexagon rule, and writes `gridfile/gridfile_NXP####_##_<mode_grid>.nc4`. Remaining `mkgrd.F90` work is now the `gridinit` generation path itself, especially Delaunay-to-Voronoi conversion and `pcvt` circumcenter adjustment before final Rust CLI orchestration.
+
+### 2026-06-12: `grid_xyz2lonlat` state adapter ported
+
+Extended `rust/earthmesh_mesh` with `grid_xyz2lonlat_state`, a state-level adapter for `mkgrd.F90:grid_xyz2lonlat`. It validates placeholder-inclusive M/W Cartesian arrays, allocates `GLONM/GLATM/GLONW/GLATW` through `GridMemory::allocate_grid_lonlatmw`, and fills lon/lat values using the already migrated scalar `xyz_to_lonlat_degrees` formula. This gives the remaining `gridinit` pipeline a tested Rust step between `pcvt` Cartesian coordinates and the Rust `gridfile_write` adapter.
