@@ -36,6 +36,61 @@ fn mask_restart_ocean_without_patch_plans_remask_postproc_without_gridinit() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn run_mask_restart_patch_namelist_executes_patch_mask_make_and_continues_mkgrd() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mask_restart_patch_run_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let source = root.join("patch_source.nc4");
+    earthmesh_cli::write_bbox_mask_netcdf(
+        &source,
+        &earthmesh_cli::BBoxMask {
+            refine_degree: 0,
+            points: vec![earthmesh_cli::BBoxPoint {
+                west: -1.0,
+                east: 1.0,
+                north: 1.0,
+                south: -1.0,
+            }],
+        },
+    )
+    .expect("write patch source");
+
+    let namelist = root.join("mkgrd_restart_patch.nml");
+    let base_dir = format!("{}/", root.display());
+    let source_path = source.display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_restart_patch'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.true.\n  NL%mask_patch_type='bbox'\n  NL%mask_patch_fprefix='{source_path}'\n/\n"
+        ),
+    )
+    .expect("write namelist");
+
+    let report = earthmesh_cli::run_mkgrd_mask_restart_patch_namelist(&namelist, &root, 7)
+        .expect("run restart patch mask_make");
+
+    assert_eq!(
+        report.plan.remask.action,
+        earthmesh_cli::MaskRestartAction::ContinueMkgrd
+    );
+    assert_eq!(report.plan.remask.step, 8);
+    assert_eq!(report.workspace_mask.mask_reports.len(), 1);
+    assert_eq!(report.workspace_mask.mask_counts.mask_patch_ndm[0], 1);
+    assert_eq!(
+        report.workspace_mask.mask_reports[0].outputs,
+        vec![root.join("case_restart_patch/tmpfile/mask_patch_bbox_0_01.nc4")]
+    );
+    assert!(root
+        .join("case_restart_patch/tmpfile/mask_patch_bbox_0_01.nc4")
+        .exists());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn restart_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
     let mut m_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
     for (idx, point) in m_points.iter_mut().enumerate() {

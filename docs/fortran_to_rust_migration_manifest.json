@@ -121,7 +121,8 @@
         "existing FVCOM mode_file converter ported to rust/earthmesh_cli",
         "existing IAP-Ocean mode_file converter ported to rust/earthmesh_cli",
         "top-level mask_restart/remask branch decision ported to rust/earthmesh_cli plan API",
-        "mkgrd.x mask_restart oceanmesh immediate mask_postproc execution wiring ported to rust/earthmesh_cli"
+        "mkgrd.x mask_restart oceanmesh immediate mask_postproc execution wiring ported to rust/earthmesh_cli",
+        "mkgrd mask_restart patch Mask_make preprocessing and continue-mkgrd action runner ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"
@@ -177,7 +178,7 @@
         "Area_judge restart selected-grid file reader and full source-grid expansion runner ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "Area_judge namelist/mkgrd restart-loop production wiring over grids and masks",
+        "Area_judge mkgrd restart-loop domain/refine production wiring over grids and masks",
         "fixture parity for land/ocean/river/coast classification decisions"
       ]
     },

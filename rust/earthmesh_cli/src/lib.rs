@@ -55,6 +55,13 @@ pub struct MkgrdMaskRestartOceanRunReport {
     pub postproc: MaskPostprocOceanDomainReport,
 }
 
+/// Report for executing the `read_nl` mask-restart patch preprocessing branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdMaskRestartPatchRunReport {
+    pub plan: MkgrdMaskRestartPlanReport,
+    pub workspace_mask: WorkspaceMaskApplyReport,
+}
+
 /// File-level I/O contract for the domain branches of
 /// `MOD_mask_postproc.F90:mask_postproc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +225,45 @@ pub fn plan_mkgrd_mask_restart_namelist(
         config,
         workspace_plan,
         remask,
+    })
+}
+
+/// Execute the migrated `mkgrd.F90:read_nl` mask-restart branch that runs
+/// `Mask_make('mask_patch', ...)` and then returns to the normal mkgrd flow.
+pub fn run_mkgrd_mask_restart_patch_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+) -> io::Result<MkgrdMaskRestartPatchRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let plan = plan_mkgrd_mask_restart_namelist(namelist_source, workdir, max_iter)?;
+    if !plan.config.mask_patch_on {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "mask_restart patch execution requires NL%mask_patch_on=.true.",
+        ));
+    }
+    if plan.remask.action != MaskRestartAction::ContinueMkgrd {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart patch execution must continue mkgrd; got action {:?}",
+                plan.remask.action
+            ),
+        ));
+    }
+    let workspace_mask = apply_workspace_and_mask_operations(
+        &plan.workspace_plan,
+        namelist_source,
+        workdir,
+        0,
+        false,
+    )?;
+
+    Ok(MkgrdMaskRestartPatchRunReport {
+        plan,
+        workspace_mask,
     })
 }
 
