@@ -297,3 +297,7 @@ Added `rust/earthmesh_mesh/tests/mpas_real_fixture.rs`, a compact fixture extrac
 ### 2026-06-12: `MOD_grid_preprocess.F90` GetEdge real MPAS fixture parity added
 
 Extended the compact MPAS fixture test with a real vertex-ring connectivity case from `MPASOUT_NXP0064_global.nc4`. The test validates `get_edge_connectivity_fortran_indexed` against MPAS `verticesOnEdge`, `edgesOnVertex`, and unordered `cellsOnEdge` topology for the sampled ring, documenting that cell-pair order is an orientation detail handled by later sorting rather than a topology mismatch. Remaining GetEdge work is full NetCDF adapter integration.
+
+### 2026-06-12: `icosahedron.F90` initial grid counts and point coordinates ported
+
+Extended `rust/earthmesh_mesh` with `icosahedron_counts_fortran`, `icosahedron_diamond_corners_fortran`, and `icosahedron_initial_grid_fortran`, covering the point-coordinate portion of `icosahedron(nxp0)` before `fill_diamond`, `tri_neighbors`, and `spring_dynamics1`. The Rust kernel preserves Fortran-indexed `nmd/nud/nwd` sizing, 12 `impent` pentagonal point indices, the 10 big-diamond corner coordinate formulas, the `pwrd=0.9` interpolation weights, and Earth-radius projection for active M points. Remaining icosahedron work is connectivity table construction, loop flags, neighbor derivation, and spring relaxation.

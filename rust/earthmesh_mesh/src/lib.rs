@@ -77,6 +77,202 @@ pub fn xyz_points_to_lonlat_degrees(points: &[CartesianPoint]) -> Vec<LonLatDegr
     points.iter().copied().map(xyz_to_lonlat_degrees).collect()
 }
 
+/// Count metadata from `icosahedron.F90:icosahedron`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IcosahedronCounts {
+    pub nmd: usize,
+    pub nud: usize,
+    pub nwd: usize,
+}
+
+/// Four corner coordinates for one of the ten OLAM/EarthMesh big diamonds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IcosahedronDiamondCorners {
+    pub south: CartesianPoint,
+    pub north: CartesianPoint,
+    pub west: CartesianPoint,
+    pub east: CartesianPoint,
+}
+
+/// Initial point-only state from `icosahedron.F90:icosahedron` before
+/// `tri_neighbors` and `spring_dynamics1` mutate connectivity/coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IcosahedronInitialGrid {
+    pub nmd: usize,
+    pub nud: usize,
+    pub nwd: usize,
+    pub impent: [usize; 12],
+    pub diamond_corners: [IcosahedronDiamondCorners; 10],
+    pub m_points: Vec<CartesianPoint>,
+}
+
+/// Port of the `nmd/nud/nwd` sizing formulas in
+/// `icosahedron.F90:icosahedron`.
+pub fn icosahedron_counts_fortran(nxp0: usize) -> Option<IcosahedronCounts> {
+    if nxp0 == 0 {
+        return None;
+    }
+    let nn10 = nxp0.checked_mul(nxp0)?.checked_mul(10)?;
+    Some(IcosahedronCounts {
+        nmd: nn10 + 3,
+        nud: 3 * nn10 + 1,
+        nwd: 2 * nn10 + 1,
+    })
+}
+
+/// Port of the big-diamond corner coordinate initialization in
+/// `icosahedron.F90:icosahedron`.
+pub fn icosahedron_diamond_corners_fortran() -> [IcosahedronDiamondCorners; 10] {
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let erador5 = radius / 5.0_f64.sqrt();
+    let full_turn = earthmesh_core::PI2;
+
+    std::array::from_fn(|slot| {
+        let id = slot + 1;
+        if id <= 5 {
+            let angle_n = 0.2 * (id - 1) as f64 * full_turn;
+            let angle_w = angle_n - 0.1 * full_turn;
+            let angle_e = angle_n + 0.1 * full_turn;
+            IcosahedronDiamondCorners {
+                south: CartesianPoint::new(0.0, 0.0, -radius),
+                north: CartesianPoint::new(
+                    erador5 * 2.0 * angle_n.cos(),
+                    erador5 * 2.0 * angle_n.sin(),
+                    erador5,
+                ),
+                west: CartesianPoint::new(
+                    erador5 * 2.0 * angle_w.cos(),
+                    erador5 * 2.0 * angle_w.sin(),
+                    -erador5,
+                ),
+                east: CartesianPoint::new(
+                    erador5 * 2.0 * angle_e.cos(),
+                    erador5 * 2.0 * angle_e.sin(),
+                    -erador5,
+                ),
+            }
+        } else {
+            let angle_s = 0.2 * (id - 6) as f64 * full_turn + 0.1 * full_turn;
+            let angle_w = angle_s - 0.1 * full_turn;
+            let angle_e = angle_s + 0.1 * full_turn;
+            IcosahedronDiamondCorners {
+                south: CartesianPoint::new(
+                    erador5 * 2.0 * angle_s.cos(),
+                    erador5 * 2.0 * angle_s.sin(),
+                    -erador5,
+                ),
+                north: CartesianPoint::new(0.0, 0.0, radius),
+                west: CartesianPoint::new(
+                    erador5 * 2.0 * angle_w.cos(),
+                    erador5 * 2.0 * angle_w.sin(),
+                    erador5,
+                ),
+                east: CartesianPoint::new(
+                    erador5 * 2.0 * angle_e.cos(),
+                    erador5 * 2.0 * angle_e.sin(),
+                    erador5,
+                ),
+            }
+        }
+    })
+}
+
+/// Point-coordinate portion of `icosahedron.F90:icosahedron`.
+///
+/// This initializes the allocated point counts, the 12 pentagonal M-point
+/// indices, the 10 big-diamond corner coordinates, and the pre-spring M-point
+/// coordinates. Connectivity construction (`fill_diamond`/`tri_neighbors`) and
+/// spring relaxation remain separate migration surfaces.
+pub fn icosahedron_initial_grid_fortran(nxp0: usize) -> Option<IcosahedronInitialGrid> {
+    let counts = icosahedron_counts_fortran(nxp0)?;
+    let diamond_corners = icosahedron_diamond_corners_fortran();
+    let mut impent = [0usize; 12];
+    let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); counts.nmd + 1];
+    let pwrd = 0.9_f64;
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+
+    impent[0] = 2;
+    impent[11] = counts.nmd;
+
+    for ibigd in 1..=10 {
+        let corners = diamond_corners[ibigd - 1];
+        for j in 1..=nxp0 {
+            for i in 1..=nxp0 {
+                let idiamond = (ibigd - 1) * nxp0 * nxp0 + (j - 1) * nxp0 + i;
+                let im_left = idiamond + 2;
+                if i == 1 && j == nxp0 {
+                    impent[ibigd] = im_left;
+                }
+
+                let (mut wts, mut wtn, wtw0, wte0) = if i + j <= nxp0 {
+                    (
+                        ((nxp0 + 1 - i - j) as f64 / nxp0 as f64).clamp(0.0, 1.0),
+                        0.0,
+                        (j as f64 / (i + j - 1) as f64).clamp(0.0, 1.0),
+                        1.0 - (j as f64 / (i + j - 1) as f64).clamp(0.0, 1.0),
+                    )
+                } else {
+                    let wte0 = ((nxp0 - j) as f64 / (2 * nxp0 + 1 - i - j) as f64).clamp(0.0, 1.0);
+                    (
+                        0.0,
+                        ((i + j - nxp0 - 1) as f64 / nxp0 as f64).clamp(0.0, 1.0),
+                        1.0 - wte0,
+                        wte0,
+                    )
+                };
+
+                let mut wtw = (1.0 - wts - wtn) * wtw0;
+                let mut wte = (1.0 - wts - wtn) * wte0;
+                let sumwt = wts.powf(pwrd) + wtn.powf(pwrd) + wtw.powf(pwrd) + wte.powf(pwrd);
+                if sumwt == 0.0 {
+                    return None;
+                }
+                wts = wts.powf(pwrd) / sumwt;
+                wtn = wtn.powf(pwrd) / sumwt;
+                wtw = wtw.powf(pwrd) / sumwt;
+                wte = wte.powf(pwrd) / sumwt;
+
+                let point = CartesianPoint::new(
+                    wts * corners.south.x
+                        + wtn * corners.north.x
+                        + wtw * corners.west.x
+                        + wte * corners.east.x,
+                    wts * corners.south.y
+                        + wtn * corners.north.y
+                        + wtw * corners.west.y
+                        + wte * corners.east.y,
+                    wts * corners.south.z
+                        + wtn * corners.north.z
+                        + wtw * corners.west.z
+                        + wte * corners.east.z,
+                );
+                let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+                if norm == 0.0 {
+                    return None;
+                }
+                let expansion = radius / norm;
+                m_points[im_left] = CartesianPoint::new(
+                    point.x * expansion,
+                    point.y * expansion,
+                    point.z * expansion,
+                );
+            }
+        }
+    }
+
+    m_points[2] = CartesianPoint::new(0.0, 0.0, -radius);
+    m_points[counts.nmd] = CartesianPoint::new(0.0, 0.0, radius);
+
+    Some(IcosahedronInitialGrid {
+        nmd: counts.nmd,
+        nud: counts.nud,
+        nwd: counts.nwd,
+        impent,
+        diamond_corners,
+        m_points,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
