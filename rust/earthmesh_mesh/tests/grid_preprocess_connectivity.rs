@@ -2,11 +2,12 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
-    set_weights_on_edge_fortran_indexed, spring_apply_cell_displacements_fortran_indexed,
-    spring_dynamics_global_fortran_indexed, spring_dynamics_regional_fortran_indexed,
-    spring_edge_adjustment_fortran, spring_edge_directions_fortran_indexed,
-    spring_global_iteration_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
-    CartesianPoint, LonLatDegrees,
+    set_dbx_move_regional_step_fortran_indexed, set_weights_on_edge_fortran_indexed,
+    spring_apply_cell_displacements_fortran_indexed, spring_dynamics_global_fortran_indexed,
+    spring_dynamics_regional_fortran_indexed, spring_edge_adjustment_fortran,
+    spring_edge_directions_fortran_indexed, spring_global_iteration_fortran_indexed,
+    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
+    RegionalMoveMaskInput,
 };
 
 #[test]
@@ -460,6 +461,54 @@ fn spring_dynamics_regional_wrapper_moves_only_masked_cells_by_neighbor_average(
         )),
         1.0e-15,
     );
+}
+
+#[test]
+fn set_dbx_move_regional_step_masks_refined_cells_but_freezes_boundary_cells() {
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 4, 0], [2, 3, 5], [3, 4, 0]];
+    let triangles_on_cell = vec![vec![], vec![], vec![2, 3], vec![3, 4], vec![2, 4], vec![3]];
+    let n_edges_on_cell = vec![0, 0, 2, 2, 2, 1];
+    let refined_triangles = vec![false, false, false, true, false];
+
+    let output = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+        set_dis: 0,
+        refined_triangles: &refined_triangles,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        protected_seed_cells: &[],
+        vertex_protect_layers: 0,
+    })
+    .expect("valid regional move-mask input");
+
+    assert!(output.expanded_refined_triangles[3]);
+    assert!(output.boundary_mask[2]);
+    assert!(output.boundary_mask[3]);
+    assert!(!output.move_mask[2]);
+    assert!(!output.move_mask[3]);
+    assert!(output.move_mask[5]);
+}
+
+#[test]
+fn set_dbx_move_regional_step_protects_seed_vertex_cells_when_refinement_touches_them() {
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 4, 0], [2, 3, 5], [3, 4, 0]];
+    let triangles_on_cell = vec![vec![], vec![], vec![2, 3], vec![3, 4], vec![2, 4], vec![3]];
+    let n_edges_on_cell = vec![0, 0, 2, 2, 2, 1];
+    let refined_triangles = vec![false, false, false, true, false];
+
+    let output = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+        set_dis: 0,
+        refined_triangles: &refined_triangles,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        protected_seed_cells: &[5],
+        vertex_protect_layers: 1,
+    })
+    .expect("valid protected regional move-mask input");
+
+    assert!(output.protected_triangles[3]);
+    assert!(!output.move_mask[5]);
 }
 
 #[test]

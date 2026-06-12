@@ -1574,6 +1574,28 @@ pub struct SpringDynamicsRegionalOutput {
     pub diagnostic_max_displacements: Vec<SpringDiagnosticMaxDisplacement>,
 }
 
+/// Borrowed inputs for the pure mask-derivation core of
+/// `MOD_grid_preprocess:set_dbxMove_regional_step`.
+#[derive(Debug, Clone, Copy)]
+pub struct RegionalMoveMaskInput<'a> {
+    pub set_dis: usize,
+    pub refined_triangles: &'a [bool],
+    pub cells_on_triangle: &'a [[usize; 3]],
+    pub triangles_on_cell: &'a [Vec<usize>],
+    pub n_edges_on_cell: &'a [usize],
+    pub protected_seed_cells: &'a [usize],
+    pub vertex_protect_layers: usize,
+}
+
+/// Output from the migrated `set_dbxMove_regional_step` mask derivation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionalMoveMaskOutput {
+    pub move_mask: Vec<bool>,
+    pub boundary_mask: Vec<bool>,
+    pub expanded_refined_triangles: Vec<bool>,
+    pub protected_triangles: Vec<bool>,
+}
+
 /// Borrowed inputs for the pure in-memory calculation side of
 /// `MOD_grid_preprocess:Springjustment_global`.
 #[derive(Debug, Clone, Copy)]
@@ -1882,6 +1904,169 @@ pub fn spring_dynamics_regional_fortran_indexed(
         calculated_cells,
         moved_cells,
         diagnostic_max_displacements,
+    })
+}
+
+fn regional_boundary_mask_fortran_indexed(
+    triangle_flags: &[bool],
+    triangles_on_cell: &[Vec<usize>],
+    n_edges_on_cell: &[usize],
+) -> Option<Vec<bool>> {
+    if triangles_on_cell.len() != n_edges_on_cell.len() {
+        return None;
+    }
+    let mut boundary = vec![false; triangles_on_cell.len()];
+    for cell_id in 2..triangles_on_cell.len() {
+        let edge_count = n_edges_on_cell[cell_id];
+        let cell_triangles = triangles_on_cell.get(cell_id)?;
+        if edge_count == 0 {
+            continue;
+        }
+        if edge_count > cell_triangles.len() {
+            return None;
+        }
+        let mut flagged = 0usize;
+        for &triangle_id in cell_triangles.iter().take(edge_count) {
+            if *triangle_flags.get(triangle_id)? {
+                flagged += 1;
+            }
+        }
+        boundary[cell_id] = flagged != 0 && flagged != edge_count;
+    }
+    Some(boundary)
+}
+
+fn expand_triangles_from_boundary_fortran_indexed(
+    mut triangle_flags: Vec<bool>,
+    triangles_on_cell: &[Vec<usize>],
+    n_edges_on_cell: &[usize],
+    expansion_layers: usize,
+) -> Option<(Vec<bool>, Vec<bool>)> {
+    let mut boundary = regional_boundary_mask_fortran_indexed(
+        &triangle_flags,
+        triangles_on_cell,
+        n_edges_on_cell,
+    )?;
+    for _ in 0..expansion_layers {
+        for cell_id in 2..boundary.len() {
+            if !boundary[cell_id] {
+                continue;
+            }
+            let edge_count = n_edges_on_cell[cell_id];
+            let cell_triangles = triangles_on_cell.get(cell_id)?;
+            if edge_count > cell_triangles.len() {
+                return None;
+            }
+            for &triangle_id in cell_triangles.iter().take(edge_count) {
+                *triangle_flags.get_mut(triangle_id)? = true;
+            }
+        }
+        boundary = regional_boundary_mask_fortran_indexed(
+            &triangle_flags,
+            triangles_on_cell,
+            n_edges_on_cell,
+        )?;
+    }
+    Some((triangle_flags, boundary))
+}
+
+/// Pure Rust port of `MOD_grid_preprocess:set_dbxMove_regional_step`.
+///
+/// The original routine derives initial refinement flags either from
+/// `num_sjx_ref` or `refine_sjx_regional_make`. This core accepts those flags
+/// explicitly, expands them through `set_dis` boundary layers, marks cells on
+/// refined triangles as movable, freezes mixed boundary cells, then optionally
+/// removes cells in protected seed-vertex neighborhoods for
+/// `vertex_protect_layers`.
+pub fn set_dbx_move_regional_step_fortran_indexed(
+    input: RegionalMoveMaskInput<'_>,
+) -> Option<RegionalMoveMaskOutput> {
+    if input.refined_triangles.len() != input.cells_on_triangle.len()
+        || input.triangles_on_cell.len() != input.n_edges_on_cell.len()
+    {
+        return None;
+    }
+
+    let (expanded_refined_triangles, boundary_mask) =
+        expand_triangles_from_boundary_fortran_indexed(
+            input.refined_triangles.to_vec(),
+            input.triangles_on_cell,
+            input.n_edges_on_cell,
+            input.set_dis,
+        )?;
+
+    let mut move_mask = vec![false; input.triangles_on_cell.len()];
+    for triangle_id in 2..expanded_refined_triangles.len() {
+        if !expanded_refined_triangles[triangle_id] {
+            continue;
+        }
+        for &cell_id in input.cells_on_triangle.get(triangle_id)? {
+            if cell_id == 0 {
+                continue;
+            }
+            *move_mask.get_mut(cell_id)? = true;
+        }
+    }
+    for cell_id in 2..boundary_mask.len() {
+        if boundary_mask[cell_id] {
+            move_mask[cell_id] = false;
+        }
+    }
+
+    let mut protected_triangles = vec![false; input.refined_triangles.len()];
+    if input.vertex_protect_layers > 0 && !input.protected_seed_cells.is_empty() {
+        let mut active_protected_seed_cells = Vec::new();
+        for &cell_id in input.protected_seed_cells {
+            let edge_count = *input.n_edges_on_cell.get(cell_id)?;
+            let cell_triangles = input.triangles_on_cell.get(cell_id)?;
+            if edge_count > cell_triangles.len() {
+                return None;
+            }
+            let touches_refinement = cell_triangles.iter().take(edge_count).any(|&triangle_id| {
+                *expanded_refined_triangles
+                    .get(triangle_id)
+                    .unwrap_or(&false)
+            });
+            if touches_refinement {
+                active_protected_seed_cells.push(cell_id);
+            }
+        }
+
+        if !active_protected_seed_cells.is_empty() {
+            for cell_id in active_protected_seed_cells {
+                let edge_count = input.n_edges_on_cell[cell_id];
+                let cell_triangles = input.triangles_on_cell.get(cell_id)?;
+                for &triangle_id in cell_triangles.iter().take(edge_count) {
+                    *protected_triangles.get_mut(triangle_id)? = true;
+                }
+            }
+            protected_triangles = expand_triangles_from_boundary_fortran_indexed(
+                protected_triangles,
+                input.triangles_on_cell,
+                input.n_edges_on_cell,
+                input.vertex_protect_layers,
+            )?
+            .0;
+
+            for triangle_id in 2..protected_triangles.len() {
+                if !protected_triangles[triangle_id] {
+                    continue;
+                }
+                for &cell_id in input.cells_on_triangle.get(triangle_id)? {
+                    if cell_id == 0 {
+                        continue;
+                    }
+                    *move_mask.get_mut(cell_id)? = false;
+                }
+            }
+        }
+    }
+
+    Some(RegionalMoveMaskOutput {
+        move_mask,
+        boundary_mask,
+        expanded_refined_triangles,
+        protected_triangles,
     })
 }
 

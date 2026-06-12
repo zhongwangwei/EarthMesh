@@ -222,11 +222,12 @@
         "spring_dynamics_regionalv2 move-mask smoother ported to rust/earthmesh_mesh",
         "Springjustment_global pure in-memory core adapter ported to rust/earthmesh_mesh",
         "Springjustment_global distance-step core wiring ported to rust/earthmesh_mesh",
-        "Springjustment_regional_step pure in-memory core adapter ported to rust/earthmesh_mesh"
+        "Springjustment_regional_step pure in-memory core adapter ported to rust/earthmesh_mesh",
+        "set_dbxMove_regional_step move-mask derivation ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
-        "Springjustment_global/Springjustment_regional_step NetCDF and move-mask derivation adapter wiring",
+        "Springjustment_global/Springjustment_regional_step NetCDF and upstream refine-state adapter wiring",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea real MPAS mesh fixture parity and adapter integration",
         "GetEdge real MPAS mesh fixture parity and adapter integration"

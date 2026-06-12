@@ -273,3 +273,7 @@ Extended `springjustment_global_core_fortran_indexed` so the pure adapter now in
 ### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment_regional_step pure core adapter ported
 
 Extended `rust/earthmesh_mesh` with `springjustment_regional_core_fortran_indexed`, a tested pure in-memory adapter for the calculation sequence inside `Springjustment_regional_step`. It accepts the regional move mask explicitly, wires triangle-neighbor and GetEdge connectivity, rebuilds cellsOnCell/edgesOnCell, applies the migrated `spring_dynamics_regionalv2` smoother, refreshes cell lon/lat, and recomputes triangle centroid/circumcenter coordinates. Remaining Springjustment work is the move-mask derivation and NetCDF/file adapter boundary.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` set_dbxMove_regional_step mask derivation ported
+
+Extended `rust/earthmesh_mesh` with `set_dbx_move_regional_step_fortran_indexed`, a tested pure Rust port of the move-mask derivation core in `set_dbxMove_regional_step`. It accepts explicit initial refined-triangle flags, expands the regional halo through mixed boundary cells, marks refined-triangle cells movable, freezes boundary cells, and applies the optional protected seed-cell neighborhood removal that corresponds to the original 12-vertex protection logic. Remaining Springjustment work is now adapter plumbing for NetCDF/file persistence and upstream refine-state sources.
