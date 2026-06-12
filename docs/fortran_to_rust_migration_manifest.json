@@ -112,11 +112,12 @@
         "gridfile_write unstructured NetCDF writer and Fortran output naming ported to rust/earthmesh_cli",
         "grid_xyz2lonlat state adapter ported to rust/earthmesh_mesh for gridinit output preparation",
         "Fortran-indexed gridfile adapter boundary added for remaining gridinit/voronoi/pcvt one-based state",
-        "voronoi one-based Delaunay-to-grid state conversion and one-based lonlat fill ported to rust/earthmesh_mesh"
+        "voronoi one-based Delaunay-to-grid state conversion and one-based lonlat fill ported to rust/earthmesh_mesh",
+        "pcvt circumcenter adjustment and in-memory gridinit orchestration ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
-        "pcvt circumcenter adjustment and final gridinit orchestration",
-        "Rust CLI replacement for mkgrd.x end-to-end workflows"
+        "final Rust CLI orchestration for mkgrd.x end-to-end workflows",
+        "release-scale NXP fixture parity for the fully migrated gridinit path"
       ]
     },
     {

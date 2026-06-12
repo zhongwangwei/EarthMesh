@@ -1,5 +1,9 @@
 use earthmesh_core::EARTH_RADIUS_METERS;
-use earthmesh_mesh::{icosahedron_relaxed_grid_fortran, voronoi_grid_from_icosahedron_relaxed};
+use earthmesh_mesh::{
+    gridinit_voronoi_state_fortran, icosahedron_relaxed_grid_fortran,
+    pcvt_adjust_voronoi_grid_state, spherical_circumcenter_from_barycenter,
+    voronoi_grid_from_icosahedron_relaxed, CartesianPoint,
+};
 
 fn approx_eq(actual: f32, expected: f64, tolerance: f64) {
     assert!(
@@ -78,4 +82,78 @@ fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
     assert_eq!(state.grid.glonm[0], 0.0);
     assert_eq!(state.grid.glatm[0], 0.0);
     assert!((state.grid.glatw[2] + 90.0).abs() < 1.0e-4);
+}
+
+#[test]
+fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
+    let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+        .expect("relaxed icosahedron fixture");
+    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, EARTH_RADIUS_METERS)
+        .expect("voronoi grid state");
+
+    let im = (2..=state.grid.nma)
+        .find(|&candidate| {
+            let iw = state.tabs.m[candidate].iw;
+            iw.iter().all(|&value| value >= 2)
+                && state.grid.xem[candidate].abs() > f32::EPSILON
+                && state.grid.xem[candidate].hypot(state.grid.yem[candidate]) > 1.0
+        })
+        .expect("non-degenerate triangle away from projection pole");
+    let initial = CartesianPoint::new(
+        f64::from(state.grid.xem[im]),
+        f64::from(state.grid.yem[im]),
+        f64::from(state.grid.zem[im]),
+    );
+    let vertex_ids = state.tabs.m[im].iw.map(|value| value as usize);
+    let vertices = vertex_ids.map(|iw| {
+        CartesianPoint::new(
+            f64::from(state.grid.xew[iw]),
+            f64::from(state.grid.yew[iw]),
+            f64::from(state.grid.zew[iw]),
+        )
+    });
+    let expected = spherical_circumcenter_from_barycenter(initial, vertices)
+        .expect("non-degenerate circumcenter");
+
+    pcvt_adjust_voronoi_grid_state(&mut state).expect("pcvt adjustment");
+
+    approx_eq(state.grid.xem[im], expected.x, 0.5);
+    approx_eq(state.grid.yem[im], expected.y, 0.5);
+    approx_eq(state.grid.zem[im], expected.z, 0.5);
+    let radius = (f64::from(state.grid.xem[im]).powi(2)
+        + f64::from(state.grid.yem[im]).powi(2)
+        + f64::from(state.grid.zem[im]).powi(2))
+    .sqrt();
+    assert!((radius - EARTH_RADIUS_METERS).abs() <= 0.5);
+}
+
+#[test]
+fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
+    let state =
+        gridinit_voronoi_state_fortran(1, 0, 1.0, 0.25, 100).expect("gridinit in-memory state");
+
+    assert_eq!(state.grid.glonm.len(), state.grid.nma + 1);
+    assert_eq!(state.grid.glatm.len(), state.grid.nma + 1);
+    assert_eq!(state.grid.glonw.len(), state.grid.nwa + 1);
+    assert_eq!(state.grid.glatw.len(), state.grid.nwa + 1);
+    assert_eq!(state.grid.glonm[0], 0.0);
+    assert_eq!(state.grid.glatw[0], 0.0);
+
+    for im in 2..=state.grid.nma {
+        let radius = (f64::from(state.grid.xem[im]).powi(2)
+            + f64::from(state.grid.yem[im]).powi(2)
+            + f64::from(state.grid.zem[im]).powi(2))
+        .sqrt();
+        assert!(
+            (radius - EARTH_RADIUS_METERS).abs() <= 0.5,
+            "im={im} radius={radius}"
+        );
+        assert!(state.grid.glatm[im] >= -90.0 && state.grid.glatm[im] <= 90.0);
+        assert!(state.grid.glonm[im] >= -180.0 && state.grid.glonm[im] <= 180.0);
+    }
+
+    for iw in 2..=state.grid.nwa {
+        assert!(state.grid.glatw[iw] >= -90.0 && state.grid.glatw[iw] <= 90.0);
+        assert!(state.grid.glonw[iw] >= -180.0 && state.grid.glonw[iw] <= 180.0);
+    }
 }
