@@ -133,7 +133,8 @@
         "mkgrd.x final Get_Contain(0) gridfile handoff and optional domain mask_postproc execution runner ported to rust/earthmesh_cli",
         "mkgrd.x refine-loop source/refine/final-quality/final-handoff execution dispatcher ported to rust/earthmesh_cli",
         "mkgrd.x specified-refinement source branch Area_judge_refine/Get_Contain/GetRef file-backed executor wired into rust/earthmesh_cli",
-        "mkgrd.x calculated-refinement iter-zero source branch Area_judge_refine/Get_Contain/GetRef integrated-threshold file-backed executor wired into rust/earthmesh_cli"
+        "mkgrd.x calculated-refinement iter-zero source branch Area_judge_refine/Get_Contain/GetRef integrated-threshold file-backed executor wired into rust/earthmesh_cli",
+        "mkgrd.x mixed calculated/specified refine source branch dispatcher wired into rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"

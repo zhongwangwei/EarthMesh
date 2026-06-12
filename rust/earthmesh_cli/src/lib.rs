@@ -307,6 +307,21 @@ pub struct MkgrdCalculatedRefineSourceBranchReport {
     pub getref: GetRefIntegratedFileRunReport,
 }
 
+/// Runtime inputs for dispatching all currently migrated refine source
+/// branches in one `mkgrd.F90` refine-loop execution.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MkgrdRefineSourceBranchExecutorOptions<'a> {
+    pub calculated: Option<MkgrdCalculatedRefineSourceExecutorOptions<'a>>,
+    pub specified: Option<MkgrdSpecifiedRefineSourceExecutorOptions<'a>>,
+}
+
+/// Evidence from dispatching one migrated refine source branch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MkgrdRefineSourceBranchReport {
+    Calculated(MkgrdCalculatedRefineSourceBranchReport),
+    Specified(MkgrdSpecifiedRefineSourceBranchReport),
+}
+
 /// File-backed executor for the specified-refinement source branch.
 #[derive(Debug, Clone, Copy)]
 pub struct MkgrdSpecifiedRefineSourceExecutor<'a> {
@@ -577,6 +592,75 @@ fn required_output_at<'a>(
             format!("missing calculated GetRef {component} threshold output path"),
         )
     })
+}
+
+/// File-backed dispatcher for migrated calculated/specified refine source
+/// branches. Geometry refinement and final quality are intentionally still
+/// separate executor responsibilities.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdRefineSourceBranchExecutor<'a> {
+    options: MkgrdRefineSourceBranchExecutorOptions<'a>,
+}
+
+impl<'a> MkgrdRefineSourceBranchExecutor<'a> {
+    pub fn new(options: MkgrdRefineSourceBranchExecutorOptions<'a>) -> Self {
+        Self { options }
+    }
+
+    pub fn run_source_branch_report(
+        &self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<MkgrdRefineSourceBranchReport> {
+        match source.source {
+            MkgrdRefineSource::CalculatedIterZero => {
+                let options = self.options.calculated.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "calculated refine source branch requested but no calculated executor options were provided",
+                    )
+                })?;
+                MkgrdCalculatedRefineSourceExecutor::new(options)
+                    .run_source_branch_report(step, source)
+                    .map(MkgrdRefineSourceBranchReport::Calculated)
+            }
+            MkgrdRefineSource::SpecifiedStep => {
+                let options = self.options.specified.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "specified refine source branch requested but no specified executor options were provided",
+                    )
+                })?;
+                MkgrdSpecifiedRefineSourceExecutor::new(options)
+                    .run_source_branch_report(step, source)
+                    .map(MkgrdRefineSourceBranchReport::Specified)
+            }
+        }
+    }
+}
+
+impl MkgrdRefineLoopExecutor for MkgrdRefineSourceBranchExecutor<'_> {
+    fn run_source_branch(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        self.run_source_branch_report(step, source).map(|_| ())
+    }
+
+    fn run_refine_loop_step(&mut self, _step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "refine_loop geometry step is not implemented by MkgrdRefineSourceBranchExecutor",
+        ))
+    }
+
+    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Final_Grid_Quality_Check is not implemented by MkgrdRefineSourceBranchExecutor",
+        ))
+    }
 }
 
 /// File-level I/O contract for the domain branches of
