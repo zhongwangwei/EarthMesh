@@ -282,11 +282,13 @@
       "completed_rust_surfaces": [
         "extract_unique_vertices and sort_and_reindex helpers ported to rust/earthmesh_mesh",
         "Data_Renew helper ported to rust/earthmesh_mesh",
-        "Data_Finial helper ported to rust/earthmesh_mesh"
+        "Data_Finial helper ported to rust/earthmesh_mesh",
+        "IsInDmArea_ustr_Renew helper ported to rust/earthmesh_mesh",
+        "IsInDmArea_ustr_Renew_v2 helper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O",
-        "boundary, isolated-ocean, and narrow-waterway helpers"
+        "isolated-ocean and narrow-waterway helpers"
       ]
     },
     {

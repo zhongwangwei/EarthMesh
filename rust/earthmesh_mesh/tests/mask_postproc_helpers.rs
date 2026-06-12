@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
     extract_unique_vertices_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
-    renew_mask_postproc_data_fortran_indexed, sort_and_reindex_vertices,
+    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
+    renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
 };
 
 #[test]
@@ -130,4 +131,66 @@ fn data_finial_compacts_centers_and_vertices_using_compact_center_ids() {
     assert_eq!(final_data.vertex_neighbors_final[2][0..2], [2, 3]);
     assert_eq!(final_data.vertex_neighbors_final[3][0], 2);
     assert_eq!(final_data.vertex_neighbors_final[5][0], 3);
+}
+
+#[test]
+fn domain_triangle_renew_deletes_solid_boundary_triangles_and_refills_one_missing_vertex() {
+    let mut is_in_domain = vec![0, -1, 1, 1, 1, -1, -1];
+    let original_vertex_neighbors = vec![
+        vec![1, 1, 1, 1, 1, 1, 1],
+        vec![1, 1, 1, 1, 1, 1, 1],
+        vec![2, 3, 4, 1, 1, 1, 1],
+        vec![2, 4, 6, 1, 1, 1, 1],
+        vec![2, 3, 4, 6, 1, 1, 1],
+        vec![5, 6, 1, 1, 1, 1, 1],
+    ];
+    let renewed_vertex_neighbors = vec![
+        vec![1, 1, 1, 1, 1, 1, 1],
+        vec![1, 1, 1, 1, 1, 1, 1],
+        vec![2, 1, 1, 1, 1, 1, 1],
+        vec![2, 1, 1, 1, 1, 1, 1],
+        vec![2, 1, 1, 1, 1, 1, 1],
+        vec![5, 1, 1, 1, 1, 1, 1],
+    ];
+    let original_counts = vec![0, 0, 3, 3, 4, 2];
+    let renewed_counts = vec![0, 0, 1, 1, 1, 1];
+    let mut points_new = 4;
+
+    renew_mask_postproc_domain_triangles_fortran_indexed(
+        &mut is_in_domain,
+        &original_vertex_neighbors,
+        &renewed_vertex_neighbors,
+        &original_counts,
+        &renewed_counts,
+        &mut points_new,
+    )
+    .expect("renew domain triangles");
+
+    assert_eq!(is_in_domain, vec![0, -1, -1, 1, 1, 1, 1]);
+    assert_eq!(points_new, 4);
+}
+
+#[test]
+fn opposite_domain_triangle_renew_refills_two_opposed_missing_triangles() {
+    let mut is_in_domain = vec![0, -1, -1, 1, 1, -1, 1, 1];
+    let vertex_neighbors = vec![
+        vec![1, 1, 1, 1, 1, 1],
+        vec![1, 1, 1, 1, 1, 1],
+        vec![2, 3, 4, 5, 6, 7],
+    ];
+    let original_counts = vec![0, 0, 6];
+    let renewed_counts = vec![0, 0, 4];
+    let mut points_new = 5;
+
+    renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
+        &mut is_in_domain,
+        &vertex_neighbors,
+        &original_counts,
+        &renewed_counts,
+        &mut points_new,
+    )
+    .expect("renew opposite domain triangles");
+
+    assert_eq!(is_in_domain, vec![0, -1, 1, 1, 1, 1, 1, 1]);
+    assert_eq!(points_new, 7);
 }
