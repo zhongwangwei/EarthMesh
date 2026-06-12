@@ -377,3 +377,7 @@ Extended `rust/earthmesh_core` with `DelaunayMemory` and typed Delaunay records 
 ### 2026-06-12: `read_nl` workspace filesystem adapter started
 
 Added `rust/earthmesh_cli` with `apply_read_nl_workspace_plan`, the first Rust orchestration adapter for `mkgrd.F90:read_nl` side effects. It executes the safe filesystem subset from `MkgrdWorkspacePlan`: optional case-directory removal, `*_filelist.txt` cleanup in the working directory, required directory creation, and copying the input namelist to `result/namelist.save`. Restart plans preserve the Fortran short-circuit by avoiding case-directory deletion while still saving the namelist. `Mask_make` file discovery and mask-count validation remain separate adapter work because they depend on bbox/lambert/circle/close mask formats and NetCDF outputs.
+
+### 2026-06-12: `Mask_make` prefix discovery ported without shell execution
+
+Extended `rust/earthmesh_cli` with `discover_mask_sources`, the first Rust adapter slice for `mkgrd.F90:Mask_make`. It preserves the Fortran path split and `mask_fprefix*` source-listing behavior without invoking `ls` or writing temporary `*_filelist.txt` files, returning a typed `MaskSourceDiscovery` with parent directory, file prefix, and sorted matching files. Mask-type parsing (`bbox`, `lambert`, `circle`, `close`), NetCDF output generation, and mask-count updates remain separate parity-gated adapter work.

@@ -99,10 +99,11 @@
         "core mkrefine namelist controls, refine_setting derivation, and spring/refine validation ported to rust/earthmesh_core",
         "mkrefine threshold switch/value matrix and sentinel validation ported to rust/earthmesh_core",
         "read_nl workspace directories, namelist.save path, mask_restart short-circuit, and Mask_make call plan ported to rust/earthmesh_core",
-        "read_nl filesystem setup/removal, filelist cleanup, and namelist.save copy adapter started in rust/earthmesh_cli"
+        "read_nl filesystem setup/removal, filelist cleanup, and namelist.save copy adapter started in rust/earthmesh_cli",
+        "Mask_make path split and mask_fprefix source discovery ported to rust/earthmesh_cli without shell ls"
       ],
       "remaining_rust_surfaces": [
-        "Mask_make-derived mask-count validation and mask file generation adapter",
+        "Mask_make bbox/lambert/circle/close mask generation and mask-count validation adapter",
         "mode4mesh_make and mask creation orchestration",
         "gridinit/voronoi/pcvt/gridfile_write pipeline",
         "Rust CLI replacement for mkgrd.x end-to-end workflows"
