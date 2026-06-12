@@ -114,3 +114,39 @@ fn refine_loop_execution_dispatches_sources_steps_and_final_handoff_in_fortran_o
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn refine_loop_execution_runs_final_quality_before_final_handoff_when_enabled() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mkgrd_refine_loop_final_quality_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base_dir = format!("{}/", root.display());
+    let mkgrd = mkgrd_config(&base_dir);
+    let mut refine = refine_config();
+    refine.spring_global_type = 1;
+    let plan =
+        earthmesh_cli::plan_mkgrd_refine_loop_io(&mkgrd, &refine).expect("plan refine loop io");
+
+    fs::create_dir_all(plan.steps[0].refine_loop_input_gridfile.parent().unwrap())
+        .expect("create gridfile dir");
+    fs::write(
+        &plan.steps[0].refine_loop_input_gridfile,
+        "initial gridfile",
+    )
+    .expect("write initial gridfile");
+
+    let mut executor = RecordingExecutor::default();
+    let report = earthmesh_cli::run_mkgrd_refine_loop_execution(&plan, &mut executor, None)
+        .expect("run refine loop execution");
+
+    assert!(report.ran_final_quality_check);
+    assert_eq!(executor.events.last(), Some(&"final-quality".to_string()));
+    assert_eq!(
+        fs::read_to_string(&plan.final_result_gridfile).expect("read final result gridfile"),
+        "gridfile after step 2"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
