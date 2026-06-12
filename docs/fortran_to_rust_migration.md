@@ -505,3 +505,7 @@ Extended `rust/earthmesh_cli` with tested adapter-layer writers for `MOD_mask_po
 ### 2026-06-12: mask_postproc domain I/O plan ported
 
 Added a tested side-effect-free `MaskPostprocDomainIoPlan` in `rust/earthmesh_cli` for the Earth/Lnd/Ocn branches of `MOD_mask_postproc.F90:mask_postproc`. The plan preserves legacy `gridfile_NXP####_<mode>.nc4` inputs, `contain_<mesh>_domain_NXP####_<mode>.nc4` inputs, clipped `gridfile_NXP####_<mode>_<mesh>[_patch].nc4` outputs, Earth/Land `patchtype_NXP####_<mode>.nc4` outputs, and Ocean-tri `obc`/`obcv2` patch-aware boundary outputs. Remaining work is composing real NetCDF reads/writes and the full branch execution around these plans and migrated helpers.
+
+### 2026-06-12: Unstructured_Mesh_Read adapter ported
+
+Added `read_unstructured_mesh_netcdf` in `rust/earthmesh_cli` as the Rust reader counterpart to the existing `write_unstructured_mesh_netcdf` adapter for `MOD_file_preprocess.F90:Unstructured_Mesh_Read`/`Unstructured_Mesh_Save` gridfiles. The reader validates `sjx_points`, `lbx_points`, `dimb=3`, `dimc`, coordinate variables, `itab_m%iw`, `itab_w%im`, and `n_ngrwm`, then restores the typed `UnstructuredMesh` payload used by grid initialization and future `mask_postproc` orchestration. It trims writer-added trailing zero padding from fixed-width `itab_w%im` rows so the Rust layer keeps its ragged connectivity semantics.

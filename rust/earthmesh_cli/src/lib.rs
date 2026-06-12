@@ -436,6 +436,69 @@ pub fn write_unstructured_mesh_netcdf(
     })
 }
 
+/// Read the compact EarthMesh unstructured gridfile schema produced by
+/// `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
+pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<UnstructuredMesh> {
+    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let sjx_points = required_dimension_len(&file, "sjx_points")?;
+    let lbx_points = required_dimension_len(&file, "lbx_points")?;
+    let dimb = required_dimension_len(&file, "dimb")?;
+    let dimc = required_dimension_len(&file, "dimc")?;
+    if dimb != 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("dimb must be 3 for EarthMesh triangle connectivity, got {dimb}"),
+        ));
+    }
+
+    let glonm = required_values_f64(&file, "GLONM")?;
+    let glatm = required_values_f64(&file, "GLATM")?;
+    let glonw = required_values_f64(&file, "GLONW")?;
+    let glatw = required_values_f64(&file, "GLATW")?;
+    require_len("GLONM", glonm.len(), sjx_points)?;
+    require_len("GLATM", glatm.len(), sjx_points)?;
+    require_len("GLONW", glonw.len(), lbx_points)?;
+    require_len("GLATW", glatw.len(), lbx_points)?;
+
+    let m_to_w_values =
+        required_values_i32_matrix(&file, "itab_m%iw", "sjx_points", "dimb", sjx_points, dimb)?;
+    let w_to_m_values =
+        required_values_i32_matrix(&file, "itab_w%im", "lbx_points", "dimc", lbx_points, dimc)?;
+    let n_w_to_m = required_values_i32(&file, "n_ngrwm")?;
+    require_len("n_ngrwm", n_w_to_m.len(), lbx_points)?;
+
+    let m_points = (0..sjx_points)
+        .map(|idx| LonLatPoint {
+            lon: glonm[idx],
+            lat: glatm[idx],
+        })
+        .collect();
+    let w_points = (0..lbx_points)
+        .map(|idx| LonLatPoint {
+            lon: glonw[idx],
+            lat: glatw[idx],
+        })
+        .collect();
+    let m_to_w = m_to_w_values
+        .chunks_exact(3)
+        .map(|row| [row[0], row[1], row[2]])
+        .collect();
+    let w_to_m = w_to_m_values
+        .chunks_exact(dimc)
+        .map(trim_trailing_zero_connectivity)
+        .collect();
+
+    let mesh = UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    };
+    validate_unstructured_mesh(&mesh)?;
+    Ok(mesh)
+}
+
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
 pub fn obc_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: bool) -> PathBuf {
     let filename = if mask_patch_on {
@@ -1360,6 +1423,15 @@ fn flatten_w_to_m(w_to_m: &[Vec<i32>], dimc: usize) -> Vec<i32> {
         values.resize(values.len() + dimc.saturating_sub(row.len().min(dimc)), 0);
     }
     values
+}
+
+fn trim_trailing_zero_connectivity(row: &[i32]) -> Vec<i32> {
+    let end = row
+        .iter()
+        .rposition(|&value| value != 0)
+        .map(|idx| idx + 1)
+        .unwrap_or(row.len());
+    row[..end].to_vec()
 }
 
 fn usize_values_to_i32(name: &str, values: &[usize]) -> io::Result<Vec<i32>> {

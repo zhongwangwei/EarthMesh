@@ -378,3 +378,43 @@ fn write_gridfile_from_fortran_indexed_state_uses_fortran_output_name() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn unstructured_mesh_reader_round_trips_legacy_gridfile_schema() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_unstructured_reader_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let output = root.join("gridfile.nc4");
+    let mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: 10.0,
+                lat: -1.0,
+            },
+        ],
+        w_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: 20.0,
+                lat: 2.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 30.0,
+                lat: 3.0,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [1, 2, 3]],
+        w_to_m: vec![vec![1, 1, 1, 1, 1, 1, 1], vec![1, 2, 1], vec![2, 1, 1]],
+        n_w_to_m: vec![1, 3, 3],
+    };
+
+    earthmesh_cli::write_unstructured_mesh_netcdf(&output, &mesh).expect("write mesh");
+    let read_back = earthmesh_cli::read_unstructured_mesh_netcdf(&output).expect("read mesh");
+
+    assert_eq!(read_back, mesh);
+    let _ = std::fs::remove_dir_all(&root);
+}
