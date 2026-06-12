@@ -249,15 +249,23 @@ pub struct MkgrdRefineLoopWorkingStateStepReport {
     pub prologue: MkgrdRefineLoopWorkingStatePrologueReport,
     pub state: RefineLoopWorkingState,
     pub output_gridfile: PathBuf,
+    pub onedivide_four_connection: Option<OnedivideFourConnectionReport>,
+    pub array_length: Option<RefineArrayLengthCalculationRunReport>,
+    pub onedivide_four_renew: Option<OnedivideFourRenewReport>,
+    pub ngr_renew: Option<NgrRenewReport>,
 }
 
 /// File-backed refine-loop geometry executor backed by `RefineLoopWorkingState`.
 ///
-/// At this migration stage it performs the verified prologue/read/write
-/// boundary and exports the current state unchanged. Geometry stage sequencing
-/// will be filled in by subsequent, separately tested slices.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MkgrdRefineLoopWorkingStateExecutor;
+/// By default it performs the verified prologue/read/write boundary and exports
+/// the current state unchanged. Supplying one-into-four markers enables the
+/// migrated one-into-four -> Array_length -> NGR path for focused parity slices.
+#[derive(Debug, Default, Clone)]
+pub struct MkgrdRefineLoopWorkingStateExecutor {
+    one_into_four_ref_sjx: Option<Vec<i32>>,
+    num_vertex: usize,
+    set_dis_in: usize,
+}
 
 /// Evidence from applying `MOD_refine.F90:OnedivideFour_connection`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1327,19 +1335,128 @@ pub fn run_mkgrd_refine_loop_working_state_prologue(
 }
 
 impl MkgrdRefineLoopWorkingStateExecutor {
+    pub fn with_one_into_four_ref_sjx(
+        ref_sjx: Vec<i32>,
+        num_vertex: usize,
+        set_dis_in: usize,
+    ) -> Self {
+        Self {
+            one_into_four_ref_sjx: Some(ref_sjx),
+            num_vertex,
+            set_dis_in,
+        }
+    }
+
     pub fn run_refine_loop_step_report(
         &self,
         step: &MkgrdRefineLoopStepIoPlan,
     ) -> io::Result<MkgrdRefineLoopWorkingStateStepReport> {
         let prologue = run_mkgrd_refine_loop_working_state_prologue(step)?;
-        let state = prologue.state.clone();
+        let mut state = prologue.state.clone();
+        let mut onedivide_four_connection = None;
+        let mut array_length = None;
+        let mut onedivide_four_renew = None;
+        let mut ngr_renew = None;
+
+        if let Some(ref_sjx) = &self.one_into_four_ref_sjx {
+            self.run_configured_one_into_four_pipeline(step, &mut state, ref_sjx)
+                .map(|(connection, length, renew, ngr)| {
+                    onedivide_four_connection = Some(connection);
+                    array_length = Some(length);
+                    onedivide_four_renew = Some(renew);
+                    ngr_renew = Some(ngr);
+                })?;
+        }
+
         let output_mesh = state.to_unstructured_mesh()?;
         write_unstructured_mesh_netcdf(&step.refine_loop_output_gridfile, &output_mesh)?;
         Ok(MkgrdRefineLoopWorkingStateStepReport {
             prologue,
             state,
             output_gridfile: step.refine_loop_output_gridfile.clone(),
+            onedivide_four_connection,
+            array_length,
+            onedivide_four_renew,
+            ngr_renew,
         })
+    }
+
+    fn run_configured_one_into_four_pipeline(
+        &self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        state: &mut RefineLoopWorkingState,
+        ref_sjx: &[i32],
+    ) -> io::Result<(
+        OnedivideFourConnectionReport,
+        RefineArrayLengthCalculationRunReport,
+        OnedivideFourRenewReport,
+        NgrRenewReport,
+    )> {
+        let old_mp = *state
+            .num_mp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
+        let old_wp = *state
+            .num_wp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_wp[1] is required"))?;
+        if ref_sjx.len() <= old_mp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("one-into-four ref_sjx must include placeholder plus {old_mp} triangles"),
+            ));
+        }
+        state.num_vertex = self.num_vertex;
+        state.ref_sjx = ref_sjx[..=old_mp]
+            .iter()
+            .map(|&marker| if marker > 1 { 1 } else { marker })
+            .collect();
+        state.num_tranrow_sjx = state.ref_sjx[self.num_vertex + 1..=old_mp]
+            .iter()
+            .filter(|&&marker| marker != 0)
+            .count();
+
+        let connection = state.apply_onedivide_four_connection()?;
+        let file_dir = step
+            .refine_loop_input_gridfile
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "refine_loop_input_gridfile must live under <file_dir>/gridfile",
+                )
+            })?;
+        let length = state.apply_array_length_calculation(file_dir, step.step, self.set_dis_in)?;
+
+        state.iter = 2;
+        if state.num_mp.len() <= state.iter {
+            state.num_mp.resize(state.iter + 1, 0);
+        }
+        if state.num_wp.len() <= state.iter {
+            state.num_wp.resize(state.iter + 1, 0);
+        }
+        let extra_capacity = state.num_tranrow_sjx * 4;
+        state.num_mp[state.iter] = old_mp + extra_capacity;
+        state.num_wp[state.iter] = old_wp + extra_capacity;
+        state.mp_new.resize(
+            state.num_mp[state.iter] + 1,
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+        );
+        state.wp_new.resize(
+            state.num_wp[state.iter] + 1,
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+        );
+        if state.ngrmw_new.len() <= 3 {
+            state.ngrmw_new.resize_with(4, Vec::new);
+        }
+        for row in &mut state.ngrmw_new[1..=3] {
+            row.resize(state.num_mp[state.iter] + 1, 1);
+        }
+
+        let renew = state.apply_onedivide_four_renew()?;
+        let ngr = state.apply_ngr_renew()?;
+        Ok((connection, length, renew, ngr))
     }
 }
 

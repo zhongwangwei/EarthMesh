@@ -466,7 +466,8 @@
         "refine_loop working state can apply Delaunay_Lop to queued LOP segment references",
         "refine_loop working-state executor can run file-backed prologue and write passthrough output gridfile",
         "refine_loop working state can apply Array_length_calculation and write close-mesh scratch outputs",
-        "refine_loop working state derives triangle-neighbor rows from gridfile cell membership"
+        "refine_loop working state derives triangle-neighbor rows from gridfile cell membership",
+        "refine_loop working-state executor can run configured one-into-four Array_length renewal NGR geometry pipeline and write refined gridfile"
       ]
     }
   ]

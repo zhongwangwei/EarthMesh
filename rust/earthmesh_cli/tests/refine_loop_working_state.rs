@@ -783,3 +783,65 @@ fn working_state_applies_array_length_calculation_and_close_mesh_outputs() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn working_state_executor_runs_configured_one_into_four_refinement_pipeline() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_onefour_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let input_gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
+    let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
+    let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        sources: Vec::new(),
+        refine_loop_input_gridfile: input_gridfile.clone(),
+        refine_loop_original_tmpfile: original_tmpfile.clone(),
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: output_gridfile.clone(),
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0), point(2.0, 2.0)],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+            point(6.0, 0.0),
+            point(0.0, 6.0),
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+        n_w_to_m: vec![1, 1, 1, 1],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input_gridfile, &mesh)
+        .expect("write input gridfile");
+
+    let executor =
+        MkgrdRefineLoopWorkingStateExecutor::with_one_into_four_ref_sjx(vec![0, 0, 1], 1, 0);
+    let report = executor
+        .run_refine_loop_step_report(&step)
+        .expect("run configured one-into-four refine-loop step");
+
+    assert_eq!(
+        report
+            .onedivide_four_renew
+            .as_ref()
+            .unwrap()
+            .refined_triangles,
+        vec![2]
+    );
+    assert_eq!(report.ngr_renew.as_ref().unwrap().num_sjx, 5);
+    assert_eq!(report.ngr_renew.as_ref().unwrap().num_dbx, 8);
+    let output = earthmesh_cli::read_unstructured_mesh_netcdf(&output_gridfile)
+        .expect("read refined output gridfile");
+    assert_eq!(output.m_points.len(), 5);
+    assert_eq!(output.w_points.len(), 8);
+    assert_eq!(output.m_points[1], point(1.0, 1.0));
+    assert!(output.m_to_w.iter().all(|row| row.iter().all(|&id| id > 0)));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
