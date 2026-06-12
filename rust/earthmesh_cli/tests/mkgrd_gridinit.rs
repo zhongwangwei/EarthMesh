@@ -209,6 +209,79 @@ fn run_mkgrd_gridinit_global_converts_existing_mpas_mode_file() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
+    let root =
+        std::env::temp_dir().join(format!("earthmesh_cli_fvcom_mode_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let mode_file = root.join("source_fvcom.nc4");
+    write_synthetic_fvcom_mode_file(&mode_file);
+
+    let namelist = root.join("mkgrd_fvcom.nml");
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_fvcom'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%mode_file='{}'\n  NL%mode_file_description='FVCOM'\n  NL%refine=.false.\n  NL%niter=0\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='FVCOM'\n/\n",
+            mode_file.display()
+        ),
+    )
+    .expect("write namelist");
+
+    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
+        .expect("convert FVCOM mode file");
+
+    assert_eq!(report.gridfile.sjx_points, 3);
+    assert_eq!(report.gridfile.lbx_points, 4);
+    assert_eq!(report.gridfile.dimc, 7);
+    let file = netcdf::open(&report.gridfile.output).expect("open converted gridfile");
+    let glonm = file
+        .variable("GLONM")
+        .expect("GLONM")
+        .get_values::<f64, _>(..)
+        .expect("read GLONM");
+    let glonw = file
+        .variable("GLONW")
+        .expect("GLONW")
+        .get_values::<f64, _>(..)
+        .expect("read GLONW");
+    for (actual, expected) in glonm.iter().zip([0.0, 170.0, -170.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    for (actual, expected) in glonw.iter().zip([0.0, 10.0, -179.0, 179.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    assert_eq!(
+        file.variable("itab_m%iw")
+            .expect("itab_m%iw")
+            .get_values::<i32, _>((.., ..))
+            .expect("read itab_m%iw"),
+        vec![1, 1, 1, 2, 3, 4, 4, 3, 2]
+    );
+    assert_eq!(
+        file.variable("itab_w%im")
+            .expect("itab_w%im")
+            .get_values::<i32, _>((.., ..))
+            .expect("read itab_w%im"),
+        vec![
+            1, 1, 1, 1, 1, 1, 1, //
+            2, 3, 1, 1, 1, 1, 1, //
+            3, 4, 2, 1, 1, 1, 1, //
+            4, 3, 2, 1, 1, 1, 1,
+        ]
+    );
+    assert_eq!(
+        file.variable("n_ngrwm")
+            .expect("n_ngrwm")
+            .get_values::<i32, _>(..)
+            .expect("read n_ngrwm"),
+        vec![0, 2, 3, 3]
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn write_synthetic_mpas_mode_file(path: &std::path::Path) {
     let mut file = netcdf::create(path).expect("create synthetic MPAS mode file");
     file.add_dimension("nVertices", 2).expect("nVertices");
@@ -262,6 +335,56 @@ fn write_synthetic_mpas_mode_file(path: &std::path::Path) {
             .add_variable::<i32>("nEdgesOnCell", &["nCells"])
             .expect("nEdgesOnCell");
         var.put_values(&[4, 4], ..).expect("write nEdgesOnCell");
+    }
+}
+
+fn write_synthetic_fvcom_mode_file(path: &std::path::Path) {
+    let mut file = netcdf::create(path).expect("create synthetic FVCOM mode file");
+    file.add_dimension("maxelem", 7).expect("maxelem");
+    file.add_dimension("node", 3).expect("node");
+    file.add_dimension("nele", 2).expect("nele");
+    file.add_dimension("three", 3).expect("three");
+    {
+        let mut var = file.add_variable::<f64>("lonc", &["nele"]).expect("lonc");
+        var.put_values(&[170.0, 190.0], ..).expect("write lonc");
+    }
+    {
+        let mut var = file.add_variable::<f64>("latc", &["nele"]).expect("latc");
+        var.put_values(&[20.0, -20.0], ..).expect("write latc");
+    }
+    {
+        let mut var = file.add_variable::<f64>("lon", &["node"]).expect("lon");
+        var.put_values(&[10.0, 181.0, -181.0], ..)
+            .expect("write lon");
+    }
+    {
+        let mut var = file.add_variable::<f64>("lat", &["node"]).expect("lat");
+        var.put_values(&[30.0, 40.0, 50.0], ..).expect("write lat");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("nv", &["nele", "three"])
+            .expect("nv");
+        var.put_values(&[1, 2, 3, 3, 2, 1], (.., ..))
+            .expect("write nv");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("nbve", &["node", "maxelem"])
+            .expect("nbve");
+        var.put_values(
+            &[
+                1, 2, 0, 0, 0, 0, 0, //
+                2, 3, 1, 0, 0, 0, 0, //
+                3, 2, 1, 0, 0, 0, 0,
+            ],
+            (.., ..),
+        )
+        .expect("write nbve");
+    }
+    {
+        let mut var = file.add_variable::<i32>("ntve", &["node"]).expect("ntve");
+        var.put_values(&[2, 3, 3], ..).expect("write ntve");
     }
 }
 

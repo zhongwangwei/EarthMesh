@@ -117,12 +117,13 @@
         "initial mkgrd.x hex/tri gridinit namelist-to-gridfile path ported to rust/earthmesh_cli binary",
         "release-scale NXP64 parity fixture added for the fully migrated initial gridinit path",
         "existing EarthMesh mode_file ingestion branch ported to rust/earthmesh_cli",
-        "existing MPAS mode_file converter ported to rust/earthmesh_cli"
+        "existing MPAS mode_file converter ported to rust/earthmesh_cli",
+        "existing FVCOM mode_file converter ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x mask_restart/remask branch",
         "mkgrd.x refine and postprocess loop after the initial gridfile",
-        "mkgrd.x FVCOM/IAP-Ocean existing mode_file converters"
+        "mkgrd.x IAP-Ocean existing mode_file converter"
       ]
     },
     {

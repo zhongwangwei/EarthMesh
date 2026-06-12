@@ -449,3 +449,7 @@ Extended `rust/earthmesh_cli` with `copy_existing_earthmesh_mode_file` and wired
 ### 2026-06-12: existing MPAS `mode_file` converter ported
 
 Extended `rust/earthmesh_cli` with `convert_mpas_mode_file_to_earthmesh` and wired the existing-`mode_file`, `mode_file_description='MPAS'` branch in `run_mkgrd_gridinit_global_namelist`. The converter ports `MOD_file_preprocess.F90:MPAS_Mesh_Read`: it reads MPAS `nVertices/nCells/maxEdges`, radian `lonVertex/latVertex/lonCell/latCell`, `cellsOnVertex`, `verticesOnCell`, and `nEdgesOnCell`; inserts EarthMesh placeholder records; shifts connectivity by one; normalizes longitudes into `[-180, 180]`; and writes the standard `Unstructured_Mesh_Save` gridfile schema. Remaining existing-mode converters are FVCOM and IAP-Ocean.
+
+### 2026-06-12: existing FVCOM `mode_file` converter ported
+
+Extended `rust/earthmesh_cli` with `convert_fvcom_mode_file_to_earthmesh` and wired the existing-`mode_file`, `mode_file_description='FVCOM'` branch in `run_mkgrd_gridinit_global_namelist`. The converter ports `MOD_file_preprocess.F90:FVCOM_Mesh_Read`: it reads FVCOM `maxelem/node/nele`, element centers `lonc/latc`, node coordinates `lon/lat`, element-to-node `nv`, node-to-element `nbve`, and node neighbor counts `ntve`; retains the legacy placeholder record semantics; shifts connectivity by one; normalizes longitudes into `[-180, 180]`; and writes the standard `Unstructured_Mesh_Save` gridfile schema. Remaining existing-mode converter is IAP-Ocean.
