@@ -2,6 +2,7 @@ use earthmesh_mesh::{
     extract_unique_vertices_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
     renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
+    widen_narrow_waterway_fortran_indexed,
 };
 
 #[test]
@@ -193,4 +194,43 @@ fn opposite_domain_triangle_renew_refills_two_opposed_missing_triangles() {
 
     assert_eq!(is_in_domain, vec![0, -1, 1, 1, 1, 1, 1, 1]);
     assert_eq!(points_new, 7);
+}
+
+#[test]
+fn narrow_waterway_widen_activates_cells_around_duplicate_boundary_neighbor() {
+    let mut is_in_domain = vec![0, -1, 1, 1, 1, 1, -1, -1, -1, -1, -1];
+    let vertex_neighbors = vec![
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+        vec![9, 10, 1],
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+    ];
+    let center_neighbors_new = vec![
+        vec![1, 1, 1],
+        vec![1, 1, 1],
+        vec![3, 5, 1],
+        vec![3, 5, 1],
+        vec![3, 6, 1],
+        vec![3, 7, 1],
+    ];
+    let vertex_neighbor_counts = vec![0, 0, 0, 3, 0, 3, 3, 3];
+    let vertex_neighbor_counts_new = vec![0, 0, 0, 1, 0, 1, 1, 1];
+    let center_neighbor_counts_new = vec![0, 0, 2, 2, 2, 2];
+
+    widen_narrow_waterway_fortran_indexed(
+        &mut is_in_domain,
+        &vertex_neighbors,
+        &center_neighbors_new,
+        &vertex_neighbor_counts,
+        &vertex_neighbor_counts_new,
+        &center_neighbor_counts_new,
+    )
+    .expect("widen narrow waterway");
+
+    assert_eq!(is_in_domain[9], 1);
+    assert_eq!(is_in_domain[10], 1);
 }

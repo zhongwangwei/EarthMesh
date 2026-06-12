@@ -477,3 +477,7 @@ Extended `rust/earthmesh_mesh` with `finalize_mask_postproc_data_fortran_indexed
 ### 2026-06-12: mask_postproc domain-renew helpers ported
 
 Extended `rust/earthmesh_mesh` with `renew_mask_postproc_domain_triangles_fortran_indexed` and `renew_mask_postproc_opposite_domain_triangles_fortran_indexed`, tested ports of `MOD_mask_postproc.F90:IsInDmArea_ustr_Renew` and `IsInDmArea_ustr_Renew_v2`. The helpers preserve the one-based placeholder arrays, active/inactive `IsInDmArea_ustr` integer semantics, the solid-boundary deletion rule (`n_ustr_ngr == 6`), the one-missing-triangle refill count update, and the v2 opposite-slot (`j`/`j+3`) two-triangle refill. Remaining `mask_postproc` work is isolated-ocean/narrow-waterway repair plus Earth/Lnd/Ocn/Atmos NetCDF orchestration.
+
+### 2026-06-12: mask_postproc narrow-waterway helper ported
+
+Extended `rust/earthmesh_mesh` with `widen_narrow_waterway_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:narrow_waterway_widen`. The helper rebuilds the temporary boundary vertex-to-vertex graph from compact ocean center rows, preserves the four-connection narrow-waterway signature and duplicate-neighbor detection, and activates all original centers adjacent to the duplicated boundary neighbor. Remaining `mask_postproc` work is the isolated-ocean removal helper plus Earth/Lnd/Ocn/Atmos NetCDF orchestration.
