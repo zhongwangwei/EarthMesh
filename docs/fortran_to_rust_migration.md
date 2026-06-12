@@ -85,3 +85,7 @@ Added `rust/earthmesh_mesh` with a tested Rust port of `mkgrd.F90:grid_xyz2lonla
 ### 2026-06-12: first `MOD_Area_judge.F90` geometry helpers ported
 
 Extended `rust/earthmesh_geometry` with tested Rust ports of pure `MOD_Area_judge` helpers: `haversine`, `is_point_in_circle`, `cross_product`, and `is_point_in_convex_polygon`. These functions are used by area/mask classification and are a prerequisite for porting hydro/coast refinement decisions. The full `Area_judge` orchestration and NetCDF-backed mask reads remain in Fortran.
+
+### 2026-06-12: `icosahedron.F90` polar stereographic helpers ported
+
+Extended `rust/earthmesh_mesh` with tested Rust ports of `icosahedron.F90:de_ps_r8` and `ps_de_r8`. These helpers work on displacement vectors relative to the local pole/barycenter, matching how `mkgrd.F90:pcvt` and `MOD_grid_preprocess.F90` call the Fortran routines. Full icosahedron grid construction, connectivity, and spring dynamics remain unported.
