@@ -241,10 +241,10 @@
         "GetRef_LOC split-to-component-to-aggregate threshold report wiring ported to rust/earthmesh_cli",
         "GetRef land/ocean/atmos single-mesh top-level threshold report wiring ported to rust/earthmesh_cli",
         "GetRef threshold input bridge from Area_judge cropped fields to report builder inputs ported to rust/earthmesh_cli",
-        "GetRef file-level runners from legacy contain NetCDF input to legacy threshold NetCDF outputs ported to rust/earthmesh_cli"
+        "GetRef file-level runners from legacy contain NetCDF input to legacy threshold NetCDF outputs ported to rust/earthmesh_cli",
+        "GetRef integrated runner that combines Area_judge threshold file reader, bridge inputs, contain reader, and threshold writers ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "GetRef integrated runner that combines Area_judge threshold file reader, bridge inputs, contain reader, and threshold writers",
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
       ]
     },
