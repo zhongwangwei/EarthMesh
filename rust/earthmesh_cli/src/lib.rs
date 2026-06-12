@@ -1659,6 +1659,22 @@ pub struct AreaJudgeExpandedGridReport {
     pub nlats_select: usize,
 }
 
+/// Runtime inputs for reading an `Area_judge` restart selected-grid file.
+#[derive(Debug, Clone, Copy)]
+pub struct AreaJudgeRestartGridRunConfig<'a> {
+    pub input: &'a Path,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+}
+
+/// Evidence from restoring `Area_judge` domain/sea-land state from a restart file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaJudgeRestartGridRunReport {
+    pub input: PathBuf,
+    pub payload: AreaJudgeGridPayload,
+    pub expanded: AreaJudgeExpandedGridReport,
+}
+
 fn validate_area_judge_grid_payload(payload: &AreaJudgeGridPayload) -> io::Result<()> {
     let expected_lon = payload
         .bounds
@@ -6542,6 +6558,23 @@ pub fn read_area_judge_grid_netcdf(input: impl AsRef<Path>) -> io::Result<AreaJu
         )
     })?;
     Ok(payload)
+}
+
+/// Read an `Area_judge` restart selected-grid file and expand it into full source grids.
+pub fn run_area_judge_restart_grid_fortran_indexed(
+    config: AreaJudgeRestartGridRunConfig<'_>,
+) -> io::Result<AreaJudgeRestartGridRunReport> {
+    let payload = read_area_judge_grid_netcdf(config.input)?;
+    let expanded = expand_area_judge_grid_payload_fortran_indexed(
+        &payload,
+        config.nlons_source,
+        config.nlats_source,
+    )?;
+    Ok(AreaJudgeRestartGridRunReport {
+        input: config.input.to_path_buf(),
+        payload,
+        expanded,
+    })
 }
 
 /// Expand `IsInArea_grid_Read` selected arrays back into full source grids.

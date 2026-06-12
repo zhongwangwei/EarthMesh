@@ -173,10 +173,11 @@
         "Area_judge_refine iter-zero versus specified-iteration dispatch ported to rust/earthmesh_cli",
         "Area_judge calculated-refine threshold input land/ocean/atmos window readers ported to rust/earthmesh_cli",
         "Area_judge non-restart selected-grid file orchestration for domain, seaorland, and iter-zero calculated refine outputs ported to rust/earthmesh_cli",
-        "Area_judge_refine specified-iteration selected-grid file runner ported to rust/earthmesh_cli"
+        "Area_judge_refine specified-iteration selected-grid file runner ported to rust/earthmesh_cli",
+        "Area_judge restart selected-grid file reader and full source-grid expansion runner ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "Area_judge restart and namelist production wiring over grids and masks",
+        "Area_judge namelist/mkgrd restart-loop production wiring over grids and masks",
         "fixture parity for land/ocean/river/coast classification decisions"
       ]
     },
