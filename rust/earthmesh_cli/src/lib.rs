@@ -8,9 +8,11 @@ use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWo
 use earthmesh_mesh::{
     centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, triangle_neighbors_from_cell_membership_fortran_indexed,
-    xyz_to_lonlat_degrees, BoundaryConnection, BoundaryOrders, CartesianPoint,
-    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, LonLatDegrees,
+    lonlat_points_to_unit_xyz, springjustment_global_core_fortran_indexed,
+    triangle_neighbors_from_cell_membership_fortran_indexed, xyz_to_lonlat_degrees,
+    BoundaryConnection, BoundaryOrders, CartesianPoint, DistanceLayerSpacing,
+    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep,
+    LonLatDegrees, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -473,6 +475,30 @@ pub struct GlobalQualityWriteReport {
 pub struct SpringjustmentGlobalPersistenceReport {
     pub dists_on_edge: DistsOnEdgeWriteReport,
     pub cellwidth: Option<CellwidthWriteReport>,
+}
+
+/// Runtime controls needed to reproduce the migrated
+/// `MOD_grid_preprocess.F90:Springjustment_global` calculation from a gridfile.
+#[derive(Debug, Clone, Copy)]
+pub struct SpringjustmentGlobalRunOptions<'a> {
+    pub base_dists_on_edge: f64,
+    pub base_cellwidth: Option<f64>,
+    pub distance_num_rc: usize,
+    pub distance_spacing: DistanceLayerSpacing,
+    pub distance_steps: &'a [GlobalDistanceStep<'a>],
+    pub niter_refine: usize,
+    pub relax: f64,
+    pub radius: f64,
+    pub diagnostic_every: usize,
+}
+
+/// Evidence report from the gridfile-backed Rust replacement path for
+/// `MOD_grid_preprocess.F90:Springjustment_global`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringjustmentGlobalGridfileReport {
+    pub core: SpringjustmentGlobalCoreOutput,
+    pub persistence: SpringjustmentGlobalPersistenceReport,
+    pub mesh: UnstructuredMesh,
 }
 
 /// Evidence report from writing `MOD_file_preprocess.F90:MPAS_info_Save` graph.info.
@@ -941,6 +967,74 @@ pub fn write_springjustment_global_persistence(
     Ok(SpringjustmentGlobalPersistenceReport {
         dists_on_edge,
         cellwidth,
+    })
+}
+
+/// Read an `Unstructured_Mesh_Read` gridfile, run the migrated
+/// `MOD_grid_preprocess.F90:Springjustment_global` core, and persist the
+/// legacy `distsOnEdge`/`cellwidth` result files.
+///
+/// The returned mesh carries the updated triangle/cell lon-lat coordinates but
+/// preserves the original gridfile connectivity; callers can pass it to
+/// `write_unstructured_mesh_netcdf` to match the legacy caller's final
+/// `Unstructured_Mesh_Save` side effect.
+pub fn run_springjustment_global_from_unstructured_gridfile(
+    gridfile: impl AsRef<Path>,
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    options: SpringjustmentGlobalRunOptions<'_>,
+) -> io::Result<SpringjustmentGlobalGridfileReport> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    run_springjustment_global_from_unstructured_mesh(&mesh, file_dir, nxp, step, options)
+}
+
+/// Run the migrated `Springjustment_global` core from an already-loaded
+/// unstructured mesh and persist its legacy result files.
+pub fn run_springjustment_global_from_unstructured_mesh(
+    mesh: &UnstructuredMesh,
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    options: SpringjustmentGlobalRunOptions<'_>,
+) -> io::Result<SpringjustmentGlobalGridfileReport> {
+    let cells_on_triangle = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
+    let triangles_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
+
+    let core = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        base_dists_on_edge: options.base_dists_on_edge,
+        base_cellwidth: options.base_cellwidth,
+        distance_num_rc: options.distance_num_rc,
+        distance_spacing: options.distance_spacing,
+        distance_steps: options.distance_steps,
+        niter_refine: options.niter_refine,
+        relax: options.relax,
+        radius: options.radius,
+        diagnostic_every: options.diagnostic_every,
+    })
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to run Springjustment_global core from unstructured mesh",
+        )
+    })?;
+
+    let persistence =
+        write_springjustment_global_persistence(file_dir, nxp, step, &cell_lonlat, &core)?;
+    let mesh = unstructured_mesh_from_springjustment_global(mesh, &core)?;
+
+    Ok(SpringjustmentGlobalGridfileReport {
+        core,
+        persistence,
+        mesh,
     })
 }
 
@@ -3819,6 +3913,40 @@ fn lonlat_degrees_to_lonlat_point(point: LonLatDegrees) -> LonLatPoint {
         lon: point.lon_degrees,
         lat: point.lat_degrees,
     }
+}
+
+fn unstructured_mesh_from_springjustment_global(
+    source: &UnstructuredMesh,
+    output: &SpringjustmentGlobalCoreOutput,
+) -> io::Result<UnstructuredMesh> {
+    require_len(
+        "Springjustment_global updated_triangle_lonlat",
+        output.updated_triangle_lonlat.len(),
+        source.m_points.len(),
+    )?;
+    require_len(
+        "Springjustment_global updated_cell_lonlat",
+        output.updated_cell_lonlat.len(),
+        source.w_points.len(),
+    )?;
+
+    Ok(UnstructuredMesh {
+        m_points: output
+            .updated_triangle_lonlat
+            .iter()
+            .copied()
+            .map(lonlat_degrees_to_lonlat_point)
+            .collect(),
+        w_points: output
+            .updated_cell_lonlat
+            .iter()
+            .copied()
+            .map(lonlat_degrees_to_lonlat_point)
+            .collect(),
+        m_to_w: source.m_to_w.clone(),
+        w_to_m: source.w_to_m.clone(),
+        n_w_to_m: source.n_w_to_m.clone(),
+    })
 }
 
 fn cells_on_triangle_fortran_indexed_from_mesh(
