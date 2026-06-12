@@ -159,6 +159,7 @@ pub struct MkgrdRefineLoopIoPlan {
     pub final_result_gridfile: PathBuf,
     pub final_domain_contain_output: PathBuf,
     pub final_quality_check: MkgrdFinalQualityCheckIoPlan,
+    pub final_mask_postproc_domain: Option<MaskPostprocDomainIoPlan>,
 }
 
 /// Branch selected by `mkgrd.F90:Final_Grid_Quality_Check` before optional
@@ -652,6 +653,18 @@ pub fn plan_mkgrd_refine_loop_io(
 
     let final_step = loop_plan.final_mask_postproc_step;
     let final_quality_check = plan_mkgrd_final_quality_check_io(config, refine, final_step)?;
+    let final_mask_postproc_domain =
+        matches!(mesh_type.as_str(), "earthmesh" | "landmesh" | "oceanmesh")
+            .then(|| {
+                plan_mask_postproc_domain_io(
+                    &file_dir,
+                    nxp,
+                    &mode_grid,
+                    &mesh_type,
+                    config.mask_patch_on,
+                )
+            })
+            .transpose()?;
     Ok(MkgrdRefineLoopIoPlan {
         file_dir: file_dir.clone(),
         nxp,
@@ -669,6 +682,7 @@ pub fn plan_mkgrd_refine_loop_io(
             "contain_{mesh_type}_domain_NXP{nxp:04}_{mode_grid}.nc4"
         )),
         final_quality_check,
+        final_mask_postproc_domain,
     })
 }
 

@@ -97,6 +97,16 @@ fn refine_loop_io_plan_maps_fortran_step_files_and_final_postproc_inputs() {
     );
     assert!(!plan.final_quality_check.run_quality_check);
     assert_eq!(plan.final_quality_check.step, 4);
+    let postproc = plan
+        .final_mask_postproc_domain
+        .as_ref()
+        .expect("landmesh uses domain mask_postproc");
+    assert_eq!(postproc.source_gridfile, plan.final_result_gridfile);
+    assert_eq!(postproc.contain_domain, plan.final_domain_contain_output);
+    assert_eq!(
+        postproc.result_gridfile,
+        PathBuf::from("/tmp/earthmesh/case_refine/result/gridfile_NXP0016_hex_landmesh.nc4")
+    );
 
     let step1 = &plan.steps[0];
     assert_eq!(step1.step, 1);
