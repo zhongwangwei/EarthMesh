@@ -201,3 +201,7 @@ Extended `rust/earthmesh_mesh` with `polygon_mesh_quality_fortran_indexed`, a ca
 ### 2026-06-12: `MOD_grid_preprocess.F90` layer application wrappers ported
 
 Extended `rust/earthmesh_mesh` with `dists_on_edge_layers_fortran_indexed` and `cellwidth_layers_fortran_indexed`, tested Rust ports of the core update rules in `distsOnEdge_layers_make` and `cellwidth_layers_make`. They preserve the Fortran-indexed triangle/cell/edge ids, inner refined-region halving, optional inward `num_rc` stripping, boundary-cell detection from `ngrmw`/`ngrwm`, first halo expansion, and per-layer transition values. The broader `set_distsOnEdge_global` orchestration remains part of the Springjustment/global workflow work.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` cell ordering/connectivity helpers ported
+
+Extended `rust/earthmesh_mesh` with `order_vertices_on_cell_fortran_indexed`, `standardize_vertices_on_cell_rotation_fortran_indexed`, and `connect_on_cell_fortran_indexed`, tested Rust ports of `orderVerticesOnCell`, `standardizeVerticesOnCellRotation`, and `Get_ConnectOnCell`. These preserve Fortran-indexed cell ids, MPAS-style CCW vertex selection by positive `cross(vec1, vec2) · normal`, minimum-vertex rotation standardization, and reconstruction of `edgesOnCell`/`cellsOnCell` from ordered `verticesOnCell`. Remaining MPAS postprocess geometry includes `edgeIDSort`, `Get_Edge_DIS_Angle`, and `set_weightsOnEdge`.

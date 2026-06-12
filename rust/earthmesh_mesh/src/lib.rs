@@ -735,6 +735,206 @@ pub fn normalize_vertex_rotation(
     }
 }
 
+/// Port of `MOD_grid_preprocess:standardizeVerticesOnCellRotation`.
+///
+/// Cell ids preserve the migrated Fortran indexing convention: slot `1` is
+/// skipped and valid cells are visited from id `2`. Only the first
+/// `n_edges_on_cell[cell_id]` entries are rotated; any storage tail is kept in
+/// place, matching Fortran's fixed-width `verticesOnCell(:, i)` arrays.
+pub fn standardize_vertices_on_cell_rotation_fortran_indexed(
+    vertices_on_cell: &[Vec<usize>],
+    n_edges_on_cell: &[usize],
+) -> Option<Vec<Vec<usize>>> {
+    if n_edges_on_cell.len() < vertices_on_cell.len() {
+        return None;
+    }
+
+    let mut standardized = vertices_on_cell.to_vec();
+    for cell_id in 2..vertices_on_cell.len() {
+        let ne = n_edges_on_cell[cell_id];
+        if ne == 0 {
+            continue;
+        }
+        if standardized[cell_id].len() < ne {
+            return None;
+        }
+
+        let mut min_vertex_id = usize::MAX;
+        let mut min_pos = 0usize;
+        for pos in 0..ne {
+            let vertex_id = standardized[cell_id][pos];
+            if vertex_id > 0 && vertex_id < min_vertex_id {
+                min_vertex_id = vertex_id;
+                min_pos = pos;
+            }
+        }
+
+        if min_vertex_id != usize::MAX && min_pos != 0 {
+            let current = standardized[cell_id][0..ne].to_vec();
+            let rotated = current[min_pos..]
+                .iter()
+                .chain(current[..min_pos].iter())
+                .copied()
+                .collect::<Vec<_>>();
+            standardized[cell_id][0..ne].copy_from_slice(&rotated);
+        }
+    }
+
+    Some(standardized)
+}
+
+/// Output of `MOD_grid_preprocess:Get_ConnectOnCell`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellConnectivityOnCell {
+    pub edges_on_cell: Vec<Vec<usize>>,
+    pub cells_on_cell: Vec<Vec<usize>>,
+}
+
+/// Port of `MOD_grid_preprocess:Get_ConnectOnCell`.
+///
+/// The input `vertices_on_cell` must already be ordered around each cell. For
+/// each consecutive vertex pair, this finds the shared edge from the two
+/// `edgesOnVertex` triplets, then maps that edge to the neighboring cell via
+/// `cellsOnEdge`.
+pub fn connect_on_cell_fortran_indexed(
+    n_edges_on_cell: &[usize],
+    cells_on_edge: &[[usize; 2]],
+    edges_on_vertex: &[[usize; 3]],
+    vertices_on_cell: &[Vec<usize>],
+) -> Option<CellConnectivityOnCell> {
+    if n_edges_on_cell.len() < vertices_on_cell.len() {
+        return None;
+    }
+
+    let mut edges_on_cell = vec![Vec::new(); vertices_on_cell.len()];
+    let mut cells_on_cell = vec![Vec::new(); vertices_on_cell.len()];
+
+    for cell_id in 2..vertices_on_cell.len() {
+        let ne = n_edges_on_cell[cell_id];
+        if ne == 0 {
+            continue;
+        }
+        if vertices_on_cell[cell_id].len() < ne {
+            return None;
+        }
+
+        let mut cell_edges = Vec::with_capacity(ne);
+        let mut neighbor_cells = Vec::with_capacity(ne);
+        for vertex_slot in 0..ne {
+            let vertex1 = vertices_on_cell[cell_id][vertex_slot];
+            let vertex2 = vertices_on_cell[cell_id][(vertex_slot + 1) % ne];
+            let edges_vertex1 = *edges_on_vertex.get(vertex1)?;
+            let edges_vertex2 = *edges_on_vertex.get(vertex2)?;
+            let edge_id = edges_vertex1
+                .iter()
+                .copied()
+                .find(|edge| *edge > 0 && edges_vertex2.contains(edge))?;
+            let cells = *cells_on_edge.get(edge_id)?;
+            let neighbor = if cells[0] == cell_id {
+                cells[1]
+            } else if cells[1] == cell_id {
+                cells[0]
+            } else {
+                return None;
+            };
+            cell_edges.push(edge_id);
+            neighbor_cells.push(neighbor);
+        }
+        edges_on_cell[cell_id] = cell_edges;
+        cells_on_cell[cell_id] = neighbor_cells;
+    }
+
+    Some(CellConnectivityOnCell {
+        edges_on_cell,
+        cells_on_cell,
+    })
+}
+
+/// Port of `MOD_grid_preprocess:orderVerticesOnCell`.
+///
+/// Preserves the Fortran selection-sort approach: for each fixed vertex slot,
+/// choose the remaining vertex with positive `cross(vec1, vec2) · normal` and
+/// the smallest angle to the current reference vector.
+pub fn order_vertices_on_cell_fortran_indexed(
+    cell_points: &[CartesianPoint],
+    vertex_points: &[CartesianPoint],
+    vertices_on_cell: &[Vec<usize>],
+    n_edges_on_cell: &[usize],
+) -> Option<Vec<Vec<usize>>> {
+    if n_edges_on_cell.len() < vertices_on_cell.len() || cell_points.len() < vertices_on_cell.len()
+    {
+        return None;
+    }
+
+    let mut ordered = vertices_on_cell.to_vec();
+    for cell_id in 2..vertices_on_cell.len() {
+        let ne = n_edges_on_cell[cell_id];
+        if ne == 0 {
+            continue;
+        }
+        if ordered[cell_id].len() < ne {
+            return None;
+        }
+
+        let cell_center = *cell_points.get(cell_id)?;
+        let normal_mag = magnitude(cell_center);
+        if normal_mag == 0.0 {
+            return None;
+        }
+        let normal = CartesianPoint::new(
+            cell_center.x / normal_mag,
+            cell_center.y / normal_mag,
+            cell_center.z / normal_mag,
+        );
+
+        for slot in 0..(ne - 1) {
+            let vertex1_id = ordered[cell_id][slot];
+            if vertex1_id == 0 {
+                continue;
+            }
+            let vertex1 = *vertex_points.get(vertex1_id)?;
+            let vec1 = vector_between(cell_center, vertex1);
+            let mag1 = magnitude(vec1);
+            if mag1 == 0.0 {
+                continue;
+            }
+
+            let mut min_angle = std::f64::consts::PI * 2.0;
+            let mut swap_slot = None;
+            for candidate_slot in (slot + 1)..ne {
+                let vertex2_id = ordered[cell_id][candidate_slot];
+                if vertex2_id == 0 {
+                    continue;
+                }
+                let vertex2 = *vertex_points.get(vertex2_id)?;
+                let vec2 = vector_between(cell_center, vertex2);
+                let mag2 = magnitude(vec2);
+                if mag2 == 0.0 {
+                    continue;
+                }
+
+                let cross_product = cross(vec1, vec2);
+                if dot(cross_product, normal) <= 0.0 {
+                    continue;
+                }
+                let angle = (dot(vec1, vec2) / (mag1 * mag2)).clamp(-1.0, 1.0).acos();
+                if angle < min_angle {
+                    min_angle = angle;
+                    swap_slot = Some(candidate_slot);
+                }
+            }
+
+            if let Some(candidate_slot) = swap_slot {
+                if candidate_slot != slot + 1 {
+                    ordered[cell_id].swap(slot + 1, candidate_slot);
+                }
+            }
+        }
+    }
+
+    Some(ordered)
+}
+
 fn vector_between(from: CartesianPoint, to: CartesianPoint) -> CartesianPoint {
     CartesianPoint::new(to.x - from.x, to.y - from.y, to.z - from.z)
 }
