@@ -2010,6 +2010,32 @@ pub struct AreaJudgeGridRunReport {
     pub refine_write: Option<AreaJudgeGridWriteReport>,
 }
 
+/// Runtime inputs for writing one `Area_judge_refine(iter)` selected grid.
+#[derive(Debug, Clone, Copy)]
+pub struct AreaJudgeRefineGridRunConfig<'a> {
+    pub file_dir: &'a Path,
+    pub iter: usize,
+    pub calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    pub mask_refine_spc_type: &'a str,
+    pub mask_refine_ndm: usize,
+    pub is_in_domain: &'a [Vec<i32>],
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub refine_output: &'a Path,
+}
+
+/// Evidence from an `Area_judge_refine(iter)` grid-file run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeRefineGridRunReport {
+    pub refine_step: AreaJudgeRefineStepReport,
+    pub refine_write: AreaJudgeGridWriteReport,
+}
+
 /// Threshold-data reader configuration for the calculated-refine branch of `Area_judge`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AreaJudgeThresholdReadConfig<'a> {
@@ -5038,6 +5064,39 @@ pub fn run_area_judge_non_restart_grids_fortran_indexed(
         area,
         refine_step,
         domain_write,
+        refine_write,
+    })
+}
+
+/// Run one `Area_judge_refine(iter)` step and write its selected refine grid.
+pub fn run_area_judge_refine_grid_fortran_indexed(
+    config: AreaJudgeRefineGridRunConfig<'_>,
+) -> io::Result<AreaJudgeRefineGridRunReport> {
+    let refine_step = run_area_judge_refine_fortran_indexed(
+        config.file_dir,
+        config.iter,
+        config.calculated_refine,
+        config.mask_refine_spc_type,
+        config.mask_refine_ndm,
+        config.is_in_domain,
+        config.lon_vertex,
+        config.lat_vertex,
+        config.lon_i,
+        config.lat_i,
+        config.gridnum_perdegree,
+        config.nlons_source,
+        config.nlats_source,
+    )?;
+    let refine_write = write_area_judge_selected_grid_report(
+        config.refine_output,
+        &refine_step.is_in_refine,
+        None,
+        config.lon_i,
+        config.lat_i,
+        refine_step.bounds,
+    )?;
+    Ok(AreaJudgeRefineGridRunReport {
+        refine_step,
         refine_write,
     })
 }
