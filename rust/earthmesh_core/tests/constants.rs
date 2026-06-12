@@ -322,3 +322,81 @@ fn refine_config_rejects_invalid_core_read_nl_refine_combinations() {
     assert!(atmos_cal.contains("atmosmesh"));
     assert!(atmos_cal.contains("refine_cal"));
 }
+
+#[test]
+fn refine_config_parses_threshold_switches_and_values_for_locmesh() {
+    let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        r#"
+&mkrefine
+  RL%Istransition = .true.
+  RL%SpringGlobal_type = 0
+  RL%SpringRegional_type = 0
+  RL%refine_cal = .true.
+  RL%max_iter_cal = 3
+  RL%threshold_dir = '/tmp/threshold'
+  RL%mask_refine_cal_type = 'circle'
+  RL%mask_refine_cal_fprefix = '/tmp/refine_cal'
+  RL%refine_num_landtypes = .true.
+  RL%refine_lai_m = .true.
+  RL%refine_k_s_m = .true.
+  RL%th_num_landtypes = 9
+  RL%th_lai_m = 0.25
+  RL%th_k_s_m = 1.1, 2.2
+  RL%refine_sea_ratio = .true.
+  RL%refine_sst_m = .true.
+  RL%th_sea_ratio = 0.2, 0.8
+  RL%th_sst_m = 0.4
+  RL%refine_typhoon_s = .true.
+  RL%th_typhoon_s = 0.6
+/
+"#,
+        "LOCmesh",
+        "tri",
+    )
+    .expect("LOCmesh can combine land/ocean/atmos threshold criteria");
+
+    assert!(parsed.refine_cal);
+    assert_eq!(parsed.refine_setting, "calculate");
+    assert_eq!(parsed.max_iter_cal, 3);
+    assert_eq!(parsed.threshold_dir, "/tmp/threshold");
+    assert_eq!(parsed.mask_refine_cal_type, "circle");
+    assert_eq!(parsed.mask_refine_cal_fprefix, "/tmp/refine_cal");
+    assert!(parsed.refine_num_landtypes);
+    assert_eq!(parsed.th_num_landtypes, 9);
+    assert!(parsed.refine_onelayer_lnd[0]);
+    approx_eq(parsed.th_onelayer_lnd[0], 0.25, 0.0);
+    assert!(parsed.refine_twolayer_lnd[0]);
+    assert_eq!(parsed.th_twolayer_lnd[0], [1.1, 2.2]);
+    assert!(parsed.refine_sea_ratio);
+    assert_eq!(parsed.th_sea_ratio, [0.2, 0.8]);
+    assert!(parsed.refine_onelayer_ocn[0]);
+    approx_eq(parsed.th_onelayer_ocn[0], 0.4, 0.0);
+    assert!(parsed.refine_onelayer_atmos[1]);
+    approx_eq(parsed.th_onelayer_atmos[1], 0.6, 0.0);
+}
+
+#[test]
+fn refine_config_rejects_calculate_mode_without_mesh_specific_threshold_switches() {
+    let err = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_cal = .true.\n RL%max_iter_cal = 1\n/\n",
+        "oceanmesh",
+        "tri",
+    )
+    .expect_err("calculate mode needs an ocean threshold switch like read_nl");
+
+    assert!(err.contains("refine_sea_ratio"));
+    assert!(err.contains("refine_onelayer_Ocn"));
+}
+
+#[test]
+fn refine_config_rejects_enabled_threshold_switch_with_missing_threshold_value() {
+    let err = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_cal = .true.\n RL%max_iter_cal = 1\n RL%refine_lai_m = .true.\n/\n",
+        "landmesh",
+        "tri",
+    )
+    .expect_err("enabled land one-layer switch needs non-999 threshold");
+
+    assert!(err.contains("refine_onelayer_Lnd"));
+    assert!(err.contains("th_onelayer_Lnd"));
+}

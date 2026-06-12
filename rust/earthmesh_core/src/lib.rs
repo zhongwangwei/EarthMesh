@@ -319,6 +319,19 @@ fn parse_i32_array<const N: usize>(field: &str, value: &str) -> Result<[i32; N],
     })
 }
 
+fn parse_f64_array<const N: usize>(field: &str, value: &str) -> Result<[f64; N], String> {
+    let values = value
+        .split(',')
+        .map(|part| parse_f64(field, part.trim()))
+        .collect::<Result<Vec<_>, _>>()?;
+    values.try_into().map_err(|values: Vec<f64>| {
+        format!(
+            "invalid real array length for {field}: expected {N}, got {}",
+            values.len()
+        )
+    })
+}
+
 /// Typed equivalent of the operational `refine_vars` module state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefineConfig {
@@ -477,6 +490,85 @@ impl RefineConfig {
                     config.refine_area_mainland = parse_fortran_bool(field, value)?
                 }
                 "refine_sea_ratio" => config.refine_sea_ratio = parse_fortran_bool(field, value)?,
+                "refine_lai_m" => config.refine_onelayer_lnd[0] = parse_fortran_bool(field, value)?,
+                "refine_lai_s" => config.refine_onelayer_lnd[1] = parse_fortran_bool(field, value)?,
+                "refine_slope_m" => {
+                    config.refine_onelayer_lnd[2] = parse_fortran_bool(field, value)?
+                }
+                "refine_slope_s" => {
+                    config.refine_onelayer_lnd[3] = parse_fortran_bool(field, value)?
+                }
+                "refine_k_s_m" => config.refine_twolayer_lnd[0] = parse_fortran_bool(field, value)?,
+                "refine_k_s_s" => config.refine_twolayer_lnd[1] = parse_fortran_bool(field, value)?,
+                "refine_k_solids_m" => {
+                    config.refine_twolayer_lnd[2] = parse_fortran_bool(field, value)?
+                }
+                "refine_k_solids_s" => {
+                    config.refine_twolayer_lnd[3] = parse_fortran_bool(field, value)?
+                }
+                "refine_tkdry_m" => {
+                    config.refine_twolayer_lnd[4] = parse_fortran_bool(field, value)?
+                }
+                "refine_tkdry_s" => {
+                    config.refine_twolayer_lnd[5] = parse_fortran_bool(field, value)?
+                }
+                "refine_tksatf_m" => {
+                    config.refine_twolayer_lnd[6] = parse_fortran_bool(field, value)?
+                }
+                "refine_tksatf_s" => {
+                    config.refine_twolayer_lnd[7] = parse_fortran_bool(field, value)?
+                }
+                "refine_tksatu_m" => {
+                    config.refine_twolayer_lnd[8] = parse_fortran_bool(field, value)?
+                }
+                "refine_tksatu_s" => {
+                    config.refine_twolayer_lnd[9] = parse_fortran_bool(field, value)?
+                }
+                "refine_sst_m" => config.refine_onelayer_ocn[0] = parse_fortran_bool(field, value)?,
+                "refine_sst_s" => config.refine_onelayer_ocn[1] = parse_fortran_bool(field, value)?,
+                "refine_ssh_m" => config.refine_onelayer_ocn[2] = parse_fortran_bool(field, value)?,
+                "refine_ssh_s" => config.refine_onelayer_ocn[3] = parse_fortran_bool(field, value)?,
+                "refine_eke_m" => config.refine_onelayer_ocn[4] = parse_fortran_bool(field, value)?,
+                "refine_eke_s" => config.refine_onelayer_ocn[5] = parse_fortran_bool(field, value)?,
+                "refine_sea_slope_m" => {
+                    config.refine_onelayer_ocn[6] = parse_fortran_bool(field, value)?
+                }
+                "refine_sea_slope_s" => {
+                    config.refine_onelayer_ocn[7] = parse_fortran_bool(field, value)?
+                }
+                "refine_typhoon_m" => {
+                    config.refine_onelayer_atmos[0] = parse_fortran_bool(field, value)?
+                }
+                "refine_typhoon_s" => {
+                    config.refine_onelayer_atmos[1] = parse_fortran_bool(field, value)?
+                }
+                "th_num_landtypes" => config.th_num_landtypes = parse_i32(field, value)?,
+                "th_area_mainland" => config.th_area_mainland = parse_f64(field, value)?,
+                "th_lai_m" => config.th_onelayer_lnd[0] = parse_f64(field, value)?,
+                "th_lai_s" => config.th_onelayer_lnd[1] = parse_f64(field, value)?,
+                "th_slope_m" => config.th_onelayer_lnd[2] = parse_f64(field, value)?,
+                "th_slope_s" => config.th_onelayer_lnd[3] = parse_f64(field, value)?,
+                "th_k_s_m" => config.th_twolayer_lnd[0] = parse_f64_array(field, value)?,
+                "th_k_s_s" => config.th_twolayer_lnd[1] = parse_f64_array(field, value)?,
+                "th_k_solids_m" => config.th_twolayer_lnd[2] = parse_f64_array(field, value)?,
+                "th_k_solids_s" => config.th_twolayer_lnd[3] = parse_f64_array(field, value)?,
+                "th_tkdry_m" => config.th_twolayer_lnd[4] = parse_f64_array(field, value)?,
+                "th_tkdry_s" => config.th_twolayer_lnd[5] = parse_f64_array(field, value)?,
+                "th_tksatf_m" => config.th_twolayer_lnd[6] = parse_f64_array(field, value)?,
+                "th_tksatf_s" => config.th_twolayer_lnd[7] = parse_f64_array(field, value)?,
+                "th_tksatu_m" => config.th_twolayer_lnd[8] = parse_f64_array(field, value)?,
+                "th_tksatu_s" => config.th_twolayer_lnd[9] = parse_f64_array(field, value)?,
+                "th_sea_ratio" => config.th_sea_ratio = parse_f64_array(field, value)?,
+                "th_sst_m" => config.th_onelayer_ocn[0] = parse_f64(field, value)?,
+                "th_sst_s" => config.th_onelayer_ocn[1] = parse_f64(field, value)?,
+                "th_ssh_m" => config.th_onelayer_ocn[2] = parse_f64(field, value)?,
+                "th_ssh_s" => config.th_onelayer_ocn[3] = parse_f64(field, value)?,
+                "th_eke_m" => config.th_onelayer_ocn[4] = parse_f64(field, value)?,
+                "th_eke_s" => config.th_onelayer_ocn[5] = parse_f64(field, value)?,
+                "th_sea_slope_m" => config.th_onelayer_ocn[6] = parse_f64(field, value)?,
+                "th_sea_slope_s" => config.th_onelayer_ocn[7] = parse_f64(field, value)?,
+                "th_typhoon_m" => config.th_onelayer_atmos[0] = parse_f64(field, value)?,
+                "th_typhoon_s" => config.th_onelayer_atmos[1] = parse_f64(field, value)?,
                 _ => {}
             }
         }
@@ -530,6 +622,81 @@ impl RefineConfig {
             }
         };
 
+        if self.refine_setting == "calculate" || self.refine_setting == "mixed" {
+            self.validate_threshold_switches_for_mesh(mesh_type)?;
+        }
+        self.validate_enabled_threshold_values()?;
+
+        Ok(())
+    }
+
+    fn validate_threshold_switches_for_mesh(&self, mesh_type: &str) -> Result<(), String> {
+        let has_land = self.refine_num_landtypes
+            || self.refine_area_mainland
+            || self.refine_onelayer_lnd.iter().any(|enabled| *enabled)
+            || self.refine_twolayer_lnd.iter().any(|enabled| *enabled);
+        let has_ocean =
+            self.refine_sea_ratio || self.refine_onelayer_ocn.iter().any(|enabled| *enabled);
+        let has_atmos = self.refine_onelayer_atmos.iter().any(|enabled| *enabled);
+
+        match mesh_type {
+            "landmesh" if !has_land => Err(
+                "Must one of TRUE in the refine_num_landtypes or refine_area_mainland or refine_onelayer_Lnd or refine_twolayer_Lnd when refine is TRUE and meshtype = landmesh"
+                    .to_string(),
+            ),
+            "oceanmesh" if !has_ocean => Err(
+                "Must one of TRUE in the refine_sea_ratio or refine_onelayer_Ocn when refine is TRUE and meshtype = oceanmesh"
+                    .to_string(),
+            ),
+            "atmosmesh" if !has_atmos => Err(
+                "Must one of TRUE in the refine_onelayer_Atmos when refine is TRUE and meshtype = atmosmesh"
+                    .to_string(),
+            ),
+            "LOCmesh" if !(has_land || has_ocean || has_atmos) => Err(
+                "Must one threshold switch be TRUE for LOCmesh among land, ocean, or atmos criteria"
+                    .to_string(),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_enabled_threshold_values(&self) -> Result<(), String> {
+        for (index, enabled) in self.refine_onelayer_lnd.iter().enumerate() {
+            if *enabled && self.th_onelayer_lnd[index] == 999.0 {
+                return Err(format!(
+                    "mismatch between refine_onelayer_Lnd({}) and th_onelayer_Lnd({})",
+                    index + 1,
+                    index + 1
+                ));
+            }
+        }
+        for (index, enabled) in self.refine_twolayer_lnd.iter().enumerate() {
+            if *enabled && self.th_twolayer_lnd[index].contains(&999.0) {
+                return Err(format!(
+                    "mismatch between refine_twolayer_Lnd({}) and th_twolayer_Lnd({}, 1:2)",
+                    index + 1,
+                    index + 1
+                ));
+            }
+        }
+        for (index, enabled) in self.refine_onelayer_ocn.iter().enumerate() {
+            if *enabled && self.th_onelayer_ocn[index] == 999.0 {
+                return Err(format!(
+                    "mismatch between refine_onelayer_Ocn({}) and th_onelayer_Ocn({})",
+                    index + 1,
+                    index + 1
+                ));
+            }
+        }
+        for (index, enabled) in self.refine_onelayer_atmos.iter().enumerate() {
+            if *enabled && self.th_onelayer_atmos[index] == 999.0 {
+                return Err(format!(
+                    "mismatch between refine_onelayer_Atmos({}) and th_onelayer_Atmos({})",
+                    index + 1,
+                    index + 1
+                ));
+            }
+        }
         Ok(())
     }
 }

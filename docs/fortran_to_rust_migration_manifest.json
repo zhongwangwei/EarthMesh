@@ -37,11 +37,11 @@
         "typed LonLatMeshConfig defaults mirroring lonlatmesh_coms:mesh_vars",
         "typed FvcomMeshConfig defaults mirroring fvcommesh_coms:mesh_vars",
         "mkgrd oname_vars namelist parsing and read_nl validation ported to EarthmeshConfig",
-        "refine_vars operational defaults and core mkrefine read_nl validation ported to RefineConfig"
+        "refine_vars operational defaults and core mkrefine read_nl validation ported to RefineConfig",
+        "mkrefine land/ocean/atmos threshold switch and threshold-value matrix ported to RefineConfig"
       ],
       "remaining_rust_surfaces": [
-        "mem_* state replacement modules currently co-located in consts_coms.F90",
-        "full mkrefine threshold-variable matrix parsing and namelist.save copy compatibility"
+        "mem_* state replacement modules currently co-located in consts_coms.F90"
       ]
     },
     {
@@ -93,10 +93,11 @@
       "completed_rust_surfaces": [
         "grid_xyz2lonlat scalar and batch coordinate conversion moved to rust/earthmesh_mesh",
         "read_nl mkgrd namelist assignment parsing, file_dir derivation, and mode validation ported to rust/earthmesh_core",
-        "core mkrefine namelist controls, refine_setting derivation, and spring/refine validation ported to rust/earthmesh_core"
+        "core mkrefine namelist controls, refine_setting derivation, and spring/refine validation ported to rust/earthmesh_core",
+        "mkrefine threshold switch/value matrix and sentinel validation ported to rust/earthmesh_core"
       ],
       "remaining_rust_surfaces": [
-        "read_nl filesystem setup/removal orchestration, full threshold mask validation, and namelist.save copy compatibility",
+        "read_nl filesystem setup/removal orchestration, Mask_make-derived mask-count validation, and namelist.save copy compatibility",
         "mode4mesh_make and mask creation orchestration",
         "gridinit/voronoi/pcvt/gridfile_write pipeline",
         "Rust CLI replacement for mkgrd.x end-to-end workflows"
