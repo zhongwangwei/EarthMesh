@@ -22,6 +22,7 @@ use earthmesh_mesh::{
     refine_array_length_calculation_fortran_indexed,
     refine_delaunay_lop_fortran_indexed as refine_delaunay_lop_mesh_fortran_indexed,
     refine_isreverse_judge_fortran_indexed as refine_isreverse_judge_mesh_fortran_indexed,
+    refine_m1w1_to_m11w11_fortran_indexed as refine_m1w1_to_m11w11_mesh_fortran_indexed,
     refine_ngr_renew_fortran_indexed as refine_ngr_renew_mesh_fortran_indexed,
     refine_onedivide_two_fortran_indexed as refine_onedivide_two_mesh_fortran_indexed,
     remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
@@ -286,6 +287,14 @@ pub struct NgrRenewReport {
     pub adjacency_capacity: usize,
     pub boundary_refine: Vec<usize>,
     pub boundary_refine_transition: Vec<usize>,
+}
+
+/// Evidence from applying `MOD_refine.F90:m1w1_to_m11w11` through the CLI
+/// Fortran-row adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct M1W1LookupReport {
+    pub parent_pair: (usize, usize),
+    pub child_pair: Option<(usize, usize)>,
 }
 
 /// Pluggable execution surface for the heavy kernels inside the top-level
@@ -1690,6 +1699,27 @@ pub fn apply_ngr_renew_fortran_indexed(
         adjacency_capacity,
         boundary_refine: bdy_refine.clone(),
         boundary_refine_transition: bdy_refine_tran.clone(),
+    })
+}
+
+/// CLI adapter for `MOD_refine.F90:m1w1_to_m11w11`.
+///
+/// The mesh kernel consumes triangle-major child connectivity; refine-loop
+/// state keeps `ngrmw_new(1:3, triangle)` rows. This adapter only converts the
+/// layout and reports whether a valid child edge pair was found.
+pub fn lookup_m1w1_to_m11w11_fortran_indexed(
+    m1: usize,
+    w1: usize,
+    sjx_child: &[[usize; 2]],
+    ngrmw_new: &[Vec<usize>],
+    num_mp: usize,
+) -> io::Result<M1W1LookupReport> {
+    let cells_on_triangle_new = fortran_rows_to_triangle_major(ngrmw_new, num_mp)?;
+    let child_pair =
+        refine_m1w1_to_m11w11_mesh_fortran_indexed(m1, w1, sjx_child, &cells_on_triangle_new)?;
+    Ok(M1W1LookupReport {
+        parent_pair: (m1, w1),
+        child_pair,
     })
 }
 
