@@ -668,6 +668,24 @@ pub fn get_edge_connectivity_fortran_indexed(
     })
 }
 
+/// Port of the optional `vp` midpoint calculation in `MOD_grid_preprocess:GetEdge`.
+///
+/// For each Fortran-indexed edge id from `2..`, the edge point is the spherical
+/// centroid of the two neighboring polygon cell centers `wp(cellsOnEdge(:, k), :)`.
+pub fn edge_midpoints_from_cells_fortran_indexed(
+    cells_on_edge: &[[usize; 2]],
+    cell_lonlat: &[LonLatDegrees],
+) -> Option<Vec<LonLatDegrees>> {
+    let mut midpoints = vec![LonLatDegrees::new(0.0, 0.0); cells_on_edge.len()];
+    for edge_id in 2..cells_on_edge.len() {
+        let cells = cells_on_edge[edge_id];
+        let cell1 = *cell_lonlat.get(cells[0])?;
+        let cell2 = *cell_lonlat.get(cells[1])?;
+        midpoints[edge_id] = spherical_centroid_degrees(&[cell1, cell2])?;
+    }
+    Some(midpoints)
+}
+
 /// Borrowed inputs for the Fortran-indexed subset of `MOD_grid_preprocess:GetArea`.
 ///
 /// Index `0` is unused and index `1` is skipped to mirror the Fortran loops

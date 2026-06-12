@@ -191,7 +191,8 @@
         "orderVertexArrays per-vertex edge sorting and cellsOnVertex rebuild workflow ported to rust/earthmesh_mesh",
         "orderVertexArrays Fortran-indexed array wrapper ported to rust/earthmesh_mesh",
         "GetSort_verticesOnEdge Fortran-indexed verticesOnEdge orientation wrapper ported to rust/earthmesh_mesh",
-        "GetEdge core connectivity workflow for edgesOnVertex, verticesOnEdge, and cellsOnEdge ported to rust/earthmesh_mesh"
+        "GetEdge core connectivity workflow for edgesOnVertex, verticesOnEdge, and cellsOnEdge ported to rust/earthmesh_mesh",
+        "GetEdge optional vp edge midpoint calculation ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -204,7 +205,7 @@
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
         "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
         "GetArea full production wrapper over real MPAS mesh arrays and fixture parity",
-        "GetEdge optional edge midpoint calculation, real-mesh combined edge fixture parity, and remaining ordering routines"
+        "GetEdge real-mesh combined edge fixture parity and integration wrapper"
       ]
     },
     {

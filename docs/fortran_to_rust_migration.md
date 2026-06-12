@@ -173,3 +173,7 @@ Added `order_vertices_on_edge_fortran_indexed`, a Rust port of the array-level `
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetEdge` core connectivity workflow ported
 
 Added `get_edge_connectivity_fortran_indexed`, a Rust port of the core `GetEdge` loop that creates/reuses edge ids, writes `edgesOnVertex`, `verticesOnEdge`, and derives sorted `cellsOnEdge` pairs from neighboring triangle cell ids. The optional spherical midpoint output and real mesh combined parity fixtures remain separate work.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetEdge` optional midpoint output ported
+
+Added `edge_midpoints_from_cells_fortran_indexed`, a Rust port of the optional `vp` branch in `GetEdge`. It computes each edge point from the spherical centroid of the two neighboring polygon cell centers, preserving Fortran edge ids by starting at index `2`. Remaining `GetEdge` work is combined real-mesh fixture parity and integration into a production Rust replacement path.
