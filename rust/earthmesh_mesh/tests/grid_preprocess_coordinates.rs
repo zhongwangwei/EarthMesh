@@ -1,4 +1,6 @@
-use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, LonLatDegrees};
+use earthmesh_mesh::{
+    lonlat_degrees_to_unit_xyz, lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, LonLatDegrees,
+};
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(

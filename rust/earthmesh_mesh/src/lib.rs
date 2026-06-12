@@ -25,10 +25,12 @@ pub struct LonLatDegrees {
 
 impl LonLatDegrees {
     pub const fn new(lon_degrees: f64, lat_degrees: f64) -> Self {
-        Self { lon_degrees, lat_degrees }
+        Self {
+            lon_degrees,
+            lat_degrees,
+        }
     }
 }
-
 
 /// Port of `MOD_grid_preprocess:lonlat2xyz` for a single unit-sphere point.
 ///
@@ -46,7 +48,11 @@ pub fn lonlat_degrees_to_unit_xyz(lonlat: LonLatDegrees) -> CartesianPoint {
 
 /// Batch port of `MOD_grid_preprocess:lonlat2xyz`, preserving input order.
 pub fn lonlat_points_to_unit_xyz(points: &[LonLatDegrees]) -> Vec<CartesianPoint> {
-    points.iter().copied().map(lonlat_degrees_to_unit_xyz).collect()
+    points
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect()
 }
 
 /// Convert Earth-centered Cartesian coordinates to lon/lat degrees.
@@ -77,7 +83,10 @@ mod tests {
 
     #[test]
     fn vector_conversion_preserves_order() {
-        let points = [CartesianPoint::new(1.0, 0.0, 0.0), CartesianPoint::new(0.0, 1.0, 0.0)];
+        let points = [
+            CartesianPoint::new(1.0, 0.0, 0.0),
+            CartesianPoint::new(0.0, 1.0, 0.0),
+        ];
         let lonlat = xyz_points_to_lonlat_degrees(&points);
         assert_eq!(lonlat.len(), 2);
         assert_eq!(lonlat[0].lon_degrees, 0.0);
@@ -121,10 +130,10 @@ impl PlanePoint {
 /// Port of `icosahedron.F90:de_ps_r8`.
 pub fn project_to_polar_stereographic(point: CartesianPoint, pole: PoleBasis) -> PlanePoint {
     let xq = -pole.sin_lon * point.x + pole.cos_lon * point.y;
-    let yq = pole.cos_lat * point.z
-        - pole.sin_lat * (pole.cos_lon * point.x + pole.sin_lon * point.y);
-    let zq = pole.sin_lat * point.z
-        + pole.cos_lat * (pole.cos_lon * point.x + pole.sin_lon * point.y);
+    let yq =
+        pole.cos_lat * point.z - pole.sin_lat * (pole.cos_lon * point.x + pole.sin_lon * point.y);
+    let zq =
+        pole.sin_lat * point.z + pole.cos_lat * (pole.cos_lon * point.x + pole.sin_lon * point.y);
 
     let earth_diameter = earthmesh_core::EARTH_RADIUS_METERS * 2.0;
     let t = earth_diameter / (earth_diameter + zq);
@@ -211,6 +220,25 @@ pub fn arc_length_unit_sphere(a: CartesianPoint, b: CartesianPoint) -> f64 {
     r_a * 2.0 * arg.asin()
 }
 
+/// Port of `MOD_grid_preprocess:triangle_signed_area_sphere`.
+///
+/// Despite the Fortran name, the l'Huilier implementation returns a
+/// non-negative spherical excess for the three input points. It deliberately
+/// reuses `arc_length_unit_sphere` so the same mixed-precision haversine
+/// behavior is preserved.
+pub fn spherical_triangle_area_unit(points: [CartesianPoint; 3]) -> f64 {
+    let a = arc_length_unit_sphere(points[2], points[1]);
+    let b = arc_length_unit_sphere(points[2], points[0]);
+    let c = arc_length_unit_sphere(points[0], points[1]);
+    let semiperimeter = (a + b + c) / 2.0;
+    let tan_quarter_excess = (semiperimeter / 2.0).tan()
+        * ((semiperimeter - a) / 2.0).tan()
+        * ((semiperimeter - b) / 2.0).tan()
+        * ((semiperimeter - c) / 2.0).tan();
+
+    4.0 * tan_quarter_excess.max(0.0).sqrt().atan()
+}
+
 /// Output of `MOD_grid_preprocess:Get_Length_Angle`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolygonLengthAngleMetrics {
@@ -248,7 +276,7 @@ pub fn polygon_length_angle_metrics(points: &[LonLatDegrees]) -> Option<PolygonL
         let semiperimeter = 0.5 * (length1 + length2 + length3);
         let angle_arg = ((semiperimeter - length1).sin() * (semiperimeter - length3).sin()
             / (length1.sin() * length3.sin()))
-            .sqrt();
+        .sqrt();
         angles_degrees.push(rad_to_deg(2.0 * angle_arg.asin()));
         edge_lengths_meters.push(length1 * earthmesh_core::EARTH_RADIUS_METERS);
     }
@@ -330,7 +358,8 @@ fn polygon_quality_summary(
 
 /// Port of the aggregation core in `MOD_grid_preprocess:TriMeshQuality`.
 pub fn triangle_mesh_quality(triangles: &[[LonLatDegrees; 3]]) -> Option<MeshQualitySummary> {
-    let cells: Vec<Vec<LonLatDegrees>> = triangles.iter().map(|triangle| triangle.to_vec()).collect();
+    let cells: Vec<Vec<LonLatDegrees>> =
+        triangles.iter().map(|triangle| triangle.to_vec()).collect();
     polygon_quality_summary(&cells, 60.0, 45.0, 75.0)
 }
 
@@ -347,7 +376,12 @@ pub fn polygon_mesh_quality(cells: &[Vec<LonLatDegrees>]) -> Option<MeshQualityS
     }
 
     let regular_angle = (num_edges as f64 - 2.0) * 180.0 / num_edges as f64;
-    polygon_quality_summary(cells, regular_angle, regular_angle * 0.9, regular_angle * 1.1)
+    polygon_quality_summary(
+        cells,
+        regular_angle,
+        regular_angle * 0.9,
+        regular_angle * 1.1,
+    )
 }
 
 /// Port of `MOD_grid_preprocess:robust_spherical_area`.

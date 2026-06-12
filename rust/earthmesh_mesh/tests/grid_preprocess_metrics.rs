@@ -1,4 +1,7 @@
-use earthmesh_mesh::{arc_length_unit_sphere, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180, LonLatDegrees};
+use earthmesh_mesh::{
+    arc_length_unit_sphere, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180,
+    spherical_triangle_area_unit, LonLatDegrees,
+};
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(
@@ -40,7 +43,11 @@ fn arc_length_scales_by_input_radius_like_fortran() {
     let scaled_a = earthmesh_mesh::CartesianPoint::new(a.x * 2.0, a.y * 2.0, a.z * 2.0);
     let scaled_b = earthmesh_mesh::CartesianPoint::new(b.x * 2.0, b.y * 2.0, b.z * 2.0);
 
-    approx_eq(arc_length_unit_sphere(scaled_a, scaled_b), 2.0 * arc_length_unit_sphere(a, b), 1.0e-12);
+    approx_eq(
+        arc_length_unit_sphere(scaled_a, scaled_b),
+        2.0 * arc_length_unit_sphere(a, b),
+        1.0e-12,
+    );
 }
 
 #[test]
@@ -66,11 +73,14 @@ fn polygon_length_angle_matches_fortran_octant_triangle() {
 #[test]
 fn polygon_length_angle_rejects_degenerate_polygons() {
     assert!(earthmesh_mesh::polygon_length_angle_metrics(&[]).is_none());
-    assert!(earthmesh_mesh::polygon_length_angle_metrics(&[LonLatDegrees::new(0.0, 0.0)]).is_none());
+    assert!(
+        earthmesh_mesh::polygon_length_angle_metrics(&[LonLatDegrees::new(0.0, 0.0)]).is_none()
+    );
     assert!(earthmesh_mesh::polygon_length_angle_metrics(&[
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(1.0, 0.0),
-    ]).is_none());
+    ])
+    .is_none());
 }
 
 #[test]
@@ -122,8 +132,14 @@ fn polygon_mesh_quality_matches_fortran_thresholds_for_square() {
         / 4.0)
         .sqrt();
     approx_eq(quality.angle_stddev_degrees, expected_stddev, 1.0e-12);
-    assert_eq!(quality.angle_less_flags[0], quality.extreme_angles_degrees.0 < 81.0);
-    assert_eq!(quality.angle_more_flags[0], quality.extreme_angles_degrees.1 > 99.0);
+    assert_eq!(
+        quality.angle_less_flags[0],
+        quality.extreme_angles_degrees.0 < 81.0
+    );
+    assert_eq!(
+        quality.angle_more_flags[0],
+        quality.extreme_angles_degrees.1 > 99.0
+    );
 }
 
 #[test]
@@ -171,4 +187,34 @@ fn robust_spherical_area_rejects_degenerate_polygons() {
         LonLatDegrees::new(1.0, 0.0),
     ])
     .is_none());
+}
+
+#[test]
+fn spherical_triangle_area_matches_fortran_octant_triangle() {
+    let triangle = [
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(90.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 90.0)),
+    ];
+
+    approx_eq(
+        spherical_triangle_area_unit(triangle),
+        1.5707961479809727,
+        1.0e-12,
+    );
+}
+
+#[test]
+fn spherical_triangle_area_matches_fortran_small_right_triangle() {
+    let triangle = [
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0)),
+    ];
+
+    approx_eq(
+        spherical_triangle_area_unit(triangle),
+        0.00015231644029306792,
+        1.0e-15,
+    );
 }

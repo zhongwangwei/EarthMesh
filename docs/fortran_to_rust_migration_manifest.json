@@ -175,7 +175,8 @@
         "Get_Length_Angle polygon edge length and spherical angle calculation ported to rust/earthmesh_mesh",
         "TriMeshQuality aggregation core ported to rust/earthmesh_mesh",
         "PolyMeshQuality aggregation core ported to rust/earthmesh_mesh",
-        "robust_spherical_area dateline-aware signed unit-sphere polygon area ported to rust/earthmesh_mesh"
+        "robust_spherical_area dateline-aware signed unit-sphere polygon area ported to rust/earthmesh_mesh",
+        "triangle_signed_area_sphere l'Huilier spherical triangle area helper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -187,8 +188,8 @@
         "circumcenter_spherical_calculation",
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
         "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
-        "GetArea areaTriangle/areaCell/kiteAreasOnVertex workflow",
-        "GetEdge and edge connectivity routines"
+        "GetEdge and edge connectivity routines",
+        "GetArea areaTriangle/areaCell/kiteAreasOnVertex workflow, now able to reuse Rust triangle area helper"
       ]
     },
     {

@@ -1,7 +1,7 @@
 use earthmesh_core::{deg_to_rad, EARTH_RADIUS_METERS};
 use earthmesh_mesh::{
-    project_to_polar_stereographic, unproject_from_polar_stereographic, CartesianPoint,
-    PlanePoint, PoleBasis,
+    project_to_polar_stereographic, unproject_from_polar_stereographic, CartesianPoint, PlanePoint,
+    PoleBasis,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -14,10 +14,8 @@ fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
 #[test]
 fn polar_stereographic_projection_matches_icosahedron_de_ps_r8_equatorial_pole() {
     let pole = PoleBasis::from_lonlat_radians(0.0, 0.0);
-    let projected = project_to_polar_stereographic(
-        CartesianPoint::new(0.0, EARTH_RADIUS_METERS, 0.0),
-        pole,
-    );
+    let projected =
+        project_to_polar_stereographic(CartesianPoint::new(0.0, EARTH_RADIUS_METERS, 0.0), pole);
 
     approx_eq(projected.x, EARTH_RADIUS_METERS, 1.0e-9);
     approx_eq(projected.y, 0.0, 1.0e-9);
@@ -46,5 +44,8 @@ fn polar_stereographic_unprojection_matches_icosahedron_ps_de_r8_identity_plane(
     let radius = (absolute_x.powi(2) + unprojected.y.powi(2) + unprojected.z.powi(2)).sqrt();
 
     approx_eq(radius, EARTH_RADIUS_METERS, 1.0e-6);
-    assert!(unprojected.x < 0.0, "identity-pole ps_de zq should move x below the pole radius");
+    assert!(
+        unprojected.x < 0.0,
+        "identity-pole ps_de zq should move x below the pole radius"
+    );
 }

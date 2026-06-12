@@ -121,3 +121,7 @@ Extended `rust/earthmesh_mesh` with `polygon_mesh_quality`, a tested Rust port o
 ### 2026-06-12: `MOD_grid_preprocess.F90` robust spherical area helper ported
 
 Extended `rust/earthmesh_mesh` with `robust_spherical_area_unit`, a tested Rust port of `robust_spherical_area`. It preserves the Fortran dateline-aware longitude delta adjustment and signed unit-sphere area result. Physical area scaling by radius squared remains caller responsibility, matching how this helper should feed future `GetArea` migration.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` spherical triangle area helper ported
+
+Extended `rust/earthmesh_mesh` with `spherical_triangle_area_unit`, a tested Rust port of `triangle_signed_area_sphere`. The helper preserves the Fortran l'Huilier spherical excess formula and deliberately reuses the mixed-precision `arc_length` port, so it can become the area primitive for the future `GetArea` kite, triangle, and cell-area workflow. The full `GetArea` connectivity loop and MPAS kite-area reconstruction remain unported.
