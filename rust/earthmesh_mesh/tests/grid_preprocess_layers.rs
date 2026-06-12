@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
     cellwidth_layers_fortran_indexed, distance_layers, dists_on_edge_layers_fortran_indexed,
-    find_frac_index_fortran, DistanceLayerSpacing,
+    find_frac_index_fortran, set_dists_on_edge_global_fortran_indexed, DistanceLayerSpacing,
+    GlobalDistanceStep, SetDistsOnEdgeGlobalInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -179,4 +180,68 @@ fn cellwidth_layers_rejects_short_dist_layer_array() {
         &initial_cellwidth,
     )
     .is_none());
+}
+
+#[test]
+fn set_dists_on_edge_global_wrapper_matches_manual_layer_sequence() {
+    let triangles_on_cell = vec![vec![], vec![], vec![2, 3], vec![3, 4], vec![4]];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 3, 4], [3, 4, 4]];
+    let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [4, 5, 6], [6, 0, 0]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [0, 0], [0, 0], [2, 3], [2, 3], [3, 4]];
+    let refinement_flags = vec![false, false, true, false, false];
+    let steps = vec![GlobalDistanceStep {
+        active: true,
+        halo: 1,
+        refinement_flags: &refinement_flags,
+        num_vertex_in: 1,
+        num_center_in: 1,
+    }];
+
+    let output = set_dists_on_edge_global_fortran_indexed(SetDistsOnEdgeGlobalInput {
+        base_dists_on_edge: 100.0,
+        base_cellwidth: Some(200.0),
+        num_rc: 0,
+        spacing: DistanceLayerSpacing::Linear,
+        triangles_on_cell: &triangles_on_cell,
+        cells_on_triangle: Some(&cells_on_triangle),
+        edges_on_vertex: &edges_on_vertex,
+        cells_on_edge: &cells_on_edge,
+        steps: &steps,
+    })
+    .expect("valid set_distsOnEdge_global input");
+
+    let edge_layers = distance_layers(2, 100.0, DistanceLayerSpacing::Linear).expect("edge layers");
+    let expected_edges = dists_on_edge_layers_fortran_indexed(
+        1,
+        1,
+        0,
+        1,
+        &triangles_on_cell,
+        &edges_on_vertex,
+        &cells_on_edge,
+        &edge_layers,
+        &refinement_flags,
+        &vec![100.0; cells_on_edge.len()],
+    )
+    .expect("manual edge layers");
+    let cell_layers =
+        distance_layers(1, 200.0, DistanceLayerSpacing::Linear).expect("cellwidth layers");
+    let expected_cellwidth = cellwidth_layers_fortran_indexed(
+        1,
+        1,
+        0,
+        1,
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &cell_layers,
+        &refinement_flags,
+        &vec![200.0; triangles_on_cell.len()],
+    )
+    .expect("manual cellwidth layers");
+
+    assert_eq!(output.dists_on_edge, expected_edges);
+    assert_eq!(
+        output.cellwidth.expect("cellwidth output"),
+        expected_cellwidth
+    );
 }

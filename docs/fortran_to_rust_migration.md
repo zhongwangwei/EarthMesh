@@ -233,3 +233,7 @@ Extended `rust/earthmesh_mesh` with `grid_quality_check_global_fortran_indexed`,
 ### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment topology helpers ported
 
 Extended `rust/earthmesh_mesh` with `triangle_neighbors_from_cell_membership_fortran_indexed`, a tested Rust port of `set_ngrmm`, and `edges_on_edge_tri_fortran_indexed`, a tested Rust port of `set_edgesOnEdge_tri`. These cover the pure topology preparation used by `Springjustment_global` and regional spring workflows before the remaining spring-dynamics and NetCDF-backed orchestration layers.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `set_distsOnEdge_global` calculation orchestration ported
+
+Extended `rust/earthmesh_mesh` with `set_dists_on_edge_global_fortran_indexed`, a tested pure Rust orchestration wrapper for the calculation side of `set_distsOnEdge_global`. It initializes background `distsOnEdge`/optional `cellwidth`, preserves the active-iteration skip semantics through explicit step inputs, halves the selected scale each active iteration, builds transition layers with the migrated `dist_layers_make`, and composes the migrated edge/cellwidth layer update kernels. `refine_sjx_regional_make` flag generation and NetCDF save wiring remain outside this core calculation wrapper.

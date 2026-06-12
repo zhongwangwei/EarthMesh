@@ -212,11 +212,12 @@
         "GetEdge production wrapper over connectivity, orientation, midpoint, and orderVertexArrays ported to rust/earthmesh_mesh",
         "Grid_Quality_Check_Global calculation orchestration ported to rust/earthmesh_mesh",
         "set_ngrmm triangle-neighbor construction ported to rust/earthmesh_mesh",
-        "set_edgesOnEdge_tri endpoint edge-neighbor construction ported to rust/earthmesh_mesh"
+        "set_edgesOnEdge_tri endpoint edge-neighbor construction ported to rust/earthmesh_mesh",
+        "set_distsOnEdge_global calculation orchestration ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
-        "Springjustment_global and Springjustment_regional_step spring dynamics/orchestration",
+        "Springjustment_global and Springjustment_regional_step spring dynamics/high-level orchestration",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea real MPAS mesh fixture parity and adapter integration",
         "GetEdge real MPAS mesh fixture parity and adapter integration"
