@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
-    lonlat_degrees_to_unit_xyz, order_vertices_on_cell_fortran_indexed, plane_angle_signed,
+    edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
+    order_vertices_on_cell_fortran_indexed, plane_angle_signed,
     standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
 };
 
@@ -217,6 +218,56 @@ fn edge_distance_angle_rejects_bad_connectivity() {
         &coords,
         &coords,
         &coords,
+    )
+    .is_none());
+}
+
+#[test]
+fn edge_id_sort_reorders_edges_to_match_reference_cells_and_rebuilds_edges_on_vertex() {
+    let cells_on_edge_reference = vec![[0, 0], [0, 0], [10, 20], [30, 40]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [30, 40], [10, 20]];
+    let vertices_on_edge = vec![[0, 0], [0, 0], [4, 5], [2, 3]];
+    let edge_points = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(30.0, 40.0),
+        LonLatDegrees::new(10.0, 20.0),
+    ];
+
+    let output = edge_id_sort_fortran_indexed(
+        6,
+        &cells_on_edge_reference,
+        &cells_on_edge,
+        &vertices_on_edge,
+        &edge_points,
+    )
+    .expect("sortable edge ids");
+
+    assert_eq!(output.cells_on_edge[2], [10, 20]);
+    assert_eq!(output.cells_on_edge[3], [30, 40]);
+    assert_eq!(output.vertices_on_edge[2], [2, 3]);
+    assert_eq!(output.vertices_on_edge[3], [4, 5]);
+    assert_eq!(output.edge_points[2], LonLatDegrees::new(10.0, 20.0));
+    assert_eq!(output.edge_points[3], LonLatDegrees::new(30.0, 40.0));
+    assert_eq!(output.edges_on_vertex[2], [2, 0, 0]);
+    assert_eq!(output.edges_on_vertex[3], [2, 0, 0]);
+    assert_eq!(output.edges_on_vertex[4], [3, 0, 0]);
+    assert_eq!(output.edges_on_vertex[5], [3, 0, 0]);
+}
+
+#[test]
+fn edge_id_sort_rejects_missing_reference_match() {
+    let cells_on_edge_reference = vec![[0, 0], [0, 0], [10, 20]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [30, 40]];
+    let vertices_on_edge = vec![[0, 0], [0, 0], [2, 3]];
+    let edge_points = vec![LonLatDegrees::new(0.0, 0.0); 3];
+
+    assert!(edge_id_sort_fortran_indexed(
+        4,
+        &cells_on_edge_reference,
+        &cells_on_edge,
+        &vertices_on_edge,
+        &edge_points,
     )
     .is_none());
 }
