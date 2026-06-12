@@ -149,11 +149,12 @@
         "check_self_intersection error-reporting wrapper around strict segment predicate ported to rust/earthmesh_geometry",
         "closed-curve ray-crossing source-row fill helper ported to rust/earthmesh_mesh",
         "mask_patch_modify seaorland update core ported to rust/earthmesh_mesh",
-        "NetCDF-backed IsInArea_grid_Read/Save restart payload reader/writer ported to rust/earthmesh_cli"
+        "NetCDF-backed IsInArea_grid_Read/Save restart payload reader/writer ported to rust/earthmesh_cli",
+        "mask_patch_modify bbox patch-source area construction orchestration ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",
-        "mask_patch_modify area construction orchestration over patch mask sources",
+        "mask_patch_modify lambert/circle/close patch-source area construction orchestration",
         "fixture parity for land/ocean/river/coast classification decisions"
       ]
     },

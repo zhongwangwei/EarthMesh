@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_mesh::{
+    area_judge_apply_mask_patch_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
     boundary_connection_fortran_indexed, centroid_spherical_mesh_fortran_indexed,
     circumcenter_spherical_mesh_fortran_indexed, classify_boundary_orders_fortran_indexed,
     connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
@@ -1674,6 +1675,101 @@ fn select_i32_matrix_fortran_indexed(
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// Summary from building and applying a patch-source mask to `seaorland`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaJudgePatchSourceReport {
+    pub bounds: AreaJudgeSourceBounds,
+    pub patched_cells: usize,
+}
+
+fn merge_area_judge_source_bounds(
+    current: Option<AreaJudgeSourceBounds>,
+    next: AreaJudgeSourceBounds,
+) -> AreaJudgeSourceBounds {
+    current.map_or(next, |bounds| AreaJudgeSourceBounds {
+        minlon_source: bounds.minlon_source.min(next.minlon_source),
+        maxlon_source: bounds.maxlon_source.max(next.maxlon_source),
+        maxlat_source: bounds.maxlat_source.min(next.maxlat_source),
+        minlat_source: bounds.minlat_source.max(next.minlat_source),
+    })
+}
+
+/// Build the bbox `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+///
+/// This is the file-backed orchestration slice of
+/// `MOD_Area_judge.F90:mask_patch_modify` for bbox patch sources: read the
+/// bbox source, derive Fortran one-based source bounds through
+/// `minmax_range_make`, fill the selected patch grid, then call the already
+/// migrated `seaorland(i,j)=0` patch core.
+pub fn apply_area_judge_bbox_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    let mask = read_bbox_mask_netcdf(inputfile)?;
+    validate_bbox_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid bbox patch source: {err}"),
+        )
+    })?;
+    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut merged_bounds = None;
+
+    for point in &mask.points {
+        let bounds = area_judge_minmax_range_make_fortran_indexed(
+            point.west,
+            point.east,
+            point.north,
+            point.south,
+            lon_vertex,
+            lat_vertex,
+            gridnum_perdegree,
+            nlons_source,
+            nlats_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "bbox patch bounds west/east/north/south = {}/{}/{}/{} are outside source grid",
+                    point.west, point.east, point.north, point.south
+                ),
+            )
+        })?;
+        grid_covers_area_judge_bounds_fortran_indexed("patch bbox mask", &patch_mask, bounds)?;
+        for lon_index in bounds.minlon_source..=bounds.maxlon_source {
+            for lat_index in bounds.maxlat_source..=bounds.minlat_source {
+                patch_mask[lon_index][lat_index] = 1;
+            }
+        }
+        merged_bounds = Some(merge_area_judge_source_bounds(merged_bounds, bounds));
+    }
+
+    let bounds = merged_bounds.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bbox patch source must contain at least one bbox point",
+        )
+    })?;
+    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seaorland or bbox patch mask does not cover selected source bounds",
+            )
+        })?;
+
+    Ok(AreaJudgePatchSourceReport {
+        bounds,
+        patched_cells: report.patched_cells,
+    })
 }
 
 /// Write an Area_judge selected-grid restart payload.
@@ -5822,6 +5918,57 @@ pub fn read_bbox_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize>
     Ok(refine as usize)
 }
 
+/// Read bbox mask points from the NetCDF schema produced by `bbox_mask_make`.
+pub fn read_bbox_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMask> {
+    let inputfile = inputfile.as_ref();
+    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let bbox_num = required_dimension_len(&file, "bbox_num")?;
+    let four = required_dimension_len(&file, "four")?;
+    if four != 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("bbox four dimension {four} must equal 4"),
+        ));
+    }
+    let refine_degree = read_bbox_refine_netcdf(inputfile)?;
+    let values = required_values_f64(&file, "bbox_points")?;
+    let expected = bbox_num.checked_mul(4).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("bbox_points dimensions {bbox_num}x4 overflow"),
+        )
+    })?;
+    if values.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "bbox_points contains {} values, expected {expected}",
+                values.len()
+            ),
+        ));
+    }
+    let points = values
+        .chunks_exact(4)
+        .map(|row| BBoxPoint {
+            west: row[0],
+            east: row[1],
+            north: row[2],
+            south: row[3],
+        })
+        .collect::<Vec<_>>();
+    let mask = BBoxMask {
+        refine_degree,
+        points,
+    };
+    validate_bbox_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid bbox mask NetCDF: {err}"),
+        )
+    })?;
+    Ok(mask)
+}
+
 /// Write bbox mask points to a NetCDF file using the bbox schema consumed by
 /// EarthMesh mask preprocessing.
 pub fn write_bbox_mask_netcdf(output: impl AsRef<Path>, mask: &BBoxMask) -> io::Result<()> {
@@ -6345,6 +6492,24 @@ pub fn parse_bbox_mask_nml(
         refine_degree,
         points,
     }))
+}
+
+fn validate_bbox_mask(mask: &BBoxMask) -> io::Result<()> {
+    for (index, point) in mask.points.iter().enumerate() {
+        if point.west > point.east {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("bbox point {} west must be <= east", index + 1),
+            ));
+        }
+        if point.north < point.south {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("bbox point {} north must be >= south", index + 1),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_value_after_equals<T>(line: &str, field: &str) -> io::Result<T>
