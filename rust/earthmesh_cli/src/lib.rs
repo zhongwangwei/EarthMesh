@@ -19,7 +19,8 @@ use earthmesh_mesh::{
     connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
     lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
-    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
+    refine_array_length_calculation_fortran_indexed, remove_isolated_ocean_fortran_indexed,
+    renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
@@ -14143,6 +14144,15 @@ pub struct RefineArrayLengthCloseMeshesWriteReport {
     pub outputs: Vec<RefineArrayLengthCloseMeshWriteReport>,
 }
 
+/// Combined CLI-side evidence for `MOD_refine.F90:Array_length_calculation`:
+/// the pure halo/boundary calculation plus the legacy close-mesh scratch files
+/// written for downstream mask/refine steps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefineArrayLengthCalculationRunReport {
+    pub calculation: RefineArrayLengthCalculation,
+    pub close_meshes: RefineArrayLengthCloseMeshesWriteReport,
+}
+
 /// Legacy path used by `MOD_refine.F90:Array_length_calculation` for one
 /// refinement close-curve scratch file.
 pub fn refine_array_length_close_mesh_output_path(
@@ -14207,6 +14217,49 @@ pub fn write_refine_array_length_close_meshes(
     Ok(RefineArrayLengthCloseMeshesWriteReport {
         mask_patch_ndm: num_closed_curve,
         outputs,
+    })
+}
+
+/// Run the migrated calculation and file side effects for
+/// `MOD_refine.F90:Array_length_calculation`.
+///
+/// This composes the file-I/O-free `earthmesh_mesh` kernel with the
+/// `close_Mesh_Save` compatibility writer so the CLI refine loop can keep the
+/// Fortran scratch-file contract while the heavy topology work stays Rust-native.
+#[allow(clippy::too_many_arguments)]
+pub fn run_refine_array_length_calculation_fortran_indexed(
+    file_dir: impl AsRef<Path>,
+    step: usize,
+    set_dis_in: usize,
+    num_vertex: usize,
+    num_center: usize,
+    sjx_points: usize,
+    lbx_points: usize,
+    mrl_new: &[i32],
+    triangle_neighbors: &[Vec<usize>],
+    cells_on_triangle: &[[usize; 3]],
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    initial_num_transition_row_triangles: usize,
+    wp: &[LonLatPoint],
+) -> io::Result<RefineArrayLengthCalculationRunReport> {
+    let calculation = refine_array_length_calculation_fortran_indexed(
+        set_dis_in,
+        num_vertex,
+        num_center,
+        sjx_points,
+        lbx_points,
+        mrl_new,
+        triangle_neighbors,
+        cells_on_triangle,
+        triangles_on_cell,
+        edge_counts,
+        initial_num_transition_row_triangles,
+    )?;
+    let close_meshes = write_refine_array_length_close_meshes(file_dir, step, &calculation, wp)?;
+    Ok(RefineArrayLengthCalculationRunReport {
+        calculation,
+        close_meshes,
     })
 }
 
