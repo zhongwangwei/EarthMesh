@@ -493,3 +493,7 @@ Extended `rust/earthmesh_mesh` with `boundary_connection_fortran_indexed`, a tes
 ### 2026-06-12: mask_postproc isolated-ocean removal helper ported
 
 Extended `rust/earthmesh_mesh` with `remove_isolated_ocean_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:Isolated_Ocean_Renew` after boundary graph construction. The helper preserves longest-boundary retention, `bdy_long_order` placeholder layout, isolated-curve classification via `sum(2*n_new-n_original) < 0`, boundary vertex count zeroing, center mask removal, and the inward peeling loop for fully surrounded next-layer vertices. Remaining `mask_postproc` work is `bdy_calculation`/boundary-output wiring plus Earth/Lnd/Ocn/Atmos NetCDF orchestration.
+
+### 2026-06-12: mask_postproc boundary classification helper ported
+
+Extended `rust/earthmesh_mesh` with `classify_boundary_orders_fortran_indexed`, a tested pure-data port of the classification and ordering portion of `MOD_mask_postproc.F90:bdy_calculation`. The helper maps longest-boundary vertices through `vertex_mapping`, splits OBC/IBC points from the active mask, converts singleton OBC points to IBC, and preserves the legacy boundary-order rotation rule. Remaining `mask_postproc` work is now the adapter/orchestration layer: Earth/Lnd/Ocn/Atmos NetCDF reads/writes plus `obc.nc4`/`obcv2.nc4` writer wiring around the migrated helpers.

@@ -1,8 +1,8 @@
 use earthmesh_mesh::{
     boundary_closed_curves_fortran_indexed, boundary_connection_fortran_indexed,
-    extract_unique_vertices_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
-    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_data_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    classify_boundary_orders_fortran_indexed, extract_unique_vertices_fortran_indexed,
+    finalize_mask_postproc_data_fortran_indexed, remove_isolated_ocean_fortran_indexed,
+    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -354,4 +354,52 @@ fn isolated_ocean_removal_keeps_longest_boundary_and_removes_smaller_ocean_curve
     assert_eq!(vertex_neighbor_counts_new[20], 0);
     assert_eq!(vertex_neighbor_counts_new[21], 0);
     assert_eq!(vertex_neighbor_counts_new[22], 0);
+}
+
+#[test]
+fn boundary_classification_maps_vertices_and_converts_singleton_obc_to_ibc() {
+    let num_bdy_long = [5, 1, 1];
+    let bdy_long_order = vec![1, 10, 11, 12, 13];
+    let vertex_neighbors = vec![
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![2],
+        vec![3],
+        vec![4],
+        vec![5],
+    ];
+    let vertex_neighbor_counts = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1];
+    let mut vertex_mapping = vec![0; 14];
+    vertex_mapping[10] = 110;
+    vertex_mapping[11] = 111;
+    vertex_mapping[12] = 112;
+    vertex_mapping[13] = 113;
+    let mut is_in_domain = vec![0; 6];
+    is_in_domain[2] = -1;
+    is_in_domain[3] = 1;
+    is_in_domain[4] = -1;
+    is_in_domain[5] = -1;
+
+    let classified = classify_boundary_orders_fortran_indexed(
+        num_bdy_long,
+        &bdy_long_order,
+        &vertex_neighbors,
+        &vertex_neighbor_counts,
+        &vertex_mapping,
+        &is_in_domain,
+    )
+    .expect("classify boundary");
+
+    assert_eq!(classified.bdy_order, vec![1, 110, 111, 112, 113]);
+    assert_eq!(classified.obc_order, vec![1, 1, 1, 1, 1]);
+    assert_eq!(classified.ibc_order, vec![1, 110, 111, 112, 113]);
+    assert_eq!(classified.rotation_start, None);
 }
