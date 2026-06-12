@@ -40,10 +40,11 @@
         "refine_vars operational defaults and core mkrefine read_nl validation ported to RefineConfig",
         "mkrefine land/ocean/atmos threshold switch and threshold-value matrix ported to RefineConfig",
         "mem_grid coordinate allocation and zero-initialization ported to GridMemory",
-        "mem_ijtabs loop constants and M/V/W default record allocation ported to IjTabs"
+        "mem_ijtabs loop constants and M/V/W default record allocation ported to IjTabs",
+        "mem_delaunay typed records, copy/original buffers, and alloc_itabsd zero-initialization ported to DelaunayMemory"
       ],
       "remaining_rust_surfaces": [
-        "mem_delaunay typed state, copy/original arrays, and production state wiring"
+        "production wiring from legacy consts_coms/mem_* globals into Rust-owned state containers"
       ]
     },
     {

@@ -369,3 +369,7 @@ Extended `EarthmeshConfig` with a non-destructive `read_nl_workspace_plan`, plus
 ### 2026-06-12: `mem_grid` and `mem_ijtabs` allocation defaults ported
 
 Extended `rust/earthmesh_core` with Rust-owned `GridMemory` and `IjTabs` state. `GridMemory` now mirrors `mem_grid` zero-filled coordinate and lon/lat allocation routines, while `IjTabs` ports the `mem_ijtabs` loop constants and default M/V/W record initialization (`loop(:)=.false.`, neighbor ids initialized to `1`, rank defaults, and W-direction defaults). Remaining `mem_*` work is focused on `mem_delaunay` copy/original arrays and wiring these typed state containers into production mesh orchestration.
+
+### 2026-06-12: `mem_delaunay` typed state and allocation defaults ported
+
+Extended `rust/earthmesh_core` with `DelaunayMemory` and typed Delaunay records (`ItabMd`, `ItabUd`, `ItabWd`, `NestUd`, `NestWd`). The Rust state now mirrors `mem_delaunay` defaults for loop flags, neighbor arrays, refinement metadata, copy/original buffers, and `alloc_itabsd` zero-filled `xemd/yemd/zemd` allocation. This closes the typed-state replacement surface inside `consts_coms.F90`; remaining work for this file is production wiring from the legacy module globals into Rust-owned orchestration state.

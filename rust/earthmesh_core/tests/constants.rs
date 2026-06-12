@@ -520,3 +520,58 @@ fn ijtab_allocators_match_mem_ijtabs_defaults() {
     assert_eq!(tabs.w[0].irank, -1);
     assert_eq!(tabs.w[0].dirv, [0.0; 7]);
 }
+
+#[test]
+fn delaunay_memory_allocators_match_mem_delaunay_defaults() {
+    let mut memory = earthmesh_core::DelaunayMemory::default();
+
+    memory.allocate_itabsd(2, 1, 1);
+
+    assert_eq!(memory.md.len(), 2);
+    assert_eq!(memory.ud.len(), 1);
+    assert_eq!(memory.wd.len(), 1);
+    assert_eq!(memory.xemd, vec![0.0; 2]);
+    assert_eq!(memory.yemd, vec![0.0; 2]);
+    assert_eq!(memory.zemd, vec![0.0; 2]);
+    assert_eq!(memory.md[0].loop_flags, [false; earthmesh_core::MLOOPS]);
+    assert_eq!(memory.md[0].npoly, 0);
+    assert_eq!(memory.md[0].imp, 1);
+    assert_eq!(memory.md[0].mrlm, 0);
+    assert_eq!(memory.md[0].mrlm_orig, 0);
+    assert_eq!(memory.md[0].ngr, 0);
+    assert_eq!(memory.md[0].im, [1; 7]);
+    assert_eq!(memory.md[0].iu, [1; 7]);
+    assert_eq!(memory.md[0].iw, [1; 7]);
+    assert_eq!(memory.ud[0].loop_flags, [false; earthmesh_core::MLOOPS]);
+    assert_eq!(memory.ud[0].iup, 1);
+    assert_eq!(memory.ud[0].mrlu, 0);
+    assert_eq!(memory.ud[0].im, [1; 2]);
+    assert_eq!(memory.ud[0].iu, [1; 12]);
+    assert_eq!(memory.ud[0].iw, [1; 6]);
+    assert_eq!(memory.wd[0].loop_flags, [false; earthmesh_core::MLOOPS]);
+    assert_eq!(memory.wd[0].iwp, 1);
+    assert_eq!(memory.wd[0].mrlw, 0);
+    assert_eq!(memory.wd[0].mrlw_orig, 0);
+    assert_eq!(memory.wd[0].mrow, 0);
+    assert_eq!(memory.wd[0].ngr, 0);
+    assert_eq!(memory.wd[0].im, [1; 3]);
+    assert_eq!(memory.wd[0].iu, [1; 3]);
+    assert_eq!(memory.wd[0].iw, [1; 9]);
+}
+
+#[test]
+fn delaunay_memory_copy_and_original_buffers_match_fortran_initial_state() {
+    let memory = earthmesh_core::DelaunayMemory::default();
+
+    assert_eq!(memory.nmd_copy, 0);
+    assert_eq!(memory.nud_copy, 0);
+    assert_eq!(memory.nwd_copy, 0);
+    assert!(memory.md_copy.is_empty());
+    assert!(memory.ud_copy.is_empty());
+    assert!(memory.wd_copy.is_empty());
+    assert!(memory.xemd_copy.is_empty());
+    assert!(memory.yemd_copy.is_empty());
+    assert!(memory.zemd_copy.is_empty());
+    assert!(memory.iwdorig.is_empty());
+    assert!(memory.iwdorig_temp.is_empty());
+}

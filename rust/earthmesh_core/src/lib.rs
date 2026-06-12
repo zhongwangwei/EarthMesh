@@ -232,6 +232,144 @@ impl IjTabs {
     }
 }
 
+/// Rust equivalent of `mem_delaunay:itab_md_vars`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItabMd {
+    pub loop_flags: [bool; MLOOPS],
+    pub npoly: i32,
+    pub imp: i32,
+    pub mrlm: i32,
+    pub mrlm_orig: i32,
+    pub ngr: i32,
+    pub im: [i32; 7],
+    pub iu: [i32; 7],
+    pub iw: [i32; 7],
+}
+
+impl Default for ItabMd {
+    fn default() -> Self {
+        Self {
+            loop_flags: [false; MLOOPS],
+            npoly: 0,
+            imp: 1,
+            mrlm: 0,
+            mrlm_orig: 0,
+            ngr: 0,
+            im: [1; 7],
+            iu: [1; 7],
+            iw: [1; 7],
+        }
+    }
+}
+
+/// Rust equivalent of `mem_delaunay:itab_ud_vars`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItabUd {
+    pub loop_flags: [bool; MLOOPS],
+    pub iup: i32,
+    pub mrlu: i32,
+    pub im: [i32; 2],
+    pub iu: [i32; 12],
+    pub iw: [i32; 6],
+}
+
+impl Default for ItabUd {
+    fn default() -> Self {
+        Self {
+            loop_flags: [false; MLOOPS],
+            iup: 1,
+            mrlu: 0,
+            im: [1; 2],
+            iu: [1; 12],
+            iw: [1; 6],
+        }
+    }
+}
+
+/// Rust equivalent of `mem_delaunay:itab_wd_vars`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItabWd {
+    pub loop_flags: [bool; MLOOPS],
+    pub npoly: i32,
+    pub iwp: i32,
+    pub mrlw: i32,
+    pub mrlw_orig: i32,
+    pub mrow: i32,
+    pub ngr: i32,
+    pub im: [i32; 3],
+    pub iu: [i32; 3],
+    pub iw: [i32; 9],
+}
+
+impl Default for ItabWd {
+    fn default() -> Self {
+        Self {
+            loop_flags: [false; MLOOPS],
+            npoly: 0,
+            iwp: 1,
+            mrlw: 0,
+            mrlw_orig: 0,
+            mrow: 0,
+            ngr: 0,
+            im: [1; 3],
+            iu: [1; 3],
+            iw: [1; 9],
+        }
+    }
+}
+
+/// Rust equivalent of `mem_delaunay:nest_ud_vars`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NestUd {
+    pub im: i32,
+    pub iu: i32,
+}
+
+/// Rust equivalent of `mem_delaunay:nest_wd_vars`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NestWd {
+    pub iu: [i32; 3],
+    pub iw: [i32; 3],
+}
+
+/// Allocated `mem_delaunay` state and copy/original buffers.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DelaunayMemory {
+    pub md: Vec<ItabMd>,
+    pub ud: Vec<ItabUd>,
+    pub wd: Vec<ItabWd>,
+    pub md_copy: Vec<ItabMd>,
+    pub ud_copy: Vec<ItabUd>,
+    pub wd_copy: Vec<ItabWd>,
+    pub xemd: Vec<f32>,
+    pub yemd: Vec<f32>,
+    pub zemd: Vec<f32>,
+    pub xemd_copy: Vec<f32>,
+    pub yemd_copy: Vec<f32>,
+    pub zemd_copy: Vec<f32>,
+    pub nmd: usize,
+    pub nud: usize,
+    pub nwd: usize,
+    pub nmd_copy: usize,
+    pub nud_copy: usize,
+    pub nwd_copy: usize,
+    pub iwdorig: Vec<i32>,
+    pub iwdorig_temp: Vec<i32>,
+}
+
+impl DelaunayMemory {
+    /// Match `mem_delaunay:alloc_itabsd`: allocate Delaunay records and
+    /// zero-filled M-point Cartesian arrays.
+    pub fn allocate_itabsd(&mut self, mma: usize, mua: usize, mwa: usize) {
+        self.md = vec![ItabMd::default(); mma];
+        self.ud = vec![ItabUd::default(); mua];
+        self.wd = vec![ItabWd::default(); mwa];
+        self.xemd = vec![0.0; mma];
+        self.yemd = vec![0.0; mma];
+        self.zemd = vec![0.0; mma];
+    }
+}
+
 /// Derived Earth radius values initialized by `mkgrd.F90:init_consts`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EarthRadii {
