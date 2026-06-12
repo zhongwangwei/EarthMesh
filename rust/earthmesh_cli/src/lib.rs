@@ -1401,6 +1401,39 @@ pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
     unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)
 }
 
+/// Compose `PatchID_Save` coordinate construction with the legacy patchtype
+/// output path selected by `plan_mask_postproc_domain_io`.
+pub fn write_mask_postproc_patchtype_netcdf(
+    plan: &MaskPostprocDomainIoPlan,
+    patchtypes_select: Vec<Vec<i32>>,
+    minlon_dm_area: i32,
+    maxlat_dm_area: i32,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+) -> io::Result<PatchIdWriteReport> {
+    let output = plan.patchtype_output.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_postproc plan for {} has no patchtype_output",
+                plan.mesh_type
+            ),
+        )
+    })?;
+    let patch = patchid_mesh_from_selected_domain(
+        patchtypes_select,
+        minlon_dm_area,
+        maxlat_dm_area,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+    )?;
+    write_patchid_netcdf(output, &patch)
+}
+
 /// Compose final mask-postprocess grid construction with the legacy NetCDF
 /// result path selected by `plan_mask_postproc_domain_io`.
 pub fn write_mask_postproc_final_gridfile(
