@@ -501,6 +501,7 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_cal must fit usize"))?;
     let max_iter_spc = usize::try_from(refine.max_iter_spc.max(0))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_spc must fit usize"))?;
+    validate_mkgrd_refine_loop_controls(refine, max_iter)?;
 
     let mut steps = Vec::with_capacity(max_iter);
     let mut completed_steps = vec![false; max_iter + 1];
@@ -545,6 +546,42 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
 /// `mkgrd.F90` refine loop.  This mirrors the active file names in
 /// `Area_judge_refine`, `Get_Contain`, `GetRef`, and `refine_loop` without
 /// executing their heavy geometry kernels.
+fn validate_mkgrd_refine_loop_controls(refine: &RefineConfig, max_iter: usize) -> io::Result<()> {
+    if max_iter >= refine.halo.len() || max_iter >= refine.max_transition_row.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "max_iter {max_iter} exceeds one-based refine control table length {}",
+                refine.halo.len() - 1
+            ),
+        ));
+    }
+
+    for iter in 1..=max_iter {
+        let halo = refine.halo[iter];
+        let max_transition_row = refine.max_transition_row[iter];
+        if halo < max_transition_row {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("halo({iter}) must be larger than or equal to max_transition_row({iter})"),
+            ));
+        }
+        if halo <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("halo({iter}) must be more than zero"),
+            ));
+        }
+        if max_transition_row <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("max_transition_row({iter}) must be more than zero"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn plan_mkgrd_refine_loop_io(
     config: &EarthmeshConfig,
     refine: &RefineConfig,

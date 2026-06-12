@@ -5,7 +5,7 @@ use earthmesh_core::{EarthmeshConfig, RefineConfig};
 
 fn mixed_refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
-        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=3\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
         "landmesh",
         "hex",
     )
@@ -167,4 +167,30 @@ fn refine_loop_io_plan_uses_early_exit_step_for_final_domain_postproc() {
         plan.final_domain_gridfile,
         PathBuf::from("/tmp/earthmesh/case_refine/gridfile/gridfile_NXP0016_03_hex.nc4")
     );
+}
+
+#[test]
+fn refine_loop_plan_rejects_invalid_halo_transition_controls_like_fortran() {
+    let mut too_small_halo = mixed_refine_config();
+    too_small_halo.halo[1] = 1;
+    too_small_halo.max_transition_row[1] = 2;
+    let err = plan_mkgrd_refine_loop(&too_small_halo).expect_err("halo must cover transition rows");
+    assert!(err
+        .to_string()
+        .contains("halo(1) must be larger than or equal to max_transition_row(1)"));
+
+    let mut non_positive_halo = mixed_refine_config();
+    non_positive_halo.halo[2] = 0;
+    non_positive_halo.max_transition_row[2] = -1;
+    let err = plan_mkgrd_refine_loop(&non_positive_halo).expect_err("halo must be positive");
+    assert!(err.to_string().contains("halo(2) must be more than zero"));
+
+    let mut non_positive_transition = mixed_refine_config();
+    non_positive_transition.halo[3] = 1;
+    non_positive_transition.max_transition_row[3] = 0;
+    let err = plan_mkgrd_refine_loop(&non_positive_transition)
+        .expect_err("transition rows must be positive");
+    assert!(err
+        .to_string()
+        .contains("max_transition_row(3) must be more than zero"));
 }
