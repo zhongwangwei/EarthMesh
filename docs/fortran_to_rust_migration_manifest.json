@@ -215,7 +215,8 @@
         "set_edgesOnEdge_tri endpoint edge-neighbor construction ported to rust/earthmesh_mesh",
         "set_distsOnEdge_global calculation orchestration ported to rust/earthmesh_mesh",
         "spring_dynamics_global per-edge adjustment formula ported to rust/earthmesh_mesh",
-        "spring_dynamics_global edge direction sign setup ported to rust/earthmesh_mesh"
+        "spring_dynamics_global edge direction sign setup ported to rust/earthmesh_mesh",
+        "spring_dynamics_global cell displacement accumulation and renormalization ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",

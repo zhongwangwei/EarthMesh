@@ -2,9 +2,9 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
-    set_weights_on_edge_fortran_indexed, spring_edge_adjustment_fortran,
-    spring_edge_directions_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
-    CartesianPoint, LonLatDegrees,
+    set_weights_on_edge_fortran_indexed, spring_apply_cell_displacements_fortran_indexed,
+    spring_edge_adjustment_fortran, spring_edge_directions_fortran_indexed,
+    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -140,6 +140,10 @@ fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     );
 }
 
+fn magnitude_for_test(point: CartesianPoint) -> f64 {
+    (point.x * point.x + point.y * point.y + point.z * point.z).sqrt()
+}
+
 #[test]
 fn plane_angle_signed_matches_fortran_normal_sign_rule() {
     let origin = CartesianPoint::new(0.0, 0.0, 0.0);
@@ -204,6 +208,43 @@ fn spring_edge_directions_match_fortran_cell_side_sign_rule() {
     assert_eq!(directions[1], Vec::<f64>::new());
     assert_eq!(directions[2], vec![-0.25, 0.25]);
     assert_eq!(directions[3], vec![0.25, -0.25]);
+}
+
+#[test]
+fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_fortran() {
+    let cell_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 1.0, 0.0),
+    ];
+    let n_edges_on_cell = vec![0, 0, 2, 0];
+    let edges_on_cell = vec![vec![], vec![], vec![2, 3], vec![]];
+    let directions = vec![vec![], vec![], vec![0.5, -0.25], vec![]];
+    let edge_displacements = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 2.0, 0.0),
+    ];
+
+    let updated = spring_apply_cell_displacements_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &directions,
+        &edge_displacements,
+        1.0,
+    )
+    .expect("valid spring displacement inputs");
+
+    // Cell 2 raw update: (1,0,0) + 0.5*(1,0,0) - 0.25*(0,2,0) = (1.5,-0.5,0),
+    // then Fortran scales it back onto the sphere.
+    approx_eq(updated[2].x, 0.9486832980505138, 1.0e-15);
+    approx_eq(updated[2].y, -0.31622776601683794, 1.0e-15);
+    approx_eq(updated[2].z, 0.0, 1.0e-15);
+    approx_eq(magnitude_for_test(updated[2]), 1.0, 1.0e-15);
+    assert_eq!(updated[3], cell_points[3]);
 }
 
 #[test]

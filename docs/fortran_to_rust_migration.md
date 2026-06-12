@@ -245,3 +245,7 @@ Extended `rust/earthmesh_mesh` with `spring_edge_adjustment_fortran`, a tested R
 ### 2026-06-12: `MOD_grid_preprocess.F90` spring edge direction signs ported
 
 Extended `rust/earthmesh_mesh` with `spring_edge_directions_fortran_indexed`, a tested Rust port of the `dirs(j, iw)` setup inside `spring_dynamics_global`. It preserves the Fortran sign rule: `+relax` when the cell is the second endpoint in `CellsOnEdge`, otherwise `-relax`, using compact `edgesOnCell` rows. The remaining spring work is the iterative accumulation loop, spherical renormalization, regional move-mask behavior, and high-level workflow wiring.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` spring cell displacement application ported
+
+Extended `rust/earthmesh_mesh` with `spring_apply_cell_displacements_fortran_indexed`, a tested Rust port of the cell-side accumulation and spherical renormalization steps inside `spring_dynamics_global`. It applies per-edge displacement vectors with the migrated compact direction rows, then scales each updated cell coordinate back to the requested Earth radius. The remaining spring work is assembling the full multi-iteration global/regional dynamics loop and regional move-mask behavior.

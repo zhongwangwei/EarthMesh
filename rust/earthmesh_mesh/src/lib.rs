@@ -1483,6 +1483,64 @@ pub fn spring_edge_directions_fortran_indexed(
     Some(directions)
 }
 
+/// Port of the cell accumulation and spherical renormalization steps inside
+/// `MOD_grid_preprocess:spring_dynamics_global`.
+///
+/// The caller supplies the per-edge displacements already produced by
+/// `spring_edge_adjustment_fortran` and the compact per-cell direction rows
+/// produced by `spring_edge_directions_fortran_indexed`. This helper performs
+/// the Fortran update:
+/// `xew8(iw) += dirs(j, iw) * dx(edge)` for each cell edge, followed by
+/// normalization back to `radius`.
+pub fn spring_apply_cell_displacements_fortran_indexed(
+    cell_points: &[CartesianPoint],
+    n_edges_on_cell: &[usize],
+    edges_on_cell: &[Vec<usize>],
+    directions: &[Vec<f64>],
+    edge_displacements: &[CartesianPoint],
+    radius: f64,
+) -> Option<Vec<CartesianPoint>> {
+    if n_edges_on_cell.len() != cell_points.len()
+        || edges_on_cell.len() != cell_points.len()
+        || directions.len() != cell_points.len()
+    {
+        return None;
+    }
+
+    let mut updated = cell_points.to_vec();
+    for cell_id in 2..cell_points.len() {
+        let edge_count = n_edges_on_cell[cell_id];
+        let cell_edges = edges_on_cell.get(cell_id)?;
+        let cell_directions = directions.get(cell_id)?;
+        if edge_count > cell_edges.len() || edge_count > cell_directions.len() {
+            return None;
+        }
+
+        let mut point = updated[cell_id];
+        for slot in 0..edge_count {
+            let edge_id = cell_edges[slot];
+            let displacement = *edge_displacements.get(edge_id)?;
+            let direction = cell_directions[slot];
+            point.x += direction * displacement.x;
+            point.y += direction * displacement.y;
+            point.z += direction * displacement.z;
+        }
+
+        let norm = magnitude(point);
+        if norm == 0.0 {
+            return None;
+        }
+        let expansion = radius / norm;
+        updated[cell_id] = CartesianPoint::new(
+            point.x * expansion,
+            point.y * expansion,
+            point.z * expansion,
+        );
+    }
+
+    Some(updated)
+}
+
 /// Port of the candidate-selection core in `MOD_grid_preprocess:orderVertexArrays`.
 ///
 /// From one reference edge vector, choose the candidate edge with positive CCW
