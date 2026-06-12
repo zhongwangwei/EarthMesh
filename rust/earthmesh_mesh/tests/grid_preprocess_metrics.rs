@@ -1,8 +1,9 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
-    cells_on_edge_from_neighbor_cells, get_area_unit_fortran_indexed, is_ngrmm,
-    lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
-    normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
+    cells_on_edge_from_neighbor_cells, get_area_unit_fortran_indexed,
+    get_edge_connectivity_fortran_indexed, is_ngrmm, lonlat_degrees_to_unit_xyz,
+    next_ccw_edge_candidate_slot, normalize_lon_m180_180, normalize_vertex_rotation,
+    order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, shared_cell_for_edge_pair,
     should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
     spherical_triangle_area_unit, vertex_cell_position, CartesianPoint, GetAreaUnitInput,
@@ -559,4 +560,35 @@ fn order_vertices_on_edge_fortran_indexed_matches_getsort_vertices_on_edge() {
     assert_eq!(ordered[2], [2, 3]);
     assert_eq!(ordered[3], [4, 2]);
     assert_eq!(ordered[4], [5, 6]);
+}
+
+#[test]
+fn get_edge_connectivity_fortran_indexed_matches_getedge_reuse_and_cell_mapping() {
+    let cells_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let triangle_neighbors = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [3, 4, 5],
+        [2, 4, 5],
+        [2, 3, 5],
+        [2, 3, 4],
+    ];
+
+    let connectivity = get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_vertex)
+        .expect("valid Fortran-indexed GetEdge input");
+
+    assert_eq!(connectivity.edges_on_vertex[2], [2, 3, 4]);
+    assert_eq!(connectivity.edges_on_vertex[3][0], 2);
+    assert_eq!(connectivity.vertices_on_edge[2], [2, 3]);
+    assert_eq!(connectivity.cells_on_edge[2], [10, 11]);
+    assert_eq!(connectivity.cells_on_edge[3], [10, 12]);
+    assert_eq!(connectivity.cells_on_edge[4], [11, 12]);
+    assert!(connectivity.vertices_on_edge.len() > 7);
 }

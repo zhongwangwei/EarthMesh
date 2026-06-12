@@ -169,3 +169,7 @@ Added `order_vertex_arrays_fortran_indexed`, a Rust array-level wrapper over the
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetSort_verticesOnEdge` wrapper ported
 
 Added `order_vertices_on_edge_fortran_indexed`, a Rust port of the array-level `GetSort_verticesOnEdge` loop. It preserves Fortran edge ids by starting at index `2`, uses the migrated cross-product predicate to decide swaps, and returns a sorted `verticesOnEdge` copy. Remaining edge work is full `GetEdge` edge-id construction, optional midpoint generation, and real mesh parity fixtures for the combined edge-ordering path.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetEdge` core connectivity workflow ported
+
+Added `get_edge_connectivity_fortran_indexed`, a Rust port of the core `GetEdge` loop that creates/reuses edge ids, writes `edgesOnVertex`, `verticesOnEdge`, and derives sorted `cellsOnEdge` pairs from neighboring triangle cell ids. The optional spherical midpoint output and real mesh combined parity fixtures remain separate work.
