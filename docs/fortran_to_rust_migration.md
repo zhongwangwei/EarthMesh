@@ -117,3 +117,7 @@ Extended `rust/earthmesh_mesh` with `triangle_mesh_quality`, a tested Rust port 
 ### 2026-06-12: `MOD_grid_preprocess.F90` polygon quality aggregation core ported
 
 Extended `rust/earthmesh_mesh` with `polygon_mesh_quality`, a tested Rust port of the aggregation core in `PolyMeshQuality`. It preserves the Fortran regular-angle formula `(num_edges - 2) * 180 / num_edges`, 0.9/1.1 threshold bands, RMS angle deviation, and average min/max accumulation. The Fortran-style filtering by `n_ngrwm_f` and cached update arrays remain separate wrapper work.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` robust spherical area helper ported
+
+Extended `rust/earthmesh_mesh` with `robust_spherical_area_unit`, a tested Rust port of `robust_spherical_area`. It preserves the Fortran dateline-aware longitude delta adjustment and signed unit-sphere area result. Physical area scaling by radius squared remains caller responsibility, matching how this helper should feed future `GetArea` migration.

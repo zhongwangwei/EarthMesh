@@ -174,19 +174,21 @@
         "arc_length MPAS-compatible mixed-precision haversine ported to rust/earthmesh_mesh",
         "Get_Length_Angle polygon edge length and spherical angle calculation ported to rust/earthmesh_mesh",
         "TriMeshQuality aggregation core ported to rust/earthmesh_mesh",
-        "PolyMeshQuality aggregation core ported to rust/earthmesh_mesh"
+        "PolyMeshQuality aggregation core ported to rust/earthmesh_mesh",
+        "robust_spherical_area dateline-aware signed unit-sphere polygon area ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
         "Springjustment_global and Springjustment_regional_step",
         "find_frac_index and layer construction helpers",
         "edge/cell connectivity construction and MPAS ordering routines",
-        "robust_spherical_area and GetArea/GetEdge routines",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "centroid_spherical_calculation batch wrapper over mesh connectivity",
         "circumcenter_spherical_calculation",
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
-        "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters"
+        "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
+        "GetArea areaTriangle/areaCell/kiteAreasOnVertex workflow",
+        "GetEdge and edge connectivity routines"
       ]
     },
     {

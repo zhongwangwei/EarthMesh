@@ -135,3 +135,40 @@ fn polygon_mesh_quality_rejects_empty_mesh_and_degenerate_cells() {
     ]])
     .is_none());
 }
+
+#[test]
+fn robust_spherical_area_matches_fortran_equatorial_square() {
+    let area = earthmesh_mesh::robust_spherical_area_unit(&[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+        LonLatDegrees::new(1.0, 1.0),
+        LonLatDegrees::new(0.0, 1.0),
+    ])
+    .expect("valid polygon");
+
+    approx_eq(area, -0.0003046019547268505, 1.0e-15);
+}
+
+#[test]
+fn robust_spherical_area_matches_fortran_dateline_delta_wrap() {
+    let area = earthmesh_mesh::robust_spherical_area_unit(&[
+        LonLatDegrees::new(179.0, 0.0),
+        LonLatDegrees::new(-179.0, 0.0),
+        LonLatDegrees::new(-179.0, 1.0),
+        LonLatDegrees::new(179.0, 1.0),
+    ])
+    .expect("valid dateline polygon");
+
+    approx_eq(area, -0.000609203909453701, 1.0e-15);
+}
+
+#[test]
+fn robust_spherical_area_rejects_degenerate_polygons() {
+    assert!(earthmesh_mesh::robust_spherical_area_unit(&[]).is_none());
+    assert!(earthmesh_mesh::robust_spherical_area_unit(&[LonLatDegrees::new(0.0, 0.0)]).is_none());
+    assert!(earthmesh_mesh::robust_spherical_area_unit(&[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+    ])
+    .is_none());
+}
