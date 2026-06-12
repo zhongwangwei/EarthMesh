@@ -601,3 +601,7 @@ Added `DistsOnEdgeMesh`, `DistsOnEdgeWriteReport`, and `write_dists_on_edge_netc
 ### 2026-06-12: cellwidth NetCDF writer ported
 
 Added `CellwidthMesh`, `CellwidthWriteReport`, and `write_cellwidth_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:cellwidth_save`. The writer preserves the legacy `num_dbx` dimension and variables `lonw`, `latw`, and `cellwidth`, validates coordinate/value length consistency, and round-trips with the existing `read_cellwidth_netcdf` adapter. This completes the read/write pair used by MPAS-Simple and the Springjustment/global file pipeline.
+
+### 2026-06-12: quality_save_global NetCDF writer ported
+
+Added `QualityClassMetrics`, `GlobalQualityMesh`, and `write_quality_global_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:quality_save_global`. The writer preserves the legacy dimensions (`num_sjx`, `num_wbx`, `num_lbx`, `two`, `thr`, `fiv`, `six`) plus optional `num_qbx`/`sev`, writes the `length_*`, `angle_*`, `Extr_*`, `Eavg_*`, `Savg_*`, `less_*`, and `more_*` variables for each class, and rejects row-width/count mismatches before creating output. This closes the file-writer dependency for `Grid_Quality_Check_Global`; remaining grid-preprocess adapter work is composing quality calculation, Springjustment persistence, and GetArea/GetEdge NetCDF boundaries end-to-end.

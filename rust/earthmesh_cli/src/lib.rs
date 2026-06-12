@@ -291,6 +291,27 @@ pub struct DistsOnEdgeMesh {
     pub dists_on_edge: Vec<f64>,
 }
 
+/// One polygon/triangle class in `MOD_file_preprocess.F90:quality_save_global`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QualityClassMetrics {
+    pub length: Vec<Vec<f64>>,
+    pub angle: Vec<Vec<f64>>,
+    pub extr: [f64; 2],
+    pub eavg: [f64; 2],
+    pub savg: f64,
+    pub less: Vec<i32>,
+    pub more: Vec<i32>,
+}
+
+/// Rust data shape written by `MOD_file_preprocess.F90:quality_save_global`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalQualityMesh {
+    pub sjx: QualityClassMetrics,
+    pub wbx: QualityClassMetrics,
+    pub lbx: QualityClassMetrics,
+    pub qbx: Option<QualityClassMetrics>,
+}
+
 /// Edge-reference payload read by `MOD_file_preprocess.F90:data_read`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MpasEdgeReference {
@@ -432,6 +453,16 @@ pub struct CellwidthWriteReport {
 pub struct DistsOnEdgeWriteReport {
     pub output: PathBuf,
     pub num_edge: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:quality_save_global`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalQualityWriteReport {
+    pub output: PathBuf,
+    pub num_sjx: usize,
+    pub num_wbx: usize,
+    pub num_lbx: usize,
+    pub num_qbx: usize,
 }
 
 /// Evidence report from writing `MOD_file_preprocess.F90:MPAS_info_Save` graph.info.
@@ -764,6 +795,54 @@ pub fn write_cellwidth_netcdf(
     Ok(CellwidthWriteReport {
         output: output.to_path_buf(),
         num_dbx,
+    })
+}
+
+/// Write the `quality_save_global` schema produced by
+/// `MOD_file_preprocess.F90:quality_save_global`.
+pub fn write_quality_global_netcdf(
+    output: impl AsRef<Path>,
+    quality: &GlobalQualityMesh,
+) -> io::Result<GlobalQualityWriteReport> {
+    validate_global_quality_mesh(quality)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let num_sjx = quality.sjx.length.len();
+    let num_wbx = quality.wbx.length.len();
+    let num_lbx = quality.lbx.length.len();
+    let num_qbx = quality.qbx.as_ref().map_or(0, |qbx| qbx.length.len());
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_sjx", num_sjx)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_wbx", num_wbx)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_lbx", num_lbx)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;
+    file.add_dimension("thr", 3).map_err(netcdf_to_io_error)?;
+    file.add_dimension("fiv", 5).map_err(netcdf_to_io_error)?;
+    file.add_dimension("six", 6).map_err(netcdf_to_io_error)?;
+
+    write_quality_class(&mut file, "sjx", "num_sjx", "thr", &quality.sjx)?;
+    write_quality_class(&mut file, "wbx", "num_wbx", "fiv", &quality.wbx)?;
+    write_quality_class(&mut file, "lbx", "num_lbx", "six", &quality.lbx)?;
+    if let Some(qbx) = &quality.qbx {
+        file.add_dimension("num_qbx", num_qbx)
+            .map_err(netcdf_to_io_error)?;
+        file.add_dimension("sev", 7).map_err(netcdf_to_io_error)?;
+        write_quality_class(&mut file, "qbx", "num_qbx", "sev", qbx)?;
+    }
+
+    Ok(GlobalQualityWriteReport {
+        output: output.to_path_buf(),
+        num_sjx,
+        num_wbx,
+        num_lbx,
+        num_qbx,
     })
 }
 
@@ -3432,6 +3511,67 @@ fn validate_dists_on_edge_mesh(mesh: &DistsOnEdgeMesh) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_global_quality_mesh(quality: &GlobalQualityMesh) -> io::Result<()> {
+    validate_quality_class_metrics("sjx", &quality.sjx, 3)?;
+    validate_quality_class_metrics("wbx", &quality.wbx, 5)?;
+    validate_quality_class_metrics("lbx", &quality.lbx, 6)?;
+    if let Some(qbx) = &quality.qbx {
+        validate_quality_class_metrics("qbx", qbx, 7)?;
+    }
+    Ok(())
+}
+
+fn validate_quality_class_metrics(
+    class_name: &str,
+    metrics: &QualityClassMetrics,
+    width: usize,
+) -> io::Result<()> {
+    let rows = metrics.length.len();
+    if metrics.angle.len() != rows {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{class_name} angle row count {} must match length row count {rows}",
+                metrics.angle.len()
+            ),
+        ));
+    }
+    for (name, actual) in [
+        ("less", metrics.less.len()),
+        ("more", metrics.more.len()),
+    ] {
+        if actual != rows {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{class_name} {name} length {actual} must match row count {rows}"),
+            ));
+        }
+    }
+    for (idx, row) in metrics.length.iter().enumerate() {
+        if row.len() != width {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{class_name} length row {idx} width {} must match required {width}",
+                    row.len()
+                ),
+            ));
+        }
+    }
+    for (idx, row) in metrics.angle.iter().enumerate() {
+        if row.len() != width {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{class_name} angle row {idx} width {} must match required {width}",
+                    row.len()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
     if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() || mesh.x_edge.is_empty() {
         return Err(io::Error::new(
@@ -3654,6 +3794,40 @@ fn write_f64_1d(
         .add_variable::<f64>(name, &[dim])
         .map_err(netcdf_to_io_error)?;
     var.put_values(values, ..).map_err(netcdf_to_io_error)
+}
+
+fn write_f64_scalar(file: &mut netcdf::FileMut, name: &str, value: f64) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<f64>(name, &[])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&[value], ..).map_err(netcdf_to_io_error)
+}
+
+fn write_quality_class(
+    file: &mut netcdf::FileMut,
+    suffix: &str,
+    row_dim: &str,
+    width_dim: &str,
+    metrics: &QualityClassMetrics,
+) -> io::Result<()> {
+    write_f64_matrix_rows(
+        file,
+        &format!("length_{suffix}"),
+        &[row_dim, width_dim],
+        &metrics.length,
+    )?;
+    write_f64_matrix_rows(
+        file,
+        &format!("angle_{suffix}"),
+        &[row_dim, width_dim],
+        &metrics.angle,
+    )?;
+    write_f64_1d(file, &format!("Extr_{suffix}"), "two", &metrics.extr)?;
+    write_f64_1d(file, &format!("Eavg_{suffix}"), "two", &metrics.eavg)?;
+    write_f64_scalar(file, &format!("Savg_{suffix}"), metrics.savg)?;
+    write_i32_1d(file, &format!("less_{suffix}"), row_dim, &metrics.less)?;
+    write_i32_1d(file, &format!("more_{suffix}"), row_dim, &metrics.more)?;
+    Ok(())
 }
 
 fn rows_from_flat_i32(values: &[i32], width: usize) -> Vec<Vec<i32>> {
