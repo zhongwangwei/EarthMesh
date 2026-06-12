@@ -304,7 +304,8 @@
         "final mask_postproc center-vertex reindex loop ported to rust/earthmesh_mesh",
         "final mask_postproc gridfile tri/hex save adapter ported to rust/earthmesh_cli",
         "mask_postproc finalization pipeline adapter ported to rust/earthmesh_cli",
-        "mask_postproc final gridfile NetCDF writer orchestration ported to rust/earthmesh_cli"
+        "mask_postproc final gridfile NetCDF writer orchestration ported to rust/earthmesh_cli",
+        "mask_postproc domain source gridfile and contain reader orchestration ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O"

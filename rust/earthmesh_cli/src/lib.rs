@@ -42,6 +42,14 @@ pub struct MaskPostprocDomainIoPlan {
     pub obcv2_output: Option<PathBuf>,
 }
 
+/// NetCDF inputs loaded for domain `mask_postproc_Earth/Lnd/Ocn` orchestration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocDomainInputs {
+    pub layout: MaskPostprocLayout,
+    pub contain: ContainMesh,
+    pub is_in_domain_ustr: Vec<i32>,
+}
+
 /// Restart action selected by the top-level `mkgrd.F90` mask-restart branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskRestartAction {
@@ -1173,6 +1181,24 @@ pub fn write_mask_postproc_final_gridfile(
         &plan.mode_grid,
     )?;
     write_unstructured_mesh_netcdf(&plan.result_gridfile, &mesh)
+}
+
+/// Load the two NetCDF inputs common to `mask_postproc_Earth`,
+/// `mask_postproc_Lnd`, and `mask_postproc_Ocn`: the source unstructured
+/// gridfile and the contain-domain mask table.
+pub fn read_mask_postproc_domain_inputs(
+    plan: &MaskPostprocDomainIoPlan,
+) -> io::Result<MaskPostprocDomainInputs> {
+    let source_mesh = read_unstructured_mesh_netcdf(&plan.source_gridfile)?;
+    let layout = mask_postproc_layout_from_unstructured_mesh(&source_mesh, &plan.mode_grid)?;
+    let contain = read_contain_netcdf(&plan.contain_domain)?;
+    let is_in_domain_ustr = contain.is_in_area_ustr.clone();
+
+    Ok(MaskPostprocDomainInputs {
+        layout,
+        contain,
+        is_in_domain_ustr,
+    })
 }
 
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.

@@ -549,3 +549,7 @@ Added `finalize_mask_postproc_layout_to_unstructured_mesh`, a tested composition
 ### 2026-06-12: mask_postproc final gridfile writer orchestration ported
 
 Added `write_mask_postproc_final_gridfile`, a tested orchestration helper that uses `MaskPostprocDomainIoPlan.result_gridfile`, the finalization pipeline, and the legacy unstructured-grid NetCDF writer to persist a postprocessed domain gridfile. This is the first Rust CLI layer that writes the final `mask_postproc_*` result path from a prepared layout and completed `IsInDmArea_ustr`; the remaining work is to construct that prepared layout and domain mask directly from the full Earth/Lnd/Ocn/Atmos workflows.
+
+### 2026-06-12: mask_postproc domain input reader orchestration ported
+
+Added `read_mask_postproc_domain_inputs`, a tested Rust CLI helper that loads the source unstructured gridfile and contain-domain NetCDF selected by `MaskPostprocDomainIoPlan`, converts the gridfile into `MaskPostprocLayout`, and carries forward the initial `IsInDmArea_ustr` mask. This covers the common read side of the Earth/Lnd/Ocn domain branches; the remaining orchestration work is applying branch-specific domain edits, patchtype generation, ocean boundary renewal, and final writer calls end-to-end.
