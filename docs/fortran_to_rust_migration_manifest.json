@@ -280,11 +280,12 @@
       "parity_gate": "Atmosphere, Earth, land, ocean, MPAS, narrow-waterway, and final mask fixtures preserve role masks and adapter-facing classifications.",
       "notes": "Must preserve the newer v3 requirement that every grid cell has an explicit mask and land/ocean roles remain distinguishable.",
       "completed_rust_surfaces": [
-        "extract_unique_vertices and sort_and_reindex helpers ported to rust/earthmesh_mesh"
+        "extract_unique_vertices and sort_and_reindex helpers ported to rust/earthmesh_mesh",
+        "Data_Renew helper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O",
-        "boundary, isolated-ocean, narrow-waterway, Data_Renew/Data_Finial helpers"
+        "boundary, isolated-ocean, narrow-waterway, and Data_Finial helpers"
       ]
     },
     {

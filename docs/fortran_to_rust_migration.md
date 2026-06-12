@@ -465,3 +465,7 @@ Added `rust/earthmesh_cli::plan_mkgrd_mask_restart_namelist` with a focused fixt
 ### 2026-06-12: mask_postproc vertex reindex helpers ported
 
 Extended `rust/earthmesh_mesh` with tested ports of `MOD_mask_postproc.F90:extract_unique_vertices` and `sort_and_reindex`. The Rust helpers preserve the legacy one-based placeholder vertex `1`, scan center-neighbor rows from id `2`, retain first-seen unique-vertex ordering before sorting, and build the old-vertex-id to compact new-id mapping used before final Earth/ocean mask-postprocess output writes. Full `mask_postproc` execution, NetCDF I/O, boundary renewal, and data-finalization orchestration remain pending.
+
+### 2026-06-12: mask_postproc `Data_Renew` helper ported
+
+Extended `rust/earthmesh_mesh` with `renew_mask_postproc_data_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:Data_Renew`. The helper compacts active centers according to `IsInDmArea_ustr`, rebuilds center-to-vertex and vertex-to-center counts/tables for `tri` and `hex` width conventions, preserves the one-based placeholder row, computes `ustr_points_next`/`ustr_bounds_next`, and intentionally writes original source center ids into vertex adjacency as the Fortran comment requires. `Data_Finial`, boundary repair, and full mask_postproc NetCDF orchestration remain pending.
