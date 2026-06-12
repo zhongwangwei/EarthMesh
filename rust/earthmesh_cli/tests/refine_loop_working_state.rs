@@ -359,3 +359,96 @@ fn working_state_applies_onedivide_two_into_child_geometry() {
         [2, 4, 7]
     );
 }
+
+#[test]
+fn working_state_looks_up_child_pair_from_current_sjx_child() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 2],
+        w_points: vec![point(0.0, 0.0); 3],
+        m_to_w: vec![[1, 2, 3], [1, 2, 3]],
+        w_to_m: vec![vec![1], vec![1, 2], vec![2]],
+        n_w_to_m: vec![1, 2, 1],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_mp = vec![0, 2, 7];
+    state.sjx_child = vec![[0, 0], [4, 5], [6, 7]];
+    state.ngrmw_new = vec![
+        vec![0, 0, 0, 0, 10, 20, 30, 11],
+        vec![0, 0, 0, 0, 11, 21, 31, 12],
+        vec![0, 0, 0, 0, 12, 22, 32, 40],
+        vec![0, 0, 0, 0, 0, 0, 0, 0],
+    ];
+
+    let report = state
+        .lookup_m1w1_to_m11w11(1, 2)
+        .expect("lookup child pair through state");
+
+    assert_eq!(report.parent_pair, (1, 2));
+    assert_eq!(report.child_pair, Some((4, 7)));
+}
+
+#[test]
+fn working_state_applies_weak_concav_pair_special_into_lop_workspace() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 12],
+        w_points: vec![point(0.0, 0.0); 12],
+        m_to_w: vec![[1, 2, 3]; 12],
+        w_to_m: vec![vec![1]; 12],
+        n_w_to_m: vec![1; 12],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_mp = vec![0, 12, 12];
+    state.triangle_neighbors = vec![vec![1, 1, 1]; 13];
+    state.ngrmw = vec![vec![0; 13]; 4];
+    state.mrl_new = vec![0; 13];
+    state.ref_sjx = vec![0; 13];
+    for triangle in 1..=12 {
+        state.mrl_new[triangle] = 1;
+        state.ngrmw[1][triangle] = triangle * 10;
+        state.ngrmw[2][triangle] = triangle * 10 + 1;
+        state.ngrmw[3][triangle] = triangle * 10 + 2;
+    }
+    state.triangle_neighbors[2] = vec![4, 5, 6];
+    state.mrl_new[4] = 4;
+    state.triangle_neighbors[5] = vec![7, 8, 4];
+    state.ngrmw[1][3] = 100;
+    state.ngrmw[2][3] = 101;
+    state.ngrmw[3][3] = 102;
+    state.ngrmw[1][7] = 100;
+    state.ngrmw[2][7] = 200;
+    state.ngrmw[3][7] = 201;
+    state.ngrmw[1][8] = 300;
+    state.ngrmw[2][8] = 301;
+    state.ngrmw[3][8] = 302;
+    state.triangle_neighbors[3] = vec![9, 10, 11];
+    state.mrl_new[9] = 4;
+    state.triangle_neighbors[10] = vec![11, 12, 9];
+    state.ngrmw[1][2] = 500;
+    state.ngrmw[2][2] = 501;
+    state.ngrmw[3][2] = 502;
+    state.ngrmw[1][11] = 500;
+    state.ngrmw[2][11] = 600;
+    state.ngrmw[3][11] = 601;
+    state.ngrmw[1][12] = 700;
+    state.ngrmw[2][12] = 701;
+    state.ngrmw[3][12] = 702;
+    state.weak_concav_pair = vec![[0, 0], [2, 0], [3, 0]];
+    state.weak_concav_segment = vec![vec![0; 2]; 5];
+
+    let report = state
+        .apply_weak_concav_pair_special(2, 4)
+        .expect("apply weak-concavity special state update");
+
+    assert_eq!(state.weak_concav_pair[1], [2, 5]);
+    assert_eq!(state.weak_concav_pair[2], [3, 10]);
+    assert_eq!(state.ref_sjx[5], 1);
+    assert_eq!(state.ref_sjx[10], 1);
+    assert_eq!(state.weak_concav_segment[3][0], 7);
+    assert_eq!(state.weak_concav_segment[4][0], 11);
+    assert_eq!(state.mrl_new[8], 4);
+    assert_eq!(state.mrl_new[12], 4);
+    assert_eq!(report.updated_pairs, vec![[2, 5], [3, 10]]);
+    assert_eq!(report.marked_ref_sjx_triangles, vec![5, 10]);
+}

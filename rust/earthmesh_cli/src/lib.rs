@@ -386,6 +386,8 @@ pub struct RefineLoopWorkingState {
     pub segments: Vec<Vec<usize>>,
     pub n_segments: Vec<usize>,
     pub sjx_child: Vec<[usize; 2]>,
+    pub weak_concav_pair: Vec<[usize; 2]>,
+    pub weak_concav_segment: Vec<Vec<usize>>,
     pub bdy_refine: Vec<usize>,
     pub bdy_refine_tran: Vec<usize>,
 }
@@ -1357,6 +1359,8 @@ impl RefineLoopWorkingState {
             segments: Vec::new(),
             n_segments: Vec::new(),
             sjx_child: vec![[0, 0]; nma + 1],
+            weak_concav_pair: Vec::new(),
+            weak_concav_segment: Vec::new(),
             bdy_refine: Vec::new(),
             bdy_refine_tran: Vec::new(),
         }
@@ -1431,6 +1435,54 @@ impl RefineLoopWorkingState {
             &mut self.mp_new,
             &mut self.wp_new,
             &mut self.ngrmw_new,
+        )
+    }
+
+    /// Look up the child triangle pair corresponding to a parent triangle/cell
+    /// pair using the state's current `sjx_child` and renewed connectivity.
+    pub fn lookup_m1w1_to_m11w11(&self, m1: usize, w1: usize) -> io::Result<M1W1LookupReport> {
+        let max_triangle = self.num_mp.get(self.iter).copied().unwrap_or_else(|| {
+            self.ngrmw_new
+                .get(1)
+                .map_or(0, |row| row.len().saturating_sub(1))
+        });
+        lookup_m1w1_to_m11w11_fortran_indexed(
+            m1,
+            w1,
+            &self.sjx_child,
+            &self.ngrmw_new,
+            max_triangle,
+        )
+    }
+
+    /// Apply migrated `weak_concav_pair_special` to the state's weak-concavity
+    /// pair and temporary segment workspace.
+    pub fn apply_weak_concav_pair_special(
+        &mut self,
+        num_weak_concav_pair: usize,
+        num_ref_weak_concav: usize,
+    ) -> io::Result<WeakConcavPairSpecialReport> {
+        let max_triangle = self
+            .iter
+            .checked_sub(1)
+            .and_then(|idx| self.num_mp.get(idx))
+            .copied()
+            .filter(|&value| value > 0)
+            .unwrap_or_else(|| {
+                self.ngrmw
+                    .get(1)
+                    .map_or(0, |row| row.len().saturating_sub(1))
+            });
+        apply_weak_concav_pair_special_fortran_indexed(
+            num_weak_concav_pair,
+            num_ref_weak_concav,
+            max_triangle,
+            &self.triangle_neighbors,
+            &self.ngrmw,
+            &mut self.mrl_new,
+            &mut self.ref_sjx,
+            &mut self.weak_concav_pair,
+            &mut self.weak_concav_segment,
         )
     }
 
