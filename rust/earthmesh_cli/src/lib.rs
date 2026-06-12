@@ -634,6 +634,22 @@ pub struct GetRefLandThresholdWriteReport {
     pub ref_colnum: usize,
 }
 
+/// Evidence report from writing `MOD_GetRef.F90:GetRef_Ocn` threshold output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetRefOceanThresholdWriteReport {
+    pub output: PathBuf,
+    pub sjx_points: usize,
+    pub ref_colnum: usize,
+}
+
+/// Evidence report from writing `MOD_GetRef.F90:GetRef_Atmos` threshold output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetRefAtmosThresholdWriteReport {
+    pub output: PathBuf,
+    pub sjx_points: usize,
+    pub ref_colnum: usize,
+}
+
 /// Evidence report from writing `MOD_grid_preprocess.F90:Springjustment_global`
 /// persistence side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3492,6 +3508,287 @@ pub fn calculate_getref_atmos_threshold_report_fortran_indexed(
         onelayer_reports,
         last_p_num,
     })
+}
+
+/// Write the `GetRef_Ocn` calculated-threshold NetCDF report using the legacy
+/// `threshold_calculate_ocean_NXP####_##.nc4` schema.
+pub fn write_getref_ocean_threshold_netcdf(
+    output: impl AsRef<Path>,
+    report: &GetRefOceanThresholdReport,
+) -> io::Result<GetRefOceanThresholdWriteReport> {
+    validate_getref_ocean_threshold_report(report)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let sjx_points = report.ref_th.len() - 1;
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("sjx_points", sjx_points)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("ref_colnum", report.ref_colnum)
+        .map_err(netcdf_to_io_error)?;
+
+    let mut col_cursor = 0usize;
+    if let Some(values) = report.sea_ratio.as_ref() {
+        require_getref_column_name_at(&report.column_names, col_cursor, "sea_ratio")?;
+        write_f64_1d(
+            &mut file,
+            "sea_ratio",
+            "sjx_points",
+            &skip_fortran_f64_placeholder(values),
+        )?;
+        col_cursor += 1;
+    }
+    write_getref_onelayer_value_columns(
+        &mut file,
+        &report.column_names,
+        &mut col_cursor,
+        &report.onelayer_reports,
+    )?;
+    validate_getref_written_column_count(col_cursor, report.ref_colnum)?;
+    if let Some(values) = report.last_p_num.as_ref() {
+        write_i32_1d(
+            &mut file,
+            "p_num",
+            "sjx_points",
+            &skip_fortran_i32_placeholder(values),
+        )?;
+    }
+    write_getref_ref_th_matrix(&mut file, "ref_th_Ocn", &report.ref_th, report.ref_colnum)?;
+
+    Ok(GetRefOceanThresholdWriteReport {
+        output: output.to_path_buf(),
+        sjx_points,
+        ref_colnum: report.ref_colnum,
+    })
+}
+
+/// Write the `GetRef_Atmos` calculated-threshold NetCDF report using the legacy
+/// `threshold_calculate_atmos_NXP####_##.nc4` schema.
+pub fn write_getref_atmos_threshold_netcdf(
+    output: impl AsRef<Path>,
+    report: &GetRefAtmosThresholdReport,
+) -> io::Result<GetRefAtmosThresholdWriteReport> {
+    validate_getref_atmos_threshold_report(report)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let sjx_points = report.ref_th.len() - 1;
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("sjx_points", sjx_points)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("ref_colnum", report.ref_colnum)
+        .map_err(netcdf_to_io_error)?;
+
+    let mut col_cursor = 0usize;
+    write_getref_onelayer_value_columns(
+        &mut file,
+        &report.column_names,
+        &mut col_cursor,
+        &report.onelayer_reports,
+    )?;
+    validate_getref_written_column_count(col_cursor, report.ref_colnum)?;
+    if let Some(values) = report.last_p_num.as_ref() {
+        write_i32_1d(
+            &mut file,
+            "p_num",
+            "sjx_points",
+            &skip_fortran_i32_placeholder(values),
+        )?;
+    }
+    write_getref_ref_th_matrix(&mut file, "ref_th_Atmos", &report.ref_th, report.ref_colnum)?;
+
+    Ok(GetRefAtmosThresholdWriteReport {
+        output: output.to_path_buf(),
+        sjx_points,
+        ref_colnum: report.ref_colnum,
+    })
+}
+
+fn validate_getref_ocean_threshold_report(report: &GetRefOceanThresholdReport) -> io::Result<()> {
+    validate_getref_common_threshold_shape(
+        "ref_th_Ocn",
+        report.ref_colnum,
+        &report.column_names,
+        &report.ref_th,
+    )?;
+    let sjx_points = report.ref_th.len() - 1;
+    validate_optional_fortran_f64_len("sea_ratio", report.sea_ratio.as_deref(), sjx_points)?;
+    validate_optional_fortran_i32_len("last_p_num", report.last_p_num.as_deref(), sjx_points)?;
+    validate_getref_onelayer_reports(&report.onelayer_reports, sjx_points)
+}
+
+fn validate_getref_atmos_threshold_report(report: &GetRefAtmosThresholdReport) -> io::Result<()> {
+    validate_getref_common_threshold_shape(
+        "ref_th_Atmos",
+        report.ref_colnum,
+        &report.column_names,
+        &report.ref_th,
+    )?;
+    let sjx_points = report.ref_th.len() - 1;
+    validate_optional_fortran_i32_len("last_p_num", report.last_p_num.as_deref(), sjx_points)?;
+    validate_getref_onelayer_reports(&report.onelayer_reports, sjx_points)
+}
+
+fn validate_getref_common_threshold_shape(
+    matrix_name: &str,
+    ref_colnum: usize,
+    column_names: &[String],
+    ref_th: &[Vec<i32>],
+) -> io::Result<()> {
+    if ref_colnum == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{matrix_name} writer requires at least one threshold column"),
+        ));
+    }
+    if column_names.len() != ref_colnum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "column_names length {} must equal ref_colnum {ref_colnum}",
+                column_names.len()
+            ),
+        ));
+    }
+    let _ = ref_th.len().checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{matrix_name} must include a Fortran placeholder row"),
+        )
+    })?;
+    for (row_index, row) in ref_th.iter().enumerate() {
+        if row.len() <= ref_colnum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{matrix_name} row {row_index} width {} must cover ref_colnum {ref_colnum} plus placeholder column",
+                    row.len()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_getref_onelayer_reports(
+    reports: &[GetRefMeanStd2DReport],
+    sjx_points: usize,
+) -> io::Result<()> {
+    for (index, layer_report) in reports.iter().enumerate() {
+        validate_fortran_f64_len(
+            &format!("onelayer_reports[{index}].mean"),
+            &layer_report.mean,
+            sjx_points,
+        )?;
+        validate_optional_fortran_f64_len(
+            &format!("onelayer_reports[{index}].stddev"),
+            layer_report.stddev.as_deref(),
+            sjx_points,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_getref_onelayer_value_columns(
+    file: &mut netcdf::FileMut,
+    column_names: &[String],
+    col_cursor: &mut usize,
+    reports: &[GetRefMeanStd2DReport],
+) -> io::Result<()> {
+    for layer_report in reports {
+        for _ in 0..layer_report.ref_colnum {
+            let name = column_names.get(*col_cursor).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "column_names ended before one-layer report columns",
+                )
+            })?;
+            if name.ends_with("_m") {
+                write_f64_1d(
+                    file,
+                    name,
+                    "sjx_points",
+                    &skip_fortran_f64_placeholder(&layer_report.mean),
+                )?;
+            } else if name.ends_with("_s") {
+                let stddev = layer_report.stddev.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("one-layer column {name} requires stddev values"),
+                    )
+                })?;
+                write_f64_1d(
+                    file,
+                    name,
+                    "sjx_points",
+                    &skip_fortran_f64_placeholder(stddev),
+                )?;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("one-layer threshold column {name} must end with _m or _s"),
+                ));
+            }
+            *col_cursor += 1;
+        }
+    }
+    Ok(())
+}
+
+fn require_getref_column_name_at(
+    column_names: &[String],
+    zero_based_index: usize,
+    expected: &str,
+) -> io::Result<()> {
+    match column_names.get(zero_based_index) {
+        Some(name) if name == expected => Ok(()),
+        Some(name) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "expected column {expected} at position {}, got {name}",
+                zero_based_index + 1
+            ),
+        )),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "missing column {expected} at position {}",
+                zero_based_index + 1
+            ),
+        )),
+    }
+}
+
+fn validate_getref_written_column_count(written: usize, ref_colnum: usize) -> io::Result<()> {
+    if written != ref_colnum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("wrote {written} threshold value columns but ref_colnum is {ref_colnum}"),
+        ));
+    }
+    Ok(())
+}
+
+fn write_getref_ref_th_matrix(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    ref_th: &[Vec<i32>],
+    ref_colnum: usize,
+) -> io::Result<()> {
+    let sjx_points = ref_th.len() - 1;
+    let mut values = Vec::with_capacity(sjx_points * ref_colnum);
+    for row in ref_th.iter().take(sjx_points + 1).skip(1) {
+        values.extend_from_slice(&row[1..=ref_colnum]);
+    }
+    let mut var = file
+        .add_variable::<i32>(name, &["sjx_points", "ref_colnum"])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&values, (.., ..))
+        .map_err(netcdf_to_io_error)
 }
 
 /// Build `seaorland` from `IsInDmArea_grid` and `landtypes_global`.
