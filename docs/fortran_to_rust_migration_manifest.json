@@ -67,7 +67,17 @@
       "migration_phase": "phase_5",
       "strategy": "replace_with_v3_pipeline",
       "parity_gate": "Rust CLI can run the same small smoke, Greater Bay Area, and China/MERIT workflows and reproduce required grid/mask/adapter outputs within documented tolerances.",
-      "notes": "This is the final orchestration cutover after lower-level kernels have parity gates."
+      "notes": "This is the final orchestration cutover after lower-level kernels have parity gates.",
+      "port_status": "started",
+      "completed_rust_surfaces": [
+        "grid_xyz2lonlat scalar and batch coordinate conversion moved to rust/earthmesh_mesh"
+      ],
+      "remaining_rust_surfaces": [
+        "read_nl orchestration and namelist compatibility",
+        "mode4mesh_make and mask creation orchestration",
+        "gridinit/voronoi/pcvt/gridfile_write pipeline",
+        "Rust CLI replacement for mkgrd.x end-to-end workflows"
+      ]
     },
     {
       "path": "src/MOD_Area_judge.F90",

@@ -1,0 +1,13 @@
+[package]
+name = "earthmesh_mesh"
+version = "0.1.0"
+edition = "2021"
+description = "Rust mesh kernels migrated from EarthMesh Fortran"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "earthmesh_mesh"
+path = "src/lib.rs"
+
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
