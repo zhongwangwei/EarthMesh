@@ -1839,6 +1839,337 @@ pub struct AreaJudgeNonRestartReport {
     pub calculated_refine: Option<AreaJudgeAreaSourceReport>,
 }
 
+/// Threshold-data reader configuration for the calculated-refine branch of `Area_judge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaJudgeThresholdReadConfig<'a> {
+    pub threshold_dir: &'a Path,
+    pub mesh_type: &'a str,
+    pub refine_onelayer_lnd: &'a [bool],
+    pub refine_twolayer_lnd: &'a [bool],
+    pub refine_onelayer_ocn: &'a [bool],
+    pub refine_onelayer_atmos: &'a [bool],
+}
+
+/// One selected 2-D threshold dataset, stored with local Fortran one-based indices.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaJudgeThreshold2D {
+    pub name: String,
+    pub values: Vec<Vec<f64>>,
+}
+
+/// One selected two-layer threshold dataset, stored as layer x local Fortran one-based grid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaJudgeThreshold2Layer {
+    pub name: String,
+    pub layers: Vec<Vec<Vec<f64>>>,
+}
+
+/// Threshold inputs sliced to the calculated-refine source bounds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaJudgeThresholdInputsReport {
+    pub bounds: AreaJudgeSourceBounds,
+    pub nlons_select: usize,
+    pub nlats_select: usize,
+    pub landtypes: Vec<Vec<i32>>,
+    pub land_onelayer: Vec<Option<AreaJudgeThreshold2D>>,
+    pub land_twolayer: Vec<Option<AreaJudgeThreshold2Layer>>,
+    pub ocean_onelayer: Vec<Option<AreaJudgeThreshold2D>>,
+    pub atmos_onelayer: Vec<Option<AreaJudgeThreshold2D>>,
+}
+
+const AREA_JUDGE_LAND_ONELAYER_NAMES: [&str; 2] = ["lai", "slope_avg"];
+const AREA_JUDGE_LAND_TWOLAYER_NAMES: [&str; 5] = ["k_s", "k_solids", "tkdry", "tksatf", "tksatu"];
+const AREA_JUDGE_OCEAN_ONELAYER_NAMES: [&str; 4] = ["sst", "ssh", "eke", "sea_slope"];
+const AREA_JUDGE_ATMOS_ONELAYER_NAMES: [&str; 1] = ["typhoon"];
+
+fn area_judge_refine_flag_pair_enabled(flags: &[bool], pair_index: usize) -> bool {
+    flags.get(2 * pair_index).copied().unwrap_or(false)
+        || flags.get(2 * pair_index + 1).copied().unwrap_or(false)
+}
+
+fn area_judge_threshold_path(threshold_dir: &Path, name: &str) -> PathBuf {
+    threshold_dir.join(format!("{name}.nc"))
+}
+
+fn read_area_judge_threshold_2d_window_fortran_indexed(
+    threshold_dir: &Path,
+    name: &str,
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeThreshold2D> {
+    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
+    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
+    let file =
+        netcdf::open(area_judge_threshold_path(threshold_dir, name)).map_err(netcdf_to_io_error)?;
+    let variable = file.variable(name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {name} variable"),
+        )
+    })?;
+    let start_lon = bounds.minlon_source.checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "minlon_source must be one-based",
+        )
+    })?;
+    let start_lat = bounds.maxlat_source.checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "maxlat_source must be one-based",
+        )
+    })?;
+    let values = variable
+        .get_values::<f64, _>((
+            start_lon..start_lon + nlons_select,
+            start_lat..start_lat + nlats_select,
+        ))
+        .map_err(netcdf_to_io_error)?;
+    let expected = nlons_select * nlats_select;
+    require_len(name, values.len(), expected)?;
+
+    let mut selected = vec![vec![0.0; nlats_select + 1]; nlons_select + 1];
+    for lon_offset in 0..nlons_select {
+        for lat_offset in 0..nlats_select {
+            selected[lon_offset + 1][lat_offset + 1] =
+                values[lon_offset * nlats_select + lat_offset];
+        }
+    }
+    Ok(AreaJudgeThreshold2D {
+        name: name.to_string(),
+        values: selected,
+    })
+}
+
+fn read_area_judge_threshold_2layer_window_fortran_indexed(
+    threshold_dir: &Path,
+    name: &str,
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeThreshold2Layer> {
+    let first = read_area_judge_threshold_2d_variable_window_fortran_indexed(
+        threshold_dir,
+        name,
+        &format!("{name}_l1"),
+        bounds,
+    )?;
+    let second = read_area_judge_threshold_2d_variable_window_fortran_indexed(
+        threshold_dir,
+        name,
+        &format!("{name}_l2"),
+        bounds,
+    )?;
+    Ok(AreaJudgeThreshold2Layer {
+        name: name.to_string(),
+        layers: vec![first, second],
+    })
+}
+
+fn read_area_judge_threshold_2d_variable_window_fortran_indexed(
+    threshold_dir: &Path,
+    file_stem: &str,
+    var_name: &str,
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<Vec<Vec<f64>>> {
+    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
+    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
+    let file = netcdf::open(area_judge_threshold_path(threshold_dir, file_stem))
+        .map_err(netcdf_to_io_error)?;
+    let variable = file.variable(var_name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {var_name} variable"),
+        )
+    })?;
+    let start_lon = bounds.minlon_source.checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "minlon_source must be one-based",
+        )
+    })?;
+    let start_lat = bounds.maxlat_source.checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "maxlat_source must be one-based",
+        )
+    })?;
+    let values = variable
+        .get_values::<f64, _>((
+            start_lon..start_lon + nlons_select,
+            start_lat..start_lat + nlats_select,
+        ))
+        .map_err(netcdf_to_io_error)?;
+    require_len(var_name, values.len(), nlons_select * nlats_select)?;
+
+    let mut selected = vec![vec![0.0; nlats_select + 1]; nlons_select + 1];
+    for lon_offset in 0..nlons_select {
+        for lat_offset in 0..nlats_select {
+            selected[lon_offset + 1][lat_offset + 1] =
+                values[lon_offset * nlats_select + lat_offset];
+        }
+    }
+    Ok(selected)
+}
+
+fn read_area_judge_threshold_2d_group_fortran_indexed(
+    threshold_dir: &Path,
+    names: &[&str],
+    flags: &[bool],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<Vec<Option<AreaJudgeThreshold2D>>> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| {
+            if area_judge_refine_flag_pair_enabled(flags, idx) {
+                read_area_judge_threshold_2d_window_fortran_indexed(threshold_dir, name, bounds)
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .collect()
+}
+
+fn read_area_judge_threshold_2layer_group_fortran_indexed(
+    threshold_dir: &Path,
+    names: &[&str],
+    flags: &[bool],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<Vec<Option<AreaJudgeThreshold2Layer>>> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| {
+            if area_judge_refine_flag_pair_enabled(flags, idx) {
+                read_area_judge_threshold_2layer_window_fortran_indexed(threshold_dir, name, bounds)
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .collect()
+}
+
+fn crop_area_judge_landtypes_fortran_indexed(
+    landtypes_global: &[Vec<i32>],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<Vec<Vec<i32>>> {
+    grid_covers_area_judge_bounds_fortran_indexed("landtypes_global", landtypes_global, bounds)?;
+    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
+    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
+    let mut landtypes = vec![vec![0; nlats_select + 1]; nlons_select + 1];
+    for lon_offset in 0..nlons_select {
+        for lat_offset in 0..nlats_select {
+            landtypes[lon_offset + 1][lat_offset + 1] = landtypes_global
+                [bounds.minlon_source + lon_offset][bounds.maxlat_source + lat_offset];
+        }
+    }
+    Ok(landtypes)
+}
+
+/// Read and crop threshold inputs after calculated `Area_judge` refine bounds are known.
+pub fn read_area_judge_threshold_inputs_fortran_indexed(
+    config: AreaJudgeThresholdReadConfig<'_>,
+    landtypes_global: &[Vec<i32>],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeThresholdInputsReport> {
+    if bounds.maxlon_source < bounds.minlon_source || bounds.minlat_source < bounds.maxlat_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "invalid Area_judge threshold bounds lon {}..{} lat {}..{}",
+                bounds.minlon_source,
+                bounds.maxlon_source,
+                bounds.maxlat_source,
+                bounds.minlat_source
+            ),
+        ));
+    }
+    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
+    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
+    let landtypes = crop_area_judge_landtypes_fortran_indexed(landtypes_global, bounds)?;
+
+    let mut land_onelayer = Vec::new();
+    let mut land_twolayer = Vec::new();
+    let mut ocean_onelayer = Vec::new();
+    let mut atmos_onelayer = Vec::new();
+
+    match config.mesh_type {
+        "landmesh" => {
+            land_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_LAND_ONELAYER_NAMES,
+                config.refine_onelayer_lnd,
+                bounds,
+            )?;
+            land_twolayer = read_area_judge_threshold_2layer_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_LAND_TWOLAYER_NAMES,
+                config.refine_twolayer_lnd,
+                bounds,
+            )?;
+        }
+        "oceanmesh" => {
+            ocean_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_OCEAN_ONELAYER_NAMES,
+                config.refine_onelayer_ocn,
+                bounds,
+            )?;
+        }
+        "atmosmesh" => {
+            atmos_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_ATMOS_ONELAYER_NAMES,
+                config.refine_onelayer_atmos,
+                bounds,
+            )?;
+        }
+        "LOCmesh" => {
+            land_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_LAND_ONELAYER_NAMES,
+                config.refine_onelayer_lnd,
+                bounds,
+            )?;
+            land_twolayer = read_area_judge_threshold_2layer_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_LAND_TWOLAYER_NAMES,
+                config.refine_twolayer_lnd,
+                bounds,
+            )?;
+            ocean_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_OCEAN_ONELAYER_NAMES,
+                config.refine_onelayer_ocn,
+                bounds,
+            )?;
+            atmos_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+                config.threshold_dir,
+                &AREA_JUDGE_ATMOS_ONELAYER_NAMES,
+                config.refine_onelayer_atmos,
+                bounds,
+            )?;
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported Area_judge threshold mesh_type {other}"),
+            ));
+        }
+    }
+
+    Ok(AreaJudgeThresholdInputsReport {
+        bounds,
+        nlons_select,
+        nlats_select,
+        landtypes,
+        land_onelayer,
+        land_twolayer,
+        ocean_onelayer,
+        atmos_onelayer,
+    })
+}
+
 /// Build `seaorland` from `IsInDmArea_grid` and `landtypes_global`.
 pub fn build_area_judge_seaorland_fortran_indexed(
     is_in_domain: &[Vec<i32>],
