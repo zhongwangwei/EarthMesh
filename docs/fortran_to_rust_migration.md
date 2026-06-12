@@ -257,3 +257,7 @@ Extended `rust/earthmesh_mesh` with `spring_global_iteration_fortran_indexed`, a
 ### 2026-06-12: `MOD_grid_preprocess.F90` global spring multi-iteration wrapper ported
 
 Extended `rust/earthmesh_mesh` with `spring_dynamics_global_fortran_indexed`, a tested Rust wrapper for the multi-iteration core of `spring_dynamics_global`. It repeatedly applies the migrated single-iteration edge-distance, edge-correction, direction-sign, cell-displacement, and spherical-renormalization sequence while retaining the Fortran-style periodic `Max DS` diagnostic snapshots without storing every full-mesh iteration. Remaining spring work is the regional move-mask smoother plus `Springjustment_global`/`Springjustment_regional_step` high-level adapter wiring.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` regional spring move-mask smoother ported
+
+Extended `rust/earthmesh_mesh` with `spring_dynamics_regional_fortran_indexed`, a tested Rust port of the core `spring_dynamics_regionalv2` move-mask smoother. It builds the calculation mask from movable cells plus their neighbor halo, updates only movable cells by previous-iteration neighbor averaging, renormalizes to the requested Earth radius, and records Fortran-style periodic `Max DS` diagnostics. Remaining spring work is now the high-level `Springjustment_global`/`Springjustment_regional_step` adapter wiring and NetCDF/file workflow integration.

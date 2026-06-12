@@ -3,9 +3,10 @@ use earthmesh_mesh::{
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
     set_weights_on_edge_fortran_indexed, spring_apply_cell_displacements_fortran_indexed,
-    spring_dynamics_global_fortran_indexed, spring_edge_adjustment_fortran,
-    spring_edge_directions_fortran_indexed, spring_global_iteration_fortran_indexed,
-    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
+    spring_dynamics_global_fortran_indexed, spring_dynamics_regional_fortran_indexed,
+    spring_edge_adjustment_fortran, spring_edge_directions_fortran_indexed,
+    spring_global_iteration_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
+    CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -403,6 +404,60 @@ fn spring_dynamics_global_wrapper_repeats_single_iteration_updates() {
                 ))
             })
             .fold(0.0, f64::max),
+        1.0e-15,
+    );
+}
+
+#[test]
+fn spring_dynamics_regional_wrapper_moves_only_masked_cells_by_neighbor_average() {
+    let cell_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 1.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 1.0),
+    ];
+    let n_edges_on_cell = vec![0, 0, 2, 0, 0];
+    let cells_on_cell = vec![vec![], vec![], vec![3, 4], vec![], vec![]];
+    let move_mask = vec![false, false, true, false, false];
+
+    let output = spring_dynamics_regional_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &cells_on_cell,
+        &move_mask,
+        1,
+        1.0,
+        10,
+    )
+    .expect("valid regional spring inputs");
+
+    assert_eq!(output.calculated_cells, vec![2, 3, 4]);
+    assert_eq!(output.moved_cells, vec![2]);
+    assert_eq!(output.updated_cell_points[0], cell_points[0]);
+    assert_eq!(output.updated_cell_points[1], cell_points[1]);
+    assert_eq!(output.updated_cell_points[3], cell_points[3]);
+    assert_eq!(output.updated_cell_points[4], cell_points[4]);
+    approx_eq(output.updated_cell_points[2].x, 0.0, 1.0e-15);
+    approx_eq(
+        output.updated_cell_points[2].y,
+        std::f64::consts::FRAC_1_SQRT_2,
+        1.0e-15,
+    );
+    approx_eq(
+        output.updated_cell_points[2].z,
+        std::f64::consts::FRAC_1_SQRT_2,
+        1.0e-15,
+    );
+    assert_eq!(output.diagnostic_max_displacements.len(), 1);
+    assert_eq!(output.diagnostic_max_displacements[0].iteration, 1);
+    approx_eq(
+        output.diagnostic_max_displacements[0].max_displacement,
+        magnitude_for_test(CartesianPoint::new(
+            output.updated_cell_points[2].x - cell_points[2].x,
+            output.updated_cell_points[2].y - cell_points[2].y,
+            output.updated_cell_points[2].z - cell_points[2].z,
+        )),
         1.0e-15,
     );
 }
