@@ -382,6 +382,10 @@ pub struct RefineLoopWorkingState {
     pub ref_sjx: Vec<i32>,
     pub ref_lbx: Vec<i32>,
     pub mrl_new: Vec<i32>,
+    pub triangle_neighbors: Vec<Vec<usize>>,
+    pub segments: Vec<Vec<usize>>,
+    pub n_segments: Vec<usize>,
+    pub sjx_child: Vec<[usize; 2]>,
     pub bdy_refine: Vec<usize>,
     pub bdy_refine_tran: Vec<usize>,
 }
@@ -1349,6 +1353,10 @@ impl RefineLoopWorkingState {
             ref_sjx: vec![0; nma + 1],
             ref_lbx: vec![0; nwa + 1],
             mrl_new: vec![1; nma + 1],
+            triangle_neighbors: Vec::new(),
+            segments: Vec::new(),
+            n_segments: Vec::new(),
+            sjx_child: vec![[0, 0]; nma + 1],
             bdy_refine: Vec::new(),
             bdy_refine_tran: Vec::new(),
         }
@@ -1423,6 +1431,50 @@ impl RefineLoopWorkingState {
             &mut self.mp_new,
             &mut self.wp_new,
             &mut self.ngrmw_new,
+        )
+    }
+
+    /// Apply migrated `ref_sjx_isreverse_judge` to the state's transition
+    /// segment workspace and replace `ref_sjx` with the returned markers.
+    pub fn apply_isreverse_judge(&mut self, set_dis_in: usize) -> io::Result<IsreverseJudgeReport> {
+        let report = apply_isreverse_judge_fortran_indexed(
+            set_dis_in,
+            self.n_segments.len(),
+            &self.triangle_neighbors,
+            &self.mrl_new,
+            &mut self.segments,
+            &self.n_segments,
+        )?;
+        self.ref_sjx = report.ref_sjx.clone();
+        Ok(report)
+    }
+
+    /// Apply migrated `OnedivideTwo` and write transition child geometry plus
+    /// `sjx_child` mapping back into this state.
+    pub fn apply_onedivide_two(&mut self, is_reverse: bool) -> io::Result<OnedivideTwoReport> {
+        if let Some(&old_mp) = self
+            .iter
+            .checked_sub(1)
+            .and_then(|idx| self.num_mp.get(idx))
+        {
+            if self.sjx_child.len() <= old_mp {
+                self.sjx_child.resize(old_mp + 1, [0, 0]);
+            }
+        }
+        apply_onedivide_two_fortran_indexed(
+            self.iter,
+            is_reverse,
+            self.num_vertex,
+            &self.num_mp,
+            &self.num_wp,
+            &self.triangle_neighbors,
+            &self.ngrmw,
+            &self.ref_sjx,
+            &self.mrl_new,
+            &mut self.mp_new,
+            &mut self.wp_new,
+            &mut self.ngrmw_new,
+            &mut self.sjx_child,
         )
     }
 

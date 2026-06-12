@@ -244,3 +244,118 @@ fn working_state_applies_onedivide_four_connection_then_renew() {
         [4, 5, 6]
     );
 }
+
+#[test]
+fn working_state_applies_isreverse_judge_into_markers_and_segments() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 6],
+        w_points: vec![point(0.0, 0.0); 6],
+        m_to_w: vec![[1, 2, 3]; 6],
+        w_to_m: vec![vec![1]; 6],
+        n_w_to_m: vec![1; 6],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.triangle_neighbors = vec![
+        vec![0, 0, 0],
+        vec![0, 0, 0],
+        vec![4, 5, 7],
+        vec![5, 6, 8],
+        vec![2, 5, 9],
+        vec![2, 3, 4],
+        vec![3, 5, 10],
+        vec![2, 11, 12],
+        vec![3, 13, 14],
+        vec![4, 15, 16],
+        vec![6, 17, 18],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+        vec![2, 3, 4],
+    ];
+    state.mrl_new = vec![0, 1, 1, 1, 4, 1, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    state.segments = vec![vec![2, 3, 1], vec![0, 0, 0]];
+    state.n_segments = vec![2, 0];
+
+    let report = state
+        .apply_isreverse_judge(3)
+        .expect("apply reverse one-into-two judge through state");
+
+    assert_eq!(report.marked_triangles, vec![5]);
+    assert_eq!(report.active_segments, vec![0]);
+    assert_eq!(report.rewritten_segments, vec![vec![3, 1, 1]]);
+    assert_eq!(state.ref_sjx[5], 1);
+    assert_eq!(state.ref_sjx.iter().sum::<i32>(), 1);
+    assert_eq!(state.segments[0], vec![3, 1, 1]);
+    assert_eq!(state.segments[1], vec![0, 0, 0]);
+}
+
+#[test]
+fn working_state_applies_onedivide_two_into_child_geometry() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 3],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+            point(6.0, 0.0),
+            point(0.0, 6.0),
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4], [3, 4, 5]],
+        w_to_m: vec![vec![1], vec![2], vec![2, 3], vec![2, 3], vec![3], vec![1]],
+        n_w_to_m: vec![1, 1, 2, 2, 1, 1],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_vertex = 1;
+    state.num_mp = vec![0, 3, 5];
+    state.num_wp = vec![0, 6, 7];
+    state.mp_new.resize(6, point(0.0, 0.0));
+    state.wp_new.resize(8, point(0.0, 0.0));
+    for row in &mut state.ngrmw_new {
+        row.resize(6, 0);
+    }
+    state.triangle_neighbors = vec![
+        vec![0, 0, 0],
+        vec![0, 0, 0],
+        vec![3, 3, 3],
+        vec![2, 2, 2],
+        vec![2, 3, 3],
+        vec![2, 3, 3],
+    ];
+    state.ref_sjx = vec![0, 0, 1, 0, 0, 0];
+    state.mrl_new = vec![0, 1, 1, 4, 1, 1];
+    state.sjx_child = vec![[0, 0]; state.num_mp[state.iter] + 1];
+
+    let report = state
+        .apply_onedivide_two(false)
+        .expect("apply one-into-two transition split through state");
+
+    assert_eq!(report.split_triangles, vec![2]);
+    assert_eq!(report.new_triangle_ids, vec![4, 5]);
+    assert_eq!(report.new_vertex_ids, vec![7]);
+    assert_eq!(state.wp_new[7], point(3.0, 3.0));
+    assert_eq!(state.mp_new[4], point(3.0, 1.0));
+    assert_eq!(state.mp_new[5], point(1.0, 3.0));
+    assert_eq!(state.sjx_child[2], [4, 5]);
+    assert_eq!(
+        [
+            state.ngrmw_new[1][4],
+            state.ngrmw_new[2][4],
+            state.ngrmw_new[3][4]
+        ],
+        [2, 3, 7]
+    );
+    assert_eq!(
+        [
+            state.ngrmw_new[1][5],
+            state.ngrmw_new[2][5],
+            state.ngrmw_new[3][5]
+        ],
+        [2, 4, 7]
+    );
+}
