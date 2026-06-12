@@ -609,3 +609,7 @@ Added `QualityClassMetrics`, `GlobalQualityMesh`, and `write_quality_global_netc
 ### 2026-06-12: Grid_Quality_Check_Global quality adapter composition ported
 
 Added `global_quality_mesh_from_grid_quality` and `write_grid_quality_global_netcdf` in `rust/earthmesh_cli`, wiring the migrated pure `earthmesh_mesh::GridQualityGlobalOutput` into the `quality_save_global` NetCDF writer. The adapter preserves Fortran placeholder triangle rows, compact polygon quality rows, converts boolean less/more angle flags to legacy integer arrays, and omits heptagon/qbx output when no heptagon quality group exists. Remaining `MOD_grid_preprocess.F90` adapter work is now Springjustment persistence plus GetArea/GetEdge NetCDF boundaries.
+
+### 2026-06-12: Springjustment_global persistence adapter ported
+
+Added `write_springjustment_global_persistence` in `rust/earthmesh_cli`, wiring the pure `earthmesh_mesh::SpringjustmentGlobalCoreOutput` to the migrated `distsOnEdge_save` and `cellwidth_save` NetCDF writers. The adapter preserves legacy `result/distsOnEdge_NXP####_##_global.nc4` and optional `result/cellwidth_NXP####_global.nc4` paths, keeps `distsOnEdge` edge coordinates from the pure kernel, and requires pre-spring cell coordinates for the MPAS cellwidth side effect to match the Fortran `wp` argument. Remaining Springjustment work is full NetCDF loading/orchestration for global runs and regional-step persistence wiring.

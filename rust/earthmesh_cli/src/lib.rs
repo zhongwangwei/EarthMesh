@@ -465,6 +465,14 @@ pub struct GlobalQualityWriteReport {
     pub num_qbx: usize,
 }
 
+/// Evidence report from writing `MOD_grid_preprocess.F90:Springjustment_global`
+/// persistence side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpringjustmentGlobalPersistenceReport {
+    pub dists_on_edge: DistsOnEdgeWriteReport,
+    pub cellwidth: Option<CellwidthWriteReport>,
+}
+
 /// Evidence report from writing `MOD_file_preprocess.F90:MPAS_info_Save` graph.info.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MpasGraphInfoWriteReport {
@@ -876,6 +884,62 @@ pub fn write_grid_quality_global_netcdf(
 ) -> io::Result<GlobalQualityWriteReport> {
     let mesh = global_quality_mesh_from_grid_quality(quality);
     write_quality_global_netcdf(output, &mesh)
+}
+
+/// Persist the file side effects produced near the start of
+/// `MOD_grid_preprocess.F90:Springjustment_global`.
+///
+/// The pure mesh kernel owns the calculations. This adapter preserves the
+/// legacy result filenames and writes `distsOnEdge` for every global run, plus
+/// `cellwidth` when the MPAS/MPAS-Simple distance branch produced it.  The
+/// `cell_points_for_cellwidth` argument is intentionally separate because the
+/// Fortran writer receives the pre-spring `wp` coordinates.
+pub fn write_springjustment_global_persistence(
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    cell_points_for_cellwidth: &[LonLatDegrees],
+    output: &earthmesh_mesh::SpringjustmentGlobalCoreOutput,
+) -> io::Result<SpringjustmentGlobalPersistenceReport> {
+    let file_dir = file_dir.as_ref();
+    let result_dir = file_dir.join("result");
+    fs::create_dir_all(&result_dir)?;
+
+    let edge_points = output
+        .edge_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_lonlat_point)
+        .collect::<Vec<_>>();
+    let dists_on_edge = write_dists_on_edge_netcdf(
+        result_dir.join(format!("distsOnEdge_NXP{nxp:04}_{step:02}_global.nc4")),
+        &DistsOnEdgeMesh {
+            edge_points,
+            dists_on_edge: output.dists_on_edge.clone(),
+        },
+    )?;
+
+    let cellwidth = if let Some(cellwidth) = &output.cellwidth {
+        let cell_points = cell_points_for_cellwidth
+            .iter()
+            .copied()
+            .map(lonlat_degrees_to_lonlat_point)
+            .collect::<Vec<_>>();
+        Some(write_cellwidth_netcdf(
+            result_dir.join(format!("cellwidth_NXP{nxp:04}_global.nc4")),
+            &CellwidthMesh {
+                cell_points,
+                cellwidth: cellwidth.clone(),
+            },
+        )?)
+    } else {
+        None
+    };
+
+    Ok(SpringjustmentGlobalPersistenceReport {
+        dists_on_edge,
+        cellwidth,
+    })
 }
 
 /// Read the MPAS edge-reference fields consumed by
@@ -3658,6 +3722,13 @@ fn empty_quality_class(_width: usize) -> QualityClassMetrics {
 
 fn bool_flags_to_i32(flags: &[bool]) -> Vec<i32> {
     flags.iter().map(|flag| i32::from(*flag)).collect()
+}
+
+fn lonlat_degrees_to_lonlat_point(point: LonLatDegrees) -> LonLatPoint {
+    LonLatPoint {
+        lon: point.lon_degrees,
+        lat: point.lat_degrees,
+    }
 }
 
 fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
