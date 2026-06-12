@@ -625,6 +625,15 @@ pub struct GlobalQualityWriteReport {
     pub num_qbx: usize,
 }
 
+/// Evidence report from writing `MOD_GetRef.F90:GetRef_Lnd` threshold output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetRefLandThresholdWriteReport {
+    pub output: PathBuf,
+    pub sjx_points: usize,
+    pub dima: usize,
+    pub ref_colnum: usize,
+}
+
 /// Evidence report from writing `MOD_grid_preprocess.F90:Springjustment_global`
 /// persistence side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2911,6 +2920,330 @@ pub fn calculate_getref_land_threshold_report_fortran_indexed(
         twolayer_reports,
         last_p_num,
     })
+}
+
+/// Write the `GetRef_Lnd` calculated-threshold NetCDF report using the legacy
+/// `threshold_calculate_land_NXP####_##.nc4` schema.
+pub fn write_getref_land_threshold_netcdf(
+    output: impl AsRef<Path>,
+    report: &GetRefLandThresholdReport,
+) -> io::Result<GetRefLandThresholdWriteReport> {
+    validate_getref_land_threshold_report(report)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let sjx_points = report.ref_th_land.len() - 1;
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("sjx_points", sjx_points)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("dima", 2).map_err(netcdf_to_io_error)?;
+    file.add_dimension("ref_colnum", report.ref_colnum)
+        .map_err(netcdf_to_io_error)?;
+
+    let mut col_cursor = 0usize;
+    if let Some(values) = report.n_landtypes.as_ref() {
+        require_getref_column_name(report, col_cursor, "n_landtypes")?;
+        write_i32_1d(
+            &mut file,
+            "n_landtypes",
+            "sjx_points",
+            &skip_fortran_i32_placeholder(values),
+        )?;
+        col_cursor += 1;
+    }
+    if let Some(values) = report.f_mainarea.as_ref() {
+        require_getref_column_name(report, col_cursor, "f_mainarea")?;
+        write_f64_1d(
+            &mut file,
+            "f_mainarea",
+            "sjx_points",
+            &skip_fortran_f64_placeholder(values),
+        )?;
+        col_cursor += 1;
+    }
+
+    for layer_report in &report.onelayer_reports {
+        for _ in 0..layer_report.ref_colnum {
+            let name = report.column_names.get(col_cursor).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "column_names ended before one-layer report columns",
+                )
+            })?;
+            if name.ends_with("_m") {
+                write_f64_1d(
+                    &mut file,
+                    name,
+                    "sjx_points",
+                    &skip_fortran_f64_placeholder(&layer_report.mean),
+                )?;
+            } else if name.ends_with("_s") {
+                let stddev = layer_report.stddev.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("one-layer column {name} requires stddev values"),
+                    )
+                })?;
+                write_f64_1d(
+                    &mut file,
+                    name,
+                    "sjx_points",
+                    &skip_fortran_f64_placeholder(stddev),
+                )?;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("one-layer threshold column {name} must end with _m or _s"),
+                ));
+            }
+            col_cursor += 1;
+        }
+    }
+
+    for layer_report in &report.twolayer_reports {
+        for _ in 0..layer_report.ref_colnum {
+            let name = report.column_names.get(col_cursor).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "column_names ended before two-layer report columns",
+                )
+            })?;
+            if name.ends_with("_m") {
+                write_f64_layer2_rows(&mut file, name, &layer_report.mean)?;
+            } else if name.ends_with("_s") {
+                let stddev = layer_report.stddev.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("two-layer column {name} requires stddev values"),
+                    )
+                })?;
+                write_f64_layer2_rows(&mut file, name, stddev)?;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("two-layer threshold column {name} must end with _m or _s"),
+                ));
+            }
+            col_cursor += 1;
+        }
+    }
+
+    if col_cursor != report.ref_colnum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "wrote {col_cursor} threshold value columns but ref_colnum is {}",
+                report.ref_colnum
+            ),
+        ));
+    }
+
+    if let Some(values) = report.last_p_num.as_ref() {
+        write_i32_1d(
+            &mut file,
+            "p_num",
+            "sjx_points",
+            &skip_fortran_i32_placeholder(values),
+        )?;
+    }
+
+    let mut ref_th_values = Vec::with_capacity(sjx_points * report.ref_colnum);
+    for sjx_index in 1..=sjx_points {
+        ref_th_values.extend_from_slice(&report.ref_th_land[sjx_index][1..=report.ref_colnum]);
+    }
+    let mut ref_th = file
+        .add_variable::<i32>("ref_th_Lnd", &["sjx_points", "ref_colnum"])
+        .map_err(netcdf_to_io_error)?;
+    ref_th
+        .put_values(&ref_th_values, (.., ..))
+        .map_err(netcdf_to_io_error)?;
+
+    Ok(GetRefLandThresholdWriteReport {
+        output: output.to_path_buf(),
+        sjx_points,
+        dima: 2,
+        ref_colnum: report.ref_colnum,
+    })
+}
+
+fn validate_getref_land_threshold_report(report: &GetRefLandThresholdReport) -> io::Result<()> {
+    if report.ref_colnum == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "GetRef land threshold writer requires at least one threshold column",
+        ));
+    }
+    if report.column_names.len() != report.ref_colnum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "column_names length {} must equal ref_colnum {}",
+                report.column_names.len(),
+                report.ref_colnum
+            ),
+        ));
+    }
+    let sjx_points = report.ref_th_land.len().checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ref_th_land must include a Fortran placeholder row",
+        )
+    })?;
+    for (row_index, row) in report.ref_th_land.iter().enumerate() {
+        if row.len() <= report.ref_colnum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "ref_th_land row {row_index} width {} must cover ref_colnum {} plus placeholder column",
+                    row.len(), report.ref_colnum
+                ),
+            ));
+        }
+    }
+    validate_optional_fortran_i32_len("n_landtypes", report.n_landtypes.as_deref(), sjx_points)?;
+    validate_optional_fortran_f64_len("f_mainarea", report.f_mainarea.as_deref(), sjx_points)?;
+    validate_optional_fortran_i32_len("last_p_num", report.last_p_num.as_deref(), sjx_points)?;
+    for (index, layer_report) in report.onelayer_reports.iter().enumerate() {
+        validate_fortran_f64_len(
+            &format!("onelayer_reports[{index}].mean"),
+            &layer_report.mean,
+            sjx_points,
+        )?;
+        validate_optional_fortran_f64_len(
+            &format!("onelayer_reports[{index}].stddev"),
+            layer_report.stddev.as_deref(),
+            sjx_points,
+        )?;
+    }
+    for (index, layer_report) in report.twolayer_reports.iter().enumerate() {
+        validate_fortran_layer2_len(
+            &format!("twolayer_reports[{index}].mean"),
+            &layer_report.mean,
+            sjx_points,
+        )?;
+        if let Some(stddev) = layer_report.stddev.as_ref() {
+            validate_fortran_layer2_len(
+                &format!("twolayer_reports[{index}].stddev"),
+                stddev,
+                sjx_points,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn require_getref_column_name(
+    report: &GetRefLandThresholdReport,
+    zero_based_index: usize,
+    expected: &str,
+) -> io::Result<()> {
+    match report.column_names.get(zero_based_index) {
+        Some(name) if name == expected => Ok(()),
+        Some(name) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "expected column {expected} at position {}, got {name}",
+                zero_based_index + 1
+            ),
+        )),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "missing column {expected} at position {}",
+                zero_based_index + 1
+            ),
+        )),
+    }
+}
+
+fn validate_optional_fortran_i32_len(
+    name: &str,
+    values: Option<&[i32]>,
+    sjx_points: usize,
+) -> io::Result<()> {
+    if let Some(values) = values {
+        if values.len() != sjx_points + 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{name} length {} must equal sjx_points {sjx_points} plus placeholder",
+                    values.len()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_fortran_f64_len(
+    name: &str,
+    values: Option<&[f64]>,
+    sjx_points: usize,
+) -> io::Result<()> {
+    if let Some(values) = values {
+        validate_fortran_f64_len(name, values, sjx_points)?;
+    }
+    Ok(())
+}
+
+fn validate_fortran_f64_len(name: &str, values: &[f64], sjx_points: usize) -> io::Result<()> {
+    if values.len() != sjx_points + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} length {} must equal sjx_points {sjx_points} plus placeholder",
+                values.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_fortran_layer2_len(
+    name: &str,
+    values: &[[f64; 2]],
+    sjx_points: usize,
+) -> io::Result<()> {
+    if values.len() != sjx_points + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} length {} must equal sjx_points {sjx_points} plus placeholder",
+                values.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn skip_fortran_i32_placeholder(values: &[i32]) -> Vec<i32> {
+    values.iter().skip(1).copied().collect()
+}
+
+fn skip_fortran_f64_placeholder(values: &[f64]) -> Vec<f64> {
+    values.iter().skip(1).copied().collect()
+}
+
+fn flatten_fortran_layer2_rows(values: &[[f64; 2]]) -> Vec<f64> {
+    values
+        .iter()
+        .skip(1)
+        .flat_map(|layers| layers.iter().copied())
+        .collect()
+}
+
+fn write_f64_layer2_rows(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    values: &[[f64; 2]],
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<f64>(name, &["sjx_points", "dima"])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&flatten_fortran_layer2_rows(values), (.., ..))
+        .map_err(netcdf_to_io_error)
 }
 
 /// Configuration for `MOD_GetRef:GetRef_Ocn` in-memory threshold assembly.

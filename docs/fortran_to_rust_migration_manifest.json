@@ -232,10 +232,11 @@
         "GetRef mean_std_cal2d one-layer mean/std threshold helper ported to rust/earthmesh_cli",
         "GetRef mean_std_cal3d two-layer mean/std threshold helper ported to rust/earthmesh_cli",
         "GetRef_Lnd in-memory threshold report assembly for basic, one-layer, and two-layer columns ported to rust/earthmesh_cli",
-        "GetRef_Ocn and GetRef_Atmos in-memory one-layer threshold report assembly ported to rust/earthmesh_cli"
+        "GetRef_Ocn and GetRef_Atmos in-memory one-layer threshold report assembly ported to rust/earthmesh_cli",
+        "GetRef_Lnd threshold NetCDF writer ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "GetRef_Lnd threshold NetCDF writer and full GetRef aggregation wiring",
+        "GetRef_Lnd full GetRef aggregation wiring",
         "GetRef_Ocn/GetRef_Atmos threshold NetCDF writers and report wiring",
         "GetRef land/ocean/atmos/LOC threshold NetCDF writers and top-level aggregation",
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
