@@ -5,6 +5,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
+use earthmesh_mesh::{
+    centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
+    lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, CartesianPoint, LonLatDegrees,
+};
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,10 +94,16 @@ pub fn run_mkgrd_gridinit_global_namelist(
                 nxp,
                 &config.mode_grid,
             )?,
+            "IAP-Ocean" => convert_iap_ocean_mode_file_to_earthmesh(
+                &mode_file,
+                &config.file_dir(),
+                nxp,
+                &config.mode_grid,
+            )?,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "only existing EarthMesh, MPAS, and FVCOM mode_file ingestion are migrated to Rust",
+                    "only existing EarthMesh, MPAS, FVCOM, and IAP-Ocean mode_file ingestion are migrated to Rust",
                 ));
             }
         }
@@ -570,6 +580,133 @@ pub fn convert_fvcom_mode_file_to_earthmesh(
     write_unstructured_mesh_netcdf(output, &mesh)
 }
 
+/// Convert an existing IAP-Ocean-style mesh NetCDF into the EarthMesh gridfile schema.
+///
+/// This ports the `mkgrd.F90` branch that calls
+/// `MOD_grid_preprocess.F90:IAP_Mesh_make`: the source stores W-point
+/// coordinates in radians plus M-to-W triangle connectivity.  The Rust path
+/// rebuilds M-point spherical circumcenters, derives W-to-M adjacency, preserves
+/// the legacy placeholder record, and writes `Unstructured_Mesh_Save` output.
+pub fn convert_iap_ocean_mode_file_to_earthmesh(
+    mode_file: impl AsRef<Path>,
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    mode_grid: &str,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    let mode_file = mode_file.as_ref();
+    let file = netcdf::open(mode_file).map_err(netcdf_to_io_error)?;
+    let source_triangles = required_dimension_len(&file, "sjx_points")?;
+    let source_vertices = required_dimension_len(&file, "lbx_points")?;
+    let fortran_triangles = source_triangles + 1;
+    let fortran_vertices = source_vertices + 1;
+
+    let glonw = required_values_f64(&file, "GLONW")?;
+    let glatw = required_values_f64(&file, "GLATW")?;
+    let _triangles_on_triangle = required_values_i32_matrix(
+        &file,
+        "itab_m%im",
+        "sjx_points",
+        "dimb",
+        source_triangles,
+        3,
+    )?;
+    let source_m_to_w = required_values_i32_matrix(
+        &file,
+        "itab_m%iw",
+        "sjx_points",
+        "dimb",
+        source_triangles,
+        3,
+    )?;
+
+    require_len("GLONW", glonw.len(), source_vertices)?;
+    require_len("GLATW", glatw.len(), source_vertices)?;
+
+    let mut w_points_fortran = vec![LonLatDegrees::new(0.0, 0.0); fortran_vertices + 1];
+    for source_idx in 0..source_vertices {
+        let fortran_idx = source_idx + 2;
+        w_points_fortran[fortran_idx] = LonLatDegrees::new(
+            normalize_degrees(rad_to_deg(glonw[source_idx])),
+            rad_to_deg(glatw[source_idx]),
+        );
+    }
+
+    let mut m_to_w_fortran = vec![[1_usize, 1, 1]; fortran_triangles + 1];
+    for source_idx in 0..source_triangles {
+        let fortran_idx = source_idx + 2;
+        let base = source_idx * 3;
+        m_to_w_fortran[fortran_idx] = [
+            usize_from_i32_connectivity(source_m_to_w[base], "itab_m%iw")? + 1,
+            usize_from_i32_connectivity(source_m_to_w[base + 1], "itab_m%iw")? + 1,
+            usize_from_i32_connectivity(source_m_to_w[base + 2], "itab_m%iw")? + 1,
+        ];
+    }
+
+    let centroids = centroid_spherical_mesh_fortran_indexed(&w_points_fortran, &m_to_w_fortran)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IAP-Ocean triangle connectivity references missing W points",
+            )
+        })?;
+    let mut centroid_xyz = lonlat_points_to_unit_xyz(&centroids);
+    let mut vertex_xyz = lonlat_points_to_unit_xyz(&w_points_fortran);
+    scale_cartesian_points_by_earth_radius(&mut centroid_xyz);
+    scale_cartesian_points_by_earth_radius(&mut vertex_xyz);
+    let circumcenters =
+        circumcenter_spherical_mesh_fortran_indexed(&centroid_xyz, &vertex_xyz, &m_to_w_fortran)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "IAP-Ocean spherical circumcenter calculation failed",
+                )
+            })?;
+
+    let mut m_points_fortran = vec![LonLatDegrees::new(0.0, 0.0); fortran_triangles + 1];
+    for fortran_idx in 2..=fortran_triangles {
+        m_points_fortran[fortran_idx] = xyz_to_lonlat_degrees(circumcenters[fortran_idx]);
+    }
+
+    let mut m_points = Vec::with_capacity(fortran_triangles);
+    for fortran_idx in 1..=fortran_triangles {
+        let lonlat = m_points_fortran[fortran_idx];
+        m_points.push(LonLatPoint {
+            lon: lonlat.lon_degrees,
+            lat: lonlat.lat_degrees,
+        });
+    }
+
+    let mut w_points = Vec::with_capacity(fortran_vertices);
+    for point in w_points_fortran.iter().take(fortran_vertices + 1).skip(1) {
+        w_points.push(LonLatPoint {
+            lon: point.lon_degrees,
+            lat: point.lat_degrees,
+        });
+    }
+
+    let m_to_w = (1..=fortran_triangles)
+        .map(|idx| {
+            [
+                m_to_w_fortran[idx][0] as i32,
+                m_to_w_fortran[idx][1] as i32,
+                m_to_w_fortran[idx][2] as i32,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let (w_to_m, n_w_to_m) =
+        derive_iap_w_to_m_fortran_indexed(fortran_vertices, &m_to_w_fortran, &m_points_fortran)?;
+
+    let mesh = UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    };
+    let output = gridfile_output_path(file_dir, nxp, 1, mode_grid);
+    write_unstructured_mesh_netcdf(output, &mesh)
+}
+
 fn required_dimension_len(file: &netcdf::File, name: &str) -> io::Result<usize> {
     file.dimension(name)
         .map(|dimension| dimension.len())
@@ -665,6 +802,181 @@ fn required_values_i32_matrix(
             dimension_names, dimension_lengths
         ),
     ))
+}
+
+fn usize_from_i32_connectivity(value: i32, name: &str) -> io::Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} contains negative connectivity value {value}"),
+        )
+    })
+}
+
+fn scale_cartesian_points_by_earth_radius(points: &mut [CartesianPoint]) {
+    for point in points {
+        point.x *= earthmesh_core::EARTH_RADIUS_METERS;
+        point.y *= earthmesh_core::EARTH_RADIUS_METERS;
+        point.z *= earthmesh_core::EARTH_RADIUS_METERS;
+    }
+}
+
+fn derive_iap_w_to_m_fortran_indexed(
+    fortran_vertices: usize,
+    m_to_w_fortran: &[[usize; 3]],
+    m_points_fortran: &[LonLatDegrees],
+) -> io::Result<(Vec<Vec<i32>>, Vec<i32>)> {
+    let mut incident = vec![Vec::<usize>::new(); fortran_vertices + 1];
+    for triangle_id in 2..m_to_w_fortran.len() {
+        for &vertex_id in &m_to_w_fortran[triangle_id] {
+            if vertex_id == 0 || vertex_id > fortran_vertices {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "IAP-Ocean triangle {triangle_id} references W point {vertex_id}, outside 1..={fortran_vertices}"
+                    ),
+                ));
+            }
+            incident[vertex_id].push(triangle_id);
+        }
+    }
+
+    let maxnum = incident
+        .iter()
+        .take(fortran_vertices + 1)
+        .skip(1)
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let mut w_to_m = Vec::with_capacity(fortran_vertices);
+    let mut n_w_to_m = Vec::with_capacity(fortran_vertices);
+    for vertex_id in 1..=fortran_vertices {
+        let sorted =
+            sort_iap_incident_triangles(&incident[vertex_id], m_to_w_fortran, m_points_fortran)?;
+        n_w_to_m.push(i32::try_from(incident[vertex_id].len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IAP-Ocean W point has too many incident triangles",
+            )
+        })?);
+        let mut row = vec![1; maxnum];
+        for (slot, triangle_id) in sorted.iter().copied().enumerate() {
+            row[slot] = i32::try_from(triangle_id).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "IAP-Ocean triangle id exceeds i32 range",
+                )
+            })?;
+        }
+        w_to_m.push(row);
+    }
+    Ok((w_to_m, n_w_to_m))
+}
+
+fn sort_iap_incident_triangles(
+    incident: &[usize],
+    m_to_w_fortran: &[[usize; 3]],
+    m_points_fortran: &[LonLatDegrees],
+) -> io::Result<Vec<usize>> {
+    if incident.len() <= 1 {
+        return Ok(incident.to_vec());
+    }
+
+    let mut neighbor_degree = vec![0; incident.len()];
+    for (idx, &triangle_id) in incident.iter().enumerate() {
+        for (other_idx, &other_triangle_id) in incident.iter().enumerate() {
+            if idx == other_idx {
+                continue;
+            }
+            if iap_triangles_are_neighbors(
+                m_to_w_fortran[triangle_id],
+                m_to_w_fortran[other_triangle_id],
+            ) {
+                neighbor_degree[idx] += 1;
+            }
+        }
+    }
+
+    let start_pos = neighbor_degree
+        .iter()
+        .position(|&degree| degree == 1)
+        .unwrap_or(0);
+    let mut used = vec![false; incident.len()];
+    let mut ordered = Vec::with_capacity(incident.len());
+    let mut ref_triangle = incident[start_pos];
+    used[start_pos] = true;
+    ordered.push(ref_triangle);
+
+    while ordered.len() < incident.len() {
+        let mut found_pos = None;
+        for (idx, &candidate) in incident.iter().enumerate() {
+            if used[idx] {
+                continue;
+            }
+            if iap_triangles_are_neighbors(m_to_w_fortran[ref_triangle], m_to_w_fortran[candidate])
+            {
+                found_pos = Some(idx);
+                break;
+            }
+        }
+        if found_pos.is_none() {
+            found_pos = used.iter().position(|is_used| !*is_used);
+        }
+        let Some(pos) = found_pos else {
+            break;
+        };
+        ref_triangle = incident[pos];
+        used[pos] = true;
+        ordered.push(ref_triangle);
+    }
+
+    let area = robust_spherical_area_degrees(
+        &ordered
+            .iter()
+            .map(|&triangle_id| {
+                m_points_fortran.get(triangle_id).copied().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "IAP-Ocean sorted triangle id missing M point",
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?,
+    );
+    if area < 0.0 {
+        ordered.reverse();
+    }
+    Ok(ordered)
+}
+
+fn iap_triangles_are_neighbors(a: [usize; 3], b: [usize; 3]) -> bool {
+    let shared = a
+        .iter()
+        .filter(|&&vertex_id| b.contains(&vertex_id))
+        .count();
+    shared >= 2
+}
+
+fn robust_spherical_area_degrees(points: &[LonLatDegrees]) -> f64 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for idx in 0..points.len() {
+        let next = (idx + 1) % points.len();
+        let mut delta_lon = (points[next].lon_degrees - points[idx].lon_degrees).to_radians();
+        if delta_lon > std::f64::consts::PI {
+            delta_lon -= 2.0 * std::f64::consts::PI;
+        } else if delta_lon < -std::f64::consts::PI {
+            delta_lon += 2.0 * std::f64::consts::PI;
+        }
+        area += delta_lon
+            * (2.0
+                + points[idx].lat_degrees.to_radians().sin()
+                + points[next].lat_degrees.to_radians().sin());
+    }
+    area / 2.0
 }
 
 fn rad_to_deg(radians: f64) -> f64 {

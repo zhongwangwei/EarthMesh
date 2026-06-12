@@ -282,6 +282,93 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn run_mkgrd_gridinit_global_converts_existing_iap_ocean_mode_file() {
+    let root = std::env::temp_dir().join(format!("earthmesh_cli_iap_mode_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let mode_file = root.join("source_iap.nc4");
+    write_synthetic_iap_ocean_mode_file(&mode_file);
+
+    let namelist = root.join("mkgrd_iap.nml");
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_iap'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%mode_file='{}'\n  NL%mode_file_description='IAP-Ocean'\n  NL%refine=.false.\n  NL%niter=0\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='FVCOM'\n/\n",
+            mode_file.display()
+        ),
+    )
+    .expect("write namelist");
+
+    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
+        .expect("convert IAP-Ocean mode file");
+
+    assert_eq!(report.gridfile.sjx_points, 2);
+    assert_eq!(report.gridfile.lbx_points, 4);
+    assert_eq!(report.gridfile.dimc, 7);
+    let file = netcdf::open(&report.gridfile.output).expect("open converted gridfile");
+    let glonm = file
+        .variable("GLONM")
+        .expect("GLONM")
+        .get_values::<f64, _>(..)
+        .expect("read GLONM");
+    let glatm = file
+        .variable("GLATM")
+        .expect("GLATM")
+        .get_values::<f64, _>(..)
+        .expect("read GLATM");
+    let glonw = file
+        .variable("GLONW")
+        .expect("GLONW")
+        .get_values::<f64, _>(..)
+        .expect("read GLONW");
+    let glatw = file
+        .variable("GLATW")
+        .expect("GLATW")
+        .get_values::<f64, _>(..)
+        .expect("read GLATW");
+    for (actual, expected) in glonm.iter().zip([0.0, 45.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    assert_close(glatm[0], 0.0, 1.0e-10);
+    assert_close(glatm[1], 35.264389682754654, 1.0e-10);
+    for (actual, expected) in glonw.iter().zip([0.0, 0.0, 90.0, 0.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    for (actual, expected) in glatw.iter().zip([0.0, 0.0, 0.0, 90.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    assert_eq!(
+        file.variable("itab_m%iw")
+            .expect("itab_m%iw")
+            .get_values::<i32, _>((.., ..))
+            .expect("read itab_m%iw"),
+        vec![1, 1, 1, 2, 3, 4]
+    );
+    assert_eq!(
+        file.variable("itab_w%im")
+            .expect("itab_w%im")
+            .get_values::<i32, _>((.., ..))
+            .expect("read itab_w%im"),
+        vec![
+            1, 1, 1, 1, 1, 1, 1, //
+            2, 1, 1, 1, 1, 1, 1, //
+            2, 1, 1, 1, 1, 1, 1, //
+            2, 1, 1, 1, 1, 1, 1,
+        ]
+    );
+    assert_eq!(
+        file.variable("n_ngrwm")
+            .expect("n_ngrwm")
+            .get_values::<i32, _>(..)
+            .expect("read n_ngrwm"),
+        vec![0, 1, 1, 1]
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn write_synthetic_mpas_mode_file(path: &std::path::Path) {
     let mut file = netcdf::create(path).expect("create synthetic MPAS mode file");
     file.add_dimension("nVertices", 2).expect("nVertices");
@@ -385,6 +472,41 @@ fn write_synthetic_fvcom_mode_file(path: &std::path::Path) {
     {
         let mut var = file.add_variable::<i32>("ntve", &["node"]).expect("ntve");
         var.put_values(&[2, 3, 3], ..).expect("write ntve");
+    }
+}
+
+fn write_synthetic_iap_ocean_mode_file(path: &std::path::Path) {
+    let mut file = netcdf::create(path).expect("create synthetic IAP-Ocean mode file");
+    file.add_dimension("sjx_points", 1).expect("sjx_points");
+    file.add_dimension("lbx_points", 3).expect("lbx_points");
+    file.add_dimension("dimb", 3).expect("dimb");
+    {
+        let mut var = file
+            .add_variable::<f64>("GLONW", &["lbx_points"])
+            .expect("GLONW");
+        var.put_values(&[0.0_f64.to_radians(), 90.0_f64.to_radians(), 0.0], ..)
+            .expect("write GLONW");
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("GLATW", &["lbx_points"])
+            .expect("GLATW");
+        var.put_values(&[0.0, 0.0, 90.0_f64.to_radians()], ..)
+            .expect("write GLATW");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("itab_m%im", &["sjx_points", "dimb"])
+            .expect("itab_m%im");
+        var.put_values(&[1, 2, 3], (.., ..))
+            .expect("write itab_m%im");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("itab_m%iw", &["sjx_points", "dimb"])
+            .expect("itab_m%iw");
+        var.put_values(&[1, 2, 3], (.., ..))
+            .expect("write itab_m%iw");
     }
 }
 
