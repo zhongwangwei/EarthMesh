@@ -54,10 +54,10 @@
       "completed_rust_surfaces": [
         "de_ps_r8 polar stereographic projection formula ported to rust/earthmesh_mesh",
         "ps_de_r8 polar stereographic inverse projection formula ported to rust/earthmesh_mesh",
-        "icosahedron(nxp0) initial counts, pentagon indices, diamond corners, and M-point coordinates ported to rust/earthmesh_mesh"
+        "icosahedron(nxp0) initial counts, pentagon indices, diamond corners, and M-point coordinates ported to rust/earthmesh_mesh",
+        "fill_diamond U/W connectivity seed ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
-        "fill_diamond subdivision and connectivity construction",
         "spring_dynamics1 relaxation loop",
         "mdloopf/udloopf/wdloopf loop table construction",
         "tri_neighbors connectivity derivation",

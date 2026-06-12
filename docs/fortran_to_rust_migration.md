@@ -301,3 +301,7 @@ Extended the compact MPAS fixture test with a real vertex-ring connectivity case
 ### 2026-06-12: `icosahedron.F90` initial grid counts and point coordinates ported
 
 Extended `rust/earthmesh_mesh` with `icosahedron_counts_fortran`, `icosahedron_diamond_corners_fortran`, and `icosahedron_initial_grid_fortran`, covering the point-coordinate portion of `icosahedron(nxp0)` before `fill_diamond`, `tri_neighbors`, and `spring_dynamics1`. The Rust kernel preserves Fortran-indexed `nmd/nud/nwd` sizing, 12 `impent` pentagonal point indices, the 10 big-diamond corner coordinate formulas, the `pwrd=0.9` interpolation weights, and Earth-radius projection for active M points. Remaining icosahedron work is connectivity table construction, loop flags, neighbor derivation, and spring relaxation.
+
+### 2026-06-12: `icosahedron.F90` fill_diamond connectivity seed ported
+
+Extended `rust/earthmesh_mesh` with `icosahedron_fill_diamonds_fortran`, plus compact `IcosahedronUEdge` and `IcosahedronWFace` table structs for the fields written directly by `fill_diamond`. The new kernel preserves Fortran-indexed U/W allocation slots, southern/northern diamond neighbor index formulas, and the initial `im`, `iw`, `iu`, `mrlu`, `mrlw`, `mrlw_orig`, and `ngr` assignments before `tri_neighbors` completes reciprocal connectivity. Remaining icosahedron work is `tri_neighbors`, loop flags, spring relaxation, and post-relaxation NXP parity.

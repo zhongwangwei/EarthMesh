@@ -49,3 +49,37 @@ fn icosahedron_initial_grid_projects_all_active_points_to_earth_radius() {
         );
     }
 }
+
+#[test]
+fn icosahedron_fill_diamonds_matches_fortran_first_southern_diamond_nxp1() {
+    let connectivity = earthmesh_mesh::icosahedron_fill_diamonds_fortran(1)
+        .expect("valid nxp fill_diamond connectivity");
+
+    assert_eq!(connectivity.u_edges.len(), 32);
+    assert_eq!(connectivity.w_faces.len(), 22);
+
+    assert_eq!(connectivity.u_edges[3].im, [3, 4]);
+    assert_eq!(connectivity.u_edges[3].iw[0..2], [2, 3]);
+    assert_eq!(connectivity.u_edges[3].mrlu, 1);
+
+    assert_eq!(connectivity.u_edges[2].im, [3, 2]);
+    assert_eq!(connectivity.u_edges[2].iw[1], 2);
+    assert_eq!(connectivity.u_edges[2].mrlu, 1);
+
+    assert_eq!(connectivity.u_edges[4].im, [8, 3]);
+    assert_eq!(connectivity.u_edges[4].iw[1], 3);
+    assert_eq!(connectivity.u_edges[4].mrlu, 1);
+
+    assert_eq!(connectivity.u_edges[5].iw[0], 2);
+    assert_eq!(connectivity.u_edges[17].iw[0], 3);
+
+    assert_eq!(connectivity.w_faces[2].iu, [3, 2, 5]);
+    assert_eq!(connectivity.w_faces[2].mrlw, 1);
+    assert_eq!(connectivity.w_faces[2].mrlw_orig, 1);
+    assert_eq!(connectivity.w_faces[2].ngr, 1);
+
+    assert_eq!(connectivity.w_faces[3].iu, [3, 17, 4]);
+    assert_eq!(connectivity.w_faces[3].mrlw, 1);
+    assert_eq!(connectivity.w_faces[3].mrlw_orig, 1);
+    assert_eq!(connectivity.w_faces[3].ngr, 1);
+}
