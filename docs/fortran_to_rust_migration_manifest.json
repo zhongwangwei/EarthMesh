@@ -159,7 +159,8 @@
         "Area_judge refine-within-domain validation ported to rust/earthmesh_cli",
         "Area_judge_refine iter-zero calculated refine activation ported to rust/earthmesh_cli",
         "Area_judge global-domain mask initialization ported to rust/earthmesh_cli",
-        "IsInArea_bbox_Calculation area-mask source builder ported to rust/earthmesh_cli"
+        "IsInArea_bbox_Calculation area-mask source builder ported to rust/earthmesh_cli",
+        "IsInArea_circle_Calculation area-mask source builder ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",

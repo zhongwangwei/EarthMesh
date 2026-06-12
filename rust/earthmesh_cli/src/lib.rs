@@ -2135,10 +2135,9 @@ fn area_judge_circle_scan_bounds_fortran(
     Ok((edgew_temp, edgee_temp, edgen_temp, edges_temp))
 }
 
-/// Build the circle `IsInPaArea_grid` patch mask and apply it to `seaorland`.
-pub fn apply_area_judge_circle_patch_source_fortran_indexed(
+/// Build the circle `IsInArea_grid` source mask used by domain/refine/patch paths.
+pub fn build_area_judge_circle_area_source_fortran_indexed(
     inputfile: impl AsRef<Path>,
-    seaorland: &mut [Vec<i32>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     lon_i: &[f64],
@@ -2146,16 +2145,17 @@ pub fn apply_area_judge_circle_patch_source_fortran_indexed(
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,
-) -> io::Result<AreaJudgePatchSourceReport> {
+) -> io::Result<AreaJudgeAreaSourceReport> {
     let mask = read_circle_mask_netcdf(inputfile)?;
     validate_circle_mask(&mask).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid circle patch source: {err}"),
+            format!("invalid circle area source: {err}"),
         )
     })?;
-    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
     let mut merged_bounds = None;
+    let mut numpatch = 0usize;
 
     for (&center, &radius_km) in mask.points.iter().zip(mask.radius_km.iter()) {
         let (edgew_temp, edgee_temp, edgen_temp, edges_temp) =
@@ -2175,7 +2175,7 @@ pub fn apply_area_judge_circle_patch_source_fortran_indexed(
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "circle patch scan bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+                    "circle area scan bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
                 ),
             )
         })?;
@@ -2243,22 +2243,23 @@ pub fn apply_area_judge_circle_patch_source_fortran_indexed(
                 "circle maxlat_source must be smaller than minlat_source",
             ));
         }
-        require_len("circle patch mask", patch_mask.len(), maxlon_source)?;
+        require_len("circle area mask", is_in_area.len(), maxlon_source)?;
         require_len("circle longitude centers", lon_i.len(), maxlon_source)?;
         require_len("circle latitude centers", lat_i.len(), minlat_source)?;
-        for row in patch_mask.iter().take(maxlon_source).skip(minlon_source) {
-            require_len("circle patch mask row", row.len(), minlat_source)?;
+        for row in is_in_area.iter().take(maxlon_source).skip(minlon_source) {
+            require_len("circle area mask row", row.len(), minlat_source)?;
         }
 
         for lon_index in minlon_source..maxlon_source {
             for lat_index in maxlat_source..minlat_source {
-                if patch_mask[lon_index][lat_index] != 0 {
+                if is_in_area[lon_index][lat_index] != 0 {
                     continue;
                 }
                 let point = AreaJudgePoint::new(lon_i[lon_index], lat_i[lat_index]);
                 let center = AreaJudgePoint::new(center.lon, center.lat);
                 if is_point_in_circle_km(point, center, radius_km) {
-                    patch_mask[lon_index][lat_index] = 1;
+                    is_in_area[lon_index][lat_index] = 1;
+                    numpatch += 1;
                 }
             }
         }
@@ -2268,11 +2269,48 @@ pub fn apply_area_judge_circle_patch_source_fortran_indexed(
     let bounds = merged_bounds.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "circle patch source must contain at least one circle",
+            "circle area source must contain at least one circle",
         )
     })?;
-    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
-        .ok_or_else(|| {
+
+    Ok(AreaJudgeAreaSourceReport {
+        is_in_area,
+        bounds,
+        numpatch,
+    })
+}
+
+/// Build the circle `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+pub fn apply_area_judge_circle_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    let source = build_area_judge_circle_area_source_fortran_indexed(
+        inputfile,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )
+    .map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            err.to_string().replace("circle area", "circle patch"),
+        )
+    })?;
+    let report =
+        area_judge_apply_mask_patch_fortran_indexed(seaorland, &source.is_in_area, source.bounds)
+            .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "seaorland or circle patch mask does not cover selected source bounds",
@@ -2280,7 +2318,7 @@ pub fn apply_area_judge_circle_patch_source_fortran_indexed(
         })?;
 
     Ok(AreaJudgePatchSourceReport {
-        bounds,
+        bounds: source.bounds,
         patched_cells: report.patched_cells,
     })
 }
