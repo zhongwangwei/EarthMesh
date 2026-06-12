@@ -296,7 +296,8 @@
         "bdy_calculation pure boundary classification helper ported to rust/earthmesh_mesh",
         "obc/obcv2 boundary NetCDF writer wiring ported to rust/earthmesh_cli",
         "domain mask_postproc legacy I/O path plan ported to rust/earthmesh_cli",
-        "PatchID_Save patchtype NetCDF writer ported to rust/earthmesh_cli"
+        "PatchID_Save patchtype NetCDF writer ported to rust/earthmesh_cli",
+        "mask_postproc_Ocn contain mask_sea_ratio adjustment ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O"

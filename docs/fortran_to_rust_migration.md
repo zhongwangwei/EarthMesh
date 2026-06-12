@@ -517,3 +517,7 @@ Added typed `ContainMesh` plus `read_contain_netcdf` and `write_contain_netcdf` 
 ### 2026-06-12: PatchID_Save adapter ported
 
 Added typed `PatchIdMesh` and `write_patchid_netcdf` in `rust/earthmesh_cli` for the `MOD_mask_postproc.F90:PatchID_Save` schema used by the Earth/Land mask-postprocess branches. The writer preserves `nlon`, `nlat`, `elmindex`, `lon_w`, `lon_e`, `lat_n`, `lat_s`, `longitude`, and `latitude`, and validates matrix/vector dimension consistency before creating the patchtype NetCDF file.
+
+### 2026-06-12: mask_postproc_Ocn contain mask adjustment ported
+
+Added `apply_ocean_mask_sea_ratio_fortran_indexed` in `rust/earthmesh_cli`, a tested pure-data port of the `mask_postproc_Ocn` loop that copies `IsInDmArea_ustr` from `Contain_Read` and then demotes post-`num_vertex` records to `-1` when `ustr_id(i,1) / real(ustr_id(i,3)) < mask_sea_ratio`. The helper preserves Fortran one-based row semantics, validates the ocean-specific third `ustr_id` column, and reports invalid denominators before the full Ocean branch orchestration is wired.
