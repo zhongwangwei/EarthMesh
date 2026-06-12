@@ -345,3 +345,21 @@ fn icosahedron_spring_dynamics_repeats_iterations_and_records_max_ds() {
     assert!(output.diagnostic_max_displacements[0].max_displacement > 0.0);
     assert!(output.diagnostic_max_displacements[1].max_displacement > 0.0);
 }
+
+#[test]
+fn icosahedron_relaxed_grid_wrapper_wires_initial_connectivity_and_spring() {
+    let initial = earthmesh_mesh::icosahedron_initial_grid_fortran(1).expect("valid initial grid");
+
+    let relaxed = earthmesh_mesh::icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+        .expect("valid integrated icosahedron grid");
+
+    assert_eq!(relaxed.nmd, initial.nmd);
+    assert_eq!(relaxed.nud, initial.nud);
+    assert_eq!(relaxed.nwd, initial.nwd);
+    assert_eq!(relaxed.impent, initial.impent);
+    assert_eq!(relaxed.m_points, initial.m_points);
+    assert_eq!(relaxed.connectivity.w_faces[2].npoly, 3);
+    assert_eq!(relaxed.connectivity.u_edges[3].mrlu, 1);
+    assert_eq!(relaxed.m_neighbors[3].npoly, 5);
+    assert!(relaxed.spring.diagnostic_max_displacements.is_empty());
+}

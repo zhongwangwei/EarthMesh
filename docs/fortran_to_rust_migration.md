@@ -341,3 +341,7 @@ Extended `rust/earthmesh_mesh` with `icosahedron_spring_iteration_fortran`, a te
 ### 2026-06-12: `icosahedron.F90` `spring_dynamics1` multi-iteration wrapper ported
 
 Extended `rust/earthmesh_mesh` with `icosahedron_spring_dynamics1_fortran`, a tested Rust wrapper for the main `spring_dynamics1` iteration loop. It repeatedly applies the migrated single-iteration edge-displacement/coordinate-normalization kernel and records Fortran-style periodic Max-DS diagnostics for iteration 1 and `diagnostic_every` intervals. Remaining icosahedron work is full NXP fixture parity for the post-relaxation grid.
+
+### 2026-06-12: `icosahedron.F90` integrated relaxed-grid wrapper ported
+
+Extended `rust/earthmesh_mesh` with `icosahedron_relaxed_grid_fortran`, an integrated Rust entry point for the deterministic in-memory path of `icosahedron(nxp0)`. The wrapper composes initial M-point generation, `fill_diamond`, `tri_neighbors`, `spring_dynamics1` topology, Fortran `dist00 = beta * pi2_r8 * erad8 / (5 * nxp0)`, and the migrated spring loop. Remaining icosahedron work is fixture-based NXP parity for post-relaxation coordinates/connectivity against the Fortran output.

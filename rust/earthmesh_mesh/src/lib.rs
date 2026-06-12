@@ -121,6 +121,20 @@ pub struct IcosahedronInitialGrid {
     pub m_points: Vec<CartesianPoint>,
 }
 
+/// Integrated icosahedron grid state after connectivity derivation and optional
+/// `spring_dynamics1` relaxation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IcosahedronRelaxedGrid {
+    pub nmd: usize,
+    pub nud: usize,
+    pub nwd: usize,
+    pub impent: [usize; 12],
+    pub m_points: Vec<CartesianPoint>,
+    pub connectivity: IcosahedronDiamondConnectivity,
+    pub m_neighbors: Vec<IcosahedronMPointNeighbors>,
+    pub spring: IcosahedronSpringDynamicsOutput,
+}
+
 /// Minimal Rust equivalent of the `itab_ud` fields written by
 /// `icosahedron.F90:fill_diamond`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1077,6 +1091,52 @@ pub fn icosahedron_spring_dynamics1_fortran(
         updated_m_points: current_m_points,
         last_edge_displacements,
         diagnostic_max_displacements,
+    })
+}
+
+/// Integrated Rust port of the deterministic in-memory portions of
+/// `icosahedron.F90:icosahedron`.
+///
+/// This creates initial M-point coordinates, fills diamond U/W connectivity,
+/// derives `tri_neighbors`, builds `spring_dynamics1` topology, computes the
+/// Fortran coarse target distance `beta * pi2_r8 * erad8 / (5 * nxp0)`, and
+/// applies the migrated spring loop for `niter` iterations.
+pub fn icosahedron_relaxed_grid_fortran(
+    nxp0: usize,
+    niter: usize,
+    beta: f64,
+    relax: f64,
+    diagnostic_every: usize,
+) -> Option<IcosahedronRelaxedGrid> {
+    let initial = icosahedron_initial_grid_fortran(nxp0)?;
+    let mut connectivity = icosahedron_fill_diamonds_fortran(nxp0)?;
+    let m_neighbors = derive_icosahedron_tri_neighbors_fortran(initial.nmd, &mut connectivity)?;
+    let topology = icosahedron_spring_topology_fortran(
+        initial.nmd,
+        &connectivity.u_edges,
+        &m_neighbors,
+        relax,
+    )?;
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let dist00 = beta * earthmesh_core::PI2 * radius / (5.0 * nxp0 as f64);
+    let spring = icosahedron_spring_dynamics1_fortran(
+        &initial.m_points,
+        &topology,
+        niter,
+        dist00,
+        radius,
+        diagnostic_every,
+    )?;
+
+    Some(IcosahedronRelaxedGrid {
+        nmd: initial.nmd,
+        nud: initial.nud,
+        nwd: initial.nwd,
+        impent: initial.impent,
+        m_points: spring.updated_m_points.clone(),
+        connectivity,
+        m_neighbors,
+        spring,
     })
 }
 
