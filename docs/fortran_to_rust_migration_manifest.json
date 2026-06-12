@@ -234,7 +234,8 @@
       "parity_gate": "Containment matrix fixtures match Fortran cell/source overlap assignments for structured and unstructured samples.",
       "notes": "This is central to conservative remap/coupling support.",
       "completed_rust_surfaces": [
-        "IsInArea_ustr_Calculation unstructured domain/refine area selector ported to rust/earthmesh_cli with Fortran-indexed fixture coverage"
+        "IsInArea_ustr_Calculation unstructured domain/refine area selector ported to rust/earthmesh_cli with Fortran-indexed fixture coverage",
+        "Contain_Calculation non-polar non-dateline land/ocean/atmos containment matrix core ported to rust/earthmesh_cli with Fortran-indexed fixture coverage"
       ]
     },
     {

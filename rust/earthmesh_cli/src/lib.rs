@@ -1159,6 +1159,31 @@ pub struct GetContainAreaBounds {
     pub north: f64,
 }
 
+/// Mesh-specific containment semantics from
+/// `MOD_GetContain.F90:Contain_Calculation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetContainMeshKind {
+    Land,
+    Ocean,
+    Atmos,
+}
+
+impl GetContainMeshKind {
+    fn ustr_id_width(self) -> usize {
+        match self {
+            Self::Ocean => 3,
+            Self::Land | Self::Atmos => 2,
+        }
+    }
+
+    fn ustr_ii_width(self) -> usize {
+        match self {
+            Self::Atmos => 3,
+            Self::Land | Self::Ocean => 2,
+        }
+    }
+}
+
 /// Port of `MOD_GetContain.F90:IsInArea_ustr_Calculation`.
 ///
 /// The inputs keep Fortran indexing conventions: row `0` is normally a dummy,
@@ -1236,6 +1261,149 @@ pub fn getcontain_is_in_area_ustr_fortran_indexed(
     Ok(is_in_area_ustr)
 }
 
+/// Non-polar, non-dateline core of `MOD_GetContain.F90:Contain_Calculation`.
+///
+/// This covers the main land/ocean/atmos scan that fills `ustr_id` and
+/// `ustr_ii` after `Data_Updata` has identified active unstructured cells.
+/// Dateline-crossing (`icl_points`) and south-pole cell splitting remain a
+/// separate migration slice.
+pub fn getcontain_containment_matrix_fortran_indexed(
+    mesh_kind: GetContainMeshKind,
+    vertices: &[LonLatPoint],
+    cell_to_vertices: &[Vec<i32>],
+    n_edges: &[i32],
+    is_in_area_ustr: &[i32],
+    is_in_area_grid: &[Vec<i32>],
+    seaorland: &[Vec<i32>],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    num_vertex: usize,
+) -> io::Result<ContainMesh> {
+    if is_in_area_ustr.len() != cell_to_vertices.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IsInArea_ustr length {} must match cell_to_vertices rows {}",
+                is_in_area_ustr.len(),
+                cell_to_vertices.len()
+            ),
+        ));
+    }
+    if lon_i.len() < 2 || lat_i.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lon_i and lat_i must include a dummy slot plus at least one source point",
+        ));
+    }
+    getcontain_validate_source_matrix("IsInArea_grid", is_in_area_grid, lon_i.len(), lat_i.len())?;
+    getcontain_validate_source_matrix("seaorland", seaorland, lon_i.len(), lat_i.len())?;
+
+    let id_width = mesh_kind.ustr_id_width();
+    let mut ustr_id = vec![vec![0; id_width]; cell_to_vertices.len()];
+    let mut cell_entries = vec![Vec::<Vec<i32>>::new(); cell_to_vertices.len()];
+    let mut selected_mask = is_in_area_ustr.to_vec();
+    let start_row = num_vertex.saturating_add(1);
+
+    for cell_index in start_row..cell_to_vertices.len() {
+        if is_in_area_ustr[cell_index] != 1 {
+            continue;
+        }
+        let polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
+        let (min_lon, max_lon) = polygon.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(min_lon, max_lon), point| (min_lon.min(point.x), max_lon.max(point.x)),
+        );
+        if max_lon - min_lon > 180.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dateline-crossing containment requires the icl_points migration path",
+            ));
+        }
+
+        let mut total_inside = 0;
+        for i in 1..lon_i.len() {
+            for j in 1..lat_i.len() {
+                if is_in_area_grid[i][j] == 0 {
+                    continue;
+                }
+                let point = AreaJudgePoint::new(lon_i[i], lat_i[j]);
+                if !is_point_in_convex_polygon(&polygon, point) {
+                    continue;
+                }
+                total_inside += 1;
+                match mesh_kind {
+                    GetContainMeshKind::Land => {
+                        if seaorland[i][j] == 1 {
+                            cell_entries[cell_index].push(vec![i as i32, j as i32]);
+                        }
+                    }
+                    GetContainMeshKind::Ocean => {
+                        if seaorland[i][j] == 0 {
+                            cell_entries[cell_index].push(vec![i as i32, j as i32]);
+                        }
+                    }
+                    GetContainMeshKind::Atmos => {
+                        cell_entries[cell_index].push(vec![
+                            i as i32,
+                            j as i32,
+                            if seaorland[i][j] == 1 { 1 } else { 0 },
+                        ]);
+                    }
+                }
+            }
+        }
+
+        let contained = i32::try_from(cell_entries[cell_index].len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "contained source-pixel count exceeds i32",
+            )
+        })?;
+        ustr_id[cell_index][0] = contained;
+        if mesh_kind == GetContainMeshKind::Ocean {
+            ustr_id[cell_index][2] = total_inside;
+        }
+        if contained == 0 {
+            selected_mask[cell_index] = 0;
+        }
+    }
+
+    let mut next_start = 1;
+    if num_vertex > 0 && num_vertex < ustr_id.len() {
+        ustr_id[num_vertex][1] = next_start;
+        next_start += ustr_id[num_vertex][0];
+    }
+    for row in start_row..ustr_id.len() {
+        ustr_id[row][1] = next_start;
+        next_start += ustr_id[row][0];
+    }
+
+    let numpatch = usize::try_from(next_start - 1).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "contained source-pixel count exceeds usize",
+        )
+    })?;
+    let mut ustr_ii = Vec::with_capacity(numpatch);
+    for entries in cell_entries.into_iter().skip(start_row) {
+        for entry in entries {
+            if entry.len() != mesh_kind.ustr_ii_width() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "internal containment entry width mismatch",
+                ));
+            }
+            ustr_ii.push(entry);
+        }
+    }
+
+    Ok(ContainMesh {
+        ustr_id,
+        ustr_ii,
+        is_in_area_ustr: selected_mask,
+    })
+}
+
 fn getcontain_cell_polygon(
     cell_index: usize,
     vertices: &[LonLatPoint],
@@ -1285,6 +1453,35 @@ fn getcontain_cell_polygon(
         polygon.push(AreaJudgePoint::new(vertex.lon, vertex.lat));
     }
     Ok(polygon)
+}
+
+fn getcontain_validate_source_matrix(
+    name: &str,
+    matrix: &[Vec<i32>],
+    lon_len: usize,
+    lat_len: usize,
+) -> io::Result<()> {
+    if matrix.len() != lon_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} longitude rows {} must match lon_i length {lon_len}",
+                matrix.len()
+            ),
+        ));
+    }
+    for (index, row) in matrix.iter().enumerate() {
+        if row.len() != lat_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{name} row {index} latitude length {} must match lat_i length {lat_len}",
+                    row.len()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Rust data shape written by `MOD_mask_postproc.F90:PatchID_Save`.
