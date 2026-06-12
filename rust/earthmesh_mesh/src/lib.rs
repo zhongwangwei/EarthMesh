@@ -171,3 +171,42 @@ pub fn spherical_centroid_degrees(points: &[LonLatDegrees]) -> Option<LonLatDegr
     let centroid = CartesianPoint::new(sx / n, sy / n, sz / n);
     Some(xyz_to_lonlat_degrees(centroid))
 }
+
+/// Port of `MOD_grid_preprocess:CheckLon`.
+///
+/// The Fortran routine performs a single +/-360 adjustment rather than a full
+/// modulo normalization. Preserve that behavior for parity.
+pub fn normalize_lon_m180_180(lon_degrees: f64) -> f64 {
+    if lon_degrees > 180.0 {
+        lon_degrees - 360.0
+    } else if lon_degrees < -180.0 {
+        lon_degrees + 360.0
+    } else {
+        lon_degrees
+    }
+}
+
+/// Port of `MOD_grid_preprocess:arc_length`.
+///
+/// Computes spherical arc length from Cartesian coordinates using the same
+/// haversine form and float32 squaring emulation described in the Fortran code.
+pub fn arc_length_unit_sphere(a: CartesianPoint, b: CartesianPoint) -> f64 {
+    let r_a = (a.x * a.x + a.y * a.y + a.z * a.z).sqrt();
+    let r_b = (b.x * b.x + b.y * b.y + b.z * b.z).sqrt();
+
+    let lon_a = a.y.atan2(a.x);
+    let lat_a = (a.z / r_a).asin();
+    let lon_b = b.y.atan2(b.x);
+    let lat_b = (b.z / r_b).asin();
+
+    let dlat_half = 0.5 * (lat_a - lat_b);
+    let dlon_half = 0.5 * (lon_a - lon_b);
+
+    let sin_dlat_half_f32 = dlat_half.sin() as f32;
+    let sin_dlon_half_f32 = dlon_half.sin() as f32;
+    let term1 = (sin_dlat_half_f32 * sin_dlat_half_f32) as f64;
+    let term2 = lat_b.cos() * lat_a.cos() * (sin_dlon_half_f32 * sin_dlon_half_f32) as f64;
+
+    let arg = (term1 + term2).sqrt();
+    r_a * 2.0 * arg.asin()
+}

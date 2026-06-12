@@ -101,3 +101,7 @@ Extended `rust/earthmesh_mesh` with a tested Rust port of `MOD_grid_preprocess:l
 ### 2026-06-12: `MOD_grid_preprocess.F90` spherical centroid helper ported
 
 Extended `rust/earthmesh_mesh` with `spherical_centroid_degrees`, a tested Rust port of `MOD_grid_preprocess:centroid_spherical_single`. It preserves the Fortran method: lon/lat vertices are converted to unit Cartesian vectors, averaged component-wise, then converted back to lon/lat. The grid-wide `centroid_spherical_calculation` wrapper over connectivity remains unported.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` longitude normalization and arc length ported
+
+Extended `rust/earthmesh_mesh` with tested ports of `CheckLon` and `arc_length`. `CheckLon` preserves the Fortran single-step +/-360 behavior rather than full modulo wrapping. `arc_length_unit_sphere` preserves the MPAS-compatible mixed precision behavior in the Fortran implementation by squaring the half-angle sine terms as `f32` before converting back to `f64`.
