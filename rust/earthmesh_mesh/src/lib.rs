@@ -1584,6 +1584,10 @@ pub struct SpringjustmentGlobalCoreInput<'a> {
     pub triangles_on_cell: &'a [Vec<usize>],
     pub n_edges_on_cell: &'a [usize],
     pub base_dists_on_edge: f64,
+    pub base_cellwidth: Option<f64>,
+    pub distance_num_rc: usize,
+    pub distance_spacing: DistanceLayerSpacing,
+    pub distance_steps: &'a [GlobalDistanceStep<'a>],
     pub niter_refine: usize,
     pub relax: f64,
     pub radius: f64,
@@ -1604,6 +1608,7 @@ pub struct SpringjustmentGlobalCoreOutput {
     pub cells_on_cell: Vec<Vec<usize>>,
     pub edges_on_edge_tri: Vec<[usize; 4]>,
     pub dists_on_edge: Vec<f64>,
+    pub cellwidth: Option<Vec<f64>>,
     pub edge_lonlat: Vec<LonLatDegrees>,
     pub spring: SpringDynamicsGlobalOutput,
 }
@@ -1890,7 +1895,17 @@ pub fn springjustment_global_core_fortran_indexed(
         &edge_output.vertices_on_edge,
         &edge_output.edges_on_vertex,
     )?;
-    let dists_on_edge = vec![input.base_dists_on_edge; edge_output.cells_on_edge.len()];
+    let distance_output = set_dists_on_edge_global_fortran_indexed(SetDistsOnEdgeGlobalInput {
+        base_dists_on_edge: input.base_dists_on_edge,
+        base_cellwidth: input.base_cellwidth,
+        num_rc: input.distance_num_rc,
+        spacing: input.distance_spacing,
+        triangles_on_cell: input.triangles_on_cell,
+        cells_on_triangle: Some(input.cells_on_triangle),
+        edges_on_vertex: &edge_output.edges_on_vertex,
+        cells_on_edge: &edge_output.cells_on_edge,
+        steps: input.distance_steps,
+    })?;
     let cell_points = input
         .cell_lonlat
         .iter()
@@ -1910,7 +1925,7 @@ pub fn springjustment_global_core_fortran_indexed(
         &cell_connectivity.edges_on_cell,
         &edge_output.cells_on_edge,
         &edges_on_edge_tri,
-        &dists_on_edge,
+        &distance_output.dists_on_edge,
         input.niter_refine,
         input.relax,
         input.radius,
@@ -1991,7 +2006,8 @@ pub fn springjustment_global_core_fortran_indexed(
         edges_on_cell: cell_connectivity.edges_on_cell,
         cells_on_cell: cell_connectivity.cells_on_cell,
         edges_on_edge_tri,
-        dists_on_edge,
+        dists_on_edge: distance_output.dists_on_edge,
+        cellwidth: distance_output.cellwidth,
         edge_lonlat: edge_output.edge_points,
         spring,
     })

@@ -265,3 +265,7 @@ Extended `rust/earthmesh_mesh` with `spring_dynamics_regional_fortran_indexed`, 
 ### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment_global pure core adapter ported
 
 Extended `rust/earthmesh_mesh` with `springjustment_global_core_fortran_indexed`, a tested pure in-memory adapter for the calculation sequence inside `Springjustment_global`. It wires the migrated triangle-neighbor, GetEdge production, ConnectOnCell, EdgesOnedge_tri, global spring dynamics, cell lon/lat refresh, triangle centroid/circumcenter refresh, and final orderVertexArrays kernels without introducing NetCDF/file side effects. Remaining high-level work is distance-step/file adapter integration and `Springjustment_regional_step` orchestration.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment_global distance-step wiring ported
+
+Extended `springjustment_global_core_fortran_indexed` so the pure adapter now invokes the migrated `set_dists_on_edge_global_fortran_indexed` distance-layer workflow after GetEdge/connectivity construction and before global spring dynamics. The adapter now carries updated `dists_on_edge` and optional `cellwidth` outputs, matching the in-memory part of `Springjustment_global` while keeping NetCDF persistence outside the core boundary. Remaining Springjustment work is NetCDF/file adapter integration and `Springjustment_regional_step` high-level orchestration.
