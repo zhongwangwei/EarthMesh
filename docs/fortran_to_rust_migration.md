@@ -293,3 +293,7 @@ Extended `rust/earthmesh_mesh` with `springjustment_regional_from_source_mask_fo
 ### 2026-06-12: `MOD_grid_preprocess.F90` GetArea real MPAS fixture parity added
 
 Added `rust/earthmesh_mesh/tests/mpas_real_fixture.rs`, a compact fixture extracted from `cases/ATMOS_hex_N64_refine2_global_LOM67_251027/result/MPASOUT_NXP0064_global.nc4`. The test validates the migrated `get_area_unit_fortran_indexed` kernel against real MPAS `areaCell` and `areaTriangle` values using x/y/z coordinates and compact reindexed connectivity, without adding a Rust NetCDF dependency. Remaining GetArea work is the NetCDF adapter boundary that loads/persists full production arrays.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` GetEdge real MPAS fixture parity added
+
+Extended the compact MPAS fixture test with a real vertex-ring connectivity case from `MPASOUT_NXP0064_global.nc4`. The test validates `get_edge_connectivity_fortran_indexed` against MPAS `verticesOnEdge`, `edgesOnVertex`, and unordered `cellsOnEdge` topology for the sampled ring, documenting that cell-pair order is an orientation detail handled by later sorting rather than a topology mismatch. Remaining GetEdge work is full NetCDF adapter integration.

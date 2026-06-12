@@ -1,9 +1,21 @@
-use earthmesh_mesh::{get_area_unit_fortran_indexed, CartesianPoint, GetAreaUnitInput};
+use earthmesh_mesh::{
+    get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed, CartesianPoint,
+    GetAreaUnitInput,
+};
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(
         (actual - expected).abs() <= tolerance,
         "actual {actual} expected {expected} tolerance {tolerance}"
+    );
+}
+
+fn assert_pair_unordered(actual: [usize; 2], expected: [usize; 2]) {
+    assert!(
+        actual == expected || actual == [expected[1], expected[0]],
+        "actual {:?} expected unordered {:?}",
+        actual,
+        expected
     );
 }
 
@@ -174,4 +186,40 @@ fn get_area_matches_real_mpas_fixture_for_cell_and_vertex_areas() {
     approx_eq(output.area_cell[2], 2.89334492920077725e-04, 1.0e-12);
     approx_eq(output.area_cell[3], 2.89565002952682569e-04, 1.0e-12);
     approx_eq(output.area_cell[4], 2.91760534643355750e-04, 1.0e-12);
+}
+
+#[test]
+fn get_edge_connectivity_matches_real_mpas_fixture_for_vertex_ring() {
+    // Compact reindexing of MPAS vertices 1000, 999, 1001, and 1127 plus
+    // cells 438, 502, and 501 from MPASOUT_NXP0064_global.nc4.
+    let triangle_neighbors = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [3, 4, 5],
+        [2, 0, 0],
+        [2, 0, 0],
+        [2, 0, 0],
+    ];
+    let cells_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [2, 3, 4],
+        [2, 4, 0],
+        [2, 3, 0],
+        [4, 3, 0],
+    ];
+
+    let output = get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_vertex)
+        .expect("valid compact MPAS GetEdge fixture");
+
+    assert_eq!(output.vertices_on_edge[2], [2, 3]);
+    assert_eq!(output.vertices_on_edge[3], [2, 4]);
+    assert_eq!(output.vertices_on_edge[4], [2, 5]);
+    assert_pair_unordered(output.cells_on_edge[2], [2, 4]);
+    assert_pair_unordered(output.cells_on_edge[3], [2, 3]);
+    assert_pair_unordered(output.cells_on_edge[4], [4, 3]);
+    assert_eq!(output.edges_on_vertex[2], [2, 3, 4]);
+    assert_eq!(output.edges_on_vertex[3][0], 2);
+    assert_eq!(output.edges_on_vertex[4][0], 3);
+    assert_eq!(output.edges_on_vertex[5][0], 4);
 }

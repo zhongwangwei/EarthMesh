@@ -227,14 +227,15 @@
         "Springjustment_regional_step refinement-mask composition adapter ported to rust/earthmesh_mesh",
         "refine_sjx_regional_make source-mask classifier ported to rust/earthmesh_mesh",
         "Springjustment_regional_step source-mask composition adapter ported to rust/earthmesh_mesh",
-        "GetArea real MPAS mesh fixture parity added for rust/earthmesh_mesh"
+        "GetArea real MPAS mesh fixture parity added for rust/earthmesh_mesh",
+        "GetEdge real MPAS mesh fixture parity added for rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
         "Springjustment_global/Springjustment_regional_step NetCDF adapter loading and persistence wiring",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea NetCDF adapter integration",
-        "GetEdge real MPAS mesh fixture parity and adapter integration"
+        "GetEdge NetCDF adapter integration"
       ]
     },
     {
