@@ -597,3 +597,7 @@ Added `MpasEdgeReference` and `read_mpas_edge_reference_netcdf` in `rust/earthme
 ### 2026-06-12: distsOnEdge NetCDF writer ported
 
 Added `DistsOnEdgeMesh`, `DistsOnEdgeWriteReport`, and `write_dists_on_edge_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:distsOnEdge_save`. The writer preserves the legacy `num_edge` dimension and variables `lonv`, `latv`, and `distsOnEdge`, with validation that edge coordinates and distance arrays have matching lengths. This closes another Springjustment/global persistence dependency; remaining grid-preprocess adapter work is composing these file writers/readers around the migrated GetEdge/GetArea/spring kernels.
+
+### 2026-06-12: cellwidth NetCDF writer ported
+
+Added `CellwidthMesh`, `CellwidthWriteReport`, and `write_cellwidth_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:cellwidth_save`. The writer preserves the legacy `num_dbx` dimension and variables `lonw`, `latw`, and `cellwidth`, validates coordinate/value length consistency, and round-trips with the existing `read_cellwidth_netcdf` adapter. This completes the read/write pair used by MPAS-Simple and the Springjustment/global file pipeline.

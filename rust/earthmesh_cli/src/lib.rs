@@ -277,6 +277,13 @@ pub struct MpasSimpleMesh {
     pub mesh_density: Vec<f64>,
 }
 
+/// Rust data shape written by `MOD_file_preprocess.F90:cellwidth_save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CellwidthMesh {
+    pub cell_points: Vec<LonLatPoint>,
+    pub cellwidth: Vec<f64>,
+}
+
 /// Rust data shape written by `MOD_file_preprocess.F90:distsOnEdge_save`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DistsOnEdgeMesh {
@@ -411,6 +418,13 @@ pub struct MpasMeshWriteReport {
     pub n_cells: usize,
     pub n_vertices: usize,
     pub n_edges: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:cellwidth_save` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellwidthWriteReport {
+    pub output: PathBuf,
+    pub num_dbx: usize,
 }
 
 /// Evidence report from writing `MOD_file_preprocess.F90:distsOnEdge_save` output.
@@ -724,6 +738,32 @@ pub fn write_dists_on_edge_netcdf(
     Ok(DistsOnEdgeWriteReport {
         output: output.to_path_buf(),
         num_edge,
+    })
+}
+
+/// Write the `cellwidth_NXP####_global.nc4` schema produced by
+/// `MOD_file_preprocess.F90:cellwidth_save`.
+pub fn write_cellwidth_netcdf(
+    output: impl AsRef<Path>,
+    mesh: &CellwidthMesh,
+) -> io::Result<CellwidthWriteReport> {
+    validate_cellwidth_mesh(mesh)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let num_dbx = mesh.cell_points.len();
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_dbx", num_dbx)
+        .map_err(netcdf_to_io_error)?;
+    write_f64_1d(&mut file, "lonw", "num_dbx", &lon_values(&mesh.cell_points))?;
+    write_f64_1d(&mut file, "latw", "num_dbx", &lat_values(&mesh.cell_points))?;
+    write_f64_1d(&mut file, "cellwidth", "num_dbx", &mesh.cellwidth)?;
+
+    Ok(CellwidthWriteReport {
+        output: output.to_path_buf(),
+        num_dbx,
     })
 }
 
@@ -3358,6 +3398,20 @@ fn validate_earthmesh_info(info: &EarthmeshInfo) -> io::Result<()> {
                 "refine_degree_f and seaorland_ustr_f must have matching length: {} != {}",
                 info.refine_degree_f.len(),
                 info.seaorland_ustr_f.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cellwidth_mesh(mesh: &CellwidthMesh) -> io::Result<()> {
+    if mesh.cellwidth.len() != mesh.cell_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cellwidth length {} must match cell_points length {}",
+                mesh.cellwidth.len(),
+                mesh.cell_points.len()
             ),
         ));
     }

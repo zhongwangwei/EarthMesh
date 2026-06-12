@@ -182,7 +182,8 @@
         "MPAS_info_Save graph.info writer ported to rust/earthmesh_cli",
         "MPAS_Mesh_Save full MPAS NetCDF writer ported to rust/earthmesh_cli",
         "data_read MPAS edge-reference reader ported to rust/earthmesh_cli",
-        "distsOnEdge_save NetCDF writer ported to rust/earthmesh_cli"
+        "distsOnEdge_save NetCDF writer ported to rust/earthmesh_cli",
+        "cellwidth_save NetCDF writer ported to rust/earthmesh_cli"
       ]
     },
     {
@@ -275,7 +276,8 @@
         "Springjustment_regional_step source-mask composition adapter ported to rust/earthmesh_mesh",
         "GetArea real MPAS mesh fixture parity added for rust/earthmesh_mesh",
         "GetEdge real MPAS mesh fixture parity added for rust/earthmesh_mesh",
-        "Springjustment_global distsOnEdge_save writer dependency ported to rust/earthmesh_cli"
+        "Springjustment_global distsOnEdge_save writer dependency ported to rust/earthmesh_cli",
+        "Springjustment_global cellwidth_save writer dependency ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
