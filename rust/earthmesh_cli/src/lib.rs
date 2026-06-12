@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use earthmesh_core::MkgrdWorkspacePlan;
+use earthmesh_core::{MaskOperation, MkgrdWorkspacePlan};
 
 /// Evidence report from applying the filesystem subset of `mkgrd.F90:read_nl`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -220,6 +220,205 @@ pub fn apply_read_nl_workspace_plan(
     report.copied_namelist_to = Some(namelist_save_path);
 
     Ok(report)
+}
+
+/// Result of applying one Rust `Mask_make` operation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MaskOperationReport {
+    pub sources: Vec<PathBuf>,
+    pub outputs: Vec<PathBuf>,
+}
+
+/// Apply one `mkgrd.F90:Mask_make(mask_select, type_select, mask_fprefix)` call.
+pub fn apply_mask_operation(
+    operation: &MaskOperation,
+    file_dir: impl AsRef<Path>,
+    max_iter_spc: usize,
+    counts: &mut MaskCountState,
+) -> io::Result<MaskOperationReport> {
+    let discovery = discover_mask_sources(&operation.mask_fprefix)?;
+    if discovery.files.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no mask sources matched mask_fprefix",
+        ));
+    }
+
+    let file_dir = file_dir.as_ref();
+    let mut report = MaskOperationReport {
+        sources: discovery.files.clone(),
+        outputs: Vec::new(),
+    };
+
+    for source in discovery.files {
+        let output = match operation.type_select.as_str() {
+            "bbox" => apply_bbox_source(
+                &source,
+                &operation.mask_select,
+                file_dir,
+                max_iter_spc,
+                counts,
+            )?,
+            "circle" => apply_circle_source(
+                &source,
+                &operation.mask_select,
+                file_dir,
+                max_iter_spc,
+                counts,
+            )?,
+            "close" => apply_close_source(
+                &source,
+                &operation.mask_select,
+                file_dir,
+                max_iter_spc,
+                counts,
+            )?,
+            "lambert" => Some(convert_lambert_mask_netcdf(
+                &source,
+                &operation.mask_select,
+                file_dir,
+                counts,
+            )?),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported type_select {other}"),
+                ));
+            }
+        };
+        if let Some(output) = output {
+            report.outputs.push(output);
+        }
+    }
+
+    Ok(report)
+}
+
+/// Preserve the `read_nl` specified-refinement guard.
+pub fn validate_mask_refine_reaches_max_iter_spc(
+    counts: &MaskCountState,
+    max_iter_spc: usize,
+) -> io::Result<()> {
+    if max_iter_spc >= counts.mask_refine_ndm.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "max_iter_spc must fit mask_refine_ndm 0:9",
+        ));
+    }
+    if counts.mask_refine_ndm[max_iter_spc] == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mask_refine_ndm(max_iter_spc) must be larger than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn apply_bbox_source(
+    source: &Path,
+    mask_select: &str,
+    file_dir: &Path,
+    max_iter_spc: usize,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>> {
+    match source_extension(source).as_deref() {
+        Some("nml") => {
+            let Some(mask) = parse_bbox_mask_nml(source, max_iter_spc)? else {
+                return Ok(None);
+            };
+            let output = counts.next_bbox_output(mask_select, mask.refine_degree, file_dir)?;
+            write_bbox_mask_netcdf(&output, &mask)?;
+            Ok(Some(output))
+        }
+        Some("nc") | Some("nc4") => {
+            let refine = read_bbox_refine_netcdf(source)?;
+            copy_bbox_mask_netcdf_with_refine(
+                source,
+                mask_select,
+                refine,
+                max_iter_spc,
+                file_dir,
+                counts,
+            )
+        }
+        _ => Err(unsupported_mask_source(source)),
+    }
+}
+
+fn apply_circle_source(
+    source: &Path,
+    mask_select: &str,
+    file_dir: &Path,
+    max_iter_spc: usize,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>> {
+    match source_extension(source).as_deref() {
+        Some("nml") => {
+            let Some(mask) = parse_circle_mask_nml(source, max_iter_spc)? else {
+                return Ok(None);
+            };
+            let output = counts.next_circle_output(mask_select, mask.refine_degree, file_dir)?;
+            write_circle_mask_netcdf(&output, &mask)?;
+            Ok(Some(output))
+        }
+        Some("nc") | Some("nc4") => {
+            let refine = read_circle_refine_netcdf(source)?;
+            copy_circle_mask_netcdf_with_refine(
+                source,
+                mask_select,
+                refine,
+                max_iter_spc,
+                file_dir,
+                counts,
+            )
+        }
+        _ => Err(unsupported_mask_source(source)),
+    }
+}
+
+fn apply_close_source(
+    source: &Path,
+    mask_select: &str,
+    file_dir: &Path,
+    max_iter_spc: usize,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>> {
+    match source_extension(source).as_deref() {
+        Some("nml") => {
+            let Some(mask) = parse_close_mask_nml(source, max_iter_spc)? else {
+                return Ok(None);
+            };
+            let output = counts.next_close_output(mask_select, mask.refine_degree, file_dir)?;
+            write_close_mask_netcdf(&output, &mask)?;
+            Ok(Some(output))
+        }
+        Some("nc") | Some("nc4") => {
+            let refine = read_close_refine_netcdf(source)?;
+            copy_close_mask_netcdf_with_refine(
+                source,
+                mask_select,
+                refine,
+                max_iter_spc,
+                file_dir,
+                counts,
+            )
+        }
+        _ => Err(unsupported_mask_source(source)),
+    }
+}
+
+fn source_extension(source: &Path) -> Option<String> {
+    source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+fn unsupported_mask_source(source: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("unsupported mask source extension for {}", source.display()),
+    )
 }
 
 /// Prefix discovery result for the first shell-listing step in `Mask_make`.
