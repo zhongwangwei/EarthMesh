@@ -422,7 +422,8 @@
         "iterD_judge 1+n weak-concavity boundary segment marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
         "OnedivideFour_connection ref_lbx/mrl_new state update ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
         "OnedivideFour_renew child coordinate/connectivity renewal ported to rust/earthmesh_mesh with dateline and storage fixture coverage",
-        "ref_sjx_isreverse_judge reverse one-into-two marker and segment rewrite ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage"
+        "ref_sjx_isreverse_judge reverse one-into-two marker and segment rewrite ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
+        "OnedivideTwo forward/reverse transition split geometry and child mapping ported to rust/earthmesh_mesh with dateline fixture coverage"
       ]
     }
   ]

@@ -8251,3 +8251,166 @@ pub fn refine_isreverse_judge_fortran_indexed(
 
     Ok(ref_sjx)
 }
+
+/// Port of `MOD_refine.F90:OnedivideTwo`.
+///
+/// Splits each marked transition triangle into two child triangles.  Forward
+/// mode chooses the neighboring already-refined triangle (`mrl_new == 4`) to
+/// identify the shared edge; reverse mode chooses the neighboring unrefined
+/// triangle (`mrl_new == 1`).  The parent triangle connectivity is cleared to
+/// Fortran placeholder `1`, child connectivity and `sjx_child` are filled, and
+/// dateline-crossing coordinates follow the Fortran `CheckCrossing` and
+/// `crossline_check` rules.
+pub fn refine_onedivide_two_fortran_indexed(
+    iter: usize,
+    is_reverse: bool,
+    num_vertex: usize,
+    num_mp: &[usize],
+    num_wp: &[usize],
+    triangle_neighbors: &[Vec<usize>],
+    cells_on_triangle: &[[usize; 3]],
+    ref_sjx: &[i32],
+    mrl_new: &[i32],
+    triangle_points: &mut [LonLatDegrees],
+    cell_points: &mut [LonLatDegrees],
+    cells_on_triangle_new: &mut [[usize; 3]],
+    sjx_child: &mut [[usize; 2]],
+) -> io::Result<()> {
+    if iter == 0 || iter >= num_mp.len() || iter >= num_wp.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("iter {iter} must address num_mp/num_wp previous and current slots"),
+        ));
+    }
+    let sjx_points = num_mp[iter - 1];
+    if sjx_points >= triangle_neighbors.len()
+        || sjx_points >= cells_on_triangle.len()
+        || sjx_points >= ref_sjx.len()
+        || sjx_points >= mrl_new.len()
+        || sjx_points >= cells_on_triangle_new.len()
+        || sjx_points >= sjx_child.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("previous sjx_points {sjx_points} must be addressable in triangle arrays"),
+        ));
+    }
+    if num_mp[iter] >= triangle_points.len() || num_mp[iter] >= cells_on_triangle_new.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "num_mp[{iter}] {} exceeds triangle output storage",
+                num_mp[iter]
+            ),
+        ));
+    }
+    if num_wp[iter] >= cell_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "num_wp[{iter}] {} exceeds cell output storage",
+                num_wp[iter]
+            ),
+        ));
+    }
+    if num_vertex > sjx_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("num_vertex {num_vertex} exceeds previous sjx_points {sjx_points}"),
+        ));
+    }
+    validate_triangle_neighbor_rows(num_vertex, sjx_points, triangle_neighbors)?;
+
+    let mut refed_iter = 0_usize;
+    for triangle in (num_vertex + 1)..=sjx_points {
+        if ref_sjx[triangle] == 0 {
+            continue;
+        }
+        let required_state = if is_reverse { 1 } else { 4 };
+        let split_neighbor = triangle_neighbors[triangle]
+            .iter()
+            .copied()
+            .filter(|&neighbor| mrl_new[neighbor] == required_state)
+            .last()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "triangle {triangle} has no {} neighbor for one-into-two split",
+                        if is_reverse { "unrefined" } else { "refined" }
+                    ),
+                )
+            })?;
+        let neighbor_cells = cells_on_triangle[split_neighbor];
+        let parent_cells = cells_on_triangle_new[triangle];
+        let unique_pos = parent_cells
+            .iter()
+            .position(|cell| !neighbor_cells.contains(cell))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "triangle {triangle} has no vertex opposite split neighbor {split_neighbor}"
+                    ),
+                )
+            })?;
+        let w1 = parent_cells[unique_pos];
+        let w2 = parent_cells[(unique_pos + 1) % 3];
+        let w3 = parent_cells[(unique_pos + 2) % 3];
+        for &cell in &[w1, w2, w3] {
+            if cell == 0 || cell >= cell_points.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("triangle {triangle} references invalid cell {cell}"),
+                ));
+            }
+        }
+        let mut split_points = [cell_points[w1], cell_points[w2], cell_points[w3]];
+        let crosses_dateline = split_points
+            .iter()
+            .map(|point| point.lon_degrees)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - split_points
+                .iter()
+                .map(|point| point.lon_degrees)
+                .fold(f64::INFINITY, f64::min)
+            > 180.0;
+        if crosses_dateline {
+            check_crossing_fortran_lonlat(&mut split_points);
+        }
+
+        let mut new_cell_point = midpoint_lonlat(split_points[1], split_points[2]);
+        let mut child_point_a = average_lonlat3(split_points[0], new_cell_point, split_points[1]);
+        let mut child_point_b = average_lonlat3(split_points[0], new_cell_point, split_points[2]);
+        let m1 = num_mp[iter - 1] + refed_iter * 2 + 1;
+        let m2 = num_mp[iter - 1] + refed_iter * 2 + 2;
+        let w4 = num_wp[iter - 1] + refed_iter + 1;
+        if m2 >= triangle_points.len()
+            || m2 >= cells_on_triangle_new.len()
+            || w4 >= cell_points.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("triangle {triangle} exceeds allocated one-into-two child storage"),
+            ));
+        }
+
+        cells_on_triangle_new[m1] = [w1, w2, w4];
+        cells_on_triangle_new[m2] = [w1, w3, w4];
+        if crosses_dateline {
+            check_crossing_fortran_lonlat(std::slice::from_mut(&mut child_point_a));
+            check_crossing_fortran_lonlat(std::slice::from_mut(&mut child_point_b));
+            check_crossing_fortran_lonlat(std::slice::from_mut(&mut new_cell_point));
+        }
+        triangle_points[m1] = child_point_a;
+        triangle_points[m2] = child_point_b;
+        cell_points[w4] = new_cell_point;
+        cells_on_triangle_new[triangle] = [1, 1, 1];
+        sjx_child[triangle] = [m1, m2];
+        refed_iter += 1;
+    }
+
+    crossline_check_fortran(iter, num_mp, num_wp, triangle_points, cell_points)?;
+
+    Ok(())
+}
