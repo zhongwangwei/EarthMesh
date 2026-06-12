@@ -385,3 +385,7 @@ Extended `rust/earthmesh_cli` with `discover_mask_sources`, the first Rust adapt
 ### 2026-06-12: `bbox_mask_make` text input parsing and numbering ported
 
 Extended `rust/earthmesh_cli` with the text `.nml` branch of `mkgrd.F90:bbox_mask_make`. The new `parse_bbox_mask_nml` preserves the Fortran free-format `bbox_num`, `bbox_refine`, and bbox point parsing, validates West/East and North/South orientation, and returns no output plan when `refine_degree > max_iter_spc` just like the Fortran early return. Added `MaskCountState::next_bbox_output` to reproduce `mask_domain_ndm`, `mask_refine_ndm(refine_degree)`, `mask_patch_ndm(refine_degree)`, and the `tmpfile/{mask_select}_bbox_{refine}_{NN}.nc4` output naming. NetCDF bbox copy/write remains pending.
+
+### 2026-06-12: `bbox_mask_make` NetCDF copy branch adapter ported
+
+Extended `rust/earthmesh_cli` with `copy_bbox_mask_netcdf_with_refine`, covering the `.nc/.nc4` branch side effects after `bbox_refine` has been read: extension validation, early no-op when `refine_degree > max_iter_spc`, Fortran-compatible counter advancement through `MaskCountState`, creation of the `tmpfile` parent, and byte-for-byte copy into `tmpfile/{mask_select}_bbox_{refine}_{NN}.nc4`. Reading `bbox_refine` from NetCDF metadata and writing bbox NetCDF files from text `.nml` points remain pending so that the NetCDF dependency boundary can be decided separately.

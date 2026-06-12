@@ -101,10 +101,11 @@
         "read_nl workspace directories, namelist.save path, mask_restart short-circuit, and Mask_make call plan ported to rust/earthmesh_core",
         "read_nl filesystem setup/removal, filelist cleanup, and namelist.save copy adapter started in rust/earthmesh_cli",
         "Mask_make path split and mask_fprefix source discovery ported to rust/earthmesh_cli without shell ls",
-        "bbox_mask_make text nml parsing, orientation validation, early refine skip, and bbox output numbering ported to rust/earthmesh_cli"
+        "bbox_mask_make text nml parsing, orientation validation, early refine skip, and bbox output numbering ported to rust/earthmesh_cli",
+        "bbox_mask_make NetCDF copy branch, extension validation, early refine skip, and tmpfile byte copy ported to rust/earthmesh_cli with externally supplied bbox_refine"
       ],
       "remaining_rust_surfaces": [
-        "Mask_make bbox NetCDF copy/write plus lambert/circle/close generation and mask-count validation adapter",
+        "Mask_make bbox NetCDF bbox_refine reader and text bbox NetCDF writer plus lambert/circle/close generation and mask-count validation adapter",
         "mode4mesh_make and mask creation orchestration",
         "gridinit/voronoi/pcvt/gridfile_write pipeline",
         "Rust CLI replacement for mkgrd.x end-to-end workflows"

@@ -15,6 +15,40 @@ pub struct WorkspaceApplyReport {
     pub copied_namelist_to: Option<PathBuf>,
 }
 
+/// Copy a bbox NetCDF source into the Fortran tmpfile naming scheme.
+///
+/// This covers the `bbox_mask_make` `.nc/.nc4` branch after the caller has
+/// obtained `bbox_refine` from the NetCDF metadata. If `refine_degree` is above
+/// `max_iter_spc`, the function returns `Ok(None)` and leaves counters/files
+/// untouched, matching the Fortran early return.
+pub fn copy_bbox_mask_netcdf_with_refine(
+    inputfile: impl AsRef<Path>,
+    mask_select: &str,
+    refine_degree: usize,
+    max_iter_spc: usize,
+    file_dir: impl AsRef<Path>,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>> {
+    let inputfile = inputfile.as_ref();
+    let extension = inputfile.extension().and_then(|value| value.to_str());
+    if !matches!(extension, Some("nc") | Some("nc4")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bbox NetCDF input must end with .nc or .nc4",
+        ));
+    }
+    if refine_degree > max_iter_spc {
+        return Ok(None);
+    }
+
+    let output = counts.next_bbox_output(mask_select, refine_degree, file_dir)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(inputfile, &output)?;
+    Ok(Some(output))
+}
+
 /// Apply the non-mask filesystem side effects described by a Rust read_nl plan.
 ///
 /// This intentionally does not execute `Mask_make`; callers can inspect

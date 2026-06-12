@@ -108,3 +108,45 @@ fn bbox_mask_output_plan_matches_fortran_numbering() {
     assert_eq!(counts.mask_refine_ndm[3], 2);
     assert_eq!(counts.mask_patch_ndm[3], 1);
 }
+
+#[test]
+fn copy_bbox_mask_netcdf_matches_fortran_skip_copy_and_numbering() {
+    let root = std::env::temp_dir().join(format!("earthmesh_cli_bbox_copy_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("tmpfile")).expect("create tmpfile");
+    let source = root.join("source_bbox.nc4");
+    fs::write(&source, b"pretend netcdf bytes").expect("write source nc4");
+    let mut counts = earthmesh_cli::MaskCountState::default();
+
+    let skipped = earthmesh_cli::copy_bbox_mask_netcdf_with_refine(
+        &source,
+        "mask_refine",
+        6,
+        5,
+        &root,
+        &mut counts,
+    )
+    .expect("too-high refine is a no-op like Fortran");
+    assert!(skipped.is_none());
+    assert_eq!(counts.mask_refine_ndm[6], 0);
+
+    let copied = earthmesh_cli::copy_bbox_mask_netcdf_with_refine(
+        &source,
+        "mask_refine",
+        4,
+        5,
+        &root,
+        &mut counts,
+    )
+    .expect("copy valid bbox nc4")
+    .expect("valid refine yields output");
+
+    assert_eq!(copied, root.join("tmpfile/mask_refine_bbox_4_01.nc4"));
+    assert_eq!(
+        fs::read(&copied).expect("read copied nc4"),
+        b"pretend netcdf bytes"
+    );
+    assert_eq!(counts.mask_refine_ndm[4], 1);
+
+    let _ = fs::remove_dir_all(&root);
+}
