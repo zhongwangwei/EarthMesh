@@ -190,3 +190,30 @@ fn icosahedron_m_neighbor_derivation_matches_tri_neighbors_m_loop() {
     assert_eq!(m_neighbors[10].iu, [2, 3, 4, 1, 1, 1, 1]);
     assert_eq!(m_neighbors[10].iw, [6, 8, 10, 1, 1, 1, 1]);
 }
+
+#[test]
+fn icosahedron_tri_neighbors_wrapper_matches_manual_w_u_m_sequence() {
+    let grid = earthmesh_mesh::icosahedron_initial_grid_fortran(1).expect("valid nxp grid");
+    let mut manual = earthmesh_mesh::icosahedron_fill_diamonds_fortran(1)
+        .expect("valid fill_diamond connectivity");
+    earthmesh_mesh::derive_icosahedron_w_neighbors_fortran(&mut manual)
+        .expect("valid manual W derivation");
+    earthmesh_mesh::derive_icosahedron_u_neighbors_fortran(&mut manual)
+        .expect("valid manual U derivation");
+    let expected_m = earthmesh_mesh::derive_icosahedron_m_neighbors_fortran(
+        grid.nmd,
+        &manual.u_edges,
+        &manual.w_faces,
+    )
+    .expect("valid manual M derivation");
+
+    let mut wrapped = earthmesh_mesh::icosahedron_fill_diamonds_fortran(1)
+        .expect("valid fill_diamond connectivity");
+    let actual_m = earthmesh_mesh::derive_icosahedron_tri_neighbors_fortran(grid.nmd, &mut wrapped)
+        .expect("valid integrated tri_neighbors derivation");
+
+    assert_eq!(wrapped, manual);
+    assert_eq!(actual_m, expected_m);
+    assert_eq!(wrapped.w_faces[2].npoly, 3);
+    assert_eq!(wrapped.u_edges[3].mrlu, 1);
+}

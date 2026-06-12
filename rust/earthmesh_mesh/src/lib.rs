@@ -837,6 +837,20 @@ pub fn derive_icosahedron_m_neighbors_fortran(
     Some(m_points)
 }
 
+/// Integrated Rust wrapper for `icosahedron.F90:tri_neighbors`.
+///
+/// The mutable U/W tables are updated in the same high-level sequence as the
+/// Fortran subroutine: W-face neighbors, U-edge reciprocal neighbors, then
+/// M-point polygon rings. The returned M table is Fortran-indexed.
+pub fn derive_icosahedron_tri_neighbors_fortran(
+    nmd: usize,
+    connectivity: &mut IcosahedronDiamondConnectivity,
+) -> Option<Vec<IcosahedronMPointNeighbors>> {
+    derive_icosahedron_w_neighbors_fortran(connectivity)?;
+    derive_icosahedron_u_neighbors_fortran(connectivity)?;
+    derive_icosahedron_m_neighbors_fortran(nmd, &connectivity.u_edges, &connectivity.w_faces)
+}
+
 /// Shared Rust port of `icosahedron.F90:mdloopf`, `udloopf`, and `wdloopf`.
 ///
 /// The three Fortran routines have identical flag semantics: `init == 'f'`
