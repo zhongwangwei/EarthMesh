@@ -405,3 +405,7 @@ Extended `rust/earthmesh_cli` with `LambertVertices`, `Mode4Mesh`, `read_lambert
 ### 2026-06-12: `Mask_make` dispatcher and refine-count validation ported
 
 Extended `rust/earthmesh_cli` with `apply_mask_operation` and `MaskOperationReport`, wiring the Rust `MaskOperation` plan into bbox, lambert, circle, and close source handlers over `discover_mask_sources`. Text `.nml` inputs now parse and write NetCDF outputs through the shared `MaskCountState`, while `.nc/.nc4` inputs read their refine metadata and copy or convert with Fortran-compatible skip/count behavior. Added `validate_mask_refine_reaches_max_iter_spc` to preserve the specified-refinement `read_nl` guard that requires at least one `mask_refine` source at `max_iter_spc`. Remaining `mkgrd.F90` work moves beyond Mask_make into mode4mesh/gridinit/voronoi/pcvt/gridfile_write orchestration and final Rust CLI replacement.
+
+### 2026-06-12: `mode4mesh_make` Lambert NetCDF branch ported
+
+Extended `rust/earthmesh_cli` with `Mode4MeshMakeReport` and `mode4mesh_make_netcdf`, covering the active Lambert `.nc/.nc4` branch of `mkgrd.F90:mode4mesh_make`. The adapter reuses the migrated Lambert vertex reader and mode4 mesh conversion, writes `Mode4_Mesh_Save`-compatible NetCDF outputs to a requested gridfile path, reports bound/mode point counts, and preserves the legacy unsupported paths as explicit `InvalidInput` errors for Lambert `.nml`, lonlat NetCDF, cubical, and unknown grid selections. Remaining `mkgrd.F90` work is the gridinit/voronoi/pcvt/gridfile_write pipeline and final Rust CLI orchestration.
