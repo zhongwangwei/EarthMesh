@@ -1,6 +1,6 @@
 use earthmesh_mesh::{
-    area_judge_minmax_range_make_fortran_indexed, area_judge_source_find_fortran_indexed,
-    AreaJudgeAxis, AreaJudgeSourceBounds,
+    area_judge_closed_curve_fill_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
+    area_judge_source_find_fortran_indexed, AreaJudgeAxis, AreaJudgeSourceBounds, LonLatDegrees,
 };
 
 fn one_degree_lon_vertices_fortran_indexed() -> Vec<f64> {
@@ -142,5 +142,72 @@ fn minmax_range_make_preserves_fortran_eastern_and_southern_edge_adjustments() {
             maxlat_source: 180,
             minlat_source: 180,
         })
+    );
+}
+
+#[test]
+fn closed_curve_fill_marks_cells_between_sorted_ray_intersections() {
+    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
+    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+    let square = [
+        LonLatDegrees::new(0.0, 2.0),
+        LonLatDegrees::new(2.0, 2.0),
+        LonLatDegrees::new(2.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+    ];
+
+    let filled = area_judge_closed_curve_fill_fortran_indexed(
+        &square,
+        &lon_vertices,
+        &lat_vertices,
+        1,
+        360,
+        180,
+        false,
+    )
+    .expect("square fill should be valid");
+
+    assert_eq!(filled.patch_count, 4);
+    assert_eq!(
+        filled.cells,
+        vec![(181, 89), (182, 89), (181, 90), (182, 90)]
+    );
+}
+
+#[test]
+fn closed_curve_fill_restores_shifted_dateline_longitudes() {
+    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
+    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+    let shifted_square = [
+        LonLatDegrees::new(-2.0, 2.0),
+        LonLatDegrees::new(2.0, 2.0),
+        LonLatDegrees::new(2.0, 0.0),
+        LonLatDegrees::new(-2.0, 0.0),
+    ];
+
+    let filled = area_judge_closed_curve_fill_fortran_indexed(
+        &shifted_square,
+        &lon_vertices,
+        &lat_vertices,
+        1,
+        360,
+        180,
+        true,
+    )
+    .expect("dateline-shifted fill should be valid");
+
+    assert_eq!(filled.patch_count, 8);
+    assert_eq!(
+        filled.cells,
+        vec![
+            (359, 89),
+            (360, 89),
+            (1, 89),
+            (2, 89),
+            (359, 90),
+            (360, 90),
+            (1, 90),
+            (2, 90)
+        ]
     );
 }
