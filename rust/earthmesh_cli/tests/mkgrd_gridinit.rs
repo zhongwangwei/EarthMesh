@@ -87,6 +87,53 @@ fn earthmesh_cli_binary_runs_gridinit_namelist() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_existing_mode_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let mode_file = root.join("source_mode.nc4");
+    let source_mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 1.0 }],
+        w_points: vec![earthmesh_cli::LonLatPoint { lon: 2.0, lat: 3.0 }],
+        m_to_w: vec![[1, 1, 1]],
+        w_to_m: vec![vec![1, 1, 1, 1, 1, 1, 1]],
+        n_w_to_m: vec![1],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&mode_file, &source_mesh)
+        .expect("write source EarthMesh mode file");
+
+    let namelist = root.join("mkgrd_existing.nml");
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_existing'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='{}'\n  NL%mode_file_description='EarthMesh'\n  NL%refine=.false.\n  NL%niter=0\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='MPAS'\n/\n",
+            mode_file.display()
+        ),
+    )
+    .expect("write namelist");
+
+    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
+        .expect("copy existing EarthMesh mode file");
+
+    assert_eq!(report.gridfile.sjx_points, 1);
+    assert_eq!(report.gridfile.lbx_points, 1);
+    assert_eq!(
+        report.gridfile.output,
+        root.join("case_existing/gridfile/gridfile_NXP0001_01_hex.nc4")
+    );
+    assert_eq!(
+        fs::read(&report.gridfile.output).unwrap(),
+        fs::read(&mode_file).unwrap()
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn assert_close(actual: f64, expected: f64, tolerance: f64) {
     assert!(
         (actual - expected).abs() <= tolerance,

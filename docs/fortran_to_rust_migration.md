@@ -441,3 +441,7 @@ Extended `rust/earthmesh_cli` with `run_mkgrd_gridinit_global_namelist` and a mi
 ### 2026-06-12: full NXP64 Rust gridinit gridfile parity fixture added
 
 Added an ignored long-running `rust/earthmesh_cli` fixture for the fully migrated initial gridinit path at `NXP=64, niter=5000, beta=1.0, relax=0.035`. The fixture runs the Rust namelist-to-gridfile path, writes `gridfile_NXP0064_01_hex.nc4`, and compares dimensions, sampled `GLONM/GLATM/GLONW/GLATW`, `itab_m%iw`, and `n_ngrwm` against the archived Fortran `cases/ATMOS_hex_N64_refine2_global_LOM67_251027/gridfile/gridfile_NXP0064_01_hex.nc4`. This closes release-scale parity for the no-existing-`mode_file` initial gridinit branch; remaining `mkgrd.x` migration work is restart/remask, existing mode-file ingestion, and refine/postprocess orchestration after the initial gridfile.
+
+### 2026-06-12: existing EarthMesh `mode_file` ingestion branch ported
+
+Extended `rust/earthmesh_cli` with `copy_existing_earthmesh_mode_file` and wired `run_mkgrd_gridinit_global_namelist` to mirror the Fortran branch where `mode_file` exists and `mode_file_description='EarthMesh'`. The Rust path now applies the workspace/mask plan, validates the source gridfile dimensions, copies the existing EarthMesh gridfile into `gridfile/gridfile_NXP####_01_<mode_grid>.nc4`, and reports copied dimensions without regenerating the grid. Existing MPAS/FVCOM/IAP-Ocean mode-file converters remain explicit unsupported branches until their readers are migrated.

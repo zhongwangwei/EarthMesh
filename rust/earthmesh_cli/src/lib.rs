@@ -48,13 +48,6 @@ pub fn run_mkgrd_gridinit_global_namelist(
             ),
         ));
     }
-    let mode_file = PathBuf::from(config.mode_file.trim());
-    if mode_file.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "reading an existing mode_file is not yet migrated to Rust",
-        ));
-    }
     if config.nxp <= 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -67,28 +60,41 @@ pub fn run_mkgrd_gridinit_global_namelist(
             "niter must be non-negative for gridinit",
         ));
     }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let niter = usize::try_from(config.niter)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "niter must fit usize"))?;
 
     let plan = config.read_nl_workspace_plan(None);
     let workspace_mask =
         apply_workspace_and_mask_operations(&plan, namelist_source, workdir, 9, false)?;
-    let state = earthmesh_mesh::gridinit_voronoi_state_fortran(
-        usize::try_from(config.nxp)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?,
-        usize::try_from(config.niter)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "niter must fit usize"))?,
-        f64::from(config.beta),
-        f64::from(config.relax),
-        max_tris,
-    )?;
-    let gridfile = write_gridfile_from_fortran_indexed_state(
-        config.file_dir(),
-        usize::try_from(config.nxp)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?,
-        1,
-        &config.mode_grid,
-        &state.grid,
-        &state.tabs,
-    )?;
+
+    let mode_file = PathBuf::from(config.mode_file.trim());
+    let gridfile = if mode_file.exists() {
+        if config.mode_file_description.trim() != "EarthMesh" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "only existing EarthMesh mode_file ingestion is migrated to Rust",
+            ));
+        }
+        copy_existing_earthmesh_mode_file(&mode_file, &config.file_dir(), nxp, &config.mode_grid)?
+    } else {
+        let state = earthmesh_mesh::gridinit_voronoi_state_fortran(
+            nxp,
+            niter,
+            f64::from(config.beta),
+            f64::from(config.relax),
+            max_tris,
+        )?;
+        write_gridfile_from_fortran_indexed_state(
+            config.file_dir(),
+            nxp,
+            1,
+            &config.mode_grid,
+            &state.grid,
+            &state.tabs,
+        )?
+    };
 
     Ok(MkgrdGridinitRunReport {
         config,
@@ -328,6 +334,42 @@ pub fn write_gridfile_from_fortran_indexed_state(
     let mesh = gridfile_mesh_from_fortran_indexed_state(grid, tabs)?;
     let output = gridfile_output_path(file_dir, nxp, step, mode_grid);
     write_unstructured_mesh_netcdf(output, &mesh)
+}
+
+/// Copy an existing EarthMesh-format mode file into the standard initial gridfile path.
+pub fn copy_existing_earthmesh_mode_file(
+    mode_file: impl AsRef<Path>,
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    mode_grid: &str,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    let mode_file = mode_file.as_ref();
+    let source = netcdf::open(mode_file).map_err(netcdf_to_io_error)?;
+    let sjx_points = source
+        .dimension("sjx_points")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "mode_file missing sjx_points"))?
+        .len();
+    let lbx_points = source
+        .dimension("lbx_points")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "mode_file missing lbx_points"))?
+        .len();
+    let dimc = source
+        .dimension("dimc")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "mode_file missing dimc"))?
+        .len();
+    drop(source);
+
+    let output = gridfile_output_path(file_dir, nxp, 1, mode_grid);
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(mode_file, &output)?;
+    Ok(UnstructuredMeshWriteReport {
+        output,
+        sjx_points,
+        lbx_points,
+        dimc,
+    })
 }
 
 /// Build the `gridfile_write` output path:
