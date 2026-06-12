@@ -169,6 +169,25 @@ impl Default for IcosahedronWFace {
     }
 }
 
+/// Minimal Rust equivalent of the `itab_md` neighbor fields completed by
+/// `icosahedron.F90:tri_neighbors`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IcosahedronMPointNeighbors {
+    pub npoly: usize,
+    pub iu: [usize; 7],
+    pub iw: [usize; 7],
+}
+
+impl Default for IcosahedronMPointNeighbors {
+    fn default() -> Self {
+        Self {
+            npoly: 0,
+            iu: [1; 7],
+            iw: [1; 7],
+        }
+    }
+}
+
 /// Connectivity arrays after the `fill_diamond` calls inside
 /// `icosahedron.F90:icosahedron`, before `tri_neighbors` fills the remaining
 /// reciprocal neighbors.
@@ -749,6 +768,73 @@ pub fn derive_icosahedron_u_neighbors_fortran(
     }
 
     Some(())
+}
+
+/// Port of the M-point polygon assembly portion of
+/// `icosahedron.F90:tri_neighbors`.
+///
+/// Returns a Fortran-indexed table (`0` and `1` are placeholders) with each M
+/// point's surrounding U and W rings. The original routine stops when a ring
+/// exceeds seven sides; this Rust boundary returns `None` instead.
+pub fn derive_icosahedron_m_neighbors_fortran(
+    nmd: usize,
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+) -> Option<Vec<IcosahedronMPointNeighbors>> {
+    let mut m_points = vec![IcosahedronMPointNeighbors::default(); nmd + 1];
+
+    for iu in 2..u_edges.len() {
+        for j in 0..2 {
+            let im = u_edges.get(iu)?.im[j];
+            let iw = u_edges.get(iu)?.iw[j];
+            if im >= m_points.len() || iw >= w_faces.len() {
+                return None;
+            }
+
+            if m_points[im].npoly != 0 && w_faces[iw].npoly >= 3 {
+                continue;
+            }
+
+            let mut m_point = m_points[im];
+            let start_iu = iu;
+            let mut iunow = iu;
+            let mut npoly = 0usize;
+
+            while iunow > 1 {
+                npoly += 1;
+                if npoly > 7 {
+                    return None;
+                }
+
+                let ring_slot = npoly - 1;
+                let edge_now = *u_edges.get(iunow)?;
+                m_point.iu[ring_slot] = iunow;
+
+                if edge_now.im[0] == im {
+                    if edge_now.iw[1] > 1 {
+                        m_point.iw[ring_slot] = edge_now.iw[1];
+                        iunow = edge_now.iu[2];
+                    } else {
+                        iunow = start_iu;
+                    }
+                } else if edge_now.iw[0] > 1 {
+                    m_point.iw[ring_slot] = edge_now.iw[0];
+                    iunow = edge_now.iu[1];
+                } else {
+                    iunow = start_iu;
+                }
+
+                m_point.npoly = npoly;
+                if iunow == start_iu {
+                    break;
+                }
+            }
+
+            m_points[im] = m_point;
+        }
+    }
+
+    Some(m_points)
 }
 
 /// Shared Rust port of `icosahedron.F90:mdloopf`, `udloopf`, and `wdloopf`.

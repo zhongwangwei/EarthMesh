@@ -59,11 +59,12 @@
         "mdloopf/udloopf/wdloopf loop table flag semantics ported to rust/earthmesh_mesh",
         "single-precision de_ps/ps_de compatibility wrappers ported to rust/earthmesh_mesh",
         "tri_neighbors W-face neighbor derivation ported to rust/earthmesh_mesh",
-        "tri_neighbors U-edge neighbor derivation ported to rust/earthmesh_mesh"
+        "tri_neighbors U-edge neighbor derivation ported to rust/earthmesh_mesh",
+        "tri_neighbors M-point polygon assembly ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "spring_dynamics1 relaxation loop",
-        "tri_neighbors M-point polygon assembly",
+        "tri_neighbors integrated orchestration over fill_diamond output",
         "NXP fixture parity for point counts, connectivity, and coordinates after spring relaxation"
       ]
     },

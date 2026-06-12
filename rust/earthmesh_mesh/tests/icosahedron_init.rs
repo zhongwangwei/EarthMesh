@@ -160,3 +160,33 @@ fn icosahedron_u_neighbor_derivation_matches_tri_neighbors_u_loop() {
         [5, 6, 7, 8, 13, 14, 16, 15, 18, 17, 20, 19]
     );
 }
+
+#[test]
+fn icosahedron_m_neighbor_derivation_matches_tri_neighbors_m_loop() {
+    let mut u_edges = vec![earthmesh_mesh::IcosahedronUEdge::default(); 5];
+    let mut w_faces = vec![earthmesh_mesh::IcosahedronWFace::default(); 11];
+
+    u_edges[2].im = [10, 20];
+    u_edges[2].iw[0..2].copy_from_slice(&[5, 6]);
+    u_edges[2].iu[2] = 3;
+
+    u_edges[3].im = [10, 30];
+    u_edges[3].iw[0..2].copy_from_slice(&[7, 8]);
+    u_edges[3].iu[2] = 4;
+
+    u_edges[4].im = [10, 40];
+    u_edges[4].iw[0..2].copy_from_slice(&[9, 10]);
+    u_edges[4].iu[2] = 2;
+
+    w_faces[5].npoly = 3;
+    w_faces[7].npoly = 3;
+    w_faces[9].npoly = 3;
+
+    let m_neighbors =
+        earthmesh_mesh::derive_icosahedron_m_neighbors_fortran(40, &u_edges, &w_faces)
+            .expect("valid M-point polygon derivation");
+
+    assert_eq!(m_neighbors[10].npoly, 3);
+    assert_eq!(m_neighbors[10].iu, [2, 3, 4, 1, 1, 1, 1]);
+    assert_eq!(m_neighbors[10].iw, [6, 8, 10, 1, 1, 1, 1]);
+}

@@ -321,3 +321,7 @@ Extended `rust/earthmesh_mesh` with `derive_icosahedron_w_neighbors_fortran`, a 
 ### 2026-06-12: `icosahedron.F90` `tri_neighbors` U-edge neighbor derivation ported
 
 Extended `rust/earthmesh_mesh` with `derive_icosahedron_u_neighbors_fortran`, a tested Rust port of the U-edge portion of `tri_neighbors`. It fills each active U edge's refinement level, four adjacent U edges, four surrounding W faces, and eight second-ring U neighbors from the W-face connectivity tables while preserving the Fortran branch order. Remaining `tri_neighbors` work is M-point polygon assembly.
+
+### 2026-06-12: `icosahedron.F90` `tri_neighbors` M-point polygon assembly ported
+
+Extended `rust/earthmesh_mesh` with `derive_icosahedron_m_neighbors_fortran`, a tested Rust port of the final M-point polygon assembly loop in `tri_neighbors`. The kernel returns Fortran-indexed M-point neighbor tables, follows the U-edge ring walk, preserves wall-boundary termination behavior, and converts the original `npoly > 7` stop path into `None`. Remaining `tri_neighbors` work is an integrated wrapper over the migrated W/U/M phases plus fixture parity on full icosahedron connectivity.
