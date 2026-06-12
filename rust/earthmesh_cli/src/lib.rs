@@ -62,6 +62,30 @@ pub struct MkgrdMaskRestartPatchRunReport {
     pub workspace_mask: WorkspaceMaskApplyReport,
 }
 
+/// Source-grid geometry supplied by the caller for the restarted `Area_judge`
+/// continuation inside the `mkgrd.F90` mask-restart path.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdRestartAreaJudgeOptions<'a> {
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+}
+
+/// Report for the restarted `Area_judge` continuation of the top-level
+/// `mkgrd.F90` mask-restart branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRestartAreaJudgeRunReport {
+    pub plan: MkgrdMaskRestartPlanReport,
+    pub workspace_mask: WorkspaceMaskApplyReport,
+    pub area: AreaJudgeRestartReport,
+    pub area_write: AreaJudgeGridWriteReport,
+    pub refine_write: Option<AreaJudgeGridWriteReport>,
+}
+
 /// File-level I/O contract for the domain branches of
 /// `MOD_mask_postproc.F90:mask_postproc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +288,78 @@ pub fn run_mkgrd_mask_restart_patch_namelist(
     Ok(MkgrdMaskRestartPatchRunReport {
         plan,
         workspace_mask,
+    })
+}
+
+/// Execute the restarted `Area_judge` state restoration for the top-level
+/// `mkgrd.F90` mask-restart continuation path.
+///
+/// This composes the Fortran sequence after `read_nl` has short-circuited a
+/// restart: optionally preprocess `mask_patch`, read
+/// `result/IsInDmArea_grid.nc4`, apply the patch to `seaorland`, and rewrite
+/// the selected-grid restart file for downstream post-processing.  The top
+/// level Fortran restart branch has already forced `refine=.false.`, so this
+/// runner intentionally does not continue calculated-refine outputs.
+pub fn run_mkgrd_mask_restart_area_judge_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+    options: MkgrdRestartAreaJudgeOptions<'_>,
+) -> io::Result<MkgrdRestartAreaJudgeRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let plan = plan_mkgrd_mask_restart_namelist(namelist_source, workdir, max_iter)?;
+    if plan.remask.action != MaskRestartAction::ContinueMkgrd {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart Area_judge continuation requires ContinueMkgrd; got action {:?}",
+                plan.remask.action
+            ),
+        ));
+    }
+
+    let workspace_mask = apply_workspace_and_mask_operations(
+        &plan.workspace_plan,
+        namelist_source,
+        workdir,
+        0,
+        false,
+    )?;
+    let mask_patch = plan.config.mask_patch_on.then_some(AreaJudgePatchConfig {
+        mask_patch_type: &plan.config.mask_patch_type,
+        mask_patch_ndm: workspace_mask.mask_counts.mask_patch_ndm[0],
+    });
+    let area_output = plan.remask.file_dir.join("result/IsInDmArea_grid.nc4");
+    let area = build_area_judge_restart_fortran_indexed(
+        &plan.remask.file_dir,
+        &area_output,
+        mask_patch,
+        plan.remask.refine,
+        None,
+        options.lon_vertex,
+        options.lat_vertex,
+        options.lon_i,
+        options.lat_i,
+        options.gridnum_perdegree,
+        options.nlons_source,
+        options.nlats_source,
+    )?;
+    let area_write = write_area_judge_selected_grid_report(
+        &area_output,
+        &area.domain.is_in_domain,
+        Some(&area.seaorland.seaorland),
+        options.lon_i,
+        options.lat_i,
+        area.domain.bounds,
+    )?;
+
+    Ok(MkgrdRestartAreaJudgeRunReport {
+        plan,
+        workspace_mask,
+        area,
+        area_write,
+        refine_write: None,
     })
 }
 

@@ -122,7 +122,8 @@
         "existing IAP-Ocean mode_file converter ported to rust/earthmesh_cli",
         "top-level mask_restart/remask branch decision ported to rust/earthmesh_cli plan API",
         "mkgrd.x mask_restart oceanmesh immediate mask_postproc execution wiring ported to rust/earthmesh_cli",
-        "mkgrd mask_restart patch Mask_make preprocessing and continue-mkgrd action runner ported to rust/earthmesh_cli"
+        "mkgrd mask_restart patch Mask_make preprocessing and continue-mkgrd action runner ported to rust/earthmesh_cli",
+        "mkgrd mask_restart ContinueMkgrd Area_judge restart-grid restoration, patch application, and selected-grid rewrite ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"
@@ -176,7 +177,8 @@
         "Area_judge non-restart selected-grid file orchestration for domain, seaorland, and iter-zero calculated refine outputs ported to rust/earthmesh_cli",
         "Area_judge_refine specified-iteration selected-grid file runner ported to rust/earthmesh_cli",
         "Area_judge restart selected-grid file reader and full source-grid expansion runner ported to rust/earthmesh_cli",
-        "Area_judge restart domain/seaorland restoration with mask_patch and calculated-refine continuation ported to rust/earthmesh_cli"
+        "Area_judge restart domain/seaorland restoration with mask_patch and calculated-refine continuation ported to rust/earthmesh_cli",
+        "Area_judge restart selected-grid rewrite wired into mkgrd mask_restart ContinueMkgrd runner in rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Area_judge restart state integration into the full mkgrd refine/postprocess loop",
