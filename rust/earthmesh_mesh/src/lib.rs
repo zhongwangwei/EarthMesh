@@ -1385,6 +1385,66 @@ fn magnitude(a: CartesianPoint) -> f64 {
     (a.x * a.x + a.y * a.y + a.z * a.z).sqrt()
 }
 
+/// One-edge correction term from `MOD_grid_preprocess:spring_dynamics_global`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringEdgeAdjustment {
+    pub displacement: CartesianPoint,
+    pub distance: f64,
+    pub ratio: f64,
+    pub target_distance: f64,
+    pub frac_change: f64,
+    pub frac_change_squared: f64,
+}
+
+/// Port of the per-edge spring correction formula in
+/// `MOD_grid_preprocess:spring_dynamics_global`.
+///
+/// `neighbor_distance_1..4` correspond to `dist(iu1..iu4)` from
+/// `EdgesOnedge_tri(:, iu)`. The returned displacement is the Fortran-updated
+/// `(dx, dy, dz)` after multiplying the edge vector by `frac_change`.
+pub fn spring_edge_adjustment_fortran(
+    cell1: CartesianPoint,
+    cell2: CartesianPoint,
+    target_edge_distance: f64,
+    neighbor_distance_1: f64,
+    neighbor_distance_2: f64,
+    neighbor_distance_3: f64,
+    neighbor_distance_4: f64,
+) -> Option<SpringEdgeAdjustment> {
+    let edge_vector = vector_between(cell1, cell2);
+    let distance = magnitude(edge_vector);
+    if distance == 0.0
+        || neighbor_distance_1 == 0.0
+        || neighbor_distance_2 == 0.0
+        || neighbor_distance_3 == 0.0
+        || neighbor_distance_4 == 0.0
+    {
+        return None;
+    }
+
+    let twocosphi3 = (neighbor_distance_1.powi(2) + neighbor_distance_2.powi(2) - distance.powi(2))
+        / (neighbor_distance_1 * neighbor_distance_2);
+    let twocosphi4 = (neighbor_distance_3.powi(2) + neighbor_distance_4.powi(2) - distance.powi(2))
+        / (neighbor_distance_3 * neighbor_distance_4);
+    let ratio = (twocosphi3 + twocosphi4).clamp(0.15, 1.2);
+    let target_distance = target_edge_distance / 1.2 * ratio;
+    let frac_change = (target_distance - distance) / distance;
+    let displacement = CartesianPoint::new(
+        edge_vector.x * frac_change,
+        edge_vector.y * frac_change,
+        edge_vector.z * frac_change,
+    );
+
+    Some(SpringEdgeAdjustment {
+        displacement,
+        distance,
+        ratio,
+        target_distance,
+        frac_change,
+        frac_change_squared: frac_change * frac_change,
+    })
+}
+
 /// Port of the candidate-selection core in `MOD_grid_preprocess:orderVertexArrays`.
 ///
 /// From one reference edge vector, choose the candidate edge with positive CCW

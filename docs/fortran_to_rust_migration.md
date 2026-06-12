@@ -237,3 +237,7 @@ Extended `rust/earthmesh_mesh` with `triangle_neighbors_from_cell_membership_for
 ### 2026-06-12: `MOD_grid_preprocess.F90` `set_distsOnEdge_global` calculation orchestration ported
 
 Extended `rust/earthmesh_mesh` with `set_dists_on_edge_global_fortran_indexed`, a tested pure Rust orchestration wrapper for the calculation side of `set_distsOnEdge_global`. It initializes background `distsOnEdge`/optional `cellwidth`, preserves the active-iteration skip semantics through explicit step inputs, halves the selected scale each active iteration, builds transition layers with the migrated `dist_layers_make`, and composes the migrated edge/cellwidth layer update kernels. `refine_sjx_regional_make` flag generation and NetCDF save wiring remain outside this core calculation wrapper.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` spring edge adjustment formula ported
+
+Extended `rust/earthmesh_mesh` with `spring_edge_adjustment_fortran`, a tested Rust port of the per-edge correction formula inside `spring_dynamics_global`. It computes the current edge vector length, `twocosphi3/twocosphi4` ratio clamp, target distance, fractional change, displacement vector, and squared fractional change. The full global/regional spring iteration loops and spherical renormalization orchestration remain pending.

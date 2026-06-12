@@ -2,8 +2,8 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
-    set_weights_on_edge_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
-    CartesianPoint, LonLatDegrees,
+    set_weights_on_edge_fortran_indexed, spring_edge_adjustment_fortran,
+    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -154,6 +154,33 @@ fn plane_angle_signed_matches_fortran_normal_sign_rule() {
     approx_eq(
         plane_angle_signed(origin, north, east, up).expect("angle"),
         -std::f64::consts::FRAC_PI_2,
+        1.0e-15,
+    );
+}
+
+#[test]
+fn spring_edge_adjustment_matches_fortran_ratio_and_displacement_formula() {
+    let point_a = CartesianPoint::new(0.0, 0.0, 0.0);
+    let point_b = CartesianPoint::new(10.0, 0.0, 0.0);
+
+    let adjustment = spring_edge_adjustment_fortran(point_a, point_b, 12.0, 8.0, 9.0, 7.0, 6.0)
+        .expect("valid spring edge adjustment");
+
+    // twocosphi3 = (8^2 + 9^2 - 10^2)/(8*9) = 45/72
+    // twocosphi4 = (7^2 + 6^2 - 10^2)/(7*6) = -15/42
+    // ratio = 0.625 - 0.35714285714285715 = 0.26785714285714285
+    // distm = 12 / 1.2 * ratio = 2.6785714285714284
+    // frac = (distm - 10) / 10 = -0.7321428571428572
+    approx_eq(adjustment.distance, 10.0, 1.0e-15);
+    approx_eq(adjustment.ratio, 0.26785714285714285, 1.0e-15);
+    approx_eq(adjustment.target_distance, 2.6785714285714284, 1.0e-15);
+    approx_eq(adjustment.frac_change, -0.7321428571428572, 1.0e-15);
+    approx_eq(adjustment.displacement.x, -7.321428571428572, 1.0e-15);
+    approx_eq(adjustment.displacement.y, 0.0, 1.0e-15);
+    approx_eq(adjustment.displacement.z, 0.0, 1.0e-15);
+    approx_eq(
+        adjustment.frac_change_squared,
+        adjustment.frac_change * adjustment.frac_change,
         1.0e-15,
     );
 }
