@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
-    connect_on_cell_fortran_indexed, order_vertices_on_cell_fortran_indexed,
-    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint,
+    arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
+    lonlat_degrees_to_unit_xyz, order_vertices_on_cell_fortran_indexed, plane_angle_signed,
+    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -125,6 +126,97 @@ fn order_vertices_on_cell_rejects_missing_vertex_coordinates() {
         &vertex_points,
         &vertices_on_cell,
         &n_edges_on_cell,
+    )
+    .is_none());
+}
+
+fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "actual {actual} expected {expected} tolerance {tolerance}"
+    );
+}
+
+#[test]
+fn plane_angle_signed_matches_fortran_normal_sign_rule() {
+    let origin = CartesianPoint::new(0.0, 0.0, 0.0);
+    let east = CartesianPoint::new(1.0, 0.0, 0.0);
+    let north = CartesianPoint::new(0.0, 1.0, 0.0);
+    let up = CartesianPoint::new(0.0, 0.0, 1.0);
+
+    approx_eq(
+        plane_angle_signed(origin, east, north, up).expect("angle"),
+        std::f64::consts::FRAC_PI_2,
+        1.0e-15,
+    );
+    approx_eq(
+        plane_angle_signed(origin, north, east, up).expect("angle"),
+        -std::f64::consts::FRAC_PI_2,
+        1.0e-15,
+    );
+}
+
+#[test]
+fn edge_distance_angle_matches_fortran_meridian_edge_case() {
+    let vertex1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+    let vertex2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
+    let cell1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(-1.0, 0.5));
+    let cell2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.5));
+    let edge = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.5));
+
+    let vertices = vec![vertex1, vertex1, vertex1, vertex2];
+    let cells = vec![cell1, cell1, cell1, cell2];
+    let edge_points = vec![edge, edge, edge];
+    let vertices_on_edge = vec![[0, 0], [0, 0], [2, 3]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3]];
+    let lat_vertex = vec![0.0, 0.0, 0.0, 1.0];
+    let lon_edge = vec![0.0, 0.0, 0.0];
+    let lat_edge = vec![0.0, 0.0, 0.5];
+
+    let output = edge_distance_angle_fortran_indexed(
+        &vertices,
+        &cells,
+        &edge_points,
+        &vertices_on_edge,
+        &cells_on_edge,
+        &lat_vertex,
+        &lon_edge,
+        &lat_edge,
+    )
+    .expect("valid edge metric inputs");
+
+    approx_eq(
+        output.dv_edge[2],
+        arc_length_unit_sphere(vertex1, vertex2),
+        1.0e-15,
+    );
+    approx_eq(
+        output.dc_edge[2],
+        arc_length_unit_sphere(cell1, cell2),
+        1.0e-15,
+    );
+    approx_eq(output.angle_edge[2], 0.0, 1.0e-12);
+}
+
+#[test]
+fn edge_distance_angle_rejects_bad_connectivity() {
+    let point = CartesianPoint::new(1.0, 0.0, 0.0);
+    let vertices = vec![point, point, point];
+    let cells = vec![point, point, point];
+    let edge_points = vec![point, point, point];
+    let vertices_on_edge = vec![[0, 0], [0, 0], [2, 99]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 2]];
+    let coords = vec![0.0, 0.0, 0.0];
+
+    assert!(edge_distance_angle_fortran_indexed(
+        &vertices,
+        &cells,
+        &edge_points,
+        &vertices_on_edge,
+        &cells_on_edge,
+        &coords,
+        &coords,
+        &coords,
     )
     .is_none());
 }

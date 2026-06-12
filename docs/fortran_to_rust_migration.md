@@ -205,3 +205,7 @@ Extended `rust/earthmesh_mesh` with `dists_on_edge_layers_fortran_indexed` and `
 ### 2026-06-12: `MOD_grid_preprocess.F90` cell ordering/connectivity helpers ported
 
 Extended `rust/earthmesh_mesh` with `order_vertices_on_cell_fortran_indexed`, `standardize_vertices_on_cell_rotation_fortran_indexed`, and `connect_on_cell_fortran_indexed`, tested Rust ports of `orderVerticesOnCell`, `standardizeVerticesOnCellRotation`, and `Get_ConnectOnCell`. These preserve Fortran-indexed cell ids, MPAS-style CCW vertex selection by positive `cross(vec1, vec2) · normal`, minimum-vertex rotation standardization, and reconstruction of `edgesOnCell`/`cellsOnCell` from ordered `verticesOnCell`. Remaining MPAS postprocess geometry includes `edgeIDSort`, `Get_Edge_DIS_Angle`, and `set_weightsOnEdge`.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` edge distance/angle metrics ported
+
+Extended `rust/earthmesh_mesh` with `plane_angle_signed` and `edge_distance_angle_fortran_indexed`, tested Rust ports of `planeAngle` and `Get_Edge_DIS_Angle`. The wrapper preserves Fortran-indexed edge ids from `2`, computes `dvEdge` from edge vertices, `dcEdge` from adjacent cell centers, applies the latitude-difference angle formula, signs the angle with the MPAS plane-angle normal rule, and wraps into `[-pi, pi]`. Remaining MPAS postprocess work is now concentrated in `edgeIDSort` and `set_weightsOnEdge`.
