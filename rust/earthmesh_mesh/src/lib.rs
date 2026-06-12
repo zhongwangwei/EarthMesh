@@ -5171,3 +5171,87 @@ pub fn robust_spherical_area_unit(points: &[LonLatDegrees]) -> Option<f64> {
 
     Some(area / 2.0)
 }
+
+/// Result of `MOD_mask_postproc.F90:sort_and_reindex`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VertexReindex {
+    pub sorted_vertices: Vec<usize>,
+    pub vertex_mapping: Vec<usize>,
+}
+
+/// Port of `MOD_mask_postproc.F90:extract_unique_vertices`.
+///
+/// The input is Rust row-major by center id: `center_neighbors[j][i]` mirrors
+/// Fortran `ustr_ngr_center_f(i, j)`. Slot `1` is preserved as the legacy empty
+/// vertex placeholder and the scan starts at center id `2`.
+pub fn extract_unique_vertices_fortran_indexed(
+    center_neighbors: &[Vec<usize>],
+    neighbor_counts: &[usize],
+    max_vertex_id: usize,
+) -> io::Result<Vec<usize>> {
+    if neighbor_counts.len() < center_neighbors.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "neighbor_counts length must cover center_neighbors",
+        ));
+    }
+
+    let mut is_selected = vec![true; max_vertex_id + 1];
+    let mut unique_vertices = vec![1];
+    for center_id in 2..center_neighbors.len() {
+        let count = neighbor_counts[center_id];
+        if count > center_neighbors[center_id].len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "neighbor count {count} exceeds center {center_id} row length {}",
+                    center_neighbors[center_id].len()
+                ),
+            ));
+        }
+        for &vertex_id in center_neighbors[center_id].iter().take(count) {
+            if vertex_id > max_vertex_id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "center {center_id} references vertex {vertex_id}, outside 0..={max_vertex_id}"
+                    ),
+                ));
+            }
+            if is_selected[vertex_id] {
+                unique_vertices.push(vertex_id);
+                is_selected[vertex_id] = false;
+            }
+        }
+    }
+
+    Ok(unique_vertices)
+}
+
+/// Port of `MOD_mask_postproc.F90:sort_and_reindex`.
+///
+/// Returns the sorted unique vertex list and the Fortran-style old vertex id to
+/// new compact id mapping. Mapping slot `0` is retained but unused.
+pub fn sort_and_reindex_vertices(
+    unique_vertices: &[usize],
+    max_vertex_id: usize,
+) -> io::Result<VertexReindex> {
+    let mut sorted_vertices = unique_vertices.to_vec();
+    sorted_vertices.sort_unstable();
+
+    let mut vertex_mapping = vec![0; max_vertex_id + 1];
+    for (new_id, &old_vertex_id) in sorted_vertices.iter().enumerate() {
+        if old_vertex_id > max_vertex_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("vertex {old_vertex_id} outside 0..={max_vertex_id}"),
+            ));
+        }
+        vertex_mapping[old_vertex_id] = new_id + 1;
+    }
+
+    Ok(VertexReindex {
+        sorted_vertices,
+        vertex_mapping,
+    })
+}

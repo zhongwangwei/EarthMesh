@@ -461,3 +461,7 @@ Extended `rust/earthmesh_cli` with `convert_iap_ocean_mode_file_to_earthmesh` an
 ### 2026-06-12: top-level `mask_restart` remask decision ported
 
 Added `rust/earthmesh_cli::plan_mkgrd_mask_restart_namelist` with a focused fixture for the `mkgrd.F90` branch where `mask_restart=.true.`, `mesh_type='oceanmesh'`, and `mask_patch_on=.false.`. The Rust plan now preserves the Fortran state transition around remasking (`refine=.false.`, `step=max_iter+1`) and selects an explicit `RunMaskPostproc` action without deleting/recreating the case workspace or re-running grid initialization. The heavy `MOD_mask_postproc.F90:mask_postproc` execution remains a separate migration surface; this slice only ports the top-level branch decision and report contract.
+
+### 2026-06-12: mask_postproc vertex reindex helpers ported
+
+Extended `rust/earthmesh_mesh` with tested ports of `MOD_mask_postproc.F90:extract_unique_vertices` and `sort_and_reindex`. The Rust helpers preserve the legacy one-based placeholder vertex `1`, scan center-neighbor rows from id `2`, retain first-seen unique-vertex ordering before sorting, and build the old-vertex-id to compact new-id mapping used before final Earth/ocean mask-postprocess output writes. Full `mask_postproc` execution, NetCDF I/O, boundary renewal, and data-finalization orchestration remain pending.
