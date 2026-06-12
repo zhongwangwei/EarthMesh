@@ -180,7 +180,8 @@
         "cellwidth_read NetCDF reader ported to rust/earthmesh_cli",
         "MPAS_Mesh_Simple_Save file-level input pipeline ported to rust/earthmesh_cli",
         "MPAS_info_Save graph.info writer ported to rust/earthmesh_cli",
-        "MPAS_Mesh_Save full MPAS NetCDF writer ported to rust/earthmesh_cli"
+        "MPAS_Mesh_Save full MPAS NetCDF writer ported to rust/earthmesh_cli",
+        "data_read MPAS edge-reference reader ported to rust/earthmesh_cli"
       ]
     },
     {
@@ -320,7 +321,8 @@
         "MPAS_Mesh_Cal_Simple MPAS-Simple payload/file pipeline ported to rust/earthmesh_cli",
         "mask_postproc_Atmos MPAS-Simple top-level file dispatch ported to rust/earthmesh_cli",
         "mask_postproc_Atmos full MPAS graph.info writer dependency ported to rust/earthmesh_cli",
-        "mask_postproc_Atmos full MPAS NetCDF writer dependency ported to rust/earthmesh_cli"
+        "mask_postproc_Atmos full MPAS NetCDF writer dependency ported to rust/earthmesh_cli",
+        "mask_postproc_Atmos full MPAS edge-reference reader dependency ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn top-level execution composition and MPAS_Mesh_Cal file-level payload orchestration"

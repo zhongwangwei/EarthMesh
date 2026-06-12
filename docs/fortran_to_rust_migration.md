@@ -589,3 +589,7 @@ Added `MpasGraphInfoWriteReport` and `write_mpas_graph_info` in `rust/earthmesh_
 ### 2026-06-12: Full MPAS mesh NetCDF writer ported
 
 Added `MpasMesh`, `MpasMeshWriteReport`, and `write_mpas_mesh_netcdf` in `rust/earthmesh_cli`, a tested Rust writer for `MOD_file_preprocess.F90:MPAS_Mesh_Save`. The adapter preserves the full MPAS dimensions (`nCells`, `nVertices`, `nEdges`, `maxEdges`, `maxEdges2`, `TWO`, `vertexDegree`), generated `indexTo*ID` variables, placeholder-row slicing (`2:num_dbx`, `2:num_sjx`, `2:num_edge`), representative 1D/2D/scalar variables, and the legacy global attributes including `mesh_spec`, `sphere_radius`, and `source`. Remaining full-atmosphere work is now the `MPAS_Mesh_Cal` file-level orchestration that builds this payload from the migrated geometry kernels and pairs it with the graph.info writer.
+
+### 2026-06-12: MPAS edge-reference reader ported
+
+Added `MpasEdgeReference` and `read_mpas_edge_reference_netcdf` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:data_read`. The reader loads full MPAS `cellsOnEdge`, `lonEdge`, and `latEdge`, restores the legacy placeholder row, applies the Fortran `cellsOnEdge_reference = cellsOnEdge_reference + 1` ID shift, converts edge coordinates from radians to degrees, and preserves the single-step longitude normalization used by the Fortran branch. This removes another file I/O dependency from `MPAS_Mesh_Cal`; remaining work is composing the full payload from geometry outputs and writing `distsOnEdge`/spring-adjustment persistence adapters.
