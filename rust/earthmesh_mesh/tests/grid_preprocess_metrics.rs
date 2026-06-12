@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
-    cells_on_edge_from_neighbor_cells, edge_midpoints_from_cells_fortran_indexed,
+    cells_on_edge_from_neighbor_cells, centroid_spherical_mesh_fortran_indexed,
+    circumcenter_spherical_mesh_fortran_indexed, edge_midpoints_from_cells_fortran_indexed,
     edges_on_edge_tri_fortran_indexed, get_area_production_fortran_indexed,
     get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed,
     get_edge_production_fortran_indexed, grid_quality_check_global_fortran_indexed, is_ngrmm,
@@ -9,8 +10,10 @@ use earthmesh_mesh::{
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
     polygon_mesh_quality_fortran_indexed, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
+    spring_dynamics_global_fortran_indexed, springjustment_global_core_fortran_indexed,
     triangle_mesh_quality_fortran_indexed, triangle_neighbors_from_cell_membership_fortran_indexed,
     vertex_cell_position, CartesianPoint, GetAreaUnitInput, LonLatDegrees,
+    SpringjustmentGlobalCoreInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -756,6 +759,137 @@ fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
     assert_eq!(output.edge_points, expected_edge_points);
     assert_eq!(output.edges_on_vertex, expected_ordered.edges_on_vertex);
     assert_eq!(output.cells_on_vertex, expected_ordered.cells_on_vertex);
+}
+
+#[test]
+fn springjustment_global_core_matches_manual_migrated_pipeline() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut n_edges_on_cell = vec![0usize; 14];
+    n_edges_on_cell[10] = 3;
+    n_edges_on_cell[11] = 3;
+    n_edges_on_cell[12] = 3;
+    n_edges_on_cell[13] = 3;
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+
+    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        base_dists_on_edge: 2.0,
+        niter_refine: 1,
+        relax: 0.25,
+        radius: 1.0,
+        diagnostic_every: 100,
+    })
+    .expect("valid springjustment global core input");
+
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &n_edges_on_cell,
+    )
+    .expect("triangle neighbors");
+    let edge_output = get_edge_production_fortran_indexed(
+        &triangle_neighbors,
+        &cells_on_triangle,
+        &triangle_lonlat,
+        &cell_lonlat,
+    )
+    .expect("edge production");
+    let cell_connectivity = earthmesh_mesh::connect_on_cell_fortran_indexed(
+        &n_edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edge_output.edges_on_vertex,
+        &triangles_on_cell,
+    )
+    .expect("cell connectivity");
+    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(
+        &edge_output.vertices_on_edge,
+        &edge_output.edges_on_vertex,
+    )
+    .expect("edges on edge tri");
+    let dists_on_edge = vec![2.0; edge_output.cells_on_edge.len()];
+    let cell_points = cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let spring_output = spring_dynamics_global_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &cell_connectivity.edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        1,
+        0.25,
+        1.0,
+        100,
+    )
+    .expect("spring dynamics");
+    let expected_cell_lonlat = spring_output
+        .updated_cell_points
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+    let centroid_lonlat =
+        centroid_spherical_mesh_fortran_indexed(&expected_cell_lonlat, &cells_on_triangle)
+            .expect("centroids");
+    let centroid_cartesian = centroid_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+        &centroid_cartesian,
+        &spring_output.updated_cell_points,
+        &cells_on_triangle,
+    )
+    .expect("circumcenters");
+    let expected_triangle_lonlat = circumcenters
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+
+    assert_eq!(output.triangle_neighbors, triangle_neighbors);
+    assert_eq!(output.cells_on_edge, edge_output.cells_on_edge);
+    assert_eq!(output.vertices_on_edge, edge_output.vertices_on_edge);
+    assert_eq!(output.edges_on_cell, cell_connectivity.edges_on_cell);
+    assert_eq!(output.dists_on_edge, dists_on_edge);
+    assert_eq!(output.updated_cell_lonlat, expected_cell_lonlat);
+    assert_eq!(output.updated_triangle_lonlat, expected_triangle_lonlat);
+    assert_eq!(
+        output.spring.diagnostic_max_displacements,
+        spring_output.diagnostic_max_displacements
+    );
 }
 
 #[test]

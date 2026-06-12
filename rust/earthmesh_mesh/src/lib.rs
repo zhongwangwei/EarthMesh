@@ -1574,6 +1574,40 @@ pub struct SpringDynamicsRegionalOutput {
     pub diagnostic_max_displacements: Vec<SpringDiagnosticMaxDisplacement>,
 }
 
+/// Borrowed inputs for the pure in-memory calculation side of
+/// `MOD_grid_preprocess:Springjustment_global`.
+#[derive(Debug, Clone, Copy)]
+pub struct SpringjustmentGlobalCoreInput<'a> {
+    pub triangle_lonlat: &'a [LonLatDegrees],
+    pub cell_lonlat: &'a [LonLatDegrees],
+    pub cells_on_triangle: &'a [[usize; 3]],
+    pub triangles_on_cell: &'a [Vec<usize>],
+    pub n_edges_on_cell: &'a [usize],
+    pub base_dists_on_edge: f64,
+    pub niter_refine: usize,
+    pub relax: f64,
+    pub radius: f64,
+    pub diagnostic_every: usize,
+}
+
+/// Output from the pure in-memory `Springjustment_global` adapter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringjustmentGlobalCoreOutput {
+    pub updated_triangle_lonlat: Vec<LonLatDegrees>,
+    pub updated_cell_lonlat: Vec<LonLatDegrees>,
+    pub triangle_neighbors: Vec<[usize; 3]>,
+    pub cells_on_edge: Vec<[usize; 2]>,
+    pub vertices_on_edge: Vec<[usize; 2]>,
+    pub edges_on_vertex: Vec<[usize; 3]>,
+    pub cells_on_vertex: Vec<[usize; 3]>,
+    pub edges_on_cell: Vec<Vec<usize>>,
+    pub cells_on_cell: Vec<Vec<usize>>,
+    pub edges_on_edge_tri: Vec<[usize; 4]>,
+    pub dists_on_edge: Vec<f64>,
+    pub edge_lonlat: Vec<LonLatDegrees>,
+    pub spring: SpringDynamicsGlobalOutput,
+}
+
 /// One-iteration Rust wrapper for `MOD_grid_preprocess:spring_dynamics_global`.
 ///
 /// This ports the calculation order inside one Fortran iteration: compute all
@@ -1814,6 +1848,152 @@ pub fn spring_dynamics_regional_fortran_indexed(
         calculated_cells,
         moved_cells,
         diagnostic_max_displacements,
+    })
+}
+
+/// Pure Rust adapter for the in-memory calculation sequence inside
+/// `MOD_grid_preprocess:Springjustment_global`.
+///
+/// This deliberately excludes NetCDF/file side effects. It wires the migrated
+/// kernels in the same order as the Fortran workflow: triangle neighbors,
+/// edge/connectivity construction, edge-neighbor topology, global spring
+/// dynamics, cell lon/lat refresh, triangle centroid/circumcenter refresh, and
+/// final MPAS-style vertex-array ordering.
+pub fn springjustment_global_core_fortran_indexed(
+    input: SpringjustmentGlobalCoreInput<'_>,
+) -> Option<SpringjustmentGlobalCoreOutput> {
+    if input.triangle_lonlat.len() != input.cells_on_triangle.len()
+        || input.triangles_on_cell.len() != input.n_edges_on_cell.len()
+        || input.cell_lonlat.len() != input.n_edges_on_cell.len()
+    {
+        return None;
+    }
+
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+        input.cells_on_triangle,
+        input.triangles_on_cell,
+        input.n_edges_on_cell,
+    )?;
+    let edge_output = get_edge_production_fortran_indexed(
+        &triangle_neighbors,
+        input.cells_on_triangle,
+        input.triangle_lonlat,
+        input.cell_lonlat,
+    )?;
+    let cell_connectivity = connect_on_cell_fortran_indexed(
+        input.n_edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edge_output.edges_on_vertex,
+        input.triangles_on_cell,
+    )?;
+    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(
+        &edge_output.vertices_on_edge,
+        &edge_output.edges_on_vertex,
+    )?;
+    let dists_on_edge = vec![input.base_dists_on_edge; edge_output.cells_on_edge.len()];
+    let cell_points = input
+        .cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| {
+            CartesianPoint::new(
+                point.x * input.radius,
+                point.y * input.radius,
+                point.z * input.radius,
+            )
+        })
+        .collect::<Vec<_>>();
+    let spring = spring_dynamics_global_fortran_indexed(
+        &cell_points,
+        input.n_edges_on_cell,
+        &cell_connectivity.edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        input.niter_refine,
+        input.relax,
+        input.radius,
+        input.diagnostic_every,
+    )?;
+    let updated_cell_lonlat = spring
+        .updated_cell_points
+        .iter()
+        .copied()
+        .map(xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+
+    let centroid_lonlat =
+        centroid_spherical_mesh_fortran_indexed(&updated_cell_lonlat, input.cells_on_triangle)?;
+    let centroid_cartesian = centroid_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| {
+            CartesianPoint::new(
+                point.x * input.radius,
+                point.y * input.radius,
+                point.z * input.radius,
+            )
+        })
+        .collect::<Vec<_>>();
+    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+        &centroid_cartesian,
+        &spring.updated_cell_points,
+        input.cells_on_triangle,
+    )?;
+    let updated_triangle_lonlat = circumcenters
+        .iter()
+        .copied()
+        .map(xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+    let updated_triangle_points = updated_triangle_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| {
+            CartesianPoint::new(
+                point.x * input.radius,
+                point.y * input.radius,
+                point.z * input.radius,
+            )
+        })
+        .collect::<Vec<_>>();
+    let edge_points_cartesian = edge_output
+        .edge_points
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| {
+            CartesianPoint::new(
+                point.x * input.radius,
+                point.y * input.radius,
+                point.z * input.radius,
+            )
+        })
+        .collect::<Vec<_>>();
+    let final_ordered = order_vertex_arrays_fortran_indexed(
+        &updated_triangle_points,
+        &edge_points_cartesian,
+        &edge_output.edges_on_vertex,
+        &edge_output.vertices_on_edge,
+        &edge_output.cells_on_edge,
+    )?;
+
+    Some(SpringjustmentGlobalCoreOutput {
+        updated_triangle_lonlat,
+        updated_cell_lonlat,
+        triangle_neighbors,
+        cells_on_edge: edge_output.cells_on_edge,
+        vertices_on_edge: edge_output.vertices_on_edge,
+        edges_on_vertex: final_ordered.edges_on_vertex,
+        cells_on_vertex: final_ordered.cells_on_vertex,
+        edges_on_cell: cell_connectivity.edges_on_cell,
+        cells_on_cell: cell_connectivity.cells_on_cell,
+        edges_on_edge_tri,
+        dists_on_edge,
+        edge_lonlat: edge_output.edge_points,
+        spring,
     })
 }
 

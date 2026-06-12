@@ -261,3 +261,7 @@ Extended `rust/earthmesh_mesh` with `spring_dynamics_global_fortran_indexed`, a 
 ### 2026-06-12: `MOD_grid_preprocess.F90` regional spring move-mask smoother ported
 
 Extended `rust/earthmesh_mesh` with `spring_dynamics_regional_fortran_indexed`, a tested Rust port of the core `spring_dynamics_regionalv2` move-mask smoother. It builds the calculation mask from movable cells plus their neighbor halo, updates only movable cells by previous-iteration neighbor averaging, renormalizes to the requested Earth radius, and records Fortran-style periodic `Max DS` diagnostics. Remaining spring work is now the high-level `Springjustment_global`/`Springjustment_regional_step` adapter wiring and NetCDF/file workflow integration.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment_global pure core adapter ported
+
+Extended `rust/earthmesh_mesh` with `springjustment_global_core_fortran_indexed`, a tested pure in-memory adapter for the calculation sequence inside `Springjustment_global`. It wires the migrated triangle-neighbor, GetEdge production, ConnectOnCell, EdgesOnedge_tri, global spring dynamics, cell lon/lat refresh, triangle centroid/circumcenter refresh, and final orderVertexArrays kernels without introducing NetCDF/file side effects. Remaining high-level work is distance-step/file adapter integration and `Springjustment_regional_step` orchestration.
