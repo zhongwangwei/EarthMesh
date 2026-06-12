@@ -148,3 +148,26 @@ pub fn unproject_from_polar_stereographic(point: PlanePoint, pole: PoleBasis) ->
         pole.cos_lat * yq + pole.sin_lat * zq,
     )
 }
+
+/// Port of `MOD_grid_preprocess:centroid_spherical_single`.
+///
+/// Converts lon/lat vertices to unit Cartesian vectors, averages components,
+/// then converts the averaged vector back to lon/lat degrees.
+pub fn spherical_centroid_degrees(points: &[LonLatDegrees]) -> Option<LonLatDegrees> {
+    if points.is_empty() {
+        return None;
+    }
+
+    let mut sx = 0.0;
+    let mut sy = 0.0;
+    let mut sz = 0.0;
+    for point in points {
+        let xyz = lonlat_degrees_to_unit_xyz(*point);
+        sx += xyz.x;
+        sy += xyz.y;
+        sz += xyz.z;
+    }
+    let n = points.len() as f64;
+    let centroid = CartesianPoint::new(sx / n, sy / n, sz / n);
+    Some(xyz_to_lonlat_degrees(centroid))
+}

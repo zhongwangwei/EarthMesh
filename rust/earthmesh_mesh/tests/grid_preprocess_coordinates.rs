@@ -48,3 +48,33 @@ fn batch_lonlat_to_unit_xyz_preserves_order() {
     approx_eq(xyz[1].y, 1.0, 1.0e-15);
     approx_eq(xyz[2].z, 1.0, 1.0e-15);
 }
+
+#[test]
+fn spherical_centroid_matches_fortran_vector_average_on_equator() {
+    let centroid = earthmesh_mesh::spherical_centroid_degrees(&[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+    ])
+    .expect("non-empty centroid");
+
+    approx_eq(centroid.lon_degrees, 45.0, 1.0e-12);
+    approx_eq(centroid.lat_degrees, 0.0, 1.0e-12);
+}
+
+#[test]
+fn spherical_centroid_matches_fortran_vector_average_for_triangle() {
+    let centroid = earthmesh_mesh::spherical_centroid_degrees(&[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(0.0, 90.0),
+    ])
+    .expect("non-empty centroid");
+
+    approx_eq(centroid.lon_degrees, 45.0, 1.0e-12);
+    approx_eq(centroid.lat_degrees, 35.264389682754654, 1.0e-12);
+}
+
+#[test]
+fn spherical_centroid_rejects_empty_input() {
+    assert!(earthmesh_mesh::spherical_centroid_degrees(&[]).is_none());
+}

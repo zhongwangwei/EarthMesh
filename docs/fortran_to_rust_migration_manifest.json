@@ -168,17 +168,19 @@
       "port_status": "started",
       "completed_rust_surfaces": [
         "lonlat2xyz unit-sphere coordinate conversion ported to rust/earthmesh_mesh",
-        "xyz2lonlat-compatible round trip covered through rust/earthmesh_mesh xyz_to_lonlat_degrees"
+        "xyz2lonlat-compatible round trip covered through rust/earthmesh_mesh xyz_to_lonlat_degrees",
+        "centroid_spherical_single vector-average spherical centroid ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
         "Springjustment_global and Springjustment_regional_step",
         "find_frac_index and layer construction helpers",
         "edge/cell connectivity construction and MPAS ordering routines",
-        "centroid_spherical_single and circumcenter_spherical_calculation",
         "TriMeshQuality and PolyMeshQuality metrics",
         "robust_spherical_area and GetArea/GetEdge routines",
-        "IAP_Mesh_make and NetCDF-backed workflows"
+        "IAP_Mesh_make and NetCDF-backed workflows",
+        "centroid_spherical_calculation batch wrapper over mesh connectivity",
+        "circumcenter_spherical_calculation"
       ]
     },
     {

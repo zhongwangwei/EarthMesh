@@ -97,3 +97,7 @@ Extended `rust/earthmesh_geometry` with Rust ports of closed-curve helper logic 
 ### 2026-06-12: `MOD_grid_preprocess.F90` lon/lat unit-vector conversion ported
 
 Extended `rust/earthmesh_mesh` with a tested Rust port of `MOD_grid_preprocess:lonlat2xyz`. The function returns unit-sphere Cartesian coordinates, matching the Fortran routine before callers multiply by `erad8`. Round-trip tests use the already migrated Rust `xyz_to_lonlat_degrees` path. Most grid preprocessing remains unported.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` spherical centroid helper ported
+
+Extended `rust/earthmesh_mesh` with `spherical_centroid_degrees`, a tested Rust port of `MOD_grid_preprocess:centroid_spherical_single`. It preserves the Fortran method: lon/lat vertices are converted to unit Cartesian vectors, averaged component-wise, then converted back to lon/lat. The grid-wide `centroid_spherical_calculation` wrapper over connectivity remains unported.
