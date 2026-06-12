@@ -425,7 +425,8 @@
         "ref_sjx_isreverse_judge reverse one-into-two marker and segment rewrite ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
         "OnedivideTwo forward/reverse transition split geometry and child mapping ported to rust/earthmesh_mesh with dateline fixture coverage",
         "m1w1_to_m11w11 child-adjacency lookup ported to rust/earthmesh_mesh with zero-child and missing-adjacency fixture coverage",
-        "weak_concav_pair_special one-cell weak-concavity pair state update ported to rust/earthmesh_mesh with segment and deferred-renewal fixture coverage"
+        "weak_concav_pair_special one-cell weak-concavity pair state update ported to rust/earthmesh_mesh with segment and deferred-renewal fixture coverage",
+        "sharp_concav_lop_judge strong-concavity LOP segment builder ported to rust/earthmesh_mesh with child-pair and mirror fixture coverage"
       ]
     }
   ]
