@@ -481,3 +481,7 @@ Extended `rust/earthmesh_mesh` with `renew_mask_postproc_domain_triangles_fortra
 ### 2026-06-12: mask_postproc narrow-waterway helper ported
 
 Extended `rust/earthmesh_mesh` with `widen_narrow_waterway_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:narrow_waterway_widen`. The helper rebuilds the temporary boundary vertex-to-vertex graph from compact ocean center rows, preserves the four-connection narrow-waterway signature and duplicate-neighbor detection, and activates all original centers adjacent to the duplicated boundary neighbor. Remaining `mask_postproc` work is the isolated-ocean removal helper plus Earth/Lnd/Ocn/Atmos NetCDF orchestration.
+
+### 2026-06-12: mask_postproc boundary closed-curve helper ported
+
+Extended `rust/earthmesh_mesh` with `boundary_closed_curves_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:bdy_connection_closed_curve`. The helper preserves the Fortran boundary walk order, placeholder curve slot, closed-curve length records, longest-curve id, and the legacy `num_bdy_long(1:2)+1` allocation convention. Remaining `mask_postproc` work is the boundary graph builder, isolated-ocean removal helper, and Earth/Lnd/Ocn/Atmos NetCDF orchestration.

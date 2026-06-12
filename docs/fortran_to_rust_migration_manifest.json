@@ -285,11 +285,12 @@
         "Data_Finial helper ported to rust/earthmesh_mesh",
         "IsInDmArea_ustr_Renew helper ported to rust/earthmesh_mesh",
         "IsInDmArea_ustr_Renew_v2 helper ported to rust/earthmesh_mesh",
-        "narrow_waterway_widen helper ported to rust/earthmesh_mesh"
+        "narrow_waterway_widen helper ported to rust/earthmesh_mesh",
+        "bdy_connection_closed_curve helper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O",
-        "isolated-ocean helper"
+        "bdy_connection and isolated-ocean helpers"
       ]
     },
     {

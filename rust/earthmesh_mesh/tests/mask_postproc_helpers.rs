@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
-    extract_unique_vertices_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
-    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
+    boundary_closed_curves_fortran_indexed, extract_unique_vertices_fortran_indexed,
+    finalize_mask_postproc_data_fortran_indexed, renew_mask_postproc_data_fortran_indexed,
+    renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -233,4 +234,26 @@ fn narrow_waterway_widen_activates_cells_around_duplicate_boundary_neighbor() {
 
     assert_eq!(is_in_domain[9], 1);
     assert_eq!(is_in_domain[10], 1);
+}
+
+#[test]
+fn boundary_closed_curves_preserve_fortran_walk_order_and_longest_metadata() {
+    let boundary_order = vec![1, 10, 11, 12, 20, 21, 22, 23];
+    let mut boundary_neighbors = vec![vec![1, 1]; 24];
+    boundary_neighbors[10] = vec![11, 12];
+    boundary_neighbors[11] = vec![12, 10];
+    boundary_neighbors[12] = vec![10, 11];
+    boundary_neighbors[20] = vec![21, 23];
+    boundary_neighbors[21] = vec![22, 20];
+    boundary_neighbors[22] = vec![23, 21];
+    boundary_neighbors[23] = vec![20, 22];
+
+    let curves = boundary_closed_curves_fortran_indexed(&boundary_order, &boundary_neighbors)
+        .expect("closed curves");
+
+    assert_eq!(curves.num_closed_curve, 2);
+    assert_eq!(curves.num_bdy_long, [5, 1, 2]);
+    assert_eq!(curves.close_curves[1], vec![10, 11, 12]);
+    assert_eq!(curves.close_curves[2], vec![20, 21, 22, 23]);
+    assert_eq!(curves.n_close_curve, vec![0, 3, 4]);
 }
