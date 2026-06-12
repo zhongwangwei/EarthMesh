@@ -7,6 +7,27 @@ fn point(lon: f64, lat: f64) -> LonLatPoint {
 }
 
 #[test]
+fn working_state_derives_triangle_neighbors_from_gridfile_membership() {
+    let mesh = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0), point(1.0, 1.0)],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.0, 1.0),
+            point(1.0, 1.0),
+        ],
+        m_to_w: vec![[1, 2, 3], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![1, 2], vec![1, 2], vec![2]],
+        n_w_to_m: vec![1, 2, 2, 1],
+    };
+
+    let state = RefineLoopWorkingState::from_unstructured_mesh(&mesh);
+
+    assert_eq!(state.triangle_neighbors[1], vec![2, 0, 0]);
+    assert_eq!(state.triangle_neighbors[2], vec![0, 0, 1]);
+}
+
+#[test]
 fn working_state_round_trips_unstructured_mesh_into_fortran_indexed_arrays() {
     let mesh = UnstructuredMesh {
         m_points: vec![point(0.0, 10.0), point(20.0, 30.0)],

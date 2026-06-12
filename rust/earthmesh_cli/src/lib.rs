@@ -1401,6 +1401,8 @@ impl RefineLoopWorkingState {
         for (vertex, &count) in mesh.n_w_to_m.iter().enumerate() {
             n_ngrwm[vertex + 1] = count.max(0) as usize;
         }
+        let triangle_neighbors =
+            derive_triangle_neighbors_from_one_based_membership(nma, nwa, &ngrmw, &ngrwm, &n_ngrwm);
 
         Self {
             iter: 1,
@@ -1424,7 +1426,7 @@ impl RefineLoopWorkingState {
             ref_sjx: vec![0; nma + 1],
             ref_lbx: vec![0; nwa + 1],
             mrl_new: vec![1; nma + 1],
-            triangle_neighbors: Vec::new(),
+            triangle_neighbors,
             segments: Vec::new(),
             n_segments: Vec::new(),
             sjx_child: vec![[0, 0]; nma + 1],
@@ -1771,6 +1773,64 @@ impl RefineLoopWorkingState {
         self.num_dbx = report.num_dbx;
         Ok(report)
     }
+}
+
+fn derive_triangle_neighbors_from_one_based_membership(
+    num_triangles: usize,
+    num_vertices: usize,
+    ngrmw: &[Vec<usize>],
+    ngrwm: &[Vec<usize>],
+    n_ngrwm: &[usize],
+) -> Vec<Vec<usize>> {
+    let mut neighbors = vec![vec![0_usize; 3]; num_triangles + 1];
+    if ngrmw.len() <= 3 || n_ngrwm.len() <= num_vertices {
+        return neighbors;
+    }
+    for triangle in 1..=num_triangles {
+        if ngrmw[1..=3].iter().any(|row| row.len() <= triangle) {
+            continue;
+        }
+        let cells = [ngrmw[1][triangle], ngrmw[2][triangle], ngrmw[3][triangle]];
+        for &cell in &cells {
+            if cell == 0 || cell > num_vertices || cell >= n_ngrwm.len() {
+                continue;
+            }
+            let count = n_ngrwm[cell];
+            if ngrwm.len() <= count || ngrwm[1..=count].iter().any(|row| row.len() <= cell) {
+                continue;
+            }
+            for row in 1..=count {
+                let candidate = ngrwm[row][cell];
+                if candidate == 0 || candidate == triangle || candidate > num_triangles {
+                    continue;
+                }
+                if ngrmw[1..=3].iter().any(|row| row.len() <= candidate) {
+                    continue;
+                }
+                let candidate_cells = [
+                    ngrmw[1][candidate],
+                    ngrmw[2][candidate],
+                    ngrmw[3][candidate],
+                ];
+                let shared = cells
+                    .iter()
+                    .filter(|&&triangle_cell| {
+                        triangle_cell != 0 && candidate_cells.contains(&triangle_cell)
+                    })
+                    .count();
+                if shared != 2 {
+                    continue;
+                }
+                if let Some(slot) = cells
+                    .iter()
+                    .position(|triangle_cell| !candidate_cells.contains(triangle_cell))
+                {
+                    neighbors[triangle][slot] = candidate;
+                }
+            }
+        }
+    }
+    neighbors
 }
 
 fn state_arrays_to_unstructured_mesh(
