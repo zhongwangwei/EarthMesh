@@ -541,3 +541,7 @@ Added `reindex_final_center_vertices_fortran_indexed`, a tested Rust port of the
 ### 2026-06-12: final mask_postproc gridfile adapter ported
 
 Added `unstructured_mesh_from_mask_postproc_final`, a tested CLI adapter for the final `Unstructured_Mesh_Save` call in `mask_postproc_*`. The helper writes `tri` final centers/vertices directly and applies the Fortran `hex` argument swap so the legacy gridfile still stores triangles in `m*` arrays and polygons in `w*` arrays. Full Earth/Lnd/Ocn orchestration still needs to call this after the migrated mesh-renewal helpers and before NetCDF persistence.
+
+### 2026-06-12: mask_postproc finalization pipeline adapter ported
+
+Added `finalize_mask_postproc_layout_to_unstructured_mesh`, a tested composition layer that turns a prepared `MaskPostprocLayout` plus `IsInDmArea_ustr` into the final legacy `UnstructuredMesh` payload. It composes the migrated `Data_Finial`, unique-vertex extraction, sorted vertex remapping, final center-neighbor reindexing, and tri/hex gridfile adapter. Domain-specific mask edits, boundary renewal, patchtype writing, and NetCDF orchestration still remain outside this helper.

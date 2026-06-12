@@ -1105,6 +1105,61 @@ pub fn unstructured_mesh_from_mask_postproc_final(
     }
 }
 
+/// Compose the Rust ports of the final `MOD_mask_postproc.F90:mask_postproc_*`
+/// compaction steps into the gridfile payload written by `Unstructured_Mesh_Save`.
+///
+/// This intentionally starts after the domain-specific mask edits are already
+/// represented in `IsInDmArea_ustr`; ocean-specific renewal, land patchtype
+/// generation, and NetCDF I/O remain separate orchestration layers.
+pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+    mode_grid: &str,
+) -> io::Result<UnstructuredMesh> {
+    validate_mask_postproc_layout(layout)?;
+    if is_in_domain_ustr.len() < layout.ustr_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IsInDmArea_ustr length {} must cover ustr_points {}",
+                is_in_domain_ustr.len(),
+                layout.ustr_points
+            ),
+        ));
+    }
+
+    let active_centers = is_in_domain_ustr
+        .iter()
+        .map(|&value| value == 1)
+        .collect::<Vec<_>>();
+    let center_coordinates = lonlat_pairs_from_points(&layout.center_points);
+    let vertex_coordinates = lonlat_pairs_from_points(&layout.vertex_points);
+    let mut final_data = earthmesh_mesh::finalize_mask_postproc_data_fortran_indexed(
+        mode_grid,
+        &active_centers,
+        &center_coordinates,
+        &vertex_coordinates,
+        &layout.center_neighbors,
+        &layout.center_neighbor_counts,
+        layout.ustr_bounds.saturating_sub(1),
+    )?;
+
+    let unique_vertices = earthmesh_mesh::extract_unique_vertices_fortran_indexed(
+        &final_data.center_neighbors_final,
+        &final_data.center_neighbor_counts_final,
+        layout.ustr_bounds.saturating_sub(1),
+    )?;
+    let reindex = earthmesh_mesh::sort_and_reindex_vertices(&unique_vertices, layout.ustr_bounds)?;
+    final_data.center_neighbors_final =
+        earthmesh_mesh::reindex_final_center_vertices_fortran_indexed(
+            &final_data.center_neighbors_final,
+            &final_data.center_neighbor_counts_final,
+            &reindex.vertex_mapping,
+        )?;
+
+    unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)
+}
+
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
 pub fn obc_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: bool) -> PathBuf {
     let filename = if mask_patch_on {
@@ -1844,6 +1899,53 @@ fn i32_counts_as_usize(values: &[i32], name: &str) -> io::Result<Vec<usize>> {
         .iter()
         .map(|&value| usize_from_i32_connectivity(value, name))
         .collect()
+}
+
+fn validate_mask_postproc_layout(layout: &MaskPostprocLayout) -> io::Result<()> {
+    for (name, actual, required) in [
+        (
+            "center_points",
+            layout.center_points.len(),
+            layout.ustr_points,
+        ),
+        (
+            "center_neighbors",
+            layout.center_neighbors.len(),
+            layout.ustr_points,
+        ),
+        (
+            "center_neighbor_counts",
+            layout.center_neighbor_counts.len(),
+            layout.ustr_points,
+        ),
+        (
+            "vertex_points",
+            layout.vertex_points.len(),
+            layout.ustr_bounds,
+        ),
+        (
+            "vertex_neighbors",
+            layout.vertex_neighbors.len(),
+            layout.ustr_bounds,
+        ),
+        (
+            "vertex_neighbor_counts",
+            layout.vertex_neighbor_counts.len(),
+            layout.ustr_bounds,
+        ),
+    ] {
+        if actual != required {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} length {actual} must match required {required}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn lonlat_pairs_from_points(points: &[LonLatPoint]) -> Vec<[f64; 2]> {
+    points.iter().map(|point| [point.lon, point.lat]).collect()
 }
 
 fn lonlat_points_from_pairs(

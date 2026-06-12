@@ -302,7 +302,8 @@
         "mask_postproc tri/hex mesh layout setup ported to rust/earthmesh_cli",
         "mask_postproc_Lnd patchtypes_make fallback classification ported to rust/earthmesh_cli",
         "final mask_postproc center-vertex reindex loop ported to rust/earthmesh_mesh",
-        "final mask_postproc gridfile tri/hex save adapter ported to rust/earthmesh_cli"
+        "final mask_postproc gridfile tri/hex save adapter ported to rust/earthmesh_cli",
+        "mask_postproc finalization pipeline adapter ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O"
