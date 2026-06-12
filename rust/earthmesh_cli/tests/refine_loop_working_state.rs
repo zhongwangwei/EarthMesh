@@ -1,4 +1,6 @@
-use earthmesh_cli::{LonLatPoint, RefineLoopWorkingState, UnstructuredMesh};
+use earthmesh_cli::{
+    LonLatPoint, MkgrdRefineLoopWorkingStateExecutor, RefineLoopWorkingState, UnstructuredMesh,
+};
 
 fn point(lon: f64, lat: f64) -> LonLatPoint {
     LonLatPoint { lon, lat }
@@ -604,4 +606,55 @@ fn working_state_applies_delaunay_lop_into_new_connectivity() {
     assert_eq!(state.mp_new[4], point(4.0, 2.0));
     assert_eq!(state.mp_new[5], point(2.0, 4.0));
     assert_eq!(state.wp_new[14], point(180.0, 9.0));
+}
+
+#[test]
+fn working_state_executor_runs_file_backed_passthrough_refine_step() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_executor_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let input_gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
+    let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
+    let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        sources: Vec::new(),
+        refine_loop_input_gridfile: input_gridfile.clone(),
+        refine_loop_original_tmpfile: original_tmpfile.clone(),
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: output_gridfile.clone(),
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![point(-1.0, -2.0), point(3.0, 4.0)],
+        w_points: vec![point(10.0, 11.0), point(12.0, 13.0), point(14.0, 15.0)],
+        m_to_w: vec![[1, 2, 3], [3, 1, 2]],
+        w_to_m: vec![vec![1, 2], vec![1, 2], vec![2, 1]],
+        n_w_to_m: vec![2, 2, 2],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input_gridfile, &mesh)
+        .expect("write input gridfile");
+
+    let executor = MkgrdRefineLoopWorkingStateExecutor::default();
+    let report = executor
+        .run_refine_loop_step_report(&step)
+        .expect("run passthrough refine-loop step");
+
+    assert_eq!(report.output_gridfile, output_gridfile);
+    assert_eq!(report.state.num_mp, vec![0, 2]);
+    assert_eq!(
+        earthmesh_cli::read_unstructured_mesh_netcdf(&report.output_gridfile)
+            .expect("read output gridfile"),
+        mesh
+    );
+    assert_eq!(
+        std::fs::read(&original_tmpfile).expect("read copied original"),
+        std::fs::read(&input_gridfile).expect("read input gridfile")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

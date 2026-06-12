@@ -463,7 +463,8 @@
         "refine_loop working state can apply ref_sjx_isreverse_judge and OnedivideTwo transition split adapters",
         "refine_loop working state can look up child triangle pairs and apply weak_concav_pair_special",
         "refine_loop working state can apply sharp_concav_lop_judge and weak_concav_lop_judge temporary segment updates",
-        "refine_loop working state can apply Delaunay_Lop to queued LOP segment references"
+        "refine_loop working state can apply Delaunay_Lop to queued LOP segment references",
+        "refine_loop working-state executor can run file-backed prologue and write passthrough output gridfile"
       ]
     }
   ]

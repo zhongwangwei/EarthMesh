@@ -242,6 +242,23 @@ pub struct MkgrdRefineLoopWorkingStatePrologueReport {
     pub state: RefineLoopWorkingState,
 }
 
+/// Evidence from the conservative Rust working-state executor for one
+/// file-backed `MOD_refine.F90:refine_loop` step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLoopWorkingStateStepReport {
+    pub prologue: MkgrdRefineLoopWorkingStatePrologueReport,
+    pub state: RefineLoopWorkingState,
+    pub output_gridfile: PathBuf,
+}
+
+/// File-backed refine-loop geometry executor backed by `RefineLoopWorkingState`.
+///
+/// At this migration stage it performs the verified prologue/read/write
+/// boundary and exports the current state unchanged. Geometry stage sequencing
+/// will be filled in by subsequent, separately tested slices.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MkgrdRefineLoopWorkingStateExecutor;
+
 /// Evidence from applying `MOD_refine.F90:OnedivideFour_connection`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnedivideFourConnectionReport {
@@ -1306,6 +1323,47 @@ pub fn run_mkgrd_refine_loop_working_state_prologue(
     };
     let state = RefineLoopWorkingState::from_unstructured_mesh(&mesh);
     Ok(MkgrdRefineLoopWorkingStatePrologueReport { snapshot, state })
+}
+
+impl MkgrdRefineLoopWorkingStateExecutor {
+    pub fn run_refine_loop_step_report(
+        &self,
+        step: &MkgrdRefineLoopStepIoPlan,
+    ) -> io::Result<MkgrdRefineLoopWorkingStateStepReport> {
+        let prologue = run_mkgrd_refine_loop_working_state_prologue(step)?;
+        let state = prologue.state.clone();
+        let output_mesh = state.to_unstructured_mesh()?;
+        write_unstructured_mesh_netcdf(&step.refine_loop_output_gridfile, &output_mesh)?;
+        Ok(MkgrdRefineLoopWorkingStateStepReport {
+            prologue,
+            state,
+            output_gridfile: step.refine_loop_output_gridfile.clone(),
+        })
+    }
+}
+
+impl MkgrdRefineLoopExecutor for MkgrdRefineLoopWorkingStateExecutor {
+    fn run_source_branch(
+        &mut self,
+        _step: &MkgrdRefineLoopStepIoPlan,
+        _source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "refine source branches are not implemented by MkgrdRefineLoopWorkingStateExecutor",
+        ))
+    }
+
+    fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
+        self.run_refine_loop_step_report(step).map(|_| ())
+    }
+
+    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Final_Grid_Quality_Check is not implemented by MkgrdRefineLoopWorkingStateExecutor",
+        ))
+    }
 }
 
 impl RefineLoopWorkingState {
