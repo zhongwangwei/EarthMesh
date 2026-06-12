@@ -5,16 +5,19 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
-use earthmesh_geometry::{is_point_in_circle_km, Point as AreaJudgePoint};
+use earthmesh_geometry::{
+    area_judge_first_self_intersection_fortran_indexed, is_point_in_circle_km,
+    Point as AreaJudgePoint,
+};
 use earthmesh_mesh::{
-    area_judge_apply_mask_patch_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
-    area_judge_source_find_fortran_indexed, boundary_connection_fortran_indexed,
-    centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
-    classify_boundary_orders_fortran_indexed, connect_on_cell_fortran_indexed,
-    edge_distance_angle_fortran_indexed, get_area_production_fortran_indexed,
-    get_edge_production_fortran_indexed, lonlat_points_to_unit_xyz,
-    order_vertices_on_cell_fortran_indexed, remove_isolated_ocean_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    area_judge_apply_mask_patch_fortran_indexed, area_judge_closed_curve_fill_fortran_indexed,
+    area_judge_minmax_range_make_fortran_indexed, area_judge_source_find_fortran_indexed,
+    boundary_connection_fortran_indexed, centroid_spherical_mesh_fortran_indexed,
+    circumcenter_spherical_mesh_fortran_indexed, classify_boundary_orders_fortran_indexed,
+    connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
+    get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
+    lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
+    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
@@ -1951,6 +1954,156 @@ pub fn apply_area_judge_circle_patch_source_fortran_indexed(
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "seaorland or circle patch mask does not cover selected source bounds",
+            )
+        })?;
+
+    Ok(AreaJudgePatchSourceReport {
+        bounds,
+        patched_cells: report.patched_cells,
+    })
+}
+
+fn area_judge_close_crosses_dateline(points: &[LonLatDegrees]) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    let edgew = points
+        .iter()
+        .map(|point| point.lon_degrees)
+        .fold(f64::INFINITY, f64::min);
+    let edgee = points
+        .iter()
+        .map(|point| point.lon_degrees)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let widest_edge = points
+        .windows(2)
+        .map(|pair| (pair[1].lon_degrees - pair[0].lon_degrees).abs())
+        .fold(0.0, f64::max);
+    widest_edge > (edgee - edgew).abs()
+}
+
+fn area_judge_check_crossing(points: &mut [LonLatDegrees]) {
+    for point in points {
+        if point.lon_degrees < 0.0 {
+            point.lon_degrees += 180.0;
+        } else {
+            point.lon_degrees -= 180.0;
+        }
+    }
+}
+
+/// Build the close-curve `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+pub fn apply_area_judge_close_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    let mask = read_close_mask_netcdf(inputfile)?;
+    validate_close_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid close patch source: {err}"),
+        )
+    })?;
+    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let close_points = &mask.points;
+    let geometry_points = close_points
+        .iter()
+        .map(|point| AreaJudgePoint::new(point.lon, point.lat))
+        .collect::<Vec<_>>();
+    if let Some(intersection) = area_judge_first_self_intersection_fortran_indexed(&geometry_points)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "close polygon self-intersects between segments {} and {}",
+                intersection.first_segment_id, intersection.second_segment_id
+            ),
+        ));
+    }
+
+    let mut fill_points = close_points
+        .iter()
+        .map(|point| LonLatDegrees {
+            lon_degrees: point.lon,
+            lat_degrees: point.lat,
+        })
+        .collect::<Vec<_>>();
+    let mut edgew_temp = fill_points
+        .iter()
+        .map(|point| point.lon_degrees)
+        .fold(f64::INFINITY, f64::min);
+    let mut edgee_temp = fill_points
+        .iter()
+        .map(|point| point.lon_degrees)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let edgen_temp = fill_points
+        .iter()
+        .map(|point| point.lat_degrees)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let edges_temp = fill_points
+        .iter()
+        .map(|point| point.lat_degrees)
+        .fold(f64::INFINITY, f64::min);
+    let restore_dateline_shift = area_judge_close_crosses_dateline(&fill_points);
+    if restore_dateline_shift {
+        edgew_temp = -180.0;
+        edgee_temp = 180.0;
+        area_judge_check_crossing(&mut fill_points);
+    }
+
+    let bounds = area_judge_minmax_range_make_fortran_indexed(
+        edgew_temp,
+        edgee_temp,
+        edgen_temp,
+        edges_temp,
+        lon_vertex,
+        lat_vertex,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "close patch bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+            ),
+        )
+    })?;
+    let fill = area_judge_closed_curve_fill_fortran_indexed(
+        &fill_points,
+        lon_vertex,
+        lat_vertex,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+        restore_dateline_shift,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "close patch source could not be converted to source-grid cells",
+        )
+    })?;
+    for (lon_index, lat_index) in fill.cells {
+        require_len("close patch mask", patch_mask.len(), lon_index + 1)?;
+        require_len(
+            &format!("close patch mask[{lon_index}]"),
+            patch_mask[lon_index].len(),
+            lat_index + 1,
+        )?;
+        patch_mask[lon_index][lat_index] = 1;
+    }
+    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seaorland or close patch mask does not cover selected source bounds",
             )
         })?;
 
@@ -6682,6 +6835,24 @@ pub fn parse_bbox_mask_nml(
     }))
 }
 
+fn validate_close_mask(mask: &CloseMask) -> io::Result<()> {
+    if mask.points.len() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "close mask must contain at least three points",
+        ));
+    }
+    for (index, point) in mask.points.iter().enumerate() {
+        if !point.lon.is_finite() || !point.lat.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("close point {} coordinates must be finite", index + 1),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
     if mask.points.len() != mask.radius_km.len() {
         return Err(io::Error::new(
@@ -6922,6 +7093,54 @@ pub fn read_circle_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Circle
 
 pub fn read_close_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
     read_nonnegative_refine_netcdf(inputfile, "close_refine")
+}
+
+pub fn read_close_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CloseMask> {
+    let inputfile = inputfile.as_ref();
+    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let close_num = required_dimension_len(&file, "close_num")?;
+    let two = required_dimension_len(&file, "two")?;
+    if two != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("close two dimension {two} must equal 2"),
+        ));
+    }
+    let refine_degree = read_close_refine_netcdf(inputfile)?;
+    let values = required_values_f64(&file, "close_points")?;
+    let expected = close_num.checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("close_points dimensions {close_num}x2 overflow"),
+        )
+    })?;
+    if values.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "close_points contains {} values, expected {expected}",
+                values.len()
+            ),
+        ));
+    }
+    let points = values
+        .chunks_exact(2)
+        .map(|row| LonLatPoint {
+            lon: row[0],
+            lat: row[1],
+        })
+        .collect::<Vec<_>>();
+    let mask = CloseMask {
+        refine_degree,
+        points,
+    };
+    validate_close_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid close mask NetCDF: {err}"),
+        )
+    })?;
+    Ok(mask)
 }
 
 pub fn write_circle_mask_netcdf(output: impl AsRef<Path>, mask: &CircleMask) -> io::Result<()> {

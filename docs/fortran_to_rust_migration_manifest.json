@@ -151,11 +151,12 @@
         "mask_patch_modify seaorland update core ported to rust/earthmesh_mesh",
         "NetCDF-backed IsInArea_grid_Read/Save restart payload reader/writer ported to rust/earthmesh_cli",
         "mask_patch_modify bbox patch-source area construction orchestration ported to rust/earthmesh_cli",
-        "mask_patch_modify circle patch-source area construction orchestration ported to rust/earthmesh_cli"
+        "mask_patch_modify circle patch-source area construction orchestration ported to rust/earthmesh_cli",
+        "mask_patch_modify close patch-source area construction orchestration ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",
-        "mask_patch_modify lambert/close patch-source area construction orchestration",
+        "mask_patch_modify lambert patch-source area construction orchestration",
         "fixture parity for land/ocean/river/coast classification decisions"
       ]
     },
