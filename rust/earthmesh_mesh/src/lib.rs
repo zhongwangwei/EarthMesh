@@ -155,6 +155,9 @@ pub struct IcosahedronDiamondConnectivity {
     pub w_faces: Vec<IcosahedronWFace>,
 }
 
+/// `mem_ijtabs:mloops` used by `mdloopf`, `udloopf`, and `wdloopf`.
+pub const ICOSAHEDRON_MLOOPS: usize = 7;
+
 /// Port of the `nmd/nud/nwd` sizing formulas in
 /// `icosahedron.F90:icosahedron`.
 pub fn icosahedron_counts_fortran(nxp0: usize) -> Option<IcosahedronCounts> {
@@ -498,6 +501,32 @@ pub fn icosahedron_fill_diamonds_fortran(nxp0: usize) -> Option<IcosahedronDiamo
     }
 
     Some(IcosahedronDiamondConnectivity { u_edges, w_faces })
+}
+
+/// Shared Rust port of `icosahedron.F90:mdloopf`, `udloopf`, and `wdloopf`.
+///
+/// The three Fortran routines have identical flag semantics: `init == 'f'`
+/// clears all loop flags, negative ids clear the selected loop, positive ids
+/// set it, and zero ids are ignored. Input ids are Fortran 1-based.
+pub fn apply_icosahedron_loop_flags_fortran(
+    loop_flags: &mut [bool; ICOSAHEDRON_MLOOPS],
+    initialize_false: bool,
+    loop_ids: &[isize],
+) -> Option<()> {
+    if initialize_false {
+        loop_flags.fill(false);
+    }
+
+    for &loop_id in loop_ids {
+        if loop_id == 0 {
+            continue;
+        }
+        let index = loop_id.unsigned_abs().checked_sub(1)?;
+        let slot = loop_flags.get_mut(index)?;
+        *slot = loop_id > 0;
+    }
+
+    Some(())
 }
 
 #[cfg(test)]

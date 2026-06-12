@@ -83,3 +83,15 @@ fn icosahedron_fill_diamonds_matches_fortran_first_southern_diamond_nxp1() {
     assert_eq!(connectivity.w_faces[3].mrlw_orig, 1);
     assert_eq!(connectivity.w_faces[3].ngr, 1);
 }
+
+#[test]
+fn icosahedron_loop_flags_match_mdloopf_sign_and_reset_rules() {
+    let mut flags = [true; 7];
+    earthmesh_mesh::apply_icosahedron_loop_flags_fortran(&mut flags, true, &[1, 2, 3, 4, 5, 0])
+        .expect("valid initial loop flags");
+    assert_eq!(flags, [true, true, true, true, true, false, false]);
+
+    earthmesh_mesh::apply_icosahedron_loop_flags_fortran(&mut flags, false, &[-2, 7, 0])
+        .expect("valid loop toggle flags");
+    assert_eq!(flags, [true, false, true, true, true, false, true]);
+}

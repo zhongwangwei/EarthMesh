@@ -305,3 +305,7 @@ Extended `rust/earthmesh_mesh` with `icosahedron_counts_fortran`, `icosahedron_d
 ### 2026-06-12: `icosahedron.F90` fill_diamond connectivity seed ported
 
 Extended `rust/earthmesh_mesh` with `icosahedron_fill_diamonds_fortran`, plus compact `IcosahedronUEdge` and `IcosahedronWFace` table structs for the fields written directly by `fill_diamond`. The new kernel preserves Fortran-indexed U/W allocation slots, southern/northern diamond neighbor index formulas, and the initial `im`, `iw`, `iu`, `mrlu`, `mrlw`, `mrlw_orig`, and `ngr` assignments before `tri_neighbors` completes reciprocal connectivity. Remaining icosahedron work is `tri_neighbors`, loop flags, spring relaxation, and post-relaxation NXP parity.
+
+### 2026-06-12: `icosahedron.F90` mdloopf/udloopf/wdloopf loop flags ported
+
+Extended `rust/earthmesh_mesh` with `apply_icosahedron_loop_flags_fortran`, a shared tested Rust port of the identical loop-flag semantics in `mdloopf`, `udloopf`, and `wdloopf`. The function preserves `mloops=7`, `init='f'` reset behavior, positive id enable, negative id disable, zero-id ignore, and Fortran 1-based loop ids. Remaining icosahedron work is reciprocal connectivity derivation, spring relaxation, single-precision wrapper decision, and post-relaxation NXP parity.
