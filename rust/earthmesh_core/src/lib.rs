@@ -306,6 +306,234 @@ fn parse_fortran_bool(field: &str, value: &str) -> Result<bool, String> {
     }
 }
 
+fn parse_i32_array<const N: usize>(field: &str, value: &str) -> Result<[i32; N], String> {
+    let values = value
+        .split(',')
+        .map(|part| parse_i32(field, part.trim()))
+        .collect::<Result<Vec<_>, _>>()?;
+    values.try_into().map_err(|values: Vec<i32>| {
+        format!(
+            "invalid integer array length for {field}: expected {N}, got {}",
+            values.len()
+        )
+    })
+}
+
+/// Typed equivalent of the operational `refine_vars` module state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefineConfig {
+    pub refine_setting: String,
+    pub mask_refine_spc_type: String,
+    pub mask_refine_spc_fprefix: String,
+    pub mask_refine_cal_type: String,
+    pub mask_refine_cal_fprefix: String,
+    pub threshold_dir: String,
+    pub set_dis_type: String,
+    pub mask_refine_ndm: [i32; 10],
+    pub max_iter: i32,
+    pub max_iter_spc: i32,
+    pub max_iter_cal: i32,
+    pub halo: [i32; 10],
+    pub max_transition_row: [i32; 10],
+    pub spring_global_type: i32,
+    pub spring_regional_type: i32,
+    pub num_rc: i32,
+    pub vertex_pretect_layers: i32,
+    pub niter_refine: i32,
+    pub th_num_landtypes: i32,
+    pub th_area_mainland: f64,
+    pub th_sea_ratio: [f64; 2],
+    pub th_onelayer_lnd: [f64; 4],
+    pub th_onelayer_ocn: [f64; 8],
+    pub th_onelayer_atmos: [f64; 2],
+    pub th_twolayer_lnd: [[f64; 2]; 10],
+    pub weak_concav_eliminate: bool,
+    pub is_transition: bool,
+    pub iter_d: bool,
+    pub refine_spc: bool,
+    pub refine_cal: bool,
+    pub refine_num_landtypes: bool,
+    pub refine_area_mainland: bool,
+    pub refine_sea_ratio: bool,
+    pub refine_onelayer_lnd: [bool; 4],
+    pub refine_onelayer_ocn: [bool; 8],
+    pub refine_onelayer_atmos: [bool; 2],
+    pub refine_twolayer_lnd: [bool; 10],
+    pub exit_loop_step: [bool; 10],
+}
+
+impl Default for RefineConfig {
+    fn default() -> Self {
+        Self {
+            refine_setting: "/tmp".to_string(),
+            mask_refine_spc_type: "/tmp".to_string(),
+            mask_refine_spc_fprefix: "/tmp".to_string(),
+            mask_refine_cal_type: "/tmp".to_string(),
+            mask_refine_cal_fprefix: "/tmp".to_string(),
+            threshold_dir: "/tmp".to_string(),
+            set_dis_type: "/tmp".to_string(),
+            mask_refine_ndm: [0; 10],
+            max_iter: 0,
+            max_iter_spc: 0,
+            max_iter_cal: 0,
+            halo: [0; 10],
+            max_transition_row: [0; 10],
+            spring_global_type: 1,
+            spring_regional_type: 1,
+            num_rc: 0,
+            vertex_pretect_layers: 1,
+            niter_refine: 100,
+            th_num_landtypes: 12,
+            th_area_mainland: 0.6,
+            th_sea_ratio: [0.5; 2],
+            th_onelayer_lnd: [999.0; 4],
+            th_onelayer_ocn: [999.0; 8],
+            th_onelayer_atmos: [999.0; 2],
+            th_twolayer_lnd: [[999.0; 2]; 10],
+            weak_concav_eliminate: false,
+            is_transition: false,
+            iter_d: false,
+            refine_spc: false,
+            refine_cal: false,
+            refine_num_landtypes: false,
+            refine_area_mainland: false,
+            refine_sea_ratio: false,
+            refine_onelayer_lnd: [false; 4],
+            refine_onelayer_ocn: [false; 8],
+            refine_onelayer_atmos: [false; 2],
+            refine_twolayer_lnd: [false; 10],
+            exit_loop_step: [false; 10],
+        }
+    }
+}
+
+impl RefineConfig {
+    /// Parse the `/mkrefine/ RL` namelist and apply the non-I/O validation and
+    /// derived mode changes performed by `mkgrd.F90:read_nl`.
+    pub fn from_mkrefine_namelist(
+        input: &str,
+        mesh_type: &str,
+        mode_grid: &str,
+    ) -> Result<Self, String> {
+        let mut config = Self::default();
+        let mut in_mkrefine = false;
+
+        for raw_line in input.lines() {
+            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with('&') {
+                in_mkrefine = line.eq_ignore_ascii_case("&mkrefine");
+                continue;
+            }
+            if line == "/" {
+                in_mkrefine = false;
+                continue;
+            }
+            if !in_mkrefine {
+                continue;
+            }
+
+            let Some((left, right)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(field) = left.trim().split_once('%').map(|(_, field)| field.trim()) else {
+                continue;
+            };
+            let value = right.trim().trim_end_matches(',');
+
+            match field.to_ascii_lowercase().as_str() {
+                "weak_concav_eliminate" => {
+                    config.weak_concav_eliminate = parse_fortran_bool(field, value)?
+                }
+                "istransition" => config.is_transition = parse_fortran_bool(field, value)?,
+                "iterd" => config.iter_d = parse_fortran_bool(field, value)?,
+                "halo" => config.halo = parse_i32_array(field, value)?,
+                "max_transition_row" => config.max_transition_row = parse_i32_array(field, value)?,
+                "springglobal_type" => config.spring_global_type = parse_i32(field, value)?,
+                "springregional_type" => config.spring_regional_type = parse_i32(field, value)?,
+                "num_rc" => config.num_rc = parse_i32(field, value)?,
+                "set_dis_type" => config.set_dis_type = parse_fortran_string(value),
+                "vertex_pretect_layers" => config.vertex_pretect_layers = parse_i32(field, value)?,
+                "niter_refine" => config.niter_refine = parse_i32(field, value)?,
+                "refine_spc" => config.refine_spc = parse_fortran_bool(field, value)?,
+                "refine_cal" => config.refine_cal = parse_fortran_bool(field, value)?,
+                "max_iter_spc" => config.max_iter_spc = parse_i32(field, value)?,
+                "max_iter_cal" => config.max_iter_cal = parse_i32(field, value)?,
+                "mask_refine_spc_type" => config.mask_refine_spc_type = parse_fortran_string(value),
+                "mask_refine_spc_fprefix" => {
+                    config.mask_refine_spc_fprefix = parse_fortran_string(value)
+                }
+                "mask_refine_cal_type" => config.mask_refine_cal_type = parse_fortran_string(value),
+                "mask_refine_cal_fprefix" => {
+                    config.mask_refine_cal_fprefix = parse_fortran_string(value)
+                }
+                "threshold_dir" => config.threshold_dir = parse_fortran_string(value),
+                "refine_num_landtypes" => {
+                    config.refine_num_landtypes = parse_fortran_bool(field, value)?
+                }
+                "refine_area_mainland" => {
+                    config.refine_area_mainland = parse_fortran_bool(field, value)?
+                }
+                "refine_sea_ratio" => config.refine_sea_ratio = parse_fortran_bool(field, value)?,
+                _ => {}
+            }
+        }
+
+        config.validate_like_read_nl(mesh_type, mode_grid)?;
+        Ok(config)
+    }
+
+    fn validate_like_read_nl(&mut self, mesh_type: &str, mode_grid: &str) -> Result<(), String> {
+        if !self.is_transition {
+            if mode_grid != "tri" {
+                return Err("not Istransition can only use in the tri".to_string());
+            }
+            self.spring_global_type = 0;
+            self.spring_regional_type = 0;
+        } else {
+            if !(0..=1).contains(&self.spring_global_type) {
+                return Err("SpringGlobal_type must 0,1".to_string());
+            }
+            if !(0..=2).contains(&self.spring_regional_type) {
+                return Err("SpringRegional_type must 0,1,2".to_string());
+            }
+            if self.spring_global_type > 0 && self.spring_regional_type > 0 {
+                return Err(
+                    "only one of (SpringGlobal_type and SpringRegional_type) can larger than zero"
+                        .to_string(),
+                );
+            }
+        }
+
+        if self.spring_global_type > 0 {
+            self.vertex_pretect_layers = 0;
+        }
+        if self.vertex_pretect_layers < 0 {
+            return Err("vertex_pretect_layers must >= 0".to_string());
+        }
+
+        if self.refine_cal && mesh_type == "atmosmesh" {
+            return Err("atmosmesh can not use in refine_cal".to_string());
+        }
+
+        self.refine_setting = match (self.refine_spc, self.refine_cal) {
+            (true, true) => "mixed".to_string(),
+            (true, false) => "specified".to_string(),
+            (false, true) => "calculate".to_string(),
+            (false, false) => {
+                return Err(
+                    "Must one of TRUE in the refine_spc and refine_cal when refine is TRUE"
+                        .to_string(),
+                );
+            }
+        };
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

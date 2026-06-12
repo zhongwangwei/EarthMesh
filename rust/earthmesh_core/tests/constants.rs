@@ -188,3 +188,137 @@ fn earthmesh_config_rejects_invalid_read_nl_mesh_output_combo() {
     assert!(err.contains("landmesh"));
     assert!(err.contains("CoLM"));
 }
+
+#[test]
+fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
+    let cfg = earthmesh_core::RefineConfig::default();
+
+    assert_eq!(cfg.refine_setting, "/tmp");
+    assert_eq!(cfg.mask_refine_spc_type, "/tmp");
+    assert_eq!(cfg.mask_refine_spc_fprefix, "/tmp");
+    assert_eq!(cfg.mask_refine_cal_type, "/tmp");
+    assert_eq!(cfg.mask_refine_cal_fprefix, "/tmp");
+    assert_eq!(cfg.threshold_dir, "/tmp");
+    assert_eq!(cfg.set_dis_type, "/tmp");
+    assert_eq!(cfg.mask_refine_ndm, [0; 10]);
+    assert_eq!(cfg.max_iter, 0);
+    assert_eq!(cfg.max_iter_spc, 0);
+    assert_eq!(cfg.max_iter_cal, 0);
+    assert_eq!(cfg.halo, [0; 10]);
+    assert_eq!(cfg.max_transition_row, [0; 10]);
+    assert_eq!(cfg.spring_global_type, 1);
+    assert_eq!(cfg.spring_regional_type, 1);
+    assert_eq!(cfg.num_rc, 0);
+    assert_eq!(cfg.vertex_pretect_layers, 1);
+    assert_eq!(cfg.niter_refine, 100);
+    assert_eq!(cfg.th_num_landtypes, 12);
+    approx_eq(cfg.th_area_mainland, 0.6, 0.0);
+    assert_eq!(cfg.th_sea_ratio, [0.5, 0.5]);
+    assert_eq!(cfg.th_onelayer_lnd, [999.0; 4]);
+    assert_eq!(cfg.th_onelayer_ocn, [999.0; 8]);
+    assert_eq!(cfg.th_onelayer_atmos, [999.0; 2]);
+    assert_eq!(cfg.th_twolayer_lnd, [[999.0; 2]; 10]);
+    assert!(!cfg.weak_concav_eliminate);
+    assert!(!cfg.is_transition);
+    assert!(!cfg.iter_d);
+    assert!(!cfg.refine_spc);
+    assert!(!cfg.refine_cal);
+    assert!(!cfg.refine_num_landtypes);
+    assert!(!cfg.refine_area_mainland);
+    assert!(!cfg.refine_sea_ratio);
+    assert_eq!(cfg.refine_onelayer_lnd, [false; 4]);
+    assert_eq!(cfg.refine_onelayer_ocn, [false; 8]);
+    assert_eq!(cfg.refine_onelayer_atmos, [false; 2]);
+    assert_eq!(cfg.refine_twolayer_lnd, [false; 10]);
+    assert_eq!(cfg.exit_loop_step, [false; 10]);
+}
+
+#[test]
+fn refine_config_parses_mkrefine_namelist_and_derives_specified_setting() {
+    let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        r#"
+&mkrefine
+  RL%weak_concav_eliminate = .true.
+  RL%Istransition = .true.
+  RL%iterD = .true.
+  RL%halo = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+  RL%max_transition_row = 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+  RL%SpringGlobal_type = 0
+  RL%SpringRegional_type = 2
+  RL%num_rc = 3
+  RL%set_dis_type = 'nonlinear2'
+  RL%vertex_pretect_layers = 4
+  RL%niter_refine = 80
+  RL%refine_spc = .true.
+  RL%refine_cal = .false.
+  RL%max_iter_spc = 2
+  RL%mask_refine_spc_type = 'bbox'
+  RL%mask_refine_spc_fprefix = '/tmp/refine_spc'
+/
+"#,
+        "landmesh",
+        "tri",
+    )
+    .expect("valid mkrefine namelist");
+
+    assert!(parsed.weak_concav_eliminate);
+    assert!(parsed.is_transition);
+    assert!(parsed.iter_d);
+    assert_eq!(parsed.halo, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(parsed.max_transition_row, [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    assert_eq!(parsed.spring_global_type, 0);
+    assert_eq!(parsed.spring_regional_type, 2);
+    assert_eq!(parsed.num_rc, 3);
+    assert_eq!(parsed.set_dis_type, "nonlinear2");
+    assert_eq!(parsed.vertex_pretect_layers, 4);
+    assert_eq!(parsed.niter_refine, 80);
+    assert!(parsed.refine_spc);
+    assert!(!parsed.refine_cal);
+    assert_eq!(parsed.max_iter_spc, 2);
+    assert_eq!(parsed.refine_setting, "specified");
+    assert_eq!(parsed.mask_refine_spc_type, "bbox");
+    assert_eq!(parsed.mask_refine_spc_fprefix, "/tmp/refine_spc");
+}
+
+#[test]
+fn refine_config_forces_spring_types_to_zero_when_transition_disabled_for_tri() {
+    let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .false.\n RL%SpringGlobal_type = 1\n RL%SpringRegional_type = 2\n RL%refine_spc = .true.\n RL%max_iter_spc = 1\n/\n",
+        "landmesh",
+        "tri",
+    )
+    .expect("tri grid can disable transition");
+
+    assert_eq!(parsed.spring_global_type, 0);
+    assert_eq!(parsed.spring_regional_type, 0);
+    assert_eq!(parsed.refine_setting, "specified");
+}
+
+#[test]
+fn refine_config_rejects_invalid_core_read_nl_refine_combinations() {
+    let both_springs = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 1\n RL%SpringRegional_type = 1\n RL%refine_spc = .true.\n RL%max_iter_spc = 1\n/\n",
+        "landmesh",
+        "tri",
+    )
+    .expect_err("read_nl allows only one spring type larger than zero");
+    assert!(both_springs.contains("only one"));
+
+    let no_refine_mode = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_spc = .false.\n RL%refine_cal = .false.\n/\n",
+        "landmesh",
+        "tri",
+    )
+    .expect_err("refine=true requires specified or calculated refinement");
+    assert!(no_refine_mode.contains("refine_spc"));
+    assert!(no_refine_mode.contains("refine_cal"));
+
+    let atmos_cal = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_cal = .true.\n RL%max_iter_cal = 1\n/\n",
+        "atmosmesh",
+        "tri",
+    )
+    .expect_err("atmosmesh cannot use refine_cal like read_nl");
+    assert!(atmos_cal.contains("atmosmesh"));
+    assert!(atmos_cal.contains("refine_cal"));
+}
