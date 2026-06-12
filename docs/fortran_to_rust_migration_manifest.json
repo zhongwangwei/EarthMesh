@@ -106,13 +106,18 @@
         "haversine distance in kilometers using EarthMesh MPAS radius",
         "is_point_in_circle radius predicate",
         "2D cross product orientation helper",
-        "convex polygon point-inclusion predicate with boundary-inside behavior"
+        "convex polygon point-inclusion predicate with boundary-inside behavior",
+        "ray_segment_intersect closed-curve scanline helper with Option-return sentinel mapping",
+        "cross_product2 component helper",
+        "segments_intersect strict self-intersection predicate",
+        "CheckCrossing dateline longitude shift helper"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",
         "mask_patch_modify and NetCDF-backed area reads",
-        "closed-curve/ray-crossing polygon handling including dateline crossing",
-        "self-intersection checks and all non-convex area predicates",
+        "closed-curve/ray-crossing polygon fill over source grid rows",
+        "self-intersection error reporting wrapper around strict segment predicate",
+        "minmax_range_make and Source_Find source-index boundary logic",
         "fixture parity for land/ocean/river/coast classification decisions"
       ]
     },

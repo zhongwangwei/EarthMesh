@@ -213,3 +213,65 @@ fn earthmesh_geometry(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_intersection_area, module)?)?;
     Ok(())
 }
+
+/// Port of `MOD_Area_judge:ray_segment_intersect`.
+///
+/// Fortran returns the ray start longitude as a sentinel for no intersection.
+/// Rust exposes that sentinel as `None` while keeping the same intersection math.
+pub fn ray_segment_intersection_lon(
+    ray_start: Point,
+    lat1: f64,
+    lon1: f64,
+    lat2: f64,
+    lon2: f64,
+) -> Option<f64> {
+    let lon_p = ray_start.x;
+    let lat_p = ray_start.y;
+
+    if lat1 == lat2 {
+        return None;
+    }
+    if (lat1 > lat_p && lat2 > lat_p) || (lat1 < lat_p && lat2 < lat_p) {
+        return None;
+    }
+
+    let m = (lat2 - lat1) / (lon2 - lon1);
+    let lon_intersect = lon1 + (lat_p - lat1) / m;
+    if lon_intersect == lon_p {
+        None
+    } else {
+        Some(lon_intersect)
+    }
+}
+
+/// Port of `MOD_Area_judge:cross_product2`.
+#[inline]
+pub fn cross_product_components(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    x1 * y2 - x2 * y1
+}
+
+/// Port of `MOD_Area_judge:segments_intersect`.
+///
+/// This intentionally uses the strict Fortran rule (`< 0` products), so
+/// endpoint touches and collinear overlaps are not intersections.
+pub fn segments_intersect_strict(a1: Point, a2: Point, b1: Point, b2: Point) -> bool {
+    let cp1 = cross_product_components(a2.x - a1.x, a2.y - a1.y, b1.x - a1.x, b1.y - a1.y);
+    let cp2 = cross_product_components(a2.x - a1.x, a2.y - a1.y, b2.x - a1.x, b2.y - a1.y);
+    let cp3 = cross_product_components(b2.x - b1.x, b2.y - b1.y, a1.x - b1.x, a1.y - b1.y);
+    let cp4 = cross_product_components(b2.x - b1.x, b2.y - b1.y, a2.x - b1.x, a2.y - b1.y);
+    cp1 * cp2 < 0.0 && cp3 * cp4 < 0.0
+}
+
+/// Port of `MOD_Area_judge:CheckCrossing`.
+///
+/// This shifts longitudes by 180 degrees when a closed polygon crosses the
+/// dateline so ray-intersection intervals can be processed on a continuous axis.
+pub fn shift_longitudes_for_dateline_crossing(points: &[Point]) -> Vec<Point> {
+    points
+        .iter()
+        .map(|point| {
+            let shifted_lon = if point.x < 0.0 { point.x + 180.0 } else { point.x - 180.0 };
+            Point::new(shifted_lon, point.y)
+        })
+        .collect()
+}
