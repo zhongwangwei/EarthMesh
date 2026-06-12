@@ -434,7 +434,8 @@
         "Array_length_calculation pure halo sizing and boundary list logic ported to rust/earthmesh_mesh with transition-row fixture coverage",
         "NGR_RENEW GetSortNew final adjacency-order dependency ported to rust/earthmesh_mesh with orientation fixture coverage",
         "bdy_connection_make refine boundary graph and closed-curve construction ported to rust/earthmesh_mesh with open-boundary fixture coverage",
-        "bdy_refine_segment_make boundary curve rotation, segment splitting, and unrefined triangle extraction ported to rust/earthmesh_mesh with fixture coverage"
+        "bdy_refine_segment_make boundary curve rotation, segment splitting, and unrefined triangle extraction ported to rust/earthmesh_mesh with fixture coverage",
+        "weak_concav_segment_make weak-concavity segment/pair classification and boundary segment remainder update ported to rust/earthmesh_mesh with fixture coverage"
       ]
     }
   ]
