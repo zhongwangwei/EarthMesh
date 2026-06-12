@@ -1149,6 +1149,144 @@ pub struct ContainMesh {
     pub is_in_area_ustr: Vec<i32>,
 }
 
+/// Axis-aligned domain/refinement bounds used by
+/// `MOD_GetContain.F90:IsInArea_ustr_Calculation`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GetContainAreaBounds {
+    pub west: f64,
+    pub east: f64,
+    pub south: f64,
+    pub north: f64,
+}
+
+/// Port of `MOD_GetContain.F90:IsInArea_ustr_Calculation`.
+///
+/// The inputs keep Fortran indexing conventions: row `0` is normally a dummy,
+/// vertex ids in `cell_to_vertices` are one-based, and rows `<= num_vertex`
+/// are preserved as unselected because the Fortran loop starts at
+/// `num_vertex + 1`.
+pub fn getcontain_is_in_area_ustr_fortran_indexed(
+    bounds: GetContainAreaBounds,
+    vertices: &[LonLatPoint],
+    cell_to_vertices: &[Vec<i32>],
+    n_edges: &[i32],
+    num_vertex: usize,
+) -> io::Result<Vec<i32>> {
+    if n_edges.len() != cell_to_vertices.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "n_edges length {} must match cell_to_vertices rows {}",
+                n_edges.len(),
+                cell_to_vertices.len()
+            ),
+        ));
+    }
+    if bounds.west >= bounds.east || bounds.south >= bounds.north {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "area bounds must satisfy west < east and south < north",
+        ));
+    }
+
+    let mut is_in_area_ustr = vec![0; cell_to_vertices.len()];
+    let start_row = num_vertex.saturating_add(1);
+
+    for cell_index in start_row..cell_to_vertices.len() {
+        let polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
+        if polygon.iter().any(|point| {
+            point.x > bounds.west
+                && point.x < bounds.east
+                && point.y > bounds.south
+                && point.y < bounds.north
+        }) {
+            is_in_area_ustr[cell_index] = 1;
+        }
+    }
+
+    let domain_corners = [
+        AreaJudgePoint::new(bounds.east, bounds.north),
+        AreaJudgePoint::new(bounds.west, bounds.north),
+        AreaJudgePoint::new(bounds.west, bounds.south),
+        AreaJudgePoint::new(bounds.east, bounds.south),
+    ];
+    for cell_index in start_row..cell_to_vertices.len() {
+        if is_in_area_ustr[cell_index] != 0 {
+            continue;
+        }
+        let polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
+        if polygon.is_empty() {
+            continue;
+        }
+        let (min_lon, max_lon) = polygon.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(min_lon, max_lon), point| (min_lon.min(point.x), max_lon.max(point.x)),
+        );
+        for corner in domain_corners {
+            if is_point_in_convex_polygon(&polygon, corner) {
+                if max_lon - min_lon > 180.0 {
+                    break;
+                }
+                is_in_area_ustr[cell_index] = 1;
+                break;
+            }
+        }
+    }
+
+    Ok(is_in_area_ustr)
+}
+
+fn getcontain_cell_polygon(
+    cell_index: usize,
+    vertices: &[LonLatPoint],
+    cell_to_vertices: &[Vec<i32>],
+    n_edges: &[i32],
+) -> io::Result<Vec<AreaJudgePoint>> {
+    let edge_count = usize::try_from(n_edges[cell_index]).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "cell {cell_index} has negative edge count {}",
+                n_edges[cell_index]
+            ),
+        )
+    })?;
+    let row = &cell_to_vertices[cell_index];
+    if edge_count > row.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "cell {cell_index} edge count {edge_count} exceeds vertex row width {}",
+                row.len()
+            ),
+        ));
+    }
+
+    let mut polygon = Vec::with_capacity(edge_count);
+    for vertex_id in row.iter().take(edge_count) {
+        if *vertex_id <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cell {cell_index} references missing vertex {vertex_id}"),
+            ));
+        }
+        let vertex_index = usize::try_from(*vertex_id).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cell {cell_index} references missing vertex {vertex_id}"),
+            )
+        })?;
+        let vertex = vertices.get(vertex_index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cell {cell_index} references missing vertex {vertex_id}"),
+            )
+        })?;
+        polygon.push(AreaJudgePoint::new(vertex.lon, vertex.lat));
+    }
+    Ok(polygon)
+}
+
 /// Rust data shape written by `MOD_mask_postproc.F90:PatchID_Save`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatchIdMesh {

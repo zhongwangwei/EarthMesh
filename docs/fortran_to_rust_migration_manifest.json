@@ -228,11 +228,14 @@
     {
       "path": "src/MOD_GetContain.F90",
       "line_count": 774,
-      "rust_target": "rust/earthmesh_overlay/src/contain.rs",
+      "rust_target": "rust/earthmesh_cli/src/lib.rs",
       "migration_phase": "phase_3",
       "strategy": "port",
       "parity_gate": "Containment matrix fixtures match Fortran cell/source overlap assignments for structured and unstructured samples.",
-      "notes": "This is central to conservative remap/coupling support."
+      "notes": "This is central to conservative remap/coupling support.",
+      "completed_rust_surfaces": [
+        "IsInArea_ustr_Calculation unstructured domain/refine area selector ported to rust/earthmesh_cli with Fortran-indexed fixture coverage"
+      ]
     },
     {
       "path": "src/MOD_GetRef.F90",
