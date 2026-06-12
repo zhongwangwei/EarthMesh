@@ -19,8 +19,9 @@ use earthmesh_mesh::{
     connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
     lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
-    refine_array_length_calculation_fortran_indexed, remove_isolated_ocean_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    refine_array_length_calculation_fortran_indexed,
+    refine_onedivide_two_fortran_indexed as refine_onedivide_two_mesh_fortran_indexed,
+    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
@@ -238,6 +239,16 @@ pub struct OnedivideFourConnectionReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnedivideFourRenewReport {
     pub refined_triangles: Vec<usize>,
+    pub new_triangle_ids: Vec<usize>,
+    pub new_vertex_ids: Vec<usize>,
+    pub dateline_adjusted: bool,
+}
+
+/// Evidence from applying `MOD_refine.F90:OnedivideTwo` through the CLI
+/// Fortran-row adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnedivideTwoReport {
+    pub split_triangles: Vec<usize>,
     pub new_triangle_ids: Vec<usize>,
     pub new_vertex_ids: Vec<usize>,
     pub dateline_adjusted: bool,
@@ -1392,6 +1403,185 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
         new_vertex_ids,
         dateline_adjusted,
     })
+}
+
+/// CLI adapter for `MOD_refine.F90:OnedivideTwo`.
+///
+/// The pure mesh kernel uses triangle-major `[[w1,w2,w3]]` rows and
+/// `LonLatDegrees`.  This wrapper keeps the surrounding CLI/refine-loop state
+/// in the Fortran-compatible row-major `ngrmw(1:3, triangle)` layout and the
+/// local `LonLatPoint` type, then writes the mutated connectivity rows back to
+/// `ngrmw_new`.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_onedivide_two_fortran_indexed(
+    iter: usize,
+    is_reverse: bool,
+    num_vertex: usize,
+    num_mp: &[usize],
+    num_wp: &[usize],
+    triangle_neighbors: &[Vec<usize>],
+    ngrmw: &[Vec<usize>],
+    ref_sjx: &[i32],
+    mrl_new: &[i32],
+    mp_new: &mut [LonLatPoint],
+    wp_new: &mut [LonLatPoint],
+    ngrmw_new: &mut [Vec<usize>],
+    sjx_child: &mut [[usize; 2]],
+) -> io::Result<OnedivideTwoReport> {
+    if iter == 0 || iter >= num_mp.len() || iter >= num_wp.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("iter {iter} must address num_mp/num_wp previous and current slots"),
+        ));
+    }
+    let old_mp = num_mp[iter - 1];
+    let new_mp = num_mp[iter];
+    let old_wp = num_wp[iter - 1];
+    let new_wp = num_wp[iter];
+    if ref_sjx.len() <= old_mp || mrl_new.len() <= old_mp {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("num_mp previous count {old_mp} requires one-based ref_sjx/mrl_new storage"),
+        ));
+    }
+    if mp_new.len() <= new_mp || wp_new.len() <= new_wp || sjx_child.len() <= old_mp {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("num_mp[{iter}] {new_mp} and num_wp[{iter}] {new_wp} exceed one-based output storage"),
+        ));
+    }
+    if ngrmw.len() <= 3 || ngrmw_new.len() <= 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ngrmw/ngrmw_new must expose one-based rows 1..=3",
+        ));
+    }
+    if ngrmw[1..=3].iter().any(|row| row.len() <= old_mp) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "num_mp previous count {old_mp} requires ngrmw rows with at least {} columns",
+                old_mp + 1
+            ),
+        ));
+    }
+    if ngrmw_new[1..=3].iter().any(|row| row.len() <= new_mp) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "num_mp[{iter}] {new_mp} requires ngrmw_new rows with at least {} columns",
+                new_mp + 1
+            ),
+        ));
+    }
+
+    let split_triangles: Vec<usize> = ((num_vertex + 1)..=old_mp)
+        .filter(|&triangle| ref_sjx[triangle] != 0)
+        .collect();
+    let mut new_triangle_ids = Vec::with_capacity(split_triangles.len() * 2);
+    let mut new_vertex_ids = Vec::with_capacity(split_triangles.len());
+    let mut dateline_adjusted = false;
+    for (split_idx, &triangle) in split_triangles.iter().enumerate() {
+        let vertex_ids = [ngrmw[1][triangle], ngrmw[2][triangle], ngrmw[3][triangle]];
+        let mut min_lon = f64::INFINITY;
+        let mut max_lon = f64::NEG_INFINITY;
+        for &vertex_id in &vertex_ids {
+            if vertex_id == 0 || vertex_id > old_wp || vertex_id >= wp_new.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "ngrmw vertex id {vertex_id} for triangle {triangle} is outside wp_new"
+                    ),
+                ));
+            }
+            min_lon = min_lon.min(wp_new[vertex_id].lon);
+            max_lon = max_lon.max(wp_new[vertex_id].lon);
+        }
+        dateline_adjusted |= max_lon - min_lon > 180.0;
+        let m1 = old_mp + split_idx * 2 + 1;
+        let m2 = old_mp + split_idx * 2 + 2;
+        let w4 = old_wp + split_idx + 1;
+        if m2 > new_mp || w4 > new_wp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "one-into-two split for triangle {triangle} exceeds allocated child storage"
+                ),
+            ));
+        }
+        new_triangle_ids.extend([m1, m2]);
+        new_vertex_ids.push(w4);
+    }
+
+    let mut cells_on_triangle = fortran_rows_to_triangle_major(ngrmw, old_mp)?;
+    let mut cells_on_triangle_new = fortran_rows_to_triangle_major(ngrmw_new, new_mp)?;
+    cells_on_triangle.resize(new_mp + 1, [0, 0, 0]);
+    let mut triangle_points: Vec<LonLatDegrees> = mp_new
+        .iter()
+        .map(|point| LonLatDegrees::new(point.lon, point.lat))
+        .collect();
+    let mut cell_points: Vec<LonLatDegrees> = wp_new
+        .iter()
+        .map(|point| LonLatDegrees::new(point.lon, point.lat))
+        .collect();
+
+    refine_onedivide_two_mesh_fortran_indexed(
+        iter,
+        is_reverse,
+        num_vertex,
+        num_mp,
+        num_wp,
+        triangle_neighbors,
+        &cells_on_triangle,
+        ref_sjx,
+        mrl_new,
+        &mut triangle_points,
+        &mut cell_points,
+        &mut cells_on_triangle_new,
+        sjx_child,
+    )?;
+
+    for triangle in 1..=new_mp {
+        ngrmw_new[1][triangle] = cells_on_triangle_new[triangle][0];
+        ngrmw_new[2][triangle] = cells_on_triangle_new[triangle][1];
+        ngrmw_new[3][triangle] = cells_on_triangle_new[triangle][2];
+    }
+    for triangle in 1..=new_mp {
+        mp_new[triangle] = LonLatPoint {
+            lon: triangle_points[triangle].lon_degrees,
+            lat: triangle_points[triangle].lat_degrees,
+        };
+    }
+    for vertex in 1..=new_wp {
+        wp_new[vertex] = LonLatPoint {
+            lon: cell_points[vertex].lon_degrees,
+            lat: cell_points[vertex].lat_degrees,
+        };
+    }
+
+    Ok(OnedivideTwoReport {
+        split_triangles,
+        new_triangle_ids,
+        new_vertex_ids,
+        dateline_adjusted,
+    })
+}
+
+fn fortran_rows_to_triangle_major(
+    rows: &[Vec<usize>],
+    max_triangle: usize,
+) -> io::Result<Vec<[usize; 3]>> {
+    if rows.len() <= 3 || rows[1..=3].iter().any(|row| row.len() <= max_triangle) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("triangle count {max_triangle} requires one-based rows 1..=3"),
+        ));
+    }
+    let mut out = vec![[0, 0, 0]; max_triangle + 1];
+    for triangle in 1..=max_triangle {
+        out[triangle] = [rows[1][triangle], rows[2][triangle], rows[3][triangle]];
+    }
+    Ok(out)
 }
 
 fn midpoint(a: LonLatPoint, b: LonLatPoint) -> LonLatPoint {
