@@ -249,3 +249,7 @@ Extended `rust/earthmesh_mesh` with `spring_edge_directions_fortran_indexed`, a 
 ### 2026-06-12: `MOD_grid_preprocess.F90` spring cell displacement application ported
 
 Extended `rust/earthmesh_mesh` with `spring_apply_cell_displacements_fortran_indexed`, a tested Rust port of the cell-side accumulation and spherical renormalization steps inside `spring_dynamics_global`. It applies per-edge displacement vectors with the migrated compact direction rows, then scales each updated cell coordinate back to the requested Earth radius. The remaining spring work is assembling the full multi-iteration global/regional dynamics loop and regional move-mask behavior.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` global spring single-iteration wrapper ported
+
+Extended `rust/earthmesh_mesh` with `spring_global_iteration_fortran_indexed`, a tested Rust wrapper for one calculation iteration of `spring_dynamics_global`. It computes current edge distances, applies the migrated per-edge correction formula through `EdgesOnedge_tri`, builds the migrated direction signs, applies per-cell displacement accumulation, and renormalizes coordinates to the requested Earth radius. The remaining spring work is multi-iteration convergence orchestration plus regional move-mask behavior.

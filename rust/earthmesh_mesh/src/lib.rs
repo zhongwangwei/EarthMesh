@@ -1541,6 +1541,86 @@ pub fn spring_apply_cell_displacements_fortran_indexed(
     Some(updated)
 }
 
+/// Output from one `spring_dynamics_global` iteration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringGlobalIterationOutput {
+    pub updated_cell_points: Vec<CartesianPoint>,
+    pub edge_displacements: Vec<CartesianPoint>,
+    pub frac_change_squared: Vec<f64>,
+}
+
+/// One-iteration Rust wrapper for `MOD_grid_preprocess:spring_dynamics_global`.
+///
+/// This ports the calculation order inside one Fortran iteration: compute all
+/// current edge distances, update per-edge correction vectors from
+/// `EdgesOnedge_tri`, build/apply per-cell direction signs, then renormalize
+/// cell coordinates back to `radius`.
+pub fn spring_global_iteration_fortran_indexed(
+    cell_points: &[CartesianPoint],
+    n_edges_on_cell: &[usize],
+    edges_on_cell: &[Vec<usize>],
+    cells_on_edge: &[[usize; 2]],
+    edges_on_edge_tri: &[[usize; 4]],
+    dists_on_edge: &[f64],
+    relax: f64,
+    radius: f64,
+) -> Option<SpringGlobalIterationOutput> {
+    if cells_on_edge.len() != edges_on_edge_tri.len()
+        || cells_on_edge.len() != dists_on_edge.len()
+        || n_edges_on_cell.len() != cell_points.len()
+        || edges_on_cell.len() != cell_points.len()
+    {
+        return None;
+    }
+
+    let mut edge_distances = vec![0.0; cells_on_edge.len()];
+    for edge_id in 2..cells_on_edge.len() {
+        let cells = cells_on_edge[edge_id];
+        let cell1 = *cell_points.get(cells[0])?;
+        let cell2 = *cell_points.get(cells[1])?;
+        edge_distances[edge_id] = magnitude(vector_between(cell1, cell2));
+    }
+
+    let mut edge_displacements = vec![CartesianPoint::new(0.0, 0.0, 0.0); cells_on_edge.len()];
+    let mut frac_change_squared = vec![0.0; cells_on_edge.len()];
+    for edge_id in 2..cells_on_edge.len() {
+        let cells = cells_on_edge[edge_id];
+        let neighbor_edges = edges_on_edge_tri[edge_id];
+        let adjustment = spring_edge_adjustment_fortran(
+            *cell_points.get(cells[0])?,
+            *cell_points.get(cells[1])?,
+            dists_on_edge[edge_id],
+            *edge_distances.get(neighbor_edges[0])?,
+            *edge_distances.get(neighbor_edges[1])?,
+            *edge_distances.get(neighbor_edges[2])?,
+            *edge_distances.get(neighbor_edges[3])?,
+        )?;
+        edge_displacements[edge_id] = adjustment.displacement;
+        frac_change_squared[edge_id] = adjustment.frac_change_squared;
+    }
+
+    let directions = spring_edge_directions_fortran_indexed(
+        n_edges_on_cell,
+        edges_on_cell,
+        cells_on_edge,
+        relax,
+    )?;
+    let updated_cell_points = spring_apply_cell_displacements_fortran_indexed(
+        cell_points,
+        n_edges_on_cell,
+        edges_on_cell,
+        &directions,
+        &edge_displacements,
+        radius,
+    )?;
+
+    Some(SpringGlobalIterationOutput {
+        updated_cell_points,
+        edge_displacements,
+        frac_change_squared,
+    })
+}
+
 /// Port of the candidate-selection core in `MOD_grid_preprocess:orderVertexArrays`.
 ///
 /// From one reference edge vector, choose the candidate edge with positive CCW

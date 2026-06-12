@@ -4,7 +4,8 @@ use earthmesh_mesh::{
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
     set_weights_on_edge_fortran_indexed, spring_apply_cell_displacements_fortran_indexed,
     spring_edge_adjustment_fortran, spring_edge_directions_fortran_indexed,
-    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
+    spring_global_iteration_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
+    CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -245,6 +246,90 @@ fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_fortran() {
     approx_eq(updated[2].z, 0.0, 1.0e-15);
     approx_eq(magnitude_for_test(updated[2]), 1.0, 1.0e-15);
     assert_eq!(updated[3], cell_points[3]);
+}
+
+#[test]
+fn spring_global_iteration_wrapper_matches_manual_helper_composition() {
+    let cell_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 1.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 1.0),
+    ];
+    let n_edges_on_cell = vec![0, 0, 2, 1, 1];
+    let edges_on_cell = vec![vec![], vec![], vec![2, 3], vec![2], vec![3]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [4, 2]];
+    let edges_on_edge_tri = vec![[0, 0, 0, 0], [0, 0, 0, 0], [2, 2, 2, 2], [3, 3, 3, 3]];
+    let dists_on_edge = vec![0.0, 0.0, 2.0, 2.0];
+
+    let output = spring_global_iteration_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        0.25,
+        1.0,
+    )
+    .expect("valid spring global iteration inputs");
+
+    let adjustment2 = spring_edge_adjustment_fortran(
+        cell_points[2],
+        cell_points[3],
+        dists_on_edge[2],
+        std::f64::consts::SQRT_2,
+        std::f64::consts::SQRT_2,
+        std::f64::consts::SQRT_2,
+        std::f64::consts::SQRT_2,
+    )
+    .expect("edge 2 adjustment");
+    let adjustment3 = spring_edge_adjustment_fortran(
+        cell_points[4],
+        cell_points[2],
+        dists_on_edge[3],
+        std::f64::consts::SQRT_2,
+        std::f64::consts::SQRT_2,
+        std::f64::consts::SQRT_2,
+        std::f64::consts::SQRT_2,
+    )
+    .expect("edge 3 adjustment");
+    let edge_displacements = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        adjustment2.displacement,
+        adjustment3.displacement,
+    ];
+    let directions = spring_edge_directions_fortran_indexed(
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &cells_on_edge,
+        0.25,
+    )
+    .expect("directions");
+    let expected = spring_apply_cell_displacements_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &directions,
+        &edge_displacements,
+        1.0,
+    )
+    .expect("manual application");
+
+    assert_eq!(output.updated_cell_points, expected);
+    assert_eq!(output.edge_displacements, edge_displacements);
+    approx_eq(
+        output.frac_change_squared[2],
+        adjustment2.frac_change_squared,
+        1.0e-15,
+    );
+    approx_eq(
+        output.frac_change_squared[3],
+        adjustment3.frac_change_squared,
+        1.0e-15,
+    );
 }
 
 #[test]
