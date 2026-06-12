@@ -5316,6 +5316,55 @@ pub fn sort_and_reindex_vertices(
     })
 }
 
+/// Port of the final `ustr_ngr_center_f = vertex_mapping(ustr_ngr_center_f)`
+/// loop in `MOD_mask_postproc.F90:mask_postproc_*`.
+///
+/// The scan preserves Fortran indexing by leaving rows `0` and `1` untouched
+/// and only remapping slots covered by `center_neighbor_counts`.
+pub fn reindex_final_center_vertices_fortran_indexed(
+    center_neighbors_final: &[Vec<usize>],
+    center_neighbor_counts_final: &[usize],
+    vertex_mapping: &[usize],
+) -> io::Result<Vec<Vec<usize>>> {
+    if center_neighbor_counts_final.len() < center_neighbors_final.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "center_neighbor_counts_final must cover center_neighbors_final",
+        ));
+    }
+
+    let mut reindexed = center_neighbors_final.to_vec();
+    for center_id in 2..center_neighbors_final.len() {
+        let count = center_neighbor_counts_final[center_id];
+        if count > center_neighbors_final[center_id].len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("center {center_id} neighbor count exceeds available row width"),
+            ));
+        }
+        for slot in 0..count {
+            let old_vertex_id = center_neighbors_final[center_id][slot];
+            let Some(&new_vertex_id) = vertex_mapping.get(old_vertex_id) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "center {center_id} references vertex {old_vertex_id}, outside vertex_mapping"
+                    ),
+                ));
+            };
+            if new_vertex_id == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("center {center_id} references unmapped vertex {old_vertex_id}"),
+                ));
+            }
+            reindexed[center_id][slot] = new_vertex_id;
+        }
+    }
+
+    Ok(reindexed)
+}
+
 /// Port of `MOD_mask_postproc.F90:Data_Renew`.
 ///
 /// The function compacts active centers (`IsInDmArea_ustr(i)==1`) into a new

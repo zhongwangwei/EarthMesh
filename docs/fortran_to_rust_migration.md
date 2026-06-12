@@ -533,3 +533,7 @@ Added `mask_postproc_layout_from_unstructured_mesh` and `MaskPostprocLayout` in 
 ### 2026-06-12: `mask_postproc_Lnd` patchtype fallback ported
 
 Added `build_land_patchtypes_fortran_indexed`, a tested Rust port of the land-only `patchtypes_make` loop. It preserves the Fortran rule that any non-zero `IsInDmArea_ustr` cell is active, maps active contain pixels to `patchtypes_select`, clears covered `seaorland` land pixels, and fills ignored land pixels from the previous latitude row while rejecting cases that would leave a land cell without a patch id. Full `mask_postproc_Lnd` mesh clipping, boundary renewal, and NetCDF orchestration remain unported.
+
+### 2026-06-12: final mask_postproc vertex reindex loop ported
+
+Added `reindex_final_center_vertices_fortran_indexed`, a tested Rust port of the post-`Data_Finial` loop that rewrites final center-neighbor vertex ids through `vertex_mapping`. This closes the pure renumbering step after `extract_unique_vertices` and `sort_and_reindex`; full Earth/Lnd/Ocn orchestration still needs to compose the migrated helpers around real NetCDF inputs and outputs.

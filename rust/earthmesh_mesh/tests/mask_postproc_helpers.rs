@@ -1,8 +1,9 @@
 use earthmesh_mesh::{
     boundary_closed_curves_fortran_indexed, boundary_connection_fortran_indexed,
     classify_boundary_orders_fortran_indexed, extract_unique_vertices_fortran_indexed,
-    finalize_mask_postproc_data_fortran_indexed, remove_isolated_ocean_fortran_indexed,
-    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
+    finalize_mask_postproc_data_fortran_indexed, reindex_final_center_vertices_fortran_indexed,
+    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_data_fortran_indexed,
+    renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -37,6 +38,45 @@ fn sort_and_reindex_vertices_builds_fortran_old_to_new_mapping() {
     assert_eq!(reindexed.vertex_mapping[5], 4);
     assert_eq!(reindexed.vertex_mapping[6], 5);
     assert_eq!(reindexed.vertex_mapping[3], 0);
+}
+
+#[test]
+fn reindex_final_center_vertices_applies_sorted_vertex_mapping_like_mask_postproc() {
+    let center_neighbors_final = vec![
+        vec![1, 1, 1, 1],
+        vec![1, 1, 1, 1],
+        vec![4, 2, 5, 99],
+        vec![6, 5, 4, 88],
+    ];
+    let center_neighbor_counts_final = vec![0, 0, 3, 2];
+    let vertex_mapping = vec![0, 1, 2, 0, 3, 4, 5];
+
+    let reindexed = reindex_final_center_vertices_fortran_indexed(
+        &center_neighbors_final,
+        &center_neighbor_counts_final,
+        &vertex_mapping,
+    )
+    .expect("reindex final center vertices");
+
+    assert_eq!(reindexed[0], vec![1, 1, 1, 1]);
+    assert_eq!(reindexed[1], vec![1, 1, 1, 1]);
+    assert_eq!(reindexed[2], vec![3, 2, 4, 99]);
+    assert_eq!(reindexed[3], vec![5, 4, 4, 88]);
+}
+
+#[test]
+fn reindex_final_center_vertices_rejects_unmapped_or_out_of_range_vertices() {
+    let center_neighbors_final = vec![vec![1, 1, 1], vec![1, 1, 1], vec![4, 3, 5]];
+    let center_neighbor_counts_final = vec![0, 0, 3];
+    let vertex_mapping = vec![0, 1, 2, 0, 3, 4];
+
+    let err = reindex_final_center_vertices_fortran_indexed(
+        &center_neighbors_final,
+        &center_neighbor_counts_final,
+        &vertex_mapping,
+    )
+    .expect_err("unmapped vertex rejected");
+    assert!(err.to_string().contains("unmapped"));
 }
 
 #[test]
