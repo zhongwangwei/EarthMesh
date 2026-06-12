@@ -509,3 +509,7 @@ Added a tested side-effect-free `MaskPostprocDomainIoPlan` in `rust/earthmesh_cl
 ### 2026-06-12: Unstructured_Mesh_Read adapter ported
 
 Added `read_unstructured_mesh_netcdf` in `rust/earthmesh_cli` as the Rust reader counterpart to the existing `write_unstructured_mesh_netcdf` adapter for `MOD_file_preprocess.F90:Unstructured_Mesh_Read`/`Unstructured_Mesh_Save` gridfiles. The reader validates `sjx_points`, `lbx_points`, `dimb=3`, `dimc`, coordinate variables, `itab_m%iw`, `itab_w%im`, and `n_ngrwm`, then restores the typed `UnstructuredMesh` payload used by grid initialization and future `mask_postproc` orchestration. It trims writer-added trailing zero padding from fixed-width `itab_w%im` rows so the Rust layer keeps its ragged connectivity semantics.
+
+### 2026-06-12: Contain_Read/Contain_Save adapters ported
+
+Added typed `ContainMesh` plus `read_contain_netcdf` and `write_contain_netcdf` in `rust/earthmesh_cli` for the `MOD_file_preprocess.F90:Contain_Read`/`Contain_Save` schema used by `mask_postproc`. The adapter validates `num_ustr`, `num_ii`, `dim_a`, `dim_b`, `ustr_id`, `ustr_ii`, and `IsInArea_ustr`, rejects ragged rows or mask-length mismatches before writing, and round-trips representative land/ocean/earth-style integer payloads through NetCDF.

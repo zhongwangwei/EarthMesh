@@ -173,7 +173,8 @@
       "parity_gate": "NetCDF/text/binary fixture round-trips preserve dimensions, coordinate variables, masks, and adapter input/output fields byte-for-byte where formats permit.",
       "notes": "Start with a narrow compatibility wrapper to stabilize I/O contracts, then port readers/writers into typed Rust modules.",
       "completed_rust_surfaces": [
-        "Unstructured_Mesh_Read compact gridfile reader ported to rust/earthmesh_cli"
+        "Unstructured_Mesh_Read compact gridfile reader ported to rust/earthmesh_cli",
+        "Contain_Read/Contain_Save domain file adapters ported to rust/earthmesh_cli"
       ]
     },
     {

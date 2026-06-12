@@ -228,6 +228,14 @@ pub struct UnstructuredMesh {
     pub n_w_to_m: Vec<i32>,
 }
 
+/// Rust data shape written by `MOD_file_preprocess.F90:Contain_Save`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainMesh {
+    pub ustr_id: Vec<Vec<i32>>,
+    pub ustr_ii: Vec<Vec<i32>>,
+    pub is_in_area_ustr: Vec<i32>,
+}
+
 /// Evidence report from writing an unstructured gridfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnstructuredMeshWriteReport {
@@ -235,6 +243,16 @@ pub struct UnstructuredMeshWriteReport {
     pub sjx_points: usize,
     pub lbx_points: usize,
     pub dimc: usize,
+}
+
+/// Evidence report from reading/writing a contain-domain file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainWriteReport {
+    pub output: PathBuf,
+    pub num_ustr: usize,
+    pub num_ii: usize,
+    pub dim_a: usize,
+    pub dim_b: usize,
 }
 
 /// Evidence report from writing `MOD_mask_postproc.F90:bdy_calculation` output.
@@ -497,6 +515,87 @@ pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<Unst
     };
     validate_unstructured_mesh(&mesh)?;
     Ok(mesh)
+}
+
+/// Read the `contain_*.nc4` schema produced by
+/// `MOD_file_preprocess.F90:Contain_Save`.
+pub fn read_contain_netcdf(input: impl AsRef<Path>) -> io::Result<ContainMesh> {
+    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let num_ustr = required_dimension_len(&file, "num_ustr")?;
+    let num_ii = required_dimension_len(&file, "num_ii")?;
+    let dim_a = required_dimension_len(&file, "dim_a")?;
+    let dim_b = required_dimension_len(&file, "dim_b")?;
+    let ustr_id_values =
+        required_values_i32_matrix(&file, "ustr_id", "num_ustr", "dim_a", num_ustr, dim_a)?;
+    let ustr_ii_values =
+        required_values_i32_matrix(&file, "ustr_ii", "num_ii", "dim_b", num_ii, dim_b)?;
+    let is_in_area_ustr = required_values_i32(&file, "IsInArea_ustr")?;
+    require_len("IsInArea_ustr", is_in_area_ustr.len(), num_ustr)?;
+
+    let contain = ContainMesh {
+        ustr_id: rows_from_flat_i32(&ustr_id_values, dim_a),
+        ustr_ii: rows_from_flat_i32(&ustr_ii_values, dim_b),
+        is_in_area_ustr,
+    };
+    validate_contain_mesh(&contain)?;
+    Ok(contain)
+}
+
+/// Write the `contain_*.nc4` schema consumed by
+/// `MOD_file_preprocess.F90:Contain_Read`.
+pub fn write_contain_netcdf(
+    output: impl AsRef<Path>,
+    contain: &ContainMesh,
+) -> io::Result<ContainWriteReport> {
+    validate_contain_mesh(contain)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let num_ustr = contain.ustr_id.len();
+    let num_ii = contain.ustr_ii.len();
+    let dim_a = matrix_width("ustr_id", &contain.ustr_id)?;
+    let dim_b = matrix_width("ustr_ii", &contain.ustr_ii)?;
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_ustr", num_ustr)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_ii", num_ii)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("dim_a", dim_a)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("dim_b", dim_b)
+        .map_err(netcdf_to_io_error)?;
+    {
+        let mut var = file
+            .add_variable::<i32>("ustr_id", &["num_ustr", "dim_a"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&flatten_i32_rows(&contain.ustr_id), (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("ustr_ii", &["num_ii", "dim_b"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&flatten_i32_rows(&contain.ustr_ii), (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("IsInArea_ustr", &["num_ustr"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&contain.is_in_area_ustr, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    Ok(ContainWriteReport {
+        output: output.to_path_buf(),
+        num_ustr,
+        num_ii,
+        dim_a,
+        dim_b,
+    })
 }
 
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
@@ -1388,6 +1487,44 @@ fn validate_unstructured_mesh(mesh: &UnstructuredMesh) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_contain_mesh(contain: &ContainMesh) -> io::Result<()> {
+    matrix_width("ustr_id", &contain.ustr_id)?;
+    matrix_width("ustr_ii", &contain.ustr_ii)?;
+    if contain.is_in_area_ustr.len() != contain.ustr_id.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IsInArea_ustr length {} must match num_ustr {}",
+                contain.is_in_area_ustr.len(),
+                contain.ustr_id.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn matrix_width(name: &str, rows: &[Vec<i32>]) -> io::Result<usize> {
+    let width = rows.first().map(Vec::len).unwrap_or(0);
+    if rows.iter().any(|row| row.len() != width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} rows must have uniform width"),
+        ));
+    }
+    Ok(width)
+}
+
+fn flatten_i32_rows(rows: &[Vec<i32>]) -> Vec<i32> {
+    rows.iter().flat_map(|row| row.iter().copied()).collect()
+}
+
+fn rows_from_flat_i32(values: &[i32], width: usize) -> Vec<Vec<i32>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    values.chunks_exact(width).map(|row| row.to_vec()).collect()
 }
 
 fn unstructured_dimc(mesh: &UnstructuredMesh) -> usize {
