@@ -9461,6 +9461,12 @@ pub struct RefineArrayLengthHalo {
     pub num_transition_row_triangles: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefineArrayLengthCalculation {
+    pub halo: RefineArrayLengthHalo,
+    pub boundary: BoundaryConnection,
+}
+
 /// Pure halo-sizing core of `MOD_refine.F90:Array_length_calculation`.
 ///
 /// This excludes `bdy_connection_make` close-curve generation and NetCDF side
@@ -9544,6 +9550,47 @@ pub fn refine_array_length_halo_fortran_indexed(
         boundary_refine_transition,
         num_transition_row_triangles,
     })
+}
+
+/// File-I/O-free wrapper for `MOD_refine.F90:Array_length_calculation`.
+///
+/// This composes the already migrated halo sizing with
+/// `bdy_connection_make` close-curve construction.  The Fortran
+/// `close_Mesh_Save` NetCDF writes remain an adapter concern; callers can use
+/// `boundary.curves.close_curves` plus their coordinate table to write the same
+/// files.
+pub fn refine_array_length_calculation_fortran_indexed(
+    set_dis_in: usize,
+    num_vertex: usize,
+    num_center: usize,
+    sjx_points: usize,
+    lbx_points: usize,
+    mrl_new: &[i32],
+    triangle_neighbors: &[Vec<usize>],
+    cells_on_triangle: &[[usize; 3]],
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    initial_num_transition_row_triangles: usize,
+) -> io::Result<RefineArrayLengthCalculation> {
+    let halo = refine_array_length_halo_fortran_indexed(
+        set_dis_in,
+        num_center,
+        sjx_points,
+        lbx_points,
+        mrl_new,
+        triangles_on_cell,
+        edge_counts,
+        initial_num_transition_row_triangles,
+    )?;
+    let boundary = refine_boundary_connection_make_fortran_indexed(
+        num_vertex,
+        sjx_points,
+        lbx_points,
+        mrl_new,
+        triangle_neighbors,
+        cells_on_triangle,
+    )?;
+    Ok(RefineArrayLengthCalculation { halo, boundary })
 }
 
 fn refine_boundary_mask_from_mrl(

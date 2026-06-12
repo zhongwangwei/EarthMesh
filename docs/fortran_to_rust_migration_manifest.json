@@ -436,7 +436,8 @@
         "bdy_connection_make refine boundary graph and closed-curve construction ported to rust/earthmesh_mesh with open-boundary fixture coverage",
         "bdy_refine_segment_make boundary curve rotation, segment splitting, and unrefined triangle extraction ported to rust/earthmesh_mesh with fixture coverage",
         "weak_concav_segment_make weak-concavity segment/pair classification and boundary segment remainder update ported to rust/earthmesh_mesh with fixture coverage",
-        "NGR_RENEW pure wrapper now composes topology renewal with GetSortNew final adjacency ordering in rust/earthmesh_mesh with fixture coverage"
+        "NGR_RENEW pure wrapper now composes topology renewal with GetSortNew final adjacency ordering in rust/earthmesh_mesh with fixture coverage",
+        "Array_length_calculation pure wrapper now composes halo sizing with bdy_connection_make close-curve output in rust/earthmesh_mesh with fixture coverage"
       ]
     }
   ]
