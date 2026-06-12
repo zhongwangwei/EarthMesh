@@ -193,3 +193,7 @@ Extended `rust/earthmesh_mesh` with `find_frac_index_fortran` and `distance_laye
 ### 2026-06-12: `MOD_grid_preprocess.F90` `TriMeshQuality` cache wrapper ported
 
 Extended `rust/earthmesh_mesh` with `triangle_mesh_quality_fortran_indexed`, a cache-aware Rust wrapper for `MOD_grid_preprocess:TriMeshQuality`. It preserves Fortran-indexed triangle ids from `2` onward, recomputes only adjusted triangles, reuses cached length/angle arrays for unchanged triangles, updates angle threshold flags, and reproduces the extreme/average/stddev aggregation over active triangles. `PolyMeshQuality` cache/update behavior remains separate because it filters cells by polygon edge count.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `PolyMeshQuality` compact-cache wrapper ported
+
+Extended `rust/earthmesh_mesh` with `polygon_mesh_quality_fortran_indexed`, a cache-aware Rust wrapper for `MOD_grid_preprocess:PolyMeshQuality`. It preserves the Fortran loop over cell ids from `2`, filters by `n_ngrwm == num_edges`, uses compact `j`-indexed length/angle caches for only matching polygons, recomputes adjusted cells, reuses unchanged caches, and reproduces regular-angle threshold flags plus aggregate min/max/stddev metrics.

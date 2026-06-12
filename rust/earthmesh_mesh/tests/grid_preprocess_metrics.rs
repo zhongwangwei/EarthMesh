@@ -4,10 +4,11 @@ use earthmesh_mesh::{
     get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed, is_ngrmm,
     lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
     normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
-    order_vertices_on_edge_fortran_indexed, shared_cell_for_edge_pair,
-    should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
-    spherical_triangle_area_unit, triangle_mesh_quality_fortran_indexed, vertex_cell_position,
-    CartesianPoint, GetAreaUnitInput, LonLatDegrees,
+    order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
+    polygon_mesh_quality_fortran_indexed, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
+    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
+    triangle_mesh_quality_fortran_indexed, vertex_cell_position, CartesianPoint, GetAreaUnitInput,
+    LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -664,6 +665,113 @@ fn triangle_mesh_quality_fortran_indexed_rejects_mismatched_cache_lengths() {
     assert!(triangle_mesh_quality_fortran_indexed(
         &cell_points,
         &cells_on_triangle,
+        &adjust_flags,
+        &length_cache,
+        &angle_cache,
+    )
+    .is_none());
+}
+
+#[test]
+fn polygon_mesh_quality_fortran_indexed_filters_cells_and_reuses_compact_cache() {
+    let cell_points = vec![LonLatDegrees::new(0.0, 0.0); 8];
+    let cells_on_polygon = vec![
+        vec![],
+        vec![],
+        vec![2, 3, 4, 5],
+        vec![2, 3, 4],
+        vec![3, 4, 5, 6],
+    ];
+    let polygon_edge_counts = vec![0, 0, 4, 3, 4];
+    let adjust_flags = vec![false; 5];
+    let length_cache = vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]];
+    let angle_cache = vec![
+        vec![80.0, 90.0, 100.0, 110.0],
+        vec![85.0, 90.0, 95.0, 100.0],
+    ];
+
+    let output = polygon_mesh_quality_fortran_indexed(
+        4,
+        &cell_points,
+        &cells_on_polygon,
+        &polygon_edge_counts,
+        &adjust_flags,
+        &length_cache,
+        &angle_cache,
+    )
+    .expect("valid compact polygon quality cache");
+
+    assert_eq!(output.length_cache, length_cache);
+    assert_eq!(output.angle_cache, angle_cache);
+    assert!(output.angle_less_flags[0]);
+    assert!(output.angle_more_flags[0]);
+    assert!(!output.angle_less_flags[1]);
+    assert!(output.angle_more_flags[1]);
+    approx_eq(output.extreme_angles_degrees.0, 80.0, 1.0e-12);
+    approx_eq(output.extreme_angles_degrees.1, 110.0, 1.0e-12);
+    approx_eq(output.average_min_max_angles_degrees.0, 82.5, 1.0e-12);
+    approx_eq(output.average_min_max_angles_degrees.1, 105.0, 1.0e-12);
+}
+
+#[test]
+fn polygon_mesh_quality_fortran_indexed_updates_adjusted_compact_cache() {
+    let cell_points = vec![
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(60.0, 0.0),
+        LonLatDegrees::new(60.0, 30.0),
+        LonLatDegrees::new(0.0, 30.0),
+    ];
+    let cells_on_polygon = vec![vec![], vec![], vec![2, 3, 4, 5]];
+    let polygon_edge_counts = vec![0, 0, 4];
+    let adjust_flags = vec![false, false, true];
+    let length_cache = vec![vec![0.0; 4]];
+    let angle_cache = vec![vec![0.0; 4]];
+
+    let output = polygon_mesh_quality_fortran_indexed(
+        4,
+        &cell_points,
+        &cells_on_polygon,
+        &polygon_edge_counts,
+        &adjust_flags,
+        &length_cache,
+        &angle_cache,
+    )
+    .expect("valid adjusted polygon quality input");
+    let expected = polygon_length_angle_metrics(&[
+        cell_points[2],
+        cell_points[3],
+        cell_points[4],
+        cell_points[5],
+    ])
+    .expect("polygon metrics");
+
+    for (actual, expected) in output.angle_cache[0].iter().zip(expected.angles_degrees) {
+        approx_eq(*actual, expected, 1.0e-12);
+    }
+    for (actual, expected) in output.length_cache[0]
+        .iter()
+        .zip(expected.edge_lengths_meters)
+    {
+        approx_eq(*actual, expected, 1.0e-9);
+    }
+}
+
+#[test]
+fn polygon_mesh_quality_fortran_indexed_rejects_bad_compact_cache_length() {
+    let cell_points = vec![LonLatDegrees::new(0.0, 0.0); 6];
+    let cells_on_polygon = vec![vec![], vec![], vec![2, 3, 4, 5]];
+    let polygon_edge_counts = vec![0, 0, 4];
+    let adjust_flags = vec![false, false, false];
+    let length_cache: Vec<Vec<f64>> = Vec::new();
+    let angle_cache: Vec<Vec<f64>> = Vec::new();
+
+    assert!(polygon_mesh_quality_fortran_indexed(
+        4,
+        &cell_points,
+        &cells_on_polygon,
+        &polygon_edge_counts,
         &adjust_flags,
         &length_cache,
         &angle_cache,
