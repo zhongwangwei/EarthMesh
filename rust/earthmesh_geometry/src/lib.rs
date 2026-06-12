@@ -13,7 +13,6 @@ impl Point {
     }
 }
 
-
 /// Earth radius in kilometers used by `MOD_Area_judge:haversine`.
 ///
 /// The Fortran routine initializes `erad = 6371229` meters and computes
@@ -262,6 +261,60 @@ pub fn segments_intersect_strict(a1: Point, a2: Point, b1: Point, b2: Point) -> 
     cp1 * cp2 < 0.0 && cp3 * cp4 < 0.0
 }
 
+/// First crossing reported by `MOD_Area_judge:check_self_intersection`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AreaJudgeSelfIntersection {
+    pub first_segment_id: usize,
+    pub second_segment_id: usize,
+    pub first_segment: [Point; 2],
+    pub second_segment: [Point; 2],
+}
+
+/// Return-value wrapper for `MOD_Area_judge:check_self_intersection`.
+///
+/// Fortran closes the polygon by appending point 1 at `close_num + 1`, scans
+/// `i = 1..close_num-2` and `j = i+2..close_num`, prints both segment ids and
+/// endpoints, then stops on the first strict intersection.  Rust preserves the
+/// one-based segment ids and endpoint payload as data so callers can turn it
+/// into an error without terminating the process.
+pub fn area_judge_first_self_intersection_fortran_indexed(
+    close_points: &[Point],
+) -> Option<AreaJudgeSelfIntersection> {
+    let close_num = close_points.len();
+    if close_num < 3 {
+        return None;
+    }
+
+    for i in 0..=(close_num - 3) {
+        let first_segment = [close_points[i], close_points[i + 1]];
+        for j in (i + 2)..close_num {
+            let second_segment = [
+                close_points[j],
+                if j + 1 == close_num {
+                    close_points[0]
+                } else {
+                    close_points[j + 1]
+                },
+            ];
+            if segments_intersect_strict(
+                first_segment[0],
+                first_segment[1],
+                second_segment[0],
+                second_segment[1],
+            ) {
+                return Some(AreaJudgeSelfIntersection {
+                    first_segment_id: i + 1,
+                    second_segment_id: j + 1,
+                    first_segment,
+                    second_segment,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Port of `MOD_Area_judge:CheckCrossing`.
 ///
 /// This shifts longitudes by 180 degrees when a closed polygon crosses the
@@ -270,7 +323,11 @@ pub fn shift_longitudes_for_dateline_crossing(points: &[Point]) -> Vec<Point> {
     points
         .iter()
         .map(|point| {
-            let shifted_lon = if point.x < 0.0 { point.x + 180.0 } else { point.x - 180.0 };
+            let shifted_lon = if point.x < 0.0 {
+                point.x + 180.0
+            } else {
+                point.x - 180.0
+            };
             Point::new(shifted_lon, point.y)
         })
         .collect()

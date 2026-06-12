@@ -1,5 +1,6 @@
 use earthmesh_geometry::{
-    cross_product_2d, haversine_km, is_point_in_circle_km, is_point_in_convex_polygon, Point,
+    area_judge_first_self_intersection_fortran_indexed, cross_product_2d, haversine_km,
+    is_point_in_circle_km, is_point_in_convex_polygon, AreaJudgeSelfIntersection, Point,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -11,7 +12,11 @@ fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
 
 #[test]
 fn haversine_matches_mod_area_judge_zero_and_one_degree_equator() {
-    approx_eq(haversine_km(Point::new(0.0, 0.0), Point::new(0.0, 0.0)), 0.0, 1.0e-12);
+    approx_eq(
+        haversine_km(Point::new(0.0, 0.0), Point::new(0.0, 0.0)),
+        0.0,
+        1.0e-12,
+    );
     approx_eq(
         haversine_km(Point::new(0.0, 0.0), Point::new(1.0, 0.0)),
         111.1989234485458,
@@ -56,19 +61,37 @@ fn convex_polygon_test_accepts_inside_boundary_and_rejects_outside() {
 #[test]
 fn ray_segment_intersection_matches_fortran_sentinel_cases() {
     assert_eq!(
-        earthmesh_geometry::ray_segment_intersection_lon(Point::new(-200.0, 1.0), 0.0, 10.0, 2.0, 20.0),
+        earthmesh_geometry::ray_segment_intersection_lon(
+            Point::new(-200.0, 1.0),
+            0.0,
+            10.0,
+            2.0,
+            20.0
+        ),
         Some(15.0)
     );
 
     // Horizontal segments are treated as no intersection by MOD_Area_judge.
     assert_eq!(
-        earthmesh_geometry::ray_segment_intersection_lon(Point::new(-200.0, 1.0), 1.0, 10.0, 1.0, 20.0),
+        earthmesh_geometry::ray_segment_intersection_lon(
+            Point::new(-200.0, 1.0),
+            1.0,
+            10.0,
+            1.0,
+            20.0
+        ),
         None
     );
 
     // Ray latitude outside the segment latitude range is also no intersection.
     assert_eq!(
-        earthmesh_geometry::ray_segment_intersection_lon(Point::new(-200.0, 3.0), 0.0, 10.0, 2.0, 20.0),
+        earthmesh_geometry::ray_segment_intersection_lon(
+            Point::new(-200.0, 3.0),
+            0.0,
+            10.0,
+            2.0,
+            20.0
+        ),
         None
     );
 }
@@ -102,4 +125,48 @@ fn dateline_crossing_shift_matches_fortran_checkcrossing() {
     assert_eq!(shifted[0], Point::new(10.0, 10.0));
     assert_eq!(shifted[1], Point::new(-5.0, 11.0));
     assert_eq!(shifted[2], Point::new(-180.0, 12.0));
+}
+
+#[test]
+fn self_intersection_wrapper_reports_fortran_one_based_segments_and_points() {
+    let bow_tie = [
+        Point::new(0.0, 0.0),
+        Point::new(2.0, 2.0),
+        Point::new(0.0, 2.0),
+        Point::new(2.0, 0.0),
+    ];
+
+    assert_eq!(
+        area_judge_first_self_intersection_fortran_indexed(&bow_tie),
+        Some(AreaJudgeSelfIntersection {
+            first_segment_id: 1,
+            second_segment_id: 3,
+            first_segment: [Point::new(0.0, 0.0), Point::new(2.0, 2.0)],
+            second_segment: [Point::new(0.0, 2.0), Point::new(2.0, 0.0)],
+        })
+    );
+}
+
+#[test]
+fn self_intersection_wrapper_accepts_simple_polygons_and_endpoint_touches() {
+    let square = [
+        Point::new(0.0, 0.0),
+        Point::new(2.0, 0.0),
+        Point::new(2.0, 2.0),
+        Point::new(0.0, 2.0),
+    ];
+    let triangle = [
+        Point::new(0.0, 0.0),
+        Point::new(1.0, 1.0),
+        Point::new(2.0, 0.0),
+    ];
+
+    assert_eq!(
+        area_judge_first_self_intersection_fortran_indexed(&square),
+        None
+    );
+    assert_eq!(
+        area_judge_first_self_intersection_fortran_indexed(&triangle),
+        None
+    );
 }
