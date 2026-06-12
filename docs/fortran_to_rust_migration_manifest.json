@@ -329,11 +329,13 @@
         "mask_postproc_Atmos MPAS-Simple top-level file dispatch ported to rust/earthmesh_cli",
         "mask_postproc_Atmos full MPAS graph.info writer dependency ported to rust/earthmesh_cli",
         "mask_postproc_Atmos full MPAS NetCDF writer dependency ported to rust/earthmesh_cli",
-        "mask_postproc_Atmos full MPAS edge-reference reader dependency ported to rust/earthmesh_cli"
+        "mask_postproc_Atmos full MPAS edge-reference reader dependency ported to rust/earthmesh_cli",
+        "MPAS_Mesh_Cal full MPAS payload builder and file pipeline ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "mask_postproc Earth/Lnd/Ocn top-level execution composition and MPAS_Mesh_Cal file-level payload orchestration"
-      ]
+        "mask_postproc Earth/Lnd/Ocn top-level execution composition"
+      ],
+      "port_status": "started"
     },
     {
       "path": "src/MOD_refine.F90",

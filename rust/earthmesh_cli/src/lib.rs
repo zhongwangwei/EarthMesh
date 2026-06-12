@@ -7,9 +7,12 @@ use std::path::{Path, PathBuf};
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_mesh::{
     centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
+    connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, springjustment_global_core_fortran_indexed,
+    lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
+    set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
+    standardize_vertices_on_cell_rotation_fortran_indexed,
     triangle_neighbors_from_cell_membership_fortran_indexed, xyz_to_lonlat_degrees,
     BoundaryConnection, BoundaryOrders, CartesianPoint, DistanceLayerSpacing,
     GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep,
@@ -529,6 +532,13 @@ pub struct MpasGraphInfoWriteReport {
     pub n_cells_written: usize,
     pub interior_edges: usize,
     pub cells_with_boundary_edges: usize,
+}
+
+/// Evidence report from the full `MOD_mask_postproc.F90:MPAS_Mesh_Cal` file pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MpasFullMeshPipelineReport {
+    pub mesh: MpasMeshWriteReport,
+    pub graph_info: MpasGraphInfoWriteReport,
 }
 
 /// Evidence report from writing `MOD_mask_postproc.F90:bdy_calculation` output.
@@ -1833,6 +1843,225 @@ pub fn write_mpas_graph_info(
 /// converts `ngrmw`/`m_to_w` to MPAS zero-based `cellsOnVertex`, and derives
 /// `meshDensity = (min(cellwidth) / cellwidth) ** 4` using the full legacy
 /// `1:num_dbx` cellwidth range.
+/// Build the in-memory payload produced by `MOD_mask_postproc.F90:MPAS_Mesh_Cal`
+/// before `MPAS_Mesh_Save` and `MPAS_info_Save` write side effects.
+///
+/// The input mesh preserves EarthMesh/Fortran indexing. The returned payload
+/// keeps a placeholder row at index 0 but converts connectivity ids to MPAS
+/// zero-based ids for rows written by `write_mpas_mesh_netcdf`.
+pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
+    mesh: &UnstructuredMesh,
+    cellwidth: &[f64],
+    nxp: usize,
+    step: usize,
+) -> io::Result<MpasMesh> {
+    validate_unstructured_mesh(mesh)?;
+    if cellwidth.len() != mesh.w_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cellwidth length {} must match w_points length {}",
+                cellwidth.len(),
+                mesh.w_points.len()
+            ),
+        ));
+    }
+    if nxp == 0 || step == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "nxp and step must be positive for MPAS nominalMinDc",
+        ));
+    }
+    if cellwidth
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cellwidth values must be finite and positive",
+        ));
+    }
+
+    let cells_on_triangle = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
+    let vertices_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
+    let edge_output = get_edge_from_unstructured_mesh(mesh)?;
+
+    let vertices = lonlat_points_to_unit_xyz(&triangle_lonlat);
+    let cells = lonlat_points_to_unit_xyz(&cell_lonlat);
+    let edge_points = lonlat_points_to_unit_xyz(&edge_output.edge_points);
+
+    let ordered_vertices_on_cell = order_vertices_on_cell_fortran_indexed(
+        &cells,
+        &vertices,
+        &vertices_on_cell,
+        &n_edges_on_cell,
+    )
+    .and_then(|ordered| {
+        standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, &n_edges_on_cell)
+    })
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to order MPAS verticesOnCell from unstructured mesh",
+        )
+    })?;
+    let cell_connectivity = connect_on_cell_fortran_indexed(
+        &n_edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edge_output.edges_on_vertex,
+        &ordered_vertices_on_cell,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to build MPAS cell connectivity from unstructured mesh",
+        )
+    })?;
+
+    let area = get_area_production_fortran_indexed(GetAreaUnitInput {
+        vertices: &vertices,
+        edge_points: &edge_points,
+        cell_points: &cells,
+        cells_on_vertex: &cells_on_triangle,
+        edges_on_vertex: &edge_output.edges_on_vertex,
+        cells_on_edge: &edge_output.cells_on_edge,
+        vertices_on_cell: &ordered_vertices_on_cell,
+    })
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to compute MPAS area payload from unstructured mesh",
+        )
+    })?;
+
+    let lon_edge_degrees = edge_output
+        .edge_points
+        .iter()
+        .map(|point| point.lon_degrees)
+        .collect::<Vec<_>>();
+    let lat_edge_degrees = edge_output
+        .edge_points
+        .iter()
+        .map(|point| point.lat_degrees)
+        .collect::<Vec<_>>();
+    let lat_vertex_degrees = triangle_lonlat
+        .iter()
+        .map(|point| point.lat_degrees)
+        .collect::<Vec<_>>();
+    let edge_metrics = edge_distance_angle_fortran_indexed(
+        &vertices,
+        &cells,
+        &edge_points,
+        &edge_output.vertices_on_edge,
+        &edge_output.cells_on_edge,
+        &lat_vertex_degrees,
+        &lon_edge_degrees,
+        &lat_edge_degrees,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to compute MPAS edge distance/angle payload",
+        )
+    })?;
+
+    let weights = set_weights_on_edge_fortran_indexed(
+        &area.unit.area_cell,
+        &edge_metrics.angle_edge,
+        &edge_metrics.dc_edge,
+        &edge_metrics.dv_edge,
+        &area.unit.kite_areas_on_vertex,
+        &cell_connectivity.edges_on_cell,
+        &cells_on_triangle,
+        &edge_output.cells_on_edge,
+        &ordered_vertices_on_cell,
+        &edge_output.vertices_on_edge,
+        &n_edges_on_cell,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to compute MPAS weightsOnEdge payload",
+        )
+    })?;
+
+    let (x_vertex, y_vertex, z_vertex) = split_cartesian_components(&vertices);
+    let (x_cell, y_cell, z_cell) = split_cartesian_components(&cells);
+    let (x_edge, y_edge, z_edge) = split_cartesian_components(&edge_points);
+    let (lat_cell, lon_cell) = mpas_lat_lon_radians(&cell_lonlat);
+    let (lat_vertex, lon_vertex) = mpas_lat_lon_radians(&triangle_lonlat);
+    let (lat_edge, lon_edge) = mpas_lat_lon_radians(&edge_output.edge_points);
+
+    let min_cellwidth = cellwidth.iter().copied().fold(f64::INFINITY, f64::min);
+    let mesh_density = cellwidth
+        .iter()
+        .map(|width| (min_cellwidth / width).powi(4))
+        .collect::<Vec<_>>();
+    let nominal_min_dc =
+        7680.0 / nxp as f64 / 2.0_f64.powi((step - 1) as i32) / earthmesh_core::EARTH_RADIUS_METERS
+            * 1000.0;
+
+    let mpas = MpasMesh {
+        lat_cell,
+        lon_cell,
+        x_cell,
+        y_cell,
+        z_cell,
+        lat_vertex,
+        lon_vertex,
+        x_vertex,
+        y_vertex,
+        z_vertex,
+        lat_edge,
+        lon_edge,
+        x_edge,
+        y_edge,
+        z_edge,
+        n_edges_on_cell: usize_values_to_i32("n_edges_on_cell", &n_edges_on_cell)?,
+        cells_on_cell: zero_based_padded_rows(
+            "cells_on_cell",
+            &cell_connectivity.cells_on_cell,
+            10,
+        )?,
+        vertices_on_cell: zero_based_padded_rows(
+            "vertices_on_cell",
+            &ordered_vertices_on_cell,
+            10,
+        )?,
+        edges_on_cell: zero_based_padded_rows(
+            "edges_on_cell",
+            &cell_connectivity.edges_on_cell,
+            10,
+        )?,
+        cells_on_vertex: zero_based_triplet_rows("cells_on_vertex", &edge_output.cells_on_vertex)?,
+        edges_on_vertex: zero_based_triplet_rows("edges_on_vertex", &edge_output.edges_on_vertex)?,
+        cells_on_edge: zero_based_pair_rows("cells_on_edge", &edge_output.cells_on_edge)?,
+        vertices_on_edge: zero_based_pair_rows("vertices_on_edge", &edge_output.vertices_on_edge)?,
+        n_edges_on_edge: usize_values_to_i32("n_edges_on_edge", &weights.n_edges_on_edge)?,
+        edges_on_edge: zero_based_padded_rows("edges_on_edge", &weights.edges_on_edge, 20)?,
+        area_cell: area.unit.area_cell,
+        area_triangle: area.unit.area_triangle,
+        kite_areas_on_vertex: area
+            .unit
+            .kite_areas_on_vertex
+            .into_iter()
+            .map(|row| row.to_vec())
+            .collect(),
+        dv_edge: edge_metrics.dv_edge,
+        dc_edge: edge_metrics.dc_edge,
+        angle_edge: edge_metrics.angle_edge,
+        weights_on_edge: pad_f64_rows(&weights.weights_on_edge, 20),
+        mesh_density,
+        nominal_min_dc,
+        error_segment: weights.error_segment,
+    };
+    validate_mpas_mesh(&mpas)?;
+    Ok(mpas)
+}
+
 pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
     mesh: &UnstructuredMesh,
     cellwidth: &[f64],
@@ -1920,6 +2149,34 @@ pub fn write_mpas_simple_mesh_from_netcdf_inputs(
     let cellwidth = read_cellwidth_netcdf(cellwidth_file)?;
     let simple = build_mpas_simple_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth)?;
     write_mpas_simple_mesh_netcdf(output, &simple)
+}
+
+/// File-level replacement for the full `MPAS_Mesh_Cal` path that reads the
+/// EarthMesh gridfile plus `cellwidth_NXP####_global.nc4`, builds the full MPAS
+/// payload, and writes both `MPASOUT_NXP####_global.nc4` and graph.info.
+pub fn write_mpas_mesh_from_netcdf_inputs(
+    gridfile: impl AsRef<Path>,
+    cellwidth_file: impl AsRef<Path>,
+    mesh_output: impl AsRef<Path>,
+    graph_output: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+) -> io::Result<MpasFullMeshPipelineReport> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    let cellwidth = read_cellwidth_netcdf(cellwidth_file)?;
+    let mpas = build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth, nxp, step)?;
+    let mesh_report = write_mpas_mesh_netcdf(mesh_output, &mpas)?;
+    let graph_info = write_mpas_graph_info(
+        graph_output,
+        10,
+        &mpas.cells_on_cell,
+        &mpas.cells_on_edge,
+        &mpas.n_edges_on_cell,
+    )?;
+    Ok(MpasFullMeshPipelineReport {
+        mesh: mesh_report,
+        graph_info,
+    })
 }
 
 /// Rust entry point for the `mask_postproc_Atmos` branch when
@@ -4132,6 +4389,84 @@ fn n_edges_on_cell_usize_from_mesh(mesh: &UnstructuredMesh) -> io::Result<Vec<us
                 ));
             }
             Ok(*value as usize)
+        })
+        .collect()
+}
+
+fn mpas_lat_lon_radians(points: &[LonLatDegrees]) -> (Vec<f64>, Vec<f64>) {
+    let mut lat = Vec::with_capacity(points.len());
+    let mut lon = Vec::with_capacity(points.len());
+    for point in points {
+        lat.push(earthmesh_core::deg_to_rad(point.lat_degrees));
+        let mut lon_degrees = point.lon_degrees;
+        if lon_degrees < 0.0 {
+            lon_degrees += 360.0;
+        }
+        lon.push(earthmesh_core::deg_to_rad(lon_degrees));
+    }
+    (lat, lon)
+}
+
+fn zero_based_id(name: &str, value: usize) -> io::Result<i32> {
+    if value == 0 {
+        return Ok(0);
+    }
+    i32::try_from(value - 1).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} contains value {value} that does not fit NetCDF INT"),
+        )
+    })
+}
+
+fn zero_based_padded_rows(
+    name: &str,
+    rows: &[Vec<usize>],
+    width: usize,
+) -> io::Result<Vec<Vec<i32>>> {
+    rows.iter()
+        .enumerate()
+        .map(|(row_idx, row)| {
+            if row.len() > width {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{name} row {row_idx} width {} exceeds {width}", row.len()),
+                ));
+            }
+            let mut output = row
+                .iter()
+                .copied()
+                .map(|value| zero_based_id(name, value))
+                .collect::<io::Result<Vec<_>>>()?;
+            output.resize(width, 0);
+            Ok(output)
+        })
+        .collect()
+}
+
+fn zero_based_triplet_rows(name: &str, rows: &[[usize; 3]]) -> io::Result<Vec<Vec<i32>>> {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .copied()
+                .map(|value| zero_based_id(name, value))
+                .collect()
+        })
+        .collect()
+}
+
+fn zero_based_pair_rows(name: &str, rows: &[[usize; 2]]) -> io::Result<Vec<[i32; 2]>> {
+    rows.iter()
+        .map(|row| Ok([zero_based_id(name, row[0])?, zero_based_id(name, row[1])?]))
+        .collect()
+}
+
+fn pad_f64_rows(rows: &[Vec<f64>], width: usize) -> Vec<Vec<f64>> {
+    rows.iter()
+        .map(|row| {
+            let mut output = row.clone();
+            output.resize(width, 0.0);
+            output
         })
         .collect()
 }
