@@ -222,7 +222,8 @@
         "data_read MPAS edge-reference reader ported to rust/earthmesh_cli",
         "distsOnEdge_save NetCDF writer ported to rust/earthmesh_cli",
         "cellwidth_save NetCDF writer ported to rust/earthmesh_cli",
-        "quality_save_global NetCDF writer ported to rust/earthmesh_cli"
+        "quality_save_global NetCDF writer ported to rust/earthmesh_cli",
+        "close_Mesh_Read/close_Mesh_Save refinement close-curve NetCDF schema ported to rust/earthmesh_cli without close_refine mask metadata"
       ]
     },
     {
