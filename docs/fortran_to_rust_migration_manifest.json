@@ -450,6 +450,7 @@
         "ref_sjx_isreverse_judge reverse one-into-two marker and segment rewrite composed through rust/earthmesh_cli adapter",
         "OnedivideTwo transition split geometry and dateline cleanup composed through rust/earthmesh_cli Fortran-row adapter",
         "Delaunay_Lop diagonal flip and crossline cleanup composed through rust/earthmesh_cli Fortran-row adapter",
+        "NGR_RENEW final allocatable write-back composed through rust/earthmesh_cli Fortran-row adapter",
         "Array_length_calculation pure halo/boundary computation and close_Mesh_Save side effects composed through rust/earthmesh_cli"
       ]
     }
