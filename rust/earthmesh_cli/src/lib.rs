@@ -658,6 +658,67 @@ pub struct GetRefSpecifiedThresholdWriteReport {
     pub sjx_points: usize,
 }
 
+/// File outputs written by a top-level GetRef calculated-threshold run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetRefThresholdFileWrites {
+    pub land: Option<GetRefLandThresholdWriteReport>,
+    pub ocean: Option<GetRefOceanThresholdWriteReport>,
+    pub atmos: Option<GetRefAtmosThresholdWriteReport>,
+}
+
+/// Runtime inputs for a non-LOC top-level GetRef file run.
+#[derive(Debug, Clone, Copy)]
+pub struct GetRefSingleMeshFileRunConfig<'a> {
+    pub mesh_type: &'a str,
+    pub contain_file: &'a Path,
+    pub land_threshold_output: Option<&'a Path>,
+    pub ocean_threshold_output: Option<&'a Path>,
+    pub atmos_threshold_output: Option<&'a Path>,
+    pub is_in_refine_sjx: &'a [i32],
+    pub landtypes: &'a [Vec<i32>],
+    pub land_basic_config: GetRefLandBasicConfig,
+    pub land_onelayer_inputs: &'a [GetRefOneLayerThresholdInput<'a>],
+    pub land_twolayer_inputs: &'a [GetRefTwoLayerThresholdInput<'a>],
+    pub ocean_config: GetRefOceanThresholdConfig,
+    pub ocean_onelayer_inputs: &'a [GetRefOneLayerThresholdInput<'a>],
+    pub atmos_config: GetRefAtmosThresholdConfig,
+    pub atmos_onelayer_inputs: &'a [GetRefOneLayerThresholdInput<'a>],
+}
+
+/// Evidence from a non-LOC top-level GetRef file run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetRefSingleMeshFileRunReport {
+    pub contain: ContainMesh,
+    pub threshold: GetRefSingleMeshThresholdReports,
+    pub writes: GetRefThresholdFileWrites,
+}
+
+/// Runtime inputs for a LOCmesh top-level GetRef file run.
+#[derive(Debug, Clone, Copy)]
+pub struct GetRefLocMeshFileRunConfig<'a> {
+    pub contain_file: &'a Path,
+    pub land_threshold_output: Option<&'a Path>,
+    pub ocean_threshold_output: Option<&'a Path>,
+    pub atmos_threshold_output: Option<&'a Path>,
+    pub is_in_refine_sjx: &'a [i32],
+    pub landtypes: &'a [Vec<i32>],
+    pub land_basic_config: GetRefLandBasicConfig,
+    pub land_onelayer_inputs: &'a [GetRefOneLayerThresholdInput<'a>],
+    pub land_twolayer_inputs: &'a [GetRefTwoLayerThresholdInput<'a>],
+    pub ocean_config: GetRefOceanThresholdConfig,
+    pub ocean_onelayer_inputs: &'a [GetRefOneLayerThresholdInput<'a>],
+    pub atmos_config: GetRefAtmosThresholdConfig,
+    pub atmos_onelayer_inputs: &'a [GetRefOneLayerThresholdInput<'a>],
+}
+
+/// Evidence from a LOCmesh top-level GetRef file run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetRefLocMeshFileRunReport {
+    pub contain: ContainMesh,
+    pub threshold: GetRefLocThresholdReports,
+    pub writes: GetRefThresholdFileWrites,
+}
+
 /// Evidence report from writing `MOD_grid_preprocess.F90:Springjustment_global`
 /// persistence side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3848,6 +3909,172 @@ pub fn calculate_getref_single_mesh_threshold_reports_fortran_indexed(
         ocean,
         atmos,
         aggregate,
+    })
+}
+
+/// Run the calculated-threshold GetRef path for a non-LOC mesh from legacy
+/// contain NetCDF input through legacy threshold NetCDF output.
+pub fn run_getref_single_mesh_threshold_files_fortran_indexed(
+    config: GetRefSingleMeshFileRunConfig<'_>,
+) -> io::Result<GetRefSingleMeshFileRunReport> {
+    let contain = read_contain_netcdf(config.contain_file)?;
+    let mp_id = contain_rows_to_fortran_indexed("ustr_id", &contain.ustr_id)?;
+    let mp_ii = contain_rows_to_fortran_indexed("ustr_ii", &contain.ustr_ii)?;
+    let threshold = calculate_getref_single_mesh_threshold_reports_fortran_indexed(
+        config.mesh_type,
+        config.is_in_refine_sjx,
+        &mp_id,
+        &mp_ii,
+        config.landtypes,
+        config.land_basic_config,
+        config.land_onelayer_inputs,
+        config.land_twolayer_inputs,
+        config.ocean_config,
+        config.ocean_onelayer_inputs,
+        config.atmos_config,
+        config.atmos_onelayer_inputs,
+    )?;
+
+    let writes = match config.mesh_type {
+        "landmesh" => GetRefThresholdFileWrites {
+            land: Some(write_getref_land_threshold_netcdf(
+                required_getref_output_path(config.land_threshold_output, "land")?,
+                threshold.land.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "landmesh run missing land report",
+                    )
+                })?,
+            )?),
+            ocean: None,
+            atmos: None,
+        },
+        "oceanmesh" => GetRefThresholdFileWrites {
+            land: None,
+            ocean: Some(write_getref_ocean_threshold_netcdf(
+                required_getref_output_path(config.ocean_threshold_output, "ocean")?,
+                threshold.ocean.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "oceanmesh run missing ocean report",
+                    )
+                })?,
+            )?),
+            atmos: None,
+        },
+        "atmosmesh" => GetRefThresholdFileWrites {
+            land: None,
+            ocean: None,
+            atmos: Some(write_getref_atmos_threshold_netcdf(
+                required_getref_output_path(config.atmos_threshold_output, "atmos")?,
+                threshold.atmos.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "atmosmesh run missing atmosphere report",
+                    )
+                })?,
+            )?),
+        },
+        "LOCmesh" => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LOCmesh requires LOC-specific GetRef file orchestration",
+            ));
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported GetRef mesh_type {other}"),
+            ));
+        }
+    };
+
+    Ok(GetRefSingleMeshFileRunReport {
+        contain,
+        threshold,
+        writes,
+    })
+}
+
+/// Run the calculated-threshold GetRef path for LOCmesh from legacy mixed
+/// contain NetCDF input through legacy component threshold NetCDF outputs.
+pub fn run_getref_loc_mesh_threshold_files_fortran_indexed(
+    config: GetRefLocMeshFileRunConfig<'_>,
+) -> io::Result<GetRefLocMeshFileRunReport> {
+    let contain = read_contain_netcdf(config.contain_file)?;
+    let loc_id = contain_rows_to_fortran_indexed("LOC ustr_id", &contain.ustr_id)?;
+    let loc_ii = contain_rows_to_fortran_indexed("LOC ustr_ii", &contain.ustr_ii)?;
+    let threshold = calculate_getref_loc_threshold_reports_fortran_indexed(
+        config.is_in_refine_sjx,
+        &loc_id,
+        &loc_ii,
+        config.landtypes,
+        config.land_basic_config,
+        config.land_onelayer_inputs,
+        config.land_twolayer_inputs,
+        config.ocean_config,
+        config.ocean_onelayer_inputs,
+        config.atmos_config,
+        config.atmos_onelayer_inputs,
+    )?;
+
+    let writes = GetRefThresholdFileWrites {
+        land: threshold
+            .land
+            .as_ref()
+            .map(|report| {
+                write_getref_land_threshold_netcdf(
+                    required_getref_output_path(config.land_threshold_output, "land")?,
+                    report,
+                )
+            })
+            .transpose()?,
+        ocean: threshold
+            .ocean
+            .as_ref()
+            .map(|report| {
+                write_getref_ocean_threshold_netcdf(
+                    required_getref_output_path(config.ocean_threshold_output, "ocean")?,
+                    report,
+                )
+            })
+            .transpose()?,
+        atmos: threshold
+            .atmos
+            .as_ref()
+            .map(|report| {
+                write_getref_atmos_threshold_netcdf(
+                    required_getref_output_path(config.atmos_threshold_output, "atmos")?,
+                    report,
+                )
+            })
+            .transpose()?,
+    };
+
+    Ok(GetRefLocMeshFileRunReport {
+        contain,
+        threshold,
+        writes,
+    })
+}
+
+fn contain_rows_to_fortran_indexed(name: &str, rows: &[Vec<i32>]) -> io::Result<Vec<Vec<i32>>> {
+    let width = matrix_width(name, rows)?;
+    let mut indexed = Vec::with_capacity(rows.len() + 1);
+    indexed.push(vec![0; width]);
+    indexed.extend(rows.iter().cloned());
+    Ok(indexed)
+}
+
+fn required_getref_output_path<'a>(
+    path: Option<&'a Path>,
+    component: &str,
+) -> io::Result<&'a Path> {
+    path.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("missing GetRef {component} threshold output path"),
+        )
     })
 }
 
