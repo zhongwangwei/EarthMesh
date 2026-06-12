@@ -277,6 +277,46 @@ pub struct MpasSimpleMesh {
     pub mesh_density: Vec<f64>,
 }
 
+/// Rust data shape written by `MOD_file_preprocess.F90:MPAS_Mesh_Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MpasMesh {
+    pub lat_cell: Vec<f64>,
+    pub lon_cell: Vec<f64>,
+    pub x_cell: Vec<f64>,
+    pub y_cell: Vec<f64>,
+    pub z_cell: Vec<f64>,
+    pub lat_vertex: Vec<f64>,
+    pub lon_vertex: Vec<f64>,
+    pub x_vertex: Vec<f64>,
+    pub y_vertex: Vec<f64>,
+    pub z_vertex: Vec<f64>,
+    pub lat_edge: Vec<f64>,
+    pub lon_edge: Vec<f64>,
+    pub x_edge: Vec<f64>,
+    pub y_edge: Vec<f64>,
+    pub z_edge: Vec<f64>,
+    pub n_edges_on_cell: Vec<i32>,
+    pub cells_on_cell: Vec<Vec<i32>>,
+    pub vertices_on_cell: Vec<Vec<i32>>,
+    pub edges_on_cell: Vec<Vec<i32>>,
+    pub cells_on_vertex: Vec<Vec<i32>>,
+    pub edges_on_vertex: Vec<Vec<i32>>,
+    pub cells_on_edge: Vec<[i32; 2]>,
+    pub vertices_on_edge: Vec<[i32; 2]>,
+    pub n_edges_on_edge: Vec<i32>,
+    pub edges_on_edge: Vec<Vec<i32>>,
+    pub area_cell: Vec<f64>,
+    pub area_triangle: Vec<f64>,
+    pub kite_areas_on_vertex: Vec<Vec<f64>>,
+    pub dv_edge: Vec<f64>,
+    pub dc_edge: Vec<f64>,
+    pub angle_edge: Vec<f64>,
+    pub weights_on_edge: Vec<Vec<f64>>,
+    pub mesh_density: Vec<f64>,
+    pub nominal_min_dc: f64,
+    pub error_segment: Vec<f64>,
+}
+
 /// Result of the pure `mask_postproc_Earth` patchtypes_make loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EarthPatchtypes {
@@ -348,6 +388,15 @@ pub struct MpasSimpleMeshWriteReport {
     pub output: PathBuf,
     pub n_cells: usize,
     pub n_vertices: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:MPAS_Mesh_Save` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MpasMeshWriteReport {
+    pub output: PathBuf,
+    pub n_cells: usize,
+    pub n_vertices: usize,
+    pub n_edges: usize,
 }
 
 /// Evidence report from writing `MOD_file_preprocess.F90:MPAS_info_Save` graph.info.
@@ -888,6 +937,197 @@ pub fn write_mpas_simple_mesh_netcdf(
         output: output.to_path_buf(),
         n_cells,
         n_vertices,
+    })
+}
+
+/// Write the full MPAS mesh schema produced by
+/// `MOD_file_preprocess.F90:MPAS_Mesh_Save`.
+///
+/// The Rust data shape preserves the legacy placeholder row at index `0`; all
+/// MPAS-facing variables are written from index `1..`, matching Fortran slices
+/// such as `2:num_dbx`, `2:num_sjx`, and `2:num_edge` after the earlier
+/// zero-based connectivity conversion in `mask_postproc_Atmos`.
+pub fn write_mpas_mesh_netcdf(
+    output: impl AsRef<Path>,
+    mesh: &MpasMesh,
+) -> io::Result<MpasMeshWriteReport> {
+    validate_mpas_mesh(mesh)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let n_cells = mesh.x_cell.len() - 1;
+    let n_vertices = mesh.x_vertex.len() - 1;
+    let n_edges = mesh.x_edge.len() - 1;
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("nCells", n_cells)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("nVertices", n_vertices)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("nEdges", n_edges)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("maxEdges", 10)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("maxEdges2", 20)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("TWO", 2).map_err(netcdf_to_io_error)?;
+    file.add_dimension("vertexDegree", 3)
+        .map_err(netcdf_to_io_error)?;
+
+    write_i32_1d(
+        &mut file,
+        "indexToCellID",
+        "nCells",
+        &one_to_n_i32(n_cells, "indexToCellID")?,
+    )?;
+    write_f64_1d(&mut file, "latCell", "nCells", &mesh.lat_cell[1..])?;
+    write_f64_1d(&mut file, "lonCell", "nCells", &mesh.lon_cell[1..])?;
+    write_f64_1d(&mut file, "xCell", "nCells", &mesh.x_cell[1..])?;
+    write_f64_1d(&mut file, "yCell", "nCells", &mesh.y_cell[1..])?;
+    write_f64_1d(&mut file, "zCell", "nCells", &mesh.z_cell[1..])?;
+    write_i32_1d(
+        &mut file,
+        "indexToVertexID",
+        "nVertices",
+        &one_to_n_i32(n_vertices, "indexToVertexID")?,
+    )?;
+    write_f64_1d(&mut file, "latVertex", "nVertices", &mesh.lat_vertex[1..])?;
+    write_f64_1d(&mut file, "lonVertex", "nVertices", &mesh.lon_vertex[1..])?;
+    write_f64_1d(&mut file, "xVertex", "nVertices", &mesh.x_vertex[1..])?;
+    write_f64_1d(&mut file, "yVertex", "nVertices", &mesh.y_vertex[1..])?;
+    write_f64_1d(&mut file, "zVertex", "nVertices", &mesh.z_vertex[1..])?;
+    write_i32_1d(
+        &mut file,
+        "indexToEdgeID",
+        "nEdges",
+        &one_to_n_i32(n_edges, "indexToEdgeID")?,
+    )?;
+    write_f64_1d(&mut file, "latEdge", "nEdges", &mesh.lat_edge[1..])?;
+    write_f64_1d(&mut file, "lonEdge", "nEdges", &mesh.lon_edge[1..])?;
+    write_f64_1d(&mut file, "xEdge", "nEdges", &mesh.x_edge[1..])?;
+    write_f64_1d(&mut file, "yEdge", "nEdges", &mesh.y_edge[1..])?;
+    write_f64_1d(&mut file, "zEdge", "nEdges", &mesh.z_edge[1..])?;
+    write_i32_1d(
+        &mut file,
+        "nEdgesOnCell",
+        "nCells",
+        &mesh.n_edges_on_cell[1..],
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "cellsOnCell",
+        &["nCells", "maxEdges"],
+        &mesh.cells_on_cell[1..],
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "verticesOnCell",
+        &["nCells", "maxEdges"],
+        &mesh.vertices_on_cell[1..],
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "edgesOnCell",
+        &["nCells", "maxEdges"],
+        &mesh.edges_on_cell[1..],
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "cellsOnVertex",
+        &["nVertices", "vertexDegree"],
+        &mesh.cells_on_vertex[1..],
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "edgesOnVertex",
+        &["nVertices", "vertexDegree"],
+        &mesh.edges_on_vertex[1..],
+    )?;
+    write_i32_pair_rows(
+        &mut file,
+        "cellsOnEdge",
+        &["nEdges", "TWO"],
+        &mesh.cells_on_edge[1..],
+    )?;
+    write_i32_pair_rows(
+        &mut file,
+        "verticesOnEdge",
+        &["nEdges", "TWO"],
+        &mesh.vertices_on_edge[1..],
+    )?;
+    write_i32_1d(
+        &mut file,
+        "nEdgesOnEdge",
+        "nEdges",
+        &mesh.n_edges_on_edge[1..],
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "edgesOnEdge",
+        &["nEdges", "maxEdges2"],
+        &mesh.edges_on_edge[1..],
+    )?;
+    write_f64_1d(&mut file, "areaCell", "nCells", &mesh.area_cell[1..])?;
+    write_f64_1d(
+        &mut file,
+        "areaTriangle",
+        "nVertices",
+        &mesh.area_triangle[1..],
+    )?;
+    write_f64_matrix_rows(
+        &mut file,
+        "kiteAreasOnVertex",
+        &["nVertices", "vertexDegree"],
+        &mesh.kite_areas_on_vertex[1..],
+    )?;
+    write_f64_1d(&mut file, "dvEdge", "nEdges", &mesh.dv_edge[1..])?;
+    write_f64_1d(&mut file, "dcEdge", "nEdges", &mesh.dc_edge[1..])?;
+    write_f64_1d(&mut file, "angleEdge", "nEdges", &mesh.angle_edge[1..])?;
+    write_f64_matrix_rows(
+        &mut file,
+        "weightsOnEdge",
+        &["nEdges", "maxEdges2"],
+        &mesh.weights_on_edge[1..],
+    )?;
+    write_f64_1d(&mut file, "meshDensity", "nCells", &mesh.mesh_density[1..])?;
+    {
+        let mut var = file
+            .add_variable::<f64>("nominalMinDc", &[])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&[mesh.nominal_min_dc], ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    write_f64_1d(
+        &mut file,
+        "error_segment",
+        "nEdges",
+        &mesh.error_segment[1..],
+    )?;
+
+    file.add_attribute("mesh_spec", "1.0")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("on_a_sphere", "YES")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("sphere_radius", 1.0_f64)
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("is_periodic", "NO")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("x_period", 0.0_f64)
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("y_period", 0.0_f64)
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("file_id", "bbdd9043")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("source", "Generated by EarthMesh")
+        .map_err(netcdf_to_io_error)?;
+
+    Ok(MpasMeshWriteReport {
+        output: output.to_path_buf(),
+        n_cells,
+        n_vertices,
+        n_edges,
     })
 }
 
@@ -3017,6 +3257,93 @@ fn validate_earthmesh_info(info: &EarthmeshInfo) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
+    if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() || mesh.x_edge.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MPAS mesh arrays must include the legacy placeholder row",
+        ));
+    }
+    let n_cells = mesh.x_cell.len();
+    let n_vertices = mesh.x_vertex.len();
+    let n_edges = mesh.x_edge.len();
+    for (name, actual, required) in [
+        ("lat_cell", mesh.lat_cell.len(), n_cells),
+        ("lon_cell", mesh.lon_cell.len(), n_cells),
+        ("y_cell", mesh.y_cell.len(), n_cells),
+        ("z_cell", mesh.z_cell.len(), n_cells),
+        ("n_edges_on_cell", mesh.n_edges_on_cell.len(), n_cells),
+        ("cells_on_cell", mesh.cells_on_cell.len(), n_cells),
+        ("vertices_on_cell", mesh.vertices_on_cell.len(), n_cells),
+        ("edges_on_cell", mesh.edges_on_cell.len(), n_cells),
+        ("area_cell", mesh.area_cell.len(), n_cells),
+        ("mesh_density", mesh.mesh_density.len(), n_cells),
+        ("lat_vertex", mesh.lat_vertex.len(), n_vertices),
+        ("lon_vertex", mesh.lon_vertex.len(), n_vertices),
+        ("y_vertex", mesh.y_vertex.len(), n_vertices),
+        ("z_vertex", mesh.z_vertex.len(), n_vertices),
+        ("cells_on_vertex", mesh.cells_on_vertex.len(), n_vertices),
+        ("edges_on_vertex", mesh.edges_on_vertex.len(), n_vertices),
+        ("area_triangle", mesh.area_triangle.len(), n_vertices),
+        (
+            "kite_areas_on_vertex",
+            mesh.kite_areas_on_vertex.len(),
+            n_vertices,
+        ),
+        ("lat_edge", mesh.lat_edge.len(), n_edges),
+        ("lon_edge", mesh.lon_edge.len(), n_edges),
+        ("y_edge", mesh.y_edge.len(), n_edges),
+        ("z_edge", mesh.z_edge.len(), n_edges),
+        ("cells_on_edge", mesh.cells_on_edge.len(), n_edges),
+        ("vertices_on_edge", mesh.vertices_on_edge.len(), n_edges),
+        ("n_edges_on_edge", mesh.n_edges_on_edge.len(), n_edges),
+        ("edges_on_edge", mesh.edges_on_edge.len(), n_edges),
+        ("dv_edge", mesh.dv_edge.len(), n_edges),
+        ("dc_edge", mesh.dc_edge.len(), n_edges),
+        ("angle_edge", mesh.angle_edge.len(), n_edges),
+        ("weights_on_edge", mesh.weights_on_edge.len(), n_edges),
+        ("error_segment", mesh.error_segment.len(), n_edges),
+    ] {
+        if actual != required {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} length {actual} must match required {required}"),
+            ));
+        }
+    }
+    for (name, rows, width) in [
+        ("cells_on_cell", &mesh.cells_on_cell, 10_usize),
+        ("vertices_on_cell", &mesh.vertices_on_cell, 10_usize),
+        ("edges_on_cell", &mesh.edges_on_cell, 10_usize),
+        ("cells_on_vertex", &mesh.cells_on_vertex, 3_usize),
+        ("edges_on_vertex", &mesh.edges_on_vertex, 3_usize),
+        ("edges_on_edge", &mesh.edges_on_edge, 20_usize),
+    ] {
+        let actual = matrix_width(name, rows)?;
+        if actual != width {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} width {actual} must match required {width}"),
+            ));
+        }
+    }
+    let kite_width = f64_matrix_width("kite_areas_on_vertex", &mesh.kite_areas_on_vertex)?;
+    if kite_width != 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("kite_areas_on_vertex width {kite_width} must match required 3"),
+        ));
+    }
+    let weights_width = f64_matrix_width("weights_on_edge", &mesh.weights_on_edge)?;
+    if weights_width != 20 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("weights_on_edge width {weights_width} must match required 20"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_mpas_simple_mesh(mesh: &MpasSimpleMesh) -> io::Result<()> {
     if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() {
         return Err(io::Error::new(
@@ -3053,6 +3380,17 @@ fn validate_mpas_simple_mesh(mesh: &MpasSimpleMesh) -> io::Result<()> {
     Ok(())
 }
 
+fn f64_matrix_width(name: &str, rows: &[Vec<f64>]) -> io::Result<usize> {
+    let width = rows.first().map(Vec::len).unwrap_or(0);
+    if rows.iter().any(|row| row.len() != width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} rows must have uniform width"),
+        ));
+    }
+    Ok(width)
+}
+
 fn matrix_width(name: &str, rows: &[Vec<i32>]) -> io::Result<usize> {
     let width = rows.first().map(Vec::len).unwrap_or(0);
     if rows.iter().any(|row| row.len() != width) {
@@ -3066,6 +3404,69 @@ fn matrix_width(name: &str, rows: &[Vec<i32>]) -> io::Result<usize> {
 
 fn flatten_i32_rows(rows: &[Vec<i32>]) -> Vec<i32> {
     rows.iter().flat_map(|row| row.iter().copied()).collect()
+}
+
+fn flatten_i32_pairs(rows: &[[i32; 2]]) -> Vec<i32> {
+    rows.iter().flat_map(|row| row.iter().copied()).collect()
+}
+
+fn flatten_f64_rows(rows: &[Vec<f64>]) -> Vec<f64> {
+    rows.iter().flat_map(|row| row.iter().copied()).collect()
+}
+
+fn write_i32_1d(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    dim: &str,
+    values: &[i32],
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<i32>(name, &[dim])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(values, ..).map_err(netcdf_to_io_error)
+}
+
+fn write_i32_matrix_rows(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    dims: &[&str],
+    rows: &[Vec<i32>],
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<i32>(name, dims)
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&flatten_i32_rows(rows), (.., ..))
+        .map_err(netcdf_to_io_error)
+}
+
+fn write_i32_pair_rows(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    dims: &[&str],
+    rows: &[[i32; 2]],
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<i32>(name, dims)
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&flatten_i32_pairs(rows), (.., ..))
+        .map_err(netcdf_to_io_error)
+}
+
+fn write_f64_matrix_rows(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    dims: &[&str],
+    rows: &[Vec<f64>],
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<f64>(name, dims)
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&flatten_f64_rows(rows), (.., ..))
+        .map_err(netcdf_to_io_error)
+}
+
+fn one_to_n_i32(n: usize, name: &str) -> io::Result<Vec<i32>> {
+    (1..=n).map(|value| usize_to_i32(name, value)).collect()
 }
 
 fn write_f64_1d(

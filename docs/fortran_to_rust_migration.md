@@ -585,3 +585,7 @@ Added `write_mask_postproc_atmos_mpas_simple_netcdf` in `rust/earthmesh_cli`, a 
 ### 2026-06-12: MPAS graph.info writer ported
 
 Added `MpasGraphInfoWriteReport` and `write_mpas_graph_info` in `rust/earthmesh_cli`, a tested Rust port of `MOD_file_preprocess.F90:MPAS_info_Save`. The writer keeps the legacy placeholder row, counts only interior edges with both adjacent cells present, emits Fortran-style width-10 integer rows, and reports cells whose positive neighbor count is lower than `nEdgesOnCell`. This removes one more dependency from the full MPAS atmosphere output path; the large MPAS NetCDF writer and remaining geometry/file orchestration are still separate migration gates.
+
+### 2026-06-12: Full MPAS mesh NetCDF writer ported
+
+Added `MpasMesh`, `MpasMeshWriteReport`, and `write_mpas_mesh_netcdf` in `rust/earthmesh_cli`, a tested Rust writer for `MOD_file_preprocess.F90:MPAS_Mesh_Save`. The adapter preserves the full MPAS dimensions (`nCells`, `nVertices`, `nEdges`, `maxEdges`, `maxEdges2`, `TWO`, `vertexDegree`), generated `indexTo*ID` variables, placeholder-row slicing (`2:num_dbx`, `2:num_sjx`, `2:num_edge`), representative 1D/2D/scalar variables, and the legacy global attributes including `mesh_spec`, `sphere_radius`, and `source`. Remaining full-atmosphere work is now the `MPAS_Mesh_Cal` file-level orchestration that builds this payload from the migrated geometry kernels and pairs it with the graph.info writer.
