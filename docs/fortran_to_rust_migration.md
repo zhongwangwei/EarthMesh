@@ -413,3 +413,7 @@ Extended `rust/earthmesh_cli` with `Mode4MeshMakeReport` and `mode4mesh_make_net
 ### 2026-06-12: workspace and mask operation orchestration wired
 
 Extended `rust/earthmesh_cli` with `WorkspaceMaskApplyReport` and `apply_workspace_and_mask_operations`, which applies the Rust `read_nl` workspace plan, executes every planned `Mask_make` operation in order, returns final `MaskCountState`, and optionally enforces the specified-refinement `max_iter_spc` mask-count guard. This closes the Rust adapter wiring between namelist-derived workspace setup and the migrated bbox/lambert/circle/close mask machinery; remaining work is focused on the gridinit/voronoi/pcvt/gridfile_write pipeline and a final Rust CLI replacement for `mkgrd.x`.
+
+### 2026-06-12: `gridfile_write` unstructured NetCDF writer ported
+
+Extended `rust/earthmesh_cli` with `UnstructuredMesh`, `gridfile_mesh_from_state`, `write_unstructured_mesh_netcdf`, `gridfile_output_path`, and `write_gridfile_from_state`, covering the compact `MOD_file_preprocess.F90:Unstructured_Mesh_Save` schema used by `mkgrd.F90:gridfile_write`. The Rust adapter derives `GLONM/GLATM/GLONW/GLATW`, `itab_m%iw`, `itab_w%im`, and `n_ngrwm` from `GridMemory` plus `IjTabs`, preserves the Fortran `n_ngrwm(1)=1` and pentagon/hexagon rule, and writes `gridfile/gridfile_NXP####_##_<mode_grid>.nc4`. Remaining `mkgrd.F90` work is now the `gridinit` generation path itself, especially Delaunay-to-Voronoi conversion and `pcvt` circumcenter adjustment before final Rust CLI orchestration.

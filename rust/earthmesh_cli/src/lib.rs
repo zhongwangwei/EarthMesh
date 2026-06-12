@@ -4,7 +4,250 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use earthmesh_core::{MaskOperation, MkgrdWorkspacePlan};
+use earthmesh_core::{GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
+
+/// Rust data shape written by `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnstructuredMesh {
+    pub m_points: Vec<LonLatPoint>,
+    pub w_points: Vec<LonLatPoint>,
+    pub m_to_w: Vec<[i32; 3]>,
+    pub w_to_m: Vec<Vec<i32>>,
+    pub n_w_to_m: Vec<i32>,
+}
+
+/// Evidence report from writing an unstructured gridfile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnstructuredMeshWriteReport {
+    pub output: PathBuf,
+    pub sjx_points: usize,
+    pub lbx_points: usize,
+    pub dimc: usize,
+}
+
+/// Build the `Unstructured_Mesh_Save` payload from the Rust-owned grid and
+/// connectivity state used by `mkgrd.F90:gridfile_write`.
+pub fn gridfile_mesh_from_state(grid: &GridMemory, tabs: &IjTabs) -> io::Result<UnstructuredMesh> {
+    let nma = grid.nma;
+    let nwa = grid.nwa;
+    require_len("grid.glonm", grid.glonm.len(), nma)?;
+    require_len("grid.glatm", grid.glatm.len(), nma)?;
+    require_len("grid.glonw", grid.glonw.len(), nwa)?;
+    require_len("grid.glatw", grid.glatw.len(), nwa)?;
+    require_len("itab_m", tabs.m.len(), nma)?;
+    require_len("itab_w", tabs.w.len(), nwa)?;
+
+    let m_points = (0..nma)
+        .map(|idx| LonLatPoint {
+            lon: f64::from(grid.glonm[idx]),
+            lat: f64::from(grid.glatm[idx]),
+        })
+        .collect();
+    let w_points = (0..nwa)
+        .map(|idx| LonLatPoint {
+            lon: f64::from(grid.glonw[idx]),
+            lat: f64::from(grid.glatw[idx]),
+        })
+        .collect();
+    let m_to_w = tabs.m.iter().take(nma).map(|tab| tab.iw).collect();
+
+    let mut n_w_to_m = vec![1; nwa];
+    let mut w_to_m = Vec::with_capacity(nwa);
+    for (idx, tab) in tabs.w.iter().take(nwa).enumerate() {
+        if idx == 0 {
+            n_w_to_m[idx] = 1;
+        } else if tab.im[5] == 1 {
+            n_w_to_m[idx] = 5;
+        } else {
+            n_w_to_m[idx] = 6;
+        }
+        w_to_m.push(tab.im.to_vec());
+    }
+
+    Ok(UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    })
+}
+
+/// Write the compact EarthMesh unstructured gridfile schema used by legacy
+/// refinement and mask post-processing code.
+pub fn write_unstructured_mesh_netcdf(
+    output: impl AsRef<Path>,
+    mesh: &UnstructuredMesh,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    validate_unstructured_mesh(mesh)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let dimc = unstructured_dimc(mesh);
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("sjx_points", mesh.m_points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("lbx_points", mesh.w_points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("dimb", 3).map_err(netcdf_to_io_error)?;
+    file.add_dimension("dimc", dimc)
+        .map_err(netcdf_to_io_error)?;
+
+    {
+        let mut var = file
+            .add_variable::<f64>("GLONM", &["sjx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&lon_values(&mesh.m_points), ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("GLATM", &["sjx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&lat_values(&mesh.m_points), ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("GLONW", &["lbx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&lon_values(&mesh.w_points), ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("GLATW", &["lbx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&lat_values(&mesh.w_points), ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("itab_m%iw", &["sjx_points", "dimb"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&flatten_m_to_w(&mesh.m_to_w), (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("itab_w%im", &["lbx_points", "dimc"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&flatten_w_to_m(&mesh.w_to_m, dimc), (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("n_ngrwm", &["lbx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&mesh.n_w_to_m, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    Ok(UnstructuredMeshWriteReport {
+        output: output.to_path_buf(),
+        sjx_points: mesh.m_points.len(),
+        lbx_points: mesh.w_points.len(),
+        dimc,
+    })
+}
+
+/// Rust adapter for `mkgrd.F90:gridfile_write`: derive the unstructured
+/// gridfile payload from grid state and write the legacy output path.
+pub fn write_gridfile_from_state(
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    mode_grid: &str,
+    grid: &GridMemory,
+    tabs: &IjTabs,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    let mesh = gridfile_mesh_from_state(grid, tabs)?;
+    let output = gridfile_output_path(file_dir, nxp, step, mode_grid);
+    write_unstructured_mesh_netcdf(output, &mesh)
+}
+
+/// Build the `gridfile_write` output path:
+/// `file_dir/gridfile/gridfile_NXP####_##_<mode_grid>.nc4`.
+pub fn gridfile_output_path(
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    mode_grid: &str,
+) -> PathBuf {
+    file_dir.as_ref().join("gridfile").join(format!(
+        "gridfile_NXP{nxp:04}_{step:02}_{}.nc4",
+        mode_grid.trim()
+    ))
+}
+
+fn require_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
+    if actual < required {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} length {actual} is shorter than required {required}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_unstructured_mesh(mesh: &UnstructuredMesh) -> io::Result<()> {
+    if mesh.m_to_w.len() != mesh.m_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "m_to_w length must match m_points length",
+        ));
+    }
+    if mesh.w_to_m.len() != mesh.w_points.len() || mesh.n_w_to_m.len() != mesh.w_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "w_to_m and n_w_to_m lengths must match w_points length",
+        ));
+    }
+    if mesh.n_w_to_m.iter().any(|&n| n < 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "n_w_to_m values must be non-negative",
+        ));
+    }
+    Ok(())
+}
+
+fn unstructured_dimc(mesh: &UnstructuredMesh) -> usize {
+    mesh.n_w_to_m
+        .iter()
+        .filter_map(|&value| usize::try_from(value).ok())
+        .chain(mesh.w_to_m.iter().map(Vec::len))
+        .max()
+        .unwrap_or(0)
+        .max(7)
+}
+
+fn lon_values(points: &[LonLatPoint]) -> Vec<f64> {
+    points.iter().map(|point| point.lon).collect()
+}
+
+fn lat_values(points: &[LonLatPoint]) -> Vec<f64> {
+    points.iter().map(|point| point.lat).collect()
+}
+
+fn flatten_m_to_w(m_to_w: &[[i32; 3]]) -> Vec<i32> {
+    let mut values = Vec::with_capacity(m_to_w.len() * 3);
+    for row in m_to_w {
+        values.extend_from_slice(row);
+    }
+    values
+}
+
+fn flatten_w_to_m(w_to_m: &[Vec<i32>], dimc: usize) -> Vec<i32> {
+    let mut values = Vec::with_capacity(w_to_m.len() * dimc);
+    for row in w_to_m {
+        values.extend(row.iter().copied().take(dimc));
+        values.resize(values.len() + dimc.saturating_sub(row.len().min(dimc)), 0);
+    }
+    values
+}
 
 /// Report for the migrated NetCDF branch of `mkgrd.F90:mode4mesh_make`.
 #[derive(Debug, Clone, PartialEq, Eq)]

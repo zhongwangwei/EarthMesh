@@ -108,10 +108,11 @@
         "lamb_mask_make Lambert vertex NetCDF reader, mode4 mesh conversion, writer, and output numbering ported to rust/earthmesh_cli",
         "Mask_make per-file dispatcher and specified-refine mask-count validation ported to rust/earthmesh_cli",
         "mode4mesh_make Lambert NetCDF branch and Mode4_Mesh_Save-compatible gridfile writer ported to rust/earthmesh_cli",
-        "workspace setup plus Mask_make operation orchestration wired through rust/earthmesh_cli with final mask-count state reporting"
+        "workspace setup plus Mask_make operation orchestration wired through rust/earthmesh_cli with final mask-count state reporting",
+        "gridfile_write unstructured NetCDF writer and Fortran output naming ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "gridinit/voronoi/pcvt/gridfile_write pipeline",
+        "gridinit/voronoi/pcvt pipeline",
         "Rust CLI replacement for mkgrd.x end-to-end workflows"
       ]
     },
