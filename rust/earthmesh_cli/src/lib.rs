@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_geometry::{
     area_judge_first_self_intersection_fortran_indexed, is_point_in_circle_km,
-    Point as AreaJudgePoint,
+    is_point_in_convex_polygon, Point as AreaJudgePoint,
 };
 use earthmesh_mesh::{
     area_judge_apply_mask_patch_fortran_indexed, area_judge_closed_curve_fill_fortran_indexed,
@@ -2104,6 +2104,251 @@ pub fn apply_area_judge_close_patch_source_fortran_indexed(
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "seaorland or close patch mask does not cover selected source bounds",
+            )
+        })?;
+
+    Ok(AreaJudgePatchSourceReport {
+        bounds,
+        patched_cells: report.patched_cells,
+    })
+}
+
+fn area_judge_checked_source_index_minus_one(index: usize) -> usize {
+    index.saturating_sub(1).max(1)
+}
+
+/// Build the Lambert/mode4 `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    require_len("lon_i", lon_i.len(), nlons_source + 1)?;
+    require_len("lat_i", lat_i.len(), nlats_source + 1)?;
+
+    let mesh = read_mode4_mesh_netcdf(inputfile)?;
+    validate_mode4_mesh_for_area_judge(&mesh).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid lambert patch source: {err}"),
+        )
+    })?;
+
+    let mesh_points = &mesh.lonlat_bound[1..];
+    let mut edgew_temp = mesh_points
+        .iter()
+        .map(|point| point.lon)
+        .fold(f64::INFINITY, f64::min);
+    let mut edgee_temp = mesh_points
+        .iter()
+        .map(|point| point.lon)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let edgen_temp = mesh_points
+        .iter()
+        .map(|point| point.lat)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let edges_temp = mesh_points
+        .iter()
+        .map(|point| point.lat)
+        .fold(f64::INFINITY, f64::min);
+    let global_points = mesh_points
+        .iter()
+        .map(|point| LonLatDegrees {
+            lon_degrees: point.lon,
+            lat_degrees: point.lat,
+        })
+        .collect::<Vec<_>>();
+    if area_judge_close_crosses_dateline(&global_points) {
+        edgew_temp = -180.0;
+        edgee_temp = 180.0;
+    }
+
+    let bounds = area_judge_minmax_range_make_fortran_indexed(
+        edgew_temp,
+        edgee_temp,
+        edgen_temp,
+        edges_temp,
+        lon_vertex,
+        lat_vertex,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "lambert patch bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+            ),
+        )
+    })?;
+
+    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    for cell_index in 1..mesh.mode_points() {
+        if mesh.n_ngr[cell_index] < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lambert mode4 cell {cell_index} must have at least four vertices"),
+            ));
+        }
+
+        let mut cell_points = mesh.ngr_bound[cell_index]
+            .iter()
+            .map(|&bound_index| {
+                let bound_index = usize::try_from(bound_index).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "lambert mode4 cell {cell_index} has negative vertex id {bound_index}"
+                        ),
+                    )
+                })?;
+                mesh.lonlat_bound.get(bound_index - 1).copied().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "lambert mode4 cell {cell_index} references out-of-range vertex {bound_index}"
+                        ),
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        let cell_lon_span = cell_points
+            .iter()
+            .map(|point| point.lon)
+            .fold(f64::NEG_INFINITY, f64::max)
+            - cell_points
+                .iter()
+                .map(|point| point.lon)
+                .fold(f64::INFINITY, f64::min);
+        let restore_dateline_shift = cell_lon_span > 180.0;
+        if restore_dateline_shift {
+            let mut shifted = cell_points
+                .iter()
+                .map(|point| LonLatDegrees {
+                    lon_degrees: point.lon,
+                    lat_degrees: point.lat,
+                })
+                .collect::<Vec<_>>();
+            area_judge_check_crossing(&mut shifted);
+            for (point, shifted_point) in cell_points.iter_mut().zip(shifted) {
+                point.lon = shifted_point.lon_degrees;
+                point.lat = shifted_point.lat_degrees;
+            }
+        }
+
+        let minlon_source = area_judge_source_find_fortran_indexed(
+            cell_points
+                .iter()
+                .map(|point| point.lon)
+                .fold(f64::INFINITY, f64::min),
+            lon_vertex,
+            AreaJudgeAxis::Longitude,
+            gridnum_perdegree,
+            nlons_source,
+        )
+        .map(area_judge_checked_source_index_minus_one)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lambert mode4 cell {cell_index} west edge is outside source grid"),
+            )
+        })?;
+        let maxlon_source = area_judge_source_find_fortran_indexed(
+            cell_points
+                .iter()
+                .map(|point| point.lon)
+                .fold(f64::NEG_INFINITY, f64::max),
+            lon_vertex,
+            AreaJudgeAxis::Longitude,
+            gridnum_perdegree,
+            nlons_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lambert mode4 cell {cell_index} east edge is outside source grid"),
+            )
+        })?;
+        let maxlat_source = area_judge_source_find_fortran_indexed(
+            cell_points
+                .iter()
+                .map(|point| point.lat)
+                .fold(f64::NEG_INFINITY, f64::max),
+            lat_vertex,
+            AreaJudgeAxis::Latitude,
+            gridnum_perdegree,
+            nlats_source,
+        )
+        .map(area_judge_checked_source_index_minus_one)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lambert mode4 cell {cell_index} north edge is outside source grid"),
+            )
+        })?;
+        let minlat_source = area_judge_source_find_fortran_indexed(
+            cell_points
+                .iter()
+                .map(|point| point.lat)
+                .fold(f64::INFINITY, f64::min),
+            lat_vertex,
+            AreaJudgeAxis::Latitude,
+            gridnum_perdegree,
+            nlats_source,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lambert mode4 cell {cell_index} south edge is outside source grid"),
+            )
+        })?;
+
+        let polygon = cell_points
+            .iter()
+            .map(|point| AreaJudgePoint::new(point.lon, point.lat))
+            .collect::<Vec<_>>();
+        for lon_index in minlon_source..maxlon_source {
+            for lat_index in maxlat_source..minlat_source {
+                let point = AreaJudgePoint::new(lon_i[lon_index], lat_i[lat_index]);
+                if !is_point_in_convex_polygon(&polygon, point) {
+                    continue;
+                }
+                let restored_lon_index =
+                    if restore_dateline_shift && lon_index < nlons_source / 2 + 1 {
+                        lon_index + nlons_source / 2
+                    } else if restore_dateline_shift {
+                        lon_index - nlons_source / 2
+                    } else {
+                        lon_index
+                    };
+                require_len(
+                    "lambert patch mask",
+                    patch_mask.len(),
+                    restored_lon_index + 1,
+                )?;
+                require_len(
+                    &format!("lambert patch mask[{restored_lon_index}]"),
+                    patch_mask[restored_lon_index].len(),
+                    lat_index + 1,
+                )?;
+                patch_mask[restored_lon_index][lat_index] = 1;
+            }
+        }
+    }
+
+    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seaorland or lambert patch mask does not cover selected source bounds",
             )
         })?;
 
@@ -6853,6 +7098,52 @@ fn validate_close_mask(mask: &CloseMask) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_mode4_mesh_for_area_judge(mesh: &Mode4Mesh) -> io::Result<()> {
+    if mesh.bound_points() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mode4 mesh must include a placeholder plus at least one boundary point",
+        ));
+    }
+    if mesh.mode_points() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mode4 mesh must include a placeholder plus at least one cell",
+        ));
+    }
+    if mesh.ngr_bound.len() != mesh.n_ngr.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mode4 ngr_bound and n_ngr lengths must match",
+        ));
+    }
+    for (index, point) in mesh.lonlat_bound.iter().enumerate() {
+        if index == 0 {
+            continue;
+        }
+        if !point.lon.is_finite() || !point.lat.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "mode4 boundary point {} coordinates must be finite",
+                    index + 1
+                ),
+            ));
+        }
+    }
+    for cell_index in 1..mesh.mode_points() {
+        for &bound_index in &mesh.ngr_bound[cell_index] {
+            if bound_index < 1 || bound_index as usize > mesh.bound_points() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("mode4 cell {cell_index} references out-of-range vertex {bound_index}"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
     if mask.points.len() != mask.radius_km.len() {
         return Err(io::Error::new(
@@ -7385,6 +7676,95 @@ pub fn lambert_vertices_to_mode4_mesh(vertices: &LambertVertices) -> io::Result<
         ngr_bound,
         n_ngr: vec![4; mode_points],
     })
+}
+
+pub fn read_mode4_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Mode4Mesh> {
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let bound_points = required_dimension_len(&file, "bound_points")?;
+    let mode_points = required_dimension_len(&file, "mode_points")?;
+    let two = required_dimension_len(&file, "two")?;
+    let four = required_dimension_len(&file, "four")?;
+    if two != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("mode4 two dimension {two} must equal 2"),
+        ));
+    }
+    if four != 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("mode4 four dimension {four} must equal 4"),
+        ));
+    }
+
+    let lonlat_values = required_values_f64(&file, "lonlat_bound")?;
+    let expected_lonlat = bound_points.checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("mode4 lonlat_bound dimensions {bound_points}x2 overflow"),
+        )
+    })?;
+    if lonlat_values.len() != expected_lonlat {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "lonlat_bound contains {} values, expected {expected_lonlat}",
+                lonlat_values.len()
+            ),
+        ));
+    }
+    let lonlat_bound = lonlat_values
+        .chunks_exact(2)
+        .map(|row| LonLatPoint {
+            lon: row[0],
+            lat: row[1],
+        })
+        .collect::<Vec<_>>();
+
+    let ngr_values = required_values_i32_2d(&file, "ngr_bound")?;
+    let expected_ngr = mode_points.checked_mul(4).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("mode4 ngr_bound dimensions {mode_points}x4 overflow"),
+        )
+    })?;
+    if ngr_values.len() != expected_ngr {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "ngr_bound contains {} values, expected {expected_ngr}",
+                ngr_values.len()
+            ),
+        ));
+    }
+    let ngr_bound = ngr_values
+        .chunks_exact(4)
+        .map(|row| [row[0], row[1], row[2], row[3]])
+        .collect::<Vec<_>>();
+
+    let n_ngr = required_values_i32(&file, "n_ngr")?;
+    if n_ngr.len() != mode_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "n_ngr contains {} values, expected {mode_points}",
+                n_ngr.len()
+            ),
+        ));
+    }
+
+    let mesh = Mode4Mesh {
+        lonlat_bound,
+        ngr_bound,
+        n_ngr,
+    };
+    validate_mode4_mesh_for_area_judge(&mesh).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid mode4 mesh NetCDF: {err}"),
+        )
+    })?;
+    Ok(mesh)
 }
 
 pub fn write_mode4_mesh_netcdf(output: impl AsRef<Path>, mesh: &Mode4Mesh) -> io::Result<()> {
