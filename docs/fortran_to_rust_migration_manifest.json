@@ -35,11 +35,12 @@
         "MPAS-compatible Earth radius and derived radius values from init_consts",
         "typed EarthmeshConfig defaults mirroring oname_vars",
         "typed LonLatMeshConfig defaults mirroring lonlatmesh_coms:mesh_vars",
-        "typed FvcomMeshConfig defaults mirroring fvcommesh_coms:mesh_vars"
+        "typed FvcomMeshConfig defaults mirroring fvcommesh_coms:mesh_vars",
+        "mkgrd oname_vars namelist parsing and read_nl validation ported to EarthmeshConfig"
       ],
       "remaining_rust_surfaces": [
         "mem_* state replacement modules currently co-located in consts_coms.F90",
-        "full namelist read/write compatibility with mkgrd.F90 read_nl"
+        "mkrefine namelist parsing and namelist.save write compatibility"
       ]
     },
     {
@@ -89,10 +90,11 @@
       "notes": "This is the final orchestration cutover after lower-level kernels have parity gates.",
       "port_status": "started",
       "completed_rust_surfaces": [
-        "grid_xyz2lonlat scalar and batch coordinate conversion moved to rust/earthmesh_mesh"
+        "grid_xyz2lonlat scalar and batch coordinate conversion moved to rust/earthmesh_mesh",
+        "read_nl mkgrd namelist assignment parsing, file_dir derivation, and mode validation ported to rust/earthmesh_core"
       ],
       "remaining_rust_surfaces": [
-        "read_nl orchestration and namelist compatibility",
+        "read_nl filesystem setup/removal orchestration and mkrefine save compatibility",
         "mode4mesh_make and mask creation orchestration",
         "gridinit/voronoi/pcvt/gridfile_write pipeline",
         "Rust CLI replacement for mkgrd.x end-to-end workflows"

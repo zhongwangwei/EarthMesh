@@ -125,6 +125,187 @@ impl Default for EarthmeshConfig {
     }
 }
 
+impl EarthmeshConfig {
+    /// Derive `file_dir = trim(base_dir) // trim(expnme) // '/'` as in
+    /// `mkgrd.F90:read_nl`.
+    pub fn file_dir(&self) -> String {
+        format!(
+            "{}{}/",
+            self.base_dir.trim_end(),
+            self.experiment_name.trim()
+        )
+    }
+
+    /// Parse the Fortran `/mkgrd/ NL` namelist shape consumed by
+    /// `mkgrd.F90:read_nl` into the typed Rust configuration.
+    ///
+    /// This is intentionally non-destructive: it mirrors assignment parsing and
+    /// validation, but does not create/remove the working directories that the
+    /// Fortran driver manages after `read_nl`.
+    pub fn from_mkgrd_namelist(input: &str) -> Result<Self, String> {
+        let mut config = Self::default();
+        let mut in_mkgrd = false;
+
+        for raw_line in input.lines() {
+            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with('&') {
+                in_mkgrd = line.eq_ignore_ascii_case("&mkgrd");
+                continue;
+            }
+            if line == "/" {
+                in_mkgrd = false;
+                continue;
+            }
+            if !in_mkgrd {
+                continue;
+            }
+
+            let Some((left, right)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(field) = left.trim().split_once('%').map(|(_, field)| field.trim()) else {
+                continue;
+            };
+            let value = right.trim().trim_end_matches(',');
+
+            match field.to_ascii_lowercase().as_str() {
+                "expnme" => config.experiment_name = parse_fortran_string(value),
+                "nxp" => config.nxp = parse_i32(field, value)?,
+                "base_dir" => config.base_dir = parse_fortran_string(value),
+                "mesh_type" => config.mesh_type = parse_fortran_string(value),
+                "mode_grid" => config.mode_grid = parse_fortran_string(value),
+                "mode_file_description" => {
+                    config.mode_file_description = parse_fortran_string(value)
+                }
+                "mode_file" => config.mode_file = parse_fortran_string(value),
+                "refine" => config.refine = parse_fortran_bool(field, value)?,
+                "openmp" => config.openmp = parse_i32(field, value)?,
+                "niter" => config.niter = parse_i32(field, value)?,
+                "gridnum_perdegree" => config.gridnum_perdegree = parse_i32(field, value)?,
+                "mask_sea_ratio" => config.mask_sea_ratio = parse_f64(field, value)?,
+                "beta" => config.beta = parse_f32(field, value)?,
+                "relax" => config.relax = parse_f32(field, value)?,
+                "isolated_ocean" => config.isolated_ocean = parse_fortran_bool(field, value)?,
+                "mask_restart" => config.mask_restart = parse_fortran_bool(field, value)?,
+                "mask_domain_type" => config.mask_domain_type = parse_fortran_string(value),
+                "landtype_file" => config.landtype_file = parse_fortran_string(value),
+                "mask_domain_fprefix" => config.mask_domain_fprefix = parse_fortran_string(value),
+                "mask_domain_global" => {
+                    config.mask_domain_global = parse_fortran_bool(field, value)?
+                }
+                "mask_patch_on" => config.mask_patch_on = parse_fortran_bool(field, value)?,
+                "mask_patch_type" => config.mask_patch_type = parse_fortran_string(value),
+                "mask_patch_fprefix" => config.mask_patch_fprefix = parse_fortran_string(value),
+                "output_format" => config.output_format = parse_fortran_string(value),
+                _ => {}
+            }
+        }
+
+        config.validate_like_read_nl()?;
+        Ok(config)
+    }
+
+    fn validate_like_read_nl(&self) -> Result<(), String> {
+        match self.gridnum_perdegree {
+            120 | 240 => {}
+            other => {
+                return Err(format!(
+                    "gridnum_perdegree must be 120 or 240 like mkgrd.F90:read_nl, got {other}"
+                ));
+            }
+        }
+
+        match (self.mesh_type.as_str(), self.output_format.as_str()) {
+            ("landmesh", "CoLM")
+            | ("oceanmesh", "FVCOM")
+            | ("atmosmesh", "MPAS")
+            | ("atmosmesh", "MPAS-Simple")
+            | ("LOCmesh", "CoLM") => Ok(()),
+            ("landmesh", _) => Err(format!(
+                "landmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
+                self.output_format
+            )),
+            ("oceanmesh", _) => Err(format!(
+                "oceanmesh output_format must be FVCOM like mkgrd.F90:read_nl, got {}",
+                self.output_format
+            )),
+            ("atmosmesh", _) => Err(format!(
+                "atmosmesh output_format must be MPAS or MPAS-Simple like mkgrd.F90:read_nl, got {}",
+                self.output_format
+            )),
+            ("LOCmesh", _) => Err(format!(
+                "LOCmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
+                self.output_format
+            )),
+            (mesh_type, _) => Err(format!(
+                "unsupported mesh_type {mesh_type} like mkgrd.F90:read_nl"
+            )),
+        }
+    }
+}
+
+fn strip_fortran_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (index, ch) in line.char_indices() {
+        match ch {
+            '\'' | '"' if quote == Some(ch) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(ch),
+            '!' if quote.is_none() => return &line[..index],
+            _ => {}
+        }
+    }
+    line
+}
+
+fn parse_fortran_string(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .trim_matches(|ch| ch == '\'' || ch == '"')
+        .to_string()
+}
+
+fn parse_i32(field: &str, value: &str) -> Result<i32, String> {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .parse()
+        .map_err(|err| format!("invalid integer for {field}: {value} ({err})"))
+}
+
+fn parse_f32(field: &str, value: &str) -> Result<f32, String> {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .parse()
+        .map_err(|err| format!("invalid real for {field}: {value} ({err})"))
+}
+
+fn parse_f64(field: &str, value: &str) -> Result<f64, String> {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .parse()
+        .map_err(|err| format!("invalid real for {field}: {value} ({err})"))
+}
+
+fn parse_fortran_bool(field: &str, value: &str) -> Result<bool, String> {
+    match value
+        .trim()
+        .trim_end_matches(',')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        ".true." | "true" | "t" => Ok(true),
+        ".false." | "false" | "f" => Ok(false),
+        other => Err(format!("invalid logical for {field}: {other}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

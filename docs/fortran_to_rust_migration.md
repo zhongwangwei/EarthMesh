@@ -349,3 +349,7 @@ Extended `rust/earthmesh_mesh` with `icosahedron_relaxed_grid_fortran`, an integ
 ### 2026-06-12: `icosahedron.F90` NXP64 post-spring parity fixture added
 
 Added an ignored long-running release fixture test for `icosahedron_relaxed_grid_fortran(64, 5000, beta=1.0, relax=0.035)`, comparing point counts and sampled post-spring coordinates against the existing Fortran-generated `gridfile_NXP0064_01_ori.nc4` `GLONW/GLATW` output. `voronoi()` moves `xemd/yemd/zemd` into final W-point coordinates, so this fixture validates the migrated initial-grid, `fill_diamond`, `tri_neighbors`, and `spring_dynamics1` path against the archived NXP0064 Fortran output; pole longitude is intentionally not asserted because it is coordinate-convention arbitrary at ±90° latitude.
+
+### 2026-06-12: `mkgrd.F90` namelist parsing and `read_nl` validation ported
+
+Extended `rust/earthmesh_core` with `EarthmeshConfig::from_mkgrd_namelist` and `EarthmeshConfig::file_dir`, covering the non-destructive compatibility layer for the Fortran `/mkgrd/ NL` namelist consumed by `mkgrd.F90:read_nl`. The Rust parser now accepts `NL%...` assignments case-insensitively, preserves Fortran string/logical/numeric values, derives `file_dir = trim(base_dir) // trim(expnme) // '/'`, and enforces the same `gridnum_perdegree` plus `mesh_type`/`output_format` constraints for CoLM, FVCOM, MPAS, MPAS-Simple, and LOC mesh modes. Filesystem setup/removal and later `mkrefine` namelist save/write compatibility remain orchestration-layer work.
