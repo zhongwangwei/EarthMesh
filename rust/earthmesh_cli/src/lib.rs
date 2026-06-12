@@ -75,6 +75,78 @@ fn netcdf_to_io_error(err: netcdf::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
 
+/// Copy a circle NetCDF source into the Fortran tmpfile naming scheme.
+pub fn copy_circle_mask_netcdf_with_refine(
+    inputfile: impl AsRef<Path>,
+    mask_select: &str,
+    refine_degree: usize,
+    max_iter_spc: usize,
+    file_dir: impl AsRef<Path>,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>> {
+    copy_mask_netcdf_with_output(
+        inputfile,
+        refine_degree,
+        max_iter_spc,
+        |counts, refine_degree, file_dir| {
+            counts.next_circle_output(mask_select, refine_degree, file_dir)
+        },
+        file_dir,
+        counts,
+    )
+}
+
+/// Copy a close NetCDF source into the Fortran tmpfile naming scheme.
+pub fn copy_close_mask_netcdf_with_refine(
+    inputfile: impl AsRef<Path>,
+    mask_select: &str,
+    refine_degree: usize,
+    max_iter_spc: usize,
+    file_dir: impl AsRef<Path>,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>> {
+    copy_mask_netcdf_with_output(
+        inputfile,
+        refine_degree,
+        max_iter_spc,
+        |counts, refine_degree, file_dir| {
+            counts.next_close_output(mask_select, refine_degree, file_dir)
+        },
+        file_dir,
+        counts,
+    )
+}
+
+fn copy_mask_netcdf_with_output<F>(
+    inputfile: impl AsRef<Path>,
+    refine_degree: usize,
+    max_iter_spc: usize,
+    output_fn: F,
+    file_dir: impl AsRef<Path>,
+    counts: &mut MaskCountState,
+) -> io::Result<Option<PathBuf>>
+where
+    F: FnOnce(&mut MaskCountState, usize, &Path) -> io::Result<PathBuf>,
+{
+    let inputfile = inputfile.as_ref();
+    let extension = inputfile.extension().and_then(|value| value.to_str());
+    if !matches!(extension, Some("nc") | Some("nc4")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "mask NetCDF input must end with .nc or .nc4",
+        ));
+    }
+    if refine_degree > max_iter_spc {
+        return Ok(None);
+    }
+    let output = output_fn(counts, refine_degree, file_dir.as_ref())?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(inputfile, &output)?;
+    Ok(Some(output))
+}
+
 /// Copy a bbox NetCDF source into the Fortran tmpfile naming scheme.
 ///
 /// This covers the `bbox_mask_make` `.nc/.nc4` branch after the caller has
@@ -89,24 +161,16 @@ pub fn copy_bbox_mask_netcdf_with_refine(
     file_dir: impl AsRef<Path>,
     counts: &mut MaskCountState,
 ) -> io::Result<Option<PathBuf>> {
-    let inputfile = inputfile.as_ref();
-    let extension = inputfile.extension().and_then(|value| value.to_str());
-    if !matches!(extension, Some("nc") | Some("nc4")) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "bbox NetCDF input must end with .nc or .nc4",
-        ));
-    }
-    if refine_degree > max_iter_spc {
-        return Ok(None);
-    }
-
-    let output = counts.next_bbox_output(mask_select, refine_degree, file_dir)?;
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(inputfile, &output)?;
-    Ok(Some(output))
+    copy_mask_netcdf_with_output(
+        inputfile,
+        refine_degree,
+        max_iter_spc,
+        |counts, refine_degree, file_dir| {
+            counts.next_bbox_output(mask_select, refine_degree, file_dir)
+        },
+        file_dir,
+        counts,
+    )
 }
 
 /// Apply the non-mask filesystem side effects described by a Rust read_nl plan.
@@ -318,6 +382,247 @@ where
     })
 }
 
+/// Shared longitude/latitude row used by circle and close masks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LonLatPoint {
+    pub lon: f64,
+    pub lat: f64,
+}
+
+/// Parsed circle mask input: lon, lat, and radius in kilometers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CircleMask {
+    pub refine_degree: usize,
+    pub points: Vec<LonLatPoint>,
+    pub radius_km: Vec<f64>,
+}
+
+/// Parsed close-polygon mask input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloseMask {
+    pub refine_degree: usize,
+    pub points: Vec<LonLatPoint>,
+}
+
+/// Parse the text `.nml` branch of `mkgrd.F90:circle_mask_make`.
+pub fn parse_circle_mask_nml(
+    inputfile: impl AsRef<Path>,
+    max_iter_spc: usize,
+) -> io::Result<Option<CircleMask>> {
+    let content = fs::read_to_string(inputfile)?;
+    let mut lines = content.lines();
+    let count_line = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing circle_num line"))?;
+    let refine_line = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing circle_refine line"))?;
+    let circle_num = parse_value_after_equals::<usize>(count_line, "circle_num")?;
+    let refine_degree = parse_value_after_equals::<usize>(refine_line, "circle_refine")?;
+    if refine_degree > max_iter_spc {
+        return Ok(None);
+    }
+
+    let mut points = Vec::with_capacity(circle_num);
+    let mut radius_km = Vec::with_capacity(circle_num);
+    for index in 0..circle_num {
+        let values = parse_float_row(
+            lines.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("missing circle point row {}", index + 1),
+                )
+            })?,
+            3,
+            "circle point",
+            index + 1,
+        )?;
+        points.push(LonLatPoint {
+            lon: values[0],
+            lat: values[1],
+        });
+        radius_km.push(values[2]);
+    }
+    Ok(Some(CircleMask {
+        refine_degree,
+        points,
+        radius_km,
+    }))
+}
+
+/// Parse the text `.nml` branch of `mkgrd.F90:close_mask_make`.
+pub fn parse_close_mask_nml(
+    inputfile: impl AsRef<Path>,
+    max_iter_spc: usize,
+) -> io::Result<Option<CloseMask>> {
+    let content = fs::read_to_string(inputfile)?;
+    let mut lines = content.lines();
+    let count_line = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing close_num line"))?;
+    let refine_line = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing close_refine line"))?;
+    let close_num = parse_value_after_equals::<usize>(count_line, "close_num")?;
+    let refine_degree = parse_value_after_equals::<usize>(refine_line, "close_refine")?;
+    if refine_degree > max_iter_spc {
+        return Ok(None);
+    }
+
+    let mut points = Vec::with_capacity(close_num);
+    for index in 0..close_num {
+        let values = parse_float_row(
+            lines.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("missing close point row {}", index + 1),
+                )
+            })?,
+            2,
+            "close point",
+            index + 1,
+        )?;
+        points.push(LonLatPoint {
+            lon: values[0],
+            lat: values[1],
+        });
+    }
+    Ok(Some(CloseMask {
+        refine_degree,
+        points,
+    }))
+}
+
+pub fn read_circle_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
+    read_nonnegative_refine_netcdf(inputfile, "circle_refine")
+}
+
+pub fn read_close_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
+    read_nonnegative_refine_netcdf(inputfile, "close_refine")
+}
+
+pub fn write_circle_mask_netcdf(output: impl AsRef<Path>, mask: &CircleMask) -> io::Result<()> {
+    if mask.points.len() != mask.radius_km.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "circle points and radius arrays must have the same length",
+        ));
+    }
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("circle_num", mask.points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;
+    {
+        let mut refine = file
+            .add_variable::<i32>("circle_refine", &[])
+            .map_err(netcdf_to_io_error)?;
+        refine
+            .put_value(mask.refine_degree as i32, ())
+            .map_err(netcdf_to_io_error)?;
+    }
+    let mut point_values = Vec::with_capacity(mask.points.len() * 2);
+    for point in &mask.points {
+        point_values.extend([point.lon, point.lat]);
+    }
+    {
+        let mut points = file
+            .add_variable::<f64>("circle_points", &["circle_num", "two"])
+            .map_err(netcdf_to_io_error)?;
+        points
+            .put_values(&point_values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut radius = file
+            .add_variable::<f64>("circle_radius", &["circle_num"])
+            .map_err(netcdf_to_io_error)?;
+        radius
+            .put_values(&mask.radius_km, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    Ok(())
+}
+
+pub fn write_close_mask_netcdf(output: impl AsRef<Path>, mask: &CloseMask) -> io::Result<()> {
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("close_num", mask.points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;
+    {
+        let mut refine = file
+            .add_variable::<i32>("close_refine", &[])
+            .map_err(netcdf_to_io_error)?;
+        refine
+            .put_value(mask.refine_degree as i32, ())
+            .map_err(netcdf_to_io_error)?;
+    }
+    let mut point_values = Vec::with_capacity(mask.points.len() * 2);
+    for point in &mask.points {
+        point_values.extend([point.lon, point.lat]);
+    }
+    {
+        let mut points = file
+            .add_variable::<f64>("close_points", &["close_num", "two"])
+            .map_err(netcdf_to_io_error)?;
+        points
+            .put_values(&point_values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    Ok(())
+}
+
+fn read_nonnegative_refine_netcdf(
+    inputfile: impl AsRef<Path>,
+    var_name: &str,
+) -> io::Result<usize> {
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let variable = file.variable(var_name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("NetCDF input is missing {var_name}"),
+        )
+    })?;
+    let refine = variable
+        .get_value::<i32, _>(())
+        .map_err(netcdf_to_io_error)?;
+    if refine < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{var_name} must be non-negative"),
+        ));
+    }
+    Ok(refine as usize)
+}
+
+fn parse_float_row(line: &str, expected: usize, label: &str, row: usize) -> io::Result<Vec<f64>> {
+    let values = line
+        .split_whitespace()
+        .map(|value| {
+            value.parse::<f64>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid {label} coordinate {value}: {err}"),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if values.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} row {row} must contain {expected} values"),
+        ));
+    }
+    Ok(values)
+}
+
 /// Rust-owned mask counters matching `mask_domain_ndm`, `mask_refine_ndm`, and
 /// `mask_patch_ndm` updates in `bbox_mask_make`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -334,6 +639,37 @@ impl MaskCountState {
         mask_select: &str,
         refine_degree: usize,
         file_dir: impl AsRef<Path>,
+    ) -> io::Result<PathBuf> {
+        self.next_mask_output(mask_select, "bbox", refine_degree, file_dir, 2)
+    }
+
+    /// Advance counters and return the Fortran circle output filename.
+    pub fn next_circle_output(
+        &mut self,
+        mask_select: &str,
+        refine_degree: usize,
+        file_dir: impl AsRef<Path>,
+    ) -> io::Result<PathBuf> {
+        self.next_mask_output(mask_select, "circle", refine_degree, file_dir, 2)
+    }
+
+    /// Advance counters and return the Fortran close output filename.
+    pub fn next_close_output(
+        &mut self,
+        mask_select: &str,
+        refine_degree: usize,
+        file_dir: impl AsRef<Path>,
+    ) -> io::Result<PathBuf> {
+        self.next_mask_output(mask_select, "close", refine_degree, file_dir, 3)
+    }
+
+    fn next_mask_output(
+        &mut self,
+        mask_select: &str,
+        mask_type: &str,
+        refine_degree: usize,
+        file_dir: impl AsRef<Path>,
+        count_width: usize,
     ) -> io::Result<PathBuf> {
         if refine_degree >= self.mask_refine_ndm.len() {
             return Err(io::Error::new(
@@ -361,9 +697,8 @@ impl MaskCountState {
                 ));
             }
         };
-        Ok(file_dir
-            .as_ref()
-            .join("tmpfile")
-            .join(format!("{mask_select}_bbox_{refine_degree}_{count:02}.nc4")))
+        Ok(file_dir.as_ref().join("tmpfile").join(format!(
+            "{mask_select}_{mask_type}_{refine_degree}_{count:0count_width$}.nc4"
+        )))
     }
 }
