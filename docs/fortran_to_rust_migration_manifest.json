@@ -134,7 +134,8 @@
         "mkgrd.x refine-loop source/refine/final-quality/final-handoff execution dispatcher ported to rust/earthmesh_cli",
         "mkgrd.x specified-refinement source branch Area_judge_refine/Get_Contain/GetRef file-backed executor wired into rust/earthmesh_cli",
         "mkgrd.x calculated-refinement iter-zero source branch Area_judge_refine/Get_Contain/GetRef integrated-threshold file-backed executor wired into rust/earthmesh_cli",
-        "mkgrd.x mixed calculated/specified refine source branch dispatcher wired into rust/earthmesh_cli"
+        "mkgrd.x mixed calculated/specified refine source branch dispatcher wired into rust/earthmesh_cli",
+        "GetRef calculated-threshold NetCDF reader aggregates ref_th_Lnd ref_th_Ocn ref_th_Atmos into ref_sjx markers for Rust refine-loop executor"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"
@@ -270,7 +271,8 @@
         "GetRef threshold input bridge from Area_judge cropped fields to report builder inputs ported to rust/earthmesh_cli",
         "GetRef file-level runners from legacy contain NetCDF input to legacy threshold NetCDF outputs ported to rust/earthmesh_cli",
         "GetRef integrated runner that combines Area_judge threshold file reader, bridge inputs, contain reader, and threshold writers ported to rust/earthmesh_cli",
-        "GetRef specified-refinement NetCDF reader restores ref_sjx markers for Rust refine-loop executor"
+        "GetRef specified-refinement NetCDF reader restores ref_sjx markers for Rust refine-loop executor",
+        "GetRef calculated-threshold NetCDF reader aggregates ref_th_Lnd ref_th_Ocn ref_th_Atmos into ref_sjx markers for Rust refine-loop executor"
       ],
       "remaining_rust_surfaces": [
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
@@ -469,7 +471,9 @@
         "refine_loop working state can apply Array_length_calculation and write close-mesh scratch outputs",
         "refine_loop working state derives triangle-neighbor rows from gridfile cell membership",
         "refine_loop working-state executor can run configured one-into-four Array_length renewal NGR geometry pipeline and write refined gridfile",
-        "refine_loop working-state executor can load specified GetRef threshold markers before one-into-four geometry pipeline"
+        "refine_loop working-state executor can load specified GetRef threshold markers before one-into-four geometry pipeline",
+        "GetRef calculated-threshold NetCDF reader aggregates ref_th_Lnd ref_th_Ocn ref_th_Atmos into ref_sjx markers for Rust refine-loop executor",
+        "refine_loop working-state executor can load calculated GetRef threshold markers before one-into-four geometry pipeline"
       ]
     }
   ]
