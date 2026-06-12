@@ -182,7 +182,9 @@
         "GetArea shared-cell lookup over consecutive edges ported to rust/earthmesh_mesh",
         "GetArea cellsOnVertex position scan ported to rust/earthmesh_mesh",
         "GetArea Fortran-indexed unit-area workflow for kiteAreasOnVertex, areaTriangle, and areaCell ported to rust/earthmesh_mesh",
-        "GetArea areaTriangle reconstruction relative error summary ported to rust/earthmesh_mesh"
+        "GetArea areaTriangle reconstruction relative error summary ported to rust/earthmesh_mesh",
+        "IsNgrmm triangle-neighbor opposite-edge classifier ported to rust/earthmesh_mesh",
+        "GetEdge cellsOnEdge shared-cell mapping primitive ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -194,8 +196,8 @@
         "circumcenter_spherical_calculation",
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
         "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
-        "GetEdge and edge connectivity routines",
-        "GetArea full production wrapper over real MPAS mesh arrays and fixture parity"
+        "GetArea full production wrapper over real MPAS mesh arrays and fixture parity",
+        "GetEdge full edge connectivity workflow, edge midpoint calculation, and sorting routines"
       ]
     },
     {

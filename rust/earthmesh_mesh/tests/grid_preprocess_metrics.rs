@@ -1,8 +1,9 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
-    get_area_unit_fortran_indexed, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180,
-    shared_cell_for_edge_pair, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
-    spherical_triangle_area_unit, vertex_cell_position, GetAreaUnitInput, LonLatDegrees,
+    cells_on_edge_from_neighbor_cells, get_area_unit_fortran_indexed, is_ngrmm,
+    lonlat_degrees_to_unit_xyz, normalize_lon_m180_180, shared_cell_for_edge_pair,
+    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
+    vertex_cell_position, GetAreaUnitInput, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -355,4 +356,32 @@ fn area_triangle_reconstruction_error_matches_fortran_getarea_summary() {
 
     approx_eq(summary.max_relative, 0.1, 1.0e-12);
     approx_eq(summary.avg_relative, 0.05, 1.0e-12);
+}
+
+#[test]
+fn is_ngrmm_matches_fortran_opposite_vertex_codes() {
+    assert_eq!(is_ngrmm([1, 2, 3], [1, 2, 9]), Some(3));
+    assert_eq!(is_ngrmm([1, 2, 3], [1, 8, 3]), Some(2));
+    assert_eq!(is_ngrmm([1, 2, 3], [7, 2, 3]), Some(1));
+    assert_eq!(is_ngrmm([1, 2, 3], [7, 8, 3]), None);
+}
+
+#[test]
+fn cells_on_edge_from_neighbor_cells_matches_fortran_getedge_mapping() {
+    assert_eq!(
+        cells_on_edge_from_neighbor_cells([3, 1, 2], [1, 3, 9]),
+        Some([1, 3])
+    );
+    assert_eq!(
+        cells_on_edge_from_neighbor_cells([3, 2, 1], [1, 3, 9]),
+        Some([1, 3])
+    );
+    assert_eq!(
+        cells_on_edge_from_neighbor_cells([1, 2, 3], [9, 2, 3]),
+        Some([2, 3])
+    );
+    assert_eq!(
+        cells_on_edge_from_neighbor_cells([1, 2, 3], [7, 8, 3]),
+        None
+    );
 }

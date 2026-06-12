@@ -300,6 +300,44 @@ pub fn vertex_cell_position(cells_on_vertex: [usize; 3], cell: usize) -> Option<
         .position(|candidate| *candidate == cell)
 }
 
+/// Port of `MOD_grid_preprocess:IsNgrmm`.
+///
+/// Returns the one-based Fortran code for the vertex in `a` opposite the shared
+/// edge with `b`: `1`, `2`, or `3`. Non-neighbor triangles return `None`
+/// instead of Fortran's `0` sentinel.
+pub fn is_ngrmm(a: [usize; 3], b: [usize; 3]) -> Option<usize> {
+    if b.contains(&a[0]) {
+        if b.contains(&a[1]) {
+            Some(3)
+        } else if b.contains(&a[2]) {
+            Some(2)
+        } else {
+            None
+        }
+    } else if b.contains(&a[1]) && b.contains(&a[2]) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Port of the `GetEdge` `cellsOnEdge(:, k)` mapping after `IsNgrmm`.
+///
+/// The two shared polygon-cell ids are selected from `a` according to the
+/// Fortran opposite-vertex code and sorted ascending before return.
+pub fn cells_on_edge_from_neighbor_cells(a: [usize; 3], b: [usize; 3]) -> Option<[usize; 2]> {
+    let mut cells = match is_ngrmm(a, b)? {
+        1 => [a[1], a[2]],
+        2 => [a[2], a[0]],
+        3 => [a[0], a[1]],
+        _ => return None,
+    };
+    if cells[0] > cells[1] {
+        cells.swap(0, 1);
+    }
+    Some(cells)
+}
+
 /// Borrowed inputs for the Fortran-indexed subset of `MOD_grid_preprocess:GetArea`.
 ///
 /// Index `0` is unused and index `1` is skipped to mirror the Fortran loops
