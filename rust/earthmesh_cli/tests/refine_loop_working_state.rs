@@ -67,3 +67,55 @@ fn working_state_exports_current_renewed_final_arrays_when_available() {
     assert_eq!(exported.w_to_m, vec![vec![1, 1], vec![1, 1], vec![1, 1]]);
     assert_eq!(exported.n_w_to_m, vec![1, 1, 1]);
 }
+
+#[test]
+fn working_state_prologue_reads_gridfile_copies_snapshot_and_returns_state() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_prologue_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
+    let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        sources: Vec::new(),
+        refine_loop_input_gridfile: gridfile.clone(),
+        refine_loop_original_tmpfile: original_tmpfile.clone(),
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: root.join("gridfile/gridfile_NXP0004_02_tri.nc4"),
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![point(-1.0, -2.0), point(3.0, 4.0)],
+        w_points: vec![point(10.0, 11.0), point(12.0, 13.0), point(14.0, 15.0)],
+        m_to_w: vec![[1, 2, 3], [3, 1, 2]],
+        w_to_m: vec![vec![1, 2], vec![1, 2], vec![2, 1]],
+        n_w_to_m: vec![2, 2, 2],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh).expect("write input gridfile");
+
+    let report = earthmesh_cli::run_mkgrd_refine_loop_working_state_prologue(&step)
+        .expect("read prologue working state");
+
+    assert_eq!(report.snapshot.sjx_points, 2);
+    assert_eq!(report.snapshot.lbx_points, 3);
+    assert_eq!(report.state.num_mp, vec![0, 2]);
+    assert_eq!(report.state.num_wp, vec![0, 3]);
+    assert_eq!(report.state.ngrmw[1][2], 3);
+    assert_eq!(
+        report
+            .state
+            .to_unstructured_mesh()
+            .expect("round trip state"),
+        mesh
+    );
+    assert_eq!(
+        std::fs::read(&original_tmpfile).expect("read copied original"),
+        std::fs::read(&gridfile).expect("read source gridfile")
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

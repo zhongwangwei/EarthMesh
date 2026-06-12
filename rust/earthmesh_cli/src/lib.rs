@@ -234,6 +234,14 @@ pub struct MkgrdRefineLoopPrologueSnapshotReport {
     pub lbx_points: usize,
 }
 
+/// Evidence from the same prologue once the gridfile has also been converted
+/// into the Rust `refine_loop` working arrays.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLoopWorkingStatePrologueReport {
+    pub snapshot: MkgrdRefineLoopPrologueSnapshotReport,
+    pub state: RefineLoopWorkingState,
+}
+
 /// Evidence from applying `MOD_refine.F90:OnedivideFour_connection`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnedivideFourConnectionReport {
@@ -1256,6 +1264,30 @@ pub fn run_mkgrd_refine_loop_prologue_snapshot(
         sjx_points: mesh.m_points.len(),
         lbx_points: mesh.w_points.len(),
     })
+}
+
+/// Execute the `refine_loop` prologue and return the Fortran-indexed Rust
+/// working state that subsequent migrated geometry adapters can mutate.
+pub fn run_mkgrd_refine_loop_working_state_prologue(
+    step: &MkgrdRefineLoopStepIoPlan,
+) -> io::Result<MkgrdRefineLoopWorkingStatePrologueReport> {
+    let mesh = read_unstructured_mesh_netcdf(&step.refine_loop_input_gridfile)?;
+    if let Some(parent) = step.refine_loop_original_tmpfile.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let copied_bytes = fs::copy(
+        &step.refine_loop_input_gridfile,
+        &step.refine_loop_original_tmpfile,
+    )?;
+    let snapshot = MkgrdRefineLoopPrologueSnapshotReport {
+        input_gridfile: step.refine_loop_input_gridfile.clone(),
+        original_tmpfile: step.refine_loop_original_tmpfile.clone(),
+        copied_bytes,
+        sjx_points: mesh.m_points.len(),
+        lbx_points: mesh.w_points.len(),
+    };
+    let state = RefineLoopWorkingState::from_unstructured_mesh(&mesh);
+    Ok(MkgrdRefineLoopWorkingStatePrologueReport { snapshot, state })
 }
 
 impl RefineLoopWorkingState {
