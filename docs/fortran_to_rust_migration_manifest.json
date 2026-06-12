@@ -332,7 +332,8 @@
         "mask_postproc_Atmos full MPAS edge-reference reader dependency ported to rust/earthmesh_cli",
         "MPAS_Mesh_Cal full MPAS payload builder and file pipeline ported to rust/earthmesh_cli",
         "mask_postproc_Earth top-level file-backed execution composition ported to rust/earthmesh_cli",
-        "mask_postproc_Lnd top-level file-backed execution composition ported to rust/earthmesh_cli"
+        "mask_postproc_Lnd top-level file-backed execution composition ported to rust/earthmesh_cli",
+        "final mask_postproc vertex_mapping/reindex evidence report exposed for ocean boundary writers"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc_Ocn top-level execution composition with ocean renewals and boundary outputs"

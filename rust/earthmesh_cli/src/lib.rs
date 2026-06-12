@@ -449,6 +449,15 @@ pub struct MaskPostprocLayout {
     pub vertex_neighbor_counts: Vec<usize>,
 }
 
+/// Final gridfile payload plus the vertex reindex evidence produced by the
+/// final `MOD_mask_postproc.F90:mask_postproc_*` compaction sequence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocFinalizationReport {
+    pub mesh: UnstructuredMesh,
+    pub final_data: earthmesh_mesh::MaskPostprocFinalData,
+    pub vertex_reindex: earthmesh_mesh::VertexReindex,
+}
+
 /// Evidence report from writing an unstructured gridfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnstructuredMeshWriteReport {
@@ -2835,11 +2844,11 @@ pub fn unstructured_mesh_from_mask_postproc_final(
 /// This intentionally starts after the domain-specific mask edits are already
 /// represented in `IsInDmArea_ustr`; ocean-specific renewal, land patchtype
 /// generation, and NetCDF I/O remain separate orchestration layers.
-pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
+pub fn finalize_mask_postproc_layout_with_reindex_report(
     layout: &MaskPostprocLayout,
     is_in_domain_ustr: &[i32],
     mode_grid: &str,
-) -> io::Result<UnstructuredMesh> {
+) -> io::Result<MaskPostprocFinalizationReport> {
     validate_mask_postproc_layout(layout)?;
     if is_in_domain_ustr.len() < layout.ustr_points {
         return Err(io::Error::new(
@@ -2873,15 +2882,38 @@ pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
         &final_data.center_neighbor_counts_final,
         layout.ustr_bounds.saturating_sub(1),
     )?;
-    let reindex = earthmesh_mesh::sort_and_reindex_vertices(&unique_vertices, layout.ustr_bounds)?;
+    let vertex_reindex =
+        earthmesh_mesh::sort_and_reindex_vertices(&unique_vertices, layout.ustr_bounds)?;
     final_data.center_neighbors_final =
         earthmesh_mesh::reindex_final_center_vertices_fortran_indexed(
             &final_data.center_neighbors_final,
             &final_data.center_neighbor_counts_final,
-            &reindex.vertex_mapping,
+            &vertex_reindex.vertex_mapping,
         )?;
 
-    unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)
+    let mesh = unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)?;
+    Ok(MaskPostprocFinalizationReport {
+        mesh,
+        final_data,
+        vertex_reindex,
+    })
+}
+
+/// Compose the Rust ports of the final `MOD_mask_postproc.F90:mask_postproc_*`
+/// compaction steps into the gridfile payload written by `Unstructured_Mesh_Save`.
+///
+/// Use `finalize_mask_postproc_layout_with_reindex_report` when downstream
+/// writers need the original-vertex to final-vertex mapping, such as ocean OBC
+/// boundary classification.
+pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+    mode_grid: &str,
+) -> io::Result<UnstructuredMesh> {
+    Ok(
+        finalize_mask_postproc_layout_with_reindex_report(layout, is_in_domain_ustr, mode_grid)?
+            .mesh,
+    )
 }
 
 /// Compose the Earth branch role/refinement payload with the legacy

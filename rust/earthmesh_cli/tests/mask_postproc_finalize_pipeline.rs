@@ -77,6 +77,66 @@ fn mask_postproc_finalize_pipeline_compacts_active_tri_centers_and_reindexes_ver
 }
 
 #[test]
+fn mask_postproc_finalize_report_exposes_vertex_mapping_for_ocean_boundary_writers() {
+    let layout = earthmesh_cli::MaskPostprocLayout {
+        ustr_points: 4,
+        ustr_bounds: 6,
+        center_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 1.0 },
+            earthmesh_cli::LonLatPoint { lon: 2.0, lat: 2.0 },
+            earthmesh_cli::LonLatPoint { lon: 3.0, lat: 3.0 },
+        ],
+        vertex_points: vec![
+            earthmesh_cli::LonLatPoint {
+                lon: 10.0,
+                lat: 10.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 11.0,
+                lat: 11.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 12.0,
+                lat: 12.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 13.0,
+                lat: 13.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 14.0,
+                lat: 14.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 15.0,
+                lat: 15.0,
+            },
+        ],
+        center_neighbors: vec![vec![1, 1, 1], vec![1, 1, 1], vec![2, 4, 5], vec![5, 6, 4]],
+        vertex_neighbors: vec![vec![1], vec![1], vec![2], vec![], vec![2, 3], vec![2, 3]],
+        center_neighbor_counts: vec![0, 0, 3, 3],
+        vertex_neighbor_counts: vec![0, 0, 1, 0, 2, 2],
+    };
+
+    let report = earthmesh_cli::finalize_mask_postproc_layout_with_reindex_report(
+        &layout,
+        &[0, 0, 1, -1],
+        "tri",
+    )
+    .expect("finalize mask_postproc report");
+
+    assert_eq!(report.vertex_reindex.sorted_vertices, vec![1, 2, 4, 5]);
+    assert_eq!(report.vertex_reindex.vertex_mapping[1], 1);
+    assert_eq!(report.vertex_reindex.vertex_mapping[2], 2);
+    assert_eq!(report.vertex_reindex.vertex_mapping[3], 0);
+    assert_eq!(report.vertex_reindex.vertex_mapping[4], 3);
+    assert_eq!(report.vertex_reindex.vertex_mapping[5], 4);
+    assert_eq!(report.final_data.center_neighbors_final[2], vec![2, 3, 4]);
+    assert_eq!(report.mesh.m_to_w[2], [2, 3, 4]);
+}
+
+#[test]
 fn mask_postproc_finalize_pipeline_rejects_mask_length_mismatch() {
     let layout = earthmesh_cli::MaskPostprocLayout {
         ustr_points: 2,
