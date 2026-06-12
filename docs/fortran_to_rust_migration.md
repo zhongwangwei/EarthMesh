@@ -189,3 +189,7 @@ Extended `rust/earthmesh_mesh` with `spherical_circumcenter_from_barycenter` and
 ### 2026-06-12: `MOD_grid_preprocess.F90` fractional index and distance-layer helpers ported
 
 Extended `rust/earthmesh_mesh` with `find_frac_index_fortran` and `distance_layers`, tested Rust ports of `find_frac_index` and `dist_layers_make`. The fractional-index helper preserves the Fortran 1-based interval index and clamped fraction for ascending longitude and descending latitude grids, while returning `None` for out-of-bounds or zero-width cells. The layer helper covers the four `set_dis_type` formulas (`linear`, `nonlinear1`, `nonlinear2`, `nonlinear3`) as explicit Rust enum variants. Mesh-wide `distsOnEdge_layers_make` and `cellwidth_layers_make` application logic remains unported.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `TriMeshQuality` cache wrapper ported
+
+Extended `rust/earthmesh_mesh` with `triangle_mesh_quality_fortran_indexed`, a cache-aware Rust wrapper for `MOD_grid_preprocess:TriMeshQuality`. It preserves Fortran-indexed triangle ids from `2` onward, recomputes only adjusted triangles, reuses cached length/angle arrays for unchanged triangles, updates angle threshold flags, and reproduces the extreme/average/stddev aggregation over active triangles. `PolyMeshQuality` cache/update behavior remains separate because it filters cells by polygon edge count.

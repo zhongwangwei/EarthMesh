@@ -6,8 +6,8 @@ use earthmesh_mesh::{
     normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, shared_cell_for_edge_pair,
     should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
-    spherical_triangle_area_unit, vertex_cell_position, CartesianPoint, GetAreaUnitInput,
-    LonLatDegrees,
+    spherical_triangle_area_unit, triangle_mesh_quality_fortran_indexed, vertex_cell_position,
+    CartesianPoint, GetAreaUnitInput, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -612,4 +612,61 @@ fn edge_midpoints_from_cells_fortran_indexed_matches_getedge_optional_vp() {
     approx_eq(midpoints[2].lat_degrees, 0.0, 1.0e-12);
     approx_eq(midpoints[3].lon_degrees.abs(), 180.0, 1.0e-12);
     approx_eq(midpoints[3].lat_degrees, 0.0, 1.0e-12);
+}
+
+#[test]
+fn triangle_mesh_quality_fortran_indexed_updates_adjusted_triangles_and_reuses_cache() {
+    let cell_points = vec![
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(0.0, 90.0),
+        LonLatDegrees::new(180.0, 0.0),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 4, 5]];
+    let adjust_flags = vec![false, false, true, false];
+    let length_cache = vec![[0.0; 3], [0.0; 3], [0.0; 3], [1.0, 2.0, 3.0]];
+    let angle_cache = vec![[0.0; 3], [0.0; 3], [0.0; 3], [50.0, 60.0, 70.0]];
+
+    let output = triangle_mesh_quality_fortran_indexed(
+        &cell_points,
+        &cells_on_triangle,
+        &adjust_flags,
+        &length_cache,
+        &angle_cache,
+    )
+    .expect("valid Fortran-indexed triangle quality inputs");
+
+    assert_eq!(output.length_cache[3], [1.0, 2.0, 3.0]);
+    assert_eq!(output.angle_cache[3], [50.0, 60.0, 70.0]);
+    for angle in output.angle_cache[2] {
+        approx_eq(angle, 90.0, 1.0e-5);
+    }
+    assert!(!output.angle_less_flags[2]);
+    assert!(output.angle_more_flags[2]);
+    assert!(!output.angle_less_flags[3]);
+    assert!(!output.angle_more_flags[3]);
+    approx_eq(output.extreme_angles_degrees.0, 50.0, 1.0e-12);
+    approx_eq(output.extreme_angles_degrees.1, 90.0, 1.0e-5);
+    approx_eq(output.average_min_max_angles_degrees.0, 70.0, 1.0e-5);
+    approx_eq(output.average_min_max_angles_degrees.1, 80.0, 1.0e-5);
+}
+
+#[test]
+fn triangle_mesh_quality_fortran_indexed_rejects_mismatched_cache_lengths() {
+    let cell_points = vec![LonLatDegrees::new(0.0, 0.0); 5];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
+    let adjust_flags = vec![false, false, false];
+    let length_cache = vec![[0.0; 3]; 2];
+    let angle_cache = vec![[0.0; 3]; 3];
+
+    assert!(triangle_mesh_quality_fortran_indexed(
+        &cell_points,
+        &cells_on_triangle,
+        &adjust_flags,
+        &length_cache,
+        &angle_cache,
+    )
+    .is_none());
 }
