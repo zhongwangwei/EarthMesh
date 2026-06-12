@@ -217,11 +217,12 @@
         "spring_dynamics_global per-edge adjustment formula ported to rust/earthmesh_mesh",
         "spring_dynamics_global edge direction sign setup ported to rust/earthmesh_mesh",
         "spring_dynamics_global cell displacement accumulation and renormalization ported to rust/earthmesh_mesh",
-        "spring_dynamics_global one-iteration wrapper ported to rust/earthmesh_mesh"
+        "spring_dynamics_global one-iteration wrapper ported to rust/earthmesh_mesh",
+        "spring_dynamics_global multi-iteration wrapper ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
-        "Springjustment_global and Springjustment_regional_step multi-iteration/regional orchestration",
+        "Springjustment_global/Springjustment_regional_step high-level adapter wiring and spring_dynamics_regionalv2 move-mask orchestration",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea real MPAS mesh fixture parity and adapter integration",
         "GetEdge real MPAS mesh fixture parity and adapter integration"

@@ -3,9 +3,9 @@ use earthmesh_mesh::{
     edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
     order_vertices_on_cell_fortran_indexed, plane_angle_signed,
     set_weights_on_edge_fortran_indexed, spring_apply_cell_displacements_fortran_indexed,
-    spring_edge_adjustment_fortran, spring_edge_directions_fortran_indexed,
-    spring_global_iteration_fortran_indexed, standardize_vertices_on_cell_rotation_fortran_indexed,
-    CartesianPoint, LonLatDegrees,
+    spring_dynamics_global_fortran_indexed, spring_edge_adjustment_fortran,
+    spring_edge_directions_fortran_indexed, spring_global_iteration_fortran_indexed,
+    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
 };
 
 #[test]
@@ -328,6 +328,81 @@ fn spring_global_iteration_wrapper_matches_manual_helper_composition() {
     approx_eq(
         output.frac_change_squared[3],
         adjustment3.frac_change_squared,
+        1.0e-15,
+    );
+}
+
+#[test]
+fn spring_dynamics_global_wrapper_repeats_single_iteration_updates() {
+    let cell_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 1.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 1.0),
+    ];
+    let n_edges_on_cell = vec![0, 0, 2, 1, 1];
+    let edges_on_cell = vec![vec![], vec![], vec![2, 3], vec![2], vec![3]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [4, 2]];
+    let edges_on_edge_tri = vec![[0, 0, 0, 0], [0, 0, 0, 0], [2, 2, 2, 2], [3, 3, 3, 3]];
+    let dists_on_edge = vec![0.0, 0.0, 2.0, 2.0];
+
+    let output = spring_dynamics_global_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        2,
+        0.25,
+        1.0,
+        100,
+    )
+    .expect("valid spring dynamics inputs");
+
+    let first = spring_global_iteration_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        0.25,
+        1.0,
+    )
+    .expect("first iteration");
+    let second = spring_global_iteration_fortran_indexed(
+        &first.updated_cell_points,
+        &n_edges_on_cell,
+        &edges_on_cell,
+        &cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        0.25,
+        1.0,
+    )
+    .expect("second iteration");
+
+    assert_eq!(output.updated_cell_points, second.updated_cell_points);
+    assert_eq!(output.last_edge_displacements, second.edge_displacements);
+    assert_eq!(output.last_frac_change_squared, second.frac_change_squared);
+    assert_eq!(output.diagnostic_max_displacements.len(), 1);
+    assert_eq!(output.diagnostic_max_displacements[0].iteration, 1);
+    approx_eq(
+        output.diagnostic_max_displacements[0].max_displacement,
+        first
+            .updated_cell_points
+            .iter()
+            .zip(cell_points.iter())
+            .map(|(updated, previous)| {
+                magnitude_for_test(CartesianPoint::new(
+                    updated.x - previous.x,
+                    updated.y - previous.y,
+                    updated.z - previous.z,
+                ))
+            })
+            .fold(0.0, f64::max),
         1.0e-15,
     );
 }
