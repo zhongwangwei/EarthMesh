@@ -269,7 +269,8 @@
         "GetRef land/ocean/atmos single-mesh top-level threshold report wiring ported to rust/earthmesh_cli",
         "GetRef threshold input bridge from Area_judge cropped fields to report builder inputs ported to rust/earthmesh_cli",
         "GetRef file-level runners from legacy contain NetCDF input to legacy threshold NetCDF outputs ported to rust/earthmesh_cli",
-        "GetRef integrated runner that combines Area_judge threshold file reader, bridge inputs, contain reader, and threshold writers ported to rust/earthmesh_cli"
+        "GetRef integrated runner that combines Area_judge threshold file reader, bridge inputs, contain reader, and threshold writers ported to rust/earthmesh_cli",
+        "GetRef specified-refinement NetCDF reader restores ref_sjx markers for Rust refine-loop executor"
       ],
       "remaining_rust_surfaces": [
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
@@ -467,7 +468,8 @@
         "refine_loop working-state executor can run file-backed prologue and write passthrough output gridfile",
         "refine_loop working state can apply Array_length_calculation and write close-mesh scratch outputs",
         "refine_loop working state derives triangle-neighbor rows from gridfile cell membership",
-        "refine_loop working-state executor can run configured one-into-four Array_length renewal NGR geometry pipeline and write refined gridfile"
+        "refine_loop working-state executor can run configured one-into-four Array_length renewal NGR geometry pipeline and write refined gridfile",
+        "refine_loop working-state executor can load specified GetRef threshold markers before one-into-four geometry pipeline"
       ]
     }
   ]

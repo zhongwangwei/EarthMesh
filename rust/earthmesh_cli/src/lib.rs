@@ -249,6 +249,7 @@ pub struct MkgrdRefineLoopWorkingStateStepReport {
     pub prologue: MkgrdRefineLoopWorkingStatePrologueReport,
     pub state: RefineLoopWorkingState,
     pub output_gridfile: PathBuf,
+    pub loaded_ref_sjx: Option<Vec<i32>>,
     pub onedivide_four_connection: Option<OnedivideFourConnectionReport>,
     pub array_length: Option<RefineArrayLengthCalculationRunReport>,
     pub onedivide_four_renew: Option<OnedivideFourRenewReport>,
@@ -263,6 +264,7 @@ pub struct MkgrdRefineLoopWorkingStateStepReport {
 #[derive(Debug, Default, Clone)]
 pub struct MkgrdRefineLoopWorkingStateExecutor {
     one_into_four_ref_sjx: Option<Vec<i32>>,
+    specified_threshold_file: Option<PathBuf>,
     num_vertex: usize,
     set_dis_in: usize,
 }
@@ -1342,6 +1344,20 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     ) -> Self {
         Self {
             one_into_four_ref_sjx: Some(ref_sjx),
+            specified_threshold_file: None,
+            num_vertex,
+            set_dis_in,
+        }
+    }
+
+    pub fn with_specified_threshold_file(
+        threshold_file: impl Into<PathBuf>,
+        num_vertex: usize,
+        set_dis_in: usize,
+    ) -> Self {
+        Self {
+            one_into_four_ref_sjx: None,
+            specified_threshold_file: Some(threshold_file.into()),
             num_vertex,
             set_dis_in,
         }
@@ -1353,13 +1369,23 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     ) -> io::Result<MkgrdRefineLoopWorkingStateStepReport> {
         let prologue = run_mkgrd_refine_loop_working_state_prologue(step)?;
         let mut state = prologue.state.clone();
+        let mut loaded_ref_sjx = None;
         let mut onedivide_four_connection = None;
         let mut array_length = None;
         let mut onedivide_four_renew = None;
         let mut ngr_renew = None;
 
-        if let Some(ref_sjx) = &self.one_into_four_ref_sjx {
-            self.run_configured_one_into_four_pipeline(step, &mut state, ref_sjx)
+        let ref_sjx = if let Some(ref_sjx) = &self.one_into_four_ref_sjx {
+            Some(ref_sjx.clone())
+        } else if let Some(threshold_file) = &self.specified_threshold_file {
+            Some(read_getref_specified_ref_sjx_netcdf(threshold_file)?)
+        } else {
+            None
+        };
+
+        if let Some(ref_sjx) = ref_sjx {
+            loaded_ref_sjx = Some(ref_sjx.clone());
+            self.run_configured_one_into_four_pipeline(step, &mut state, &ref_sjx)
                 .map(|(connection, length, renew, ngr)| {
                     onedivide_four_connection = Some(connection);
                     array_length = Some(length);
@@ -1374,6 +1400,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             prologue,
             state,
             output_gridfile: step.refine_loop_output_gridfile.clone(),
+            loaded_ref_sjx,
             onedivide_four_connection,
             array_length,
             onedivide_four_renew,
@@ -8349,6 +8376,26 @@ pub fn write_getref_atmos_threshold_netcdf(
 
 /// Write the specified-refinement target file produced by
 /// `MOD_GetRef:GetRef(iter /= 0)`.
+/// Read the specified-refinement marker file produced by
+/// `MOD_GetRef:GetRef(iter /= 0)` and restore the Fortran placeholder element.
+pub fn read_getref_specified_ref_sjx_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<i32>> {
+    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let variable = file.variable("IsInRfArea_sjx_specified").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "specified threshold file is missing IsInRfArea_sjx_specified",
+        )
+    })?;
+    let mut values = Vec::with_capacity(variable.len() + 1);
+    values.push(0);
+    values.extend(
+        variable
+            .get_values::<i32, _>(..)
+            .map_err(netcdf_to_io_error)?,
+    );
+    Ok(values)
+}
+
 pub fn write_getref_specified_threshold_netcdf(
     output: impl AsRef<Path>,
     is_in_refine_sjx: &[i32],

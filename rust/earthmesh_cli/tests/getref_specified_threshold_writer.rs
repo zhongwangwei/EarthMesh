@@ -33,3 +33,22 @@ fn read_i32(file: &netcdf::File, name: &str) -> Vec<i32> {
         .get_values::<i32, _>(..)
         .expect("read i32 values")
 }
+
+#[test]
+fn specified_threshold_reader_restores_fortran_placeholder() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_getref_specified_threshold_reader_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let output = root.join("threshold_specified_NXP0009_04.nc4");
+    write_getref_specified_threshold_netcdf(&output, &[0, 0, 1, -1, 1])
+        .expect("write specified threshold netcdf");
+
+    let markers = earthmesh_cli::read_getref_specified_ref_sjx_netcdf(&output)
+        .expect("read specified threshold markers");
+
+    assert_eq!(markers, vec![0, 0, 1, -1, 1]);
+    let _ = fs::remove_dir_all(&root);
+}
