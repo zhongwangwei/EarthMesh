@@ -612,6 +612,16 @@ pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<Unst
     Ok(mesh)
 }
 
+/// Read the `cellwidth_NXP####_global.nc4` schema produced by
+/// `MOD_file_preprocess.F90:cellwidth_save`.
+pub fn read_cellwidth_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<f64>> {
+    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let num_dbx = required_dimension_len(&file, "num_dbx")?;
+    let cellwidth = required_values_f64(&file, "cellwidth")?;
+    require_len("cellwidth", cellwidth.len(), num_dbx)?;
+    Ok(cellwidth.into_iter().take(num_dbx).collect())
+}
+
 /// Read the `contain_*.nc4` schema produced by
 /// `MOD_file_preprocess.F90:Contain_Save`.
 pub fn read_contain_netcdf(input: impl AsRef<Path>) -> io::Result<ContainMesh> {
@@ -870,6 +880,105 @@ pub fn write_mpas_simple_mesh_netcdf(
         n_cells,
         n_vertices,
     })
+}
+
+/// Build the in-memory payload produced by
+/// `MOD_mask_postproc.F90:MPAS_Mesh_Cal_Simple` before
+/// `MPAS_Mesh_Simple_Save` writes NetCDF.
+///
+/// The legacy file includes a first placeholder/non-existent polygon/vertex
+/// record.  This adapter preserves that record at Rust index `0`, computes
+/// unit-sphere Cartesian coordinates with the same `lonlat2xyz` convention,
+/// converts `ngrmw`/`m_to_w` to MPAS zero-based `cellsOnVertex`, and derives
+/// `meshDensity = (min(cellwidth) / cellwidth) ** 4` using the full legacy
+/// `1:num_dbx` cellwidth range.
+pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
+    mesh: &UnstructuredMesh,
+    cellwidth: &[f64],
+) -> io::Result<MpasSimpleMesh> {
+    validate_unstructured_mesh(mesh)?;
+    if cellwidth.len() != mesh.w_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cellwidth length {} must match w_points length {}",
+                cellwidth.len(),
+                mesh.w_points.len()
+            ),
+        ));
+    }
+    if cellwidth.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cellwidth must include the legacy placeholder row",
+        ));
+    }
+    if cellwidth
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cellwidth values must be finite and positive",
+        ));
+    }
+
+    let vertex_xyz = lonlat_points_to_unit_xyz(&lonlat_degrees_from_points(&mesh.m_points));
+    let cell_xyz = lonlat_points_to_unit_xyz(&lonlat_degrees_from_points(&mesh.w_points));
+    let (x_vertex, y_vertex, z_vertex) = split_cartesian_components(&vertex_xyz);
+    let (x_cell, y_cell, z_cell) = split_cartesian_components(&cell_xyz);
+
+    let cells_on_vertex = mesh
+        .m_to_w
+        .iter()
+        .enumerate()
+        .map(|(row_idx, row)| {
+            row.iter()
+                .map(|&value| {
+                    value.checked_sub(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("m_to_w row {row_idx} contains non-positive cell id {value}"),
+                        )
+                    })
+                })
+                .collect::<io::Result<Vec<i32>>>()
+        })
+        .collect::<io::Result<Vec<Vec<i32>>>>()?;
+
+    let min_cellwidth = cellwidth.iter().copied().fold(f64::INFINITY, f64::min);
+    let mesh_density = cellwidth
+        .iter()
+        .map(|width| (min_cellwidth / width).powi(4))
+        .collect();
+
+    let simple = MpasSimpleMesh {
+        x_cell,
+        y_cell,
+        z_cell,
+        x_vertex,
+        y_vertex,
+        z_vertex,
+        cells_on_vertex,
+        mesh_density,
+    };
+    validate_mpas_simple_mesh(&simple)?;
+    Ok(simple)
+}
+
+/// File-level replacement for the `MPAS_Mesh_Cal_Simple` path that reads the
+/// EarthMesh gridfile plus `cellwidth_NXP####_global.nc4`, builds the simple
+/// MPAS payload, and writes `MPASOUT_NXP####_global_Simple.nc4`-compatible
+/// NetCDF.
+pub fn write_mpas_simple_mesh_from_netcdf_inputs(
+    gridfile: impl AsRef<Path>,
+    cellwidth_file: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> io::Result<MpasSimpleMeshWriteReport> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    let cellwidth = read_cellwidth_netcdf(cellwidth_file)?;
+    let simple = build_mpas_simple_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth)?;
+    write_mpas_simple_mesh_netcdf(output, &simple)
 }
 
 /// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Ocn` adjustment:
@@ -2440,6 +2549,28 @@ fn usize_to_i32(name: &str, value: usize) -> io::Result<i32> {
             format!("{name} contains value {value} that does not fit NetCDF INT"),
         )
     })
+}
+
+fn lonlat_degrees_from_points(points: &[LonLatPoint]) -> Vec<LonLatDegrees> {
+    points
+        .iter()
+        .map(|point| LonLatDegrees {
+            lon_degrees: point.lon,
+            lat_degrees: point.lat,
+        })
+        .collect()
+}
+
+fn split_cartesian_components(points: &[CartesianPoint]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mut x = Vec::with_capacity(points.len());
+    let mut y = Vec::with_capacity(points.len());
+    let mut z = Vec::with_capacity(points.len());
+    for point in points {
+        x.push(point.x);
+        y.push(point.y);
+        z.push(point.z);
+    }
+    (x, y, z)
 }
 
 fn scale_cartesian_points_by_earth_radius(points: &mut [CartesianPoint]) {
