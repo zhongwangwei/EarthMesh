@@ -1804,6 +1804,31 @@ pub struct AreaJudgeBaseStateReport {
     pub seaorland: AreaJudgeSeaOrLandReport,
 }
 
+/// Optional `mask_patch_modify` configuration for non-restart `Area_judge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaJudgePatchConfig<'a> {
+    pub mask_patch_type: &'a str,
+    pub mask_patch_ndm: usize,
+}
+
+/// Optional calculated-refine configuration for non-restart `Area_judge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaJudgeCalculatedRefineConfig<'a> {
+    pub refine_setting: &'a str,
+    pub mask_refine_cal_type: &'a str,
+    pub mask_refine_ndm: usize,
+}
+
+/// Non-restart `Area_judge` state after domain, sea/land, optional patch, and
+/// optional calculated-refine source construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeNonRestartReport {
+    pub domain: AreaJudgeDomainInitializationReport,
+    pub seaorland: AreaJudgeSeaOrLandReport,
+    pub patch: Option<AreaJudgePatchModifyReport>,
+    pub calculated_refine: Option<AreaJudgeAreaSourceReport>,
+}
+
 /// Build `seaorland` from `IsInDmArea_grid` and `landtypes_global`.
 pub fn build_area_judge_seaorland_fortran_indexed(
     is_in_domain: &[Vec<i32>],
@@ -1886,6 +1911,89 @@ pub fn build_area_judge_base_state_fortran_indexed(
     )?;
 
     Ok(AreaJudgeBaseStateReport { domain, seaorland })
+}
+
+/// Compose the non-restart `MOD_Area_judge.F90:Area_judge` branch.
+pub fn build_area_judge_non_restart_fortran_indexed(
+    file_dir: impl AsRef<Path>,
+    mask_domain_global: bool,
+    mask_domain_type: &str,
+    mask_domain_ndm: usize,
+    mask_patch: Option<AreaJudgePatchConfig<'_>>,
+    refine: bool,
+    calculated_refine: Option<AreaJudgeCalculatedRefineConfig<'_>>,
+    landtypes_global: &[Vec<i32>],
+    mesh_type: &str,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgeNonRestartReport> {
+    let mut base = build_area_judge_base_state_fortran_indexed(
+        &file_dir,
+        mask_domain_global,
+        mask_domain_type,
+        mask_domain_ndm,
+        landtypes_global,
+        mesh_type,
+        refine,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )?;
+
+    let patch = mask_patch
+        .map(|config| {
+            apply_area_judge_patch_sources_fortran_indexed(
+                &file_dir,
+                config.mask_patch_type,
+                0,
+                config.mask_patch_ndm,
+                &mut base.seaorland.seaorland,
+                lon_vertex,
+                lat_vertex,
+                lon_i,
+                lat_i,
+                gridnum_perdegree,
+                nlons_source,
+                nlats_source,
+            )
+        })
+        .transpose()?;
+
+    let calculated_refine = match (refine, calculated_refine) {
+        (true, Some(config)) if config.refine_setting != "specified" => {
+            Some(build_area_judge_calculated_refine_fortran_indexed(
+                &file_dir,
+                0,
+                config.mask_refine_cal_type,
+                config.mask_refine_ndm,
+                &base.domain.is_in_domain,
+                lon_vertex,
+                lat_vertex,
+                lon_i,
+                lat_i,
+                gridnum_perdegree,
+                nlons_source,
+                nlats_source,
+            )?)
+        }
+        _ => None,
+    };
+
+    Ok(AreaJudgeNonRestartReport {
+        domain: base.domain,
+        seaorland: base.seaorland,
+        patch,
+        calculated_refine,
+    })
 }
 
 /// Active refine-grid state produced by `Area_judge_refine(iter=0)`.
