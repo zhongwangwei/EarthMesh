@@ -373,3 +373,7 @@ Extended `rust/earthmesh_core` with Rust-owned `GridMemory` and `IjTabs` state. 
 ### 2026-06-12: `mem_delaunay` typed state and allocation defaults ported
 
 Extended `rust/earthmesh_core` with `DelaunayMemory` and typed Delaunay records (`ItabMd`, `ItabUd`, `ItabWd`, `NestUd`, `NestWd`). The Rust state now mirrors `mem_delaunay` defaults for loop flags, neighbor arrays, refinement metadata, copy/original buffers, and `alloc_itabsd` zero-filled `xemd/yemd/zemd` allocation. This closes the typed-state replacement surface inside `consts_coms.F90`; remaining work for this file is production wiring from the legacy module globals into Rust-owned orchestration state.
+
+### 2026-06-12: `read_nl` workspace filesystem adapter started
+
+Added `rust/earthmesh_cli` with `apply_read_nl_workspace_plan`, the first Rust orchestration adapter for `mkgrd.F90:read_nl` side effects. It executes the safe filesystem subset from `MkgrdWorkspacePlan`: optional case-directory removal, `*_filelist.txt` cleanup in the working directory, required directory creation, and copying the input namelist to `result/namelist.save`. Restart plans preserve the Fortran short-circuit by avoiding case-directory deletion while still saving the namelist. `Mask_make` file discovery and mask-count validation remain separate adapter work because they depend on bbox/lambert/circle/close mask formats and NetCDF outputs.
