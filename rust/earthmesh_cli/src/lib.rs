@@ -1265,8 +1265,9 @@ pub fn getcontain_is_in_area_ustr_fortran_indexed(
 ///
 /// This covers the main land/ocean/atmos scan that fills `ustr_id` and
 /// `ustr_ii` after `Data_Updata` has identified active unstructured cells,
-/// including the Fortran `icl_points` dateline-shift branch. South-pole cell
-/// splitting remains a separate migration slice.
+/// including the Fortran `icl_points` dateline-shift branch and the south-pole
+/// pentagon virtual-wedge split/merge. South-pole triangle and refine-adjacent
+/// polygon adjustments remain separate migration slices.
 pub fn getcontain_containment_matrix_fortran_indexed(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
@@ -1298,6 +1299,17 @@ pub fn getcontain_containment_matrix_fortran_indexed(
     getcontain_validate_source_matrix("IsInArea_grid", is_in_area_grid, lon_i.len(), lat_i.len())?;
     getcontain_validate_source_matrix("seaorland", seaorland, lon_i.len(), lat_i.len())?;
 
+    let global_min_lat = vertices
+        .iter()
+        .filter_map(|point| point.lat.is_finite().then_some(point.lat))
+        .fold(f64::INFINITY, f64::min);
+    if !global_min_lat.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "vertices must include at least one finite latitude",
+        ));
+    }
+
     let id_width = mesh_kind.ustr_id_width();
     let mut ustr_id = vec![vec![0; id_width]; cell_to_vertices.len()];
     let mut cell_entries = vec![Vec::<Vec<i32>>::new(); cell_to_vertices.len()];
@@ -1308,49 +1320,53 @@ pub fn getcontain_containment_matrix_fortran_indexed(
         if is_in_area_ustr[cell_index] != 1 {
             continue;
         }
-        let mut polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
-        let (min_lon, max_lon) = polygon.iter().fold(
-            (f64::INFINITY, f64::NEG_INFINITY),
-            |(min_lon, max_lon), point| (min_lon.min(point.x), max_lon.max(point.x)),
-        );
-        let crosses_dateline = max_lon - min_lon > 180.0;
-        if crosses_dateline {
-            polygon = shift_longitudes_for_dateline_crossing(&polygon);
-        }
+        let polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
+        let scan_polygons = getcontain_south_pole_scan_polygons(&polygon, global_min_lat);
 
         let mut total_inside = 0;
-        for i in 1..lon_i.len() {
-            let restored_i = if crosses_dateline {
-                getcontain_restore_dateline_source_index(i, lon_i.len() - 1)?
-            } else {
-                i
-            };
-            for j in 1..lat_i.len() {
-                if is_in_area_grid[restored_i][j] == 0 {
-                    continue;
-                }
-                let point = AreaJudgePoint::new(lon_i[i], lat_i[j]);
-                if !is_point_in_convex_polygon(&polygon, point) {
-                    continue;
-                }
-                total_inside += 1;
-                match mesh_kind {
-                    GetContainMeshKind::Land => {
-                        if seaorland[restored_i][j] == 1 {
-                            cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
-                        }
+        for mut scan_polygon in scan_polygons {
+            let (min_lon, max_lon) = scan_polygon.iter().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_lon, max_lon), point| (min_lon.min(point.x), max_lon.max(point.x)),
+            );
+            let crosses_dateline = max_lon - min_lon > 180.0;
+            if crosses_dateline {
+                scan_polygon = shift_longitudes_for_dateline_crossing(&scan_polygon);
+            }
+
+            for i in 1..lon_i.len() {
+                let restored_i = if crosses_dateline {
+                    getcontain_restore_dateline_source_index(i, lon_i.len() - 1)?
+                } else {
+                    i
+                };
+                for j in 1..lat_i.len() {
+                    if is_in_area_grid[restored_i][j] == 0 {
+                        continue;
                     }
-                    GetContainMeshKind::Ocean => {
-                        if seaorland[restored_i][j] == 0 {
-                            cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
-                        }
+                    let point = AreaJudgePoint::new(lon_i[i], lat_i[j]);
+                    if !is_point_in_convex_polygon(&scan_polygon, point) {
+                        continue;
                     }
-                    GetContainMeshKind::Atmos => {
-                        cell_entries[cell_index].push(vec![
-                            restored_i as i32,
-                            j as i32,
-                            if seaorland[restored_i][j] == 1 { 1 } else { 0 },
-                        ]);
+                    total_inside += 1;
+                    match mesh_kind {
+                        GetContainMeshKind::Land => {
+                            if seaorland[restored_i][j] == 1 {
+                                cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
+                            }
+                        }
+                        GetContainMeshKind::Ocean => {
+                            if seaorland[restored_i][j] == 0 {
+                                cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
+                            }
+                        }
+                        GetContainMeshKind::Atmos => {
+                            cell_entries[cell_index].push(vec![
+                                restored_i as i32,
+                                j as i32,
+                                if seaorland[restored_i][j] == 1 { 1 } else { 0 },
+                            ]);
+                        }
                     }
                 }
             }
@@ -1405,6 +1421,38 @@ pub fn getcontain_containment_matrix_fortran_indexed(
         ustr_ii,
         is_in_area_ustr: selected_mask,
     })
+}
+
+fn getcontain_south_pole_scan_polygons(
+    polygon: &[AreaJudgePoint],
+    global_min_lat: f64,
+) -> Vec<Vec<AreaJudgePoint>> {
+    let cell_min_lat = polygon
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    if polygon.len() != 5 || (cell_min_lat - global_min_lat).abs() > 1.0e-12 {
+        return vec![polygon.to_vec()];
+    }
+
+    let mut sorted = polygon.to_vec();
+    sorted.sort_by(|left, right| {
+        left.x
+            .partial_cmp(&right.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut wedges = Vec::with_capacity(sorted.len());
+    for i in 0..sorted.len() {
+        let j = (i + 1) % sorted.len();
+        wedges.push(vec![
+            sorted[j],
+            sorted[i],
+            AreaJudgePoint::new(sorted[i].x, -90.0),
+            AreaJudgePoint::new(sorted[j].x, -90.0),
+        ]);
+    }
+    wedges
 }
 
 fn getcontain_restore_dateline_source_index(

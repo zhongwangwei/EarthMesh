@@ -236,7 +236,8 @@
       "completed_rust_surfaces": [
         "IsInArea_ustr_Calculation unstructured domain/refine area selector ported to rust/earthmesh_cli with Fortran-indexed fixture coverage",
         "Contain_Calculation non-polar non-dateline land/ocean/atmos containment matrix core ported to rust/earthmesh_cli with Fortran-indexed fixture coverage",
-        "Contain_Calculation dateline-crossing icl_points source-index restoration ported to rust/earthmesh_cli with fixture coverage"
+        "Contain_Calculation dateline-crossing icl_points source-index restoration ported to rust/earthmesh_cli with fixture coverage",
+        "Contain_Calculation south-pole pentagon virtual-wedge split/merge ported to rust/earthmesh_cli with fixture coverage"
       ]
     },
     {
