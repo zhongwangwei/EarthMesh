@@ -123,6 +123,7 @@ pub struct MkgrdRefineSourceIoPlan {
     pub area_judge_iter: usize,
     pub get_contain_iter: usize,
     pub getref_iter: usize,
+    pub area_judge_output: PathBuf,
     pub contain_output: PathBuf,
     pub threshold_outputs: Vec<PathBuf>,
     pub specified_threshold_output: Option<PathBuf>,
@@ -238,6 +239,146 @@ pub struct MkgrdRefineLoopExecutionReport {
     pub executed_refine_steps: usize,
     pub ran_final_quality_check: bool,
     pub final_handoff: MkgrdRefineLoopFinalDomainHandoffReport,
+}
+
+/// Runtime inputs for executing the already-migrated specified-refinement
+/// source branch inside one `mkgrd.F90` refine-loop step.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdSpecifiedRefineSourceExecutorOptions<'a> {
+    pub file_dir: &'a Path,
+    pub mesh_type: &'a str,
+    pub mask_refine_spc_type: &'a str,
+    pub mask_refine_ndm: usize,
+    pub is_in_domain: &'a [Vec<i32>],
+    pub seaorland: &'a [Vec<i32>],
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub num_vertex: usize,
+}
+
+/// Evidence from running `Area_judge_refine(step) -> Get_Contain(step) ->
+/// GetRef(step)` for the specified-refinement source branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdSpecifiedRefineSourceBranchReport {
+    pub area: AreaJudgeRefineGridRunReport,
+    pub contain: GetContainRefineFileRunReport,
+    pub specified_threshold: GetRefSpecifiedThresholdWriteReport,
+}
+
+/// File-backed executor for the specified-refinement source branch.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdSpecifiedRefineSourceExecutor<'a> {
+    options: MkgrdSpecifiedRefineSourceExecutorOptions<'a>,
+}
+
+impl<'a> MkgrdSpecifiedRefineSourceExecutor<'a> {
+    pub fn new(options: MkgrdSpecifiedRefineSourceExecutorOptions<'a>) -> Self {
+        Self { options }
+    }
+
+    pub fn run_source_branch_report(
+        &self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<MkgrdSpecifiedRefineSourceBranchReport> {
+        if source.source != MkgrdRefineSource::SpecifiedStep {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MkgrdSpecifiedRefineSourceExecutor only supports specified refine sources",
+            ));
+        }
+        if source.area_judge_iter != step.step
+            || source.get_contain_iter != step.step
+            || source.getref_iter != step.step
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "specified refine source iter mismatch for step {}: area {} contain {} getref {}",
+                    step.step, source.area_judge_iter, source.get_contain_iter, source.getref_iter
+                ),
+            ));
+        }
+
+        let mesh_kind = getcontain_mesh_kind_from_mesh_type(self.options.mesh_type)?;
+        let area = run_area_judge_refine_grid_fortran_indexed(AreaJudgeRefineGridRunConfig {
+            file_dir: self.options.file_dir,
+            iter: source.area_judge_iter,
+            calculated_refine: None,
+            mask_refine_spc_type: self.options.mask_refine_spc_type,
+            mask_refine_ndm: self.options.mask_refine_ndm,
+            is_in_domain: self.options.is_in_domain,
+            lon_vertex: self.options.lon_vertex,
+            lat_vertex: self.options.lat_vertex,
+            lon_i: self.options.lon_i,
+            lat_i: self.options.lat_i,
+            gridnum_perdegree: self.options.gridnum_perdegree,
+            nlons_source: self.options.nlons_source,
+            nlats_source: self.options.nlats_source,
+            refine_output: &source.area_judge_output,
+        })?;
+        let contain = run_getcontain_refine_file_fortran_indexed(GetContainRefineFileRunConfig {
+            gridfile: &step.refine_loop_input_gridfile,
+            area_grid_file: &source.area_judge_output,
+            output: &source.contain_output,
+            mesh_kind,
+            seaorland: self.options.seaorland,
+            lon_vertex: self.options.lon_vertex,
+            lat_vertex: self.options.lat_vertex,
+            lon_i: self.options.lon_i,
+            lat_i: self.options.lat_i,
+            num_vertex: self.options.num_vertex,
+        })?;
+        let contain_payload = read_contain_netcdf(&source.contain_output)?;
+        let threshold_output = source
+            .specified_threshold_output
+            .as_deref()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "specified refine source requires specified threshold output path",
+                )
+            })?;
+        let specified_threshold = write_getref_specified_threshold_netcdf(
+            threshold_output,
+            &contain_payload.is_in_area_ustr,
+        )?;
+
+        Ok(MkgrdSpecifiedRefineSourceBranchReport {
+            area,
+            contain,
+            specified_threshold,
+        })
+    }
+}
+
+impl MkgrdRefineLoopExecutor for MkgrdSpecifiedRefineSourceExecutor<'_> {
+    fn run_source_branch(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        self.run_source_branch_report(step, source).map(|_| ())
+    }
+
+    fn run_refine_loop_step(&mut self, _step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "refine_loop geometry step is not implemented by MkgrdSpecifiedRefineSourceExecutor",
+        ))
+    }
+
+    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Final_Grid_Quality_Check is not implemented by MkgrdSpecifiedRefineSourceExecutor",
+        ))
+    }
 }
 
 /// File-level I/O contract for the domain branches of
@@ -851,6 +992,9 @@ fn plan_mkgrd_refine_source_io(
             area_judge_iter: 0,
             get_contain_iter: 0,
             getref_iter: 0,
+            area_judge_output: file_dir
+                .join("result")
+                .join(format!("IsInRfArea_grid_cal_NXP{nxp:04}_{stepc}.nc4")),
             contain_output: file_dir.join("contain").join(format!(
                 "contain_{mesh_type}_refine_cal_NXP{nxp:04}_{stepc}_tri.nc4"
             )),
@@ -862,6 +1006,9 @@ fn plan_mkgrd_refine_source_io(
             area_judge_iter: step,
             get_contain_iter: step,
             getref_iter: step,
+            area_judge_output: file_dir
+                .join("result")
+                .join(format!("IsInRfArea_grid_spc_NXP{nxp:04}_{stepc}.nc4")),
             contain_output: file_dir.join("contain").join(format!(
                 "contain_{mesh_type}_refine_spc_NXP{nxp:04}_{stepc}_tri.nc4"
             )),
@@ -1207,6 +1354,22 @@ impl GetContainMeshKind {
             Self::Atmos => 3,
             Self::Land | Self::Ocean => 2,
         }
+    }
+}
+
+fn getcontain_mesh_kind_from_mesh_type(mesh_type: &str) -> io::Result<GetContainMeshKind> {
+    match mesh_type {
+        "landmesh" => Ok(GetContainMeshKind::Land),
+        "oceanmesh" => Ok(GetContainMeshKind::Ocean),
+        "atmosmesh" => Ok(GetContainMeshKind::Atmos),
+        "LOCmesh" => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LOCmesh refine containment is not supported by the single-kind specified source executor yet",
+        )),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported Get_Contain mesh_type {other}"),
+        )),
     }
 }
 
