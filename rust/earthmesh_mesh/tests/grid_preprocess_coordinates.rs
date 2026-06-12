@@ -1,5 +1,6 @@
 use earthmesh_mesh::{
-    lonlat_degrees_to_unit_xyz, lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, LonLatDegrees,
+    centroid_spherical_mesh_fortran_indexed, lonlat_degrees_to_unit_xyz, lonlat_points_to_unit_xyz,
+    spherical_centroid_degrees, xyz_to_lonlat_degrees, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -79,4 +80,48 @@ fn spherical_centroid_matches_fortran_vector_average_for_triangle() {
 #[test]
 fn spherical_centroid_rejects_empty_input() {
     assert!(earthmesh_mesh::spherical_centroid_degrees(&[]).is_none());
+}
+
+#[test]
+fn centroid_spherical_mesh_matches_fortran_indexed_triangle_loop() {
+    let cell_points = vec![
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(0.0, 90.0),
+        LonLatDegrees::new(180.0, 0.0),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 4, 5]];
+
+    let centroids = centroid_spherical_mesh_fortran_indexed(&cell_points, &cells_on_triangle)
+        .expect("valid triangle cell references");
+
+    assert_eq!(centroids.len(), cells_on_triangle.len());
+    assert_eq!(centroids[0], LonLatDegrees::new(0.0, 0.0));
+    assert_eq!(centroids[1], LonLatDegrees::new(0.0, 0.0));
+
+    let expected_2 = spherical_centroid_degrees(&[cell_points[2], cell_points[3], cell_points[4]])
+        .expect("triangle centroid");
+    approx_eq(centroids[2].lon_degrees, expected_2.lon_degrees, 1.0e-12);
+    approx_eq(centroids[2].lat_degrees, expected_2.lat_degrees, 1.0e-12);
+
+    let expected_3 = spherical_centroid_degrees(&[cell_points[2], cell_points[4], cell_points[5]])
+        .expect("triangle centroid");
+    approx_eq(centroids[3].lon_degrees, expected_3.lon_degrees, 1.0e-12);
+    approx_eq(centroids[3].lat_degrees, expected_3.lat_degrees, 1.0e-12);
+}
+
+#[test]
+fn centroid_spherical_mesh_rejects_out_of_range_triangle_cell() {
+    let cell_points = vec![
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(-999.0, -999.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(0.0, 90.0),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 42]];
+
+    assert!(centroid_spherical_mesh_fortran_indexed(&cell_points, &cells_on_triangle).is_none());
 }

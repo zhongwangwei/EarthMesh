@@ -181,6 +181,30 @@ pub fn spherical_centroid_degrees(points: &[LonLatDegrees]) -> Option<LonLatDegr
     Some(xyz_to_lonlat_degrees(centroid))
 }
 
+/// Batch port of `MOD_grid_preprocess:centroid_spherical_calculation`.
+///
+/// Preserves the Fortran workflow where triangle ids start at `2`; slots `0`
+/// and `1` remain initialized to `(0, 0)` just like an unwritten `mp` scratch
+/// array in the migrated Rust call boundary.
+pub fn centroid_spherical_mesh_fortran_indexed(
+    cell_points: &[LonLatDegrees],
+    cells_on_triangle: &[[usize; 3]],
+) -> Option<Vec<LonLatDegrees>> {
+    let mut centroids = vec![LonLatDegrees::new(0.0, 0.0); cells_on_triangle.len()];
+
+    for triangle_id in 2..cells_on_triangle.len() {
+        let cell_ids = cells_on_triangle[triangle_id];
+        let triangle_points = [
+            *cell_points.get(cell_ids[0])?,
+            *cell_points.get(cell_ids[1])?,
+            *cell_points.get(cell_ids[2])?,
+        ];
+        centroids[triangle_id] = spherical_centroid_degrees(&triangle_points)?;
+    }
+
+    Some(centroids)
+}
+
 /// Port of `MOD_grid_preprocess:CheckLon`.
 ///
 /// The Fortran routine performs a single +/-360 adjustment rather than a full

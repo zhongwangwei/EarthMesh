@@ -100,7 +100,7 @@ Extended `rust/earthmesh_mesh` with a tested Rust port of `MOD_grid_preprocess:l
 
 ### 2026-06-12: `MOD_grid_preprocess.F90` spherical centroid helper ported
 
-Extended `rust/earthmesh_mesh` with `spherical_centroid_degrees`, a tested Rust port of `MOD_grid_preprocess:centroid_spherical_single`. It preserves the Fortran method: lon/lat vertices are converted to unit Cartesian vectors, averaged component-wise, then converted back to lon/lat. The grid-wide `centroid_spherical_calculation` wrapper over connectivity remains unported.
+Extended `rust/earthmesh_mesh` with `spherical_centroid_degrees`, a tested Rust port of `MOD_grid_preprocess:centroid_spherical_single`. It preserves the Fortran method: lon/lat vertices are converted to unit Cartesian vectors, averaged component-wise, then converted back to lon/lat. The grid-wide `centroid_spherical_calculation` wrapper is now covered by `centroid_spherical_mesh_fortran_indexed`, preserving the Fortran triangle-id loop from `2..sjx_points` and zero-initialized unwritten slots.
 
 ### 2026-06-12: `MOD_grid_preprocess.F90` longitude normalization and arc length ported
 
@@ -177,3 +177,7 @@ Added `get_edge_connectivity_fortran_indexed`, a Rust port of the core `GetEdge`
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetEdge` optional midpoint output ported
 
 Added `edge_midpoints_from_cells_fortran_indexed`, a Rust port of the optional `vp` branch in `GetEdge`. It computes each edge point from the spherical centroid of the two neighboring polygon cell centers, preserving Fortran edge ids by starting at index `2`. Remaining `GetEdge` work is combined real-mesh fixture parity and integration into a production Rust replacement path.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` centroid batch wrapper ported
+
+Extended `rust/earthmesh_mesh` with `centroid_spherical_mesh_fortran_indexed`, a tested Rust wrapper for `MOD_grid_preprocess:centroid_spherical_calculation`. It resolves three cell-center lon/lat references per triangle, starts at Fortran triangle id `2`, leaves slots `0` and `1` initialized to `(0, 0)`, and rejects out-of-range connectivity before a future Python/Rust runtime boundary can silently propagate bad mesh topology.
