@@ -2352,24 +2352,23 @@ fn area_judge_check_crossing(points: &mut [LonLatDegrees]) {
     }
 }
 
-/// Build the close-curve `IsInPaArea_grid` patch mask and apply it to `seaorland`.
-pub fn apply_area_judge_close_patch_source_fortran_indexed(
+/// Build the close-curve `IsInArea_grid` source mask used by domain/refine/patch paths.
+pub fn build_area_judge_close_area_source_fortran_indexed(
     inputfile: impl AsRef<Path>,
-    seaorland: &mut [Vec<i32>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,
-) -> io::Result<AreaJudgePatchSourceReport> {
+) -> io::Result<AreaJudgeAreaSourceReport> {
     let mask = read_close_mask_netcdf(inputfile)?;
     validate_close_mask(&mask).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid close patch source: {err}"),
+            format!("invalid close area source: {err}"),
         )
     })?;
-    let mut patch_mask = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
     let close_points = &mask.points;
     let geometry_points = close_points
         .iter()
@@ -2431,7 +2430,7 @@ pub fn apply_area_judge_close_patch_source_fortran_indexed(
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "close patch bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+                "close area bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
             ),
         )
     })?;
@@ -2447,20 +2446,53 @@ pub fn apply_area_judge_close_patch_source_fortran_indexed(
     .ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "close patch source could not be converted to source-grid cells",
+            "close area source could not be converted to source-grid cells",
         )
     })?;
     for (lon_index, lat_index) in fill.cells {
-        require_len("close patch mask", patch_mask.len(), lon_index + 1)?;
+        require_len("close area mask", is_in_area.len(), lon_index + 1)?;
         require_len(
-            &format!("close patch mask[{lon_index}]"),
-            patch_mask[lon_index].len(),
+            &format!("close area mask[{lon_index}]"),
+            is_in_area[lon_index].len(),
             lat_index + 1,
         )?;
-        patch_mask[lon_index][lat_index] = 1;
+        is_in_area[lon_index][lat_index] = 1;
     }
-    let report = area_judge_apply_mask_patch_fortran_indexed(seaorland, &patch_mask, bounds)
-        .ok_or_else(|| {
+
+    Ok(AreaJudgeAreaSourceReport {
+        is_in_area,
+        bounds,
+        numpatch: fill.patch_count,
+    })
+}
+
+/// Build the close-curve `IsInPaArea_grid` patch mask and apply it to `seaorland`.
+pub fn apply_area_judge_close_patch_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    seaorland: &mut [Vec<i32>],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgePatchSourceReport> {
+    let source = build_area_judge_close_area_source_fortran_indexed(
+        inputfile,
+        lon_vertex,
+        lat_vertex,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )
+    .map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            err.to_string().replace("close area", "close patch"),
+        )
+    })?;
+    let report =
+        area_judge_apply_mask_patch_fortran_indexed(seaorland, &source.is_in_area, source.bounds)
+            .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "seaorland or close patch mask does not cover selected source bounds",
@@ -2468,7 +2500,7 @@ pub fn apply_area_judge_close_patch_source_fortran_indexed(
         })?;
 
     Ok(AreaJudgePatchSourceReport {
-        bounds,
+        bounds: source.bounds,
         patched_cells: report.patched_cells,
     })
 }
