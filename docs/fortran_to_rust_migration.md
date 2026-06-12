@@ -469,3 +469,7 @@ Extended `rust/earthmesh_mesh` with tested ports of `MOD_mask_postproc.F90:extra
 ### 2026-06-12: mask_postproc `Data_Renew` helper ported
 
 Extended `rust/earthmesh_mesh` with `renew_mask_postproc_data_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:Data_Renew`. The helper compacts active centers according to `IsInDmArea_ustr`, rebuilds center-to-vertex and vertex-to-center counts/tables for `tri` and `hex` width conventions, preserves the one-based placeholder row, computes `ustr_points_next`/`ustr_bounds_next`, and intentionally writes original source center ids into vertex adjacency as the Fortran comment requires. `Data_Finial`, boundary repair, and full mask_postproc NetCDF orchestration remain pending.
+
+### 2026-06-12: mask_postproc `Data_Finial` helper ported
+
+Extended `rust/earthmesh_mesh` with `finalize_mask_postproc_data_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:Data_Finial`. The helper compacts active center coordinates and center-neighbor rows, rebuilds intermediate vertex adjacency using compact center ids as the Fortran `k` branch requires, then compacts surviving vertex coordinates and vertex-neighbor rows while preserving the one-based placeholder convention. Remaining `mask_postproc` work is boundary/isolated-ocean/narrow-waterway repair plus Earth/Lnd/Ocn/Atmos NetCDF orchestration.
