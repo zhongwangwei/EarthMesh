@@ -4,7 +4,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
+use earthmesh_core::{
+    EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan, RefineConfig,
+};
 use earthmesh_geometry::{
     area_judge_first_self_intersection_fortran_indexed, is_point_in_circle_km,
     is_point_in_convex_polygon, Point as AreaJudgePoint,
@@ -84,6 +86,32 @@ pub struct MkgrdRestartAreaJudgeRunReport {
     pub area: AreaJudgeRestartReport,
     pub area_write: AreaJudgeGridWriteReport,
     pub refine_write: Option<AreaJudgeGridWriteReport>,
+}
+
+/// One source branch scheduled inside a `mkgrd.F90` refine-loop step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MkgrdRefineSource {
+    /// Fortran calls `Area_judge_refine(0)`, `Get_Contain(0)`, and `GetRef(0)`.
+    CalculatedIterZero,
+    /// Fortran calls `Area_judge_refine(step)`, `Get_Contain(step)`, and `GetRef(step)`.
+    SpecifiedStep,
+}
+
+/// Non-destructive schedule for one `mkgrd.F90` refine-loop iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRefineLoopStepPlan {
+    pub step: usize,
+    pub sources: Vec<MkgrdRefineSource>,
+    pub run_refine_loop: bool,
+}
+
+/// Non-destructive schedule for the `mkgrd.F90` refine loop after the initial
+/// gridfile and Area_judge domain setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRefineLoopPlan {
+    pub max_iter: usize,
+    pub steps: Vec<MkgrdRefineLoopStepPlan>,
+    pub final_mask_postproc_step: usize,
 }
 
 /// File-level I/O contract for the domain branches of
@@ -403,6 +431,51 @@ pub fn run_mkgrd_mask_restart_ocean_namelist(
     let postproc = run_mask_postproc_ocean_domain(&postproc_plan, options)?;
 
     Ok(MkgrdMaskRestartOceanRunReport { plan, postproc })
+}
+
+/// Build the non-destructive step schedule for the `mkgrd.F90` refine loop.
+///
+/// Fortran computes `max_iter = max(max_iter_cal, max_iter_spc)`, then for each
+/// `step` runs the calculated `iter=0` threshold branch while `step <=
+/// max_iter_cal`, the specified branch while `step <= max_iter_spc`, and then
+/// calls `refine_loop`.  Dynamic early-exit decisions remain a future execution
+/// surface; this plan captures the deterministic dispatch windows.
+pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLoopPlan> {
+    let max_iter_i32 = refine.max_iter_cal.max(refine.max_iter_spc);
+    if max_iter_i32 <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "max_iter must be more than zero like mkgrd.F90 refine loop",
+        ));
+    }
+    let max_iter = usize::try_from(max_iter_i32)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter must fit usize"))?;
+    let max_iter_cal = usize::try_from(refine.max_iter_cal.max(0))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_cal must fit usize"))?;
+    let max_iter_spc = usize::try_from(refine.max_iter_spc.max(0))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_spc must fit usize"))?;
+
+    let mut steps = Vec::with_capacity(max_iter);
+    for step in 1..=max_iter {
+        let mut sources = Vec::with_capacity(2);
+        if matches!(refine.refine_setting.as_str(), "calculate" | "mixed") && step <= max_iter_cal {
+            sources.push(MkgrdRefineSource::CalculatedIterZero);
+        }
+        if matches!(refine.refine_setting.as_str(), "specified" | "mixed") && step <= max_iter_spc {
+            sources.push(MkgrdRefineSource::SpecifiedStep);
+        }
+        steps.push(MkgrdRefineLoopStepPlan {
+            step,
+            sources,
+            run_refine_loop: true,
+        });
+    }
+
+    Ok(MkgrdRefineLoopPlan {
+        max_iter,
+        steps,
+        final_mask_postproc_step: max_iter + 1,
+    })
 }
 
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
