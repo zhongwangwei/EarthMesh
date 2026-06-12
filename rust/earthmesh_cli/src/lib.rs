@@ -20,6 +20,7 @@ use earthmesh_mesh::{
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
     lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
     refine_array_length_calculation_fortran_indexed,
+    refine_isreverse_judge_fortran_indexed as refine_isreverse_judge_mesh_fortran_indexed,
     refine_onedivide_two_fortran_indexed as refine_onedivide_two_mesh_fortran_indexed,
     remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
@@ -252,6 +253,16 @@ pub struct OnedivideTwoReport {
     pub new_triangle_ids: Vec<usize>,
     pub new_vertex_ids: Vec<usize>,
     pub dateline_adjusted: bool,
+}
+
+/// Evidence from applying `MOD_refine.F90:ref_sjx_isreverse_judge` through
+/// the CLI adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsreverseJudgeReport {
+    pub ref_sjx: Vec<i32>,
+    pub marked_triangles: Vec<usize>,
+    pub active_segments: Vec<usize>,
+    pub rewritten_segments: Vec<Vec<usize>>,
 }
 
 /// Pluggable execution surface for the heavy kernels inside the top-level
@@ -1402,6 +1413,50 @@ pub fn apply_onedivide_four_renew_fortran_indexed(
         new_triangle_ids,
         new_vertex_ids,
         dateline_adjusted,
+    })
+}
+
+/// CLI adapter for `MOD_refine.F90:ref_sjx_isreverse_judge`.
+///
+/// The underlying mesh kernel owns the Fortran-indexed neighbor/segment logic;
+/// this wrapper adds execution evidence useful for stitching the transition-row
+/// loop into the CLI refine-loop executor.
+pub fn apply_isreverse_judge_fortran_indexed(
+    set_dis_in: usize,
+    num_segment: usize,
+    triangle_neighbors: &[Vec<usize>],
+    mrl_new: &[i32],
+    segments: &mut [Vec<usize>],
+    n_segments: &[usize],
+) -> io::Result<IsreverseJudgeReport> {
+    let ref_sjx = refine_isreverse_judge_mesh_fortran_indexed(
+        set_dis_in,
+        num_segment,
+        triangle_neighbors,
+        mrl_new,
+        segments,
+        n_segments,
+    )?;
+    let marked_triangles = ref_sjx
+        .iter()
+        .enumerate()
+        .filter_map(|(triangle, &marker)| (marker != 0).then_some(triangle))
+        .collect();
+    let mut active_segments = Vec::new();
+    let mut rewritten_segments = Vec::new();
+    for segment_id in 0..num_segment.min(segments.len()).min(n_segments.len()) {
+        if n_segments[segment_id] == 0 {
+            continue;
+        }
+        active_segments.push(segment_id);
+        rewritten_segments.push(segments[segment_id].clone());
+    }
+
+    Ok(IsreverseJudgeReport {
+        ref_sjx,
+        marked_triangles,
+        active_segments,
+        rewritten_segments,
     })
 }
 
