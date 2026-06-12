@@ -239,6 +239,37 @@ pub fn spherical_triangle_area_unit(points: [CartesianPoint; 3]) -> f64 {
     4.0 * tan_quarter_excess.max(0.0).sqrt().atan()
 }
 
+/// Port of the MPAS kite area primitive inside `MOD_grid_preprocess:GetArea`.
+///
+/// For one vertex/cell pair, Fortran computes the kite as the absolute area of
+/// triangle `(vertex, edge1, cell)` plus triangle `(vertex, edge2, cell)`.
+pub fn spherical_kite_area_unit(
+    vertex: CartesianPoint,
+    edge1: CartesianPoint,
+    edge2: CartesianPoint,
+    cell: CartesianPoint,
+) -> f64 {
+    spherical_triangle_area_unit([vertex, edge1, cell]).abs()
+        + spherical_triangle_area_unit([vertex, edge2, cell]).abs()
+}
+
+/// Port of the `areaCell` fan triangulation inside `MOD_grid_preprocess:GetArea`.
+///
+/// Fortran pins `verticesOnCell(1, i)` and sums triangles
+/// `(v1, vj+1, vj+2)` for `j = 1..num_edges-2`.
+pub fn spherical_cell_area_from_vertices_unit(vertices: &[CartesianPoint]) -> Option<f64> {
+    if vertices.len() < 3 {
+        return None;
+    }
+
+    let anchor = vertices[0];
+    let mut area = 0.0;
+    for j in 0..(vertices.len() - 2) {
+        area += spherical_triangle_area_unit([anchor, vertices[j + 1], vertices[j + 2]]);
+    }
+    Some(area)
+}
+
 /// Output of `MOD_grid_preprocess:Get_Length_Angle`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolygonLengthAngleMetrics {

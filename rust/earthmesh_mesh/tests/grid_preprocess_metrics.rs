@@ -1,6 +1,7 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180,
-    spherical_triangle_area_unit, LonLatDegrees,
+    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
+    LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -217,4 +218,44 @@ fn spherical_triangle_area_matches_fortran_small_right_triangle() {
         0.00015231644029306792,
         1.0e-15,
     );
+}
+
+#[test]
+fn spherical_kite_area_matches_fortran_getarea_two_triangle_sum() {
+    let vertex = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+    let edge1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
+    let edge2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
+    let cell = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.5));
+
+    approx_eq(
+        spherical_kite_area_unit(vertex, edge1, edge2, cell),
+        0.00015230773702390324,
+        1.0e-15,
+    );
+}
+
+#[test]
+fn spherical_cell_area_fans_vertices_like_fortran_getarea() {
+    let vertices = [
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 1.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0)),
+    ];
+
+    approx_eq(
+        spherical_cell_area_from_vertices_unit(&vertices).expect("valid cell"),
+        0.000304609680288118,
+        1.0e-15,
+    );
+}
+
+#[test]
+fn spherical_cell_area_rejects_degenerate_cells() {
+    assert!(spherical_cell_area_from_vertices_unit(&[]).is_none());
+    assert!(spherical_cell_area_from_vertices_unit(&[
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
+    ])
+    .is_none());
 }

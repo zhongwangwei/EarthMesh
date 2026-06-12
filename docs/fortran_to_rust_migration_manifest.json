@@ -176,7 +176,9 @@
         "TriMeshQuality aggregation core ported to rust/earthmesh_mesh",
         "PolyMeshQuality aggregation core ported to rust/earthmesh_mesh",
         "robust_spherical_area dateline-aware signed unit-sphere polygon area ported to rust/earthmesh_mesh",
-        "triangle_signed_area_sphere l'Huilier spherical triangle area helper ported to rust/earthmesh_mesh"
+        "triangle_signed_area_sphere l'Huilier spherical triangle area helper ported to rust/earthmesh_mesh",
+        "GetArea kite area two-triangle primitive ported to rust/earthmesh_mesh",
+        "GetArea areaCell fan triangulation primitive ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -189,7 +191,7 @@
         "TriMeshQuality array-cache/update wrapper over Fortran-style adjust flags",
         "PolyMeshQuality array-cache/update wrapper over Fortran-style adjust flags and n_ngrwm filters",
         "GetEdge and edge connectivity routines",
-        "GetArea areaTriangle/areaCell/kiteAreasOnVertex workflow, now able to reuse Rust triangle area helper"
+        "GetArea connectivity-driven kiteAreasOnVertex and areaTriangle reconstruction workflow"
       ]
     },
     {
