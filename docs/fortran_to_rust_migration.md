@@ -277,3 +277,7 @@ Extended `rust/earthmesh_mesh` with `springjustment_regional_core_fortran_indexe
 ### 2026-06-12: `MOD_grid_preprocess.F90` set_dbxMove_regional_step mask derivation ported
 
 Extended `rust/earthmesh_mesh` with `set_dbx_move_regional_step_fortran_indexed`, a tested pure Rust port of the move-mask derivation core in `set_dbxMove_regional_step`. It accepts explicit initial refined-triangle flags, expands the regional halo through mixed boundary cells, marks refined-triangle cells movable, freezes boundary cells, and applies the optional protected seed-cell neighborhood removal that corresponds to the original 12-vertex protection logic. Remaining Springjustment work is now adapter plumbing for NetCDF/file persistence and upstream refine-state sources.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment_regional_step refinement-mask composition ported
+
+Extended `rust/earthmesh_mesh` with `springjustment_regional_from_refinement_fortran_indexed`, a tested pure in-memory adapter that composes the migrated `set_dbxMove_regional_step` mask derivation with `springjustment_regional_core_fortran_indexed`. The new boundary accepts already-classified refined-triangle flags, derives the Fortran-style movable/boundary/protected masks, and then runs the regional spring/circumcenter refresh pipeline. Remaining Springjustment work is now NetCDF/file persistence plus the original upstream `refine_sjx_regional_make` source-classification adapter.

@@ -8,15 +8,17 @@ use earthmesh_mesh::{
     lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
     normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
-    polygon_mesh_quality_fortran_indexed, set_dists_on_edge_global_fortran_indexed,
-    shared_cell_for_edge_pair, should_swap_vertices_on_edge,
-    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    spring_dynamics_global_fortran_indexed, spring_dynamics_regional_fortran_indexed,
-    springjustment_global_core_fortran_indexed, springjustment_regional_core_fortran_indexed,
-    triangle_mesh_quality_fortran_indexed, triangle_neighbors_from_cell_membership_fortran_indexed,
-    vertex_cell_position, CartesianPoint, DistanceLayerSpacing, GetAreaUnitInput,
-    GlobalDistanceStep, LonLatDegrees, SetDistsOnEdgeGlobalInput, SpringjustmentGlobalCoreInput,
-    SpringjustmentRegionalCoreInput,
+    polygon_mesh_quality_fortran_indexed, set_dbx_move_regional_step_fortran_indexed,
+    set_dists_on_edge_global_fortran_indexed, shared_cell_for_edge_pair,
+    should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
+    spherical_triangle_area_unit, spring_dynamics_global_fortran_indexed,
+    spring_dynamics_regional_fortran_indexed, springjustment_global_core_fortran_indexed,
+    springjustment_regional_core_fortran_indexed,
+    springjustment_regional_from_refinement_fortran_indexed, triangle_mesh_quality_fortran_indexed,
+    triangle_neighbors_from_cell_membership_fortran_indexed, vertex_cell_position, CartesianPoint,
+    DistanceLayerSpacing, GetAreaUnitInput, GlobalDistanceStep, LonLatDegrees,
+    RegionalMoveMaskInput, SetDistsOnEdgeGlobalInput, SpringjustmentGlobalCoreInput,
+    SpringjustmentRegionalCoreInput, SpringjustmentRegionalFromRefinementInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -1101,6 +1103,92 @@ fn springjustment_regional_core_matches_manual_migrated_pipeline() {
         output.regional.diagnostic_max_displacements,
         regional.diagnostic_max_displacements
     );
+}
+
+#[test]
+fn springjustment_regional_from_refinement_derives_mask_then_runs_core_pipeline() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut n_edges_on_cell = vec![0usize; 14];
+    n_edges_on_cell[10] = 3;
+    n_edges_on_cell[11] = 3;
+    n_edges_on_cell[12] = 3;
+    n_edges_on_cell[13] = 3;
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+    let refined_triangles = vec![false, false, true, true, true, false];
+
+    let output = springjustment_regional_from_refinement_fortran_indexed(
+        SpringjustmentRegionalFromRefinementInput {
+            triangle_lonlat: &triangle_lonlat,
+            cell_lonlat: &cell_lonlat,
+            cells_on_triangle: &cells_on_triangle,
+            triangles_on_cell: &triangles_on_cell,
+            n_edges_on_cell: &n_edges_on_cell,
+            refined_triangles: &refined_triangles,
+            set_dis: 0,
+            protected_seed_cells: &[],
+            vertex_protect_layers: 0,
+            niter_refine: 1,
+            radius: 1.0,
+            diagnostic_every: 10,
+        },
+    )
+    .expect("valid regional refinement input");
+
+    let expected_mask = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+        set_dis: 0,
+        refined_triangles: &refined_triangles,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        protected_seed_cells: &[],
+        vertex_protect_layers: 0,
+    })
+    .expect("mask derivation");
+    let expected_core =
+        springjustment_regional_core_fortran_indexed(SpringjustmentRegionalCoreInput {
+            triangle_lonlat: &triangle_lonlat,
+            cell_lonlat: &cell_lonlat,
+            cells_on_triangle: &cells_on_triangle,
+            triangles_on_cell: &triangles_on_cell,
+            n_edges_on_cell: &n_edges_on_cell,
+            move_mask: &expected_mask.move_mask,
+            niter_refine: 1,
+            radius: 1.0,
+            diagnostic_every: 10,
+        })
+        .expect("manual regional core");
+
+    assert_eq!(output.mask, expected_mask);
+    assert_eq!(output.core, expected_core);
+    assert_eq!(output.mask.move_mask[10], true);
+    assert_eq!(output.mask.move_mask[11], false);
+    assert_eq!(output.mask.move_mask[12], false);
+    assert_eq!(output.mask.move_mask[13], false);
+    assert_eq!(output.core.regional.moved_cells, vec![10]);
 }
 
 #[test]
