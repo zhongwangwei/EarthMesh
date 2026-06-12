@@ -144,14 +144,14 @@
         "ray_segment_intersect closed-curve scanline helper with Option-return sentinel mapping",
         "cross_product2 component helper",
         "segments_intersect strict self-intersection predicate",
-        "CheckCrossing dateline longitude shift helper"
+        "CheckCrossing dateline longitude shift helper",
+        "Source_Find bounded source lookup and minmax_range_make source bounds ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Area_judge and Area_judge_refine orchestration over grids and masks",
         "mask_patch_modify and NetCDF-backed area reads",
         "closed-curve/ray-crossing polygon fill over source grid rows",
         "self-intersection error reporting wrapper around strict segment predicate",
-        "minmax_range_make and Source_Find source-index boundary logic",
         "fixture parity for land/ocean/river/coast classification decisions"
       ]
     },
