@@ -104,10 +104,11 @@
         "bbox_mask_make text nml parsing, orientation validation, early refine skip, and bbox output numbering ported to rust/earthmesh_cli",
         "bbox_mask_make NetCDF copy branch, extension validation, early refine skip, and tmpfile byte copy ported to rust/earthmesh_cli with externally supplied bbox_refine",
         "bbox_mask_make NetCDF bbox_refine reader and bbox_points writer ported to rust/earthmesh_cli using the Rust netcdf crate",
-        "circle_mask_make and close_mask_make text parsing, NetCDF reader/writer, copy branch, and counter-width naming ported to rust/earthmesh_cli"
+        "circle_mask_make and close_mask_make text parsing, NetCDF reader/writer, copy branch, and counter-width naming ported to rust/earthmesh_cli",
+        "lamb_mask_make Lambert vertex NetCDF reader, mode4 mesh conversion, writer, and output numbering ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "Mask_make lambert generation, per-file dispatcher integration, and mask-count validation adapter",
+        "Mask_make per-file dispatcher integration and mask-count validation adapter",
         "mode4mesh_make and mask creation orchestration",
         "gridinit/voronoi/pcvt/gridfile_write pipeline",
         "Rust CLI replacement for mkgrd.x end-to-end workflows"

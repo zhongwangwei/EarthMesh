@@ -623,6 +623,196 @@ fn parse_float_row(line: &str, expected: usize, label: &str, row: usize) -> io::
     Ok(values)
 }
 
+/// Rectilinear Lambert-style vertex grid consumed by `lamb_mask_make`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambertVertices {
+    pub xi_vert: usize,
+    pub eta_vert: usize,
+    pub lon_vert: Vec<f64>,
+    pub lat_vert: Vec<f64>,
+}
+
+/// Mode4 mesh payload written by `Mode4_Mesh_Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mode4Mesh {
+    pub lonlat_bound: Vec<LonLatPoint>,
+    pub ngr_bound: Vec<[i32; 4]>,
+    pub n_ngr: Vec<i32>,
+}
+
+impl Mode4Mesh {
+    pub fn bound_points(&self) -> usize {
+        self.lonlat_bound.len()
+    }
+
+    pub fn mode_points(&self) -> usize {
+        self.ngr_bound.len()
+    }
+}
+
+/// Read `xi_vert`/`eta_vert`, `lon_vert`, and `lat_vert` from a Lambert source.
+pub fn read_lambert_vertices_netcdf(inputfile: impl AsRef<Path>) -> io::Result<LambertVertices> {
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let xi_vert = file
+        .dimension("xi_vert")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing xi_vert dimension"))?
+        .len();
+    let eta_vert = file
+        .dimension("eta_vert")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing eta_vert dimension"))?
+        .len();
+    let lon_vert = file
+        .variable("lon_vert")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing lon_vert variable"))?
+        .get_values::<f64, _>((.., ..))
+        .map_err(netcdf_to_io_error)?;
+    let lat_vert = file
+        .variable("lat_vert")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing lat_vert variable"))?
+        .get_values::<f64, _>((.., ..))
+        .map_err(netcdf_to_io_error)?;
+    Ok(LambertVertices {
+        xi_vert,
+        eta_vert,
+        lon_vert,
+        lat_vert,
+    })
+}
+
+/// Convert Lambert vertex arrays into the Fortran-indexed mode4 mesh payload.
+pub fn lambert_vertices_to_mode4_mesh(vertices: &LambertVertices) -> io::Result<Mode4Mesh> {
+    if vertices.xi_vert < 2 || vertices.eta_vert < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "lambert xi_vert and eta_vert must both be at least 2",
+        ));
+    }
+    let expected = vertices.xi_vert * vertices.eta_vert;
+    if vertices.lon_vert.len() != expected || vertices.lat_vert.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "lambert lon_vert/lat_vert lengths must match xi_vert * eta_vert",
+        ));
+    }
+
+    let lon_points = vertices.xi_vert - 1;
+    let lat_points = vertices.eta_vert - 1;
+    let bound_points = (lon_points + 1) * (lat_points + 1) + 1;
+    let mode_points = lon_points * lat_points + 1;
+
+    let mut lonlat_bound = vec![
+        LonLatPoint {
+            lon: -999.0,
+            lat: -999.0
+        };
+        bound_points
+    ];
+    let mut out_idx = 1;
+    for j in 0..vertices.eta_vert {
+        for i in 0..vertices.xi_vert {
+            let source_idx = i + j * vertices.xi_vert;
+            let mut lon = vertices.lon_vert[source_idx];
+            if lon > 180.0 {
+                lon -= 360.0;
+            }
+            lonlat_bound[out_idx] = LonLatPoint {
+                lon,
+                lat: vertices.lat_vert[source_idx],
+            };
+            out_idx += 1;
+        }
+    }
+
+    let mut ngr_bound = vec![[1_i32; 4]; mode_points];
+    let mut cell_idx = 1;
+    for j in 0..lat_points {
+        for i in 0..lon_points {
+            let lower_left = i + j * vertices.xi_vert + 2;
+            ngr_bound[cell_idx] = [
+                lower_left as i32,
+                (lower_left + 1) as i32,
+                (lower_left + vertices.xi_vert + 1) as i32,
+                (lower_left + vertices.xi_vert) as i32,
+            ];
+            cell_idx += 1;
+        }
+    }
+
+    Ok(Mode4Mesh {
+        lonlat_bound,
+        ngr_bound,
+        n_ngr: vec![4; mode_points],
+    })
+}
+
+pub fn write_mode4_mesh_netcdf(output: impl AsRef<Path>, mesh: &Mode4Mesh) -> io::Result<()> {
+    if mesh.ngr_bound.len() != mesh.n_ngr.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "mode4 ngr_bound and n_ngr lengths must match",
+        ));
+    }
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("bound_points", mesh.bound_points())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("mode_points", mesh.mode_points())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;
+    file.add_dimension("four", 4).map_err(netcdf_to_io_error)?;
+
+    let mut lonlat_values = Vec::with_capacity(mesh.bound_points() * 2);
+    for point in &mesh.lonlat_bound {
+        lonlat_values.extend([point.lon, point.lat]);
+    }
+    {
+        let mut lonlat_bound = file
+            .add_variable::<f64>("lonlat_bound", &["bound_points", "two"])
+            .map_err(netcdf_to_io_error)?;
+        lonlat_bound
+            .put_values(&lonlat_values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    let mut ngr_values: Vec<i32> = Vec::with_capacity(mesh.mode_points() * 4);
+    for row in &mesh.ngr_bound {
+        ngr_values.extend_from_slice(row);
+    }
+    {
+        let mut ngr_bound = file
+            .add_variable::<i32>("ngr_bound", &["mode_points", "four"])
+            .map_err(netcdf_to_io_error)?;
+        ngr_bound
+            .put_values(&ngr_values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut n_ngr = file
+            .add_variable::<i32>("n_ngr", &["mode_points"])
+            .map_err(netcdf_to_io_error)?;
+        n_ngr
+            .put_values(&mesh.n_ngr, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    Ok(())
+}
+
+pub fn convert_lambert_mask_netcdf(
+    inputfile: impl AsRef<Path>,
+    mask_select: &str,
+    file_dir: impl AsRef<Path>,
+    counts: &mut MaskCountState,
+) -> io::Result<PathBuf> {
+    let vertices = read_lambert_vertices_netcdf(inputfile)?;
+    let mesh = lambert_vertices_to_mode4_mesh(&vertices)?;
+    let output = counts.next_lambert_output(mask_select, 0, file_dir)?;
+    write_mode4_mesh_netcdf(&output, &mesh)?;
+    Ok(output)
+}
+
 /// Rust-owned mask counters matching `mask_domain_ndm`, `mask_refine_ndm`, and
 /// `mask_patch_ndm` updates in `bbox_mask_make`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -661,6 +851,16 @@ impl MaskCountState {
         file_dir: impl AsRef<Path>,
     ) -> io::Result<PathBuf> {
         self.next_mask_output(mask_select, "close", refine_degree, file_dir, 3)
+    }
+
+    /// Advance counters and return the Fortran lambert output filename.
+    pub fn next_lambert_output(
+        &mut self,
+        mask_select: &str,
+        refine_degree: usize,
+        file_dir: impl AsRef<Path>,
+    ) -> io::Result<PathBuf> {
+        self.next_mask_output(mask_select, "lambert", refine_degree, file_dir, 2)
     }
 
     fn next_mask_output(
