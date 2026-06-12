@@ -25,6 +25,7 @@ use earthmesh_mesh::{
     refine_m1w1_to_m11w11_fortran_indexed as refine_m1w1_to_m11w11_mesh_fortran_indexed,
     refine_ngr_renew_fortran_indexed as refine_ngr_renew_mesh_fortran_indexed,
     refine_onedivide_two_fortran_indexed as refine_onedivide_two_mesh_fortran_indexed,
+    refine_weak_concav_pair_special_fortran_indexed as refine_weak_concav_pair_special_mesh_fortran_indexed,
     remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
@@ -295,6 +296,16 @@ pub struct NgrRenewReport {
 pub struct M1W1LookupReport {
     pub parent_pair: (usize, usize),
     pub child_pair: Option<(usize, usize)>,
+}
+
+/// Evidence from applying `MOD_refine.F90:weak_concav_pair_special` through
+/// the CLI Fortran-row adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeakConcavPairSpecialReport {
+    pub updated_pairs: Vec<[usize; 2]>,
+    pub marked_ref_sjx_triangles: Vec<usize>,
+    pub deferred_renew_triangles: Vec<usize>,
+    pub segment_first_slots: Vec<(usize, usize)>,
 }
 
 /// Pluggable execution surface for the heavy kernels inside the top-level
@@ -1720,6 +1731,81 @@ pub fn lookup_m1w1_to_m11w11_fortran_indexed(
     Ok(M1W1LookupReport {
         parent_pair: (m1, w1),
         child_pair,
+    })
+}
+
+/// CLI adapter for `MOD_refine.F90:weak_concav_pair_special`.
+///
+/// Converts `ngrmw(1:3, triangle)` rows to the mesh kernel's triangle-major
+/// connectivity, then leaves all mutable weak-concavity state in-place exactly
+/// where the refine-loop executor owns it.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_weak_concav_pair_special_fortran_indexed(
+    num_weak_concav_pair: usize,
+    num_ref_weak_concav: usize,
+    max_triangle: usize,
+    triangle_neighbors: &[Vec<usize>],
+    ngrmw: &[Vec<usize>],
+    mrl_new: &mut [i32],
+    ref_sjx: &mut [i32],
+    weak_concav_pair: &mut [[usize; 2]],
+    weak_concav_segment: &mut [Vec<usize>],
+) -> io::Result<WeakConcavPairSpecialReport> {
+    let cells_on_triangle = fortran_rows_to_triangle_major(ngrmw, max_triangle)?;
+    let previous_mrl = mrl_new.to_vec();
+    let previous_ref_sjx = ref_sjx.to_vec();
+    let previous_segments = weak_concav_segment.to_vec();
+
+    refine_weak_concav_pair_special_mesh_fortran_indexed(
+        num_weak_concav_pair,
+        num_ref_weak_concav,
+        triangle_neighbors,
+        &cells_on_triangle,
+        mrl_new,
+        ref_sjx,
+        weak_concav_pair,
+        weak_concav_segment,
+    )?;
+
+    let updated_pairs = weak_concav_pair
+        .iter()
+        .take(num_weak_concav_pair + 1)
+        .skip(1)
+        .copied()
+        .collect();
+    let marked_ref_sjx_triangles = ref_sjx
+        .iter()
+        .zip(previous_ref_sjx.iter())
+        .enumerate()
+        .filter_map(|(triangle, (&after, &before))| (after != before).then_some(triangle))
+        .collect();
+    let deferred_renew_triangles = mrl_new
+        .iter()
+        .zip(previous_mrl.iter())
+        .enumerate()
+        .filter_map(|(triangle, (&after, &before))| (after != before).then_some(triangle))
+        .collect();
+    let segment_first_slots = weak_concav_segment
+        .iter()
+        .zip(previous_segments.iter())
+        .enumerate()
+        .filter_map(|(segment_id, (after, before))| {
+            if after.first() != before.first() {
+                after
+                    .first()
+                    .copied()
+                    .map(|triangle| (segment_id, triangle))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(WeakConcavPairSpecialReport {
+        updated_pairs,
+        marked_ref_sjx_triangles,
+        deferred_renew_triangles,
+        segment_first_slots,
     })
 }
 
