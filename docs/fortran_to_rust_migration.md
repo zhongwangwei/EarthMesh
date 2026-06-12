@@ -409,3 +409,7 @@ Extended `rust/earthmesh_cli` with `apply_mask_operation` and `MaskOperationRepo
 ### 2026-06-12: `mode4mesh_make` Lambert NetCDF branch ported
 
 Extended `rust/earthmesh_cli` with `Mode4MeshMakeReport` and `mode4mesh_make_netcdf`, covering the active Lambert `.nc/.nc4` branch of `mkgrd.F90:mode4mesh_make`. The adapter reuses the migrated Lambert vertex reader and mode4 mesh conversion, writes `Mode4_Mesh_Save`-compatible NetCDF outputs to a requested gridfile path, reports bound/mode point counts, and preserves the legacy unsupported paths as explicit `InvalidInput` errors for Lambert `.nml`, lonlat NetCDF, cubical, and unknown grid selections. Remaining `mkgrd.F90` work is the gridinit/voronoi/pcvt/gridfile_write pipeline and final Rust CLI orchestration.
+
+### 2026-06-12: workspace and mask operation orchestration wired
+
+Extended `rust/earthmesh_cli` with `WorkspaceMaskApplyReport` and `apply_workspace_and_mask_operations`, which applies the Rust `read_nl` workspace plan, executes every planned `Mask_make` operation in order, returns final `MaskCountState`, and optionally enforces the specified-refinement `max_iter_spc` mask-count guard. This closes the Rust adapter wiring between namelist-derived workspace setup and the migrated bbox/lambert/circle/close mask machinery; remaining work is focused on the gridinit/voronoi/pcvt/gridfile_write pipeline and a final Rust CLI replacement for `mkgrd.x`.
