@@ -40,6 +40,14 @@ pub struct MkgrdMaskRestartPlanReport {
     pub remask: MaskRestartRemaskPlan,
 }
 
+/// Report for the migrated executable subset of the top-level `mkgrd.F90`
+/// mask-restart branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdMaskRestartOceanRunReport {
+    pub plan: MkgrdMaskRestartPlanReport,
+    pub postproc: MaskPostprocOceanDomainReport,
+}
+
 /// File-level I/O contract for the domain branches of
 /// `MOD_mask_postproc.F90:mask_postproc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +212,48 @@ pub fn plan_mkgrd_mask_restart_namelist(
         workspace_plan,
         remask,
     })
+}
+
+/// Execute the migrated `mkgrd.F90` mask-restart branch that immediately calls
+/// `mask_postproc` for `mesh_type='oceanmesh'` and `mask_patch_on=.false.`.
+///
+/// Other restart continuations still return an explicit error because their
+/// downstream refine/postprocess loop is tracked separately in the migration
+/// manifest.
+pub fn run_mkgrd_mask_restart_ocean_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+    options: MaskPostprocOceanRunOptions,
+) -> io::Result<MkgrdMaskRestartOceanRunReport> {
+    let plan = plan_mkgrd_mask_restart_namelist(namelist_source, workdir, max_iter)?;
+    if plan.remask.action != MaskRestartAction::RunMaskPostproc {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart execution is only migrated for oceanmesh without mask_patch_on; got action {:?}",
+                plan.remask.action
+            ),
+        ));
+    }
+    if plan.config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be positive for mask_restart postproc",
+        ));
+    }
+    let nxp = usize::try_from(plan.config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let postproc_plan = plan_mask_postproc_domain_io(
+        &plan.remask.file_dir,
+        nxp,
+        &plan.config.mode_grid,
+        &plan.config.mesh_type,
+        plan.config.mask_patch_on,
+    )?;
+    let postproc = run_mask_postproc_ocean_domain(&postproc_plan, options)?;
+
+    Ok(MkgrdMaskRestartOceanRunReport { plan, postproc })
 }
 
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
