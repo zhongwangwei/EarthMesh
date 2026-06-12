@@ -501,3 +501,7 @@ Extended `rust/earthmesh_mesh` with `classify_boundary_orders_fortran_indexed`, 
 ### 2026-06-12: mask_postproc OBC NetCDF writers ported
 
 Extended `rust/earthmesh_cli` with tested adapter-layer writers for `MOD_mask_postproc.F90:bdy_calculation` and `bdy_connection` outputs. The new path helpers preserve the legacy `result/obc.nc4`, `result/obc_patch.nc4`, `result/obcv2.nc4`, and `result/obcv2_patch.nc4` filenames, while `write_obc_boundary_netcdf` writes `bdy_num`, `bdy_order`, `obc_order`, and `ibc_order`, and `write_obcv2_boundary_netcdf` writes `num1`, `num2`, `close_curve`, and `n_close_curve` from the migrated pure boundary helpers. Remaining `mask_postproc` work is full Earth/Lnd/Ocn/Atmos orchestration and NetCDF read/write composition around the migrated helpers.
+
+### 2026-06-12: mask_postproc domain I/O plan ported
+
+Added a tested side-effect-free `MaskPostprocDomainIoPlan` in `rust/earthmesh_cli` for the Earth/Lnd/Ocn branches of `MOD_mask_postproc.F90:mask_postproc`. The plan preserves legacy `gridfile_NXP####_<mode>.nc4` inputs, `contain_<mesh>_domain_NXP####_<mode>.nc4` inputs, clipped `gridfile_NXP####_<mode>_<mesh>[_patch].nc4` outputs, Earth/Land `patchtype_NXP####_<mode>.nc4` outputs, and Ocean-tri `obc`/`obcv2` patch-aware boundary outputs. Remaining work is composing real NetCDF reads/writes and the full branch execution around these plans and migrated helpers.

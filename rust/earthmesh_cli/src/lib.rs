@@ -27,6 +27,21 @@ pub struct MkgrdMaskRestartPlanReport {
     pub remask: MaskRestartRemaskPlan,
 }
 
+/// File-level I/O contract for the domain branches of
+/// `MOD_mask_postproc.F90:mask_postproc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaskPostprocDomainIoPlan {
+    pub file_dir: PathBuf,
+    pub mesh_type: String,
+    pub mode_grid: String,
+    pub source_gridfile: PathBuf,
+    pub contain_domain: PathBuf,
+    pub result_gridfile: PathBuf,
+    pub patchtype_output: Option<PathBuf>,
+    pub obc_output: Option<PathBuf>,
+    pub obcv2_output: Option<PathBuf>,
+}
+
 /// Restart action selected by the top-level `mkgrd.F90` mask-restart branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskRestartAction {
@@ -439,6 +454,69 @@ pub fn obcv2_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: boo
         "obcv2.nc4"
     };
     file_dir.as_ref().join("result").join(filename)
+}
+
+/// Plan the legacy file names used by Earth/Lnd/Ocn mask post-processing.
+///
+/// This is the side-effect-free I/O contract around the migrated pure helpers:
+/// source mesh and contain-domain inputs, final clipped mesh output, optional
+/// land/earth `patchtype` output, and ocean-tri OBC outputs.
+pub fn plan_mask_postproc_domain_io(
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    mode_grid: &str,
+    mesh_type: &str,
+    mask_patch_on: bool,
+) -> io::Result<MaskPostprocDomainIoPlan> {
+    let file_dir = file_dir.as_ref();
+    let mode_grid = mode_grid.trim();
+    let mesh_type = mesh_type.trim();
+    if !matches!(mode_grid, "tri" | "hex") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "mask_postproc domain I/O supports tri or hex mode_grid only",
+        ));
+    }
+    if !matches!(mesh_type, "earthmesh" | "landmesh" | "oceanmesh") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "domain mask_postproc I/O plan supports earthmesh, landmesh, or oceanmesh; atmosmesh uses the MPAS branch",
+        ));
+    }
+
+    let nxpc = format!("{nxp:04}");
+    let source_gridfile = file_dir
+        .join("result")
+        .join(format!("gridfile_NXP{nxpc}_{mode_grid}.nc4"));
+    let contain_domain = file_dir.join("contain").join(format!(
+        "contain_{mesh_type}_domain_NXP{nxpc}_{mode_grid}.nc4"
+    ));
+    let result_suffix = if mask_patch_on { "_patch" } else { "" };
+    let result_gridfile = file_dir.join("result").join(format!(
+        "gridfile_NXP{nxpc}_{mode_grid}_{mesh_type}{result_suffix}.nc4"
+    ));
+    let patchtype_output = matches!(mesh_type, "earthmesh" | "landmesh").then(|| {
+        file_dir
+            .join("patchtype")
+            .join(format!("patchtype_NXP{nxpc}_{mode_grid}.nc4"))
+    });
+    let writes_ocean_boundary = mesh_type == "oceanmesh" && mode_grid == "tri";
+    let obc_output =
+        writes_ocean_boundary.then(|| obc_boundary_output_path(file_dir, mask_patch_on));
+    let obcv2_output =
+        writes_ocean_boundary.then(|| obcv2_boundary_output_path(file_dir, mask_patch_on));
+
+    Ok(MaskPostprocDomainIoPlan {
+        file_dir: file_dir.to_path_buf(),
+        mesh_type: mesh_type.to_string(),
+        mode_grid: mode_grid.to_string(),
+        source_gridfile,
+        contain_domain,
+        result_gridfile,
+        patchtype_output,
+        obc_output,
+        obcv2_output,
+    })
 }
 
 /// Write the `obc.nc4`/`obc_patch.nc4` schema produced by

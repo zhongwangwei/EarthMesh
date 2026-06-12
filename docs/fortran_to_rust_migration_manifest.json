@@ -290,7 +290,8 @@
         "bdy_connection boundary graph helper ported to rust/earthmesh_mesh",
         "Isolated_Ocean_Renew pure removal helper ported to rust/earthmesh_mesh",
         "bdy_calculation pure boundary classification helper ported to rust/earthmesh_mesh",
-        "obc/obcv2 boundary NetCDF writer wiring ported to rust/earthmesh_cli"
+        "obc/obcv2 boundary NetCDF writer wiring ported to rust/earthmesh_cli",
+        "domain mask_postproc legacy I/O path plan ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mask_postproc Earth/Lnd/Ocn/Atmos orchestration and NetCDF I/O"
