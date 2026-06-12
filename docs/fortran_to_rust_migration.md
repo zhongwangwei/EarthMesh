@@ -529,3 +529,7 @@ Added `build_earth_patchtypes_fortran_indexed` in `rust/earthmesh_cli`, a tested
 ### 2026-06-12: mask_postproc tri/hex layout setup ported
 
 Added `mask_postproc_layout_from_unstructured_mesh` and `MaskPostprocLayout` in `rust/earthmesh_cli`, covering the repeated `mode_grid == 'tri'/'hex'` setup in `mask_postproc_Earth`, `mask_postproc_Lnd`, and `mask_postproc_Ocn`. The helper preserves the Fortran orientation rule: tri uses M points as centers and W points as vertices, while hex swaps W points to centers and M points to vertices, carrying the matching center/vertex connectivity and neighbor-count arrays into the Rust orchestration shape.
+
+### 2026-06-12: `mask_postproc_Lnd` patchtype fallback ported
+
+Added `build_land_patchtypes_fortran_indexed`, a tested Rust port of the land-only `patchtypes_make` loop. It preserves the Fortran rule that any non-zero `IsInDmArea_ustr` cell is active, maps active contain pixels to `patchtypes_select`, clears covered `seaorland` land pixels, and fills ignored land pixels from the previous latitude row while rejecting cases that would leave a land cell without a patch id. Full `mask_postproc_Lnd` mesh clipping, boundary renewal, and NetCDF orchestration remain unported.
