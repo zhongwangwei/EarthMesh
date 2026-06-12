@@ -145,3 +145,7 @@ Added `area_triangle_reconstruction_error_fortran_indexed`, matching the `GetAre
 ### 2026-06-12: `MOD_grid_preprocess.F90` `IsNgrmm` and `GetEdge` mapping helpers ported
 
 Added `is_ngrmm`, a Rust port of the Fortran neighbor classifier that returns which triangle vertex is opposite the shared edge, and `cells_on_edge_from_neighbor_cells`, the `GetEdge` mapping that derives sorted `cellsOnEdge` pairs from neighboring triangle cell ids. The remaining `GetEdge` migration is the stateful edge-id reuse loop, optional spherical midpoint calculation, and edge/vertex sorting routines.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetSort_verticesOnEdge` swap predicate ported
+
+Added `should_swap_vertices_on_edge`, a Rust port of the 2-D cross-product rule used by `GetSort_verticesOnEdge` to decide whether `verticesOnEdge(1:2, i)` should be swapped. The helper preserves the Fortran single-step dateline adjustment for longitude differences. Remaining edge work is the full edge-id workflow, optional midpoint generation, and broader ordering routines.

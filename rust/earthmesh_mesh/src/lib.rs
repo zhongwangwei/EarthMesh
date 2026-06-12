@@ -195,6 +195,26 @@ pub fn normalize_lon_m180_180(lon_degrees: f64) -> f64 {
     }
 }
 
+/// Port of the swap predicate in `MOD_grid_preprocess:GetSort_verticesOnEdge`.
+///
+/// Fortran compares the 2-D cross product between the cell-center edge vector
+/// and the current vertex-edge vector. If `res > 0`, ordering is kept; otherwise
+/// `verticesOnEdge(1:2, i)` is swapped.
+pub fn should_swap_vertices_on_edge(
+    cell1: LonLatDegrees,
+    cell2: LonLatDegrees,
+    vertex1: LonLatDegrees,
+    vertex2: LonLatDegrees,
+) -> bool {
+    let cell_delta_lon = normalize_lon_m180_180(cell2.lon_degrees - cell1.lon_degrees);
+    let cell_delta_lat = cell2.lat_degrees - cell1.lat_degrees;
+    let vertex_delta_lon = normalize_lon_m180_180(vertex2.lon_degrees - vertex1.lon_degrees);
+    let vertex_delta_lat = vertex2.lat_degrees - vertex1.lat_degrees;
+
+    let cross = cell_delta_lon * vertex_delta_lat - cell_delta_lat * vertex_delta_lon;
+    cross <= 0.0
+}
+
 /// Port of `MOD_grid_preprocess:arc_length`.
 ///
 /// Computes spherical arc length from Cartesian coordinates using the same

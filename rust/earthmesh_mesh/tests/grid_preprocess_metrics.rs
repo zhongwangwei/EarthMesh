@@ -2,8 +2,8 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
     cells_on_edge_from_neighbor_cells, get_area_unit_fortran_indexed, is_ngrmm,
     lonlat_degrees_to_unit_xyz, normalize_lon_m180_180, shared_cell_for_edge_pair,
-    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    vertex_cell_position, GetAreaUnitInput, LonLatDegrees,
+    should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
+    spherical_triangle_area_unit, vertex_cell_position, GetAreaUnitInput, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -384,4 +384,26 @@ fn cells_on_edge_from_neighbor_cells_matches_fortran_getedge_mapping() {
         cells_on_edge_from_neighbor_cells([1, 2, 3], [7, 8, 3]),
         None
     );
+}
+
+#[test]
+fn should_swap_vertices_on_edge_matches_fortran_cross_product_rule() {
+    assert!(!should_swap_vertices_on_edge(
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 1.0),
+    ));
+    assert!(should_swap_vertices_on_edge(
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, -1.0),
+    ));
+    assert!(!should_swap_vertices_on_edge(
+        LonLatDegrees::new(179.0, 0.0),
+        LonLatDegrees::new(-179.0, 1.0),
+        LonLatDegrees::new(179.0, 0.0),
+        LonLatDegrees::new(179.0, 1.0),
+    ));
 }
