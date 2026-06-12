@@ -9,7 +9,7 @@ use earthmesh_core::{
 };
 use earthmesh_geometry::{
     area_judge_first_self_intersection_fortran_indexed, is_point_in_circle_km,
-    is_point_in_convex_polygon, Point as AreaJudgePoint,
+    is_point_in_convex_polygon, shift_longitudes_for_dateline_crossing, Point as AreaJudgePoint,
 };
 use earthmesh_mesh::{
     area_judge_apply_mask_patch_fortran_indexed, area_judge_closed_curve_fill_fortran_indexed,
@@ -1261,12 +1261,12 @@ pub fn getcontain_is_in_area_ustr_fortran_indexed(
     Ok(is_in_area_ustr)
 }
 
-/// Non-polar, non-dateline core of `MOD_GetContain.F90:Contain_Calculation`.
+/// Non-polar core of `MOD_GetContain.F90:Contain_Calculation`.
 ///
 /// This covers the main land/ocean/atmos scan that fills `ustr_id` and
-/// `ustr_ii` after `Data_Updata` has identified active unstructured cells.
-/// Dateline-crossing (`icl_points`) and south-pole cell splitting remain a
-/// separate migration slice.
+/// `ustr_ii` after `Data_Updata` has identified active unstructured cells,
+/// including the Fortran `icl_points` dateline-shift branch. South-pole cell
+/// splitting remains a separate migration slice.
 pub fn getcontain_containment_matrix_fortran_indexed(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
@@ -1308,22 +1308,25 @@ pub fn getcontain_containment_matrix_fortran_indexed(
         if is_in_area_ustr[cell_index] != 1 {
             continue;
         }
-        let polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
+        let mut polygon = getcontain_cell_polygon(cell_index, vertices, cell_to_vertices, n_edges)?;
         let (min_lon, max_lon) = polygon.iter().fold(
             (f64::INFINITY, f64::NEG_INFINITY),
             |(min_lon, max_lon), point| (min_lon.min(point.x), max_lon.max(point.x)),
         );
-        if max_lon - min_lon > 180.0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "dateline-crossing containment requires the icl_points migration path",
-            ));
+        let crosses_dateline = max_lon - min_lon > 180.0;
+        if crosses_dateline {
+            polygon = shift_longitudes_for_dateline_crossing(&polygon);
         }
 
         let mut total_inside = 0;
         for i in 1..lon_i.len() {
+            let restored_i = if crosses_dateline {
+                getcontain_restore_dateline_source_index(i, lon_i.len() - 1)?
+            } else {
+                i
+            };
             for j in 1..lat_i.len() {
-                if is_in_area_grid[i][j] == 0 {
+                if is_in_area_grid[restored_i][j] == 0 {
                     continue;
                 }
                 let point = AreaJudgePoint::new(lon_i[i], lat_i[j]);
@@ -1333,20 +1336,20 @@ pub fn getcontain_containment_matrix_fortran_indexed(
                 total_inside += 1;
                 match mesh_kind {
                     GetContainMeshKind::Land => {
-                        if seaorland[i][j] == 1 {
-                            cell_entries[cell_index].push(vec![i as i32, j as i32]);
+                        if seaorland[restored_i][j] == 1 {
+                            cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
                         }
                     }
                     GetContainMeshKind::Ocean => {
-                        if seaorland[i][j] == 0 {
-                            cell_entries[cell_index].push(vec![i as i32, j as i32]);
+                        if seaorland[restored_i][j] == 0 {
+                            cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
                         }
                     }
                     GetContainMeshKind::Atmos => {
                         cell_entries[cell_index].push(vec![
-                            i as i32,
+                            restored_i as i32,
                             j as i32,
-                            if seaorland[i][j] == 1 { 1 } else { 0 },
+                            if seaorland[restored_i][j] == 1 { 1 } else { 0 },
                         ]);
                     }
                 }
@@ -1402,6 +1405,32 @@ pub fn getcontain_containment_matrix_fortran_indexed(
         ustr_ii,
         is_in_area_ustr: selected_mask,
     })
+}
+
+fn getcontain_restore_dateline_source_index(
+    index: usize,
+    nlons_source: usize,
+) -> io::Result<usize> {
+    if nlons_source == 0 || nlons_source % 2 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "dateline containment requires a positive even nlons_source, got {nlons_source}"
+            ),
+        ));
+    }
+    if index == 0 || index > nlons_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("dateline source index {index} is outside 1..={nlons_source}"),
+        ));
+    }
+    let half = nlons_source / 2;
+    if index < half + 1 {
+        Ok(index + half)
+    } else {
+        Ok(index - half)
+    }
 }
 
 fn getcontain_cell_polygon(

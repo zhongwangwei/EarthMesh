@@ -122,3 +122,70 @@ fn atmos_containment_keeps_all_pixels_and_flags_land_pixels() {
     );
     assert_eq!(contain.is_in_area_ustr, vec![0, 1]);
 }
+
+#[test]
+fn dateline_containment_shifts_test_points_and_restores_source_indices() {
+    let vertices = vec![
+        LonLatPoint {
+            lon: f64::NAN,
+            lat: f64::NAN,
+        },
+        LonLatPoint {
+            lon: 160.0,
+            lat: 0.0,
+        },
+        LonLatPoint {
+            lon: -160.0,
+            lat: 0.0,
+        },
+        LonLatPoint {
+            lon: -160.0,
+            lat: 10.0,
+        },
+        LonLatPoint {
+            lon: 160.0,
+            lat: 10.0,
+        },
+    ];
+    let cell_to_vertices = vec![vec![0], vec![1, 2, 3, 4]];
+    let n_edges = vec![0, 4];
+    let is_in_area_ustr = vec![0, 1];
+    let lon_i = vec![
+        f64::NAN,
+        -165.0,
+        -135.0,
+        -105.0,
+        -75.0,
+        -45.0,
+        -15.0,
+        15.0,
+        45.0,
+        75.0,
+        105.0,
+        135.0,
+        165.0,
+    ];
+    let lat_i = vec![f64::NAN, 15.0, 5.0, -5.0];
+    let mut is_in_area_grid = vec![vec![0; lat_i.len()]; lon_i.len()];
+    let seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
+    is_in_area_grid[12][2] = 1;
+    is_in_area_grid[1][2] = 1;
+
+    let contain = getcontain_containment_matrix_fortran_indexed(
+        GetContainMeshKind::Ocean,
+        &vertices,
+        &cell_to_vertices,
+        &n_edges,
+        &is_in_area_ustr,
+        &is_in_area_grid,
+        &seaorland,
+        &lon_i,
+        &lat_i,
+        0,
+    )
+    .expect("calculate dateline containment");
+
+    assert_eq!(contain.ustr_id, vec![vec![0, 0, 0], vec![2, 1, 2]]);
+    assert_eq!(contain.ustr_ii, vec![vec![12, 2], vec![1, 2]]);
+    assert_eq!(contain.is_in_area_ustr, vec![0, 1]);
+}
