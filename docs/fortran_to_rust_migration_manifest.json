@@ -130,7 +130,8 @@
         "mkgrd.x refine-loop halo/max_transition_row preflight validation ported to rust/earthmesh_cli",
         "mkgrd.x Final_Grid_Quality_Check skip/global/regional file I/O planning ported to rust/earthmesh_cli and wired into refine-loop I/O plan",
         "mkgrd.x final mask_postproc domain I/O plan wired into refine-loop I/O plan in rust/earthmesh_cli",
-        "mkgrd.x final Get_Contain(0) gridfile handoff and optional domain mask_postproc execution runner ported to rust/earthmesh_cli"
+        "mkgrd.x final Get_Contain(0) gridfile handoff and optional domain mask_postproc execution runner ported to rust/earthmesh_cli",
+        "mkgrd.x refine-loop source/refine/final-quality/final-handoff execution dispatcher ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "mkgrd.x refine and postprocess loop after the initial gridfile"

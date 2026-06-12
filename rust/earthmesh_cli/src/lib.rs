@@ -212,6 +212,34 @@ pub struct MkgrdRefineLoopFinalDomainHandoffReport {
     pub postproc: Option<MkgrdFinalDomainPostprocReport>,
 }
 
+/// Pluggable execution surface for the heavy kernels inside the top-level
+/// `mkgrd.F90` refine loop.
+///
+/// The file schedule stays owned by `MkgrdRefineLoopIoPlan`; implementations
+/// only execute the already-planned branch or geometry step. This keeps the
+/// Fortran order testable while the remaining geometry kernels are replaced
+/// incrementally.
+pub trait MkgrdRefineLoopExecutor {
+    fn run_source_branch(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()>;
+
+    fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()>;
+
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()>;
+}
+
+/// Evidence from dispatching the migrated top-level `mkgrd.F90` refine loop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLoopExecutionReport {
+    pub executed_sources: usize,
+    pub executed_refine_steps: usize,
+    pub ran_final_quality_check: bool,
+    pub final_handoff: MkgrdRefineLoopFinalDomainHandoffReport,
+}
+
 /// File-level I/O contract for the domain branches of
 /// `MOD_mask_postproc.F90:mask_postproc`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,6 +672,50 @@ pub fn run_mkgrd_refine_loop_final_domain_handoff(
         copied_bytes,
         contain_domain: plan.final_domain_contain_output.clone(),
         postproc,
+    })
+}
+
+/// Execute the top-level `mkgrd.F90` refine-loop order using a pluggable kernel
+/// executor for the heavy migrated/pending geometry branches.
+///
+/// This owns only orchestration: for each planned step, dispatch
+/// `Area_judge_refine/Get_Contain/GetRef` source branches in order, then the
+/// `refine_loop` step, then optional final quality check and final domain
+/// handoff.  File names and early-exit truncation come from
+/// `MkgrdRefineLoopIoPlan`.
+pub fn run_mkgrd_refine_loop_execution(
+    plan: &MkgrdRefineLoopIoPlan,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopExecutionReport> {
+    let mut executed_sources = 0;
+    let mut executed_refine_steps = 0;
+
+    for step in &plan.steps {
+        for source in &step.sources {
+            executor.run_source_branch(step, source)?;
+            executed_sources += 1;
+        }
+        if step.run_refine_loop {
+            executor.run_refine_loop_step(step)?;
+            executed_refine_steps += 1;
+        }
+        if step.stop_after_step {
+            break;
+        }
+    }
+
+    let ran_final_quality_check = plan.final_quality_check.run_quality_check;
+    if ran_final_quality_check {
+        executor.run_final_quality_check(&plan.final_quality_check)?;
+    }
+
+    let final_handoff = run_mkgrd_refine_loop_final_domain_handoff(plan, postproc_options)?;
+    Ok(MkgrdRefineLoopExecutionReport {
+        executed_sources,
+        executed_refine_steps,
+        ran_final_quality_check,
+        final_handoff,
     })
 }
 
