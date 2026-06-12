@@ -337,3 +337,7 @@ Extended `rust/earthmesh_mesh` with `icosahedron_spring_topology_fortran`, a tes
 ### 2026-06-12: `icosahedron.F90` `spring_dynamics1` single-iteration update ported
 
 Extended `rust/earthmesh_mesh` with `icosahedron_spring_iteration_fortran`, a tested Rust port of one main-loop iteration in `spring_dynamics1`. The kernel computes U-edge lengths from M-point coordinates, applies the opposite-angle `twocosphi3/twocosphi4` ratio clamp, uses the OLAM `dist00 / 1.2` target scaling, applies precomputed M-point direction signs, and renormalizes updated M points back to the requested radius. Remaining `spring_dynamics1` work is the multi-iteration wrapper and periodic Max-DS diagnostics.
+
+### 2026-06-12: `icosahedron.F90` `spring_dynamics1` multi-iteration wrapper ported
+
+Extended `rust/earthmesh_mesh` with `icosahedron_spring_dynamics1_fortran`, a tested Rust wrapper for the main `spring_dynamics1` iteration loop. It repeatedly applies the migrated single-iteration edge-displacement/coordinate-normalization kernel and records Fortran-style periodic Max-DS diagnostics for iteration 1 and `diagnostic_every` intervals. Remaining icosahedron work is full NXP fixture parity for the post-relaxation grid.

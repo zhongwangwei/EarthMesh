@@ -291,3 +291,57 @@ fn icosahedron_spring_iteration_matches_spring_dynamics1_edge_update() {
     approx_eq(output.updated_m_points[2].y, unnormalized_y / norm, 1.0e-12);
     approx_eq(magnitude(output.updated_m_points[2]), 1.0, 1.0e-12);
 }
+
+#[test]
+fn icosahedron_spring_dynamics_repeats_iterations_and_records_max_ds() {
+    let mut topology = earthmesh_mesh::IcosahedronSpringTopology {
+        edge_m_points: vec![[1, 1]; 7],
+        edge_neighbor_u: vec![[2, 2, 2, 2]; 7],
+        m_npoly: vec![0; 6],
+        m_u_edges: vec![[1; 7]; 6],
+        directions: vec![[0.0; 7]; 6],
+    };
+    topology.edge_m_points[2] = [2, 3];
+    topology.edge_m_points[3] = [2, 4];
+    topology.edge_m_points[4] = [3, 4];
+    topology.edge_m_points[5] = [2, 5];
+    topology.edge_m_points[6] = [3, 5];
+    topology.edge_neighbor_u[2] = [3, 4, 5, 6];
+    topology.m_npoly[2] = 1;
+    topology.m_npoly[3] = 1;
+    topology.m_u_edges[2][0] = 2;
+    topology.m_u_edges[3][0] = 2;
+    topology.directions[2][0] = -0.5;
+    topology.directions[3][0] = 0.5;
+
+    let points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 1.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 1.0),
+        CartesianPoint::new(-1.0, 0.0, 0.0),
+    ];
+
+    let first = earthmesh_mesh::icosahedron_spring_iteration_fortran(&points, &topology, 2.0, 1.0)
+        .expect("first iteration");
+    let second = earthmesh_mesh::icosahedron_spring_iteration_fortran(
+        &first.updated_m_points,
+        &topology,
+        2.0,
+        1.0,
+    )
+    .expect("second iteration");
+
+    let output =
+        earthmesh_mesh::icosahedron_spring_dynamics1_fortran(&points, &topology, 2, 2.0, 1.0, 1)
+            .expect("valid spring_dynamics1 wrapper");
+
+    assert_eq!(output.updated_m_points, second.updated_m_points);
+    assert_eq!(output.last_edge_displacements, second.edge_displacements);
+    assert_eq!(output.diagnostic_max_displacements.len(), 2);
+    assert_eq!(output.diagnostic_max_displacements[0].iteration, 1);
+    assert_eq!(output.diagnostic_max_displacements[1].iteration, 2);
+    assert!(output.diagnostic_max_displacements[0].max_displacement > 0.0);
+    assert!(output.diagnostic_max_displacements[1].max_displacement > 0.0);
+}

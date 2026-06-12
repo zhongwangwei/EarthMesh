@@ -207,6 +207,14 @@ pub struct IcosahedronSpringIterationOutput {
     pub edge_distances: Vec<f64>,
 }
 
+/// Output from the multi-iteration `icosahedron.F90:spring_dynamics1` wrapper.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IcosahedronSpringDynamicsOutput {
+    pub updated_m_points: Vec<CartesianPoint>,
+    pub last_edge_displacements: Vec<CartesianPoint>,
+    pub diagnostic_max_displacements: Vec<SpringDiagnosticMaxDisplacement>,
+}
+
 /// Connectivity arrays after the `fill_diamond` calls inside
 /// `icosahedron.F90:icosahedron`, before `tri_neighbors` fills the remaining
 /// reciprocal neighbors.
@@ -1013,6 +1021,62 @@ pub fn icosahedron_spring_iteration_fortran(
         updated_m_points,
         edge_displacements,
         edge_distances,
+    })
+}
+
+/// Multi-iteration wrapper for `icosahedron.F90:spring_dynamics1`.
+///
+/// It repeatedly applies `icosahedron_spring_iteration_fortran` and records the
+/// Fortran-style periodic Max-DS diagnostic for `iter == 1` or
+/// `iter % diagnostic_every == 0`, comparing each diagnostic iteration against
+/// the coordinates at the start of that same iteration.
+pub fn icosahedron_spring_dynamics1_fortran(
+    m_points: &[CartesianPoint],
+    topology: &IcosahedronSpringTopology,
+    niter: usize,
+    dist00: f64,
+    radius: f64,
+    diagnostic_every: usize,
+) -> Option<IcosahedronSpringDynamicsOutput> {
+    if diagnostic_every == 0 {
+        return None;
+    }
+
+    let mut current_m_points = m_points.to_vec();
+    let mut last_edge_displacements =
+        vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
+    let mut diagnostic_max_displacements = Vec::new();
+
+    for iteration in 1..=niter {
+        let record_diagnostic = iteration == 1 || iteration % diagnostic_every == 0;
+        let diagnostic_reference = if record_diagnostic {
+            Some(current_m_points.clone())
+        } else {
+            None
+        };
+
+        let iteration_output =
+            icosahedron_spring_iteration_fortran(&current_m_points, topology, dist00, radius)?;
+        current_m_points = iteration_output.updated_m_points;
+        last_edge_displacements = iteration_output.edge_displacements;
+
+        if let Some(reference) = diagnostic_reference {
+            let mut max_displacement = 0.0_f64;
+            for im in 2..current_m_points.len() {
+                let displacement = magnitude(vector_between(reference[im], current_m_points[im]));
+                max_displacement = max_displacement.max(displacement);
+            }
+            diagnostic_max_displacements.push(SpringDiagnosticMaxDisplacement {
+                iteration,
+                max_displacement,
+            });
+        }
+    }
+
+    Some(IcosahedronSpringDynamicsOutput {
+        updated_m_points: current_m_points,
+        last_edge_displacements,
+        diagnostic_max_displacements,
     })
 }
 

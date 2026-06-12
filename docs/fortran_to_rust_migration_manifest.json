@@ -63,10 +63,10 @@
         "tri_neighbors M-point polygon assembly ported to rust/earthmesh_mesh",
         "tri_neighbors integrated orchestration ported to rust/earthmesh_mesh",
         "spring_dynamics1 setup topology and direction tables ported to rust/earthmesh_mesh",
-        "spring_dynamics1 single-iteration edge displacement and coordinate update ported to rust/earthmesh_mesh"
+        "spring_dynamics1 single-iteration edge displacement and coordinate update ported to rust/earthmesh_mesh",
+        "spring_dynamics1 multi-iteration wrapper and diagnostics ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
-        "spring_dynamics1 multi-iteration wrapper and diagnostics",
         "NXP fixture parity for point counts, connectivity, and coordinates after spring relaxation"
       ]
     },
