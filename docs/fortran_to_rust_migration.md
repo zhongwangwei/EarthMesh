@@ -217,3 +217,7 @@ Extended `rust/earthmesh_mesh` with `edge_id_sort_fortran_indexed`, a tested Rus
 ### 2026-06-12: `MOD_grid_preprocess.F90` `set_weightsOnEdge` ported
 
 Extended `rust/earthmesh_mesh` with `set_weights_on_edge_fortran_indexed`, a tested Rust port of `MOD_grid_preprocess:set_weightsOnEdge`. The wrapper preserves Fortran-indexed edge/cell/vertex ids, computes `RivCell` from `kiteAreasOnVertex / areaCell`, uses the same two-sided edge stencil traversal, Kahan compensated cumulative sums, `dvEdge/dcEdge` scaling, inflow sign adjustment from `cellsOnEdge`, and zonal-flow reconstruction `error_segment`. Compact per-edge vectors replace the fixed `maxEdges2 x num_edge` Fortran storage.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetArea` production wrapper ported
+
+Extended `rust/earthmesh_mesh` with `get_area_production_fortran_indexed`, a tested production-facing wrapper around the migrated `GetArea` unit workflow. It returns the `kiteAreasOnVertex`, `areaTriangle`, and `areaCell` arrays together with the reconstruction relative-error summary previously only printed by the Fortran routine. Real-mesh MPAS parity fixtures remain separate integration work.

@@ -1,9 +1,10 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
     cells_on_edge_from_neighbor_cells, edge_midpoints_from_cells_fortran_indexed,
-    get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed, is_ngrmm,
-    lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
-    normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
+    get_area_production_fortran_indexed, get_area_unit_fortran_indexed,
+    get_edge_connectivity_fortran_indexed, is_ngrmm, lonlat_degrees_to_unit_xyz,
+    next_ccw_edge_candidate_slot, normalize_lon_m180_180, normalize_vertex_rotation,
+    order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
     polygon_mesh_quality_fortran_indexed, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
@@ -777,4 +778,54 @@ fn polygon_mesh_quality_fortran_indexed_rejects_bad_compact_cache_length() {
         &angle_cache,
     )
     .is_none());
+}
+
+#[test]
+fn get_area_production_wrapper_includes_reconstruction_error_summary() {
+    let zero = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+    let vertex = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+    let cell2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.0));
+    let cell3 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.5));
+    let cell4 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.5));
+    let edge2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.25, 0.0));
+    let edge3 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.25, 0.5));
+    let edge4 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.25));
+
+    let vertices = vec![zero, zero, vertex];
+    let edge_points = vec![zero, zero, edge2, edge3, edge4];
+    let cell_points = vec![zero, zero, cell2, cell3, cell4];
+    let cells_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
+    let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [3, 4], [4, 2]];
+    let vertices_on_cell = vec![vec![], vec![]];
+
+    let output = get_area_production_fortran_indexed(GetAreaUnitInput {
+        vertices: &vertices,
+        edge_points: &edge_points,
+        cell_points: &cell_points,
+        cells_on_vertex: &cells_on_vertex,
+        edges_on_vertex: &edges_on_vertex,
+        cells_on_edge: &cells_on_edge,
+        vertices_on_cell: &vertices_on_cell,
+    })
+    .expect("valid production GetArea input");
+
+    let expected_error = area_triangle_reconstruction_error_fortran_indexed(
+        &output.unit.area_triangle,
+        &cell_points,
+        &cells_on_vertex,
+    )
+    .expect("direct reconstruction summary");
+
+    assert!(output.unit.area_triangle[2] > 0.0);
+    approx_eq(
+        output.reconstruction_error.max_relative,
+        expected_error.max_relative,
+        1.0e-15,
+    );
+    approx_eq(
+        output.reconstruction_error.avg_relative,
+        expected_error.avg_relative,
+        1.0e-15,
+    );
 }

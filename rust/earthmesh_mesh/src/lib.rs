@@ -1764,6 +1764,35 @@ pub fn get_area_unit_fortran_indexed(input: GetAreaUnitInput<'_>) -> Option<GetA
     })
 }
 
+/// Production-facing `GetArea` output with the diagnostic summary printed by
+/// the Fortran routine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetAreaProductionOutput {
+    pub unit: GetAreaUnitOutput,
+    pub reconstruction_error: AreaTriangleReconstructionError,
+}
+
+/// Production wrapper for `MOD_grid_preprocess:GetArea`.
+///
+/// This combines the migrated unit-sphere area workflow with the reconstruction
+/// relative-error diagnostic that the Fortran routine prints after computing
+/// `areaTriangle`.
+pub fn get_area_production_fortran_indexed(
+    input: GetAreaUnitInput<'_>,
+) -> Option<GetAreaProductionOutput> {
+    let unit = get_area_unit_fortran_indexed(input)?;
+    let reconstruction_error = area_triangle_reconstruction_error_fortran_indexed(
+        &unit.area_triangle,
+        input.cell_points,
+        input.cells_on_vertex,
+    )?;
+
+    Some(GetAreaProductionOutput {
+        unit,
+        reconstruction_error,
+    })
+}
+
 /// Port of the `GetArea` area-triangle reconstruction error summary.
 ///
 /// For each Fortran-indexed vertex id from `2..`, the routine recomputes the
