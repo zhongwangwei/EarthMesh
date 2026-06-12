@@ -334,12 +334,11 @@
         "mask_postproc_Earth top-level file-backed execution composition ported to rust/earthmesh_cli",
         "mask_postproc_Lnd top-level file-backed execution composition ported to rust/earthmesh_cli",
         "final mask_postproc vertex_mapping/reindex evidence report exposed for ocean boundary writers",
-        "mask_postproc_Ocn tri/hex renewal and boundary metadata composition ported to rust/earthmesh_cli"
+        "mask_postproc_Ocn tri/hex renewal and boundary metadata composition ported to rust/earthmesh_cli",
+        "mask_postproc_Ocn top-level file-backed execution composition with final gridfile and boundary outputs ported to rust/earthmesh_cli"
       ],
-      "remaining_rust_surfaces": [
-        "mask_postproc_Ocn top-level file-backed execution composition with final gridfile and boundary outputs"
-      ],
-      "port_status": "started"
+      "remaining_rust_surfaces": [],
+      "port_status": "completed"
     },
     {
       "path": "src/MOD_refine.F90",

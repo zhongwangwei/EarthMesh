@@ -1,0 +1,155 @@
+use std::fs;
+
+fn read_i32(file: &netcdf::File, name: &str) -> Vec<i32> {
+    file.variable(name)
+        .unwrap_or_else(|| panic!("missing variable {name}"))
+        .get_values::<i32, _>(..)
+        .unwrap_or_else(|err| panic!("read {name}: {err}"))
+}
+
+fn sample_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
+    let mut m_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
+    for (idx, point) in m_points.iter_mut().enumerate() {
+        point.lon = idx as f64;
+        point.lat = idx as f64 * 0.5;
+    }
+    let mut w_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
+    for (idx, point) in w_points.iter_mut().enumerate() {
+        point.lon = 100.0 + idx as f64;
+        point.lat = 40.0 + idx as f64 * 0.25;
+    }
+
+    let mut m_to_w = vec![[1, 1, 1]; 8];
+    m_to_w[2] = [10, 11, 2];
+    m_to_w[3] = [11, 12, 3];
+    m_to_w[4] = [12, 13, 4];
+    m_to_w[5] = [13, 10, 5];
+
+    let mut w_to_m = vec![vec![1; 7]; 14];
+    w_to_m[2] = vec![2, 1, 1, 1, 1, 1, 1];
+    w_to_m[3] = vec![3, 1, 1, 1, 1, 1, 1];
+    w_to_m[4] = vec![4, 1, 1, 1, 1, 1, 1];
+    w_to_m[5] = vec![5, 1, 1, 1, 1, 1, 1];
+    w_to_m[10] = vec![2, 5, 6, 7, 1, 1, 1];
+    w_to_m[11] = vec![2, 3, 6, 7, 1, 1, 1];
+    w_to_m[12] = vec![3, 4, 6, 7, 1, 1, 1];
+    w_to_m[13] = vec![4, 5, 6, 7, 1, 1, 1];
+    let mut n_w_to_m = vec![0; 14];
+    n_w_to_m[2] = 1;
+    n_w_to_m[3] = 1;
+    n_w_to_m[4] = 1;
+    n_w_to_m[5] = 1;
+    n_w_to_m[10] = 5;
+    n_w_to_m[11] = 5;
+    n_w_to_m[12] = 5;
+    n_w_to_m[13] = 5;
+
+    earthmesh_cli::UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    }
+}
+
+#[test]
+fn ocean_runner_reads_inputs_writes_final_gridfile_and_tri_boundaries() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mask_postproc_ocean_runner_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("result")).expect("create result dir");
+    fs::create_dir_all(root.join("contain")).expect("create contain dir");
+
+    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 9, "tri", "oceanmesh", false)
+        .expect("ocean plan");
+    earthmesh_cli::write_unstructured_mesh_netcdf(
+        &plan.source_gridfile,
+        &sample_ocean_source_mesh(),
+    )
+    .expect("write source mesh");
+    let contain = earthmesh_cli::ContainMesh {
+        ustr_id: vec![
+            vec![0, 0, 1],
+            vec![0, 0, 1],
+            vec![1, 0, 1],
+            vec![1, 0, 1],
+            vec![1, 0, 1],
+            vec![1, 0, 1],
+            vec![0, 0, 1],
+            vec![0, 0, 1],
+        ],
+        ustr_ii: vec![vec![0, 0, 0]],
+        is_in_area_ustr: vec![0, -1, 1, 1, 1, 1, -1, -1],
+    };
+    earthmesh_cli::write_contain_netcdf(&plan.contain_domain, &contain)
+        .expect("write contain domain");
+
+    let report = earthmesh_cli::run_mask_postproc_ocean_domain(
+        &plan,
+        earthmesh_cli::MaskPostprocOceanRunOptions {
+            mask_sea_ratio: 0.5,
+            num_vertex: 1,
+        },
+    )
+    .expect("run ocean mask_postproc domain");
+
+    assert_eq!(report.final_gridfile.output, plan.result_gridfile);
+    assert_eq!(report.final_gridfile.sjx_points, 6);
+    assert_eq!(
+        report.obc.as_ref().expect("obc report").output,
+        plan.obc_output.clone().unwrap()
+    );
+    assert_eq!(
+        report.obcv2.as_ref().expect("obcv2 report").output,
+        plan.obcv2_output.clone().unwrap()
+    );
+    assert_eq!(report.renewal.renewed.points_next, 5);
+    assert_eq!(report.finalization.vertex_reindex.vertex_mapping[10], 6);
+
+    let final_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&report.final_gridfile.output)
+        .expect("read final gridfile");
+    assert_eq!(final_mesh.m_to_w[2], [6, 7, 2]);
+    assert_eq!(final_mesh.m_to_w[5], [9, 6, 5]);
+
+    let obc_file = netcdf::open(report.obc.unwrap().output).expect("open obc");
+    assert_eq!(read_i32(&obc_file, "bdy_order"), vec![1, 6, 7, 8, 9]);
+    assert_eq!(read_i32(&obc_file, "obc_order"), vec![1, 1, 1, 1, 1]);
+    assert_eq!(read_i32(&obc_file, "ibc_order"), vec![1, 6, 7, 8, 9]);
+
+    let obcv2_file = netcdf::open(report.obcv2.unwrap().output).expect("open obcv2");
+    assert_eq!(read_i32(&obcv2_file, "n_close_curve"), vec![4]);
+    assert_eq!(
+        read_i32(&obcv2_file, "close_curve"),
+        vec![10, 11, 12, 13, 1]
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ocean_runner_rejects_non_ocean_plan_before_writing_outputs() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mask_postproc_ocean_runner_reject_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 9, "tri", "landmesh", false)
+        .expect("land plan");
+
+    let err = earthmesh_cli::run_mask_postproc_ocean_domain(
+        &plan,
+        earthmesh_cli::MaskPostprocOceanRunOptions {
+            mask_sea_ratio: 0.5,
+            num_vertex: 1,
+        },
+    )
+    .expect_err("non-ocean plan rejected");
+
+    assert!(err.to_string().contains("oceanmesh"));
+    assert!(!plan.result_gridfile.exists());
+
+    let _ = fs::remove_dir_all(&root);
+}

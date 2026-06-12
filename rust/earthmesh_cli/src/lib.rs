@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_mesh::{
     boundary_connection_fortran_indexed, centroid_spherical_mesh_fortran_indexed,
-    circumcenter_spherical_mesh_fortran_indexed, connect_on_cell_fortran_indexed,
-    edge_distance_angle_fortran_indexed, get_area_production_fortran_indexed,
-    get_edge_production_fortran_indexed, lonlat_points_to_unit_xyz,
-    order_vertices_on_cell_fortran_indexed, remove_isolated_ocean_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    circumcenter_spherical_mesh_fortran_indexed, classify_boundary_orders_fortran_indexed,
+    connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
+    get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
+    lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
+    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
@@ -105,6 +105,14 @@ pub struct MaskPostprocLandRunOptions<'a> {
     pub lat_i: &'a [f64],
 }
 
+/// Runtime controls needed to reproduce the file-backed
+/// `MOD_mask_postproc.F90:mask_postproc_Ocn` branch from an I/O plan.
+#[derive(Debug, Clone, Copy)]
+pub struct MaskPostprocOceanRunOptions {
+    pub mask_sea_ratio: f64,
+    pub num_vertex: usize,
+}
+
 /// Evidence report from the gridfile/contain-backed Rust replacement path for
 /// `MOD_mask_postproc.F90:mask_postproc_Lnd`.
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +120,18 @@ pub struct MaskPostprocLandDomainReport {
     pub patchtypes: LandPatchtypes,
     pub patchtype: PatchIdWriteReport,
     pub final_gridfile: UnstructuredMeshWriteReport,
+}
+
+/// Evidence report from the gridfile/contain-backed Rust replacement path for
+/// `MOD_mask_postproc.F90:mask_postproc_Ocn`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocOceanDomainReport {
+    pub renewal: MaskPostprocOceanRenewalReport,
+    pub finalization: MaskPostprocFinalizationReport,
+    pub final_gridfile: UnstructuredMeshWriteReport,
+    pub boundary_orders: Option<BoundaryOrders>,
+    pub obc: Option<ObcBoundaryWriteReport>,
+    pub obcv2: Option<Obcv2BoundaryWriteReport>,
 }
 
 /// Result of composing the tri-only ocean postprocess mask renewal routines
@@ -3278,6 +3298,96 @@ pub fn run_mask_postproc_land_domain(
         patchtypes,
         patchtype,
         final_gridfile,
+    })
+}
+
+/// File-backed composition of the migrated
+/// `MOD_mask_postproc.F90:mask_postproc_Ocn` branch.
+///
+/// This runner composes contain-domain reading, the ocean sea-ratio mask
+/// adjustment, tri/hex renewal, final gridfile writing, and tri-only boundary
+/// outputs (`obc*.nc4`/`obcv2*.nc4`).
+pub fn run_mask_postproc_ocean_domain(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocOceanRunOptions,
+) -> io::Result<MaskPostprocOceanDomainReport> {
+    if plan.mesh_type != "oceanmesh" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "ocean mask_postproc runner requires oceanmesh plan, got {}",
+                plan.mesh_type
+            ),
+        ));
+    }
+
+    let inputs = read_mask_postproc_domain_inputs(plan)?;
+    let ocean_mask = apply_ocean_mask_sea_ratio_fortran_indexed(
+        &inputs.contain,
+        options.num_vertex,
+        options.mask_sea_ratio,
+    )?;
+    let renewal = renew_mask_postproc_ocean_domain_fortran_indexed(
+        &inputs.layout,
+        &ocean_mask,
+        &plan.mode_grid,
+    )?;
+    let finalization = finalize_mask_postproc_layout_with_reindex_report(
+        &inputs.layout,
+        &renewal.is_in_domain_ustr,
+        &plan.mode_grid,
+    )?;
+    let final_gridfile = write_unstructured_mesh_netcdf(&plan.result_gridfile, &finalization.mesh)?;
+
+    let mut boundary_orders = None;
+    let mut obc = None;
+    let mut obcv2 = None;
+    if plan.mode_grid == "tri" {
+        let boundary = renewal.boundary.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean renewal did not produce boundary connection metadata",
+            )
+        })?;
+        let isolated = renewal.isolated.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean renewal did not produce isolated-ocean metadata",
+            )
+        })?;
+        let obcv2_output = plan.obcv2_output.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean plan is missing obcv2 output path",
+            )
+        })?;
+        obcv2 = Some(write_obcv2_boundary_netcdf(obcv2_output, boundary)?);
+
+        let orders = classify_boundary_orders_fortran_indexed(
+            isolated.num_bdy_long,
+            &isolated.bdy_long_order,
+            &inputs.layout.vertex_neighbors,
+            &inputs.layout.vertex_neighbor_counts,
+            &finalization.vertex_reindex.vertex_mapping,
+            &renewal.is_in_domain_ustr,
+        )?;
+        let obc_output = plan.obc_output.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean plan is missing obc output path",
+            )
+        })?;
+        obc = Some(write_obc_boundary_netcdf(obc_output, &orders)?);
+        boundary_orders = Some(orders);
+    }
+
+    Ok(MaskPostprocOceanDomainReport {
+        renewal,
+        finalization,
+        final_gridfile,
+        boundary_orders,
+        obc,
+        obcv2,
     })
 }
 
