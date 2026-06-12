@@ -1613,6 +1613,35 @@ pub struct SpringjustmentGlobalCoreOutput {
     pub spring: SpringDynamicsGlobalOutput,
 }
 
+/// Borrowed inputs for the pure in-memory calculation side of
+/// `MOD_grid_preprocess:Springjustment_regional_step`.
+#[derive(Debug, Clone, Copy)]
+pub struct SpringjustmentRegionalCoreInput<'a> {
+    pub triangle_lonlat: &'a [LonLatDegrees],
+    pub cell_lonlat: &'a [LonLatDegrees],
+    pub cells_on_triangle: &'a [[usize; 3]],
+    pub triangles_on_cell: &'a [Vec<usize>],
+    pub n_edges_on_cell: &'a [usize],
+    pub move_mask: &'a [bool],
+    pub niter_refine: usize,
+    pub radius: f64,
+    pub diagnostic_every: usize,
+}
+
+/// Output from the pure in-memory `Springjustment_regional_step` adapter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringjustmentRegionalCoreOutput {
+    pub updated_triangle_lonlat: Vec<LonLatDegrees>,
+    pub updated_cell_lonlat: Vec<LonLatDegrees>,
+    pub triangle_neighbors: Vec<[usize; 3]>,
+    pub cells_on_edge: Vec<[usize; 2]>,
+    pub vertices_on_edge: Vec<[usize; 2]>,
+    pub edges_on_vertex: Vec<[usize; 3]>,
+    pub edges_on_cell: Vec<Vec<usize>>,
+    pub cells_on_cell: Vec<Vec<usize>>,
+    pub regional: SpringDynamicsRegionalOutput,
+}
+
 /// One-iteration Rust wrapper for `MOD_grid_preprocess:spring_dynamics_global`.
 ///
 /// This ports the calculation order inside one Fortran iteration: compute all
@@ -2010,6 +2039,110 @@ pub fn springjustment_global_core_fortran_indexed(
         cellwidth: distance_output.cellwidth,
         edge_lonlat: edge_output.edge_points,
         spring,
+    })
+}
+
+/// Pure Rust adapter for the in-memory calculation sequence inside
+/// `MOD_grid_preprocess:Springjustment_regional_step`.
+///
+/// This excludes `set_dbxMove_regional_step` and file side effects by accepting
+/// the regional move mask explicitly. It wires the migrated topology,
+/// `spring_dynamics_regionalv2`, cell lon/lat refresh, and triangle
+/// centroid/circumcenter refresh sequence used by the Fortran routine.
+pub fn springjustment_regional_core_fortran_indexed(
+    input: SpringjustmentRegionalCoreInput<'_>,
+) -> Option<SpringjustmentRegionalCoreOutput> {
+    if input.triangle_lonlat.len() != input.cells_on_triangle.len()
+        || input.triangles_on_cell.len() != input.n_edges_on_cell.len()
+        || input.cell_lonlat.len() != input.n_edges_on_cell.len()
+        || input.move_mask.len() != input.n_edges_on_cell.len()
+    {
+        return None;
+    }
+
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+        input.cells_on_triangle,
+        input.triangles_on_cell,
+        input.n_edges_on_cell,
+    )?;
+    let edge_connectivity =
+        get_edge_connectivity_fortran_indexed(&triangle_neighbors, input.cells_on_triangle)?;
+    let vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+        input.triangle_lonlat,
+        input.cell_lonlat,
+        &edge_connectivity.cells_on_edge,
+        &edge_connectivity.vertices_on_edge,
+    )?;
+    let cell_connectivity = connect_on_cell_fortran_indexed(
+        input.n_edges_on_cell,
+        &edge_connectivity.cells_on_edge,
+        &edge_connectivity.edges_on_vertex,
+        input.triangles_on_cell,
+    )?;
+
+    let cell_points = input
+        .cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| {
+            CartesianPoint::new(
+                point.x * input.radius,
+                point.y * input.radius,
+                point.z * input.radius,
+            )
+        })
+        .collect::<Vec<_>>();
+    let regional = spring_dynamics_regional_fortran_indexed(
+        &cell_points,
+        input.n_edges_on_cell,
+        &cell_connectivity.cells_on_cell,
+        input.move_mask,
+        input.niter_refine,
+        input.radius,
+        input.diagnostic_every,
+    )?;
+    let updated_cell_lonlat = regional
+        .updated_cell_points
+        .iter()
+        .copied()
+        .map(xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+    let centroid_lonlat =
+        centroid_spherical_mesh_fortran_indexed(&updated_cell_lonlat, input.cells_on_triangle)?;
+    let centroid_cartesian = centroid_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| {
+            CartesianPoint::new(
+                point.x * input.radius,
+                point.y * input.radius,
+                point.z * input.radius,
+            )
+        })
+        .collect::<Vec<_>>();
+    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+        &centroid_cartesian,
+        &regional.updated_cell_points,
+        input.cells_on_triangle,
+    )?;
+    let updated_triangle_lonlat = circumcenters
+        .iter()
+        .copied()
+        .map(xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+
+    Some(SpringjustmentRegionalCoreOutput {
+        updated_triangle_lonlat,
+        updated_cell_lonlat,
+        triangle_neighbors,
+        cells_on_edge: edge_connectivity.cells_on_edge,
+        vertices_on_edge,
+        edges_on_vertex: edge_connectivity.edges_on_vertex,
+        edges_on_cell: cell_connectivity.edges_on_cell,
+        cells_on_cell: cell_connectivity.cells_on_cell,
+        regional,
     })
 }
 

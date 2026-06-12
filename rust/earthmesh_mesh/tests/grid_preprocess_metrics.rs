@@ -11,10 +11,12 @@ use earthmesh_mesh::{
     polygon_mesh_quality_fortran_indexed, set_dists_on_edge_global_fortran_indexed,
     shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    spring_dynamics_global_fortran_indexed, springjustment_global_core_fortran_indexed,
+    spring_dynamics_global_fortran_indexed, spring_dynamics_regional_fortran_indexed,
+    springjustment_global_core_fortran_indexed, springjustment_regional_core_fortran_indexed,
     triangle_mesh_quality_fortran_indexed, triangle_neighbors_from_cell_membership_fortran_indexed,
     vertex_cell_position, CartesianPoint, DistanceLayerSpacing, GetAreaUnitInput,
     GlobalDistanceStep, LonLatDegrees, SetDistsOnEdgeGlobalInput, SpringjustmentGlobalCoreInput,
+    SpringjustmentRegionalCoreInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -972,6 +974,133 @@ fn springjustment_global_core_wires_distance_step_updates() {
 
     assert_eq!(output.dists_on_edge, expected_distance.dists_on_edge);
     assert_eq!(output.cellwidth, expected_distance.cellwidth);
+}
+
+#[test]
+fn springjustment_regional_core_matches_manual_migrated_pipeline() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut n_edges_on_cell = vec![0usize; 14];
+    n_edges_on_cell[10] = 3;
+    n_edges_on_cell[11] = 3;
+    n_edges_on_cell[12] = 3;
+    n_edges_on_cell[13] = 3;
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+    let mut move_mask = vec![false; 14];
+    move_mask[10] = true;
+
+    let output = springjustment_regional_core_fortran_indexed(SpringjustmentRegionalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        move_mask: &move_mask,
+        niter_refine: 1,
+        radius: 1.0,
+        diagnostic_every: 10,
+    })
+    .expect("valid regional core input");
+
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &n_edges_on_cell,
+    )
+    .expect("triangle neighbors");
+    let edge_connectivity =
+        get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_triangle)
+            .expect("edge connectivity");
+    let vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+        &triangle_lonlat,
+        &cell_lonlat,
+        &edge_connectivity.cells_on_edge,
+        &edge_connectivity.vertices_on_edge,
+    )
+    .expect("sorted vertices");
+    let cell_connectivity = earthmesh_mesh::connect_on_cell_fortran_indexed(
+        &n_edges_on_cell,
+        &edge_connectivity.cells_on_edge,
+        &edge_connectivity.edges_on_vertex,
+        &triangles_on_cell,
+    )
+    .expect("cell connectivity");
+    let cell_points = cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let regional = spring_dynamics_regional_fortran_indexed(
+        &cell_points,
+        &n_edges_on_cell,
+        &cell_connectivity.cells_on_cell,
+        &move_mask,
+        1,
+        1.0,
+        10,
+    )
+    .expect("regional smoother");
+    let expected_cell_lonlat = regional
+        .updated_cell_points
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+    let centroid_lonlat =
+        centroid_spherical_mesh_fortran_indexed(&expected_cell_lonlat, &cells_on_triangle)
+            .expect("centroids");
+    let centroid_cartesian = centroid_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+        &centroid_cartesian,
+        &regional.updated_cell_points,
+        &cells_on_triangle,
+    )
+    .expect("circumcenters");
+    let expected_triangle_lonlat = circumcenters
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
+
+    assert_eq!(output.triangle_neighbors, triangle_neighbors);
+    assert_eq!(output.cells_on_edge, edge_connectivity.cells_on_edge);
+    assert_eq!(output.vertices_on_edge, vertices_on_edge);
+    assert_eq!(output.edges_on_cell, cell_connectivity.edges_on_cell);
+    assert_eq!(output.cells_on_cell, cell_connectivity.cells_on_cell);
+    assert_eq!(output.updated_cell_lonlat, expected_cell_lonlat);
+    assert_eq!(output.updated_triangle_lonlat, expected_triangle_lonlat);
+    assert_eq!(output.regional.moved_cells, vec![10]);
+    assert_eq!(
+        output.regional.diagnostic_max_displacements,
+        regional.diagnostic_max_displacements
+    );
 }
 
 #[test]
