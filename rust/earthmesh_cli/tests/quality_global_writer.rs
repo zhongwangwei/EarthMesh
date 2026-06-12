@@ -47,8 +47,8 @@ fn quality_global_writer_preserves_fortran_schema_with_optional_qbx() {
         }),
     };
 
-    let report = earthmesh_cli::write_quality_global_netcdf(&output, &quality)
-        .expect("write quality file");
+    let report =
+        earthmesh_cli::write_quality_global_netcdf(&output, &quality).expect("write quality file");
 
     assert_eq!(report.output, output);
     assert_eq!(report.num_sjx, 2);
@@ -67,8 +67,14 @@ fn quality_global_writer_preserves_fortran_schema_with_optional_qbx() {
     assert_eq!(file.dimension("six").expect("six").len(), 6);
     assert_eq!(file.dimension("sev").expect("sev").len(), 7);
 
-    assert_eq!(read_f64(&file, "length_sjx"), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    assert_eq!(read_f64(&file, "angle_wbx"), vec![11.0, 12.0, 13.0, 14.0, 15.0]);
+    assert_eq!(
+        read_f64(&file, "length_sjx"),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    );
+    assert_eq!(
+        read_f64(&file, "angle_wbx"),
+        vec![11.0, 12.0, 13.0, 14.0, 15.0]
+    );
     assert_eq!(read_f64(&file, "Extr_lbx"), vec![6.0, 11.0]);
     assert_eq!(read_f64(&file, "Eavg_qbx"), vec![22.0, 26.0]);
     assert_eq!(read_f64(&file, "Savg_qbx"), vec![24.0]);
@@ -110,7 +116,9 @@ fn quality_global_writer_rejects_wrong_class_width() {
     assert!(err.to_string().contains("sjx length row 0 width"));
 }
 
-fn minimal_quality(qbx: Option<earthmesh_cli::QualityClassMetrics>) -> earthmesh_cli::GlobalQualityMesh {
+fn minimal_quality(
+    qbx: Option<earthmesh_cli::QualityClassMetrics>,
+) -> earthmesh_cli::GlobalQualityMesh {
     earthmesh_cli::GlobalQualityMesh {
         sjx: earthmesh_cli::QualityClassMetrics {
             length: vec![vec![1.0, 2.0, 3.0]],

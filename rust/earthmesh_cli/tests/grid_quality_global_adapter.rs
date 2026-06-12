@@ -64,7 +64,10 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
     assert_eq!(report.num_qbx, 1);
 
     let file = netcdf::open(&report.output).expect("open quality file");
-    assert_eq!(read_f64(&file, "length_sjx"), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 4.0, 5.0]);
+    assert_eq!(
+        read_f64(&file, "length_sjx"),
+        vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 4.0, 5.0]
+    );
     assert_eq!(read_f64(&file, "Extr_wbx"), vec![100.0, 115.0]);
     assert_eq!(read_f64(&file, "Savg_lbx"), vec![6.0]);
     assert_eq!(read_i32(&file, "less_sjx"), vec![0, 0, 1]);
@@ -75,27 +78,29 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
 
 #[test]
 fn grid_quality_global_adapter_omits_absent_heptagon_quality() {
-    let mesh = earthmesh_cli::global_quality_mesh_from_grid_quality(&earthmesh_mesh::GridQualityGlobalOutput {
-        edge_class_counts: earthmesh_mesh::PolygonEdgeClassCounts {
-            pentagons: 0,
-            hexagons: 0,
-            heptagons: 0,
-            less_than_five: 0,
-            greater_than_seven: 0,
+    let mesh = earthmesh_cli::global_quality_mesh_from_grid_quality(
+        &earthmesh_mesh::GridQualityGlobalOutput {
+            edge_class_counts: earthmesh_mesh::PolygonEdgeClassCounts {
+                pentagons: 0,
+                hexagons: 0,
+                heptagons: 0,
+                less_than_five: 0,
+                greater_than_seven: 0,
+            },
+            triangle: earthmesh_mesh::TriangleMeshQualityFortranOutput {
+                length_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [3.0, 4.0, 5.0]],
+                angle_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [50.0, 60.0, 70.0]],
+                extreme_angles_degrees: (50.0, 70.0),
+                average_min_max_angles_degrees: (50.0, 70.0),
+                angle_stddev_degrees: 8.16,
+                angle_less_flags: vec![false, false, false],
+                angle_more_flags: vec![false, false, true],
+            },
+            pentagon: None,
+            hexagon: None,
+            heptagon: None,
         },
-        triangle: earthmesh_mesh::TriangleMeshQualityFortranOutput {
-            length_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [3.0, 4.0, 5.0]],
-            angle_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [50.0, 60.0, 70.0]],
-            extreme_angles_degrees: (50.0, 70.0),
-            average_min_max_angles_degrees: (50.0, 70.0),
-            angle_stddev_degrees: 8.16,
-            angle_less_flags: vec![false, false, false],
-            angle_more_flags: vec![false, false, true],
-        },
-        pentagon: None,
-        hexagon: None,
-        heptagon: None,
-    });
+    );
 
     assert_eq!(mesh.sjx.more, vec![0, 0, 1]);
     assert_eq!(mesh.wbx.length.len(), 0);

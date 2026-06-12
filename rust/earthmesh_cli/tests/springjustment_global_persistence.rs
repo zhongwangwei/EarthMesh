@@ -13,9 +13,18 @@ fn springjustment_global_persistence_writes_legacy_result_files() {
         9,
         3,
         &[
-            earthmesh_mesh::LonLatDegrees { lon_degrees: 110.0, lat_degrees: -10.0 },
-            earthmesh_mesh::LonLatDegrees { lon_degrees: 120.0, lat_degrees: 0.0 },
-            earthmesh_mesh::LonLatDegrees { lon_degrees: 130.0, lat_degrees: 10.0 },
+            earthmesh_mesh::LonLatDegrees {
+                lon_degrees: 110.0,
+                lat_degrees: -10.0,
+            },
+            earthmesh_mesh::LonLatDegrees {
+                lon_degrees: 120.0,
+                lat_degrees: 0.0,
+            },
+            earthmesh_mesh::LonLatDegrees {
+                lon_degrees: 130.0,
+                lat_degrees: 10.0,
+            },
         ],
         &output,
     )
@@ -35,8 +44,8 @@ fn springjustment_global_persistence_writes_legacy_result_files() {
     assert_eq!(read_f64(&dists, "latv"), vec![1.0, 2.0]);
     assert_eq!(read_f64(&dists, "distsOnEdge"), vec![100.0, 200.0]);
 
-    let cellwidth = netcdf::open(&report.cellwidth.expect("cellwidth report").output)
-        .expect("open cellwidth");
+    let cellwidth =
+        netcdf::open(&report.cellwidth.expect("cellwidth report").output).expect("open cellwidth");
     assert_eq!(read_f64(&cellwidth, "lonw"), vec![110.0, 120.0, 130.0]);
     assert_eq!(read_f64(&cellwidth, "latw"), vec![-10.0, 0.0, 10.0]);
     assert_eq!(read_f64(&cellwidth, "cellwidth"), vec![12.0, 24.0, 48.0]);
@@ -63,7 +72,9 @@ fn springjustment_global_persistence_skips_cellwidth_when_absent() {
     .expect("write springjustment persistence");
 
     assert!(report.cellwidth.is_none());
-    assert!(root.join("result/distsOnEdge_NXP0010_04_global.nc4").exists());
+    assert!(root
+        .join("result/distsOnEdge_NXP0010_04_global.nc4")
+        .exists());
     assert!(!root.join("result/cellwidth_NXP0010_global.nc4").exists());
 
     let _ = std::fs::remove_dir_all(&root);
@@ -84,8 +95,14 @@ fn spring_output(cellwidth: Option<Vec<f64>>) -> earthmesh_mesh::SpringjustmentG
         dists_on_edge: vec![100.0, 200.0],
         cellwidth,
         edge_lonlat: vec![
-            earthmesh_mesh::LonLatDegrees { lon_degrees: 10.0, lat_degrees: 1.0 },
-            earthmesh_mesh::LonLatDegrees { lon_degrees: 20.0, lat_degrees: 2.0 },
+            earthmesh_mesh::LonLatDegrees {
+                lon_degrees: 10.0,
+                lat_degrees: 1.0,
+            },
+            earthmesh_mesh::LonLatDegrees {
+                lon_degrees: 20.0,
+                lat_degrees: 2.0,
+            },
         ],
         spring: earthmesh_mesh::SpringDynamicsGlobalOutput {
             updated_cell_points: Vec::new(),
