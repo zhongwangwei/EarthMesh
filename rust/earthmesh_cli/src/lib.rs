@@ -1037,6 +1037,74 @@ pub fn mask_postproc_layout_from_unstructured_mesh(
     }
 }
 
+/// Build the `Unstructured_Mesh_Save` payload used at the end of
+/// `MOD_mask_postproc.F90:mask_postproc_*`.
+///
+/// For `tri`, the final center/vertex arrays are written directly.  For `hex`,
+/// the Fortran call swaps center and vertex arguments so the legacy gridfile
+/// still stores triangles in `m*` variables and polygons in `w*` variables.
+pub fn unstructured_mesh_from_mask_postproc_final(
+    final_data: &earthmesh_mesh::MaskPostprocFinalData,
+    mode_grid: &str,
+) -> io::Result<UnstructuredMesh> {
+    match mode_grid.trim() {
+        "tri" => Ok(UnstructuredMesh {
+            m_points: lonlat_points_from_pairs(
+                "center_coordinates_final",
+                &final_data.center_coordinates_final,
+                final_data.points_final,
+            )?,
+            w_points: lonlat_points_from_pairs(
+                "vertex_coordinates_final",
+                &final_data.vertex_coordinates_final,
+                final_data.bounds_final,
+            )?,
+            m_to_w: rows_to_triangle_connectivity(
+                "center_neighbors_final",
+                &final_data.center_neighbors_final,
+                final_data.points_final,
+            )?,
+            w_to_m: usize_rows_to_i32(
+                "vertex_neighbors_final",
+                &final_data.vertex_neighbors_final,
+            )?,
+            n_w_to_m: usize_values_to_i32(
+                "vertex_neighbor_counts_final",
+                &final_data.vertex_neighbor_counts_final,
+            )?,
+        }),
+        "hex" => Ok(UnstructuredMesh {
+            m_points: lonlat_points_from_pairs(
+                "vertex_coordinates_final",
+                &final_data.vertex_coordinates_final,
+                final_data.bounds_final,
+            )?,
+            w_points: lonlat_points_from_pairs(
+                "center_coordinates_final",
+                &final_data.center_coordinates_final,
+                final_data.points_final,
+            )?,
+            m_to_w: rows_to_triangle_connectivity(
+                "vertex_neighbors_final",
+                &final_data.vertex_neighbors_final,
+                final_data.bounds_final,
+            )?,
+            w_to_m: usize_rows_to_i32(
+                "center_neighbors_final",
+                &final_data.center_neighbors_final,
+            )?,
+            n_w_to_m: usize_values_to_i32(
+                "center_neighbor_counts_final",
+                &final_data.center_neighbor_counts_final,
+            )?,
+        }),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("final mask_postproc gridfile supports tri or hex mode_grid only, got {other}"),
+        )),
+    }
+}
+
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
 pub fn obc_boundary_output_path(file_dir: impl AsRef<Path>, mask_patch_on: bool) -> PathBuf {
     let filename = if mask_patch_on {
@@ -1776,6 +1844,76 @@ fn i32_counts_as_usize(values: &[i32], name: &str) -> io::Result<Vec<usize>> {
         .iter()
         .map(|&value| usize_from_i32_connectivity(value, name))
         .collect()
+}
+
+fn lonlat_points_from_pairs(
+    name: &str,
+    values: &[[f64; 2]],
+    expected_final_id: usize,
+) -> io::Result<Vec<LonLatPoint>> {
+    if values.len() <= expected_final_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} length {} must include final id {expected_final_id}",
+                values.len()
+            ),
+        ));
+    }
+    Ok(values
+        .iter()
+        .map(|point| LonLatPoint {
+            lon: point[0],
+            lat: point[1],
+        })
+        .collect())
+}
+
+fn rows_to_triangle_connectivity(
+    name: &str,
+    rows: &[Vec<usize>],
+    expected_final_id: usize,
+) -> io::Result<Vec<[i32; 3]>> {
+    if rows.len() <= expected_final_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} length {} must include final id {expected_final_id}",
+                rows.len()
+            ),
+        ));
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(row_idx, row)| {
+            if row.len() < 3 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{name} row {row_idx} must contain at least three connectivity slots"),
+                ));
+            }
+            Ok([
+                usize_to_i32(name, row[0])?,
+                usize_to_i32(name, row[1])?,
+                usize_to_i32(name, row[2])?,
+            ])
+        })
+        .collect()
+}
+
+fn usize_rows_to_i32(name: &str, rows: &[Vec<usize>]) -> io::Result<Vec<Vec<i32>>> {
+    rows.iter()
+        .map(|row| usize_values_to_i32(name, row))
+        .collect()
+}
+
+fn usize_to_i32(name: &str, value: usize) -> io::Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} contains value {value} that does not fit NetCDF INT"),
+        )
+    })
 }
 
 fn scale_cartesian_points_by_earth_radius(points: &mut [CartesianPoint]) {

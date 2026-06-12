@@ -537,3 +537,7 @@ Added `build_land_patchtypes_fortran_indexed`, a tested Rust port of the land-on
 ### 2026-06-12: final mask_postproc vertex reindex loop ported
 
 Added `reindex_final_center_vertices_fortran_indexed`, a tested Rust port of the post-`Data_Finial` loop that rewrites final center-neighbor vertex ids through `vertex_mapping`. This closes the pure renumbering step after `extract_unique_vertices` and `sort_and_reindex`; full Earth/Lnd/Ocn orchestration still needs to compose the migrated helpers around real NetCDF inputs and outputs.
+
+### 2026-06-12: final mask_postproc gridfile adapter ported
+
+Added `unstructured_mesh_from_mask_postproc_final`, a tested CLI adapter for the final `Unstructured_Mesh_Save` call in `mask_postproc_*`. The helper writes `tri` final centers/vertices directly and applies the Fortran `hex` argument swap so the legacy gridfile still stores triangles in `m*` arrays and polygons in `w*` arrays. Full Earth/Lnd/Ocn orchestration still needs to call this after the migrated mesh-renewal helpers and before NetCDF persistence.
