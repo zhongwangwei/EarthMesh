@@ -2,9 +2,10 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
     cells_on_edge_from_neighbor_cells, edge_midpoints_from_cells_fortran_indexed,
     get_area_production_fortran_indexed, get_area_unit_fortran_indexed,
-    get_edge_connectivity_fortran_indexed, get_edge_production_fortran_indexed, is_ngrmm,
-    lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
-    normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
+    get_edge_connectivity_fortran_indexed, get_edge_production_fortran_indexed,
+    grid_quality_check_global_fortran_indexed, is_ngrmm, lonlat_degrees_to_unit_xyz,
+    next_ccw_edge_candidate_slot, normalize_lon_m180_180, normalize_vertex_rotation,
+    order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
     polygon_mesh_quality_fortran_indexed, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
@@ -856,6 +857,99 @@ fn polygon_mesh_quality_fortran_indexed_rejects_bad_compact_cache_length() {
         &angle_cache,
     )
     .is_none());
+}
+
+fn ring_lonlat(center_lon: f64, center_lat: f64, radius: f64, count: usize) -> Vec<LonLatDegrees> {
+    (0..count)
+        .map(|index| {
+            let theta = std::f64::consts::TAU * index as f64 / count as f64;
+            LonLatDegrees::new(
+                center_lon + radius * theta.cos(),
+                center_lat + radius * theta.sin(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn grid_quality_global_wrapper_matches_direct_quality_calls() {
+    let triangle_cell_points = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+        LonLatDegrees::new(0.0, 1.0),
+        LonLatDegrees::new(1.0, 1.0),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [3, 5, 4]];
+
+    let mut polygon_points = vec![LonLatDegrees::new(0.0, 0.0); 20];
+    for (slot, point) in (2..=6).zip(ring_lonlat(10.0, 0.0, 0.25, 5)) {
+        polygon_points[slot] = point;
+    }
+    for (slot, point) in (7..=12).zip(ring_lonlat(20.0, 0.0, 0.25, 6)) {
+        polygon_points[slot] = point;
+    }
+    for (slot, point) in (13..=19).zip(ring_lonlat(30.0, 0.0, 0.25, 7)) {
+        polygon_points[slot] = point;
+    }
+    let cells_on_polygon = vec![
+        vec![],
+        vec![],
+        vec![2, 3, 4, 5, 6],
+        vec![7, 8, 9, 10, 11, 12],
+        vec![13, 14, 15, 16, 17, 18, 19],
+    ];
+    let polygon_edge_counts = vec![0, 0, 5, 6, 7];
+
+    let output = grid_quality_check_global_fortran_indexed(
+        &triangle_cell_points,
+        &cells_on_triangle,
+        &polygon_points,
+        &cells_on_polygon,
+        &polygon_edge_counts,
+    )
+    .expect("valid global quality inputs");
+
+    let triangle_adjust = vec![true; cells_on_triangle.len()];
+    let triangle_lengths = vec![[0.0; 3]; cells_on_triangle.len()];
+    let triangle_angles = vec![[0.0; 3]; cells_on_triangle.len()];
+    let expected_triangle = triangle_mesh_quality_fortran_indexed(
+        &triangle_cell_points,
+        &cells_on_triangle,
+        &triangle_adjust,
+        &triangle_lengths,
+        &triangle_angles,
+    )
+    .expect("direct triangle quality");
+    let polygon_adjust = vec![true; cells_on_polygon.len()];
+    let expected_pentagon = polygon_mesh_quality_fortran_indexed(
+        5,
+        &polygon_points,
+        &cells_on_polygon,
+        &polygon_edge_counts,
+        &polygon_adjust,
+        &[vec![0.0; 5]],
+        &[vec![0.0; 5]],
+    )
+    .expect("direct pentagon quality");
+
+    assert_eq!(output.edge_class_counts.pentagons, 1);
+    assert_eq!(output.edge_class_counts.hexagons, 1);
+    assert_eq!(output.edge_class_counts.heptagons, 1);
+    assert_eq!(output.edge_class_counts.less_than_five, 0);
+    assert_eq!(output.edge_class_counts.greater_than_seven, 0);
+    assert_eq!(output.triangle.length_cache, expected_triangle.length_cache);
+    assert_eq!(
+        output.triangle.angle_less_flags,
+        expected_triangle.angle_less_flags
+    );
+    assert_eq!(
+        output.pentagon.expect("pentagon quality").angle_cache,
+        expected_pentagon.angle_cache
+    );
+    assert!(output.hexagon.is_some());
+    assert!(output.heptagon.is_some());
 }
 
 #[test]
