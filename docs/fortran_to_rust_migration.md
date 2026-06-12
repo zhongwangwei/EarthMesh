@@ -345,3 +345,7 @@ Extended `rust/earthmesh_mesh` with `icosahedron_spring_dynamics1_fortran`, a te
 ### 2026-06-12: `icosahedron.F90` integrated relaxed-grid wrapper ported
 
 Extended `rust/earthmesh_mesh` with `icosahedron_relaxed_grid_fortran`, an integrated Rust entry point for the deterministic in-memory path of `icosahedron(nxp0)`. The wrapper composes initial M-point generation, `fill_diamond`, `tri_neighbors`, `spring_dynamics1` topology, Fortran `dist00 = beta * pi2_r8 * erad8 / (5 * nxp0)`, and the migrated spring loop. Remaining icosahedron work is fixture-based NXP parity for post-relaxation coordinates/connectivity against the Fortran output.
+
+### 2026-06-12: `icosahedron.F90` NXP64 post-spring parity fixture added
+
+Added an ignored long-running release fixture test for `icosahedron_relaxed_grid_fortran(64, 5000, beta=1.0, relax=0.035)`, comparing point counts and sampled post-spring coordinates against the existing Fortran-generated `gridfile_NXP0064_01_ori.nc4` `GLONW/GLATW` output. `voronoi()` moves `xemd/yemd/zemd` into final W-point coordinates, so this fixture validates the migrated initial-grid, `fill_diamond`, `tri_neighbors`, and `spring_dynamics1` path against the archived NXP0064 Fortran output; pole longitude is intentionally not asserted because it is coordinate-convention arbitrary at ±90° latitude.

@@ -363,3 +363,32 @@ fn icosahedron_relaxed_grid_wrapper_wires_initial_connectivity_and_spring() {
     assert_eq!(relaxed.m_neighbors[3].npoly, 5);
     assert!(relaxed.spring.diagnostic_max_displacements.is_empty());
 }
+
+#[test]
+#[ignore = "NXP64 post-spring parity is a long fixture check; run explicitly after icosahedron changes"]
+fn icosahedron_relaxed_grid_matches_fortran_nxp64_glonw_glatw_fixture() {
+    let relaxed = earthmesh_mesh::icosahedron_relaxed_grid_fortran(64, 5000, 1.0, 0.035, 100)
+        .expect("valid NXP64 relaxed icosahedron grid");
+
+    assert_eq!(relaxed.nmd, 40963);
+    assert_eq!(relaxed.nud, 122881);
+    assert_eq!(relaxed.nwd, 81921);
+
+    let expected = [
+        (2usize, 110.43421173095703, -90.0),
+        (3usize, -35.99998092651367, -89.12533569335938),
+        (4usize, 1.8392731362837367e-05, -88.49825286865234),
+        (5usize, 13.142210960388184, -87.66699981689453),
+        (64usize, 34.966949462890625, -28.71109962463379),
+        (65usize, 35.00239944458008, -27.776504516601562),
+        (40962usize, -72.00001525878906, 89.12533569335938),
+    ];
+
+    for (point_id, expected_lon, expected_lat) in expected {
+        let lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(relaxed.m_points[point_id]);
+        approx_eq(lonlat.lat_degrees, expected_lat, 2.0e-4);
+        if expected_lat.abs() < 89.999 {
+            approx_eq(lonlat.lon_degrees, expected_lon, 2.0e-4);
+        }
+    }
+}
