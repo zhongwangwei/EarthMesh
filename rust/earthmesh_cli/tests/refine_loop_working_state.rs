@@ -195,3 +195,52 @@ fn working_state_applies_ngr_renew_into_final_arrays() {
     assert_eq!(final_mesh.m_to_w[3], [2, 5, 5]);
     assert_eq!(final_mesh.m_to_w[4], [4, 5, 6]);
 }
+
+#[test]
+fn working_state_applies_onedivide_four_connection_then_renew() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(2.0, 2.0), point(2.0, 2.0)],
+        w_points: vec![point(0.0, 0.0), point(6.0, 0.0), point(0.0, 6.0)],
+        m_to_w: vec![[1, 2, 3], [1, 2, 3]],
+        w_to_m: vec![vec![1, 2], vec![1, 2], vec![1, 2]],
+        n_w_to_m: vec![2, 2, 2],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_vertex = 1;
+    state.num_mp = vec![0, 2, 6];
+    state.num_wp = vec![0, 3, 6];
+    state.mp_new.resize(7, point(0.0, 0.0));
+    state.wp_new.resize(7, point(0.0, 0.0));
+    for row in &mut state.ngrmw_new {
+        row.resize(7, 0);
+    }
+    state.ref_sjx = vec![0, 0, 1];
+    state.ref_lbx = vec![0, 0, 0, 0, 0, 0, 0];
+    state.mrl_new = vec![0, 1, 1];
+
+    let connection = state
+        .apply_onedivide_four_connection()
+        .expect("mark one-into-four candidates");
+    assert_eq!(connection.marked_triangles, vec![2]);
+    assert_eq!(connection.marked_vertices, vec![1, 2, 3]);
+    assert_eq!(state.mrl_new[2], 4);
+    assert_eq!(&state.ref_lbx[1..=3], &[1, 1, 1]);
+
+    let renew = state
+        .apply_onedivide_four_renew()
+        .expect("renew one-into-four children through state");
+    assert_eq!(renew.refined_triangles, vec![2]);
+    assert_eq!(renew.new_triangle_ids, vec![3, 4, 5, 6]);
+    assert_eq!(renew.new_vertex_ids, vec![4, 5, 6]);
+    assert_eq!(state.wp_new[4], point(3.0, 3.0));
+    assert_eq!(state.mp_new[3], point(1.0, 1.0));
+    assert_eq!(
+        [
+            state.ngrmw_new[1][6],
+            state.ngrmw_new[2][6],
+            state.ngrmw_new[3][6]
+        ],
+        [4, 5, 6]
+    );
+}

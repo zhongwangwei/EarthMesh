@@ -379,6 +379,9 @@ pub struct RefineLoopWorkingState {
     pub ngrmw_f: Vec<Vec<usize>>,
     pub ngrwm_f: Vec<Vec<usize>>,
     pub n_ngrwm_f: Vec<usize>,
+    pub ref_sjx: Vec<i32>,
+    pub ref_lbx: Vec<i32>,
+    pub mrl_new: Vec<i32>,
     pub bdy_refine: Vec<usize>,
     pub bdy_refine_tran: Vec<usize>,
 }
@@ -1343,6 +1346,9 @@ impl RefineLoopWorkingState {
             ngrmw_f: Vec::new(),
             ngrwm_f: Vec::new(),
             n_ngrwm_f: Vec::new(),
+            ref_sjx: vec![0; nma + 1],
+            ref_lbx: vec![0; nwa + 1],
+            mrl_new: vec![1; nma + 1],
             bdy_refine: Vec::new(),
             bdy_refine_tran: Vec::new(),
         }
@@ -1385,6 +1391,39 @@ impl RefineLoopWorkingState {
                 &self.n_ngrwm,
             )
         }
+    }
+
+    /// Apply migrated `OnedivideFour_connection` using the state's current
+    /// refinement markers and base triangle connectivity.
+    pub fn apply_onedivide_four_connection(&mut self) -> io::Result<OnedivideFourConnectionReport> {
+        let sjx_points = *self
+            .num_mp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
+        apply_onedivide_four_connection_fortran_indexed(
+            self.num_vertex,
+            sjx_points,
+            &self.ref_sjx,
+            &self.ngrmw,
+            &mut self.ref_lbx,
+            &mut self.mrl_new,
+        )
+    }
+
+    /// Apply migrated `OnedivideFour_renew` and write child points/connectivity
+    /// back into this state's `*_new` arrays.
+    pub fn apply_onedivide_four_renew(&mut self) -> io::Result<OnedivideFourRenewReport> {
+        apply_onedivide_four_renew_fortran_indexed(
+            self.num_vertex,
+            self.iter,
+            &self.ngrmw,
+            &self.ref_sjx,
+            &self.num_mp,
+            &self.num_wp,
+            &mut self.mp_new,
+            &mut self.wp_new,
+            &mut self.ngrmw_new,
+        )
     }
 
     /// Apply the migrated `NGR_RENEW` adapter to this working state and store
