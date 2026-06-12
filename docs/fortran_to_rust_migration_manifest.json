@@ -119,10 +119,11 @@
         "existing EarthMesh mode_file ingestion branch ported to rust/earthmesh_cli",
         "existing MPAS mode_file converter ported to rust/earthmesh_cli",
         "existing FVCOM mode_file converter ported to rust/earthmesh_cli",
-        "existing IAP-Ocean mode_file converter ported to rust/earthmesh_cli"
+        "existing IAP-Ocean mode_file converter ported to rust/earthmesh_cli",
+        "top-level mask_restart/remask branch decision ported to rust/earthmesh_cli plan API"
       ],
       "remaining_rust_surfaces": [
-        "mkgrd.x mask_restart/remask branch",
+        "mkgrd.x mask_restart mask_postproc execution wiring",
         "mkgrd.x refine and postprocess loop after the initial gridfile"
       ]
     },

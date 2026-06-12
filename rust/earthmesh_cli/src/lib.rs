@@ -18,6 +18,76 @@ pub struct MkgrdGridinitRunReport {
     pub gridfile: UnstructuredMeshWriteReport,
 }
 
+/// Report for the migrated top-level `mkgrd.F90` mask-restart branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdMaskRestartPlanReport {
+    pub config: EarthmeshConfig,
+    pub workspace_plan: MkgrdWorkspacePlan,
+    pub remask: MaskRestartRemaskPlan,
+}
+
+/// Restart action selected by the top-level `mkgrd.F90` mask-restart branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaskRestartAction {
+    /// Fortran calls `mask_postproc(mesh_type)` and stops immediately.
+    RunMaskPostproc,
+    /// Fortran continues into the normal mkgrd path after the read_nl restart short-circuit.
+    ContinueMkgrd,
+}
+
+/// Non-destructive plan for the remask-specific state mutation around `mask_postproc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaskRestartRemaskPlan {
+    pub file_dir: PathBuf,
+    pub mesh_type: String,
+    pub step: i32,
+    pub refine: bool,
+    pub action: MaskRestartAction,
+}
+
+/// Plan the top-level `mkgrd.F90` mask-restart branch without running
+/// `MOD_mask_postproc.F90:mask_postproc`.
+///
+/// This ports the branch decision and state changes around the Fortran call:
+/// `refine=.false.`, `step=max_iter+1`, and immediate `mask_postproc` only for
+/// `mesh_type='oceanmesh'` with `mask_patch_on=.false.`.  The heavy postprocess
+/// kernel remains a separate migration surface.
+pub fn plan_mkgrd_mask_restart_namelist(
+    namelist_source: impl AsRef<Path>,
+    _workdir: impl AsRef<Path>,
+    max_iter: i32,
+) -> io::Result<MkgrdMaskRestartPlanReport> {
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    if !config.mask_restart {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "mask_restart branch requires NL%mask_restart=.true.",
+        ));
+    }
+
+    let workspace_plan = config.read_nl_workspace_plan(None);
+    let action = if config.mesh_type == "oceanmesh" && !config.mask_patch_on {
+        MaskRestartAction::RunMaskPostproc
+    } else {
+        MaskRestartAction::ContinueMkgrd
+    };
+    let remask = MaskRestartRemaskPlan {
+        file_dir: PathBuf::from(config.file_dir()),
+        mesh_type: config.mesh_type.clone(),
+        step: max_iter + 1,
+        refine: false,
+        action,
+    };
+
+    Ok(MkgrdMaskRestartPlanReport {
+        config,
+        workspace_plan,
+        remask,
+    })
+}
+
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
 ///
 /// This mirrors the branch where `mode_grid` is `hex`/`tri` and `mode_file` does
