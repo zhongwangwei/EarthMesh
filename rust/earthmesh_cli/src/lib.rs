@@ -256,6 +256,14 @@ pub struct PatchIdMesh {
     pub latitude: Vec<f64>,
 }
 
+/// Rust data shape written by `MOD_file_preprocess.F90:LOCmesh_info_save`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EarthmeshInfo {
+    pub num_step_f: Vec<i32>,
+    pub refine_degree_f: Vec<i32>,
+    pub seaorland_ustr_f: Vec<i32>,
+}
+
 /// Result of the pure `mask_postproc_Earth` patchtypes_make loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EarthPatchtypes {
@@ -311,6 +319,14 @@ pub struct PatchIdWriteReport {
     pub output: PathBuf,
     pub nlon: usize,
     pub nlat: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:LOCmesh_info_save` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EarthmeshInfoWriteReport {
+    pub output: PathBuf,
+    pub num_step: usize,
+    pub num_ustr: usize,
 }
 
 /// Evidence report from writing `MOD_mask_postproc.F90:bdy_calculation` output.
@@ -732,6 +748,55 @@ pub fn write_patchid_netcdf(
     })
 }
 
+/// Write the `earthmesh_info.nc4` schema produced by
+/// `MOD_file_preprocess.F90:LOCmesh_info_save` in the Earth postprocess branch.
+pub fn write_earthmesh_info_netcdf(
+    output: impl AsRef<Path>,
+    info: &EarthmeshInfo,
+) -> io::Result<EarthmeshInfoWriteReport> {
+    validate_earthmesh_info(info)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let num_step = info.num_step_f.len();
+    let num_ustr = info.refine_degree_f.len();
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_step", num_step)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("num_ustr", num_ustr)
+        .map_err(netcdf_to_io_error)?;
+    {
+        let mut var = file
+            .add_variable::<i32>("num_step_f", &["num_step"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&info.num_step_f, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("refine_degree_f", &["num_ustr"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&info.refine_degree_f, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("seaorland_ustr_f", &["num_ustr"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&info.seaorland_ustr_f, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    Ok(EarthmeshInfoWriteReport {
+        output: output.to_path_buf(),
+        num_step,
+        num_ustr,
+    })
+}
+
 /// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Ocn` adjustment:
 ///
 /// ```text
@@ -1007,6 +1072,111 @@ pub fn build_land_patchtypes_fortran_indexed(
         seaorland,
         patchtypes_select,
         filled_ignored_land_pixels,
+    })
+}
+
+/// Build the `earthmesh_info.nc4` payload from the final
+/// `MOD_mask_postproc.F90:mask_postproc_Earth` role/refinement loop.
+pub fn build_earthmesh_info_fortran_indexed(
+    mode_grid: &str,
+    num_mp_step: &[usize],
+    sjx_points: usize,
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+    seaorland_ustr: &[i32],
+) -> io::Result<EarthmeshInfo> {
+    validate_mask_postproc_layout(layout)?;
+    if is_in_domain_ustr.len() < layout.ustr_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IsInDmArea_ustr length {} must cover ustr_points {}",
+                is_in_domain_ustr.len(),
+                layout.ustr_points
+            ),
+        ));
+    }
+    if seaorland_ustr.len() < layout.ustr_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "seaorland_ustr length {} must cover ustr_points {}",
+                seaorland_ustr.len(),
+                layout.ustr_points
+            ),
+        ));
+    }
+
+    let mut num_step_f = num_mp_step
+        .iter()
+        .map(|&value| usize_to_i32("num_mp_step", value))
+        .collect::<io::Result<Vec<_>>>()?;
+    num_step_f.push(usize_to_i32("sjx_points", sjx_points)?);
+
+    let active_count = is_in_domain_ustr
+        .iter()
+        .take(layout.ustr_points)
+        .skip(2)
+        .filter(|&&value| value == 1)
+        .count();
+    let mut seaorland_ustr_f = vec![0_i32; active_count + 2];
+    let mut refine_degree_f = vec![0_i32; active_count + 2];
+
+    let mut compact_id = 1_usize;
+    match mode_grid.trim() {
+        "tri" => {
+            let mut step_idx = 1_usize;
+            for source_id in 2..layout.ustr_points {
+                if step_idx < num_step_f.len()
+                    && usize::try_from(num_step_f[step_idx]).unwrap_or(usize::MAX) <= source_id
+                {
+                    num_step_f[step_idx] = usize_to_i32("num_step_f compact id", compact_id)?;
+                    step_idx += 1;
+                }
+                if is_in_domain_ustr[source_id] != 1 {
+                    continue;
+                }
+                compact_id += 1;
+                seaorland_ustr_f[compact_id] = seaorland_ustr[source_id];
+                refine_degree_f[compact_id] =
+                    usize_to_i32("refine_degree_f", step_idx.saturating_sub(1))?;
+            }
+        }
+        "hex" => {
+            for source_id in 2..layout.ustr_points {
+                let max_center_vertex = layout.center_neighbors[source_id]
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(0);
+                let mut step_idx = 1_usize;
+                while step_idx < num_step_f.len()
+                    && usize::try_from(num_step_f[step_idx]).unwrap_or(usize::MAX)
+                        < max_center_vertex
+                {
+                    step_idx += 1;
+                }
+                if is_in_domain_ustr[source_id] != 1 {
+                    continue;
+                }
+                compact_id += 1;
+                seaorland_ustr_f[compact_id] = seaorland_ustr[source_id];
+                refine_degree_f[compact_id] =
+                    usize_to_i32("refine_degree_f", step_idx.saturating_sub(1))?;
+            }
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("earthmesh_info supports tri or hex mode_grid only, got {other}"),
+            ));
+        }
+    }
+
+    Ok(EarthmeshInfo {
+        num_step_f,
+        refine_degree_f,
+        seaorland_ustr_f,
     })
 }
 
@@ -2393,6 +2563,20 @@ fn validate_patchid_mesh(patch: &PatchIdMesh) -> io::Result<()> {
                 format!("{name} length {actual} must match required {required}"),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_earthmesh_info(info: &EarthmeshInfo) -> io::Result<()> {
+    if info.refine_degree_f.len() != info.seaorland_ustr_f.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refine_degree_f and seaorland_ustr_f must have matching length: {} != {}",
+                info.refine_degree_f.len(),
+                info.seaorland_ustr_f.len()
+            ),
+        ));
     }
     Ok(())
 }

@@ -557,3 +557,7 @@ Added `read_mask_postproc_domain_inputs`, a tested Rust CLI helper that loads th
 ### 2026-06-12: PatchID selected-domain coordinate builder ported
 
 Added `patchid_mesh_from_selected_domain`, a tested Rust port of the coordinate-array construction inside `PatchID_Save`. It builds `lon_w/lon_e/lat_n/lat_s/longitude/latitude` from the selected-domain `minlon_DmArea`, `maxlat_DmArea`, `lon_vertex`, `lat_vertex`, `lon_i`, and `lat_i` lookup arrays, so Earth/Lnd patchtype generation can feed the existing NetCDF writer without duplicating Fortran indexing rules.
+
+### 2026-06-12: Earthmesh info writer and payload builder ported
+
+Added `EarthmeshInfo`, `write_earthmesh_info_netcdf`, and `build_earthmesh_info_fortran_indexed` in `rust/earthmesh_cli` for the Earth branch `earthmesh_info.nc4` output. The writer preserves the `LOCmesh_info_save` schema (`num_step`, `num_ustr`, `num_step_f`, `refine_degree_f`, `seaorland_ustr_f`), while the builder ports the final `mask_postproc_Earth` tri/hex refinement and land/ocean-role compaction loops from `IsInDmArea_ustr` and `seaorland_ustr`. Remaining `mask_postproc` work is full branch orchestration around real Earth/Lnd/Ocn/Atmos inputs, mask renewal, boundary outputs, and final file sequencing.
