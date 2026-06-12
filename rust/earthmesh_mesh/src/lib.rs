@@ -270,6 +270,36 @@ pub fn spherical_cell_area_from_vertices_unit(vertices: &[CartesianPoint]) -> Op
     Some(area)
 }
 
+/// Port of the shared-cell lookup in `MOD_grid_preprocess:GetArea`.
+///
+/// Fortran checks all four combinations from `cellsOnEdge(:, edge1)` and
+/// `cellsOnEdge(:, edge2)` and keeps the maximum matching positive cell id.
+/// Zero is the no-cell sentinel and is returned as `None`.
+pub fn shared_cell_for_edge_pair(
+    edge1_cells: [usize; 2],
+    edge2_cells: [usize; 2],
+) -> Option<usize> {
+    let mut shared_cell = 0usize;
+    for cell1 in edge1_cells {
+        for cell2 in edge2_cells {
+            if cell1 == cell2 {
+                shared_cell = shared_cell.max(cell1);
+            }
+        }
+    }
+
+    (shared_cell > 0).then_some(shared_cell)
+}
+
+/// Port of the `cellsOnVertex(:, i)` scan in `MOD_grid_preprocess:GetArea`.
+///
+/// Returns a zero-based Rust index for the matching Fortran `icv` slot.
+pub fn vertex_cell_position(cells_on_vertex: [usize; 3], cell: usize) -> Option<usize> {
+    cells_on_vertex
+        .iter()
+        .position(|candidate| *candidate == cell)
+}
+
 /// Output of `MOD_grid_preprocess:Get_Length_Angle`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolygonLengthAngleMetrics {

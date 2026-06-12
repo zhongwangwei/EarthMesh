@@ -1,7 +1,7 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180,
-    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    LonLatDegrees,
+    shared_cell_for_edge_pair, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
+    spherical_triangle_area_unit, vertex_cell_position, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -258,4 +258,20 @@ fn spherical_cell_area_rejects_degenerate_cells() {
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
     ])
     .is_none());
+}
+
+#[test]
+fn shared_cell_for_edge_pair_matches_fortran_getarea_combinations() {
+    assert_eq!(shared_cell_for_edge_pair([12, 30], [7, 12]), Some(12));
+    assert_eq!(shared_cell_for_edge_pair([12, 30], [30, 7]), Some(30));
+    assert_eq!(shared_cell_for_edge_pair([0, 30], [30, 0]), Some(30));
+    assert_eq!(shared_cell_for_edge_pair([4, 9], [5, 10]), None);
+}
+
+#[test]
+fn vertex_cell_position_matches_fortran_cells_on_vertex_scan() {
+    assert_eq!(vertex_cell_position([4, 8, 15], 4), Some(0));
+    assert_eq!(vertex_cell_position([4, 8, 15], 8), Some(1));
+    assert_eq!(vertex_cell_position([4, 8, 15], 15), Some(2));
+    assert_eq!(vertex_cell_position([4, 8, 15], 16), None);
 }

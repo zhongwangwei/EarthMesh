@@ -178,7 +178,9 @@
         "robust_spherical_area dateline-aware signed unit-sphere polygon area ported to rust/earthmesh_mesh",
         "triangle_signed_area_sphere l'Huilier spherical triangle area helper ported to rust/earthmesh_mesh",
         "GetArea kite area two-triangle primitive ported to rust/earthmesh_mesh",
-        "GetArea areaCell fan triangulation primitive ported to rust/earthmesh_mesh"
+        "GetArea areaCell fan triangulation primitive ported to rust/earthmesh_mesh",
+        "GetArea shared-cell lookup over consecutive edges ported to rust/earthmesh_mesh",
+        "GetArea cellsOnVertex position scan ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",

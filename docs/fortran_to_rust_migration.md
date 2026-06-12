@@ -129,3 +129,7 @@ Extended `rust/earthmesh_mesh` with `spherical_triangle_area_unit`, a tested Rus
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetArea` primitives split out
 
 Extended `rust/earthmesh_mesh` with two tested Rust primitives from `GetArea`: `spherical_kite_area_unit` for the MPAS two-triangle kite area and `spherical_cell_area_from_vertices_unit` for the cell fan triangulation over `verticesOnCell`. These reuse the migrated spherical triangle area helper. Remaining `GetArea` work is now the connectivity-driven assignment of `kiteAreasOnVertex`, reconstruction of `areaTriangle`, and fixture parity against MPAS-style mesh arrays.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetArea` connectivity helpers ported
+
+Extended `rust/earthmesh_mesh` with `shared_cell_for_edge_pair` and `vertex_cell_position`, matching the pure lookup logic inside `GetArea`. The Rust helpers preserve the Fortran behavior of checking all four `cellsOnEdge` combinations, ignoring zero as the no-cell sentinel, and scanning the three `cellsOnVertex` slots in order. Remaining `GetArea` work is the full array workflow that loops over vertices/edges and writes `kiteAreasOnVertex`, `areaTriangle`, and `areaCell`.
