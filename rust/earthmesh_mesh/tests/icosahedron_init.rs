@@ -243,3 +243,51 @@ fn icosahedron_spring_topology_matches_spring_dynamics1_setup_tables() {
         [-0.25, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0]
     );
 }
+
+#[test]
+fn icosahedron_spring_iteration_matches_spring_dynamics1_edge_update() {
+    let mut topology = earthmesh_mesh::IcosahedronSpringTopology {
+        edge_m_points: vec![[1, 1]; 7],
+        edge_neighbor_u: vec![[2, 2, 2, 2]; 7],
+        m_npoly: vec![0; 6],
+        m_u_edges: vec![[1; 7]; 6],
+        directions: vec![[0.0; 7]; 6],
+    };
+    topology.edge_m_points[2] = [2, 3];
+    topology.edge_m_points[3] = [2, 4];
+    topology.edge_m_points[4] = [3, 4];
+    topology.edge_m_points[5] = [2, 5];
+    topology.edge_m_points[6] = [3, 5];
+    topology.edge_neighbor_u[2] = [3, 4, 5, 6];
+    topology.m_npoly[2] = 1;
+    topology.m_npoly[3] = 1;
+    topology.m_u_edges[2][0] = 2;
+    topology.m_u_edges[3][0] = 2;
+    topology.directions[2][0] = -0.5;
+    topology.directions[3][0] = 0.5;
+
+    let points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(1.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 1.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 1.0),
+        CartesianPoint::new(-1.0, 0.0, 0.0),
+    ];
+
+    let output = earthmesh_mesh::icosahedron_spring_iteration_fortran(&points, &topology, 2.0, 1.0)
+        .expect("valid spring_dynamics1 iteration");
+
+    let current_distance = 2.0_f64.sqrt();
+    let frac_change = (2.0 - current_distance) / current_distance;
+    approx_eq(output.edge_distances[2], current_distance, 1.0e-12);
+    approx_eq(output.edge_displacements[2].x, -frac_change, 1.0e-12);
+    approx_eq(output.edge_displacements[2].y, frac_change, 1.0e-12);
+
+    let unnormalized_x = 1.0 + 0.5 * frac_change;
+    let unnormalized_y = -0.5 * frac_change;
+    let norm = (unnormalized_x * unnormalized_x + unnormalized_y * unnormalized_y).sqrt();
+    approx_eq(output.updated_m_points[2].x, unnormalized_x / norm, 1.0e-12);
+    approx_eq(output.updated_m_points[2].y, unnormalized_y / norm, 1.0e-12);
+    approx_eq(magnitude(output.updated_m_points[2]), 1.0, 1.0e-12);
+}

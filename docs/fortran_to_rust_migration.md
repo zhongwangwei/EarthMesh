@@ -333,3 +333,7 @@ Extended `rust/earthmesh_mesh` with `derive_icosahedron_tri_neighbors_fortran`, 
 ### 2026-06-12: `icosahedron.F90` `spring_dynamics1` setup tables ported
 
 Extended `rust/earthmesh_mesh` with `icosahedron_spring_topology_fortran`, a tested Rust port of the pre-iteration setup in `spring_dynamics1`. It snapshots U-edge endpoint ids, first-ring U neighbors, M-point polygon edge ids, and the Fortran direction sign rule (`+relax` when the current M point is the second edge endpoint, otherwise `-relax`). Remaining `spring_dynamics1` work is the edge displacement calculation and multi-iteration coordinate relaxation loop.
+
+### 2026-06-12: `icosahedron.F90` `spring_dynamics1` single-iteration update ported
+
+Extended `rust/earthmesh_mesh` with `icosahedron_spring_iteration_fortran`, a tested Rust port of one main-loop iteration in `spring_dynamics1`. The kernel computes U-edge lengths from M-point coordinates, applies the opposite-angle `twocosphi3/twocosphi4` ratio clamp, uses the OLAM `dist00 / 1.2` target scaling, applies precomputed M-point direction signs, and renormalizes updated M points back to the requested radius. Remaining `spring_dynamics1` work is the multi-iteration wrapper and periodic Max-DS diagnostics.
