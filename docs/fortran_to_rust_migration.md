@@ -445,3 +445,7 @@ Added an ignored long-running `rust/earthmesh_cli` fixture for the fully migrate
 ### 2026-06-12: existing EarthMesh `mode_file` ingestion branch ported
 
 Extended `rust/earthmesh_cli` with `copy_existing_earthmesh_mode_file` and wired `run_mkgrd_gridinit_global_namelist` to mirror the Fortran branch where `mode_file` exists and `mode_file_description='EarthMesh'`. The Rust path now applies the workspace/mask plan, validates the source gridfile dimensions, copies the existing EarthMesh gridfile into `gridfile/gridfile_NXP####_01_<mode_grid>.nc4`, and reports copied dimensions without regenerating the grid. Existing MPAS/FVCOM/IAP-Ocean mode-file converters remain explicit unsupported branches until their readers are migrated.
+
+### 2026-06-12: existing MPAS `mode_file` converter ported
+
+Extended `rust/earthmesh_cli` with `convert_mpas_mode_file_to_earthmesh` and wired the existing-`mode_file`, `mode_file_description='MPAS'` branch in `run_mkgrd_gridinit_global_namelist`. The converter ports `MOD_file_preprocess.F90:MPAS_Mesh_Read`: it reads MPAS `nVertices/nCells/maxEdges`, radian `lonVertex/latVertex/lonCell/latCell`, `cellsOnVertex`, `verticesOnCell`, and `nEdgesOnCell`; inserts EarthMesh placeholder records; shifts connectivity by one; normalizes longitudes into `[-180, 180]`; and writes the standard `Unstructured_Mesh_Save` gridfile schema. Remaining existing-mode converters are FVCOM and IAP-Ocean.

@@ -134,6 +134,137 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
     let _ = fs::remove_dir_all(&root);
 }
 
+#[test]
+fn run_mkgrd_gridinit_global_converts_existing_mpas_mode_file() {
+    let root = std::env::temp_dir().join(format!("earthmesh_cli_mpas_mode_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let mode_file = root.join("source_mpas.nc4");
+    write_synthetic_mpas_mode_file(&mode_file);
+
+    let namelist = root.join("mkgrd_mpas.nml");
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='{}'\n  NL%mode_file_description='MPAS'\n  NL%refine=.false.\n  NL%niter=0\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='MPAS'\n/\n",
+            mode_file.display()
+        ),
+    )
+    .expect("write namelist");
+
+    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
+        .expect("convert MPAS mode file");
+
+    assert_eq!(report.gridfile.sjx_points, 3);
+    assert_eq!(report.gridfile.lbx_points, 3);
+    assert_eq!(report.gridfile.dimc, 7);
+    let file = netcdf::open(&report.gridfile.output).expect("open converted gridfile");
+    let glonm = file
+        .variable("GLONM")
+        .expect("GLONM")
+        .get_values::<f64, _>(..)
+        .expect("read GLONM");
+    let glatm = file
+        .variable("GLATM")
+        .expect("GLATM")
+        .get_values::<f64, _>(..)
+        .expect("read GLATM");
+    let glonw = file
+        .variable("GLONW")
+        .expect("GLONW")
+        .get_values::<f64, _>(..)
+        .expect("read GLONW");
+    for (actual, expected) in glonm.iter().zip([0.0, 10.0, -170.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    for (actual, expected) in glatm.iter().zip([0.0, 20.0, -30.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    for (actual, expected) in glonw.iter().zip([0.0, 40.0, -160.0]) {
+        assert_close(*actual, expected, 1.0e-10);
+    }
+    assert_eq!(
+        file.variable("itab_m%iw")
+            .expect("itab_m%iw")
+            .get_values::<i32, _>((.., ..))
+            .expect("read itab_m%iw"),
+        vec![1, 1, 1, 2, 3, 1, 3, 2, 1]
+    );
+    assert_eq!(
+        file.variable("itab_w%im")
+            .expect("itab_w%im")
+            .get_values::<i32, _>((.., ..))
+            .expect("read itab_w%im"),
+        vec![1, 0, 0, 0, 0, 0, 0, 2, 3, 1, 1, 0, 0, 0, 3, 2, 1, 1, 0, 0, 0]
+    );
+    assert_eq!(
+        file.variable("n_ngrwm")
+            .expect("n_ngrwm")
+            .get_values::<i32, _>(..)
+            .expect("read n_ngrwm"),
+        vec![1, 4, 4]
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn write_synthetic_mpas_mode_file(path: &std::path::Path) {
+    let mut file = netcdf::create(path).expect("create synthetic MPAS mode file");
+    file.add_dimension("nVertices", 2).expect("nVertices");
+    file.add_dimension("nCells", 2).expect("nCells");
+    file.add_dimension("maxEdges", 4).expect("maxEdges");
+    file.add_dimension("vertexDegree", 3).expect("vertexDegree");
+    {
+        let mut var = file
+            .add_variable::<f64>("lonVertex", &["nVertices"])
+            .expect("lonVertex");
+        var.put_values(&[10.0_f64.to_radians(), 190.0_f64.to_radians()], ..)
+            .expect("write lonVertex");
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("latVertex", &["nVertices"])
+            .expect("latVertex");
+        var.put_values(&[20.0_f64.to_radians(), -30.0_f64.to_radians()], ..)
+            .expect("write latVertex");
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("lonCell", &["nCells"])
+            .expect("lonCell");
+        var.put_values(&[40.0_f64.to_radians(), 200.0_f64.to_radians()], ..)
+            .expect("write lonCell");
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("latCell", &["nCells"])
+            .expect("latCell");
+        var.put_values(&[50.0_f64.to_radians(), -60.0_f64.to_radians()], ..)
+            .expect("write latCell");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("cellsOnVertex", &["nVertices", "vertexDegree"])
+            .expect("cellsOnVertex");
+        var.put_values(&[1, 2, 0, 2, 1, 0], (.., ..))
+            .expect("write cellsOnVertex");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("verticesOnCell", &["nCells", "maxEdges"])
+            .expect("verticesOnCell");
+        var.put_values(&[1, 2, 0, 0, 2, 1, 0, 0], (.., ..))
+            .expect("write verticesOnCell");
+    }
+    {
+        let mut var = file
+            .add_variable::<i32>("nEdgesOnCell", &["nCells"])
+            .expect("nEdgesOnCell");
+        var.put_values(&[4, 4], ..).expect("write nEdgesOnCell");
+    }
+}
+
 fn assert_close(actual: f64, expected: f64, tolerance: f64) {
     assert!(
         (actual - expected).abs() <= tolerance,
