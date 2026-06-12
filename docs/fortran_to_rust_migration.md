@@ -105,3 +105,7 @@ Extended `rust/earthmesh_mesh` with `spherical_centroid_degrees`, a tested Rust 
 ### 2026-06-12: `MOD_grid_preprocess.F90` longitude normalization and arc length ported
 
 Extended `rust/earthmesh_mesh` with tested ports of `CheckLon` and `arc_length`. `CheckLon` preserves the Fortran single-step +/-360 behavior rather than full modulo wrapping. `arc_length_unit_sphere` preserves the MPAS-compatible mixed precision behavior in the Fortran implementation by squaring the half-angle sine terms as `f32` before converting back to `f64`.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` polygon length/angle helper ported
+
+Extended `rust/earthmesh_mesh` with `polygon_length_angle_metrics`, a tested Rust port of `Get_Length_Angle`. It preserves the Fortran cyclic `(previous, current, next)` triplet, spherical half-angle formula, and Earth-radius scaling of `length(1)`. The helper now gives `TriMeshQuality` and `PolyMeshQuality` a Rust-native numerical kernel to build on.

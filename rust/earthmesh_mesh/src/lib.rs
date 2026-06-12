@@ -210,3 +210,51 @@ pub fn arc_length_unit_sphere(a: CartesianPoint, b: CartesianPoint) -> f64 {
     let arg = (term1 + term2).sqrt();
     r_a * 2.0 * arg.asin()
 }
+
+/// Output of `MOD_grid_preprocess:Get_Length_Angle`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolygonLengthAngleMetrics {
+    pub angles_degrees: Vec<f64>,
+    pub edge_lengths_meters: Vec<f64>,
+}
+
+/// Port of `MOD_grid_preprocess:Get_Length_Angle`.
+///
+/// For each polygon vertex, this builds the same `(previous, current, next)`
+/// triplet as the Fortran cyclic buffer, computes the spherical angle using the
+/// half-angle formula, and records the current-to-next edge length scaled by
+/// `erad8`.
+pub fn polygon_length_angle_metrics(points: &[LonLatDegrees]) -> Option<PolygonLengthAngleMetrics> {
+    let num_edges = points.len();
+    if num_edges < 3 {
+        return None;
+    }
+
+    let mut angles_degrees = Vec::with_capacity(num_edges);
+    let mut edge_lengths_meters = Vec::with_capacity(num_edges);
+
+    for i in 0..num_edges {
+        let previous = points[(i + num_edges - 1) % num_edges];
+        let current = points[i];
+        let next = points[(i + 1) % num_edges];
+
+        let previous_xyz = lonlat_degrees_to_unit_xyz(previous);
+        let current_xyz = lonlat_degrees_to_unit_xyz(current);
+        let next_xyz = lonlat_degrees_to_unit_xyz(next);
+
+        let length1 = arc_length_unit_sphere(next_xyz, current_xyz);
+        let length2 = arc_length_unit_sphere(next_xyz, previous_xyz);
+        let length3 = arc_length_unit_sphere(previous_xyz, current_xyz);
+        let semiperimeter = 0.5 * (length1 + length2 + length3);
+        let angle_arg = ((semiperimeter - length1).sin() * (semiperimeter - length3).sin()
+            / (length1.sin() * length3.sin()))
+            .sqrt();
+        angles_degrees.push(rad_to_deg(2.0 * angle_arg.asin()));
+        edge_lengths_meters.push(length1 * earthmesh_core::EARTH_RADIUS_METERS);
+    }
+
+    Some(PolygonLengthAngleMetrics {
+        angles_degrees,
+        edge_lengths_meters,
+    })
+}

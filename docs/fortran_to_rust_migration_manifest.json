@@ -171,7 +171,8 @@
         "xyz2lonlat-compatible round trip covered through rust/earthmesh_mesh xyz_to_lonlat_degrees",
         "centroid_spherical_single vector-average spherical centroid ported to rust/earthmesh_mesh",
         "CheckLon single-step longitude normalization ported to rust/earthmesh_mesh",
-        "arc_length MPAS-compatible mixed-precision haversine ported to rust/earthmesh_mesh"
+        "arc_length MPAS-compatible mixed-precision haversine ported to rust/earthmesh_mesh",
+        "Get_Length_Angle polygon edge length and spherical angle calculation ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global and quality-save orchestration",
@@ -182,8 +183,7 @@
         "robust_spherical_area and GetArea/GetEdge routines",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "centroid_spherical_calculation batch wrapper over mesh connectivity",
-        "circumcenter_spherical_calculation",
-        "Get_Length_Angle polygon edge length and angle calculation"
+        "circumcenter_spherical_calculation"
       ]
     },
     {

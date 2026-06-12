@@ -42,3 +42,33 @@ fn arc_length_scales_by_input_radius_like_fortran() {
 
     approx_eq(arc_length_unit_sphere(scaled_a, scaled_b), 2.0 * arc_length_unit_sphere(a, b), 1.0e-12);
 }
+
+#[test]
+fn polygon_length_angle_matches_fortran_octant_triangle() {
+    let metrics = earthmesh_mesh::polygon_length_angle_metrics(&[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(90.0, 0.0),
+        LonLatDegrees::new(0.0, 90.0),
+    ])
+    .expect("valid triangle");
+
+    assert_eq!(metrics.angles_degrees.len(), 3);
+    assert_eq!(metrics.edge_lengths_meters.len(), 3);
+
+    for angle in metrics.angles_degrees {
+        approx_eq(angle, 90.0, 1.0e-5);
+    }
+    for length in metrics.edge_lengths_meters {
+        approx_eq(length, 10_007_902.73061428, 1.0e-3);
+    }
+}
+
+#[test]
+fn polygon_length_angle_rejects_degenerate_polygons() {
+    assert!(earthmesh_mesh::polygon_length_angle_metrics(&[]).is_none());
+    assert!(earthmesh_mesh::polygon_length_angle_metrics(&[LonLatDegrees::new(0.0, 0.0)]).is_none());
+    assert!(earthmesh_mesh::polygon_length_angle_metrics(&[
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+    ]).is_none());
+}
