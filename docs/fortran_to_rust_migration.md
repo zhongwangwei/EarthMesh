@@ -485,3 +485,7 @@ Extended `rust/earthmesh_mesh` with `widen_narrow_waterway_fortran_indexed`, a t
 ### 2026-06-12: mask_postproc boundary closed-curve helper ported
 
 Extended `rust/earthmesh_mesh` with `boundary_closed_curves_fortran_indexed`, a tested pure-data port of `MOD_mask_postproc.F90:bdy_connection_closed_curve`. The helper preserves the Fortran boundary walk order, placeholder curve slot, closed-curve length records, longest-curve id, and the legacy `num_bdy_long(1:2)+1` allocation convention. Remaining `mask_postproc` work is the boundary graph builder, isolated-ocean removal helper, and Earth/Lnd/Ocn/Atmos NetCDF orchestration.
+
+### 2026-06-12: mask_postproc boundary graph helper ported
+
+Extended `rust/earthmesh_mesh` with `boundary_connection_fortran_indexed`, a tested pure-data port of the graph-building portion of `MOD_mask_postproc.F90:bdy_connection`. The helper scans compact center rows for boundary vertex pairs, preserves the Fortran first-boundary-edge-per-center rule, validates that each retained boundary vertex has exactly two true connections, returns the one-based `bdy_order`/`bdy_ngr` equivalents, and composes with the migrated closed-curve helper. Remaining `mask_postproc` work is isolated-ocean removal plus Earth/Lnd/Ocn/Atmos NetCDF orchestration.

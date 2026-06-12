@@ -1,7 +1,7 @@
 use earthmesh_mesh::{
-    boundary_closed_curves_fortran_indexed, extract_unique_vertices_fortran_indexed,
-    finalize_mask_postproc_data_fortran_indexed, renew_mask_postproc_data_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    boundary_closed_curves_fortran_indexed, boundary_connection_fortran_indexed,
+    extract_unique_vertices_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
+    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -256,4 +256,39 @@ fn boundary_closed_curves_preserve_fortran_walk_order_and_longest_metadata() {
     assert_eq!(curves.close_curves[1], vec![10, 11, 12]);
     assert_eq!(curves.close_curves[2], vec![20, 21, 22, 23]);
     assert_eq!(curves.n_close_curve, vec![0, 3, 4]);
+}
+
+#[test]
+fn boundary_connection_builds_boundary_graph_and_closed_curve_from_center_edges() {
+    let center_neighbors_new = vec![
+        vec![1, 1],
+        vec![1, 1],
+        vec![10, 11],
+        vec![11, 12],
+        vec![12, 13],
+        vec![13, 10],
+    ];
+    let center_neighbor_counts_new = vec![0, 0, 2, 2, 2, 2];
+    let mut vertex_neighbor_counts = vec![0; 14];
+    let mut vertex_neighbor_counts_new = vec![0; 14];
+    for vertex_id in 10..=13 {
+        vertex_neighbor_counts[vertex_id] = 3;
+        vertex_neighbor_counts_new[vertex_id] = 1;
+    }
+
+    let boundary = boundary_connection_fortran_indexed(
+        &center_neighbors_new,
+        &center_neighbor_counts_new,
+        &vertex_neighbor_counts,
+        &vertex_neighbor_counts_new,
+    )
+    .expect("boundary connection");
+
+    assert_eq!(boundary.bdy_num_in, 5);
+    assert_eq!(boundary.boundary_order, vec![1, 10, 11, 12, 13]);
+    assert_eq!(boundary.boundary_neighbors[10], vec![11, 13]);
+    assert_eq!(boundary.boundary_neighbors[11], vec![10, 12]);
+    assert_eq!(boundary.curves.num_closed_curve, 1);
+    assert_eq!(boundary.curves.num_bdy_long, [5, 1, 1]);
+    assert_eq!(boundary.curves.close_curves[1], vec![10, 11, 12, 13]);
 }
