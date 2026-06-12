@@ -415,7 +415,8 @@
       "notes": "Port after area/ref-target/containment parity is available; otherwise failures will be hard to isolate.",
       "completed_rust_surfaces": [
         "iterB_judge transition-overlap refinement marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
-        "iterG_judge six-edge weak-concavity refinement marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage"
+        "iterG_judge six-edge weak-concavity refinement marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage",
+        "iterE_judge convex-pair weak-transition correction marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage"
       ]
     }
   ]
