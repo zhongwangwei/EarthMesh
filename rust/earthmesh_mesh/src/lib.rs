@@ -7436,3 +7436,455 @@ fn validate_triangle_neighbor_rows(
     }
     Ok(())
 }
+
+/// Port of `MOD_refine.F90:iterD_judge`.
+///
+/// Finds weak-concavity boundary segment pairs where one side has one
+/// transition triangle and the neighboring side has more than one (`1+n`).
+/// Such pairs are marked for extra refinement by setting both boundary
+/// triangles in `ref_sjx`.  Inputs preserve Fortran one-based indexing:
+/// triangle row 0 is unused, active triangle rows after `num_vertex` have
+/// exactly three `triangle_neighbors`, and polygon rows after `num_center`
+/// expose `triangles_on_cell[cell][..edge_counts[cell]]`.
+pub fn refine_iter_d_judge_fortran_indexed(
+    set_dis_in: usize,
+    num_vertex: usize,
+    sjx_points: usize,
+    num_center: usize,
+    lbx_points: usize,
+    triangle_neighbors: &[Vec<usize>],
+    cells_on_triangle: &[[usize; 3]],
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    mrl_new: &[i32],
+) -> io::Result<Vec<i32>> {
+    if sjx_points >= mrl_new.len()
+        || sjx_points >= triangle_neighbors.len()
+        || sjx_points >= cells_on_triangle.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("sjx_points {sjx_points} must be addressable in all triangle arrays"),
+        ));
+    }
+    if lbx_points >= triangles_on_cell.len() || lbx_points >= edge_counts.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("lbx_points {lbx_points} must be addressable in all cell arrays"),
+        ));
+    }
+    if num_vertex > sjx_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("num_vertex {num_vertex} exceeds sjx_points {sjx_points}"),
+        ));
+    }
+    if num_center > lbx_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("num_center {num_center} exceeds lbx_points {lbx_points}"),
+        ));
+    }
+
+    let mut ref_sjx = vec![0_i32; sjx_points + 1];
+    if set_dis_in == 1 {
+        return Ok(ref_sjx);
+    }
+    if set_dis_in == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "set_dis_in must be positive like MOD_refine:iterD_judge",
+        ));
+    }
+
+    validate_triangle_neighbor_rows(num_vertex, sjx_points, triangle_neighbors)?;
+    for cell in (num_center + 1)..=lbx_points {
+        validate_refine_cell_neighbors(cell, triangles_on_cell, edge_counts, sjx_points, None)?;
+    }
+
+    let closed_curves = refine_boundary_closed_curves_fortran_indexed(
+        num_vertex,
+        sjx_points,
+        num_center,
+        lbx_points,
+        triangle_neighbors,
+        cells_on_triangle,
+        mrl_new,
+    )?;
+    let bdy_refine_segments = refine_boundary_segments_fortran_indexed(
+        set_dis_in,
+        &closed_curves,
+        triangles_on_cell,
+        edge_counts,
+        mrl_new,
+    )?;
+
+    let num_bdy_refine_segment = bdy_refine_segments.len();
+    if num_bdy_refine_segment == 0 {
+        return Ok(ref_sjx);
+    }
+
+    for i in 0..num_bdy_refine_segment {
+        let j = (i + 1) % num_bdy_refine_segment;
+        let segment_i = &bdy_refine_segments[i];
+        let segment_j = &bdy_refine_segments[j];
+        if segment_i.is_empty() || segment_j.is_empty() {
+            continue;
+        }
+        let m1 = *segment_i.last().expect("non-empty segment");
+        let m2 = segment_j[0];
+        if is_ngrmm(cells_on_triangle[m1], cells_on_triangle[m2]).is_none() {
+            continue;
+        }
+        let num_max = segment_i.len().max(segment_j.len());
+        let num_min = segment_i.len().min(segment_j.len());
+        if num_min == 1 && num_max > 1 {
+            ref_sjx[m1] = 1;
+            ref_sjx[m2] = 1;
+        }
+    }
+
+    Ok(ref_sjx)
+}
+
+fn refine_boundary_closed_curves_fortran_indexed(
+    num_vertex: usize,
+    sjx_points: usize,
+    num_center: usize,
+    lbx_points: usize,
+    triangle_neighbors: &[Vec<usize>],
+    cells_on_triangle: &[[usize; 3]],
+    mrl_new: &[i32],
+) -> io::Result<Vec<Vec<usize>>> {
+    let mut boundary_neighbors = vec![Vec::<usize>::new(); lbx_points + 1];
+    let mut boundary_triangle_count = 1_usize; // Fortran keeps slot 1 empty.
+
+    for triangle in (num_vertex + 1)..=sjx_points {
+        if mrl_new[triangle] != 1 {
+            continue;
+        }
+        let neighbor_state_sum: i32 = triangle_neighbors[triangle]
+            .iter()
+            .map(|&neighbor| mrl_new[neighbor])
+            .sum();
+        if neighbor_state_sum != 6 {
+            continue;
+        }
+        let refined_neighbor = triangle_neighbors[triangle]
+            .iter()
+            .copied()
+            .find(|&neighbor| mrl_new[neighbor] == 4)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("boundary triangle {triangle} has no refined neighbor"),
+                )
+            })?;
+        let triangle_cells = cells_on_triangle[triangle];
+        let refined_cells = cells_on_triangle[refined_neighbor];
+        let unique_pos = triangle_cells
+            .iter()
+            .position(|cell| !refined_cells.contains(cell))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("triangle {triangle} does not expose a unique boundary-opposite cell"),
+                )
+            })?;
+        let mut shared_cells = Vec::with_capacity(2);
+        for offset in 1..=2 {
+            let cell = triangle_cells[(unique_pos + offset) % 3];
+            if cell == 0 || cell > lbx_points {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("boundary triangle {triangle} references invalid boundary cell {cell}"),
+                ));
+            }
+            shared_cells.push(cell);
+        }
+        let w1 = shared_cells[0];
+        let w2 = shared_cells[1];
+        boundary_neighbors[w1].push(w2);
+        boundary_neighbors[w2].push(w1);
+        boundary_triangle_count += 1;
+    }
+
+    let mut boundary_order = vec![1_usize];
+    for (cell, neighbors) in boundary_neighbors
+        .iter()
+        .enumerate()
+        .take(lbx_points + 1)
+        .skip(num_center + 1)
+    {
+        match neighbors.len() {
+            0 => {}
+            2 => boundary_order.push(cell),
+            n => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("boundary cell {cell} has {n} connections; expected 0 or 2"),
+                ));
+            }
+        }
+    }
+    if boundary_triangle_count != boundary_order.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "boundary triangle count with empty slot {boundary_triangle_count} differs from boundary vertex count {}",
+                boundary_order.len()
+            ),
+        ));
+    }
+
+    let mut available = vec![false; boundary_order.len()];
+    for item in available.iter_mut().skip(1) {
+        *item = true;
+    }
+    let mut closed_curves = Vec::new();
+    while available.iter().skip(1).any(|&value| value) {
+        let start_pos = available
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(idx, &value)| value.then_some(idx))
+            .expect("at least one available boundary vertex");
+        let start = boundary_order[start_pos];
+        available[start_pos] = false;
+        let mut curve = vec![start];
+        let end = boundary_neighbors[start][1];
+        let mut selected = boundary_neighbors[start][0];
+        let mut previous = start;
+        while selected != end {
+            curve.push(selected);
+            let selected_pos = boundary_order
+                .iter()
+                .position(|&cell| cell == selected)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("boundary cell {selected} is not present in boundary order"),
+                    )
+                })?;
+            if !available[selected_pos] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("boundary curve revisits cell {selected} before closure"),
+                ));
+            }
+            available[selected_pos] = false;
+            let neighbors = &boundary_neighbors[selected];
+            let next = if neighbors[0] == previous {
+                neighbors[1]
+            } else if neighbors[1] == previous {
+                neighbors[0]
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("boundary cell {selected} is not connected back to {previous}"),
+                ));
+            };
+            previous = selected;
+            selected = next;
+        }
+        curve.push(end);
+        let end_pos = boundary_order
+            .iter()
+            .position(|&cell| cell == end)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("boundary end cell {end} is not present in boundary order"),
+                )
+            })?;
+        if !available[end_pos] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("boundary curve end cell {end} was already consumed"),
+            ));
+        }
+        available[end_pos] = false;
+        if curve.len() < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "boundary closed curve must contain at least three cells",
+            ));
+        }
+        closed_curves.push(curve);
+    }
+
+    Ok(closed_curves)
+}
+
+fn refine_boundary_segments_fortran_indexed(
+    set_dis_in: usize,
+    closed_curves: &[Vec<usize>],
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    mrl_new: &[i32],
+) -> io::Result<Vec<Vec<usize>>> {
+    let mut segments = Vec::new();
+    for curve in closed_curves {
+        if curve.len() < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "closed curve must contain at least three cells",
+            ));
+        }
+        let mut closed = curve.clone();
+        closed.push(curve[0]);
+
+        let mut segment_start_end = vec![(0_usize, 0_usize); closed.len()];
+        if set_dis_in == 1 {
+            for j in 0..(closed.len() - 1) {
+                segment_start_end[j] = (j, j + 1);
+            }
+        } else {
+            let first_turn = (0..(closed.len() - 1))
+                .find(|&idx| {
+                    refined_count_around_cell(closed[idx], triangles_on_cell, edge_counts, mrl_new)
+                        != 3
+                })
+                .unwrap_or(0);
+            if first_turn != 0 {
+                let unique_len = closed.len() - 1;
+                let mut rotated = Vec::with_capacity(unique_len + 1);
+                rotated.extend_from_slice(&closed[first_turn..unique_len]);
+                rotated.extend_from_slice(&closed[..first_turn]);
+                rotated.push(rotated[0]);
+                closed = rotated;
+            }
+
+            let mut start = 0_usize;
+            segment_start_end[start].0 = 0;
+            for j in 1..(closed.len() - 1) {
+                let refined_count =
+                    refined_count_around_cell(closed[j], triangles_on_cell, edge_counts, mrl_new);
+                if refined_count == 3 {
+                    continue;
+                }
+                segment_start_end[start].1 = j;
+                segment_start_end[j].0 = j;
+                start = j;
+            }
+            segment_start_end[start].1 = closed.len() - 1;
+
+            let original_ranges: Vec<(usize, usize)> = segment_start_end
+                .iter()
+                .copied()
+                .filter(|(range_start, range_end)| range_end > range_start)
+                .collect();
+            segment_start_end.fill((0, 0));
+            for (range_start, range_end) in original_ranges {
+                let num = range_end - range_start;
+                if num <= set_dis_in {
+                    segment_start_end[range_start] = (range_start, range_end);
+                    continue;
+                }
+                let mut num_segment = ((num + 1) as f64 / set_dis_in as f64).floor() as usize;
+                if (num + 1) % set_dis_in != 0 {
+                    num_segment += 1;
+                }
+                if num % set_dis_in == 0 {
+                    num_segment = num_segment.saturating_sub(1);
+                }
+                num_segment = num_segment.max(1);
+                let mut subranges = Vec::with_capacity(num_segment);
+                let mut sub_start = range_start;
+                for _ in 0..(num_segment - 1) {
+                    let sub_end = sub_start + set_dis_in;
+                    subranges.push((sub_start, sub_end));
+                    sub_start = sub_end;
+                }
+                subranges.push((sub_start, range_end));
+                if set_dis_in >= 3 && subranges.len() >= 2 {
+                    let min_len = (set_dis_in + 1) / 2;
+                    let last_idx = subranges.len() - 1;
+                    let (last_start, last_end) = subranges[last_idx];
+                    if last_end - last_start < min_len {
+                        let adjusted_start = last_end - min_len;
+                        subranges[last_idx].0 = adjusted_start;
+                        subranges[last_idx - 1].1 = adjusted_start;
+                    }
+                }
+                for (sub_start, sub_end) in subranges {
+                    segment_start_end[sub_start] = (sub_start, sub_end);
+                }
+            }
+        }
+
+        let total_edges: usize = segment_start_end
+            .iter()
+            .filter_map(|&(start, end)| (end > start).then_some(end - start))
+            .sum();
+        if total_edges != closed.len() - 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "boundary segment edge total {total_edges} differs from closed curve edge count {}",
+                    closed.len() - 1
+                ),
+            ));
+        }
+
+        for (start, end) in segment_start_end {
+            if end <= start {
+                continue;
+            }
+            let mut segment = Vec::with_capacity(end - start);
+            for k in start..end {
+                let cell_a = closed[k];
+                let cell_b = closed[k + 1];
+                segment.push(common_unrefined_triangle_between_cells(
+                    cell_a,
+                    cell_b,
+                    triangles_on_cell,
+                    edge_counts,
+                    mrl_new,
+                )?);
+            }
+            segments.push(segment);
+        }
+    }
+    Ok(segments)
+}
+
+fn refined_count_around_cell(
+    cell: usize,
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    mrl_new: &[i32],
+) -> i32 {
+    let num_edges = edge_counts[cell];
+    let state_sum: i32 = triangles_on_cell[cell][..num_edges]
+        .iter()
+        .map(|&triangle| mrl_new[triangle])
+        .sum();
+    (state_sum - num_edges as i32) / 3
+}
+
+fn common_unrefined_triangle_between_cells(
+    cell_a: usize,
+    cell_b: usize,
+    triangles_on_cell: &[Vec<usize>],
+    edge_counts: &[usize],
+    mrl_new: &[i32],
+) -> io::Result<usize> {
+    for &triangle_a in &triangles_on_cell[cell_a][..edge_counts[cell_a]] {
+        if mrl_new[triangle_a] == 4 {
+            continue;
+        }
+        for &triangle_b in &triangles_on_cell[cell_b][..edge_counts[cell_b]] {
+            if mrl_new[triangle_b] == 4 {
+                continue;
+            }
+            if triangle_a == triangle_b {
+                return Ok(triangle_a);
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("cells {cell_a} and {cell_b} do not share an unrefined boundary triangle"),
+    ))
+}
