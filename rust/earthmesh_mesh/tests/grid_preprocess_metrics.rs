@@ -2,9 +2,10 @@ use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
     cells_on_edge_from_neighbor_cells, get_area_unit_fortran_indexed, is_ngrmm,
     lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
-    normalize_vertex_rotation, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
-    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    vertex_cell_position, CartesianPoint, GetAreaUnitInput, LonLatDegrees,
+    normalize_vertex_rotation, order_vertex_arrays_for_vertex, shared_cell_for_edge_pair,
+    should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
+    spherical_triangle_area_unit, vertex_cell_position, CartesianPoint, GetAreaUnitInput,
+    LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -458,4 +459,35 @@ fn next_ccw_edge_candidate_slot_rejects_clockwise_or_degenerate_candidates() {
         next_ccw_edge_candidate_slot(vertex, reference_edge, &candidates),
         None
     );
+}
+
+#[test]
+fn order_vertex_arrays_for_vertex_matches_fortran_edge_sort_and_cell_rebuild() {
+    let mut edge_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); 13];
+    edge_points[10] = CartesianPoint::new(1.0, 0.0, 1.0);
+    edge_points[11] = CartesianPoint::new(0.0, 1.0, 1.0);
+    edge_points[12] = CartesianPoint::new(0.2, 0.2, 1.0);
+
+    let mut vertices_on_edge = vec![[0usize, 0usize]; 13];
+    vertices_on_edge[10] = [2, 99];
+    vertices_on_edge[11] = [2, 99];
+    vertices_on_edge[12] = [99, 2];
+
+    let mut cells_on_edge = vec![[0usize, 0usize]; 13];
+    cells_on_edge[10] = [100, 200];
+    cells_on_edge[11] = [110, 210];
+    cells_on_edge[12] = [120, 220];
+
+    let ordered = order_vertex_arrays_for_vertex(
+        2,
+        CartesianPoint::new(0.0, 0.0, 1.0),
+        [10, 11, 12],
+        &edge_points,
+        &vertices_on_edge,
+        &cells_on_edge,
+    )
+    .expect("valid vertex ordering");
+
+    assert_eq!(ordered.edges_on_vertex, [10, 12, 11]);
+    assert_eq!(ordered.cells_on_vertex, [100, 220, 110]);
 }

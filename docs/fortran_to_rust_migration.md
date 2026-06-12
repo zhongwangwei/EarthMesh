@@ -157,3 +157,7 @@ Added `normalize_vertex_rotation`, a Rust port of the per-vertex rotation rule f
 ### 2026-06-12: `MOD_grid_preprocess.F90` `orderVertexArrays` CCW selector ported
 
 Added `next_ccw_edge_candidate_slot`, a Rust port of the inner `orderVertexArrays` rule that picks the next counter-clockwise edge candidate with the smallest positive angle around the vertex normal. This isolates the 3-D cross-product/dot-product geometry before porting the full stateful edge-slot swapping and `cellsOnVertex` rebuild workflow.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` per-vertex `orderVertexArrays` workflow ported
+
+Added `order_vertex_arrays_for_vertex`, a Rust port of the per-vertex `orderVertexArrays` mutation/rebuild workflow. It uses the migrated CCW candidate selector to swap `edgesOnVertex` into order, then rebuilds `cellsOnVertex` from `verticesOnEdge` and `cellsOnEdge` using the same side-of-edge rule as Fortran. Remaining work is an array-level wrapper over all vertices and real mesh fixture parity.
