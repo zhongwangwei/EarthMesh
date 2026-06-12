@@ -248,6 +248,15 @@ pub struct PatchIdMesh {
     pub latitude: Vec<f64>,
 }
 
+/// Result of the pure `mask_postproc_Earth` patchtypes_make loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EarthPatchtypes {
+    pub seaorland_ustr: Vec<i32>,
+    pub patchtypes_select: Vec<Vec<i32>>,
+    pub sum_land_ustr: usize,
+    pub sum_sea_ustr: usize,
+}
+
 /// Evidence report from writing an unstructured gridfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnstructuredMeshWriteReport {
@@ -752,6 +761,106 @@ pub fn apply_ocean_mask_sea_ratio_fortran_indexed(
     }
 
     Ok(is_in_domain)
+}
+
+/// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Earth`
+/// `patchtypes_make` loop.
+///
+/// Rust row `0` corresponds to Fortran row `1`; output `patchtypes_select`
+/// is row-major by selected longitude index, then selected latitude index.
+pub fn build_earth_patchtypes_fortran_indexed(
+    contain: &ContainMesh,
+    mask_sea_ratio: f64,
+    minlon_dm_area: i32,
+    maxlat_dm_area: i32,
+    nlons_dm_select: usize,
+    nlats_dm_select: usize,
+) -> io::Result<EarthPatchtypes> {
+    validate_contain_mesh(contain)?;
+    let dim_a = matrix_width("ustr_id", &contain.ustr_id)?;
+    let dim_b = matrix_width("ustr_ii", &contain.ustr_ii)?;
+    if dim_a < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "earth patchtype construction requires ustr_id rows with at least two columns",
+        ));
+    }
+    if dim_b < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "earth patchtype construction requires ustr_ii rows with at least three columns",
+        ));
+    }
+
+    let mut seaorland_ustr = vec![0_i32; contain.ustr_id.len()];
+    let mut patchtypes_select = vec![vec![0_i32; nlats_dm_select]; nlons_dm_select];
+    let mut sum_land_ustr = 0usize;
+    let mut sum_sea_ustr = 0usize;
+
+    for fortran_cell_id in 2..=contain.ustr_id.len() {
+        let cell_idx = fortran_cell_id - 1;
+        if contain.is_in_area_ustr[cell_idx] != 1 {
+            continue;
+        }
+        let pixel_count =
+            usize_from_i32_nonnegative(contain.ustr_id[cell_idx][0], "ustr_id(:,1) pixel count")?;
+        let first_pixel_id =
+            usize_from_i32_positive(contain.ustr_id[cell_idx][1], "ustr_id(:,2) first pixel id")?;
+        if pixel_count == 0 {
+            continue;
+        }
+        let last_pixel_id = first_pixel_id + pixel_count - 1;
+        if last_pixel_id > contain.ustr_ii.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cell {fortran_cell_id} references pixel id {last_pixel_id}, outside 1..={}",
+                    contain.ustr_ii.len()
+                ),
+            ));
+        }
+
+        let mut land_pixels = 0_i32;
+        for fortran_pixel_id in first_pixel_id..=last_pixel_id {
+            land_pixels += contain.ustr_ii[fortran_pixel_id - 1][2];
+        }
+
+        if f64::from(land_pixels) / pixel_count as f64 > mask_sea_ratio {
+            seaorland_ustr[cell_idx] = 1;
+            sum_land_ustr += 1;
+            for fortran_pixel_id in first_pixel_id..=last_pixel_id {
+                let pixel = &contain.ustr_ii[fortran_pixel_id - 1];
+                if pixel[2] == 0 {
+                    continue;
+                }
+                let (lon_idx, lat_idx) = patchtype_indices(
+                    pixel[0],
+                    pixel[1],
+                    minlon_dm_area,
+                    maxlat_dm_area,
+                    nlons_dm_select,
+                    nlats_dm_select,
+                )?;
+                patchtypes_select[lon_idx][lat_idx] =
+                    i32::try_from(fortran_cell_id).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("cell id {fortran_cell_id} does not fit i32"),
+                        )
+                    })?;
+            }
+        } else {
+            seaorland_ustr[cell_idx] = -1;
+            sum_sea_ustr += 1;
+        }
+    }
+
+    Ok(EarthPatchtypes {
+        seaorland_ustr,
+        patchtypes_select,
+        sum_land_ustr,
+        sum_sea_ustr,
+    })
 }
 
 /// Legacy output path for `MOD_mask_postproc.F90:bdy_calculation`.
@@ -1417,6 +1526,55 @@ fn usize_from_i32_connectivity(value: i32, name: &str) -> io::Result<usize> {
             format!("{name} contains negative connectivity value {value}"),
         )
     })
+}
+
+fn usize_from_i32_nonnegative(value: i32, name: &str) -> io::Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} contains negative value {value}"),
+        )
+    })
+}
+
+fn usize_from_i32_positive(value: i32, name: &str) -> io::Result<usize> {
+    let converted = usize_from_i32_nonnegative(value, name)?;
+    if converted == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must be positive"),
+        ));
+    }
+    Ok(converted)
+}
+
+fn patchtype_indices(
+    lon_source: i32,
+    lat_source: i32,
+    minlon_dm_area: i32,
+    maxlat_dm_area: i32,
+    nlons_dm_select: usize,
+    nlats_dm_select: usize,
+) -> io::Result<(usize, usize)> {
+    let lon_idx = lon_source - minlon_dm_area;
+    let lat_idx = lat_source - maxlat_dm_area;
+    if lon_idx < 0
+        || lat_idx < 0
+        || usize::try_from(lon_idx)
+            .ok()
+            .is_none_or(|idx| idx >= nlons_dm_select)
+        || usize::try_from(lat_idx)
+            .ok()
+            .is_none_or(|idx| idx >= nlats_dm_select)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "source pixel ({lon_source}, {lat_source}) is outside patchtype grid from minlon {minlon_dm_area}, maxlat {maxlat_dm_area}, shape {nlons_dm_select}x{nlats_dm_select}"
+            ),
+        ));
+    }
+    Ok((lon_idx as usize, lat_idx as usize))
 }
 
 fn scale_cartesian_points_by_earth_radius(points: &mut [CartesianPoint]) {

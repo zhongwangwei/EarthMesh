@@ -521,3 +521,7 @@ Added typed `PatchIdMesh` and `write_patchid_netcdf` in `rust/earthmesh_cli` for
 ### 2026-06-12: mask_postproc_Ocn contain mask adjustment ported
 
 Added `apply_ocean_mask_sea_ratio_fortran_indexed` in `rust/earthmesh_cli`, a tested pure-data port of the `mask_postproc_Ocn` loop that copies `IsInDmArea_ustr` from `Contain_Read` and then demotes post-`num_vertex` records to `-1` when `ustr_id(i,1) / real(ustr_id(i,3)) < mask_sea_ratio`. The helper preserves Fortran one-based row semantics, validates the ocean-specific third `ustr_id` column, and reports invalid denominators before the full Ocean branch orchestration is wired.
+
+### 2026-06-12: mask_postproc_Earth patchtypes_make ported
+
+Added `build_earth_patchtypes_fortran_indexed` in `rust/earthmesh_cli`, a tested pure-data port of the `mask_postproc_Earth` `patchtypes_make` loop. The helper preserves Fortran one-based `ustr_id`/`ustr_ii` row references, land-pixel ratio classification with the strict `> mask_sea_ratio` rule, `seaorland_ustr` values (`0` missing, `-1` sea, `1` land), land/sea counters, and longitude/latitude index remapping into the patchtype grid before the full Earth branch orchestration is wired.
