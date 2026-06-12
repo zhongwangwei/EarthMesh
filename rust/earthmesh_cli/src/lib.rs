@@ -59,6 +59,57 @@ pub struct MaskPostprocDomainInputs {
     pub is_in_domain_ustr: Vec<i32>,
 }
 
+/// Runtime controls needed to reproduce the file-backed
+/// `MOD_mask_postproc.F90:mask_postproc_Earth` branch from an I/O plan.
+#[derive(Debug, Clone, Copy)]
+pub struct MaskPostprocEarthRunOptions<'a> {
+    pub mask_sea_ratio: f64,
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub num_mp_step: &'a [usize],
+    pub sjx_points: usize,
+}
+
+/// Evidence report from the gridfile/contain-backed Rust replacement path for
+/// `MOD_mask_postproc.F90:mask_postproc_Earth`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocEarthDomainReport {
+    pub patchtypes: EarthPatchtypes,
+    pub patchtype: PatchIdWriteReport,
+    pub final_gridfile: UnstructuredMeshWriteReport,
+    pub earthmesh_info: EarthmeshInfoWriteReport,
+}
+
+/// Runtime controls needed to reproduce the file-backed
+/// `MOD_mask_postproc.F90:mask_postproc_Lnd` branch from an I/O plan.
+#[derive(Debug, Clone, Copy)]
+pub struct MaskPostprocLandRunOptions<'a> {
+    pub seaorland: &'a [Vec<i32>],
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+}
+
+/// Evidence report from the gridfile/contain-backed Rust replacement path for
+/// `MOD_mask_postproc.F90:mask_postproc_Lnd`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocLandDomainReport {
+    pub patchtypes: LandPatchtypes,
+    pub patchtype: PatchIdWriteReport,
+    pub final_gridfile: UnstructuredMeshWriteReport,
+}
+
 /// Restart action selected by the top-level `mkgrd.F90` mask-restart branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskRestartAction {
@@ -2926,6 +2977,113 @@ pub fn read_mask_postproc_domain_inputs(
         layout,
         contain,
         is_in_domain_ustr,
+    })
+}
+
+/// File-backed composition of the migrated
+/// `MOD_mask_postproc.F90:mask_postproc_Earth` branch.
+///
+/// This runner intentionally composes already-migrated pure/data helpers:
+/// contain-domain reading, Earth land/sea patchtype classification, `PatchID`
+/// output, final clipped gridfile writing, and `earthmesh_info.nc4` output.
+pub fn run_mask_postproc_earth_domain(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocEarthRunOptions<'_>,
+) -> io::Result<MaskPostprocEarthDomainReport> {
+    if plan.mesh_type != "earthmesh" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "earth mask_postproc runner requires earthmesh plan, got {}",
+                plan.mesh_type
+            ),
+        ));
+    }
+
+    let inputs = read_mask_postproc_domain_inputs(plan)?;
+    let patchtypes = build_earth_patchtypes_fortran_indexed(
+        &inputs.contain,
+        options.mask_sea_ratio,
+        options.minlon_dm_area,
+        options.maxlat_dm_area,
+        options.nlons_dm_select,
+        options.nlats_dm_select,
+    )?;
+    let patchtype = write_mask_postproc_patchtype_netcdf(
+        plan,
+        patchtypes.patchtypes_select.clone(),
+        options.minlon_dm_area,
+        options.maxlat_dm_area,
+        options.lon_vertex,
+        options.lat_vertex,
+        options.lon_i,
+        options.lat_i,
+    )?;
+    let final_gridfile =
+        write_mask_postproc_final_gridfile(plan, &inputs.layout, &inputs.is_in_domain_ustr)?;
+    let earthmesh_info = write_mask_postproc_earth_info_netcdf(
+        plan,
+        options.num_mp_step,
+        options.sjx_points,
+        &inputs.layout,
+        &inputs.is_in_domain_ustr,
+        &patchtypes.seaorland_ustr,
+    )?;
+
+    Ok(MaskPostprocEarthDomainReport {
+        patchtypes,
+        patchtype,
+        final_gridfile,
+        earthmesh_info,
+    })
+}
+
+/// File-backed composition of the migrated
+/// `MOD_mask_postproc.F90:mask_postproc_Lnd` branch.
+///
+/// The source-grid clipping uses the contain-domain mask exactly like the
+/// Fortran branch, while land-specific patchtype assignment is delegated to the
+/// already-migrated pure `build_land_patchtypes_fortran_indexed` helper.
+pub fn run_mask_postproc_land_domain(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocLandRunOptions<'_>,
+) -> io::Result<MaskPostprocLandDomainReport> {
+    if plan.mesh_type != "landmesh" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "land mask_postproc runner requires landmesh plan, got {}",
+                plan.mesh_type
+            ),
+        ));
+    }
+
+    let inputs = read_mask_postproc_domain_inputs(plan)?;
+    let patchtypes = build_land_patchtypes_fortran_indexed(
+        &inputs.contain,
+        options.seaorland,
+        options.minlon_dm_area,
+        options.maxlat_dm_area,
+        options.nlons_dm_select,
+        options.nlats_dm_select,
+    )?;
+    let patchtype = write_mask_postproc_patchtype_netcdf(
+        plan,
+        patchtypes.patchtypes_select.clone(),
+        options.minlon_dm_area,
+        options.maxlat_dm_area,
+        options.lon_vertex,
+        options.lat_vertex,
+        options.lon_i,
+        options.lat_i,
+    )?;
+    let final_gridfile =
+        write_mask_postproc_final_gridfile(plan, &inputs.layout, &inputs.is_in_domain_ustr)?;
+
+    Ok(MaskPostprocLandDomainReport {
+        patchtypes,
+        patchtype,
+        final_gridfile,
     })
 }
 
