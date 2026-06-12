@@ -412,7 +412,10 @@
       "migration_phase": "phase_4",
       "strategy": "port",
       "parity_gate": "Refinement-loop fixtures match split decisions, boundary connection behavior, weak-concavity handling, Delaunay flip outcomes, and final NGR renewal summaries.",
-      "notes": "Port after area/ref-target/containment parity is available; otherwise failures will be hard to isolate."
+      "notes": "Port after area/ref-target/containment parity is available; otherwise failures will be hard to isolate.",
+      "completed_rust_surfaces": [
+        "iterB_judge transition-overlap refinement marker ported to rust/earthmesh_mesh with Fortran-indexed fixture coverage"
+      ]
     }
   ]
 }
