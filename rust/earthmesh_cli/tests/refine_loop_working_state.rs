@@ -119,3 +119,79 @@ fn working_state_prologue_reads_gridfile_copies_snapshot_and_returns_state() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn working_state_applies_ngr_renew_into_final_arrays() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(-1.0, -1.0), point(1.0, 1.0), point(2.0, 2.0)],
+        w_points: vec![
+            point(1.0, 0.0),
+            point(2.0, 0.0),
+            point(3.0, 0.0),
+            point(4.0, 0.0),
+        ],
+        m_to_w: vec![[1, 2, 3], [2, 3, 4], [3, 4, 2]],
+        w_to_m: vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![2, 3]],
+        n_w_to_m: vec![1, 2, 2, 2],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_vertex = 1;
+    state.num_mp = vec![0, 3, 6];
+    state.num_wp = vec![0, 4, 7];
+    state.mp_new.resize(7, point(0.0, 0.0));
+    state.mp_new[4] = point(4.0, 4.0);
+    state.mp_new[5] = point(5.0, 5.0);
+    state.mp_new[6] = point(6.0, 6.0);
+    state.wp_new.resize(8, point(0.0, 0.0));
+    state.wp_new[5] = point(10.0, 1.0);
+    state.wp_new[6] = point(10.0, 1.0);
+    state.wp_new[7] = point(11.0, 2.0);
+    for row in &mut state.ngrmw_new {
+        row.resize(7, 0);
+    }
+    state.ngrmw_new[1][4] = 2;
+    state.ngrmw_new[2][4] = 5;
+    state.ngrmw_new[3][4] = 6;
+    state.ngrmw_new[1][5] = 1;
+    state.ngrmw_new[2][5] = 1;
+    state.ngrmw_new[3][5] = 1;
+    state.ngrmw_new[1][6] = 4;
+    state.ngrmw_new[2][6] = 6;
+    state.ngrmw_new[3][6] = 7;
+    state.bdy_refine = vec![5, 6, 7];
+    state.bdy_refine_tran = vec![6, 7];
+
+    let report = state
+        .apply_ngr_renew()
+        .expect("apply NGR_RENEW through state");
+
+    assert_eq!(report.num_sjx, 5);
+    assert_eq!(report.num_dbx, 6);
+    assert_eq!(state.num_sjx, 5);
+    assert_eq!(state.num_dbx, 6);
+    assert_eq!(state.bdy_refine, vec![5, 5, 6]);
+    assert_eq!(state.bdy_refine_tran, vec![5, 6]);
+    assert_eq!(
+        [
+            state.ngrmw_f[1][4],
+            state.ngrmw_f[2][4],
+            state.ngrmw_f[3][4]
+        ],
+        [2, 5, 5]
+    );
+    assert_eq!(
+        [
+            state.ngrmw_f[1][5],
+            state.ngrmw_f[2][5],
+            state.ngrmw_f[3][5]
+        ],
+        [4, 5, 6]
+    );
+
+    let final_mesh = state.to_unstructured_mesh().expect("export renewed state");
+    assert_eq!(final_mesh.m_points.len(), 5);
+    assert_eq!(final_mesh.w_points.len(), 6);
+    assert_eq!(final_mesh.m_to_w[3], [2, 5, 5]);
+    assert_eq!(final_mesh.m_to_w[4], [4, 5, 6]);
+}
