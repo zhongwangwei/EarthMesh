@@ -250,3 +250,51 @@ fn south_pole_pentagon_splits_virtual_wedges_and_merges_back_to_original_cell() 
     );
     assert_eq!(contain.is_in_area_ustr, vec![0, 1]);
 }
+
+#[test]
+fn south_pole_triangle_reshapes_to_fortran_rectangle_before_scanning() {
+    let vertices = vec![
+        LonLatPoint {
+            lon: f64::NAN,
+            lat: f64::NAN,
+        },
+        LonLatPoint {
+            lon: 0.0,
+            lat: -90.0,
+        },
+        LonLatPoint {
+            lon: -10.0,
+            lat: -80.0,
+        },
+        LonLatPoint {
+            lon: 10.0,
+            lat: -80.0,
+        },
+    ];
+    let cell_to_vertices = vec![vec![0], vec![1, 2, 3]];
+    let n_edges = vec![0, 3];
+    let is_in_area_ustr = vec![0, 1];
+    let lon_i = vec![f64::NAN, -8.0, 0.0, 8.0];
+    let lat_i = vec![f64::NAN, -85.0, -75.0];
+    let mut is_in_area_grid = vec![vec![0; lat_i.len()]; lon_i.len()];
+    let seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
+    is_in_area_grid[3][1] = 1;
+
+    let contain = getcontain_containment_matrix_fortran_indexed(
+        GetContainMeshKind::Ocean,
+        &vertices,
+        &cell_to_vertices,
+        &n_edges,
+        &is_in_area_ustr,
+        &is_in_area_grid,
+        &seaorland,
+        &lon_i,
+        &lat_i,
+        0,
+    )
+    .expect("calculate south-pole triangle containment");
+
+    assert_eq!(contain.ustr_id, vec![vec![0, 0, 0], vec![1, 1, 1]]);
+    assert_eq!(contain.ustr_ii, vec![vec![3, 1]]);
+    assert_eq!(contain.is_in_area_ustr, vec![0, 1]);
+}

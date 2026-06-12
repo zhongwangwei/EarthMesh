@@ -1265,9 +1265,9 @@ pub fn getcontain_is_in_area_ustr_fortran_indexed(
 ///
 /// This covers the main land/ocean/atmos scan that fills `ustr_id` and
 /// `ustr_ii` after `Data_Updata` has identified active unstructured cells,
-/// including the Fortran `icl_points` dateline-shift branch and the south-pole
-/// pentagon virtual-wedge split/merge. South-pole triangle and refine-adjacent
-/// polygon adjustments remain separate migration slices.
+/// including the Fortran `icl_points` dateline-shift branch, south-pole
+/// triangle reshaping, and south-pole pentagon virtual-wedge split/merge.
+/// Refine-adjacent polar polygon adjustments remain a separate migration slice.
 pub fn getcontain_containment_matrix_fortran_indexed(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
@@ -1431,7 +1431,20 @@ fn getcontain_south_pole_scan_polygons(
         .iter()
         .map(|point| point.y)
         .fold(f64::INFINITY, f64::min);
-    if polygon.len() != 5 || (cell_min_lat - global_min_lat).abs() > 1.0e-12 {
+    if (cell_min_lat - global_min_lat).abs() > 1.0e-12 {
+        return vec![polygon.to_vec()];
+    }
+
+    if polygon.len() == 3 {
+        return vec![vec![
+            AreaJudgePoint::new(polygon[2].x, polygon[0].y),
+            AreaJudgePoint::new(polygon[1].x, polygon[0].y),
+            polygon[1],
+            polygon[2],
+        ]];
+    }
+
+    if polygon.len() != 5 {
         return vec![polygon.to_vec()];
     }
 
