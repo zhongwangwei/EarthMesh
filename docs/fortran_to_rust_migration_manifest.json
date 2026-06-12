@@ -461,7 +461,8 @@
         "refine_loop working state can apply NGR_RENEW and export compacted final mesh arrays",
         "Array_length_calculation pure halo/boundary computation and close_Mesh_Save side effects composed through rust/earthmesh_cli",
         "refine_loop working state can apply ref_sjx_isreverse_judge and OnedivideTwo transition split adapters",
-        "refine_loop working state can look up child triangle pairs and apply weak_concav_pair_special"
+        "refine_loop working state can look up child triangle pairs and apply weak_concav_pair_special",
+        "refine_loop working state can apply sharp_concav_lop_judge and weak_concav_lop_judge temporary segment updates"
       ]
     }
   ]

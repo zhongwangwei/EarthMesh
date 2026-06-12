@@ -452,3 +452,98 @@ fn working_state_applies_weak_concav_pair_special_into_lop_workspace() {
     assert_eq!(report.updated_pairs, vec![[2, 5], [3, 10]]);
     assert_eq!(report.marked_ref_sjx_triangles, vec![5, 10]);
 }
+
+fn lop_child_rows() -> Vec<Vec<usize>> {
+    let mut rows = vec![vec![0; 90]; 4];
+    let mut set = |triangle: usize, vertices: [usize; 3]| {
+        rows[1][triangle] = vertices[0];
+        rows[2][triangle] = vertices[1];
+        rows[3][triangle] = vertices[2];
+    };
+    set(20, [1, 2, 3]);
+    set(21, [90, 91, 92]);
+    set(30, [10, 11, 13]);
+    set(31, [30, 31, 32]);
+    set(40, [60, 61, 62]);
+    set(50, [40, 41, 42]);
+    set(51, [2, 3, 4]);
+    set(60, [10, 11, 12]);
+    set(61, [2, 3, 4]);
+    rows
+}
+
+#[test]
+fn working_state_applies_sharp_concav_lop_judge_into_ref_segments() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 7],
+        w_points: vec![point(0.0, 0.0); 7],
+        m_to_w: vec![[1, 2, 3]; 7],
+        w_to_m: vec![vec![1]; 7],
+        n_w_to_m: vec![1; 7],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_mp = vec![0, 7, 89];
+    state.ngrmw_new = lop_child_rows();
+    state.mrl_new = vec![1; 8];
+    state.mrl_new[6] = 4;
+    state.triangle_neighbors = vec![vec![1, 1, 1]; 8];
+    state.triangle_neighbors[4] = vec![5, 6, 7];
+    state.sjx_child = vec![[0, 0]; 8];
+    state.sjx_child[2] = [20, 21];
+    state.sjx_child[3] = [30, 31];
+    state.sjx_child[6] = [60, 61];
+    state.bdy_refine_segment = vec![vec![], vec![0, 4]];
+    state.bdy_refine_segment_old = vec![vec![], vec![0, 2, 3]];
+    state.n_bdy_refine_segment = vec![0, 2];
+    state.ref_sjx_segment_temp = vec![vec![0; 9]; 2];
+    state.n_ref_sjx_segment_temp = vec![0, 1];
+    state.num_ref = 0;
+
+    let report = state
+        .apply_sharp_concav_lop_judge(1)
+        .expect("apply sharp-concavity LOP through state");
+
+    assert_eq!(state.ref_sjx_segment_temp[1][1..=4], [20, 61, 60, 30]);
+    assert_eq!(state.n_ref_sjx_segment_temp[1], 4);
+    assert_eq!(state.num_ref, 4);
+    assert_eq!(report.num_ref_added, 4);
+    assert_eq!(report.written_segments, vec![(1, vec![20, 61, 60, 30])]);
+}
+
+#[test]
+fn working_state_applies_weak_concav_lop_judge_into_ref_segments() {
+    let initial = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0); 9],
+        w_points: vec![point(0.0, 0.0); 9],
+        m_to_w: vec![[1, 2, 3]; 9],
+        w_to_m: vec![vec![1]; 9],
+        n_w_to_m: vec![1; 9],
+    };
+    let mut state = RefineLoopWorkingState::from_unstructured_mesh(&initial);
+    state.iter = 2;
+    state.num_mp = vec![0, 9, 89];
+    state.ngrmw_new = lop_child_rows();
+    state.mrl_new = vec![1; 10];
+    state.triangle_neighbors = vec![vec![1, 1, 1]; 10];
+    state.sjx_child = vec![[0, 0]; 10];
+    state.sjx_child[2] = [20, 21];
+    state.sjx_child[6] = [60, 61];
+    state.weak_concav_segment = vec![vec![]];
+    state.weak_concav_segment_old = vec![vec![]];
+    state.n_weak_concav_segment = vec![0];
+    state.weak_concav_pair = vec![[0, 0], [2, 6]];
+    state.ref_sjx_segment_temp = vec![vec![0; 6]; 3];
+    state.n_ref_sjx_segment_temp = vec![0; 3];
+    state.num_ref = 0;
+
+    let report = state
+        .apply_weak_concav_lop_judge(1, 0, 0, 1)
+        .expect("apply weak-concavity LOP through state");
+
+    assert_eq!(state.ref_sjx_segment_temp[2][1..=2], [20, 61]);
+    assert_eq!(state.n_ref_sjx_segment_temp[2], 2);
+    assert_eq!(state.num_ref, 2);
+    assert_eq!(report.num_ref_added, 2);
+    assert_eq!(report.written_segments, vec![(2, vec![20, 61])]);
+}

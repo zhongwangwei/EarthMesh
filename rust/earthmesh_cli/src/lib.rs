@@ -388,6 +388,14 @@ pub struct RefineLoopWorkingState {
     pub sjx_child: Vec<[usize; 2]>,
     pub weak_concav_pair: Vec<[usize; 2]>,
     pub weak_concav_segment: Vec<Vec<usize>>,
+    pub weak_concav_segment_old: Vec<Vec<usize>>,
+    pub n_weak_concav_segment: Vec<usize>,
+    pub bdy_refine_segment: Vec<Vec<usize>>,
+    pub bdy_refine_segment_old: Vec<Vec<usize>>,
+    pub n_bdy_refine_segment: Vec<usize>,
+    pub ref_sjx_segment_temp: Vec<Vec<usize>>,
+    pub n_ref_sjx_segment_temp: Vec<usize>,
+    pub num_ref: usize,
     pub bdy_refine: Vec<usize>,
     pub bdy_refine_tran: Vec<usize>,
 }
@@ -1361,6 +1369,14 @@ impl RefineLoopWorkingState {
             sjx_child: vec![[0, 0]; nma + 1],
             weak_concav_pair: Vec::new(),
             weak_concav_segment: Vec::new(),
+            weak_concav_segment_old: Vec::new(),
+            n_weak_concav_segment: Vec::new(),
+            bdy_refine_segment: Vec::new(),
+            bdy_refine_segment_old: Vec::new(),
+            n_bdy_refine_segment: Vec::new(),
+            ref_sjx_segment_temp: Vec::new(),
+            n_ref_sjx_segment_temp: Vec::new(),
+            num_ref: 0,
             bdy_refine: Vec::new(),
             bdy_refine_tran: Vec::new(),
         }
@@ -1483,6 +1499,67 @@ impl RefineLoopWorkingState {
             &mut self.ref_sjx,
             &mut self.weak_concav_pair,
             &mut self.weak_concav_segment,
+        )
+    }
+
+    /// Apply migrated `sharp_concav_lop_judge` to the state's boundary-refine
+    /// segment work arrays and accumulated LOP reference count.
+    pub fn apply_sharp_concav_lop_judge(
+        &mut self,
+        num_bdy_refine_segment: usize,
+    ) -> io::Result<SharpConcavLopJudgeReport> {
+        let max_triangle = self.num_mp.get(self.iter).copied().unwrap_or_else(|| {
+            self.ngrmw_new
+                .get(1)
+                .map_or(0, |row| row.len().saturating_sub(1))
+        });
+        apply_sharp_concav_lop_judge_fortran_indexed(
+            &mut self.num_ref,
+            num_bdy_refine_segment,
+            max_triangle,
+            &self.mrl_new,
+            &self.triangle_neighbors,
+            &self.ngrmw_new,
+            &self.sjx_child,
+            &self.bdy_refine_segment,
+            &self.bdy_refine_segment_old,
+            &self.n_bdy_refine_segment,
+            &mut self.ref_sjx_segment_temp,
+            &mut self.n_ref_sjx_segment_temp,
+        )
+    }
+
+    /// Apply migrated `weak_concav_lop_judge` to the state's weak-concavity
+    /// LOP work arrays and accumulated LOP reference count.
+    pub fn apply_weak_concav_lop_judge(
+        &mut self,
+        num_bdy_refine_segment: usize,
+        num_ref_weak_concav: usize,
+        num_weak_concav_segment: usize,
+        num_weak_concav_pair: usize,
+    ) -> io::Result<SharpConcavLopJudgeReport> {
+        let max_triangle = self.num_mp.get(self.iter).copied().unwrap_or_else(|| {
+            self.ngrmw_new
+                .get(1)
+                .map_or(0, |row| row.len().saturating_sub(1))
+        });
+        apply_weak_concav_lop_judge_fortran_indexed(
+            &mut self.num_ref,
+            num_bdy_refine_segment,
+            num_ref_weak_concav,
+            num_weak_concav_segment,
+            num_weak_concav_pair,
+            max_triangle,
+            &self.mrl_new,
+            &self.triangle_neighbors,
+            &self.ngrmw_new,
+            &self.sjx_child,
+            &mut self.weak_concav_segment,
+            &self.weak_concav_segment_old,
+            &self.n_weak_concav_segment,
+            &self.weak_concav_pair,
+            &mut self.ref_sjx_segment_temp,
+            &mut self.n_ref_sjx_segment_temp,
         )
     }
 
