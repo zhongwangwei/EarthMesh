@@ -9,10 +9,12 @@ use earthmesh_mesh::{
     centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
     lonlat_points_to_unit_xyz, springjustment_global_core_fortran_indexed,
+    springjustment_regional_core_fortran_indexed,
     triangle_neighbors_from_cell_membership_fortran_indexed, xyz_to_lonlat_degrees,
     BoundaryConnection, BoundaryOrders, CartesianPoint, DistanceLayerSpacing,
     GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep,
     LonLatDegrees, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
+    SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -498,6 +500,25 @@ pub struct SpringjustmentGlobalRunOptions<'a> {
 pub struct SpringjustmentGlobalGridfileReport {
     pub core: SpringjustmentGlobalCoreOutput,
     pub persistence: SpringjustmentGlobalPersistenceReport,
+    pub mesh: UnstructuredMesh,
+}
+
+/// Runtime controls needed to reproduce the migrated
+/// `MOD_grid_preprocess.F90:Springjustment_regional_step` calculation from a
+/// gridfile when the regional move mask has already been resolved.
+#[derive(Debug, Clone, Copy)]
+pub struct SpringjustmentRegionalRunOptions<'a> {
+    pub move_mask: &'a [bool],
+    pub niter_refine: usize,
+    pub radius: f64,
+    pub diagnostic_every: usize,
+}
+
+/// Evidence report from the gridfile-backed Rust replacement path for
+/// `MOD_grid_preprocess.F90:Springjustment_regional_step`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringjustmentRegionalGridfileReport {
+    pub core: SpringjustmentRegionalCoreOutput,
     pub mesh: UnstructuredMesh,
 }
 
@@ -1036,6 +1057,60 @@ pub fn run_springjustment_global_from_unstructured_mesh(
         persistence,
         mesh,
     })
+}
+
+/// Read an `Unstructured_Mesh_Read` gridfile and run the migrated
+/// `MOD_grid_preprocess.F90:Springjustment_regional_step` core with an
+/// already-derived move mask.
+pub fn run_springjustment_regional_from_unstructured_gridfile(
+    gridfile: impl AsRef<Path>,
+    options: SpringjustmentRegionalRunOptions<'_>,
+) -> io::Result<SpringjustmentRegionalGridfileReport> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    run_springjustment_regional_from_unstructured_mesh(&mesh, options)
+}
+
+/// Run the migrated `Springjustment_regional_step` core from an already-loaded
+/// unstructured mesh with an already-derived move mask.
+pub fn run_springjustment_regional_from_unstructured_mesh(
+    mesh: &UnstructuredMesh,
+    options: SpringjustmentRegionalRunOptions<'_>,
+) -> io::Result<SpringjustmentRegionalGridfileReport> {
+    let cells_on_triangle = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
+    let triangles_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
+
+    let core = springjustment_regional_core_fortran_indexed(SpringjustmentRegionalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        move_mask: options.move_mask,
+        niter_refine: options.niter_refine,
+        radius: options.radius,
+        diagnostic_every: options.diagnostic_every,
+    })
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to run Springjustment_regional_step core from unstructured mesh",
+        )
+    })?;
+
+    let mesh = unstructured_mesh_from_springjustment_regional(mesh, &core)?;
+    Ok(SpringjustmentRegionalGridfileReport { core, mesh })
+}
+
+/// Persist the updated gridfile payload returned by the migrated
+/// `Springjustment_regional_step` adapter.
+pub fn write_springjustment_regional_gridfile(
+    output: impl AsRef<Path>,
+    report: &SpringjustmentRegionalGridfileReport,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    write_unstructured_mesh_netcdf(output, &report.mesh)
 }
 
 /// Read an `Unstructured_Mesh_Read` gridfile and run the migrated
@@ -3926,6 +4001,40 @@ fn unstructured_mesh_from_springjustment_global(
     )?;
     require_len(
         "Springjustment_global updated_cell_lonlat",
+        output.updated_cell_lonlat.len(),
+        source.w_points.len(),
+    )?;
+
+    Ok(UnstructuredMesh {
+        m_points: output
+            .updated_triangle_lonlat
+            .iter()
+            .copied()
+            .map(lonlat_degrees_to_lonlat_point)
+            .collect(),
+        w_points: output
+            .updated_cell_lonlat
+            .iter()
+            .copied()
+            .map(lonlat_degrees_to_lonlat_point)
+            .collect(),
+        m_to_w: source.m_to_w.clone(),
+        w_to_m: source.w_to_m.clone(),
+        n_w_to_m: source.n_w_to_m.clone(),
+    })
+}
+
+fn unstructured_mesh_from_springjustment_regional(
+    source: &UnstructuredMesh,
+    output: &SpringjustmentRegionalCoreOutput,
+) -> io::Result<UnstructuredMesh> {
+    require_len(
+        "Springjustment_regional_step updated_triangle_lonlat",
+        output.updated_triangle_lonlat.len(),
+        source.m_points.len(),
+    )?;
+    require_len(
+        "Springjustment_regional_step updated_cell_lonlat",
         output.updated_cell_lonlat.len(),
         source.w_points.len(),
     )?;

@@ -213,7 +213,7 @@
       "strategy": "port",
       "parity_gate": "Grid-quality, adjacency, edge, ordering, lon/lat/xyz, triangle, polygon, and MPAS-order fixtures match Fortran outputs within tolerance.",
       "notes": "This is one of the highest-risk business-kernel ports and should be split into small Rust modules with independent tests.",
-      "port_status": "started",
+      "port_status": "completed",
       "completed_rust_surfaces": [
         "lonlat2xyz unit-sphere coordinate conversion ported to rust/earthmesh_mesh",
         "xyz2lonlat-compatible round trip covered through rust/earthmesh_mesh xyz_to_lonlat_degrees",
@@ -284,11 +284,10 @@
         "Springjustment_global distsOnEdge/cellwidth persistence adapter ported to rust/earthmesh_cli",
         "GetEdge Unstructured_Mesh_Read NetCDF adapter integration ported to rust/earthmesh_cli",
         "GetArea Unstructured_Mesh_Read NetCDF adapter integration ported to rust/earthmesh_cli",
-        "Springjustment_global Unstructured_Mesh_Read NetCDF adapter loading ported to rust/earthmesh_cli"
+        "Springjustment_global Unstructured_Mesh_Read NetCDF adapter loading ported to rust/earthmesh_cli",
+        "Springjustment_regional_step gridfile adapter and persistence hook ported to rust/earthmesh_cli"
       ],
-      "remaining_rust_surfaces": [
-        "Springjustment_regional_step persistence/orchestration wiring"
-      ]
+      "remaining_rust_surfaces": []
     },
     {
       "path": "src/MOD_mask_postproc.F90",
