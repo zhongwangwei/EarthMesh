@@ -4,7 +4,98 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use earthmesh_core::{GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
+use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
+
+/// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdGridinitRunReport {
+    pub config: EarthmeshConfig,
+    pub workspace_mask: WorkspaceMaskApplyReport,
+    pub gridfile: UnstructuredMeshWriteReport,
+}
+
+/// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
+///
+/// This mirrors the branch where `mode_grid` is `hex`/`tri` and `mode_file` does
+/// not exist: parse the mkgrd namelist, apply the read_nl workspace/mask plan,
+/// generate the in-memory global grid, and write
+/// `gridfile/gridfile_NXP####_01_<mode_grid>.nc4`.  Restart mode and reading an
+/// existing `mode_file` remain explicit `InvalidInput` errors until those legacy
+/// branches are migrated behind tests.
+pub fn run_mkgrd_gridinit_global_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+) -> io::Result<MkgrdGridinitRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+
+    if config.mask_restart {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "mask_restart mkgrd branch is not yet migrated to Rust",
+        ));
+    }
+    if !matches!(config.mode_grid.as_str(), "hex" | "tri") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mode_grid {} is not supported by the gridinit branch",
+                config.mode_grid
+            ),
+        ));
+    }
+    let mode_file = PathBuf::from(config.mode_file.trim());
+    if mode_file.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "reading an existing mode_file is not yet migrated to Rust",
+        ));
+    }
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be positive for gridinit",
+        ));
+    }
+    if config.niter < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "niter must be non-negative for gridinit",
+        ));
+    }
+
+    let plan = config.read_nl_workspace_plan(None);
+    let workspace_mask =
+        apply_workspace_and_mask_operations(&plan, namelist_source, workdir, 9, false)?;
+    let state = earthmesh_mesh::gridinit_voronoi_state_fortran(
+        usize::try_from(config.nxp)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?,
+        usize::try_from(config.niter)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "niter must fit usize"))?,
+        f64::from(config.beta),
+        f64::from(config.relax),
+        max_tris,
+    )?;
+    let gridfile = write_gridfile_from_fortran_indexed_state(
+        config.file_dir(),
+        usize::try_from(config.nxp)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?,
+        1,
+        &config.mode_grid,
+        &state.grid,
+        &state.tabs,
+    )?;
+
+    Ok(MkgrdGridinitRunReport {
+        config,
+        workspace_mask,
+        gridfile,
+    })
+}
 
 /// Rust data shape written by `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
 #[derive(Debug, Clone, PartialEq)]

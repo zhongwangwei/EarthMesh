@@ -38,12 +38,20 @@ name = "earthmesh_cli"
 version = "0.1.0"
 dependencies = [
  "earthmesh_core",
+ "earthmesh_mesh",
  "netcdf",
 ]
 
 [[package]]
 name = "earthmesh_core"
 version = "0.1.0"
+
+[[package]]
+name = "earthmesh_mesh"
+version = "0.1.0"
+dependencies = [
+ "earthmesh_core",
+]
 
 [[package]]
 name = "find-msvc-tools"
