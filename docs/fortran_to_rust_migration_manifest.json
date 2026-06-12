@@ -230,11 +230,12 @@
       "completed_rust_surfaces": [
         "GetRef_Lnd refine_num_landtypes and refine_area_mainland basic threshold criteria ported to rust/earthmesh_cli",
         "GetRef mean_std_cal2d one-layer mean/std threshold helper ported to rust/earthmesh_cli",
-        "GetRef mean_std_cal3d two-layer mean/std threshold helper ported to rust/earthmesh_cli"
+        "GetRef mean_std_cal3d two-layer mean/std threshold helper ported to rust/earthmesh_cli",
+        "GetRef_Lnd in-memory threshold report assembly for basic, one-layer, and two-layer columns ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
-        "GetRef one-layer mean/std integration for land/ocean/atmos threshold reports",
-        "GetRef two-layer mean/std integration for land threshold reports",
+        "GetRef ocean/atmos one-layer mean/std integration for threshold reports",
+        "GetRef_Lnd threshold NetCDF writer and full GetRef aggregation wiring",
         "GetRef land/ocean/atmos/LOC threshold NetCDF writers and top-level aggregation",
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
       ]
