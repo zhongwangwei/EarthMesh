@@ -455,6 +455,7 @@
         "weak_concav_pair_special state mutation composed through rust/earthmesh_cli Fortran-row adapter",
         "sharp_concav_lop_judge strong-concavity LOP segment builder composed through rust/earthmesh_cli Fortran-row adapter",
         "weak_concav_lop_judge weak-concavity LOP segment builder composed through rust/earthmesh_cli Fortran-row adapter",
+        "refine_loop working state container for Fortran-indexed geometry arrays composed in rust/earthmesh_cli",
         "Array_length_calculation pure halo/boundary computation and close_Mesh_Save side effects composed through rust/earthmesh_cli"
       ]
     }

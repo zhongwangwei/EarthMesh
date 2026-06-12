@@ -347,6 +347,34 @@ pub struct MkgrdRefineLoopExecutionReport {
     pub final_handoff: MkgrdRefineLoopFinalDomainHandoffReport,
 }
 
+/// In-memory Fortran-indexed working arrays for incrementally replacing
+/// `MOD_refine.F90:refine_loop`.
+///
+/// The top-level executor still owns file scheduling; this state owns the
+/// geometry arrays that the migrated Rust adapters mutate in Fortran order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefineLoopWorkingState {
+    pub iter: usize,
+    pub num_vertex: usize,
+    pub num_mp: Vec<usize>,
+    pub num_wp: Vec<usize>,
+    pub num_sjx: usize,
+    pub num_dbx: usize,
+    pub mp_new: Vec<LonLatPoint>,
+    pub wp_new: Vec<LonLatPoint>,
+    pub ngrmw: Vec<Vec<usize>>,
+    pub ngrmw_new: Vec<Vec<usize>>,
+    pub ngrwm: Vec<Vec<usize>>,
+    pub n_ngrwm: Vec<usize>,
+    pub mp_f: Vec<LonLatPoint>,
+    pub wp_f: Vec<LonLatPoint>,
+    pub ngrmw_f: Vec<Vec<usize>>,
+    pub ngrwm_f: Vec<Vec<usize>>,
+    pub n_ngrwm_f: Vec<usize>,
+    pub bdy_refine: Vec<usize>,
+    pub bdy_refine_tran: Vec<usize>,
+}
+
 /// Runtime inputs for executing the already-migrated specified-refinement
 /// source branch inside one `mkgrd.F90` refine-loop step.
 #[derive(Debug, Clone, Copy)]
@@ -1227,6 +1255,179 @@ pub fn run_mkgrd_refine_loop_prologue_snapshot(
         copied_bytes,
         sjx_points: mesh.m_points.len(),
         lbx_points: mesh.w_points.len(),
+    })
+}
+
+impl RefineLoopWorkingState {
+    /// Build the initial `refine_loop` working arrays from the current
+    /// unstructured gridfile payload.
+    pub fn from_unstructured_mesh(mesh: &UnstructuredMesh) -> Self {
+        let nma = mesh.m_points.len();
+        let nwa = mesh.w_points.len();
+        let mut mp_new = vec![LonLatPoint { lon: 0.0, lat: 0.0 }; nma + 1];
+        for (idx, point) in mesh.m_points.iter().copied().enumerate() {
+            mp_new[idx + 1] = point;
+        }
+        let mut wp_new = vec![LonLatPoint { lon: 0.0, lat: 0.0 }; nwa + 1];
+        for (idx, point) in mesh.w_points.iter().copied().enumerate() {
+            wp_new[idx + 1] = point;
+        }
+
+        let mut ngrmw = vec![vec![0_usize; nma + 1]; 4];
+        for (triangle, vertices) in mesh.m_to_w.iter().enumerate() {
+            for row in 1..=3 {
+                ngrmw[row][triangle + 1] = vertices[row - 1].max(0) as usize;
+            }
+        }
+        let ngrmw_new = ngrmw.clone();
+
+        let ngrwm_capacity = mesh.w_to_m.iter().map(Vec::len).max().unwrap_or(0);
+        let mut ngrwm = vec![vec![0_usize; nwa + 1]; ngrwm_capacity + 1];
+        for (vertex, triangles) in mesh.w_to_m.iter().enumerate() {
+            for (row, &triangle) in triangles.iter().enumerate() {
+                ngrwm[row + 1][vertex + 1] = triangle.max(0) as usize;
+            }
+        }
+        let mut n_ngrwm = vec![0_usize; nwa + 1];
+        for (vertex, &count) in mesh.n_w_to_m.iter().enumerate() {
+            n_ngrwm[vertex + 1] = count.max(0) as usize;
+        }
+
+        Self {
+            iter: 1,
+            num_vertex: 0,
+            num_mp: vec![0, nma],
+            num_wp: vec![0, nwa],
+            num_sjx: 0,
+            num_dbx: 0,
+            mp_new,
+            wp_new,
+            ngrmw,
+            ngrmw_new,
+            ngrwm,
+            n_ngrwm,
+            mp_f: Vec::new(),
+            wp_f: Vec::new(),
+            ngrmw_f: Vec::new(),
+            ngrwm_f: Vec::new(),
+            n_ngrwm_f: Vec::new(),
+            bdy_refine: Vec::new(),
+            bdy_refine_tran: Vec::new(),
+        }
+    }
+
+    /// Export either the renewed final arrays (`*_f`) or the current working
+    /// arrays back to the unstructured mesh shape used by gridfile writers.
+    pub fn to_unstructured_mesh(&self) -> io::Result<UnstructuredMesh> {
+        let has_final = self.num_sjx > 0
+            && self.num_dbx > 0
+            && !self.mp_f.is_empty()
+            && !self.wp_f.is_empty()
+            && !self.ngrmw_f.is_empty()
+            && !self.ngrwm_f.is_empty()
+            && !self.n_ngrwm_f.is_empty();
+        if has_final {
+            state_arrays_to_unstructured_mesh(
+                self.num_sjx,
+                self.num_dbx,
+                &self.mp_f,
+                &self.wp_f,
+                &self.ngrmw_f,
+                &self.ngrwm_f,
+                &self.n_ngrwm_f,
+            )
+        } else {
+            let nma = *self.num_mp.get(self.iter).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "iter must address num_mp")
+            })?;
+            let nwa = *self.num_wp.get(self.iter).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "iter must address num_wp")
+            })?;
+            state_arrays_to_unstructured_mesh(
+                nma,
+                nwa,
+                &self.mp_new,
+                &self.wp_new,
+                &self.ngrmw_new,
+                &self.ngrwm,
+                &self.n_ngrwm,
+            )
+        }
+    }
+}
+
+fn state_arrays_to_unstructured_mesh(
+    num_triangles: usize,
+    num_vertices: usize,
+    triangle_points: &[LonLatPoint],
+    vertex_points: &[LonLatPoint],
+    cells_on_triangle_rows: &[Vec<usize>],
+    triangles_on_cell_rows: &[Vec<usize>],
+    n_triangles_on_cell: &[usize],
+) -> io::Result<UnstructuredMesh> {
+    if triangle_points.len() <= num_triangles || vertex_points.len() <= num_vertices {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "point arrays must include one-based final slots",
+        ));
+    }
+    if cells_on_triangle_rows.len() <= 3
+        || cells_on_triangle_rows[1..=3]
+            .iter()
+            .any(|row| row.len() <= num_triangles)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ngrmw rows must include one-based final triangle slots",
+        ));
+    }
+    if n_triangles_on_cell.len() <= num_vertices {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "n_ngrwm must include one-based final vertex slots",
+        ));
+    }
+    if triangles_on_cell_rows
+        .iter()
+        .any(|row| row.len() <= num_vertices)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ngrwm rows must include one-based final vertex slots",
+        ));
+    }
+
+    let m_points = triangle_points[1..=num_triangles].to_vec();
+    let w_points = vertex_points[1..=num_vertices].to_vec();
+    let m_to_w = (1..=num_triangles)
+        .map(|triangle| {
+            [
+                cells_on_triangle_rows[1][triangle] as i32,
+                cells_on_triangle_rows[2][triangle] as i32,
+                cells_on_triangle_rows[3][triangle] as i32,
+            ]
+        })
+        .collect();
+    let n_w_to_m = n_triangles_on_cell[1..=num_vertices]
+        .iter()
+        .map(|&count| count as i32)
+        .collect();
+    let w_to_m = (1..=num_vertices)
+        .map(|vertex| {
+            triangles_on_cell_rows
+                .iter()
+                .skip(1)
+                .map(|row| row[vertex] as i32)
+                .collect()
+        })
+        .collect();
+
+    Ok(UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
     })
 }
 
