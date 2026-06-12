@@ -17,11 +17,11 @@ use earthmesh_mesh::{
     springjustment_regional_core_fortran_indexed,
     standardize_vertices_on_cell_rotation_fortran_indexed,
     triangle_neighbors_from_cell_membership_fortran_indexed, widen_narrow_waterway_fortran_indexed,
-    xyz_to_lonlat_degrees, BoundaryConnection, BoundaryOrders, CartesianPoint,
-    DistanceLayerSpacing, GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput,
-    GlobalDistanceStep, IsolatedOceanRenewal, LonLatDegrees, MaskPostprocRenewedData,
-    SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput, SpringjustmentRegionalCoreInput,
-    SpringjustmentRegionalCoreOutput,
+    xyz_to_lonlat_degrees, AreaJudgeSourceBounds, BoundaryConnection, BoundaryOrders,
+    CartesianPoint, DistanceLayerSpacing, GetAreaProductionOutput, GetAreaUnitInput,
+    GetEdgeProductionOutput, GlobalDistanceStep, IsolatedOceanRenewal, LonLatDegrees,
+    MaskPostprocRenewedData, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
+    SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -1497,6 +1497,306 @@ pub fn write_contain_netcdf(
         dim_a,
         dim_b,
     })
+}
+
+/// File-backed payload for `MOD_Area_judge.F90:IsInArea_grid_Save/Read`.
+///
+/// The legacy Fortran path writes the selected area-mask window with
+/// one-based source-index bounds.  The reader path historically looks for
+/// `IsInDmArea_select`, while the save path writes `IsInArea_select`; the Rust
+/// writer preserves both names so restarts remain compatible with either side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaJudgeGridPayload {
+    pub bounds: AreaJudgeSourceBounds,
+    pub longitude: Vec<f64>,
+    pub latitude: Vec<f64>,
+    pub is_in_area_select: Vec<Vec<i32>>,
+    pub seaorland_select: Option<Vec<Vec<i32>>>,
+}
+
+fn validate_area_judge_grid_payload(payload: &AreaJudgeGridPayload) -> io::Result<()> {
+    let expected_lon = payload
+        .bounds
+        .maxlon_source
+        .checked_sub(payload.bounds.minlon_source)
+        .and_then(|span| span.checked_add(1))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "area longitude bounds {}..{} are invalid",
+                    payload.bounds.minlon_source, payload.bounds.maxlon_source
+                ),
+            )
+        })?;
+    let expected_lat = payload
+        .bounds
+        .minlat_source
+        .checked_sub(payload.bounds.maxlat_source)
+        .and_then(|span| span.checked_add(1))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "area latitude bounds {}..{} are invalid",
+                    payload.bounds.maxlat_source, payload.bounds.minlat_source
+                ),
+            )
+        })?;
+    if payload.longitude.len() != expected_lon {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "longitude length {} must match selected nlons {expected_lon}",
+                payload.longitude.len()
+            ),
+        ));
+    }
+    if payload.latitude.len() != expected_lat {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "latitude length {} must match selected nlats {expected_lat}",
+                payload.latitude.len()
+            ),
+        ));
+    }
+    validate_i32_matrix_shape(
+        "IsInArea_select",
+        &payload.is_in_area_select,
+        expected_lon,
+        expected_lat,
+    )?;
+    if let Some(seaorland) = payload.seaorland_select.as_ref() {
+        validate_i32_matrix_shape("seaorland_select", seaorland, expected_lon, expected_lat)?;
+    }
+    Ok(())
+}
+
+fn validate_i32_matrix_shape(
+    name: &str,
+    rows: &[Vec<i32>],
+    expected_rows: usize,
+    expected_width: usize,
+) -> io::Result<()> {
+    if rows.len() != expected_rows {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} row count {} must match selected nlons {expected_rows}",
+                rows.len()
+            ),
+        ));
+    }
+    let width = matrix_width(name, rows)?;
+    if width != expected_width {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} width {width} must match selected nlats {expected_width}"),
+        ));
+    }
+    Ok(())
+}
+
+fn grid_covers_area_judge_bounds_fortran_indexed<T>(
+    name: &str,
+    grid: &[Vec<T>],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<()> {
+    require_len(name, grid.len(), bounds.maxlon_source + 1)?;
+    for lon_index in bounds.minlon_source..=bounds.maxlon_source {
+        require_len(
+            &format!("{name}[{lon_index}]"),
+            grid[lon_index].len(),
+            bounds.minlat_source + 1,
+        )?;
+    }
+    Ok(())
+}
+
+/// Select a one-based source-grid window using the bounds produced by
+/// `MOD_Area_judge.F90:Source_Find/minmax_range_make`.
+pub fn select_area_judge_grid_fortran_indexed(
+    is_in_area: &[Vec<i32>],
+    seaorland: Option<&[Vec<i32>]>,
+    lon_i: &[f64],
+    lat_i: &[f64],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeGridPayload> {
+    if bounds.maxlon_source < bounds.minlon_source || bounds.minlat_source < bounds.maxlat_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "invalid Area_judge source bounds lon {}..{} lat {}..{}",
+                bounds.minlon_source,
+                bounds.maxlon_source,
+                bounds.maxlat_source,
+                bounds.minlat_source
+            ),
+        ));
+    }
+    grid_covers_area_judge_bounds_fortran_indexed("IsInArea", is_in_area, bounds)?;
+    if let Some(seaorland) = seaorland {
+        grid_covers_area_judge_bounds_fortran_indexed("seaorland", seaorland, bounds)?;
+    }
+    require_len("longitude source", lon_i.len(), bounds.maxlon_source + 1)?;
+    require_len("latitude source", lat_i.len(), bounds.minlat_source + 1)?;
+
+    let longitude = (bounds.minlon_source..=bounds.maxlon_source)
+        .map(|lon_index| lon_i[lon_index])
+        .collect::<Vec<_>>();
+    let latitude = (bounds.maxlat_source..=bounds.minlat_source)
+        .map(|lat_index| lat_i[lat_index])
+        .collect::<Vec<_>>();
+    let is_in_area_select = select_i32_matrix_fortran_indexed(is_in_area, bounds);
+    let seaorland_select =
+        seaorland.map(|values| select_i32_matrix_fortran_indexed(values, bounds));
+
+    let payload = AreaJudgeGridPayload {
+        bounds,
+        longitude,
+        latitude,
+        is_in_area_select,
+        seaorland_select,
+    };
+    validate_area_judge_grid_payload(&payload)?;
+    Ok(payload)
+}
+
+fn select_i32_matrix_fortran_indexed(
+    values: &[Vec<i32>],
+    bounds: AreaJudgeSourceBounds,
+) -> Vec<Vec<i32>> {
+    (bounds.minlon_source..=bounds.maxlon_source)
+        .map(|lon_index| {
+            (bounds.maxlat_source..=bounds.minlat_source)
+                .map(|lat_index| values[lon_index][lat_index])
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Write an Area_judge selected-grid restart payload.
+pub fn write_area_judge_grid_netcdf(
+    output: impl AsRef<Path>,
+    payload: &AreaJudgeGridPayload,
+) -> io::Result<()> {
+    validate_area_judge_grid_payload(payload)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("nlons_select", payload.longitude.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("nlats_select", payload.latitude.len())
+        .map_err(netcdf_to_io_error)?;
+    write_i32_scalar(
+        &mut file,
+        "minlon_DmArea",
+        usize_to_i32("minlon_DmArea", payload.bounds.minlon_source)?,
+    )?;
+    write_i32_scalar(
+        &mut file,
+        "maxlon_DmArea",
+        usize_to_i32("maxlon_DmArea", payload.bounds.maxlon_source)?,
+    )?;
+    write_i32_scalar(
+        &mut file,
+        "maxlat_DmArea",
+        usize_to_i32("maxlat_DmArea", payload.bounds.maxlat_source)?,
+    )?;
+    write_i32_scalar(
+        &mut file,
+        "minlat_DmArea",
+        usize_to_i32("minlat_DmArea", payload.bounds.minlat_source)?,
+    )?;
+    write_f64_1d(&mut file, "longitude", "nlons_select", &payload.longitude)?;
+    write_f64_1d(&mut file, "latitude", "nlats_select", &payload.latitude)?;
+    write_i32_matrix_rows(
+        &mut file,
+        "IsInArea_select",
+        &["nlons_select", "nlats_select"],
+        &payload.is_in_area_select,
+    )?;
+    write_i32_matrix_rows(
+        &mut file,
+        "IsInDmArea_select",
+        &["nlons_select", "nlats_select"],
+        &payload.is_in_area_select,
+    )?;
+    if let Some(seaorland) = payload.seaorland_select.as_ref() {
+        write_i32_matrix_rows(
+            &mut file,
+            "seaorland_select",
+            &["nlons_select", "nlats_select"],
+            seaorland,
+        )?;
+    }
+    Ok(())
+}
+
+/// Read an Area_judge selected-grid restart payload.
+pub fn read_area_judge_grid_netcdf(input: impl AsRef<Path>) -> io::Result<AreaJudgeGridPayload> {
+    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let nlons = required_dimension_len(&file, "nlons_select")?;
+    let nlats = required_dimension_len(&file, "nlats_select")?;
+    let bounds = AreaJudgeSourceBounds {
+        minlon_source: required_scalar_usize_i32(&file, "minlon_DmArea")?,
+        maxlon_source: required_scalar_usize_i32(&file, "maxlon_DmArea")?,
+        maxlat_source: required_scalar_usize_i32(&file, "maxlat_DmArea")?,
+        minlat_source: required_scalar_usize_i32(&file, "minlat_DmArea")?,
+    };
+    let longitude = required_values_f64(&file, "longitude")?;
+    let latitude = required_values_f64(&file, "latitude")?;
+    if longitude.len() != nlons {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "longitude length {} must match nlons_select {nlons}",
+                longitude.len()
+            ),
+        ));
+    }
+    if latitude.len() != nlats {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "latitude length {} must match nlats_select {nlats}",
+                latitude.len()
+            ),
+        ));
+    }
+    let area_values = if let Some(values) = optional_values_i32_2d(&file, "IsInDmArea_select")? {
+        values
+    } else if let Some(values) = optional_values_i32_2d(&file, "IsInArea_select")? {
+        values
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing IsInDmArea_select or IsInArea_select variable",
+        ));
+    };
+    let is_in_area_select = i32_matrix_from_flat("IsInArea_select", area_values, nlons, nlats)?;
+    let seaorland_select = optional_values_i32_2d(&file, "seaorland_select")?
+        .map(|values| i32_matrix_from_flat("seaorland_select", values, nlons, nlats))
+        .transpose()?;
+
+    let payload = AreaJudgeGridPayload {
+        bounds,
+        longitude,
+        latitude,
+        is_in_area_select,
+        seaorland_select,
+    };
+    validate_area_judge_grid_payload(&payload).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid Area_judge grid payload: {err}"),
+        )
+    })?;
+    Ok(payload)
 }
 
 /// Write the `patchtype_NXP*.nc4` schema produced by
@@ -5205,6 +5505,71 @@ fn write_f64_1d(
         .add_variable::<f64>(name, &[dim])
         .map_err(netcdf_to_io_error)?;
     var.put_values(values, ..).map_err(netcdf_to_io_error)
+}
+
+fn optional_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Option<Vec<i32>>> {
+    let Some(variable) = file.variable(name) else {
+        return Ok(None);
+    };
+    variable
+        .get_values::<i32, _>((.., ..))
+        .map(Some)
+        .map_err(netcdf_to_io_error)
+}
+
+fn required_scalar_i32(file: &netcdf::File, name: &str) -> io::Result<i32> {
+    let values = required_values_i32(file, name)?;
+    match values.as_slice() {
+        [value] => Ok(*value),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name} scalar must contain exactly one value, found {}",
+                values.len()
+            ),
+        )),
+    }
+}
+
+fn required_scalar_usize_i32(file: &netcdf::File, name: &str) -> io::Result<usize> {
+    let value = required_scalar_i32(file, name)?;
+    usize::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} value {value} must be non-negative"),
+        )
+    })
+}
+
+fn i32_matrix_from_flat(
+    name: &str,
+    values: Vec<i32>,
+    rows: usize,
+    width: usize,
+) -> io::Result<Vec<Vec<i32>>> {
+    let expected = rows.checked_mul(width).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} dimensions {rows}x{width} overflow"),
+        )
+    })?;
+    if values.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name} contains {} values, expected {expected}",
+                values.len()
+            ),
+        ));
+    }
+    Ok(rows_from_flat_i32(&values, width))
+}
+
+fn write_i32_scalar(file: &mut netcdf::FileMut, name: &str, value: i32) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<i32>(name, &[])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(&[value], ..).map_err(netcdf_to_io_error)
 }
 
 fn write_f64_scalar(file: &mut netcdf::FileMut, name: &str, value: f64) -> io::Result<()> {
