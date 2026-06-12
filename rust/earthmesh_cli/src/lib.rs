@@ -236,6 +236,18 @@ pub struct ContainMesh {
     pub is_in_area_ustr: Vec<i32>,
 }
 
+/// Rust data shape written by `MOD_mask_postproc.F90:PatchID_Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatchIdMesh {
+    pub elmindex: Vec<Vec<i32>>,
+    pub lon_w: Vec<f64>,
+    pub lon_e: Vec<f64>,
+    pub lat_n: Vec<f64>,
+    pub lat_s: Vec<f64>,
+    pub longitude: Vec<f64>,
+    pub latitude: Vec<f64>,
+}
+
 /// Evidence report from writing an unstructured gridfile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnstructuredMeshWriteReport {
@@ -253,6 +265,14 @@ pub struct ContainWriteReport {
     pub num_ii: usize,
     pub dim_a: usize,
     pub dim_b: usize,
+}
+
+/// Evidence report from writing a patchtype file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchIdWriteReport {
+    pub output: PathBuf,
+    pub nlon: usize,
+    pub nlat: usize,
 }
 
 /// Evidence report from writing `MOD_mask_postproc.F90:bdy_calculation` output.
@@ -595,6 +615,82 @@ pub fn write_contain_netcdf(
         num_ii,
         dim_a,
         dim_b,
+    })
+}
+
+/// Write the `patchtype_NXP*.nc4` schema produced by
+/// `MOD_mask_postproc.F90:PatchID_Save`.
+pub fn write_patchid_netcdf(
+    output: impl AsRef<Path>,
+    patch: &PatchIdMesh,
+) -> io::Result<PatchIdWriteReport> {
+    validate_patchid_mesh(patch)?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let nlon = patch.elmindex.len();
+    let nlat = matrix_width("elmindex", &patch.elmindex)?;
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("nlon", nlon)
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("nlat", nlat)
+        .map_err(netcdf_to_io_error)?;
+    {
+        let mut var = file
+            .add_variable::<i32>("elmindex", &["nlon", "nlat"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&flatten_i32_rows(&patch.elmindex), (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("lon_w", &["nlon"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&patch.lon_w, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("lon_e", &["nlon"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&patch.lon_e, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("lat_n", &["nlat"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&patch.lat_n, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("lat_s", &["nlat"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&patch.lat_s, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("longitude", &["nlon"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&patch.longitude, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut var = file
+            .add_variable::<f64>("latitude", &["nlat"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(&patch.latitude, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+
+    Ok(PatchIdWriteReport {
+        output: output.to_path_buf(),
+        nlon,
+        nlat,
     })
 }
 
@@ -1501,6 +1597,27 @@ fn validate_contain_mesh(contain: &ContainMesh) -> io::Result<()> {
                 contain.ustr_id.len()
             ),
         ));
+    }
+    Ok(())
+}
+
+fn validate_patchid_mesh(patch: &PatchIdMesh) -> io::Result<()> {
+    let nlon = patch.elmindex.len();
+    let nlat = matrix_width("elmindex", &patch.elmindex)?;
+    for (name, actual, required) in [
+        ("lon_w", patch.lon_w.len(), nlon),
+        ("lon_e", patch.lon_e.len(), nlon),
+        ("longitude", patch.longitude.len(), nlon),
+        ("lat_n", patch.lat_n.len(), nlat),
+        ("lat_s", patch.lat_s.len(), nlat),
+        ("latitude", patch.latitude.len(), nlat),
+    ] {
+        if actual != required {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} length {actual} must match required {required}"),
+            ));
+        }
     }
     Ok(())
 }

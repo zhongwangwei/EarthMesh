@@ -513,3 +513,7 @@ Added `read_unstructured_mesh_netcdf` in `rust/earthmesh_cli` as the Rust reader
 ### 2026-06-12: Contain_Read/Contain_Save adapters ported
 
 Added typed `ContainMesh` plus `read_contain_netcdf` and `write_contain_netcdf` in `rust/earthmesh_cli` for the `MOD_file_preprocess.F90:Contain_Read`/`Contain_Save` schema used by `mask_postproc`. The adapter validates `num_ustr`, `num_ii`, `dim_a`, `dim_b`, `ustr_id`, `ustr_ii`, and `IsInArea_ustr`, rejects ragged rows or mask-length mismatches before writing, and round-trips representative land/ocean/earth-style integer payloads through NetCDF.
+
+### 2026-06-12: PatchID_Save adapter ported
+
+Added typed `PatchIdMesh` and `write_patchid_netcdf` in `rust/earthmesh_cli` for the `MOD_mask_postproc.F90:PatchID_Save` schema used by the Earth/Land mask-postprocess branches. The writer preserves `nlon`, `nlat`, `elmindex`, `lon_w`, `lon_e`, `lat_n`, `lat_s`, `longitude`, and `latitude`, and validates matrix/vector dimension consistency before creating the patchtype NetCDF file.
