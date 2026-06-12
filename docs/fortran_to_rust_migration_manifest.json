@@ -1,0 +1,132 @@
+{
+  "kind": "earthmesh_fortran_to_rust_migration_manifest",
+  "version": "0.1",
+  "goal": "Replace the src/*.F90 implementation with Rust crates and a Rust CLI while preserving verified EarthMesh outputs for CoLM2024/CoLM20XX and coupled-model adapters.",
+  "phase_definitions": {
+    "phase_0": "Inventory, architecture decisions, and parity harnesses before behavior changes.",
+    "phase_1": "Replace external math and pure utility kernels with maintained Rust crates or small Rust geometry kernels.",
+    "phase_2": "Port configuration, mesh/data model, and file/NetCDF I/O boundaries.",
+    "phase_3": "Port area, containment, reference-target, and data-preprocess kernels behind fixture parity tests.",
+    "phase_4": "Port refinement, grid-quality, spring/icosahedron, and mask-postprocess kernels.",
+    "phase_5": "Replace mkgrd.x orchestration with Rust CLI/pipeline and remove the Fortran build dependency."
+  },
+  "fortran_sources": [
+    {
+      "path": "src/blas.F90",
+      "line_count": 2873,
+      "rust_target": "rust/external:faer-or-nalgebra-blas-provider",
+      "migration_phase": "phase_1",
+      "strategy": "external_crate",
+      "parity_gate": "Linear algebra smoke tests cover every BLAS routine still reachable from EarthMesh kernels before the bundled BLAS source is removed.",
+      "notes": "Do not hand-translate vendored BLAS; select a maintained Rust/native math provider and keep only the call-level behavior that EarthMesh needs."
+    },
+    {
+      "path": "src/consts_coms.F90",
+      "line_count": 635,
+      "rust_target": "rust/earthmesh_core/src/config.rs",
+      "migration_phase": "phase_2",
+      "strategy": "port",
+      "parity_gate": "Rust config/state fixtures reproduce the same namelist defaults, constants, dimensions, and mode flags used by mkgrd.x.",
+      "notes": "This becomes typed shared state instead of global Fortran module variables."
+    },
+    {
+      "path": "src/icosahedron.F90",
+      "line_count": 1250,
+      "rust_target": "rust/earthmesh_mesh/src/icosahedron.rs",
+      "migration_phase": "phase_4",
+      "strategy": "port",
+      "parity_gate": "For representative NXP/NLEVEL fixtures, Rust matches node counts, connectivity counts, spherical coordinates within tolerance, and spring-quality summaries.",
+      "notes": "Keep deterministic ordering so downstream adapter snapshots remain stable."
+    },
+    {
+      "path": "src/lapack.F90",
+      "line_count": 25172,
+      "rust_target": "rust/external:faer-or-lapack-compatible-provider",
+      "migration_phase": "phase_1",
+      "strategy": "external_crate",
+      "parity_gate": "Every LAPACK entry point used by EarthMesh has a Rust-side numerical parity smoke test and no direct dependency on bundled lapack.F90 remains.",
+      "notes": "The file is too large and too standard to port manually; replace with a maintained provider."
+    },
+    {
+      "path": "src/mkgrd.F90",
+      "line_count": 1970,
+      "rust_target": "rust/earthmesh_cli/src/main.rs",
+      "migration_phase": "phase_5",
+      "strategy": "replace_with_v3_pipeline",
+      "parity_gate": "Rust CLI can run the same small smoke, Greater Bay Area, and China/MERIT workflows and reproduce required grid/mask/adapter outputs within documented tolerances.",
+      "notes": "This is the final orchestration cutover after lower-level kernels have parity gates."
+    },
+    {
+      "path": "src/MOD_Area_judge.F90",
+      "line_count": 1061,
+      "rust_target": "rust/earthmesh_geometry/src/area_judge.rs",
+      "migration_phase": "phase_3",
+      "strategy": "port",
+      "parity_gate": "Area classification fixtures match Fortran land/ocean/river/coast decisions, including self-intersection and polygon-in-area edge cases.",
+      "notes": "Build on the existing earthmesh_geometry crate and avoid duplicating polygon primitives."
+    },
+    {
+      "path": "src/MOD_data_preprocess.F90",
+      "line_count": 292,
+      "rust_target": "rust/earthmesh_pipeline/src/data_preprocess.rs",
+      "migration_phase": "phase_3",
+      "strategy": "replace_with_v3_pipeline",
+      "parity_gate": "Threshold, layer, and source-data preprocessing fixtures produce the same normalized arrays and metadata expected by refinement target selection.",
+      "notes": "This should align with the newer v3 hydro/coast data-source abstraction instead of preserving Fortran-only layout."
+    },
+    {
+      "path": "src/MOD_file_preprocess.F90",
+      "line_count": 1303,
+      "rust_target": "rust/earthmesh_io/src/lib.rs",
+      "migration_phase": "phase_2",
+      "strategy": "wrap_then_port",
+      "parity_gate": "NetCDF/text/binary fixture round-trips preserve dimensions, coordinate variables, masks, and adapter input/output fields byte-for-byte where formats permit.",
+      "notes": "Start with a narrow compatibility wrapper to stabilize I/O contracts, then port readers/writers into typed Rust modules."
+    },
+    {
+      "path": "src/MOD_GetContain.F90",
+      "line_count": 774,
+      "rust_target": "rust/earthmesh_overlay/src/contain.rs",
+      "migration_phase": "phase_3",
+      "strategy": "port",
+      "parity_gate": "Containment matrix fixtures match Fortran cell/source overlap assignments for structured and unstructured samples.",
+      "notes": "This is central to conservative remap/coupling support."
+    },
+    {
+      "path": "src/MOD_GetRef.F90",
+      "line_count": 803,
+      "rust_target": "rust/earthmesh_refine/src/ref_targets.rs",
+      "migration_phase": "phase_3",
+      "strategy": "port",
+      "parity_gate": "Land, ocean, atmosphere, and local refinement target fixtures reproduce Fortran refinement levels and mean/std calculations.",
+      "notes": "Keep target calculation decoupled from triangle/hex cell shape."
+    },
+    {
+      "path": "src/MOD_grid_preprocess.F90",
+      "line_count": 2839,
+      "rust_target": "rust/earthmesh_mesh/src/grid_preprocess.rs",
+      "migration_phase": "phase_4",
+      "strategy": "port",
+      "parity_gate": "Grid-quality, adjacency, edge, ordering, lon/lat/xyz, triangle, polygon, and MPAS-order fixtures match Fortran outputs within tolerance.",
+      "notes": "This is one of the highest-risk business-kernel ports and should be split into small Rust modules with independent tests."
+    },
+    {
+      "path": "src/MOD_mask_postproc.F90",
+      "line_count": 1779,
+      "rust_target": "rust/earthmesh_adapters/src/mask_postproc.rs",
+      "migration_phase": "phase_4",
+      "strategy": "port",
+      "parity_gate": "Atmosphere, Earth, land, ocean, MPAS, narrow-waterway, and final mask fixtures preserve role masks and adapter-facing classifications.",
+      "notes": "Must preserve the newer v3 requirement that every grid cell has an explicit mask and land/ocean roles remain distinguishable."
+    },
+    {
+      "path": "src/MOD_refine.F90",
+      "line_count": 2466,
+      "rust_target": "rust/earthmesh_refine/src/refine_loop.rs",
+      "migration_phase": "phase_4",
+      "strategy": "port",
+      "parity_gate": "Refinement-loop fixtures match split decisions, boundary connection behavior, weak-concavity handling, Delaunay flip outcomes, and final NGR renewal summaries.",
+      "notes": "Port after area/ref-target/containment parity is available; otherwise failures will be hard to isolate."
+    }
+  ]
+}
