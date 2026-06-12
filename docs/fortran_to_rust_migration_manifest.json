@@ -236,11 +236,11 @@
         "GetRef_Lnd threshold NetCDF writer ported to rust/earthmesh_cli",
         "GetRef_Ocn/GetRef_Atmos threshold NetCDF writers ported to rust/earthmesh_cli",
         "GetRef_LOC land/ocean/atmos containment split inputs ported to rust/earthmesh_cli",
-        "GetRef land/ocean/atmos top-level threshold matrix aggregation ported to rust/earthmesh_cli"
+        "GetRef land/ocean/atmos top-level threshold matrix aggregation ported to rust/earthmesh_cli",
+        "GetRef specified-refinement NetCDF writer for iter != 0 path ported to rust/earthmesh_cli"
       ],
       "remaining_rust_surfaces": [
         "GetRef land/ocean/atmos/LOC report wiring from contain lookups and threshold inputs",
-        "GetRef specified-refinement NetCDF writer for iter != 0 path",
         "fixture parity for land/ocean/atmos/LOC refinement target decisions"
       ]
     },

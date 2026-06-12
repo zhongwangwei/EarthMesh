@@ -650,6 +650,14 @@ pub struct GetRefAtmosThresholdWriteReport {
     pub ref_colnum: usize,
 }
 
+/// Evidence report from writing `MOD_GetRef.F90:GetRef(iter /= 0)` specified
+/// refinement targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetRefSpecifiedThresholdWriteReport {
+    pub output: PathBuf,
+    pub sjx_points: usize,
+}
+
 /// Evidence report from writing `MOD_grid_preprocess.F90:Springjustment_global`
 /// persistence side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3855,6 +3863,39 @@ pub fn write_getref_atmos_threshold_netcdf(
         output: output.to_path_buf(),
         sjx_points,
         ref_colnum: report.ref_colnum,
+    })
+}
+
+/// Write the specified-refinement target file produced by
+/// `MOD_GetRef:GetRef(iter /= 0)`.
+pub fn write_getref_specified_threshold_netcdf(
+    output: impl AsRef<Path>,
+    is_in_refine_sjx: &[i32],
+) -> io::Result<GetRefSpecifiedThresholdWriteReport> {
+    let sjx_points = is_in_refine_sjx.len().checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IsInRfArea_sjx must include a Fortran placeholder element",
+        )
+    })?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("sjx_points", sjx_points)
+        .map_err(netcdf_to_io_error)?;
+    write_i32_1d(
+        &mut file,
+        "IsInRfArea_sjx_specified",
+        "sjx_points",
+        &skip_fortran_i32_placeholder(is_in_refine_sjx),
+    )?;
+
+    Ok(GetRefSpecifiedThresholdWriteReport {
+        output: output.to_path_buf(),
+        sjx_points,
     })
 }
 
