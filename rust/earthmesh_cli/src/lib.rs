@@ -6,18 +6,22 @@ use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan};
 use earthmesh_mesh::{
-    centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
-    connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
-    get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
+    boundary_connection_fortran_indexed, centroid_spherical_mesh_fortran_indexed,
+    circumcenter_spherical_mesh_fortran_indexed, connect_on_cell_fortran_indexed,
+    edge_distance_angle_fortran_indexed, get_area_production_fortran_indexed,
+    get_edge_production_fortran_indexed, lonlat_points_to_unit_xyz,
+    order_vertices_on_cell_fortran_indexed, remove_isolated_ocean_fortran_indexed,
+    renew_mask_postproc_domain_triangles_fortran_indexed,
+    renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
     standardize_vertices_on_cell_rotation_fortran_indexed,
-    triangle_neighbors_from_cell_membership_fortran_indexed, xyz_to_lonlat_degrees,
-    BoundaryConnection, BoundaryOrders, CartesianPoint, DistanceLayerSpacing,
-    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep,
-    LonLatDegrees, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
-    SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
+    triangle_neighbors_from_cell_membership_fortran_indexed, widen_narrow_waterway_fortran_indexed,
+    xyz_to_lonlat_degrees, BoundaryConnection, BoundaryOrders, CartesianPoint,
+    DistanceLayerSpacing, GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput,
+    GlobalDistanceStep, IsolatedOceanRenewal, LonLatDegrees, MaskPostprocRenewedData,
+    SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput, SpringjustmentRegionalCoreInput,
+    SpringjustmentRegionalCoreOutput,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
@@ -108,6 +112,16 @@ pub struct MaskPostprocLandDomainReport {
     pub patchtypes: LandPatchtypes,
     pub patchtype: PatchIdWriteReport,
     pub final_gridfile: UnstructuredMeshWriteReport,
+}
+
+/// Result of composing the tri-only ocean postprocess mask renewal routines
+/// before final gridfile/OBC writing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskPostprocOceanRenewalReport {
+    pub is_in_domain_ustr: Vec<i32>,
+    pub renewed: MaskPostprocRenewedData,
+    pub boundary: Option<BoundaryConnection>,
+    pub isolated: Option<IsolatedOceanRenewal>,
 }
 
 /// Restart action selected by the top-level `mkgrd.F90` mask-restart branch.
@@ -2347,6 +2361,154 @@ pub fn apply_ocean_mask_sea_ratio_fortran_indexed(
     }
 
     Ok(is_in_domain)
+}
+
+/// Pure-data composition of the ocean branch renewal sequence in
+/// `MOD_mask_postproc.F90:mask_postproc_Ocn`.
+///
+/// This starts after the sea-ratio mask has been applied and before the final
+/// `Data_Finial`/gridfile/OBC writers.  Hex grids only need the generic
+/// `Data_Renew` compaction.  Tri grids also run the legacy triangle cleanups,
+/// narrow-waterway widening, boundary-curve discovery, and isolated-ocean
+/// peeling metadata.
+pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+    mode_grid: &str,
+) -> io::Result<MaskPostprocOceanRenewalReport> {
+    validate_mask_postproc_layout(layout)?;
+    if is_in_domain_ustr.len() < layout.ustr_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IsInDmArea_ustr length {} must cover ustr_points {}",
+                is_in_domain_ustr.len(),
+                layout.ustr_points
+            ),
+        ));
+    }
+
+    let mode_grid = mode_grid.trim();
+    let mut is_in_domain = is_in_domain_ustr[..layout.ustr_points].to_vec();
+    let mut renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
+
+    match mode_grid {
+        "hex" => Ok(MaskPostprocOceanRenewalReport {
+            is_in_domain_ustr: is_in_domain,
+            renewed,
+            boundary: None,
+            isolated: None,
+        }),
+        "tri" => {
+            let mut points_new = isize::try_from(renewed.points_next).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "renewed point count does not fit isize",
+                )
+            })?;
+            renew_mask_postproc_domain_triangles_fortran_indexed(
+                &mut is_in_domain,
+                &layout.vertex_neighbors,
+                &renewed.vertex_neighbors_next,
+                &layout.vertex_neighbor_counts,
+                &renewed.vertex_neighbor_counts_next,
+                &mut points_new,
+            )?;
+            restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
+            renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
+
+            for _ in 0..128 {
+                let before_opposite = renewed.points_next;
+                let mut points_new = isize::try_from(renewed.points_next).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "renewed point count does not fit isize",
+                    )
+                })?;
+                renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
+                    &mut is_in_domain,
+                    &layout.vertex_neighbors,
+                    &layout.vertex_neighbor_counts,
+                    &renewed.vertex_neighbor_counts_next,
+                    &mut points_new,
+                )?;
+                restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
+                renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
+
+                let before_widen = renewed.points_next;
+                widen_narrow_waterway_fortran_indexed(
+                    &mut is_in_domain,
+                    &layout.vertex_neighbors,
+                    &renewed.center_neighbors_next,
+                    &layout.vertex_neighbor_counts,
+                    &renewed.vertex_neighbor_counts_next,
+                    &renewed.center_neighbor_counts_next,
+                )?;
+                restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
+                renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
+
+                if renewed.points_next == before_opposite || renewed.points_next == before_widen {
+                    break;
+                }
+            }
+
+            let boundary = boundary_connection_fortran_indexed(
+                &renewed.center_neighbors_next,
+                &renewed.center_neighbor_counts_next,
+                &layout.vertex_neighbor_counts,
+                &renewed.vertex_neighbor_counts_next,
+            )?;
+            let mut vertex_neighbor_counts_after = renewed.vertex_neighbor_counts_next.clone();
+            let isolated = remove_isolated_ocean_fortran_indexed(
+                &mut is_in_domain,
+                &layout.center_neighbors,
+                &layout.center_neighbor_counts,
+                &renewed.vertex_neighbors_next,
+                &layout.vertex_neighbor_counts,
+                &mut vertex_neighbor_counts_after,
+                &boundary,
+            )?;
+            restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
+            renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
+
+            Ok(MaskPostprocOceanRenewalReport {
+                is_in_domain_ustr: is_in_domain,
+                renewed,
+                boundary: Some(boundary),
+                isolated: Some(isolated),
+            })
+        }
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("ocean mask_postproc renewal supports tri or hex mode_grid only, got {other}"),
+        )),
+    }
+}
+
+fn renew_mask_postproc_data_from_layout(
+    layout: &MaskPostprocLayout,
+    is_in_domain_ustr: &[i32],
+    mode_grid: &str,
+) -> io::Result<MaskPostprocRenewedData> {
+    let active_centers = is_in_domain_ustr
+        .iter()
+        .map(|&value| value == 1)
+        .collect::<Vec<_>>();
+    earthmesh_mesh::renew_mask_postproc_data_fortran_indexed(
+        mode_grid,
+        &active_centers,
+        &layout.center_neighbors,
+        &layout.center_neighbor_counts,
+        layout.ustr_bounds.saturating_sub(1),
+    )
+}
+
+fn restore_mask_postproc_placeholders(is_in_domain: &mut [i32], original: &[i32]) {
+    for placeholder_id in 0..=1 {
+        if placeholder_id < is_in_domain.len() && placeholder_id < original.len() {
+            is_in_domain[placeholder_id] = original[placeholder_id];
+        }
+    }
 }
 
 /// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Earth`
