@@ -137,3 +137,7 @@ Extended `rust/earthmesh_mesh` with `shared_cell_for_edge_pair` and `vertex_cell
 ### 2026-06-12: `MOD_grid_preprocess.F90` `GetArea` unit workflow ported
 
 Added `get_area_unit_fortran_indexed`, the first Rust array-level port of `GetArea`. It keeps the Fortran ID convention with indices `0`/`1` unused or skipped, computes `kiteAreasOnVertex` from consecutive edge pairs, reconstructs `areaTriangle` as the kite sum, and fan-triangulates `areaCell`. The current test uses a compact Fortran-indexed synthetic mesh; remaining work is a production wrapper against real MPAS/EarthMesh arrays plus parity fixtures for reconstruction error reporting.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` `GetArea` reconstruction error summary ported
+
+Added `area_triangle_reconstruction_error_fortran_indexed`, matching the `GetArea` diagnostic that recomputes triangle area from `cellsOnVertex` cell centers and reports max/average relative reconstruction error. This closes another pure numeric part of `GetArea`; remaining work is production fixture parity and integration with real mesh arrays.

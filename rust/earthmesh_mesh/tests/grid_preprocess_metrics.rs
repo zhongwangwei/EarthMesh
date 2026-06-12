@@ -1,8 +1,8 @@
 use earthmesh_mesh::{
-    arc_length_unit_sphere, get_area_unit_fortran_indexed, lonlat_degrees_to_unit_xyz,
-    normalize_lon_m180_180, shared_cell_for_edge_pair, spherical_cell_area_from_vertices_unit,
-    spherical_kite_area_unit, spherical_triangle_area_unit, vertex_cell_position, GetAreaUnitInput,
-    LonLatDegrees,
+    arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
+    get_area_unit_fortran_indexed, lonlat_degrees_to_unit_xyz, normalize_lon_m180_180,
+    shared_cell_for_edge_pair, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
+    spherical_triangle_area_unit, vertex_cell_position, GetAreaUnitInput, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -331,4 +331,28 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
     );
     approx_eq(output.area_triangle[2], 0.00015230773702390324, 1.0e-15);
     approx_eq(output.area_cell[2], 0.000304609680288118, 1.0e-15);
+}
+
+#[test]
+fn area_triangle_reconstruction_error_matches_fortran_getarea_summary() {
+    let cell_points = vec![
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(90.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 90.0)),
+    ];
+    let cells_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 3, 4]];
+    let exact = spherical_triangle_area_unit([cell_points[2], cell_points[3], cell_points[4]]);
+    let area_triangle = vec![0.0, 0.0, exact, exact * 1.1];
+
+    let summary = area_triangle_reconstruction_error_fortran_indexed(
+        &area_triangle,
+        &cell_points,
+        &cells_on_vertex,
+    )
+    .expect("valid reconstruction summary");
+
+    approx_eq(summary.max_relative, 0.1, 1.0e-12);
+    approx_eq(summary.avg_relative, 0.05, 1.0e-12);
 }
