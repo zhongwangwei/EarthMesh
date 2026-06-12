@@ -1573,6 +1573,86 @@ pub fn cells_on_edge_from_neighbor_cells(a: [usize; 3], b: [usize; 3]) -> Option
     Some(cells)
 }
 
+/// Port of `MOD_grid_preprocess:set_ngrmm`.
+///
+/// Builds triangle-neighbor slots from triangle-to-cell membership
+/// (`cells_on_triangle`) and the inverse cell-to-triangle membership
+/// (`triangles_on_cell`). Slots preserve the Fortran `IsNgrmm` meaning:
+/// neighbor slot `0`, `1`, or `2` is opposite the corresponding triangle cell.
+pub fn triangle_neighbors_from_cell_membership_fortran_indexed(
+    cells_on_triangle: &[[usize; 3]],
+    triangles_on_cell: &[Vec<usize>],
+    triangle_counts_on_cell: &[usize],
+) -> Option<Vec<[usize; 3]>> {
+    if triangles_on_cell.len() != triangle_counts_on_cell.len() {
+        return None;
+    }
+
+    let mut triangle_neighbors = vec![[0usize; 3]; cells_on_triangle.len()];
+    for triangle_id in 2..cells_on_triangle.len() {
+        let mut neighbor_count = 0usize;
+        for &cell_id in &cells_on_triangle[triangle_id] {
+            if cell_id == 0 {
+                continue;
+            }
+            let count = *triangle_counts_on_cell.get(cell_id)?;
+            let cell_triangles = triangles_on_cell.get(cell_id)?;
+            if count > cell_triangles.len() {
+                return None;
+            }
+            if neighbor_count == 3 {
+                break;
+            }
+            for &candidate_triangle_id in cell_triangles.iter().take(count) {
+                if candidate_triangle_id == 0 || candidate_triangle_id == triangle_id {
+                    continue;
+                }
+                let candidate_cells = *cells_on_triangle.get(candidate_triangle_id)?;
+                let Some(opposite_slot) = is_ngrmm(cells_on_triangle[triangle_id], candidate_cells)
+                else {
+                    continue;
+                };
+                triangle_neighbors[triangle_id][opposite_slot - 1] = candidate_triangle_id;
+                neighbor_count += 1;
+            }
+        }
+    }
+
+    Some(triangle_neighbors)
+}
+
+/// Port of `MOD_grid_preprocess:set_edgesOnEdge_tri`.
+///
+/// For each edge, returns the two cyclic neighboring edges at the first
+/// endpoint followed by the two cyclic neighboring edges at the second endpoint.
+/// Indices preserve the Fortran convention that edge ids start at `2`.
+pub fn edges_on_edge_tri_fortran_indexed(
+    vertices_on_edge: &[[usize; 2]],
+    edges_on_vertex: &[[usize; 3]],
+) -> Option<Vec<[usize; 4]>> {
+    let mut edges_on_edge = vec![[0usize; 4]; vertices_on_edge.len()];
+
+    for edge_id in 2..vertices_on_edge.len() {
+        let vertices = vertices_on_edge[edge_id];
+        for (endpoint_slot, vertex_id) in vertices.iter().copied().enumerate() {
+            let vertex_edges = *edges_on_vertex.get(vertex_id)?;
+            let edge_slot = vertex_edges
+                .iter()
+                .position(|candidate_edge| *candidate_edge == edge_id)?;
+            let adjacent_slots = match edge_slot {
+                0 => [1, 2],
+                1 => [2, 0],
+                2 => [0, 1],
+                _ => return None,
+            };
+            edges_on_edge[edge_id][endpoint_slot * 2] = vertex_edges[adjacent_slots[0]];
+            edges_on_edge[edge_id][endpoint_slot * 2 + 1] = vertex_edges[adjacent_slots[1]];
+        }
+    }
+
+    Some(edges_on_edge)
+}
+
 /// Output from the core connectivity part of `MOD_grid_preprocess:GetEdge`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetEdgeConnectivity {

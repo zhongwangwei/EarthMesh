@@ -210,11 +210,13 @@
         "set_weightsOnEdge MPAS stencil weights and reconstruction error ported to rust/earthmesh_mesh",
         "GetArea production wrapper with reconstruction diagnostic ported to rust/earthmesh_mesh",
         "GetEdge production wrapper over connectivity, orientation, midpoint, and orderVertexArrays ported to rust/earthmesh_mesh",
-        "Grid_Quality_Check_Global calculation orchestration ported to rust/earthmesh_mesh"
+        "Grid_Quality_Check_Global calculation orchestration ported to rust/earthmesh_mesh",
+        "set_ngrmm triangle-neighbor construction ported to rust/earthmesh_mesh",
+        "set_edgesOnEdge_tri endpoint edge-neighbor construction ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",
-        "Springjustment_global and Springjustment_regional_step",
+        "Springjustment_global and Springjustment_regional_step spring dynamics/orchestration",
         "IAP_Mesh_make and NetCDF-backed workflows",
         "GetArea real MPAS mesh fixture parity and adapter integration",
         "GetEdge real MPAS mesh fixture parity and adapter integration"

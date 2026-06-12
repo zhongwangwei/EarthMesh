@@ -229,3 +229,7 @@ Extended `rust/earthmesh_mesh` with `get_edge_production_fortran_indexed`, a tes
 ### 2026-06-12: `MOD_grid_preprocess.F90` `Grid_Quality_Check_Global` calculation orchestration ported
 
 Extended `rust/earthmesh_mesh` with `grid_quality_check_global_fortran_indexed`, a tested Rust wrapper for the calculation side of `Grid_Quality_Check_Global`. It counts 5/6/7-sided polygon classes, initializes all adjust flags and zero caches like the Fortran startup path, and composes the migrated `TriMeshQuality` plus 5/6/7-sided `PolyMeshQuality` wrappers. The NetCDF `quality_save_global` write remains an adapter/output-layer task.
+
+### 2026-06-12: `MOD_grid_preprocess.F90` Springjustment topology helpers ported
+
+Extended `rust/earthmesh_mesh` with `triangle_neighbors_from_cell_membership_fortran_indexed`, a tested Rust port of `set_ngrmm`, and `edges_on_edge_tri_fortran_indexed`, a tested Rust port of `set_edgesOnEdge_tri`. These cover the pure topology preparation used by `Springjustment_global` and regional spring workflows before the remaining spring-dynamics and NetCDF-backed orchestration layers.

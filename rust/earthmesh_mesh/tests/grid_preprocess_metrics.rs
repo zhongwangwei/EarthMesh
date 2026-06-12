@@ -1,16 +1,16 @@
 use earthmesh_mesh::{
     arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
     cells_on_edge_from_neighbor_cells, edge_midpoints_from_cells_fortran_indexed,
-    get_area_production_fortran_indexed, get_area_unit_fortran_indexed,
-    get_edge_connectivity_fortran_indexed, get_edge_production_fortran_indexed,
-    grid_quality_check_global_fortran_indexed, is_ngrmm, lonlat_degrees_to_unit_xyz,
-    next_ccw_edge_candidate_slot, normalize_lon_m180_180, normalize_vertex_rotation,
-    order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
+    edges_on_edge_tri_fortran_indexed, get_area_production_fortran_indexed,
+    get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed,
+    get_edge_production_fortran_indexed, grid_quality_check_global_fortran_indexed, is_ngrmm,
+    lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
+    normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
     polygon_mesh_quality_fortran_indexed, shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    triangle_mesh_quality_fortran_indexed, vertex_cell_position, CartesianPoint, GetAreaUnitInput,
-    LonLatDegrees,
+    triangle_mesh_quality_fortran_indexed, triangle_neighbors_from_cell_membership_fortran_indexed,
+    vertex_cell_position, CartesianPoint, GetAreaUnitInput, LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -594,6 +594,69 @@ fn get_edge_connectivity_fortran_indexed_matches_getedge_reuse_and_cell_mapping(
     assert_eq!(connectivity.cells_on_edge[3], [10, 12]);
     assert_eq!(connectivity.cells_on_edge[4], [11, 12]);
     assert!(connectivity.vertices_on_edge.len() > 7);
+}
+
+#[test]
+fn triangle_neighbors_from_cell_membership_matches_set_ngrmm_slots() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![vec![]; 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut triangle_counts_on_cell = vec![0usize; 14];
+    triangle_counts_on_cell[10] = 3;
+    triangle_counts_on_cell[11] = 3;
+    triangle_counts_on_cell[12] = 3;
+    triangle_counts_on_cell[13] = 3;
+
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &triangle_counts_on_cell,
+    )
+    .expect("valid set_ngrmm inputs");
+
+    assert_eq!(triangle_neighbors[2], [5, 4, 3]);
+    assert_eq!(triangle_neighbors[3], [5, 4, 2]);
+    assert_eq!(triangle_neighbors[4], [5, 3, 2]);
+    assert_eq!(triangle_neighbors[5], [4, 3, 2]);
+}
+
+#[test]
+fn edges_on_edge_tri_matches_fortran_endpoint_cyclic_neighbors() {
+    let vertices_on_edge = vec![
+        [0, 0],
+        [0, 0],
+        [2, 3],
+        [2, 4],
+        [2, 5],
+        [3, 4],
+        [3, 5],
+        [4, 5],
+    ];
+    let edges_on_vertex = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [2, 3, 4],
+        [2, 5, 6],
+        [3, 5, 7],
+        [4, 6, 7],
+    ];
+
+    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(&vertices_on_edge, &edges_on_vertex)
+        .expect("valid set_edgesOnEdge_tri inputs");
+
+    assert_eq!(edges_on_edge_tri[2], [3, 4, 5, 6]);
+    assert_eq!(edges_on_edge_tri[3], [4, 2, 5, 7]);
+    assert_eq!(edges_on_edge_tri[7], [3, 5, 4, 6]);
 }
 
 #[test]
