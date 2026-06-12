@@ -3,9 +3,10 @@ use earthmesh_mesh::{
     cells_on_edge_from_neighbor_cells, get_area_unit_fortran_indexed, is_ngrmm,
     lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
     normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
-    shared_cell_for_edge_pair, should_swap_vertices_on_edge,
-    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    vertex_cell_position, CartesianPoint, GetAreaUnitInput, LonLatDegrees,
+    order_vertices_on_edge_fortran_indexed, shared_cell_for_edge_pair,
+    should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
+    spherical_triangle_area_unit, vertex_cell_position, CartesianPoint, GetAreaUnitInput,
+    LonLatDegrees,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -526,4 +527,36 @@ fn order_vertex_arrays_fortran_indexed_processes_vertices_from_two() {
     assert_eq!(output.cells_on_vertex[1], [0, 0, 0]);
     assert_eq!(output.edges_on_vertex[2], [10, 12, 11]);
     assert_eq!(output.cells_on_vertex[2], [100, 220, 110]);
+}
+
+#[test]
+fn order_vertices_on_edge_fortran_indexed_matches_getsort_vertices_on_edge() {
+    let points = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 1.0),
+        LonLatDegrees::new(0.0, -1.0),
+        LonLatDegrees::new(179.0, 0.0),
+        LonLatDegrees::new(179.0, 1.0),
+    ];
+    let cells = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(1.0, 0.0),
+        LonLatDegrees::new(179.0, 0.0),
+        LonLatDegrees::new(-179.0, 1.0),
+    ];
+    let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [2, 3], [4, 5]];
+    let vertices_on_edge = vec![[0, 0], [9, 9], [2, 3], [2, 4], [5, 6]];
+
+    let ordered =
+        order_vertices_on_edge_fortran_indexed(&points, &cells, &cells_on_edge, &vertices_on_edge)
+            .expect("valid Fortran-indexed edge sorting input");
+
+    assert_eq!(ordered[1], [9, 9]);
+    assert_eq!(ordered[2], [2, 3]);
+    assert_eq!(ordered[3], [4, 2]);
+    assert_eq!(ordered[4], [5, 6]);
 }

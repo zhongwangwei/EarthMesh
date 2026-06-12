@@ -215,6 +215,39 @@ pub fn should_swap_vertices_on_edge(
     cross <= 0.0
 }
 
+/// Port of `MOD_grid_preprocess:GetSort_verticesOnEdge`.
+///
+/// Returns a sorted copy of `verticesOnEdge`, preserving the Fortran convention
+/// that edge ids start at `2`. Each edge is swapped when the migrated
+/// cross-product predicate indicates Fortran would exchange
+/// `verticesOnEdge(1:2, i)`.
+pub fn order_vertices_on_edge_fortran_indexed(
+    point_lonlat: &[LonLatDegrees],
+    cell_lonlat: &[LonLatDegrees],
+    cells_on_edge: &[[usize; 2]],
+    vertices_on_edge: &[[usize; 2]],
+) -> Option<Vec<[usize; 2]>> {
+    if cells_on_edge.len() != vertices_on_edge.len() {
+        return None;
+    }
+
+    let mut ordered = vertices_on_edge.to_vec();
+    for edge_id in 2..vertices_on_edge.len() {
+        let cells = cells_on_edge[edge_id];
+        let vertices = ordered[edge_id];
+        let cell1 = *cell_lonlat.get(cells[0])?;
+        let cell2 = *cell_lonlat.get(cells[1])?;
+        let vertex1 = *point_lonlat.get(vertices[0])?;
+        let vertex2 = *point_lonlat.get(vertices[1])?;
+
+        if should_swap_vertices_on_edge(cell1, cell2, vertex1, vertex2) {
+            ordered[edge_id].swap(0, 1);
+        }
+    }
+
+    Some(ordered)
+}
+
 /// Port of one-vertex rotation logic from `MOD_grid_preprocess:normalizeRotation`.
 ///
 /// The minimum positive cell id is rotated into slot 0, and the edge slots are
