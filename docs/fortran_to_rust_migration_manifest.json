@@ -350,7 +350,8 @@
         "GetEdge Unstructured_Mesh_Read NetCDF adapter integration ported to rust/earthmesh_cli",
         "GetArea Unstructured_Mesh_Read NetCDF adapter integration ported to rust/earthmesh_cli",
         "Springjustment_global Unstructured_Mesh_Read NetCDF adapter loading ported to rust/earthmesh_cli",
-        "Springjustment_regional_step gridfile adapter and persistence hook ported to rust/earthmesh_cli"
+        "Springjustment_regional_step gridfile adapter and persistence hook ported to rust/earthmesh_cli",
+        "GetSortNew final cell adjacency walk and orientation sort ported to rust/earthmesh_mesh with disconnected-walk fixture coverage"
       ],
       "remaining_rust_surfaces": []
     },
@@ -430,7 +431,8 @@
         "weak_concav_lop_judge weak-concavity LOP segment builder ported to rust/earthmesh_mesh with pair-only, intersegment, and internal fixture coverage",
         "Delaunay_Lop diagonal flip and crossline cleanup ported to rust/earthmesh_mesh with zero-pair and dateline fixture coverage",
         "NGR_RENEW pure topology core for vertex deduplication, triangle compaction, adjacency rebuild, and boundary remapping ported to rust/earthmesh_mesh with fixture coverage",
-        "Array_length_calculation pure halo sizing and boundary list logic ported to rust/earthmesh_mesh with transition-row fixture coverage"
+        "Array_length_calculation pure halo sizing and boundary list logic ported to rust/earthmesh_mesh with transition-row fixture coverage",
+        "NGR_RENEW GetSortNew final adjacency-order dependency ported to rust/earthmesh_mesh with orientation fixture coverage"
       ]
     }
   ]
