@@ -150,3 +150,67 @@ fn copy_bbox_mask_netcdf_matches_fortran_skip_copy_and_numbering() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn bbox_netcdf_reader_and_writer_match_fortran_schema() {
+    let root =
+        std::env::temp_dir().join(format!("earthmesh_cli_bbox_netcdf_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create root");
+    let source = root.join("source_bbox.nc");
+    {
+        let mut file = netcdf::create(&source).expect("create source nc");
+        let mut refine = file
+            .add_variable::<i32>("bbox_refine", &[])
+            .expect("define bbox_refine");
+        refine.put_value(3_i32, ()).expect("write bbox_refine");
+    }
+
+    let refine = earthmesh_cli::read_bbox_refine_netcdf(&source).expect("read bbox_refine");
+    assert_eq!(refine, 3);
+
+    let output = root.join("written_bbox.nc4");
+    earthmesh_cli::write_bbox_mask_netcdf(
+        &output,
+        &earthmesh_cli::BBoxMask {
+            refine_degree: 2,
+            points: vec![
+                earthmesh_cli::BBoxPoint {
+                    west: -1.0,
+                    east: 2.0,
+                    north: 30.0,
+                    south: 20.0,
+                },
+                earthmesh_cli::BBoxPoint {
+                    west: 100.0,
+                    east: 120.0,
+                    north: 10.0,
+                    south: -5.0,
+                },
+            ],
+        },
+    )
+    .expect("write bbox netcdf");
+
+    let file = netcdf::open(&output).expect("open written bbox");
+    assert_eq!(file.dimension("bbox_num").expect("bbox_num dim").len(), 2);
+    assert_eq!(file.dimension("four").expect("four dim").len(), 4);
+    let points = file
+        .variable("bbox_points")
+        .expect("bbox_points var")
+        .get_values::<f64, _>((.., ..))
+        .expect("read bbox_points");
+    assert_eq!(
+        points,
+        vec![-1.0, 2.0, 30.0, 20.0, 100.0, 120.0, 10.0, -5.0]
+    );
+    assert_eq!(
+        file.variable("bbox_refine")
+            .expect("bbox_refine var")
+            .get_value::<i32, _>(())
+            .expect("read written refine"),
+        2
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

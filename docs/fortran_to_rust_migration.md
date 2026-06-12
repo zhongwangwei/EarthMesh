@@ -389,3 +389,7 @@ Extended `rust/earthmesh_cli` with the text `.nml` branch of `mkgrd.F90:bbox_mas
 ### 2026-06-12: `bbox_mask_make` NetCDF copy branch adapter ported
 
 Extended `rust/earthmesh_cli` with `copy_bbox_mask_netcdf_with_refine`, covering the `.nc/.nc4` branch side effects after `bbox_refine` has been read: extension validation, early no-op when `refine_degree > max_iter_spc`, Fortran-compatible counter advancement through `MaskCountState`, creation of the `tmpfile` parent, and byte-for-byte copy into `tmpfile/{mask_select}_bbox_{refine}_{NN}.nc4`. Reading `bbox_refine` from NetCDF metadata and writing bbox NetCDF files from text `.nml` points remain pending so that the NetCDF dependency boundary can be decided separately.
+
+### 2026-06-12: `bbox_mask_make` NetCDF reader/writer ported
+
+Added the Rust `netcdf` crate to `rust/earthmesh_cli` and implemented `read_bbox_refine_netcdf` plus `write_bbox_mask_netcdf`. The reader extracts the scalar `bbox_refine` used by the `.nc/.nc4` branch, rejects negative values, and feeds the existing copy/count adapter. The writer creates `bbox_num`, `four`, `bbox_points`, and `bbox_refine`, giving text `.nml` bbox inputs a reusable NetCDF output that can be consumed by the copied-file branch. A small `build.rs` adds the `nc-config --libs` library directory as an rpath for macOS test/runtime parity with the local NetCDF C install. Remaining `Mask_make` work is lambert/circle/close generation, integrating the per-file dispatcher, and validating aggregate mask counts.

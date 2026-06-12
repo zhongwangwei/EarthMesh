@@ -15,6 +15,66 @@ pub struct WorkspaceApplyReport {
     pub copied_namelist_to: Option<PathBuf>,
 }
 
+/// Read `bbox_refine` from a bbox NetCDF source used by `bbox_mask_make`.
+pub fn read_bbox_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
+    let inputfile = inputfile.as_ref();
+    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let variable = file.variable("bbox_refine").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bbox NetCDF input is missing bbox_refine",
+        )
+    })?;
+    let refine = variable
+        .get_value::<i32, _>(())
+        .map_err(netcdf_to_io_error)?;
+    if refine < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bbox_refine must be non-negative",
+        ));
+    }
+    Ok(refine as usize)
+}
+
+/// Write bbox mask points to a NetCDF file using the bbox schema consumed by
+/// EarthMesh mask preprocessing.
+pub fn write_bbox_mask_netcdf(output: impl AsRef<Path>, mask: &BBoxMask) -> io::Result<()> {
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("bbox_num", mask.points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("four", 4).map_err(netcdf_to_io_error)?;
+    {
+        let mut refine = file
+            .add_variable::<i32>("bbox_refine", &[])
+            .map_err(netcdf_to_io_error)?;
+        refine
+            .put_value(mask.refine_degree as i32, ())
+            .map_err(netcdf_to_io_error)?;
+    }
+    let mut values = Vec::with_capacity(mask.points.len() * 4);
+    for point in &mask.points {
+        values.extend([point.west, point.east, point.north, point.south]);
+    }
+    {
+        let mut bbox_points = file
+            .add_variable::<f64>("bbox_points", &["bbox_num", "four"])
+            .map_err(netcdf_to_io_error)?;
+        bbox_points
+            .put_values(&values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    Ok(())
+}
+
+fn netcdf_to_io_error(err: netcdf::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+}
+
 /// Copy a bbox NetCDF source into the Fortran tmpfile naming scheme.
 ///
 /// This covers the `bbox_mask_make` `.nc/.nc4` branch after the caller has
