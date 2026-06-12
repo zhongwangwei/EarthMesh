@@ -400,3 +400,73 @@ fn refine_config_rejects_enabled_threshold_switch_with_missing_threshold_value()
     assert!(err.contains("refine_onelayer_Lnd"));
     assert!(err.contains("th_onelayer_Lnd"));
 }
+
+#[test]
+fn earthmesh_config_builds_non_destructive_read_nl_workspace_plan() {
+    let cfg = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n NL%expnme='case_b'\n NL%base_dir='/tmp/earthmesh/'\n NL%nxp=16\n NL%mesh_type='landmesh'\n NL%output_format='CoLM'\n NL%refine=.true.\n NL%mask_domain_global=.false.\n NL%mask_domain_type='bbox'\n NL%mask_domain_fprefix='/tmp/domain'\n NL%mask_patch_on=.true.\n NL%mask_patch_type='circle'\n NL%mask_patch_fprefix='/tmp/patch'\n/\n",
+    )
+    .expect("valid mkgrd namelist");
+    let refine = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition=.true.\n RL%SpringGlobal_type=0\n RL%SpringRegional_type=0\n RL%refine_spc=.true.\n RL%max_iter_spc=2\n RL%mask_refine_spc_type='close'\n RL%mask_refine_spc_fprefix='/tmp/refine'\n/\n",
+        "landmesh",
+        "tri",
+    )
+    .expect("valid specified refine namelist");
+
+    let plan = cfg.read_nl_workspace_plan(Some(&refine));
+
+    assert_eq!(plan.file_dir, "/tmp/earthmesh/case_b/");
+    assert!(plan.remove_existing_file_dir);
+    assert!(plan.remove_filelists);
+    assert_eq!(
+        plan.namelist_save_path,
+        "/tmp/earthmesh/case_b/result/namelist.save"
+    );
+    assert_eq!(
+        plan.directories_to_create,
+        vec![
+            "/tmp/earthmesh/case_b/contain/",
+            "/tmp/earthmesh/case_b/gridfile/",
+            "/tmp/earthmesh/case_b/patchtype/",
+            "/tmp/earthmesh/case_b/result/",
+            "/tmp/earthmesh/case_b/tmpfile/",
+            "/tmp/earthmesh/case_b/threshold/",
+        ]
+    );
+    assert_eq!(
+        plan.mask_operations,
+        vec![
+            earthmesh_core::MaskOperation::new("mask_domain", "bbox", "/tmp/domain"),
+            earthmesh_core::MaskOperation::new("mask_patch", "circle", "/tmp/patch"),
+            earthmesh_core::MaskOperation::new("mask_refine", "close", "/tmp/refine"),
+        ]
+    );
+}
+
+#[test]
+fn earthmesh_config_workspace_plan_preserves_mask_restart_short_circuit() {
+    let cfg = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n NL%expnme='restart_case'\n NL%base_dir='/tmp/earthmesh/'\n NL%nxp=16\n NL%mesh_type='oceanmesh'\n NL%output_format='FVCOM'\n NL%mask_restart=.true.\n NL%mask_patch_on=.true.\n NL%mask_patch_type='bbox'\n NL%mask_patch_fprefix='/tmp/restart_patch'\n/\n",
+    )
+    .expect("valid restart namelist");
+
+    let plan = cfg.read_nl_workspace_plan(None);
+
+    assert_eq!(plan.file_dir, "/tmp/earthmesh/restart_case/");
+    assert!(!plan.remove_existing_file_dir);
+    assert!(!plan.remove_filelists);
+    assert!(plan.directories_to_create.is_empty());
+    assert_eq!(
+        plan.namelist_save_path,
+        "/tmp/earthmesh/restart_case/result/namelist.save"
+    );
+    assert_eq!(
+        plan.mask_operations,
+        vec![earthmesh_core::MaskOperation::new(
+            "mask_patch",
+            "bbox",
+            "/tmp/restart_patch"
+        )]
+    );
+}
