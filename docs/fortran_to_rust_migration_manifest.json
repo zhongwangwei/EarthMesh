@@ -225,7 +225,8 @@
         "Springjustment_regional_step pure in-memory core adapter ported to rust/earthmesh_mesh",
         "set_dbxMove_regional_step move-mask derivation ported to rust/earthmesh_mesh",
         "Springjustment_regional_step refinement-mask composition adapter ported to rust/earthmesh_mesh",
-        "refine_sjx_regional_make source-mask classifier ported to rust/earthmesh_mesh"
+        "refine_sjx_regional_make source-mask classifier ported to rust/earthmesh_mesh",
+        "Springjustment_regional_step source-mask composition adapter ported to rust/earthmesh_mesh"
       ],
       "remaining_rust_surfaces": [
         "Grid_Quality_Check_Global quality_save_global NetCDF adapter integration",

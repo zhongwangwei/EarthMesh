@@ -1702,6 +1702,34 @@ pub struct SpringjustmentRegionalFromRefinementOutput {
     pub core: SpringjustmentRegionalCoreOutput,
 }
 
+/// Borrowed inputs for the pure in-memory regional Springjustment path when
+/// the upstream refinement source is an already-loaded source mask grid.
+#[derive(Debug, Clone, Copy)]
+pub struct SpringjustmentRegionalFromSourceMaskInput<'a> {
+    pub triangle_lonlat: &'a [LonLatDegrees],
+    pub cell_lonlat: &'a [LonLatDegrees],
+    pub cells_on_triangle: &'a [[usize; 3]],
+    pub triangles_on_cell: &'a [Vec<usize>],
+    pub n_edges_on_cell: &'a [usize],
+    pub source_lon_vertices: &'a [f64],
+    pub source_lat_vertices: &'a [f64],
+    pub mask_patch: &'a [Vec<bool>],
+    pub first_triangle_id: usize,
+    pub set_dis: usize,
+    pub protected_seed_cells: &'a [usize],
+    pub vertex_protect_layers: usize,
+    pub niter_refine: usize,
+    pub radius: f64,
+    pub diagnostic_every: usize,
+}
+
+/// Output from the source-mask regional Springjustment adapter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringjustmentRegionalFromSourceMaskOutput {
+    pub refined_triangles: Vec<bool>,
+    pub regional: SpringjustmentRegionalFromRefinementOutput,
+}
+
 /// One-iteration Rust wrapper for `MOD_grid_preprocess:spring_dynamics_global`.
 ///
 /// This ports the calculation order inside one Fortran iteration: compute all
@@ -2446,6 +2474,45 @@ pub fn springjustment_regional_from_refinement_fortran_indexed(
     })?;
 
     Some(SpringjustmentRegionalFromRefinementOutput { mask, core })
+}
+
+/// Pure Rust adapter for the in-memory source-mask branch of
+/// `MOD_grid_preprocess:Springjustment_regional_step`.
+///
+/// This composes `refine_sjx_regional_make`, `set_dbxMove_regional_step`, and
+/// the migrated regional spring/circumcenter core while still leaving NetCDF
+/// mask loading and final persistence outside this deterministic kernel.
+pub fn springjustment_regional_from_source_mask_fortran_indexed(
+    input: SpringjustmentRegionalFromSourceMaskInput<'_>,
+) -> Option<SpringjustmentRegionalFromSourceMaskOutput> {
+    let refined_triangles = refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
+        triangle_lonlat: input.triangle_lonlat,
+        source_lon_vertices: input.source_lon_vertices,
+        source_lat_vertices: input.source_lat_vertices,
+        mask_patch: input.mask_patch,
+        first_triangle_id: input.first_triangle_id,
+    })?;
+    let regional = springjustment_regional_from_refinement_fortran_indexed(
+        SpringjustmentRegionalFromRefinementInput {
+            triangle_lonlat: input.triangle_lonlat,
+            cell_lonlat: input.cell_lonlat,
+            cells_on_triangle: input.cells_on_triangle,
+            triangles_on_cell: input.triangles_on_cell,
+            n_edges_on_cell: input.n_edges_on_cell,
+            refined_triangles: &refined_triangles,
+            set_dis: input.set_dis,
+            protected_seed_cells: input.protected_seed_cells,
+            vertex_protect_layers: input.vertex_protect_layers,
+            niter_refine: input.niter_refine,
+            radius: input.radius,
+            diagnostic_every: input.diagnostic_every,
+        },
+    )?;
+
+    Some(SpringjustmentRegionalFromSourceMaskOutput {
+        refined_triangles,
+        regional,
+    })
 }
 
 /// Port of the candidate-selection core in `MOD_grid_preprocess:orderVertexArrays`.

@@ -8,18 +8,19 @@ use earthmesh_mesh::{
     lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
     normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
     order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
-    polygon_mesh_quality_fortran_indexed, set_dbx_move_regional_step_fortran_indexed,
-    set_dists_on_edge_global_fortran_indexed, shared_cell_for_edge_pair,
-    should_swap_vertices_on_edge, spherical_cell_area_from_vertices_unit, spherical_kite_area_unit,
-    spherical_triangle_area_unit, spring_dynamics_global_fortran_indexed,
-    spring_dynamics_regional_fortran_indexed, springjustment_global_core_fortran_indexed,
-    springjustment_regional_core_fortran_indexed,
-    springjustment_regional_from_refinement_fortran_indexed, triangle_mesh_quality_fortran_indexed,
-    triangle_neighbors_from_cell_membership_fortran_indexed, vertex_cell_position, CartesianPoint,
-    DistanceLayerSpacing, GetAreaUnitInput, GlobalDistanceStep, LonLatDegrees,
-    RefineRegionalMaskInput, RegionalMoveMaskInput, SetDistsOnEdgeGlobalInput,
-    SpringjustmentGlobalCoreInput, SpringjustmentRegionalCoreInput,
-    SpringjustmentRegionalFromRefinementInput,
+    polygon_mesh_quality_fortran_indexed, refine_sjx_regional_make_fortran_indexed,
+    set_dbx_move_regional_step_fortran_indexed, set_dists_on_edge_global_fortran_indexed,
+    shared_cell_for_edge_pair, should_swap_vertices_on_edge,
+    spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
+    spring_dynamics_global_fortran_indexed, spring_dynamics_regional_fortran_indexed,
+    springjustment_global_core_fortran_indexed, springjustment_regional_core_fortran_indexed,
+    springjustment_regional_from_refinement_fortran_indexed,
+    springjustment_regional_from_source_mask_fortran_indexed,
+    triangle_mesh_quality_fortran_indexed, triangle_neighbors_from_cell_membership_fortran_indexed,
+    vertex_cell_position, CartesianPoint, DistanceLayerSpacing, GetAreaUnitInput,
+    GlobalDistanceStep, LonLatDegrees, RefineRegionalMaskInput, RegionalMoveMaskInput,
+    SetDistsOnEdgeGlobalInput, SpringjustmentGlobalCoreInput, SpringjustmentRegionalCoreInput,
+    SpringjustmentRegionalFromRefinementInput, SpringjustmentRegionalFromSourceMaskInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -1218,6 +1219,98 @@ fn refine_sjx_regional_make_classifies_triangle_centers_from_source_mask() {
         .expect("valid source mask classifier input");
 
     assert_eq!(refined, vec![false, false, false, true, false]);
+}
+
+#[test]
+fn springjustment_regional_from_source_mask_classifies_then_runs_refinement_adapter() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut n_edges_on_cell = vec![0usize; 14];
+    n_edges_on_cell[10] = 3;
+    n_edges_on_cell[11] = 3;
+    n_edges_on_cell[12] = 3;
+    n_edges_on_cell[13] = 3;
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+    let source_lon_vertices = vec![0.0, 0.0, 0.5, 1.0];
+    let source_lat_vertices = vec![0.0, 1.0, 0.5, 0.0];
+    let mut mask_patch = vec![vec![false; 4]; 4];
+    mask_patch[1][1] = true;
+    mask_patch[1][2] = true;
+    mask_patch[2][2] = true;
+
+    let output = springjustment_regional_from_source_mask_fortran_indexed(
+        SpringjustmentRegionalFromSourceMaskInput {
+            triangle_lonlat: &triangle_lonlat,
+            cell_lonlat: &cell_lonlat,
+            cells_on_triangle: &cells_on_triangle,
+            triangles_on_cell: &triangles_on_cell,
+            n_edges_on_cell: &n_edges_on_cell,
+            source_lon_vertices: &source_lon_vertices,
+            source_lat_vertices: &source_lat_vertices,
+            mask_patch: &mask_patch,
+            first_triangle_id: 2,
+            set_dis: 0,
+            protected_seed_cells: &[],
+            vertex_protect_layers: 0,
+            niter_refine: 1,
+            radius: 1.0,
+            diagnostic_every: 10,
+        },
+    )
+    .expect("valid regional source-mask input");
+
+    let expected_refined = refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
+        triangle_lonlat: &triangle_lonlat,
+        source_lon_vertices: &source_lon_vertices,
+        source_lat_vertices: &source_lat_vertices,
+        mask_patch: &mask_patch,
+        first_triangle_id: 2,
+    })
+    .expect("source classification");
+    let expected_regional = springjustment_regional_from_refinement_fortran_indexed(
+        SpringjustmentRegionalFromRefinementInput {
+            triangle_lonlat: &triangle_lonlat,
+            cell_lonlat: &cell_lonlat,
+            cells_on_triangle: &cells_on_triangle,
+            triangles_on_cell: &triangles_on_cell,
+            n_edges_on_cell: &n_edges_on_cell,
+            refined_triangles: &expected_refined,
+            set_dis: 0,
+            protected_seed_cells: &[],
+            vertex_protect_layers: 0,
+            niter_refine: 1,
+            radius: 1.0,
+            diagnostic_every: 10,
+        },
+    )
+    .expect("refinement adapter");
+
+    assert_eq!(output.refined_triangles, expected_refined);
+    assert_eq!(output.regional, expected_regional);
+    assert_eq!(output.regional.core.regional.moved_cells, vec![10]);
 }
 
 #[test]
