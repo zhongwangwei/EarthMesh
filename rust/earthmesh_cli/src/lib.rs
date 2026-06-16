@@ -24235,6 +24235,35 @@ pub fn write_mpas_mesh_from_netcdf_inputs(
     })
 }
 
+/// Build a standard MPAS mesh NetCDF (+ `graph.info`) straight from a base
+/// `gridfile`, without the spring/refine pipeline or a cellwidth file. A uniform
+/// cellwidth is synthesized: for an unrefined mesh every cell has the same width,
+/// so `meshDensity ≡ 1`, which is exactly correct. Reuses the same validated
+/// builder/writer as the full pipeline, so the output is the standard MPAS schema.
+pub fn write_standard_mpas_from_gridfile(
+    gridfile: impl AsRef<Path>,
+    mesh_output: impl AsRef<Path>,
+    graph_output: impl AsRef<Path>,
+    nxp: usize,
+) -> io::Result<MpasFullMeshPipelineReport> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    let base_width = if nxp > 0 { 7680.0 / nxp as f64 } else { 1.0 };
+    let cellwidth = vec![base_width; mesh.w_points.len()];
+    let mpas = build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth, nxp, 1)?;
+    let mesh_report = write_mpas_mesh_netcdf(mesh_output, &mpas)?;
+    let graph_info = write_mpas_graph_info(
+        graph_output,
+        10,
+        &mpas.cells_on_cell,
+        &mpas.cells_on_edge,
+        &mpas.n_edges_on_cell,
+    )?;
+    Ok(MpasFullMeshPipelineReport {
+        mesh: mesh_report,
+        graph_info,
+    })
+}
+
 /// Rust entry point for the `mask_postproc_Atmos` branch when
 /// `output_format == 'MPAS-Simple'`.
 ///

@@ -177,6 +177,7 @@ struct EarthMeshApp {
     tiles: Option<walkers::PmTiles>, // offline Protomaps basemap; None → wireframe fallback
     map_memory: walkers::MapMemory,
     frame_pending: bool, // re-frame the map on the next render, once the widget size is known
+    gen_mpas: bool,      // atmosmesh: also write a standard MPAS mesh NetCDF after the run
 }
 
 impl Default for EarthMeshApp {
@@ -206,6 +207,7 @@ impl Default for EarthMeshApp {
             tiles: None,
             map_memory: walkers::MapMemory::default(),
             frame_pending: false,
+            gen_mpas: false,
         }
     }
 }
@@ -415,6 +417,35 @@ fn collect_outputs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Find the run's gridfile and write a standard MPAS mesh (+ graph.info) under
+/// `<out>/mpas/`, entirely in Rust. Returns the MPAS path or an error string.
+fn write_standard_mpas_for_output(out_dir: &str, nxp: usize, grid: &str) -> Result<String, String> {
+    let base = Path::new(out_dir);
+    let mut gridfile = None;
+    if let Ok(rd) = std::fs::read_dir(base.join("gridfile")) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with("gridfile_NXP") && name.ends_with(".nc4") {
+                let matches_grid = name.contains(grid);
+                gridfile = Some(p);
+                if matches_grid {
+                    break;
+                }
+            }
+        }
+    }
+    let gridfile = gridfile.ok_or_else(|| "MPAS: gridfile not found in output".to_string())?;
+    let mpas_dir = base.join("mpas");
+    std::fs::create_dir_all(&mpas_dir).map_err(|e| e.to_string())?;
+    let stem = format!("MPASOUT_NXP{nxp:04}_{grid}");
+    let mesh_out = mpas_dir.join(format!("{stem}.nc4"));
+    let graph_out = mpas_dir.join(format!("{stem}.graph.info"));
+    earthmesh_cli::write_standard_mpas_from_gridfile(&gridfile, &mesh_out, &graph_out, nxp)
+        .map_err(|e| format!("MPAS write failed: {e}"))?;
+    Ok(mesh_out.display().to_string())
+}
+
 impl EarthMeshApp {
     fn set_status(&mut self, key: &'static str, detail: String) {
         self.status_key = key;
@@ -554,6 +585,10 @@ impl EarthMeshApp {
         let cancel_worker = cancel.clone();
         let ctx = ctx.clone();
         let out_hint = self.output_dir().display().to_string();
+        let gen_mpas = self.gen_mpas && self.mkgrd.mesh_type == "atmosmesh";
+        let nxp = self.mkgrd.nxp.max(0) as usize;
+        let grid = self.mkgrd.mode_grid.clone();
+        let ptx_mpas = ptx.clone();
         thread::spawn(move || {
             earthmesh_core::progress::set(move |phase, done, total| {
                 let _ = ptx.send((phase.to_string(), done, total));
@@ -565,6 +600,15 @@ impl EarthMeshApp {
                 );
             earthmesh_core::progress::clear();
             let msg = match result {
+                Ok(_) if gen_mpas => {
+                    // Pure-Rust standard MPAS write — can be slow on big meshes,
+                    // so it runs here in the worker, not on the UI thread.
+                    let _ = ptx_mpas.send(("mpas".to_string(), 0, 1));
+                    match write_standard_mpas_for_output(&out_hint, nxp, &grid) {
+                        Ok(_) => Ok(out_hint),
+                        Err(err) => Err(err),
+                    }
+                }
                 Ok(_) => Ok(out_hint),
                 Err(err) => Err(err.to_string()),
             };
@@ -752,6 +796,11 @@ impl EarthMeshApp {
                 self.mkgrd.output_format = allowed[0].to_string();
             }
             combo_row(ui, tr(lang, "f.output_format"), &mut self.mkgrd.output_format, allowed);
+
+            // Standard MPAS output is produced in pure Rust from the gridfile.
+            if self.mkgrd.mesh_type == "atmosmesh" {
+                check_row(ui, tr(lang, "f.gen_mpas"), &mut self.gen_mpas);
+            }
 
             let grids = grid_modes_for(&self.mkgrd.mesh_type);
             mapped_combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, grids, lang);
