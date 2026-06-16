@@ -16175,6 +16175,26 @@ pub fn gridfile_mesh_from_fortran_indexed_state(
 
 /// Write the compact EarthMesh unstructured gridfile schema used by legacy
 /// refinement and mask post-processing code.
+/// Mesh node coordinates read from an EarthMesh gridfile, for visualisation.
+pub struct GridfileMeshPoints {
+    pub m_lon: Vec<f64>,
+    pub m_lat: Vec<f64>,
+    pub w_lon: Vec<f64>,
+    pub w_lat: Vec<f64>,
+}
+
+/// Read the M-point (cell-centre) and W-point (vertex) lon/lat arrays from an
+/// EarthMesh gridfile (`Unstructured_Mesh_Save` schema) for GUI visualisation.
+pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileMeshPoints> {
+    let file = netcdf::open(path.as_ref()).map_err(netcdf_to_io_error)?;
+    Ok(GridfileMeshPoints {
+        m_lon: required_values_f64(&file, "GLONM")?,
+        m_lat: required_values_f64(&file, "GLATM")?,
+        w_lon: required_values_f64(&file, "GLONW")?,
+        w_lat: required_values_f64(&file, "GLATW")?,
+    })
+}
+
 pub fn write_unstructured_mesh_netcdf(
     output: impl AsRef<Path>,
     mesh: &UnstructuredMesh,

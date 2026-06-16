@@ -153,6 +153,7 @@ struct EarthMeshApp {
     dom_circle: [f64; 3], // center lon, center lat, radius (km)
     results_detached: bool,
     output_files: Vec<PathBuf>,
+    mesh_view: Option<earthmesh_cli::GridfileMeshPoints>,
 }
 
 impl Default for EarthMeshApp {
@@ -178,7 +179,40 @@ impl Default for EarthMeshApp {
             dom_circle: [115.0, 25.0, 500.0],
             results_detached: false,
             output_files: Vec::new(),
+            mesh_view: None,
         }
+    }
+}
+
+/// Draw the mesh cell-centres on a simple equirectangular lon/lat map.
+fn draw_mesh_2d(ui: &mut egui::Ui, mesh: &earthmesh_cli::GridfileMeshPoints) {
+    let height = (ui.available_height() - 6.0).max(180.0);
+    let (rect, _resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(18, 28, 42));
+    let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
+    let to_screen = |lon: f64, lat: f64| {
+        let x = rect.left() + ((norm_lon(lon) + 180.0) / 360.0) as f32 * rect.width();
+        let y = rect.top() + ((90.0 - lat) / 180.0) as f32 * rect.height();
+        egui::pos2(x, y)
+    };
+    let grid = egui::Color32::from_gray(55);
+    for lon in (-180..=180).step_by(30) {
+        painter.line_segment(
+            [to_screen(lon as f64, 90.0), to_screen(lon as f64, -90.0)],
+            egui::Stroke::new(0.5, grid),
+        );
+    }
+    for lat in (-90..=90).step_by(30) {
+        painter.line_segment(
+            [to_screen(-180.0, lat as f64), to_screen(180.0, lat as f64)],
+            egui::Stroke::new(0.5, grid),
+        );
+    }
+    let color = egui::Color32::from_rgb(120, 200, 230);
+    for (lon, lat) in mesh.m_lon.iter().zip(&mesh.m_lat) {
+        painter.circle_filled(to_screen(*lon, *lat), 0.8, color);
     }
 }
 
@@ -404,6 +438,12 @@ impl EarthMeshApp {
                         self.set_status("status.run_done", out.clone());
                         self.push_log("log.run_done", &out);
                         self.output_files = collect_outputs(Path::new(&out));
+                        self.mesh_view = self
+                            .output_files
+                            .iter()
+                            .find(|p| p.to_string_lossy().contains("gridfile"))
+                            .or_else(|| self.output_files.first())
+                            .and_then(|p| earthmesh_cli::read_gridfile_mesh_points(p).ok());
                     }
                     Err(err) => {
                         self.set_status("status.run_failed", err.clone());
@@ -780,9 +820,20 @@ impl EarthMeshApp {
             ui.label(tr(lang, "results.empty"));
             return;
         }
-        ui.label(egui::RichText::new(tr(lang, "results.files")).strong());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tr(lang, "results.files")).strong());
+            if let Some(m) = &self.mesh_view {
+                ui.weak(format!(
+                    "·  {} {}  ·  {} {}",
+                    m.m_lon.len(),
+                    tr(lang, "results.cells"),
+                    m.w_lon.len(),
+                    tr(lang, "results.vertices"),
+                ));
+            }
+        });
         let files = self.output_files.clone();
-        egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(72.0).id_salt("files_list").show(ui, |ui| {
             for f in &files {
                 let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 if ui.button(name).on_hover_text(f.display().to_string()).clicked() {
@@ -791,7 +842,12 @@ impl EarthMeshApp {
             }
         });
         ui.separator();
-        ui.weak(tr(lang, "results.3d_soon"));
+        if let Some(mesh) = &self.mesh_view {
+            ui.weak(tr(lang, "results.map_hint"));
+            draw_mesh_2d(ui, mesh);
+        } else {
+            ui.weak(tr(lang, "results.3d_soon"));
+        }
     }
 }
 
