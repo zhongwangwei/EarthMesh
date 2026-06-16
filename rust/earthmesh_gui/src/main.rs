@@ -960,27 +960,54 @@ impl EarthMeshApp {
     /// Web Mercator screen-x is linear in longitude, so 1° spans `256·2^z / 360`
     /// px; latitude is non-linear but a linear estimate is fine for framing.
     fn frame_mesh_view(&mut self, avail_w: f32, avail_h: f32) {
-        let Some(mesh) = &self.mesh_view else { return };
-        if mesh.m_lon.is_empty() {
+        if self.mesh_view.as_ref().map_or(true, |m| m.m_lon.is_empty()) {
             return;
         }
-        let (mut lon_min, mut lon_max) = (f64::MAX, f64::MIN);
-        let (mut lat_min, mut lat_max) = (f64::MAX, f64::MIN);
-        for (&lo, &la) in mesh.m_lon.iter().zip(&mesh.m_lat) {
-            let lo = ((lo + 180.0).rem_euclid(360.0)) - 180.0;
-            lon_min = lon_min.min(lo);
-            lon_max = lon_max.max(lo);
-            lat_min = lat_min.min(la);
-            lat_max = lat_max.max(la);
-        }
+        // When a regional domain is set, frame to the user's bbox/circle (the mesh
+        // is still global, but the view zooms onto the region of interest); for a
+        // global domain — or a polygon domain that lives in a file — fit the mesh.
+        let regional = !self.mkgrd.mask_domain_global;
+        let (lon_min, lon_max, lat_min, lat_max) =
+            if regional && self.mkgrd.mask_domain_type == "bbox" {
+                let b = self.dom_bbox; // [west, east, north, south]
+                (b[0], b[1], b[3], b[2])
+            } else if regional && self.mkgrd.mask_domain_type == "circle" {
+                let [clon, clat, r_km] = self.dom_circle;
+                let r_deg = r_km / 111.32;
+                let r_lon = r_deg / clat.to_radians().cos().abs().max(0.05);
+                (clon - r_lon, clon + r_lon, clat - r_deg, clat + r_deg)
+            } else {
+                let mesh = self.mesh_view.as_ref().unwrap();
+                let (mut lo0, mut lo1) = (f64::MAX, f64::MIN);
+                let (mut la0, mut la1) = (f64::MAX, f64::MIN);
+                for (&lo, &la) in mesh.m_lon.iter().zip(&mesh.m_lat) {
+                    let lo = ((lo + 180.0).rem_euclid(360.0)) - 180.0;
+                    lo0 = lo0.min(lo);
+                    lo1 = lo1.max(lo);
+                    la0 = la0.min(la);
+                    la1 = la1.max(la);
+                }
+                (lo0, lo1, la0, la1)
+            };
+        // Tolerate reversed entries (e.g. west > east) and centre on the extent.
+        let (lon_min, lon_max) = (lon_min.min(lon_max), lon_min.max(lon_max));
+        let (lat_min, lat_max) = (lat_min.min(lat_max), lat_min.max(lat_max));
         let clon = 0.5 * (lon_min + lon_max);
         let clat = 0.5 * (lat_min + lat_max);
-        let lon_span = (lon_max - lon_min).max(0.5);
-        let lat_span = (lat_max - lat_min).max(0.5);
+        // Pad a region so it isn't drawn edge-to-edge.
+        let pad = if regional { 1.3 } else { 1.0 };
+        let lon_span = ((lon_max - lon_min) * pad).max(0.5);
+        let lat_span = ((lat_max - lat_min) * pad).max(0.5);
         let zoom_w = (avail_w as f64 * 360.0 / (256.0 * lon_span)).log2();
-        let zoom_h = (avail_h as f64 * 360.0 / (256.0 * lat_span)).log2();
-        // Near-global meshes fill the width; smaller domains fit both axes.
-        let zoom = if lon_span >= 350.0 { zoom_w } else { zoom_w.min(zoom_h) };
+        // Fill the width by default. The leftover available height is unreliable in
+        // a short dock (it can read ~0 before the map widget is allocated), so only
+        // constrain by height when it is clearly usable — e.g. the detached window.
+        let zoom = if avail_h > 60.0 && lon_span < 350.0 {
+            let zoom_h = (avail_h as f64 * 360.0 / (256.0 * lat_span)).log2();
+            zoom_w.min(zoom_h)
+        } else {
+            zoom_w
+        };
         self.map_memory.center_at(walkers::lon_lat(clon, clat));
         let _ = self.map_memory.set_zoom(zoom.clamp(0.0, 8.0));
     }
