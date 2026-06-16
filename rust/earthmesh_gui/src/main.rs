@@ -454,6 +454,8 @@ fn produce_outputs(
     fmt: &str,
     gen_output: bool,
     region: Option<earthmesh_cli::GridRegion>,
+    landtype: &str,
+    gridnum: usize,
 ) -> Result<String, String> {
     let base = Path::new(out_dir);
     let mut global_gf = None;
@@ -526,6 +528,34 @@ fn produce_outputs(
                     notes.push(format!("regional FVCOM skipped — open boundary: {e}"))
                 }
                 Err(e) => return Err(format!("FVCOM write failed: {e}")),
+            }
+        } else if fmt.eq_ignore_ascii_case("colm") {
+            // CoLM surface-data coupling: classify each cell LAND/OCEAN from the
+            // land-type grid and write the coupling CSV + NetCDF. River/coast
+            // attributes are placeholders until MERIT/CaMa assignment is wired.
+            if earthmesh_cli::landtype_file_is_real(landtype) {
+                let csv = std_dir.join(format!("CoLM_{stem}_cells.csv"));
+                let nc = std_dir.join(format!("CoLM_{stem}_coupling.nc4"));
+                let manifest = std_dir.join(format!("CoLM_{stem}_manifest.json"));
+                match earthmesh_cli::write_colm_coupling_csv_from_mesh(
+                    &source_gf, landtype, gridnum, "earthmesh", grid, &csv,
+                ) {
+                    Ok(counts) => {
+                        let _ = std::fs::write(&manifest, "{}");
+                        match earthmesh_cli::write_colm_coupling_netcdf_from_csv(
+                            &csv, &nc, "earthmesh", &manifest,
+                        ) {
+                            Ok(_) => notes.push(format!(
+                                "CoLM coupling ({} land / {} ocean cells)",
+                                counts.land, counts.ocean
+                            )),
+                            Err(e) => notes.push(format!("CoLM CSV ok, NetCDF failed: {e}")),
+                        }
+                    }
+                    Err(e) => return Err(format!("CoLM generation failed: {e}")),
+                }
+            } else {
+                notes.push("CoLM needs a land-type file (set Land-type)".into());
             }
         } else {
             notes.push(format!("standard '{fmt}' needs the data pipeline"));
@@ -799,7 +829,7 @@ impl EarthMeshApp {
                     // Pure-Rust post-processing (regional carve + standard file)
                     // — can be slow on big meshes, so it runs in the worker.
                     let _ = ptx_mpas.send(("output".to_string(), 0, 1));
-                    match produce_outputs(&out_hint, nxp, &grid, &fmt, gen_output, region) {
+                    match produce_outputs(&out_hint, nxp, &grid, &fmt, gen_output, region, &landtype, gridnum) {
                         Ok(note) if note.is_empty() => Ok(out_hint),
                         Ok(note) => Ok(format!("{out_hint}  [{note}]")),
                         Err(err) => Err(err),
