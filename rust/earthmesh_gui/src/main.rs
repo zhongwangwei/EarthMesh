@@ -441,49 +441,82 @@ fn collect_outputs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Find the run's gridfile and write the standard file for the selected model
-/// (MPAS / FVCOM …), entirely in Rust. Returns the written path or an error.
-fn write_standard_model_output(
+/// Post-run, pure-Rust outputs: carve a regional gridfile when a bbox/circle
+/// region is set (so the output drops out-of-region cells), and/or write the
+/// selected model's standard file from that (carved, if regional) gridfile.
+/// Returns a short summary, or an error for hard failures.
+fn produce_outputs(
     out_dir: &str,
     nxp: usize,
     grid: &str,
     fmt: &str,
+    gen_output: bool,
+    region: Option<earthmesh_cli::GridRegion>,
 ) -> Result<String, String> {
     let base = Path::new(out_dir);
-    let mut gridfile = None;
+    let mut global_gf = None;
     if let Ok(rd) = std::fs::read_dir(base.join("gridfile")) {
         for entry in rd.flatten() {
             let p = entry.path();
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             if name.starts_with("gridfile_NXP") && name.ends_with(".nc4") {
                 let matches_grid = name.contains(grid);
-                gridfile = Some(p);
+                global_gf = Some(p);
                 if matches_grid {
                     break;
                 }
             }
         }
     }
-    let gridfile = gridfile.ok_or_else(|| "gridfile not found in output".to_string())?;
-    let std_dir = base.join("standard");
-    std::fs::create_dir_all(&std_dir).map_err(|e| e.to_string())?;
-    let stem = format!("NXP{nxp:04}_{grid}");
-    if fmt.starts_with("MPAS") {
-        let mesh_out = std_dir.join(format!("MPASOUT_{stem}.nc4"));
-        let graph_out = std_dir.join(format!("MPASOUT_{stem}.graph.info"));
-        earthmesh_cli::write_standard_mpas_from_gridfile(&gridfile, &mesh_out, &graph_out, nxp)
-            .map_err(|e| format!("MPAS write failed: {e}"))?;
-        Ok(mesh_out.display().to_string())
-    } else if fmt == "FVCOM" {
-        let out_2dm = std_dir.join(format!("FVCOM_{stem}.2dm"));
-        earthmesh_cli::write_standard_fvcom_from_gridfile(&gridfile, &out_2dm)
-            .map_err(|e| format!("FVCOM write failed: {e}"))?;
-        Ok(out_2dm.display().to_string())
+    let global_gf = global_gf.ok_or_else(|| "gridfile not found in output".to_string())?;
+    let mut notes: Vec<String> = Vec::new();
+
+    // Carve the gridfile to the region so the output drops out-of-region cells.
+    let source_gf = if let Some(region) = region {
+        let reg_dir = base.join("regional");
+        std::fs::create_dir_all(&reg_dir).map_err(|e| e.to_string())?;
+        let reg_gf = reg_dir.join(format!("gridfile_NXP{nxp:04}_{grid}_regional.nc4"));
+        let kept = earthmesh_cli::write_regional_gridfile(&global_gf, &reg_gf, &region, grid)
+            .map_err(|e| format!("regional carve failed: {e}"))?;
+        notes.push(format!("regional gridfile ({kept} cells)"));
+        reg_gf
     } else {
-        Err(format!(
-            "standard '{fmt}' output needs the data pipeline (not produced from a base gridfile yet)"
-        ))
+        global_gf
+    };
+
+    if gen_output {
+        let std_dir = base.join("standard");
+        std::fs::create_dir_all(&std_dir).map_err(|e| e.to_string())?;
+        let stem = format!("NXP{nxp:04}_{grid}");
+        if fmt.starts_with("MPAS") {
+            let mesh_out = std_dir.join(format!("MPASOUT_{stem}.nc4"));
+            let graph_out = std_dir.join(format!("MPASOUT_{stem}.graph.info"));
+            match earthmesh_cli::write_standard_mpas_from_gridfile(&source_gf, &mesh_out, &graph_out, nxp)
+            {
+                Ok(_) => notes.push("standard MPAS".into()),
+                // A carved patch has open boundary cells the full MPAS builder
+                // rejects; the regional gridfile is still the usable output.
+                Err(e) if region.is_some() => {
+                    notes.push(format!("regional MPAS skipped — open boundary: {e}"))
+                }
+                Err(e) => return Err(format!("MPAS write failed: {e}")),
+            }
+        } else if fmt == "FVCOM" {
+            let out_2dm = std_dir.join(format!("FVCOM_{stem}.2dm"));
+            match earthmesh_cli::write_standard_fvcom_from_gridfile(&source_gf, &out_2dm) {
+                Ok(_) => notes.push("standard FVCOM".into()),
+                // A carved patch has boundary cells the writers reject; the
+                // regional gridfile is still the usable output.
+                Err(e) if region.is_some() => {
+                    notes.push(format!("regional FVCOM skipped — open boundary: {e}"))
+                }
+                Err(e) => return Err(format!("FVCOM write failed: {e}")),
+            }
+        } else {
+            notes.push(format!("standard '{fmt}' needs the data pipeline"));
+        }
     }
+    Ok(notes.join("; "))
 }
 
 impl EarthMeshApp {
@@ -629,6 +662,25 @@ impl EarthMeshApp {
         let nxp = self.mkgrd.nxp.max(0) as usize;
         let grid = self.mkgrd.mode_grid.clone();
         let fmt = self.mkgrd.output_format.clone();
+        // A bbox/circle region also carves the output gridfile to that area.
+        let region = if !self.mkgrd.mask_domain_global {
+            match self.mkgrd.mask_domain_type.as_str() {
+                "bbox" => Some(earthmesh_cli::GridRegion::Bbox {
+                    west: self.dom_bbox[0],
+                    east: self.dom_bbox[1],
+                    north: self.dom_bbox[2],
+                    south: self.dom_bbox[3],
+                }),
+                "circle" => Some(earthmesh_cli::GridRegion::Circle {
+                    lon: self.dom_circle[0],
+                    lat: self.dom_circle[1],
+                    radius_km: self.dom_circle[2],
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let ptx_mpas = ptx.clone();
         thread::spawn(move || {
             earthmesh_core::progress::set(move |phase, done, total| {
@@ -641,12 +693,13 @@ impl EarthMeshApp {
                 );
             earthmesh_core::progress::clear();
             let msg = match result {
-                Ok(_) if gen_output => {
-                    // Pure-Rust standard model file — can be slow on big meshes,
-                    // so it runs here in the worker, not on the UI thread.
+                Ok(_) if gen_output || region.is_some() => {
+                    // Pure-Rust post-processing (regional carve + standard file)
+                    // — can be slow on big meshes, so it runs in the worker.
                     let _ = ptx_mpas.send(("output".to_string(), 0, 1));
-                    match write_standard_model_output(&out_hint, nxp, &grid, &fmt) {
-                        Ok(_) => Ok(out_hint),
+                    match produce_outputs(&out_hint, nxp, &grid, &fmt, gen_output, region) {
+                        Ok(note) if note.is_empty() => Ok(out_hint),
+                        Ok(note) => Ok(format!("{out_hint}  [{note}]")),
                         Err(err) => Err(err),
                     }
                 }

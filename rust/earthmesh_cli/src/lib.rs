@@ -24301,6 +24301,69 @@ pub fn write_standard_fvcom_from_gridfile(
     write_fvcom_mesh_2dm(output_2dm, &mesh, &[])
 }
 
+/// A geographic region used to carve a gridfile down to an area of interest.
+#[derive(Debug, Clone, Copy)]
+pub enum GridRegion {
+    Bbox { west: f64, east: f64, north: f64, south: f64 },
+    Circle { lon: f64, lat: f64, radius_km: f64 },
+}
+
+impl GridRegion {
+    fn contains(&self, lon: f64, lat: f64) -> bool {
+        let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
+        match *self {
+            GridRegion::Bbox { west, east, north, south } => {
+                let (s, n) = (south.min(north), south.max(north));
+                let (w, e) = (norm(west), norm(east));
+                let lon = norm(lon);
+                lat >= s && lat <= n && lon >= w.min(e) && lon <= w.max(e)
+            }
+            GridRegion::Circle { lon: clon, lat: clat, radius_km } => {
+                let r = 6371.0_f64;
+                let (la1, la2) = (clat.to_radians(), lat.to_radians());
+                let dlat = (lat - clat).to_radians();
+                let dlon = (norm(lon) - norm(clon)).to_radians();
+                let a = (dlat / 2.0).sin().powi(2)
+                    + la1.cos() * la2.cos() * (dlon / 2.0).sin().powi(2);
+                2.0 * r * a.sqrt().asin() <= radius_km
+            }
+        }
+    }
+}
+
+/// Carve a global gridfile down to `region` and write the regional gridfile, in
+/// pure Rust. Reuses the engine's mask-postproc compaction/re-index: cells whose
+/// centre is outside the region are dropped and the mesh is renumbered. The
+/// gridfile's leading placeholder (Fortran id 1 / array index 0) is preserved.
+/// Returns the number of cells kept. `mode_grid` selects the primal cells
+/// (`hex` → hexagons / W cells, `tri` → triangles / M cells).
+pub fn write_regional_gridfile(
+    global_gridfile: impl AsRef<Path>,
+    regional_gridfile: impl AsRef<Path>,
+    region: &GridRegion,
+    mode_grid: &str,
+) -> io::Result<usize> {
+    let mesh = read_unstructured_mesh_netcdf(global_gridfile)?;
+    let layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
+    let mut is_in_domain = vec![-1i32; layout.ustr_points];
+    let mut kept = 0usize;
+    // Index 0 is the reserved placeholder point; keep it as the offset.
+    if !is_in_domain.is_empty() {
+        is_in_domain[0] = 0;
+    }
+    for i in 1..layout.ustr_points {
+        let c = layout.center_points[i];
+        if region.contains(c.lon, c.lat) {
+            is_in_domain[i] = 1;
+            kept += 1;
+        }
+    }
+    let report =
+        finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
+    write_unstructured_mesh_netcdf(regional_gridfile, &report.mesh)?;
+    Ok(kept)
+}
+
 /// Rust entry point for the `mask_postproc_Atmos` branch when
 /// `output_format == 'MPAS-Simple'`.
 ///
