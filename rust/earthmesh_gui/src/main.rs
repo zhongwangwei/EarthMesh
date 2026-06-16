@@ -257,10 +257,44 @@ fn draw_mesh_2d(ui: &mut egui::Ui, mesh: &earthmesh_cli::GridfileMeshPoints) {
     }
 }
 
+/// A regional domain used to mask the drawn mesh to the area of interest.
+#[derive(Clone, Copy)]
+enum DomainMask {
+    Bbox { west: f64, east: f64, north: f64, south: f64 },
+    Circle { lon: f64, lat: f64, radius_km: f64 },
+}
+
+impl DomainMask {
+    /// Whether a cell centre (degrees) falls inside the domain.
+    fn contains(&self, lon: f64, lat: f64) -> bool {
+        let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
+        match *self {
+            DomainMask::Bbox { west, east, north, south } => {
+                let (s, n) = (south.min(north), south.max(north));
+                let (w, e) = (norm(west), norm(east));
+                let lon = norm(lon);
+                lat >= s && lat <= n && lon >= w.min(e) && lon <= w.max(e)
+            }
+            DomainMask::Circle { lon: clon, lat: clat, radius_km } => {
+                let r_earth = 6371.0_f64;
+                let (la1, la2) = (clat.to_radians(), lat.to_radians());
+                let dlat = (lat - clat).to_radians();
+                let dlon = (norm(lon) - norm(clon)).to_radians();
+                let a = (dlat / 2.0).sin().powi(2)
+                    + la1.cos() * la2.cos() * (dlon / 2.0).sin().powi(2);
+                2.0 * r_earth * a.sqrt().asin() <= radius_km
+            }
+        }
+    }
+}
+
 /// Draws the mesh triangle wireframe on top of a walkers slippy map, projecting
-/// each W-vertex through the map's `Projector` so it tracks pan/zoom.
+/// each W-vertex through the map's `Projector` so it tracks pan/zoom. When a
+/// `domain` is set, only cells whose centre is inside it are drawn (the rest are
+/// masked out), so a regional run shows just its region of interest.
 struct MeshOverlay<'m> {
     mesh: &'m earthmesh_cli::GridfileMeshPoints,
+    domain: Option<DomainMask>,
 }
 
 /// Web-Mercator's usable latitude bound; tiles cover only ±this.
@@ -275,6 +309,7 @@ impl walkers::Plugin for MeshOverlay<'_> {
         _map_memory: &walkers::MapMemory,
     ) {
         let mesh = self.mesh;
+        let domain = self.domain;
         let wn = mesh.w_lon.len();
 
         // Clip the mesh to the basemap rectangle, derived straight from the
@@ -315,7 +350,13 @@ impl walkers::Plugin for MeshOverlay<'_> {
         let proj =
             |lon: f64, lat: f64| projector.project(walkers::lon_lat(lon, lat)).to_pos2();
 
-        for t in mesh.m_to_w.chunks_exact(3) {
+        for (ci, t) in mesh.m_to_w.chunks_exact(3).enumerate() {
+            // Mask out cells whose centre falls outside the regional domain.
+            if let Some(dom) = &domain {
+                if ci >= mesh.m_lon.len() || !dom.contains(mesh.m_lon[ci], mesh.m_lat[ci]) {
+                    continue;
+                }
+            }
             let (Some((l0, a0)), Some((l1, a1)), Some((l2, a2))) =
                 (vert(t[0]), vert(t[1]), vert(t[2]))
             else {
@@ -1049,6 +1090,26 @@ impl EarthMeshApp {
                 self.frame_mesh_view(w, h);
                 self.frame_pending = false;
             }
+            // Regional run → mask the drawn mesh to the bbox/circle (a polygon
+            // domain lives in a file we can't read here, so it isn't masked).
+            let domain = if !self.mkgrd.mask_domain_global {
+                match self.mkgrd.mask_domain_type.as_str() {
+                    "bbox" => Some(DomainMask::Bbox {
+                        west: self.dom_bbox[0],
+                        east: self.dom_bbox[1],
+                        north: self.dom_bbox[2],
+                        south: self.dom_bbox[3],
+                    }),
+                    "circle" => Some(DomainMask::Circle {
+                        lon: self.dom_circle[0],
+                        lat: self.dom_circle[1],
+                        radius_km: self.dom_circle[2],
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             if let Some(tiles) = &mut self.tiles {
                 // Offline Protomaps basemap with the mesh wireframe overlaid.
                 let mesh = self.mesh_view.as_ref().unwrap();
@@ -1060,7 +1121,7 @@ impl EarthMeshApp {
                 // Plain wheel zooms (walkers defaults to ctrl+wheel, treating a
                 // bare wheel as a vertical pan); drag still pans.
                 .zoom_with_ctrl(false)
-                .with_plugin(MeshOverlay { mesh });
+                .with_plugin(MeshOverlay { mesh, domain });
                 ui.add(map);
                 ui.weak("© OpenStreetMap contributors · Protomaps");
             } else {
