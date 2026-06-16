@@ -1032,6 +1032,9 @@ impl EarthMeshApp {
                     &mut self.map_memory,
                     walkers::lon_lat(0.0, 0.0),
                 )
+                // Plain wheel zooms (walkers defaults to ctrl+wheel, treating a
+                // bare wheel as a vertical pan); drag still pans.
+                .zoom_with_ctrl(false)
                 .with_plugin(MeshOverlay { mesh });
                 ui.add(map);
                 ui.weak("© OpenStreetMap contributors · Protomaps");
