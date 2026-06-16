@@ -24379,20 +24379,31 @@ pub fn write_clean_regional_ocean_fvcom(
 
     // Carved mesh → FVCOM .2dm. The mask_postproc output uses a 2-placeholder +
     // (0,0) boundary-marker convention the generic writer doesn't expect, so emit
-    // the .2dm over real cells/nodes only, renumbered 1-based.
+    // the .2dm over real cells/nodes only, renumbered 1-based, plus the open
+    // boundary from the carve's OBC file.
     let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
-    write_fvcom_2dm_from_carved(&carved, output_2dm)
+    let obc_order = match &plan.obc_output {
+        Some(p) if p.exists() => read_obc_order_netcdf(p)?,
+        _ => Vec::new(),
+    };
+    write_fvcom_2dm_from_carved(&carved, &obc_order, output_2dm)
 }
 
 /// Write an SMS/FVCOM `.2dm` from a carved (`mask_postproc`) ocean mesh, which
 /// uses two leading placeholder rows and a `(0,0)` boundary marker. Real nodes
-/// are renumbered 1-based; triangles touching a placeholder/marker are dropped.
-fn write_fvcom_2dm_from_carved(mesh: &UnstructuredMesh, output: &Path) -> io::Result<usize> {
+/// are renumbered 1-based; triangles touching a placeholder/marker are dropped;
+/// the open boundary (`obc_order`, in carved-id space) is re-mapped and written
+/// as NS records so the `.2dm` carries its open-boundary specification.
+fn write_fvcom_2dm_from_carved(
+    mesh: &UnstructuredMesh,
+    obc_order: &[usize],
+    output: &Path,
+) -> io::Result<usize> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
     let is_marker = |p: &LonLatPoint| p.lon == 0.0 && p.lat == 0.0;
-    // old 1-based vertex id → new 1-based node id (real nodes only).
+    // carved 1-based vertex id → new 1-based node id (real nodes only).
     let mut new_id = vec![0usize; mesh.w_points.len() + 2];
     let mut nodes: Vec<(usize, LonLatPoint)> = Vec::new();
     let mut next = 1usize;
@@ -24422,6 +24433,22 @@ fn write_fvcom_2dm_from_carved(mesh: &UnstructuredMesh, output: &Path) -> io::Re
     }
     for (id, p) in &nodes {
         writeln!(file, "ND {} {:.6} {:.6} {:.6}", id, p.lon, p.lat, 0.0)?;
+    }
+    // Open boundary: re-map carved ids to new node ids. `write_fvcom_ns_records`
+    // emits `id - 1`, so pass `new_id + 1`; 1 stays the segment separator, and a
+    // marker (no real node) also acts as a separator.
+    if !obc_order.is_empty() {
+        let remapped: Vec<usize> = obc_order
+            .iter()
+            .map(|&id| {
+                if id == 1 || id >= new_id.len() || new_id[id] == 0 {
+                    1
+                } else {
+                    new_id[id] + 1
+                }
+            })
+            .collect();
+        write_fvcom_ns_records(&mut file, &remapped)?;
     }
     Ok(elements)
 }
