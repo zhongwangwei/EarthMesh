@@ -1,0 +1,145 @@
+//! Minimal built-in bilingual lookup (中文 / English).
+//!
+//! A single static `(key, en, zh)` table avoids a heavier i18n crate while
+//! keeping every UI string switchable at runtime. `tr` returns a `&'static str`,
+//! so call sites pass string-literal keys and the result drops straight into egui
+//! widgets. Unknown keys fall back to the key itself (which surfaces typos).
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum Lang {
+    En,
+    Zh,
+}
+
+#[rustfmt::skip]
+const TABLE: &[(&str, &str, &str)] = &[
+    // chrome
+    ("app.title", "EarthMesh", "EarthMesh"),
+    ("btn.load", "📂 Load example", "📂 载入示例"),
+    ("btn.save", "💾 Save as…", "💾 另存为…"),
+    ("btn.run", "▶ Run", "▶ 运行"),
+    ("lang.label", "Language", "语言"),
+    ("nav.title", "Sections", "分区"),
+    ("nav.basics", "Basics", "基础"),
+    ("nav.spring", "Initial Mesh", "初始网格"),
+    ("nav.mask", "Mask & Domain", "掩膜与区域"),
+    ("nav.refine_general", "Refine — General", "细化 — 总体"),
+    ("nav.refine_criteria", "Refine — Criteria", "细化 — 判据"),
+    ("run.title", "Run", "运行"),
+    ("run.running", "● running", "● 运行中"),
+    ("run.idle", "○ idle", "○ 空闲"),
+    // headings
+    ("head.basics", "Basics", "基础设置"),
+    ("head.spring", "Initial Mesh / Spring", "初始网格 / 弹簧"),
+    ("head.mask", "Mask & Domain", "掩膜与区域"),
+    ("head.refine_general", "Refinement — General", "细化 — 总体"),
+    ("head.refine_criteria", "Refinement — Specified & Calculated", "细化 — 指定与阈值"),
+    // status
+    ("status.ready", "Ready.", "就绪。"),
+    ("status.loaded", "Loaded:", "已载入："),
+    ("status.saved", "Saved:", "已保存："),
+    ("status.read_error", "Read error:", "读取错误："),
+    ("status.parse_error", "Parse error:", "解析错误："),
+    ("status.write_error", "Write error:", "写入错误："),
+    ("status.stage_error", "Could not stage namelist:", "无法写出 namelist："),
+    ("status.running", "Running… (background thread; UI stays responsive)", "运行中…（后台线程，界面不卡）"),
+    ("status.run_done", "Run finished. Output under:", "运行完成。输出位于："),
+    ("status.run_failed", "Run failed:", "运行失败："),
+    // basics
+    ("f.expnme", "Experiment name", "算例名称"),
+    ("f.base_dir", "Base dir", "算例目录"),
+    ("f.mesh_type", "Mesh type", "网格类型"),
+    ("f.output_format", "Output format", "输出格式"),
+    ("f.mode_grid", "Grid mode", "网格形状"),
+    ("f.nxp", "NXP (resolution)", "NXP（分辨率）"),
+    ("f.gridnum", "Grid pts / degree", "每度网格点数"),
+    ("f.openmp", "OpenMP threads", "OpenMP 线程数"),
+    ("f.landtype_file", "Land-type file", "地表类型文件"),
+    ("f.mode_file", "Initial mesh file", "初始网格文件"),
+    ("f.mode_file_desc", "Initial mesh format", "初始网格格式"),
+    // spring
+    ("f.niter", "Initial iterations (niter)", "初始迭代次数 (niter)"),
+    ("f.beta", "Spring beta", "弹簧 beta"),
+    ("f.relax", "Relaxation factor", "松弛系数"),
+    ("f.niter_refine", "Refine iterations", "细化迭代次数"),
+    ("f.spring_global", "Spring-Global type", "全局弹簧类型"),
+    ("f.num_rc", "num_rc (Spring-Global)", "num_rc（全局弹簧）"),
+    ("f.set_dis", "Distance function", "间距函数"),
+    ("f.spring_regional", "Spring-Regional type", "区域弹簧类型"),
+    ("f.vertex_layers", "Protected vertex layers", "保护顶点层数"),
+    ("opt.spring_none", "0 — none", "0 — 无"),
+    ("opt.spring_olam", "1 — OLAM", "1 — OLAM"),
+    ("opt.reg_each", "1 — each step", "1 — 每步调整"),
+    ("opt.reg_final", "2 — final step", "2 — 最后调整"),
+    // mask
+    ("f.domain_global", "Global domain", "全局区域"),
+    ("f.domain_shape", "Domain shape", "区域形状"),
+    ("f.domain_prefix", "Domain file prefix", "区域文件前缀"),
+    ("f.mask_restart", "Restart from mask", "从掩膜重启"),
+    ("f.sea_ratio", "Sea/land ratio", "海陆占比"),
+    ("f.patch_on", "Enable mask patch", "启用掩膜补丁"),
+    ("f.patch_shape", "Patch shape", "补丁形状"),
+    ("f.patch_prefix", "Patch file prefix", "补丁文件前缀"),
+    ("f.isolated_ocean", "Remove isolated ocean", "移除孤立海洋"),
+    // refine general
+    ("f.refine_master", "Perform refinement (master switch)", "执行细化（总开关）"),
+    ("f.weak_concav", "Eliminate weak concavity", "消除弱凹陷"),
+    ("f.is_transition", "Use transition rows (Istransition)", "使用过渡行 (Istransition)"),
+    ("f.iter_d", "Iterative-D (iterD)", "迭代-D (iterD)"),
+    ("f.halo", "HALO (per level)", "HALO（每层）"),
+    ("f.max_transition", "Transition rows (per level)", "过渡行数（每层）"),
+    // refine criteria
+    ("f.refine_spc", "Specified-region refine (refine_spc)", "指定区域细化 (refine_spc)"),
+    ("f.max_iter_spc", "Max specified passes", "最大指定细化次数"),
+    ("f.spc_shape", "Specified region shape", "指定区域形状"),
+    ("f.spc_prefix", "Specified region prefix", "指定区域文件前缀"),
+    ("f.refine_cal", "Threshold-calculated refine (refine_cal)", "阈值细化 (refine_cal)"),
+    ("note.cal_atmos", "(not available for atmosmesh)", "（atmosmesh 不可用）"),
+    ("f.max_iter_cal", "Max calculated passes", "最大阈值细化次数"),
+    ("f.cal_shape", "Calculated region shape", "阈值区域形状"),
+    ("f.cal_prefix", "Calculated region prefix", "阈值区域文件前缀"),
+    ("f.threshold_dir", "Threshold dir", "阈值文件目录"),
+    ("g.lnd1", "Land — one-layer criteria", "陆面 — 单层判据"),
+    ("g.lnd2", "Land — two-layer soil criteria", "陆面 — 双层土壤判据"),
+    ("g.ocn", "Ocean criteria", "海洋判据"),
+    ("g.atmos", "Atmosphere criteria", "大气判据"),
+    ("c.num_landtypes", "Number of land types", "地表类型数"),
+    ("c.area_mainland", "Dominant land-type area", "主导地类面积"),
+    ("c.lai_m", "LAI mean", "LAI 均值"),
+    ("c.lai_s", "LAI std", "LAI 标准差"),
+    ("c.slope_m", "Slope mean", "坡度均值"),
+    ("c.slope_s", "Slope std", "坡度标准差"),
+    ("c.ks_m", "k_s mean", "饱和导水率均值"),
+    ("c.ks_s", "k_s std", "饱和导水率标准差"),
+    ("c.ksol_m", "k_solids mean", "固体导热率均值"),
+    ("c.ksol_s", "k_solids std", "固体导热率标准差"),
+    ("c.tkdry_m", "tkdry mean", "干土导热率均值"),
+    ("c.tkdry_s", "tkdry std", "干土导热率标准差"),
+    ("c.tksatf_m", "tksatf mean", "饱和冻土导热率均值"),
+    ("c.tksatf_s", "tksatf std", "饱和冻土导热率标准差"),
+    ("c.tksatu_m", "tksatu mean", "饱和融土导热率均值"),
+    ("c.tksatu_s", "tksatu std", "饱和融土导热率标准差"),
+    ("c.sea_ratio", "Sea/land ratio", "海陆占比"),
+    ("c.sst_m", "SST mean", "海表温度均值"),
+    ("c.sst_s", "SST std", "海表温度标准差"),
+    ("c.ssh_m", "SSH mean", "海表高度均值"),
+    ("c.ssh_s", "SSH std", "海表高度标准差"),
+    ("c.eke_m", "EKE mean", "涡动能均值"),
+    ("c.eke_s", "EKE std", "涡动能标准差"),
+    ("c.seaslope_m", "Sea slope mean", "海底坡度均值"),
+    ("c.seaslope_s", "Sea slope std", "海底坡度标准差"),
+    ("c.typhoon_m", "Typhoon freq. mean", "台风频率均值"),
+    ("c.typhoon_s", "Typhoon freq. std", "台风频率标准差"),
+];
+
+pub fn tr(lang: Lang, key: &'static str) -> &'static str {
+    for (k, en, zh) in TABLE {
+        if *k == key {
+            return match lang {
+                Lang::En => en,
+                Lang::Zh => zh,
+            };
+        }
+    }
+    key
+}
