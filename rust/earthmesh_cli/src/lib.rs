@@ -24291,6 +24291,141 @@ pub fn write_standard_mpas_from_gridfile(
     })
 }
 
+/// Carve a CLEAN regional ocean (FVCOM) mesh from a global gridfile + a close
+/// polygon + a landtype NetCDF — in pure Rust, WITHOUT the refine pipeline and
+/// WITHOUT reading any criterion data (LAI/slope/…). It reuses the engine's
+/// Area_judge → Get_Contain → ocean `mask_postproc` chain (the same clean tri
+/// boundary peeling the production path uses), so the result has a proper 0/2
+/// boundary that the FVCOM writer accepts. Reads only: the gridfile, the close
+/// polygon, and the landtype file. Writes intermediates under `work_dir`.
+pub fn write_clean_regional_ocean_fvcom(
+    global_gridfile: &Path,
+    close_points: &[LonLatPoint],
+    landtype_file: &Path,
+    nxp: usize,
+    gridnum_perdegree: usize,
+    mask_sea_ratio: f64,
+    work_dir: &Path,
+    output_2dm: &Path,
+) -> io::Result<usize> {
+    // Source axes + landtype (read landtype once).
+    let pre = read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
+
+    // Write the close polygon where the domain builder looks for it.
+    let close_path = work_dir.join("tmpfile").join("mask_domain_close_0_001.nc4");
+    if let Some(p) = close_path.parent() {
+        fs::create_dir_all(p)?;
+    }
+    write_close_mask_netcdf(
+        &close_path,
+        &CloseMask { refine_degree: 0, points: close_points.to_vec() },
+    )?;
+
+    // Domain membership (is_in_domain) from the close curve — geometric, no data.
+    let domain = build_area_judge_domain_fortran_indexed(
+        work_dir,
+        false,
+        "close",
+        1,
+        &pre.lon_vertex,
+        &pre.lat_vertex,
+        &pre.lon_i,
+        &pre.lat_i,
+        gridnum_perdegree,
+        pre.nlons_source,
+        pre.nlats_source,
+    )?;
+    let bounds = domain.bounds;
+
+    // Sea/land classification from the already-read landtype grid.
+    let sol = build_area_judge_seaorland_fortran_indexed(
+        &domain.is_in_domain,
+        &pre.landtypes_global,
+        bounds,
+        "oceanmesh",
+        false,
+    )?;
+
+    // Fixed I/O layout under work_dir; the global gridfile must sit at source.
+    let plan = plan_mask_postproc_domain_io(work_dir, nxp, "tri", "oceanmesh", false)?;
+    if let Some(p) = plan.source_gridfile.parent() {
+        fs::create_dir_all(p)?;
+    }
+    fs::copy(global_gridfile, &plan.source_gridfile)?;
+
+    // Area_judge payload → Get_Contain (Ocean) → contain file the carve reads.
+    let payload =
+        select_area_judge_grid_fortran_indexed(&domain.is_in_domain, None, &pre.lon_i, &pre.lat_i, bounds)?;
+    let area_grid_file = work_dir.join("tmpfile").join("area_judge_domain.nc4");
+    write_area_judge_grid_netcdf(&area_grid_file, &payload)?;
+    run_getcontain_refine_file_fortran_indexed(GetContainRefineFileRunConfig {
+        gridfile: &plan.source_gridfile,
+        area_grid_file: &area_grid_file,
+        output: &plan.contain_domain,
+        mesh_kind: GetContainMeshKind::Ocean,
+        seaorland: &sol.seaorland,
+        lon_vertex: &pre.lon_vertex,
+        lat_vertex: &pre.lat_vertex,
+        lon_i: &pre.lon_i,
+        lat_i: &pre.lat_i,
+        num_vertex: 0,
+    })?;
+
+    // Clean ocean carve (tri boundary peel + carved gridfile + OBC).
+    run_mask_postproc_ocean_domain(
+        &plan,
+        MaskPostprocOceanRunOptions { mask_sea_ratio, num_vertex: 0 },
+    )?;
+
+    // Carved mesh → FVCOM .2dm. The mask_postproc output uses a 2-placeholder +
+    // (0,0) boundary-marker convention the generic writer doesn't expect, so emit
+    // the .2dm over real cells/nodes only, renumbered 1-based.
+    let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
+    write_fvcom_2dm_from_carved(&carved, output_2dm)
+}
+
+/// Write an SMS/FVCOM `.2dm` from a carved (`mask_postproc`) ocean mesh, which
+/// uses two leading placeholder rows and a `(0,0)` boundary marker. Real nodes
+/// are renumbered 1-based; triangles touching a placeholder/marker are dropped.
+fn write_fvcom_2dm_from_carved(mesh: &UnstructuredMesh, output: &Path) -> io::Result<usize> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let is_marker = |p: &LonLatPoint| p.lon == 0.0 && p.lat == 0.0;
+    // old 1-based vertex id → new 1-based node id (real nodes only).
+    let mut new_id = vec![0usize; mesh.w_points.len() + 2];
+    let mut nodes: Vec<(usize, LonLatPoint)> = Vec::new();
+    let mut next = 1usize;
+    for (idx, p) in mesh.w_points.iter().enumerate() {
+        if idx == 0 || is_marker(p) {
+            continue;
+        }
+        new_id[idx + 1] = next; // Fortran id = idx + 1
+        nodes.push((next, *p));
+        next += 1;
+    }
+    let mut file = fs::File::create(output)?;
+    writeln!(file, "MESH2D")?;
+    writeln!(file, "MESHNAME \"FVCOM Mesh\"")?;
+    let mut elements = 0usize;
+    for tri in mesh.m_to_w.iter().skip(1) {
+        let ids = [tri[0], tri[1], tri[2]];
+        if ids.iter().any(|&v| v < 1 || (v as usize) >= new_id.len() || new_id[v as usize] == 0) {
+            continue; // touches a placeholder / boundary marker
+        }
+        elements += 1;
+        writeln!(
+            file,
+            "E3T {} {} {} {} 1",
+            elements, new_id[ids[0] as usize], new_id[ids[1] as usize], new_id[ids[2] as usize]
+        )?;
+    }
+    for (id, p) in &nodes {
+        writeln!(file, "ND {} {:.6} {:.6} {:.6}", id, p.lon, p.lat, 0.0)?;
+    }
+    Ok(elements)
+}
+
 /// Write the standard FVCOM `.2dm` mesh straight from a base gridfile, in pure
 /// Rust. Open-boundary segments are omitted (none for a from-scratch mesh).
 pub fn write_standard_fvcom_from_gridfile(
