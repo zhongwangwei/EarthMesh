@@ -1356,6 +1356,11 @@ pub fn icosahedron_spring_dynamics1_fortran(
     let mut diagnostic_max_displacements = Vec::new();
 
     for iteration in 1..=niter {
+        if (iteration == 1 || iteration == niter || iteration % 20 == 0)
+            && !earthmesh_core::progress::report("spring", iteration, niter)
+        {
+            return None;
+        }
         let record_diagnostic = iteration == 1 || iteration % diagnostic_every == 0;
         let diagnostic_reference = if record_diagnostic {
             Some(current_m_points.clone())

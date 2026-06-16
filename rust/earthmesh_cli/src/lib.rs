@@ -13197,7 +13197,10 @@ pub fn run_mkgrd_refine_loop_execution_with_final_domain_contain(
     let mut executed_sources = 0;
     let mut executed_refine_steps = 0;
 
-    for step in &plan.steps {
+    for (step_index, step) in plan.steps.iter().enumerate() {
+        if !earthmesh_core::progress::report("refine", step_index, plan.steps.len()) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         for source in &step.sources {
             executor.run_source_branch(step, source)?;
             executed_sources += 1;

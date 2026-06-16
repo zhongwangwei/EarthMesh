@@ -9,7 +9,9 @@
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use eframe::egui;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 
 mod i18n;
@@ -135,6 +137,10 @@ struct EarthMeshApp {
     status_detail: String,
     running: bool,
     run_rx: Option<Receiver<RunMsg>>,
+    prog_rx: Option<Receiver<(String, usize, usize)>>,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    progress: Option<(String, usize, usize)>,
+    last_phase: String,
 }
 
 impl Default for EarthMeshApp {
@@ -152,6 +158,10 @@ impl Default for EarthMeshApp {
             status_detail: String::new(),
             running: false,
             run_rx: None,
+            prog_rx: None,
+            cancel_flag: None,
+            progress: None,
+            last_phase: String::new(),
         }
     }
 }
@@ -240,13 +250,21 @@ impl EarthMeshApp {
         }
         let workdir = workspace_root();
         let (tx, rx) = mpsc::channel();
+        let (ptx, prx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
         let ctx = ctx.clone();
         let out_hint = self.output_dir().display().to_string();
         thread::spawn(move || {
+            earthmesh_core::progress::set(move |phase, done, total| {
+                let _ = ptx.send((phase.to_string(), done, total));
+                !cancel_worker.load(Ordering::Relaxed)
+            });
             let result =
                 earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
                     &nml_path, &workdir, 100_000, 0, None, None, None, 1, None,
                 );
+            earthmesh_core::progress::clear();
             let msg = match result {
                 Ok(_) => Ok(out_hint),
                 Err(err) => Err(err.to_string()),
@@ -255,14 +273,53 @@ impl EarthMeshApp {
             ctx.request_repaint();
         });
         self.run_rx = Some(rx);
+        self.prog_rx = Some(prx);
+        self.cancel_flag = Some(cancel);
+        self.progress = None;
+        self.last_phase.clear();
         self.running = true;
         self.set_status("status.running", String::new());
         self.push_log("log.run_start", "");
     }
 
+    fn request_cancel(&mut self) {
+        if let Some(flag) = &self.cancel_flag {
+            flag.store(true, Ordering::Relaxed);
+            self.push_log("log.cancel_req", "");
+        }
+    }
+
     fn poll_run(&mut self) {
-        if let Some(rx) = &self.run_rx {
-            if let Ok(RunMsg::Done(result)) = rx.try_recv() {
+        // Drain live progress updates into an owned buffer first (avoids holding a
+        // borrow of self.prog_rx while we mutate self below).
+        let mut updates = Vec::new();
+        if let Some(prx) = &self.prog_rx {
+            while let Ok(update) = prx.try_recv() {
+                updates.push(update);
+            }
+        }
+        for (phase, done, total) in updates {
+            if phase != self.last_phase {
+                self.last_phase = phase.clone();
+                self.log.push(format!("→ {phase}"));
+                if self.log.len() > 200 {
+                    self.log.remove(0);
+                }
+            }
+            self.progress = Some((phase, done, total));
+        }
+
+        // Completion / cancellation.
+        let done_msg = self.run_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(RunMsg::Done(result)) = done_msg {
+            let cancelled = self
+                .cancel_flag
+                .as_ref()
+                .map_or(false, |f| f.load(Ordering::Relaxed));
+            if cancelled {
+                self.set_status("status.cancelled", String::new());
+                self.push_log("status.cancelled", "");
+            } else {
                 match result {
                     Ok(out) => {
                         self.set_status("status.run_done", out.clone());
@@ -273,9 +330,12 @@ impl EarthMeshApp {
                         self.push_log("log.run_failed", &err);
                     }
                 }
-                self.running = false;
-                self.run_rx = None;
             }
+            self.running = false;
+            self.run_rx = None;
+            self.prog_rx = None;
+            self.cancel_flag = None;
+            self.progress = None;
         }
     }
 }
@@ -619,6 +679,9 @@ fn configure_style(ctx: &egui::Context) {
 impl eframe::App for EarthMeshApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_run();
+        if self.running {
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        }
         let lang = self.lang;
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -631,11 +694,12 @@ impl eframe::App for EarthMeshApp {
                         self.start_run(ctx);
                     }
                 });
-                ui.add_enabled_ui(false, |ui| {
-                    let _ = ui.button(tr(lang, "btn.cancel"));
-                })
-                .response
-                .on_hover_text(tr(lang, "note.cancel_soon"));
+                if ui
+                    .add_enabled(self.running, egui::Button::new(tr(lang, "btn.cancel")))
+                    .clicked()
+                {
+                    self.request_cancel();
+                }
                 if self.running {
                     ui.add(egui::Spinner::new());
                 }
@@ -714,6 +778,10 @@ impl eframe::App for EarthMeshApp {
                 format!("{} {}", tr(lang, self.status_key), self.status_detail)
             };
             ui.label(status);
+            if let Some((phase, done, total)) = &self.progress {
+                let frac = if *total > 0 { *done as f32 / *total as f32 } else { 0.0 };
+                ui.add(egui::ProgressBar::new(frac).text(format!("{phase} {done}/{total}")));
+            }
             ui.add_space(8.0);
             ui.label(egui::RichText::new(tr(lang, "run.log")).strong());
             egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {

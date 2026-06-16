@@ -29,6 +29,8 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("cases.recent", "Recent", "最近打开"),
     ("run.log", "Log", "日志"),
     ("note.cancel_soon", "Cancel needs the progress seam (next)", "取消需引擎进度接缝（下一步）"),
+    ("status.cancelled", "Run cancelled.", "已取消运行。"),
+    ("log.cancel_req", "Cancel requested", "已请求取消"),
     ("log.loaded", "Loaded", "已载入"),
     ("log.saved", "Saved", "已保存"),
     ("log.run_start", "Run started", "开始运行"),
