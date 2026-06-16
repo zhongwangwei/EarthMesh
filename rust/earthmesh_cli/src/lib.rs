@@ -16184,6 +16184,12 @@ pub struct GridfileMeshPoints {
     pub w_lon: Vec<f64>,
     pub w_lat: Vec<f64>,
     pub m_to_w: Vec<i32>,
+    /// `itab_w%im` flattened (`w_lon.len()` × `w_to_m_width`): the M-points around
+    /// each W cell — its hexagon corners. Empty if the gridfile lacks it.
+    pub w_to_m: Vec<i32>,
+    pub w_to_m_width: usize,
+    /// `n_ngrwm`: how many of each W cell's `w_to_m` entries are valid.
+    pub n_w: Vec<i32>,
 }
 
 /// Read the M-point (cell-centre) and W-point (vertex) lon/lat arrays plus the
@@ -16197,12 +16203,33 @@ pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileM
     let w_lat = required_values_f64(&file, "GLATW")?;
     let m_to_w =
         required_values_i32_matrix(&file, "itab_m%iw", "sjx_points", "dimb", m_lon.len(), 3)?;
+    // Hexagon connectivity (W→M corners). Optional: only hex gridfiles carry it,
+    // and a failure to read it just disables the hex rendering path.
+    let w_to_m_width = file.dimension("dimc").map(|d| d.len()).unwrap_or(0);
+    let (w_to_m, n_w) = if w_to_m_width > 0 {
+        let im = required_values_i32_matrix(
+            &file, "itab_w%im", "lbx_points", "dimc", w_lon.len(), w_to_m_width,
+        )
+        .unwrap_or_default();
+        let n = required_values_i32(&file, "n_ngrwm").unwrap_or_default();
+        if im.len() == w_lon.len() * w_to_m_width && n.len() == w_lon.len() {
+            (im, n)
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let w_to_m_width = if w_to_m.is_empty() { 0 } else { w_to_m_width };
     Ok(GridfileMeshPoints {
         m_lon,
         m_lat,
         w_lon,
         w_lat,
         m_to_w,
+        w_to_m,
+        w_to_m_width,
+        n_w,
     })
 }
 

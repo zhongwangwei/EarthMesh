@@ -297,6 +297,10 @@ impl DomainMask {
 struct MeshOverlay<'m> {
     mesh: &'m earthmesh_cli::GridfileMeshPoints,
     domain: Option<DomainMask>,
+    /// Draw the hexagonal primal cells (W cells) rather than the triangular dual
+    /// (M cells). For an MPAS hex run the cells are hexagons, so this is what the
+    /// user expects to see; a tri run draws triangles.
+    hex: bool,
 }
 
 /// Web-Mercator's usable latitude bound; tiles cover only ±this.
@@ -310,9 +314,9 @@ impl walkers::Plugin for MeshOverlay<'_> {
         projector: &walkers::Projector,
         _map_memory: &walkers::MapMemory,
     ) {
-        let mesh = self.mesh;
-        let domain = self.domain;
+        let MeshOverlay { mesh, domain, hex } = *self;
         let wn = mesh.w_lon.len();
+        let mn = mesh.m_lon.len();
 
         // Clip the mesh to the basemap rectangle, derived straight from the
         // projector so it tracks pan and zoom (Web Mercator only reaches ±85.05°,
@@ -323,23 +327,15 @@ impl walkers::Plugin for MeshOverlay<'_> {
         let x_east = p(180.0, 0.0).x;
         let y_top = p(0.0, MERCATOR_MAX_LAT).y;
         let y_bot = p(0.0, -MERCATOR_MAX_LAT).y;
-        let map_rect = egui::Rect::from_min_max(
-            egui::pos2(x_west, y_top),
-            egui::pos2(x_east, y_bot),
-        )
-        .intersect(response.rect);
+        let map_rect = egui::Rect::from_min_max(egui::pos2(x_west, y_top), egui::pos2(x_east, y_bot))
+            .intersect(response.rect);
         let painter = ui.painter().with_clip_rect(map_rect);
 
         // Semi-transparent so the basemap underneath stays readable.
         let stroke = egui::Stroke::new(0.6, egui::Color32::from_rgba_unmultiplied(255, 120, 0, 150));
         let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
-        // (normalized lon, lat) for a 1-based W index, or None if out of range.
-        let vert = |idx1: i32| -> Option<(f64, f64)> {
-            let i = idx1 as usize;
-            (idx1 >= 1 && i <= wn).then(|| (norm_lon(mesh.w_lon[i - 1]), mesh.w_lat[i - 1]))
-        };
-        // Bring `x` within ±180° of the reference so a triangle reads as one
-        // contiguous shape instead of wrapping the long way around the globe.
+        // Bring `x` within ±180° of the reference so a cell reads as one contiguous
+        // shape instead of wrapping the long way around the globe.
         let unwrap = |x: f64, reference: f64| -> f64 {
             if x - reference > 180.0 {
                 x - 360.0
@@ -349,50 +345,78 @@ impl walkers::Plugin for MeshOverlay<'_> {
                 x
             }
         };
-        let proj =
-            |lon: f64, lat: f64| projector.project(walkers::lon_lat(lon, lat)).to_pos2();
-
-        for (ci, t) in mesh.m_to_w.chunks_exact(3).enumerate() {
-            // Mask out cells whose centre falls outside the regional domain.
-            if let Some(dom) = &domain {
-                if ci >= mesh.m_lon.len() || !dom.contains(mesh.m_lon[ci], mesh.m_lat[ci]) {
-                    continue;
-                }
+        // Draw a closed cell outline from its (normalized lon, lat) corners,
+        // unwrapped around `ref_lon`. Pole-cap cells (wide even unwrapped) are
+        // dropped; seam-straddling cells get a ±360° copy so the join fills.
+        let draw_cell = |corners: &[(f64, f64)], ref_lon: f64| {
+            if corners.len() < 3 {
+                return;
             }
-            let (Some((l0, a0)), Some((l1, a1)), Some((l2, a2))) =
-                (vert(t[0]), vert(t[1]), vert(t[2]))
-            else {
-                continue;
-            };
-            // Unwrap relative to the first vertex so date-line-crossing triangles
-            // become contiguous (small span) rather than spanning the whole globe.
-            let u1 = unwrap(l1, l0);
-            let u2 = unwrap(l2, l0);
-            let umin = l0.min(u1).min(u2);
-            let umax = l0.max(u1).max(u2);
-            // After unwrapping, a still-wide triangle is a pole-cap fan (this mesh
-            // only exceeds ~45° span above 86° latitude, mostly outside the ±85°
-            // Mercator band already). Those project to ugly streaks — drop them.
+            let u: Vec<(f64, f64)> = corners.iter().map(|&(lo, la)| (unwrap(lo, ref_lon), la)).collect();
+            let umin = u.iter().map(|v| v.0).fold(f64::MAX, f64::min);
+            let umax = u.iter().map(|v| v.0).fold(f64::MIN, f64::max);
             if umax - umin > 45.0 {
-                continue;
+                return;
             }
             let draw_at = |offset: f64| {
-                let pa = proj(l0 + offset, a0);
-                let pb = proj(u1 + offset, a1);
-                let pc = proj(u2 + offset, a2);
-                painter.line_segment([pa, pb], stroke);
-                painter.line_segment([pb, pc], stroke);
-                painter.line_segment([pc, pa], stroke);
+                for i in 0..u.len() {
+                    let j = (i + 1) % u.len();
+                    painter.line_segment([p(u[i].0 + offset, u[i].1), p(u[j].0 + offset, u[j].1)], stroke);
+                }
             };
-            // The unwrapped triangle (truncated by the clip rect), plus a wrapped
-            // copy on the opposite edge when it straddles ±180° so the seam fills
-            // continuously instead of leaving a blank strip.
             draw_at(0.0);
             if umax > 180.0 {
                 draw_at(-360.0);
             }
             if umin < -180.0 {
                 draw_at(360.0);
+            }
+        };
+
+        if hex && !mesh.w_to_m.is_empty() {
+            // Hexagonal primal cells: each W cell's corners are the surrounding
+            // M-points (itab_w%im), sorted by bearing around the cell centre.
+            let width = mesh.w_to_m_width;
+            for wi in 0..wn {
+                if let Some(dom) = &domain {
+                    if !dom.contains(mesh.w_lon[wi], mesh.w_lat[wi]) {
+                        continue;
+                    }
+                }
+                let clon = norm_lon(mesh.w_lon[wi]);
+                let clat = mesh.w_lat[wi];
+                let nn = (mesh.n_w.get(wi).copied().unwrap_or(0).max(0) as usize).min(width);
+                let mut corners: Vec<(f64, f64)> = Vec::with_capacity(nn);
+                for k in 0..nn {
+                    let id = mesh.w_to_m[wi * width + k];
+                    let mi = id as usize;
+                    if id >= 1 && mi <= mn {
+                        corners.push((norm_lon(mesh.m_lon[mi - 1]), mesh.m_lat[mi - 1]));
+                    }
+                }
+                corners.sort_by(|a, b| {
+                    let ba = (a.1 - clat).atan2(unwrap(a.0, clon) - clon);
+                    let bb = (b.1 - clat).atan2(unwrap(b.0, clon) - clon);
+                    ba.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                draw_cell(&corners, clon);
+            }
+        } else {
+            // Triangular cells: each M cell → its 3 W vertices.
+            let vert = |idx1: i32| -> Option<(f64, f64)> {
+                let i = idx1 as usize;
+                (idx1 >= 1 && i <= wn).then(|| (norm_lon(mesh.w_lon[i - 1]), mesh.w_lat[i - 1]))
+            };
+            for (ci, t) in mesh.m_to_w.chunks_exact(3).enumerate() {
+                if let Some(dom) = &domain {
+                    if ci >= mn || !dom.contains(mesh.m_lon[ci], mesh.m_lat[ci]) {
+                        continue;
+                    }
+                }
+                let (Some(a), Some(b), Some(c)) = (vert(t[0]), vert(t[1]), vert(t[2])) else {
+                    continue;
+                };
+                draw_cell(&[a, b, c], a.0);
             }
         }
     }
@@ -1108,14 +1132,22 @@ impl EarthMeshApp {
             ui.label(tr(lang, "results.empty"));
             return;
         }
+        let hex = self.mkgrd.mode_grid == "hex";
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(tr(lang, "results.files")).strong());
             if let Some(m) = &self.mesh_view {
+                // Hex cells are the W points (triangles are the vertices); tri is
+                // the other way round.
+                let (cells, verts) = if hex {
+                    (m.w_lon.len(), m.m_lon.len())
+                } else {
+                    (m.m_lon.len(), m.w_lon.len())
+                };
                 ui.weak(format!(
                     "·  {} {}  ·  {} {}",
-                    m.m_lon.len(),
+                    cells,
                     tr(lang, "results.cells"),
-                    m.w_lon.len(),
+                    verts,
                     tr(lang, "results.vertices"),
                 ));
             }
@@ -1170,7 +1202,7 @@ impl EarthMeshApp {
                 // Plain wheel zooms (walkers defaults to ctrl+wheel, treating a
                 // bare wheel as a vertical pan); drag still pans.
                 .zoom_with_ctrl(false)
-                .with_plugin(MeshOverlay { mesh, domain });
+                .with_plugin(MeshOverlay { mesh, domain, hex });
                 ui.add(map);
                 ui.weak("© OpenStreetMap contributors · Protomaps");
             } else {
