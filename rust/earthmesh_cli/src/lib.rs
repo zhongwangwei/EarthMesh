@@ -28085,6 +28085,167 @@ fn n_edges_on_cell_usize_from_mesh(mesh: &UnstructuredMesh) -> io::Result<Vec<us
         .collect()
 }
 
+/// Topologically-consistent MPAS connectivity for a regionally-carved hex mesh.
+///
+/// All ids are Fortran-indexed (index `0` is the reserved placeholder row, real
+/// ids start at `2`). Cells outside the region are represented as `0` — the MPAS
+/// "no neighbour" marker — wherever a carved cell lost a neighbour. The carved
+/// gridfile's `w_to_m` corner rings are already in cyclic order, so each cell
+/// side `(ring[i], ring[i+1])` is one mesh edge; a side shared by two kept cells
+/// is an interior edge, a side touching the removed exterior is a boundary edge
+/// with `cells_on_edge = [cell, 0]`.
+#[derive(Debug, Clone)]
+pub struct RegionalMpasConnectivity {
+    pub edge_count: usize,
+    pub n_edges_on_cell: Vec<usize>,
+    pub vertices_on_cell: Vec<Vec<usize>>,
+    pub edges_on_cell: Vec<Vec<usize>>,
+    pub cells_on_cell: Vec<Vec<usize>>,
+    pub cells_on_vertex: Vec<[usize; 3]>,
+    pub edges_on_vertex: Vec<[usize; 3]>,
+    pub cells_on_edge: Vec<[usize; 2]>,
+    pub vertices_on_edge: Vec<[usize; 2]>,
+}
+
+/// Build [`RegionalMpasConnectivity`] from a carved hex [`UnstructuredMesh`].
+///
+/// This is the regional counterpart of the global `GetEdge`/`connect_on_cell`
+/// path: it does not require every edge to border two kept cells, so it does not
+/// reject boundary cells. The global builder must keep using its validated path;
+/// this one is only correct for (and only used by) the regional/limited-area case.
+pub fn build_regional_mpas_connectivity(
+    mesh: &UnstructuredMesh,
+) -> io::Result<RegionalMpasConnectivity> {
+    let n_cells = mesh.w_points.len();
+    let n_verts = mesh.m_points.len();
+    let nec = n_edges_on_cell_usize_from_mesh(mesh)?;
+
+    // A cell/vertex id is "real" when it is not a placeholder (id >= 2). A
+    // reference to id <= 1 means the neighbour was carved away (exterior).
+    let is_real = |id: usize| id >= 2;
+
+    // Pass 1: discover edges as undirected vertex pairs, recording the kept
+    // cells on each side. Sides are taken from the (already cyclic) w_to_m ring.
+    let mut edge_of_pair: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    let mut vertices_on_edge: Vec<[usize; 2]> = vec![[0, 0], [0, 0]]; // idx 0,1 placeholders
+    let mut cells_on_edge: Vec<[usize; 2]> = vec![[0, 0], [0, 0]];
+    // edges_on_cell[c] parallels the ring side order of cell c.
+    let mut edges_on_cell: Vec<Vec<usize>> = vec![Vec::new(); n_cells];
+
+    for c in 2..n_cells {
+        let ne = nec[c];
+        if ne == 0 {
+            continue;
+        }
+        if mesh.w_to_m[c].len() < ne {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("w_to_m row {c} shorter than n_w_to_m {ne}"),
+            ));
+        }
+        let ring: Vec<usize> = mesh.w_to_m[c][..ne].iter().map(|&v| v as usize).collect();
+        let mut cell_edges = Vec::with_capacity(ne);
+        for i in 0..ne {
+            let a = ring[i];
+            let b = ring[(i + 1) % ne];
+            if !is_real(a) || !is_real(b) {
+                // A side touching a placeholder vertex cannot form an edge; the
+                // carved rings are complete, so this should not occur.
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("cell {c} side ({a},{b}) references a placeholder vertex"),
+                ));
+            }
+            let key = (a.min(b), a.max(b));
+            let edge_id = match edge_of_pair.get(&key) {
+                Some(&eid) => {
+                    // Second (and final) cell to claim this edge → interior edge.
+                    if cells_on_edge[eid][1] != 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("edge {eid} (vertices {key:?}) shared by more than two cells"),
+                        ));
+                    }
+                    cells_on_edge[eid][1] = c;
+                    eid
+                }
+                None => {
+                    let eid = vertices_on_edge.len();
+                    vertices_on_edge.push([key.0, key.1]);
+                    cells_on_edge.push([c, 0]);
+                    edge_of_pair.insert(key, eid);
+                    eid
+                }
+            };
+            cell_edges.push(edge_id);
+        }
+        edges_on_cell[c] = cell_edges;
+    }
+    let edge_count = vertices_on_edge.len().saturating_sub(2);
+
+    // Pass 2: cellsOnCell — neighbour across each ring side (0 if boundary).
+    let mut cells_on_cell: Vec<Vec<usize>> = vec![Vec::new(); n_cells];
+    for c in 2..n_cells {
+        let ne = nec[c];
+        if ne == 0 {
+            continue;
+        }
+        let mut nbrs = Vec::with_capacity(ne);
+        for &eid in &edges_on_cell[c] {
+            let [c0, c1] = cells_on_edge[eid];
+            nbrs.push(if c0 == c { c1 } else { c0 });
+        }
+        cells_on_cell[c] = nbrs;
+    }
+
+    // verticesOnCell = the (cyclic) ring itself.
+    let mut vertices_on_cell: Vec<Vec<usize>> = vec![Vec::new(); n_cells];
+    for c in 2..n_cells {
+        let ne = nec[c];
+        vertices_on_cell[c] = mesh.w_to_m[c][..ne].iter().map(|&v| v as usize).collect();
+    }
+
+    // cellsOnVertex = m_to_w with carved (placeholder) cells mapped to 0.
+    let mut cells_on_vertex: Vec<[usize; 3]> = vec![[0, 0, 0]; n_verts];
+    for v in 2..n_verts {
+        let row = mesh.m_to_w[v];
+        for slot in 0..3 {
+            let id = row[slot] as usize;
+            cells_on_vertex[v][slot] = if is_real(id) { id } else { 0 };
+        }
+    }
+
+    // edgesOnVertex = the (≤3) edges incident to each vertex.
+    let mut edges_on_vertex: Vec<[usize; 3]> = vec![[0, 0, 0]; n_verts];
+    for eid in 2..vertices_on_edge.len() {
+        let [v0, v1] = vertices_on_edge[eid];
+        for v in [v0, v1] {
+            let slots = &mut edges_on_vertex[v];
+            if let Some(free) = slots.iter_mut().find(|s| **s == 0) {
+                *free = eid;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("vertex {v} incident to more than three edges"),
+                ));
+            }
+        }
+    }
+
+    Ok(RegionalMpasConnectivity {
+        edge_count,
+        n_edges_on_cell: nec,
+        vertices_on_cell,
+        edges_on_cell,
+        cells_on_cell,
+        cells_on_vertex,
+        edges_on_vertex,
+        cells_on_edge,
+        vertices_on_edge,
+    })
+}
+
 fn mpas_lat_lon_radians(points: &[LonLatDegrees]) -> (Vec<f64>, Vec<f64>) {
     let mut lat = Vec::with_capacity(points.len());
     let mut lon = Vec::with_capacity(points.len());
