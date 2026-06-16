@@ -471,6 +471,7 @@ fn produce_outputs(
         }
     }
     let global_gf = global_gf.ok_or_else(|| "gridfile not found in output".to_string())?;
+    let global_for_regional = global_gf.clone();
     let mut notes: Vec<String> = Vec::new();
 
     // Carve the gridfile to the region so the output drops out-of-region cells.
@@ -493,15 +494,27 @@ fn produce_outputs(
         if fmt.starts_with("MPAS") {
             let mesh_out = std_dir.join(format!("MPASOUT_{stem}.nc4"));
             let graph_out = std_dir.join(format!("MPASOUT_{stem}.graph.info"));
-            match earthmesh_cli::write_standard_mpas_from_gridfile(&source_gf, &mesh_out, &graph_out, nxp)
-            {
-                Ok(_) => notes.push("standard MPAS".into()),
-                // A carved patch has open boundary cells the full MPAS builder
-                // rejects; the regional gridfile is still the usable output.
-                Err(e) if region.is_some() => {
-                    notes.push(format!("regional MPAS skipped — open boundary: {e}"))
+            if let (Some(region), "hex") = (region, grid) {
+                // Limited-area MPAS: subset the validated global mesh to the
+                // region (geometry preserved, connectivity re-indexed, boundary
+                // neighbours -> 0). No open-boundary rejection.
+                match earthmesh_cli::write_regional_mpas_from_gridfile(
+                    &global_for_regional,
+                    &mesh_out,
+                    &graph_out,
+                    &region,
+                    nxp,
+                ) {
+                    Ok((_, kept)) => notes.push(format!("regional MPAS ({kept} cells)")),
+                    Err(e) => return Err(format!("regional MPAS write failed: {e}")),
                 }
-                Err(e) => return Err(format!("MPAS write failed: {e}")),
+            } else {
+                match earthmesh_cli::write_standard_mpas_from_gridfile(
+                    &source_gf, &mesh_out, &graph_out, nxp,
+                ) {
+                    Ok(_) => notes.push("standard MPAS".into()),
+                    Err(e) => return Err(format!("MPAS write failed: {e}")),
+                }
             }
         } else if fmt == "FVCOM" {
             let out_2dm = std_dir.join(format!("FVCOM_{stem}.2dm"));
