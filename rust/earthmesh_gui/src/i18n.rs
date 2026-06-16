@@ -80,6 +80,7 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("dom.poly_note", "Lambert: map input coming soon — meanwhile set a boundary file prefix.", "Lambert：地图输入稍后支持——暂用边界文件前缀。"),
     ("dom.poly_points", "Polygon (lon, lat)", "多边形顶点 (经度, 纬度)"),
     ("dom.add_point", "➕ Add point", "➕ 加点"),
+    ("btn.browse", "📂 Browse", "📂 浏览"),
     ("dom.generated", "Generated domain file:", "已生成边界文件："),
     ("f.threads", "Threads", "线程数"),
     ("sec.import", "Import existing mesh", "导入已有网格"),

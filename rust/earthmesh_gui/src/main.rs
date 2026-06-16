@@ -971,6 +971,26 @@ impl EarthMeshApp {
                 }
             }
 
+            // Ocean / Land-Ocean: the sea-land source that the regional ocean
+            // carve (clean boundary peeling) needs, picked from a NetCDF file.
+            if matches!(self.mkgrd.mesh_type.as_str(), "oceanmesh" | "LOCmesh") {
+                ui.label(tr(lang, "f.landtype_file"));
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.mkgrd.landtype_file).desired_width(210.0),
+                    );
+                    if ui.button(tr(lang, "btn.browse")).clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("NetCDF", &["nc", "nc4"])
+                            .pick_file()
+                        {
+                            self.mkgrd.landtype_file = p.display().to_string();
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+
             check_row(ui, tr(lang, "f.refine_master"), &mut self.mkgrd.refine);
             int_row(ui, tr(lang, "f.threads"), &mut self.mkgrd.openmp, 1..=1024);
         });
