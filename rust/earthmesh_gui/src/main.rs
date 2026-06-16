@@ -455,6 +455,42 @@ impl EarthMeshApp {
     }
 }
 
+/// Register a CJK-capable font as a fallback so 中文 renders instead of tofu
+/// boxes. egui's bundled fonts are Latin-only. We load the first available
+/// system font from a per-OS candidate list and append it after the defaults,
+/// so Latin keeps the default look and only missing (CJK) glyphs fall back.
+/// (Embedding a font would make this self-contained cross-platform; deferred.)
+fn install_fonts(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        // macOS
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        // Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        // Windows
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+    ];
+    let mut fonts = egui::FontDefinitions::default();
+    for path in CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert("cjk".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                fam.push("cjk".to_owned());
+            }
+            if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                fam.push("cjk".to_owned());
+            }
+            ctx.set_fonts(fonts);
+            return;
+        }
+    }
+}
+
 fn configure_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = egui::vec2(10.0, 8.0);
@@ -552,6 +588,7 @@ fn main() -> eframe::Result {
         "EarthMesh",
         native_options,
         Box::new(|cc| {
+            install_fonts(&cc.egui_ctx);
             configure_style(&cc.egui_ctx);
             let mut app = EarthMeshApp::default();
             app.load(workspace_root().join("examples/default/atmosphere_hex_global.nml"));
