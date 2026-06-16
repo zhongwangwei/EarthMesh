@@ -6,4 +6,4 @@ edition = "2021"
 [dependencies]
 eframe = "0.31"
 earthmesh_core = { path = "../earthmesh_core" }
-earthmesh_cli = { path = "../earthmesh_cli" }
+earthmesh_cli = { path = "../earthmesh_cli", features = ["static-netcdf"] }
