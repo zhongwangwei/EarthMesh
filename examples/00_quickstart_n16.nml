@@ -1,0 +1,42 @@
+&mkgrd
+  NL%EXPNME = 'quickstart_n16'
+  NL%base_dir = '/tmp/earthmesh_cases/'
+  NL%mesh_type = 'atmosmesh'
+  NL%mode_grid = 'hex'
+  NL%mode_file = 'none'
+  NL%mode_file_description = 'none'
+  NL%NXP = 16
+  NL%refine = .FALSE.
+  NL%gridnum_perdegree = 120
+  NL%niter = 200
+  NL%beta = 1.0
+  NL%relax = 0.035
+  NL%openmp = 4
+  NL%landtype_file = 'none'
+  NL%mask_domain_global = .TRUE.
+  NL%mask_domain_type = 'circle'
+  NL%mask_domain_fprefix = 'none'
+  NL%mask_restart = .FALSE.
+  NL%mask_sea_ratio = 0.5
+  NL%mask_patch_on = .FALSE.
+  NL%mask_patch_type = 'close'
+  NL%mask_patch_fprefix = 'none'
+  NL%output_format = 'MPAS'
+/
+
+&mkrefine
+  RL%Istransition = .TRUE.
+  RL%HALO = 4, 4, 3
+  RL%max_transition_row = 4, 4, 3
+  RL%SpringGlobal_type = 1
+  RL%SpringRegional_type = 0
+  RL%num_rc = 1
+  RL%set_dis_type = 'linear'
+  RL%vertex_pretect_layers = 15
+  RL%niter_refine = 500
+  RL%refine_spc = .TRUE.
+  RL%refine_cal = .FALSE.
+  RL%max_iter_spc = 2
+  RL%mask_refine_spc_type = 'circle'
+  RL%mask_refine_spc_fprefix = 'none'
+/
