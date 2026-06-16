@@ -1,10 +1,10 @@
 //! EarthMesh desktop GUI.
 //!
-//! Increment 4: closes the gaps against design §4.2.2 that don't need the engine
-//! progress seam — native file open/save dialogs (rfd), a global option search,
-//! a Cases/Templates left panel (bundled examples + recently opened files), an
-//! "open output dir" button, and a scrolling run log. Real progress bar + cancel
-//! + per-iteration log still wait on the engine seam (Plan 03).
+//! Increment 5: a user-centred form. Options are reorganised by task into three
+//! tabs — Basics / Refinement / Advanced — with friendly labels, only the mesh
+//! shapes the engine actually supports (hex, tri), a prominent Global/Regional
+//! choice, mesh-type-filtered refinement criteria, and the import/smoothing
+//! plumbing tucked under Advanced. The verbatim namelist mirror is gone.
 
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use eframe::egui;
@@ -17,8 +17,15 @@ use std::thread;
 mod i18n;
 use i18n::{tr, Lang};
 
-const MESH_TYPES: &[&str] = &["landmesh", "oceanmesh", "atmosmesh", "LOCmesh"];
-const MODE_GRIDS: &[&str] = &["lonlat", "lambert", "cubical", "tri", "hex", "dbx"];
+/// Engine value paired with its friendly i18n key.
+const MESH_TYPES: &[(&str, &str)] = &[
+    ("landmesh", "mesh.land"),
+    ("oceanmesh", "mesh.ocean"),
+    ("atmosmesh", "mesh.atmos"),
+    ("earthmesh", "mesh.earth"),
+];
+// Only hex and tri are actually implemented by the engine for mesh generation.
+const GRID_MODES: &[(&str, &str)] = &[("hex", "grid.hex"), ("tri", "grid.tri")];
 const REGION_TYPES: &[&str] = &["bbox", "lambert", "close", "circle"];
 const SET_DIS_TYPES: &[&str] = &["linear", "nonlinear1", "nonlinear2", "nonlinear3"];
 const MODE_FILE_DESCS: &[&str] = &["none", "EarthMesh", "MPAS", "IAP-Ocean", "FVCOM"];
@@ -38,56 +45,47 @@ fn output_formats_for(mesh_type: &str) -> &'static [&'static str] {
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Tab {
     Basics,
-    Spring,
-    Mask,
-    RefineGeneral,
-    RefineCriteria,
+    Refinement,
+    Advanced,
 }
 
 fn tab_nav_key(tab: Tab) -> &'static str {
     match tab {
         Tab::Basics => "nav.basics",
-        Tab::Spring => "nav.spring",
-        Tab::Mask => "nav.mask",
-        Tab::RefineGeneral => "nav.refine_general",
-        Tab::RefineCriteria => "nav.refine_criteria",
+        Tab::Refinement => "nav.refinement",
+        Tab::Advanced => "nav.advanced",
     }
 }
 
-/// Every option label key paired with the tab that hosts it — powers the search.
+/// Option label key paired with the tab that hosts it — powers the search.
 const FIELD_INDEX: &[(&str, Tab)] = &[
-    ("f.expnme", Tab::Basics), ("f.base_dir", Tab::Basics), ("f.mesh_type", Tab::Basics),
-    ("f.output_format", Tab::Basics), ("f.mode_grid", Tab::Basics), ("f.nxp", Tab::Basics),
-    ("f.gridnum", Tab::Basics), ("f.openmp", Tab::Basics), ("f.landtype_file", Tab::Basics),
-    ("f.mode_file", Tab::Basics), ("f.mode_file_desc", Tab::Basics),
-    ("f.niter", Tab::Spring), ("f.beta", Tab::Spring), ("f.relax", Tab::Spring),
-    ("f.niter_refine", Tab::Spring), ("f.spring_global", Tab::Spring), ("f.num_rc", Tab::Spring),
-    ("f.set_dis", Tab::Spring), ("f.spring_regional", Tab::Spring), ("f.vertex_layers", Tab::Spring),
-    ("f.domain_global", Tab::Mask), ("f.domain_shape", Tab::Mask), ("f.domain_prefix", Tab::Mask),
-    ("f.mask_restart", Tab::Mask), ("f.sea_ratio", Tab::Mask), ("f.patch_on", Tab::Mask),
-    ("f.patch_shape", Tab::Mask), ("f.patch_prefix", Tab::Mask), ("f.isolated_ocean", Tab::Mask),
-    ("f.refine_master", Tab::RefineGeneral), ("f.weak_concav", Tab::RefineGeneral),
-    ("f.is_transition", Tab::RefineGeneral), ("f.iter_d", Tab::RefineGeneral),
-    ("f.halo", Tab::RefineGeneral), ("f.max_transition", Tab::RefineGeneral),
-    ("f.refine_spc", Tab::RefineCriteria), ("f.max_iter_spc", Tab::RefineCriteria),
-    ("f.spc_shape", Tab::RefineCriteria), ("f.spc_prefix", Tab::RefineCriteria),
-    ("f.refine_cal", Tab::RefineCriteria), ("f.max_iter_cal", Tab::RefineCriteria),
-    ("f.cal_shape", Tab::RefineCriteria), ("f.cal_prefix", Tab::RefineCriteria),
-    ("f.threshold_dir", Tab::RefineCriteria),
-    ("c.num_landtypes", Tab::RefineCriteria), ("c.area_mainland", Tab::RefineCriteria),
-    ("c.lai_m", Tab::RefineCriteria), ("c.lai_s", Tab::RefineCriteria),
-    ("c.slope_m", Tab::RefineCriteria), ("c.slope_s", Tab::RefineCriteria),
-    ("c.ks_m", Tab::RefineCriteria), ("c.ks_s", Tab::RefineCriteria),
-    ("c.ksol_m", Tab::RefineCriteria), ("c.ksol_s", Tab::RefineCriteria),
-    ("c.tkdry_m", Tab::RefineCriteria), ("c.tkdry_s", Tab::RefineCriteria),
-    ("c.tksatf_m", Tab::RefineCriteria), ("c.tksatf_s", Tab::RefineCriteria),
-    ("c.tksatu_m", Tab::RefineCriteria), ("c.tksatu_s", Tab::RefineCriteria),
-    ("c.sea_ratio", Tab::RefineCriteria), ("c.sst_m", Tab::RefineCriteria),
-    ("c.sst_s", Tab::RefineCriteria), ("c.ssh_m", Tab::RefineCriteria),
-    ("c.ssh_s", Tab::RefineCriteria), ("c.eke_m", Tab::RefineCriteria),
-    ("c.eke_s", Tab::RefineCriteria), ("c.seaslope_m", Tab::RefineCriteria),
-    ("c.seaslope_s", Tab::RefineCriteria), ("c.typhoon_m", Tab::RefineCriteria),
-    ("c.typhoon_s", Tab::RefineCriteria),
+    ("f.mesh_type", Tab::Basics), ("f.mode_grid", Tab::Basics), ("f.nxp", Tab::Basics),
+    ("f.output_format", Tab::Basics), ("f.domain_mode", Tab::Basics), ("f.domain_shape", Tab::Basics),
+    ("f.domain_prefix", Tab::Basics), ("f.refine_master", Tab::Basics), ("f.threads", Tab::Basics),
+    ("f.expnme", Tab::Basics), ("f.base_dir", Tab::Basics),
+    ("f.refine_spc", Tab::Refinement), ("f.max_iter_spc", Tab::Refinement),
+    ("f.spc_shape", Tab::Refinement), ("f.spc_prefix", Tab::Refinement),
+    ("f.refine_cal", Tab::Refinement), ("f.max_iter_cal", Tab::Refinement),
+    ("f.cal_shape", Tab::Refinement), ("f.cal_prefix", Tab::Refinement),
+    ("f.threshold_dir", Tab::Refinement), ("f.landtype_file", Tab::Refinement),
+    ("f.weak_concav", Tab::Refinement), ("f.is_transition", Tab::Refinement),
+    ("f.iter_d", Tab::Refinement), ("f.halo", Tab::Refinement), ("f.max_transition", Tab::Refinement),
+    ("c.num_landtypes", Tab::Refinement), ("c.area_mainland", Tab::Refinement),
+    ("c.lai_m", Tab::Refinement), ("c.lai_s", Tab::Refinement), ("c.slope_m", Tab::Refinement),
+    ("c.slope_s", Tab::Refinement), ("c.ks_m", Tab::Refinement), ("c.ks_s", Tab::Refinement),
+    ("c.ksol_m", Tab::Refinement), ("c.ksol_s", Tab::Refinement), ("c.tkdry_m", Tab::Refinement),
+    ("c.tkdry_s", Tab::Refinement), ("c.tksatf_m", Tab::Refinement), ("c.tksatf_s", Tab::Refinement),
+    ("c.tksatu_m", Tab::Refinement), ("c.tksatu_s", Tab::Refinement), ("c.sea_ratio", Tab::Refinement),
+    ("c.sst_m", Tab::Refinement), ("c.sst_s", Tab::Refinement), ("c.ssh_m", Tab::Refinement),
+    ("c.ssh_s", Tab::Refinement), ("c.eke_m", Tab::Refinement), ("c.eke_s", Tab::Refinement),
+    ("c.seaslope_m", Tab::Refinement), ("c.seaslope_s", Tab::Refinement),
+    ("c.typhoon_m", Tab::Refinement), ("c.typhoon_s", Tab::Refinement),
+    ("f.mode_file", Tab::Advanced), ("f.mode_file_desc", Tab::Advanced), ("f.gridnum", Tab::Advanced),
+    ("f.niter", Tab::Advanced), ("f.beta", Tab::Advanced), ("f.relax", Tab::Advanced),
+    ("f.niter_refine", Tab::Advanced), ("f.spring_global", Tab::Advanced), ("f.num_rc", Tab::Advanced),
+    ("f.set_dis", Tab::Advanced), ("f.spring_regional", Tab::Advanced), ("f.vertex_layers", Tab::Advanced),
+    ("f.patch_on", Tab::Advanced), ("f.patch_shape", Tab::Advanced), ("f.patch_prefix", Tab::Advanced),
+    ("f.mask_restart", Tab::Advanced), ("f.sea_ratio", Tab::Advanced), ("f.isolated_ocean", Tab::Advanced),
 ];
 
 fn collect_nml(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -110,11 +108,7 @@ fn bundled_templates() -> Vec<(String, PathBuf)> {
     nmls.sort();
     nmls.into_iter()
         .map(|p| {
-            let label = p
-                .strip_prefix(&examples)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .to_string();
+            let label = p.strip_prefix(&examples).unwrap_or(&p).to_string_lossy().to_string();
             (label, p)
         })
         .collect()
@@ -290,8 +284,6 @@ impl EarthMeshApp {
     }
 
     fn poll_run(&mut self) {
-        // Drain live progress updates into an owned buffer first (avoids holding a
-        // borrow of self.prog_rx while we mutate self below).
         let mut updates = Vec::new();
         if let Some(prx) = &self.prog_rx {
             while let Ok(update) = prx.try_recv() {
@@ -309,13 +301,9 @@ impl EarthMeshApp {
             self.progress = Some((phase, done, total));
         }
 
-        // Completion / cancellation.
         let done_msg = self.run_rx.as_ref().and_then(|rx| rx.try_recv().ok());
         if let Some(RunMsg::Done(result)) = done_msg {
-            let cancelled = self
-                .cancel_flag
-                .as_ref()
-                .map_or(false, |f| f.load(Ordering::Relaxed));
+            let cancelled = self.cancel_flag.as_ref().map_or(false, |f| f.load(Ordering::Relaxed));
             if cancelled {
                 self.set_status("status.cancelled", String::new());
                 self.push_log("status.cancelled", "");
@@ -373,6 +361,29 @@ fn combo_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str
         });
     ui.end_row();
 }
+/// Combo whose options display a translated label but store an engine value.
+fn mapped_combo_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    options: &'static [(&'static str, &'static str)],
+    lang: Lang,
+) {
+    ui.label(label);
+    let current = options
+        .iter()
+        .find(|(v, _)| v == value)
+        .map(|(_, k)| tr(lang, k))
+        .unwrap_or(value.as_str());
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (v, k) in options {
+                ui.selectable_value(value, (*v).to_string(), tr(lang, k));
+            }
+        });
+    ui.end_row();
+}
 fn int_combo_row(ui: &mut egui::Ui, label: &str, value: &mut i32, options: &[(i32, &str)]) {
     ui.label(label);
     let current = options.iter().find(|(v, _)| *v == *value).map(|(_, t)| *t).unwrap_or("?");
@@ -410,120 +421,53 @@ impl EarthMeshApp {
         ui.heading(tr(lang, "head.basics"));
         ui.separator();
         egui::Grid::new("basics").num_columns(2).show(ui, |ui| {
-            text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
-            text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
-            combo_row(ui, tr(lang, "f.mesh_type"), &mut self.mkgrd.mesh_type, MESH_TYPES);
+            mapped_combo_row(ui, tr(lang, "f.mesh_type"), &mut self.mkgrd.mesh_type, MESH_TYPES, lang);
+            // keep output_format valid for the chosen mesh type
             let allowed = output_formats_for(&self.mkgrd.mesh_type);
             if !allowed.contains(&self.mkgrd.output_format.as_str()) {
                 self.mkgrd.output_format = allowed[0].to_string();
             }
-            combo_row(ui, tr(lang, "f.output_format"), &mut self.mkgrd.output_format, allowed);
-            combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, MODE_GRIDS);
+            ui.label("");
+            ui.weak(tr(lang, "mesh.custom_note"));
+            ui.end_row();
+            mapped_combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, GRID_MODES, lang);
             int_row(ui, tr(lang, "f.nxp"), &mut self.mkgrd.nxp, 1..=100_000);
-            int_combo_row(ui, tr(lang, "f.gridnum"), &mut self.mkgrd.gridnum_perdegree, &[(120, "120"), (240, "240")]);
-            int_row(ui, tr(lang, "f.openmp"), &mut self.mkgrd.openmp, 1..=1024);
-            text_row(ui, tr(lang, "f.landtype_file"), &mut self.mkgrd.landtype_file);
-            text_row(ui, tr(lang, "f.mode_file"), &mut self.mkgrd.mode_file);
-            combo_row(ui, tr(lang, "f.mode_file_desc"), &mut self.mkgrd.mode_file_description, MODE_FILE_DESCS);
-        });
-    }
+            combo_row(ui, tr(lang, "f.output_format"), &mut self.mkgrd.output_format, allowed);
 
-    fn tab_spring(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        ui.heading(tr(lang, "head.spring"));
-        ui.separator();
-        egui::Grid::new("spring").num_columns(2).show(ui, |ui| {
-            int_row(ui, tr(lang, "f.niter"), &mut self.mkgrd.niter, 0..=1_000_000);
-            f32_row(ui, tr(lang, "f.beta"), &mut self.mkgrd.beta);
-            f32_row(ui, tr(lang, "f.relax"), &mut self.mkgrd.relax);
-            int_row(ui, tr(lang, "f.niter_refine"), &mut self.refine.niter_refine, 0..=1_000_000);
-            int_combo_row(ui, tr(lang, "f.spring_global"), &mut self.refine.spring_global_type, &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.spring_olam"))]);
-            int_row(ui, tr(lang, "f.num_rc"), &mut self.refine.num_rc, 0..=1000);
-            combo_row(ui, tr(lang, "f.set_dis"), &mut self.refine.set_dis_type, SET_DIS_TYPES);
-            int_combo_row(ui, tr(lang, "f.spring_regional"), &mut self.refine.spring_regional_type, &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.reg_each")), (2, tr(lang, "opt.reg_final"))]);
-            int_row(ui, tr(lang, "f.vertex_layers"), &mut self.refine.vertex_pretect_layers, 0..=1000);
-        });
-    }
-
-    fn tab_mask(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        ui.heading(tr(lang, "head.mask"));
-        ui.separator();
-        egui::Grid::new("mask").num_columns(2).show(ui, |ui| {
-            check_row(ui, tr(lang, "f.domain_global"), &mut self.mkgrd.mask_domain_global);
-            let regional = !self.mkgrd.mask_domain_global;
-            ui.label(tr(lang, "f.domain_shape"));
-            ui.add_enabled_ui(regional, |ui| {
-                egui::ComboBox::from_id_salt("domain_type")
-                    .selected_text(self.mkgrd.mask_domain_type.clone())
-                    .show_ui(ui, |ui| {
-                        for opt in REGION_TYPES {
-                            ui.selectable_value(&mut self.mkgrd.mask_domain_type, (*opt).to_string(), *opt);
-                        }
-                    });
+            // Domain: global vs regional
+            ui.label(tr(lang, "f.domain_mode"));
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.mkgrd.mask_domain_global, true, tr(lang, "opt.global"));
+                ui.selectable_value(&mut self.mkgrd.mask_domain_global, false, tr(lang, "opt.regional"));
             });
             ui.end_row();
-            ui.label(tr(lang, "f.domain_prefix"));
-            ui.add_enabled(regional, egui::TextEdit::singleline(&mut self.mkgrd.mask_domain_fprefix).desired_width(280.0));
-            ui.end_row();
-            check_row(ui, tr(lang, "f.mask_restart"), &mut self.mkgrd.mask_restart);
-            f64_row(ui, tr(lang, "f.sea_ratio"), &mut self.mkgrd.mask_sea_ratio);
-            check_row(ui, tr(lang, "f.patch_on"), &mut self.mkgrd.mask_patch_on);
-            let patch = self.mkgrd.mask_patch_on;
-            ui.label(tr(lang, "f.patch_shape"));
-            ui.add_enabled_ui(patch, |ui| {
-                egui::ComboBox::from_id_salt("patch_type")
-                    .selected_text(self.mkgrd.mask_patch_type.clone())
-                    .show_ui(ui, |ui| {
-                        for opt in REGION_TYPES {
-                            ui.selectable_value(&mut self.mkgrd.mask_patch_type, (*opt).to_string(), *opt);
-                        }
-                    });
-            });
-            ui.end_row();
-            ui.label(tr(lang, "f.patch_prefix"));
-            ui.add_enabled(patch, egui::TextEdit::singleline(&mut self.mkgrd.mask_patch_fprefix).desired_width(280.0));
-            ui.end_row();
-            check_row(ui, tr(lang, "f.isolated_ocean"), &mut self.mkgrd.isolated_ocean);
+            if !self.mkgrd.mask_domain_global {
+                combo_row(ui, tr(lang, "f.domain_shape"), &mut self.mkgrd.mask_domain_type, REGION_TYPES);
+                text_row(ui, tr(lang, "f.domain_prefix"), &mut self.mkgrd.mask_domain_fprefix);
+            }
+
+            check_row(ui, tr(lang, "f.refine_master"), &mut self.mkgrd.refine);
+            int_row(ui, tr(lang, "f.threads"), &mut self.mkgrd.openmp, 1..=1024);
+            text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
+            text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
         });
     }
 
-    fn tab_refine_general(&mut self, ui: &mut egui::Ui) {
+    fn tab_refinement(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
-        ui.heading(tr(lang, "head.refine_general"));
+        ui.heading(tr(lang, "head.refinement"));
         ui.separator();
-        ui.checkbox(&mut self.mkgrd.refine, tr(lang, "f.refine_master"));
-        ui.add_space(4.0);
+        if !self.mkgrd.refine {
+            ui.weak(tr(lang, "note.refine_off"));
+        }
+        let mt = self.mkgrd.mesh_type.clone();
+        let show_land = mt == "landmesh" || mt == "earthmesh" || mt == "LOCmesh";
+        let show_ocean = mt == "oceanmesh" || mt == "earthmesh" || mt == "LOCmesh";
+        let show_atmos = mt == "atmosmesh" || mt == "earthmesh" || mt == "LOCmesh";
+        let atmos_only = mt == "atmosmesh";
+
         ui.add_enabled_ui(self.mkgrd.refine, |ui| {
-            egui::Grid::new("refine_general").num_columns(2).show(ui, |ui| {
-                check_row(ui, tr(lang, "f.weak_concav"), &mut self.refine.weak_concav_eliminate);
-                check_row(ui, tr(lang, "f.is_transition"), &mut self.refine.is_transition);
-                check_row(ui, tr(lang, "f.iter_d"), &mut self.refine.iter_d);
-                ui.label(tr(lang, "f.halo"));
-                ui.horizontal(|ui| {
-                    for i in 1..=9 {
-                        ui.add(egui::DragValue::new(&mut self.refine.halo[i]).speed(1.0));
-                    }
-                });
-                ui.end_row();
-                ui.label(tr(lang, "f.max_transition"));
-                ui.horizontal(|ui| {
-                    for i in 1..=9 {
-                        ui.add(egui::DragValue::new(&mut self.refine.max_transition_row[i]).speed(1.0));
-                    }
-                });
-                ui.end_row();
-            });
-        });
-    }
-
-    fn tab_refine_criteria(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        ui.heading(tr(lang, "head.refine_criteria"));
-        ui.separator();
-        let atmos = self.mkgrd.mesh_type == "atmosmesh";
-        ui.add_enabled_ui(self.mkgrd.refine, |ui| {
-            egui::Grid::new("refine_spc").num_columns(2).show(ui, |ui| {
+            egui::Grid::new("ref_ctrl").num_columns(2).show(ui, |ui| {
                 check_row(ui, tr(lang, "f.refine_spc"), &mut self.refine.refine_spc);
                 let spc = self.refine.refine_spc;
                 ui.label(tr(lang, "f.max_iter_spc"));
@@ -544,57 +488,135 @@ impl EarthMeshApp {
                 ui.add_enabled(spc, egui::TextEdit::singleline(&mut self.refine.mask_refine_spc_fprefix).desired_width(280.0));
                 ui.end_row();
             });
+
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.add_enabled(!atmos, egui::Checkbox::new(&mut self.refine.refine_cal, tr(lang, "f.refine_cal")));
-                if atmos {
+                ui.add_enabled(!atmos_only, egui::Checkbox::new(&mut self.refine.refine_cal, tr(lang, "f.refine_cal")));
+                if atmos_only {
                     ui.weak(tr(lang, "note.cal_atmos"));
                 }
             });
-            let cal = self.refine.refine_cal && !atmos;
+            let cal = self.refine.refine_cal && !atmos_only;
             ui.add_enabled_ui(cal, |ui| {
-                egui::Grid::new("refine_cal").num_columns(2).show(ui, |ui| {
+                egui::Grid::new("ref_cal").num_columns(2).show(ui, |ui| {
                     int_row(ui, tr(lang, "f.max_iter_cal"), &mut self.refine.max_iter_cal, 0..=100);
                     combo_row(ui, tr(lang, "f.cal_shape"), &mut self.refine.mask_refine_cal_type, REGION_TYPES);
                     text_row(ui, tr(lang, "f.cal_prefix"), &mut self.refine.mask_refine_cal_fprefix);
                     text_row(ui, tr(lang, "f.threshold_dir"), &mut self.refine.threshold_dir);
+                    text_row(ui, tr(lang, "f.landtype_file"), &mut self.mkgrd.landtype_file);
                 });
             });
+
             ui.add_space(6.0);
-            egui::CollapsingHeader::new(tr(lang, "g.lnd1")).show(ui, |ui| {
-                egui::Grid::new("lnd1").num_columns(2).show(ui, |ui| {
-                    ui.checkbox(&mut self.refine.refine_num_landtypes, tr(lang, "c.num_landtypes"));
-                    ui.add_enabled(self.refine.refine_num_landtypes, egui::DragValue::new(&mut self.refine.th_num_landtypes).range(0..=1000));
+            if show_land {
+                egui::CollapsingHeader::new(tr(lang, "sec.land_crit")).default_open(true).show(ui, |ui| {
+                    egui::Grid::new("lnd1").num_columns(2).show(ui, |ui| {
+                        ui.checkbox(&mut self.refine.refine_num_landtypes, tr(lang, "c.num_landtypes"));
+                        ui.add_enabled(self.refine.refine_num_landtypes, egui::DragValue::new(&mut self.refine.th_num_landtypes).range(0..=1000));
+                        ui.end_row();
+                        crit_row(ui, tr(lang, "c.area_mainland"), &mut self.refine.refine_area_mainland, &mut self.refine.th_area_mainland);
+                        crit_row(ui, tr(lang, "c.lai_m"), &mut self.refine.refine_onelayer_lnd[0], &mut self.refine.th_onelayer_lnd[0]);
+                        crit_row(ui, tr(lang, "c.lai_s"), &mut self.refine.refine_onelayer_lnd[1], &mut self.refine.th_onelayer_lnd[1]);
+                        crit_row(ui, tr(lang, "c.slope_m"), &mut self.refine.refine_onelayer_lnd[2], &mut self.refine.th_onelayer_lnd[2]);
+                        crit_row(ui, tr(lang, "c.slope_s"), &mut self.refine.refine_onelayer_lnd[3], &mut self.refine.th_onelayer_lnd[3]);
+                    });
+                    let keys = ["c.ks_m","c.ks_s","c.ksol_m","c.ksol_s","c.tkdry_m","c.tkdry_s","c.tksatf_m","c.tksatf_s","c.tksatu_m","c.tksatu_s"];
+                    egui::Grid::new("lnd2").num_columns(2).show(ui, |ui| {
+                        for i in 0..10 {
+                            crit_pair_row(ui, tr(lang, keys[i]), &mut self.refine.refine_twolayer_lnd[i], &mut self.refine.th_twolayer_lnd[i]);
+                        }
+                    });
+                });
+            }
+            if show_ocean {
+                egui::CollapsingHeader::new(tr(lang, "sec.ocean_crit")).show(ui, |ui| {
+                    egui::Grid::new("ocn").num_columns(2).show(ui, |ui| {
+                        crit_pair_row(ui, tr(lang, "c.sea_ratio"), &mut self.refine.refine_sea_ratio, &mut self.refine.th_sea_ratio);
+                        let keys = ["c.sst_m","c.sst_s","c.ssh_m","c.ssh_s","c.eke_m","c.eke_s","c.seaslope_m","c.seaslope_s"];
+                        for i in 0..8 {
+                            crit_row(ui, tr(lang, keys[i]), &mut self.refine.refine_onelayer_ocn[i], &mut self.refine.th_onelayer_ocn[i]);
+                        }
+                    });
+                });
+            }
+            if show_atmos {
+                egui::CollapsingHeader::new(tr(lang, "sec.atmos_crit")).show(ui, |ui| {
+                    egui::Grid::new("atm").num_columns(2).show(ui, |ui| {
+                        crit_row(ui, tr(lang, "c.typhoon_m"), &mut self.refine.refine_onelayer_atmos[0], &mut self.refine.th_onelayer_atmos[0]);
+                        crit_row(ui, tr(lang, "c.typhoon_s"), &mut self.refine.refine_onelayer_atmos[1], &mut self.refine.th_onelayer_atmos[1]);
+                    });
+                });
+            }
+
+            egui::CollapsingHeader::new(tr(lang, "sec.adv_refine")).show(ui, |ui| {
+                egui::Grid::new("adv_ref").num_columns(2).show(ui, |ui| {
+                    check_row(ui, tr(lang, "f.weak_concav"), &mut self.refine.weak_concav_eliminate);
+                    check_row(ui, tr(lang, "f.is_transition"), &mut self.refine.is_transition);
+                    check_row(ui, tr(lang, "f.iter_d"), &mut self.refine.iter_d);
+                    ui.label(tr(lang, "f.halo"));
+                    ui.horizontal(|ui| {
+                        for i in 1..=9 {
+                            ui.add(egui::DragValue::new(&mut self.refine.halo[i]).speed(1.0));
+                        }
+                    });
                     ui.end_row();
-                    crit_row(ui, tr(lang, "c.area_mainland"), &mut self.refine.refine_area_mainland, &mut self.refine.th_area_mainland);
-                    crit_row(ui, tr(lang, "c.lai_m"), &mut self.refine.refine_onelayer_lnd[0], &mut self.refine.th_onelayer_lnd[0]);
-                    crit_row(ui, tr(lang, "c.lai_s"), &mut self.refine.refine_onelayer_lnd[1], &mut self.refine.th_onelayer_lnd[1]);
-                    crit_row(ui, tr(lang, "c.slope_m"), &mut self.refine.refine_onelayer_lnd[2], &mut self.refine.th_onelayer_lnd[2]);
-                    crit_row(ui, tr(lang, "c.slope_s"), &mut self.refine.refine_onelayer_lnd[3], &mut self.refine.th_onelayer_lnd[3]);
+                    ui.label(tr(lang, "f.max_transition"));
+                    ui.horizontal(|ui| {
+                        for i in 1..=9 {
+                            ui.add(egui::DragValue::new(&mut self.refine.max_transition_row[i]).speed(1.0));
+                        }
+                    });
+                    ui.end_row();
                 });
             });
-            egui::CollapsingHeader::new(tr(lang, "g.lnd2")).show(ui, |ui| {
-                let keys = ["c.ks_m","c.ks_s","c.ksol_m","c.ksol_s","c.tkdry_m","c.tkdry_s","c.tksatf_m","c.tksatf_s","c.tksatu_m","c.tksatu_s"];
-                egui::Grid::new("lnd2").num_columns(2).show(ui, |ui| {
-                    for i in 0..10 {
-                        crit_pair_row(ui, tr(lang, keys[i]), &mut self.refine.refine_twolayer_lnd[i], &mut self.refine.th_twolayer_lnd[i]);
-                    }
-                });
+        });
+    }
+
+    fn tab_advanced(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        ui.heading(tr(lang, "head.advanced"));
+        ui.separator();
+        egui::CollapsingHeader::new(tr(lang, "sec.import")).show(ui, |ui| {
+            egui::Grid::new("import").num_columns(2).show(ui, |ui| {
+                text_row(ui, tr(lang, "f.mode_file"), &mut self.mkgrd.mode_file);
+                combo_row(ui, tr(lang, "f.mode_file_desc"), &mut self.mkgrd.mode_file_description, MODE_FILE_DESCS);
             });
-            egui::CollapsingHeader::new(tr(lang, "g.ocn")).show(ui, |ui| {
-                egui::Grid::new("ocn").num_columns(2).show(ui, |ui| {
-                    crit_pair_row(ui, tr(lang, "c.sea_ratio"), &mut self.refine.refine_sea_ratio, &mut self.refine.th_sea_ratio);
-                    let keys = ["c.sst_m","c.sst_s","c.ssh_m","c.ssh_s","c.eke_m","c.eke_s","c.seaslope_m","c.seaslope_s"];
-                    for i in 0..8 {
-                        crit_row(ui, tr(lang, keys[i]), &mut self.refine.refine_onelayer_ocn[i], &mut self.refine.th_onelayer_ocn[i]);
-                    }
-                });
+        });
+        egui::CollapsingHeader::new(tr(lang, "sec.smoothing")).show(ui, |ui| {
+            egui::Grid::new("smooth").num_columns(2).show(ui, |ui| {
+                int_row(ui, tr(lang, "f.niter"), &mut self.mkgrd.niter, 0..=1_000_000);
+                f32_row(ui, tr(lang, "f.beta"), &mut self.mkgrd.beta);
+                f32_row(ui, tr(lang, "f.relax"), &mut self.mkgrd.relax);
+                int_row(ui, tr(lang, "f.niter_refine"), &mut self.refine.niter_refine, 0..=1_000_000);
+                int_combo_row(ui, tr(lang, "f.spring_global"), &mut self.refine.spring_global_type, &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.spring_olam"))]);
+                int_row(ui, tr(lang, "f.num_rc"), &mut self.refine.num_rc, 0..=1000);
+                combo_row(ui, tr(lang, "f.set_dis"), &mut self.refine.set_dis_type, SET_DIS_TYPES);
+                int_combo_row(ui, tr(lang, "f.spring_regional"), &mut self.refine.spring_regional_type, &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.reg_each")), (2, tr(lang, "opt.reg_final"))]);
+                int_row(ui, tr(lang, "f.vertex_layers"), &mut self.refine.vertex_pretect_layers, 0..=1000);
             });
-            egui::CollapsingHeader::new(tr(lang, "g.atmos")).show(ui, |ui| {
-                egui::Grid::new("atm").num_columns(2).show(ui, |ui| {
-                    crit_row(ui, tr(lang, "c.typhoon_m"), &mut self.refine.refine_onelayer_atmos[0], &mut self.refine.th_onelayer_atmos[0]);
-                    crit_row(ui, tr(lang, "c.typhoon_s"), &mut self.refine.refine_onelayer_atmos[1], &mut self.refine.th_onelayer_atmos[1]);
+        });
+        egui::CollapsingHeader::new(tr(lang, "head.mask")).show(ui, |ui| {
+            egui::Grid::new("adv_mask").num_columns(2).show(ui, |ui| {
+                int_combo_row(ui, tr(lang, "f.gridnum"), &mut self.mkgrd.gridnum_perdegree, &[(120, "120"), (240, "240")]);
+                f64_row(ui, tr(lang, "f.sea_ratio"), &mut self.mkgrd.mask_sea_ratio);
+                check_row(ui, tr(lang, "f.mask_restart"), &mut self.mkgrd.mask_restart);
+                check_row(ui, tr(lang, "f.isolated_ocean"), &mut self.mkgrd.isolated_ocean);
+                check_row(ui, tr(lang, "f.patch_on"), &mut self.mkgrd.mask_patch_on);
+                let patch = self.mkgrd.mask_patch_on;
+                ui.label(tr(lang, "f.patch_shape"));
+                ui.add_enabled_ui(patch, |ui| {
+                    egui::ComboBox::from_id_salt("patch_type")
+                        .selected_text(self.mkgrd.mask_patch_type.clone())
+                        .show_ui(ui, |ui| {
+                            for opt in REGION_TYPES {
+                                ui.selectable_value(&mut self.mkgrd.mask_patch_type, (*opt).to_string(), *opt);
+                            }
+                        });
                 });
+                ui.end_row();
+                ui.label(tr(lang, "f.patch_prefix"));
+                ui.add_enabled(patch, egui::TextEdit::singleline(&mut self.mkgrd.mask_patch_fprefix).desired_width(280.0));
+                ui.end_row();
             });
         });
     }
@@ -602,10 +624,8 @@ impl EarthMeshApp {
     fn render_tab(&mut self, ui: &mut egui::Ui) {
         match self.tab {
             Tab::Basics => self.tab_basics(ui),
-            Tab::Spring => self.tab_spring(ui),
-            Tab::Mask => self.tab_mask(ui),
-            Tab::RefineGeneral => self.tab_refine_general(ui),
-            Tab::RefineCriteria => self.tab_refine_criteria(ui),
+            Tab::Refinement => self.tab_refinement(ui),
+            Tab::Advanced => self.tab_advanced(ui),
         }
     }
 
@@ -625,10 +645,7 @@ impl EarthMeshApp {
         }
         let mut goto: Option<Tab> = None;
         for (k, tab) in matches {
-            if ui
-                .button(format!("{}   ·   {}", tr(lang, k), tr(lang, tab_nav_key(tab))))
-                .clicked()
-            {
+            if ui.button(format!("{}   ·   {}", tr(lang, k), tr(lang, tab_nav_key(tab)))).clicked() {
                 goto = Some(tab);
             }
         }
@@ -694,10 +711,7 @@ impl eframe::App for EarthMeshApp {
                         self.start_run(ctx);
                     }
                 });
-                if ui
-                    .add_enabled(self.running, egui::Button::new(tr(lang, "btn.cancel")))
-                    .clicked()
-                {
+                if ui.add_enabled(self.running, egui::Button::new(tr(lang, "btn.cancel"))).clicked() {
                     self.request_cancel();
                 }
                 if self.running {
@@ -705,21 +719,12 @@ impl eframe::App for EarthMeshApp {
                 }
                 ui.separator();
                 if ui.button(tr(lang, "btn.load")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("namelist", &["nml"])
-                        .set_directory(workspace_root())
-                        .pick_file()
-                    {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("namelist", &["nml"]).set_directory(workspace_root()).pick_file() {
                         self.load(path);
                     }
                 }
                 if ui.button(tr(lang, "btn.save")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("namelist", &["nml"])
-                        .set_file_name("earthmesh.nml")
-                        .set_directory(workspace_root())
-                        .save_file()
-                    {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("namelist", &["nml"]).set_file_name("earthmesh.nml").set_directory(workspace_root()).save_file() {
                         self.save(path);
                     }
                 }
@@ -796,12 +801,10 @@ impl eframe::App for EarthMeshApp {
                 egui::ScrollArea::vertical().show(ui, |ui| self.render_search(ui));
                 return;
             }
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::Basics, tr(lang, "nav.basics"));
-                ui.selectable_value(&mut self.tab, Tab::Spring, tr(lang, "nav.spring"));
-                ui.selectable_value(&mut self.tab, Tab::Mask, tr(lang, "nav.mask"));
-                ui.selectable_value(&mut self.tab, Tab::RefineGeneral, tr(lang, "nav.refine_general"));
-                ui.selectable_value(&mut self.tab, Tab::RefineCriteria, tr(lang, "nav.refine_criteria"));
+                ui.selectable_value(&mut self.tab, Tab::Refinement, tr(lang, "nav.refinement"));
+                ui.selectable_value(&mut self.tab, Tab::Advanced, tr(lang, "nav.advanced"));
             });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| self.render_tab(ui));
