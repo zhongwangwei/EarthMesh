@@ -521,6 +521,52 @@ fn produce_outputs(
     Ok(notes.join("; "))
 }
 
+/// Carve a clean regional ocean FVCOM mesh from the run's global gridfile + the
+/// close polygon + a landtype file, without refinement. Writes the `.2dm` under
+/// `<out>/standard/`. Returns a short note.
+fn clean_ocean_fvcom_for_output(
+    out_dir: &str,
+    nxp: usize,
+    grid: &str,
+    close_points: &[earthmesh_cli::LonLatPoint],
+    landtype: &str,
+    gridnum: usize,
+    sea_ratio: f64,
+) -> Result<String, String> {
+    let base = Path::new(out_dir);
+    let mut gridfile = None;
+    if let Ok(rd) = std::fs::read_dir(base.join("gridfile")) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with("gridfile_NXP") && name.ends_with(".nc4") {
+                let matches_grid = name.contains(grid);
+                gridfile = Some(p);
+                if matches_grid {
+                    break;
+                }
+            }
+        }
+    }
+    let gridfile = gridfile.ok_or_else(|| "gridfile not found in output".to_string())?;
+    let work = base.join("regional_ocean");
+    let std_dir = base.join("standard");
+    std::fs::create_dir_all(&std_dir).map_err(|e| e.to_string())?;
+    let out_2dm = std_dir.join(format!("FVCOM_NXP{nxp:04}_{grid}.2dm"));
+    let elements = earthmesh_cli::write_clean_regional_ocean_fvcom(
+        &gridfile,
+        close_points,
+        Path::new(landtype),
+        nxp,
+        gridnum,
+        sea_ratio,
+        &work,
+        &out_2dm,
+    )
+    .map_err(|e| format!("clean ocean carve failed: {e}"))?;
+    Ok(format!("clean regional FVCOM ({elements} elements)"))
+}
+
 impl EarthMeshApp {
     fn set_status(&mut self, key: &'static str, detail: String) {
         self.status_key = key;
@@ -699,6 +745,22 @@ impl EarthMeshApp {
         } else {
             None
         };
+        // Clean regional ocean (FVCOM) via the close-curve pipeline: needs a
+        // landtype source and a polygon; runs WITHOUT refinement.
+        let clean_ocean = self.mkgrd.mesh_type == "oceanmesh"
+            && self.mkgrd.output_format == "FVCOM"
+            && !self.mkgrd.mask_domain_global
+            && self.mkgrd.mask_domain_type == "close"
+            && self.dom_close.len() >= 3
+            && !matches!(self.mkgrd.landtype_file.trim(), "" | "none");
+        let close_points: Vec<earthmesh_cli::LonLatPoint> = self
+            .dom_close
+            .iter()
+            .map(|p| earthmesh_cli::LonLatPoint { lon: p[0], lat: p[1] })
+            .collect();
+        let landtype = self.mkgrd.landtype_file.clone();
+        let gridnum = self.mkgrd.gridnum_perdegree.max(1) as usize;
+        let sea_ratio = self.mkgrd.mask_sea_ratio;
         let ptx_mpas = ptx.clone();
         thread::spawn(move || {
             earthmesh_core::progress::set(move |phase, done, total| {
@@ -711,6 +773,15 @@ impl EarthMeshApp {
                 );
             earthmesh_core::progress::clear();
             let msg = match result {
+                Ok(_) if clean_ocean => {
+                    let _ = ptx_mpas.send(("carve".to_string(), 0, 1));
+                    match clean_ocean_fvcom_for_output(
+                        &out_hint, nxp, &grid, &close_points, &landtype, gridnum, sea_ratio,
+                    ) {
+                        Ok(note) => Ok(format!("{out_hint}  [{note}]")),
+                        Err(err) => Err(err),
+                    }
+                }
                 Ok(_) if gen_output || region.is_some() => {
                     // Pure-Rust post-processing (regional carve + standard file)
                     // — can be slow on big meshes, so it runs in the worker.
