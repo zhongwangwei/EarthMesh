@@ -272,27 +272,25 @@ impl walkers::Plugin for MeshOverlay<'_> {
         ui: &mut egui::Ui,
         response: &egui::Response,
         projector: &walkers::Projector,
-        map_memory: &walkers::MapMemory,
+        _map_memory: &walkers::MapMemory,
     ) {
         let mesh = self.mesh;
         let wn = mesh.w_lon.len();
 
-        // Clip the mesh to the basemap rectangle, bounded by the map widget itself
-        // (`response.rect`) so it never bleeds into surrounding UI. Web Mercator
-        // only reaches ±85.05°, so a global mesh's polar rows would otherwise spill
-        // into the empty margins above/below the tiles. The map is centred on its
-        // geo centre, so the world is `256·2^zoom` px wide around the widget centre.
-        let widget = response.rect;
-        let center_lon = map_memory.detached().map(|p| p.x()).unwrap_or(0.0);
-        let y_top = projector.project(walkers::lon_lat(center_lon, MERCATOR_MAX_LAT)).to_pos2().y;
-        let y_bot = projector.project(walkers::lon_lat(center_lon, -MERCATOR_MAX_LAT)).to_pos2().y;
-        let half_world = (256.0 * 2f64.powf(map_memory.zoom())) as f32 * 0.5;
-        let cx = widget.center().x;
+        // Clip the mesh to the basemap rectangle, derived straight from the
+        // projector so it tracks pan and zoom (Web Mercator only reaches ±85.05°,
+        // and the world edges are lon ±180°). Bounded by the map widget itself
+        // (`response.rect`) so it never bleeds into the surrounding UI.
+        let p = |lon: f64, lat: f64| projector.project(walkers::lon_lat(lon, lat)).to_pos2();
+        let x_west = p(-180.0, 0.0).x;
+        let x_east = p(180.0, 0.0).x;
+        let y_top = p(0.0, MERCATOR_MAX_LAT).y;
+        let y_bot = p(0.0, -MERCATOR_MAX_LAT).y;
         let map_rect = egui::Rect::from_min_max(
-            egui::pos2(cx - half_world, y_top),
-            egui::pos2(cx + half_world, y_bot),
+            egui::pos2(x_west, y_top),
+            egui::pos2(x_east, y_bot),
         )
-        .intersect(widget);
+        .intersect(response.rect);
         let painter = ui.painter().with_clip_rect(map_rect);
 
         // Semi-transparent so the basemap underneath stays readable.
