@@ -1,13 +1,14 @@
 //! EarthMesh desktop GUI.
 //!
-//! Increment 3b: the full three-pane workbench (all 92 `&mkgrd`/`&mkrefine`
-//! options across five tabs) plus a built-in 中文/English switch. A small static
-//! translation table keeps the UI strings bilingual without pulling in an i18n
-//! macro crate. Visual polish (spacing/theme) is deferred.
+//! Increment 4: closes the gaps against design §4.2.2 that don't need the engine
+//! progress seam — native file open/save dialogs (rfd), a global option search,
+//! a Cases/Templates left panel (bundled examples + recently opened files), an
+//! "open output dir" button, and a scrolling run log. Real progress bar + cancel
+//! + per-iteration log still wait on the engine seam (Plan 03).
 
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use eframe::egui;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -41,6 +42,82 @@ enum Tab {
     RefineCriteria,
 }
 
+fn tab_nav_key(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Basics => "nav.basics",
+        Tab::Spring => "nav.spring",
+        Tab::Mask => "nav.mask",
+        Tab::RefineGeneral => "nav.refine_general",
+        Tab::RefineCriteria => "nav.refine_criteria",
+    }
+}
+
+/// Every option label key paired with the tab that hosts it — powers the search.
+const FIELD_INDEX: &[(&str, Tab)] = &[
+    ("f.expnme", Tab::Basics), ("f.base_dir", Tab::Basics), ("f.mesh_type", Tab::Basics),
+    ("f.output_format", Tab::Basics), ("f.mode_grid", Tab::Basics), ("f.nxp", Tab::Basics),
+    ("f.gridnum", Tab::Basics), ("f.openmp", Tab::Basics), ("f.landtype_file", Tab::Basics),
+    ("f.mode_file", Tab::Basics), ("f.mode_file_desc", Tab::Basics),
+    ("f.niter", Tab::Spring), ("f.beta", Tab::Spring), ("f.relax", Tab::Spring),
+    ("f.niter_refine", Tab::Spring), ("f.spring_global", Tab::Spring), ("f.num_rc", Tab::Spring),
+    ("f.set_dis", Tab::Spring), ("f.spring_regional", Tab::Spring), ("f.vertex_layers", Tab::Spring),
+    ("f.domain_global", Tab::Mask), ("f.domain_shape", Tab::Mask), ("f.domain_prefix", Tab::Mask),
+    ("f.mask_restart", Tab::Mask), ("f.sea_ratio", Tab::Mask), ("f.patch_on", Tab::Mask),
+    ("f.patch_shape", Tab::Mask), ("f.patch_prefix", Tab::Mask), ("f.isolated_ocean", Tab::Mask),
+    ("f.refine_master", Tab::RefineGeneral), ("f.weak_concav", Tab::RefineGeneral),
+    ("f.is_transition", Tab::RefineGeneral), ("f.iter_d", Tab::RefineGeneral),
+    ("f.halo", Tab::RefineGeneral), ("f.max_transition", Tab::RefineGeneral),
+    ("f.refine_spc", Tab::RefineCriteria), ("f.max_iter_spc", Tab::RefineCriteria),
+    ("f.spc_shape", Tab::RefineCriteria), ("f.spc_prefix", Tab::RefineCriteria),
+    ("f.refine_cal", Tab::RefineCriteria), ("f.max_iter_cal", Tab::RefineCriteria),
+    ("f.cal_shape", Tab::RefineCriteria), ("f.cal_prefix", Tab::RefineCriteria),
+    ("f.threshold_dir", Tab::RefineCriteria),
+    ("c.num_landtypes", Tab::RefineCriteria), ("c.area_mainland", Tab::RefineCriteria),
+    ("c.lai_m", Tab::RefineCriteria), ("c.lai_s", Tab::RefineCriteria),
+    ("c.slope_m", Tab::RefineCriteria), ("c.slope_s", Tab::RefineCriteria),
+    ("c.ks_m", Tab::RefineCriteria), ("c.ks_s", Tab::RefineCriteria),
+    ("c.ksol_m", Tab::RefineCriteria), ("c.ksol_s", Tab::RefineCriteria),
+    ("c.tkdry_m", Tab::RefineCriteria), ("c.tkdry_s", Tab::RefineCriteria),
+    ("c.tksatf_m", Tab::RefineCriteria), ("c.tksatf_s", Tab::RefineCriteria),
+    ("c.tksatu_m", Tab::RefineCriteria), ("c.tksatu_s", Tab::RefineCriteria),
+    ("c.sea_ratio", Tab::RefineCriteria), ("c.sst_m", Tab::RefineCriteria),
+    ("c.sst_s", Tab::RefineCriteria), ("c.ssh_m", Tab::RefineCriteria),
+    ("c.ssh_s", Tab::RefineCriteria), ("c.eke_m", Tab::RefineCriteria),
+    ("c.eke_s", Tab::RefineCriteria), ("c.seaslope_m", Tab::RefineCriteria),
+    ("c.seaslope_s", Tab::RefineCriteria), ("c.typhoon_m", Tab::RefineCriteria),
+    ("c.typhoon_s", Tab::RefineCriteria),
+];
+
+fn collect_nml(dir: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_nml(&p, out);
+            } else if p.extension().map_or(false, |x| x == "nml") {
+                out.push(p);
+            }
+        }
+    }
+}
+
+fn bundled_templates() -> Vec<(String, PathBuf)> {
+    let examples = workspace_root().join("examples");
+    let mut nmls = Vec::new();
+    collect_nml(&examples, &mut nmls);
+    nmls.sort();
+    nmls.into_iter()
+        .map(|p| {
+            let label = p
+                .strip_prefix(&examples)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .to_string();
+            (label, p)
+        })
+        .collect()
+}
+
 enum RunMsg {
     Done(Result<String, String>),
 }
@@ -51,6 +128,9 @@ struct EarthMeshApp {
     loaded_path: Option<PathBuf>,
     tab: Tab,
     lang: Lang,
+    search: String,
+    recent: Vec<PathBuf>,
+    log: Vec<String>,
     status_key: &'static str,
     status_detail: String,
     running: bool,
@@ -65,6 +145,9 @@ impl Default for EarthMeshApp {
             loaded_path: None,
             tab: Tab::Basics,
             lang: Lang::En,
+            search: String::new(),
+            recent: Vec::new(),
+            log: Vec::new(),
             status_key: "status.ready",
             status_detail: String::new(),
             running: false,
@@ -79,6 +162,18 @@ impl EarthMeshApp {
         self.status_detail = detail;
     }
 
+    fn push_log(&mut self, key: &'static str, detail: &str) {
+        let line = if detail.is_empty() {
+            tr(self.lang, key).to_string()
+        } else {
+            format!("{} {}", tr(self.lang, key), detail)
+        };
+        self.log.push(line);
+        if self.log.len() > 200 {
+            self.log.remove(0);
+        }
+    }
+
     fn load(&mut self, path: PathBuf) {
         let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -90,7 +185,12 @@ impl EarthMeshApp {
                     RefineConfig::from_mkrefine_namelist(&contents, &cfg.mesh_type, &cfg.mode_grid)
                         .unwrap_or_default();
                 self.mkgrd = cfg;
-                self.set_status("status.loaded", path.display().to_string());
+                let shown = path.display().to_string();
+                self.set_status("status.loaded", shown.clone());
+                self.push_log("log.loaded", &shown);
+                self.recent.retain(|p| p != &path);
+                self.recent.insert(0, path.clone());
+                self.recent.truncate(8);
                 self.loaded_path = Some(path);
             }
             Err(err) => self.set_status("status.parse_error", err),
@@ -107,8 +207,26 @@ impl EarthMeshApp {
 
     fn save(&mut self, path: PathBuf) {
         match std::fs::write(&path, self.combined_namelist()) {
-            Ok(()) => self.set_status("status.saved", path.display().to_string()),
+            Ok(()) => {
+                let shown = path.display().to_string();
+                self.set_status("status.saved", shown.clone());
+                self.push_log("log.saved", &shown);
+            }
             Err(err) => self.set_status("status.write_error", err.to_string()),
+        }
+    }
+
+    fn output_dir(&self) -> PathBuf {
+        workspace_root()
+            .join(self.mkgrd.base_dir.trim_start_matches("./").trim_end_matches('/'))
+            .join(self.mkgrd.experiment_name.trim())
+    }
+
+    fn open_output_dir(&mut self) {
+        let dir = self.output_dir();
+        let target = if dir.exists() { dir } else { workspace_root() };
+        if let Err(err) = open::that(&target) {
+            self.set_status("status.write_error", err.to_string());
         }
     }
 
@@ -116,25 +234,21 @@ impl EarthMeshApp {
         if self.running {
             return;
         }
-        let workdir = workspace_root();
         let nml_path = std::env::temp_dir().join("earthmesh_gui_run.nml");
         if let Err(err) = std::fs::write(&nml_path, self.combined_namelist()) {
             return self.set_status("status.stage_error", err.to_string());
         }
+        let workdir = workspace_root();
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
-        let out_hint = format!(
-            "{}{}/",
-            self.mkgrd.base_dir.trim_end(),
-            self.mkgrd.experiment_name.trim()
-        );
+        let out_hint = self.output_dir().display().to_string();
         thread::spawn(move || {
             let result =
                 earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
                     &nml_path, &workdir, 100_000, 0, None, None, None, 1, None,
                 );
             let msg = match result {
-                Ok(_) => Ok(workdir.join(out_hint.trim_start_matches("./")).display().to_string()),
+                Ok(_) => Ok(out_hint),
                 Err(err) => Err(err.to_string()),
             };
             let _ = tx.send(RunMsg::Done(msg));
@@ -143,14 +257,21 @@ impl EarthMeshApp {
         self.run_rx = Some(rx);
         self.running = true;
         self.set_status("status.running", String::new());
+        self.push_log("log.run_start", "");
     }
 
     fn poll_run(&mut self) {
         if let Some(rx) = &self.run_rx {
             if let Ok(RunMsg::Done(result)) = rx.try_recv() {
                 match result {
-                    Ok(out) => self.set_status("status.run_done", out),
-                    Err(err) => self.set_status("status.run_failed", err),
+                    Ok(out) => {
+                        self.set_status("status.run_done", out.clone());
+                        self.push_log("log.run_done", &out);
+                    }
+                    Err(err) => {
+                        self.set_status("status.run_failed", err.clone());
+                        self.push_log("log.run_failed", &err);
+                    }
                 }
                 self.running = false;
                 self.run_rx = None;
@@ -159,32 +280,28 @@ impl EarthMeshApp {
     }
 }
 
-// ---- grid-row helpers (label already translated by the caller) -----------------
+// ---- grid-row helpers ----------------------------------------------------------
 
 fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(label);
     ui.add(egui::TextEdit::singleline(value).desired_width(280.0));
     ui.end_row();
 }
-
 fn int_row(ui: &mut egui::Ui, label: &str, value: &mut i32, range: std::ops::RangeInclusive<i32>) {
     ui.label(label);
     ui.add(egui::DragValue::new(value).range(range).speed(1.0));
     ui.end_row();
 }
-
 fn f32_row(ui: &mut egui::Ui, label: &str, value: &mut f32) {
     ui.label(label);
     ui.add(egui::DragValue::new(value).speed(0.01));
     ui.end_row();
 }
-
 fn f64_row(ui: &mut egui::Ui, label: &str, value: &mut f64) {
     ui.label(label);
     ui.add(egui::DragValue::new(value).speed(0.01));
     ui.end_row();
 }
-
 fn combo_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str]) {
     ui.label(label);
     egui::ComboBox::from_id_salt(label)
@@ -196,14 +313,9 @@ fn combo_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str
         });
     ui.end_row();
 }
-
 fn int_combo_row(ui: &mut egui::Ui, label: &str, value: &mut i32, options: &[(i32, &str)]) {
     ui.label(label);
-    let current = options
-        .iter()
-        .find(|(v, _)| *v == *value)
-        .map(|(_, t)| *t)
-        .unwrap_or("?");
+    let current = options.iter().find(|(v, _)| *v == *value).map(|(_, t)| *t).unwrap_or("?");
     egui::ComboBox::from_id_salt(label)
         .selected_text(current)
         .show_ui(ui, |ui| {
@@ -213,19 +325,16 @@ fn int_combo_row(ui: &mut egui::Ui, label: &str, value: &mut i32, options: &[(i3
         });
     ui.end_row();
 }
-
 fn check_row(ui: &mut egui::Ui, label: &str, value: &mut bool) {
     ui.label(label);
     ui.checkbox(value, "");
     ui.end_row();
 }
-
 fn crit_row(ui: &mut egui::Ui, label: &str, on: &mut bool, thr: &mut f64) {
     ui.checkbox(on, label);
     ui.add_enabled(*on, egui::DragValue::new(thr).speed(0.1));
     ui.end_row();
 }
-
 fn crit_pair_row(ui: &mut egui::Ui, label: &str, on: &mut bool, thr: &mut [f64; 2]) {
     ui.checkbox(on, label);
     ui.horizontal(|ui| {
@@ -244,21 +353,14 @@ impl EarthMeshApp {
             text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
             text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
             combo_row(ui, tr(lang, "f.mesh_type"), &mut self.mkgrd.mesh_type, MESH_TYPES);
-
             let allowed = output_formats_for(&self.mkgrd.mesh_type);
             if !allowed.contains(&self.mkgrd.output_format.as_str()) {
                 self.mkgrd.output_format = allowed[0].to_string();
             }
             combo_row(ui, tr(lang, "f.output_format"), &mut self.mkgrd.output_format, allowed);
-
             combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, MODE_GRIDS);
             int_row(ui, tr(lang, "f.nxp"), &mut self.mkgrd.nxp, 1..=100_000);
-            int_combo_row(
-                ui,
-                tr(lang, "f.gridnum"),
-                &mut self.mkgrd.gridnum_perdegree,
-                &[(120, "120"), (240, "240")],
-            );
+            int_combo_row(ui, tr(lang, "f.gridnum"), &mut self.mkgrd.gridnum_perdegree, &[(120, "120"), (240, "240")]);
             int_row(ui, tr(lang, "f.openmp"), &mut self.mkgrd.openmp, 1..=1024);
             text_row(ui, tr(lang, "f.landtype_file"), &mut self.mkgrd.landtype_file);
             text_row(ui, tr(lang, "f.mode_file"), &mut self.mkgrd.mode_file);
@@ -275,24 +377,10 @@ impl EarthMeshApp {
             f32_row(ui, tr(lang, "f.beta"), &mut self.mkgrd.beta);
             f32_row(ui, tr(lang, "f.relax"), &mut self.mkgrd.relax);
             int_row(ui, tr(lang, "f.niter_refine"), &mut self.refine.niter_refine, 0..=1_000_000);
-            int_combo_row(
-                ui,
-                tr(lang, "f.spring_global"),
-                &mut self.refine.spring_global_type,
-                &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.spring_olam"))],
-            );
+            int_combo_row(ui, tr(lang, "f.spring_global"), &mut self.refine.spring_global_type, &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.spring_olam"))]);
             int_row(ui, tr(lang, "f.num_rc"), &mut self.refine.num_rc, 0..=1000);
             combo_row(ui, tr(lang, "f.set_dis"), &mut self.refine.set_dis_type, SET_DIS_TYPES);
-            int_combo_row(
-                ui,
-                tr(lang, "f.spring_regional"),
-                &mut self.refine.spring_regional_type,
-                &[
-                    (0, tr(lang, "opt.spring_none")),
-                    (1, tr(lang, "opt.reg_each")),
-                    (2, tr(lang, "opt.reg_final")),
-                ],
-            );
+            int_combo_row(ui, tr(lang, "f.spring_regional"), &mut self.refine.spring_regional_type, &[(0, tr(lang, "opt.spring_none")), (1, tr(lang, "opt.reg_each")), (2, tr(lang, "opt.reg_final"))]);
             int_row(ui, tr(lang, "f.vertex_layers"), &mut self.refine.vertex_pretect_layers, 0..=1000);
         });
     }
@@ -318,7 +406,6 @@ impl EarthMeshApp {
             ui.label(tr(lang, "f.domain_prefix"));
             ui.add_enabled(regional, egui::TextEdit::singleline(&mut self.mkgrd.mask_domain_fprefix).desired_width(280.0));
             ui.end_row();
-
             check_row(ui, tr(lang, "f.mask_restart"), &mut self.mkgrd.mask_restart);
             f64_row(ui, tr(lang, "f.sea_ratio"), &mut self.mkgrd.mask_sea_ratio);
             check_row(ui, tr(lang, "f.patch_on"), &mut self.mkgrd.mask_patch_on);
@@ -397,7 +484,6 @@ impl EarthMeshApp {
                 ui.add_enabled(spc, egui::TextEdit::singleline(&mut self.refine.mask_refine_spc_fprefix).desired_width(280.0));
                 ui.end_row();
             });
-
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.add_enabled(!atmos, egui::Checkbox::new(&mut self.refine.refine_cal, tr(lang, "f.refine_cal")));
@@ -414,7 +500,6 @@ impl EarthMeshApp {
                     text_row(ui, tr(lang, "f.threshold_dir"), &mut self.refine.threshold_dir);
                 });
             });
-
             ui.add_space(6.0);
             egui::CollapsingHeader::new(tr(lang, "g.lnd1")).show(ui, |ui| {
                 egui::Grid::new("lnd1").num_columns(2).show(ui, |ui| {
@@ -453,32 +538,61 @@ impl EarthMeshApp {
             });
         });
     }
+
+    fn render_tab(&mut self, ui: &mut egui::Ui) {
+        match self.tab {
+            Tab::Basics => self.tab_basics(ui),
+            Tab::Spring => self.tab_spring(ui),
+            Tab::Mask => self.tab_mask(ui),
+            Tab::RefineGeneral => self.tab_refine_general(ui),
+            Tab::RefineCriteria => self.tab_refine_criteria(ui),
+        }
+    }
+
+    fn render_search(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        ui.heading(tr(lang, "search.results"));
+        ui.separator();
+        let q = self.search.to_lowercase();
+        let matches: Vec<(&'static str, Tab)> = FIELD_INDEX
+            .iter()
+            .filter(|(k, _)| tr(lang, k).to_lowercase().contains(&q))
+            .copied()
+            .collect();
+        if matches.is_empty() {
+            ui.label(tr(lang, "search.none"));
+            return;
+        }
+        let mut goto: Option<Tab> = None;
+        for (k, tab) in matches {
+            if ui
+                .button(format!("{}   ·   {}", tr(lang, k), tr(lang, tab_nav_key(tab))))
+                .clicked()
+            {
+                goto = Some(tab);
+            }
+        }
+        if let Some(t) = goto {
+            self.tab = t;
+            self.search.clear();
+        }
+    }
 }
 
-/// Register a CJK-capable font as a fallback so 中文 renders instead of tofu
-/// boxes. egui's bundled fonts are Latin-only. We load the first available
-/// system font from a per-OS candidate list and append it after the defaults,
-/// so Latin keeps the default look and only missing (CJK) glyphs fall back.
-/// (Embedding a font would make this self-contained cross-platform; deferred.)
 fn install_fonts(ctx: &egui::Context) {
     const CANDIDATES: &[&str] = &[
-        // macOS
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        // Linux
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        // Windows
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
     ];
     let mut fonts = egui::FontDefinitions::default();
     for path in CANDIDATES {
         if let Ok(bytes) = std::fs::read(path) {
-            fonts
-                .font_data
-                .insert("cjk".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.font_data.insert("cjk".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
             if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
                 fam.push("cjk".to_owned());
             }
@@ -512,27 +626,44 @@ impl eframe::App for EarthMeshApp {
             ui.horizontal(|ui| {
                 ui.heading(tr(lang, "app.title"));
                 ui.separator();
-                if ui.button(tr(lang, "btn.load")).clicked() {
-                    self.load(workspace_root().join("examples/default/atmosphere_hex_global.nml"));
-                }
-                if ui.button(tr(lang, "btn.save")).clicked() {
-                    let path = self
-                        .loaded_path
-                        .clone()
-                        .map(|p| p.with_extension("saved.nml"))
-                        .unwrap_or_else(|| workspace_root().join("earthmesh_gui_out.nml"));
-                    self.save(path);
-                }
-                ui.separator();
                 ui.add_enabled_ui(!self.running, |ui| {
                     if ui.button(tr(lang, "btn.run")).clicked() {
                         self.start_run(ctx);
                     }
                 });
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.button(tr(lang, "btn.cancel"));
+                })
+                .response
+                .on_hover_text(tr(lang, "note.cancel_soon"));
                 if self.running {
                     ui.add(egui::Spinner::new());
                 }
-                // language switch (right-aligned)
+                ui.separator();
+                if ui.button(tr(lang, "btn.load")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("namelist", &["nml"])
+                        .set_directory(workspace_root())
+                        .pick_file()
+                    {
+                        self.load(path);
+                    }
+                }
+                if ui.button(tr(lang, "btn.save")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("namelist", &["nml"])
+                        .set_file_name("earthmesh.nml")
+                        .set_directory(workspace_root())
+                        .save_file()
+                    {
+                        self.save(path);
+                    }
+                }
+                if ui.button(tr(lang, "btn.open_output")).clicked() {
+                    self.open_output_dir();
+                }
+                ui.separator();
+                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(tr(lang, "search.placeholder")).desired_width(170.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.selectable_value(&mut self.lang, Lang::Zh, "中文");
                     ui.selectable_value(&mut self.lang, Lang::En, "EN");
@@ -542,46 +673,77 @@ impl eframe::App for EarthMeshApp {
             ui.add_space(2.0);
         });
 
-        egui::SidePanel::left("nav").resizable(false).default_width(160.0).show(ctx, |ui| {
+        egui::SidePanel::left("cases").resizable(true).default_width(190.0).show(ctx, |ui| {
             ui.add_space(6.0);
-            ui.heading(tr(lang, "nav.title"));
+            ui.heading(tr(lang, "cases.title"));
             ui.separator();
-            ui.selectable_value(&mut self.tab, Tab::Basics, tr(lang, "nav.basics"));
-            ui.selectable_value(&mut self.tab, Tab::Spring, tr(lang, "nav.spring"));
-            ui.selectable_value(&mut self.tab, Tab::Mask, tr(lang, "nav.mask"));
-            ui.selectable_value(&mut self.tab, Tab::RefineGeneral, tr(lang, "nav.refine_general"));
-            ui.selectable_value(&mut self.tab, Tab::RefineCriteria, tr(lang, "nav.refine_criteria"));
+            let templates = bundled_templates();
+            let recent = self.recent.clone();
+            let mut to_load: Option<PathBuf> = None;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.label(egui::RichText::new(tr(lang, "cases.templates")).strong());
+                for (label, path) in templates {
+                    if ui.button(label).clicked() {
+                        to_load = Some(path);
+                    }
+                }
+                if !recent.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(tr(lang, "cases.recent")).strong());
+                    for path in recent {
+                        let label = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                        if ui.button(label).on_hover_text(path.display().to_string()).clicked() {
+                            to_load = Some(path);
+                        }
+                    }
+                }
+            });
+            if let Some(p) = to_load {
+                self.load(p);
+            }
         });
 
-        egui::SidePanel::right("run").resizable(true).default_width(280.0).show(ctx, |ui| {
+        egui::SidePanel::right("run").resizable(true).default_width(300.0).show(ctx, |ui| {
             ui.add_space(6.0);
             ui.heading(tr(lang, "run.title"));
             ui.separator();
             ui.label(tr(lang, if self.running { "run.running" } else { "run.idle" }));
-            ui.add_space(6.0);
             let status = if self.status_detail.is_empty() {
                 tr(lang, self.status_key).to_string()
             } else {
-                format!("{}\n{}", tr(lang, self.status_key), self.status_detail)
+                format!("{} {}", tr(lang, self.status_key), self.status_detail)
             };
             ui.label(status);
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tr(lang, "run.log")).strong());
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                for line in &self.log {
+                    ui.monospace(line);
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
-                Tab::Basics => self.tab_basics(ui),
-                Tab::Spring => self.tab_spring(ui),
-                Tab::Mask => self.tab_mask(ui),
-                Tab::RefineGeneral => self.tab_refine_general(ui),
-                Tab::RefineCriteria => self.tab_refine_criteria(ui),
+            if !self.search.trim().is_empty() {
+                egui::ScrollArea::vertical().show(ui, |ui| self.render_search(ui));
+                return;
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Basics, tr(lang, "nav.basics"));
+                ui.selectable_value(&mut self.tab, Tab::Spring, tr(lang, "nav.spring"));
+                ui.selectable_value(&mut self.tab, Tab::Mask, tr(lang, "nav.mask"));
+                ui.selectable_value(&mut self.tab, Tab::RefineGeneral, tr(lang, "nav.refine_general"));
+                ui.selectable_value(&mut self.tab, Tab::RefineCriteria, tr(lang, "nav.refine_criteria"));
             });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| self.render_tab(ui));
         });
     }
 }
 
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 640.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1040.0, 680.0]),
         ..Default::default()
     };
     eframe::run_native(

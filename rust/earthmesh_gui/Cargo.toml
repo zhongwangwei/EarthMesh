@@ -8,6 +8,8 @@ description = "EarthMesh — unstructured mesh generation for land, ocean and at
 eframe = "0.31"
 earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_cli = { path = "../earthmesh_cli", features = ["static-netcdf"] }
+rfd = "0.17.2"
+open = "5.3.5"
 
 [package.metadata.packager]
 product-name = "EarthMesh"
