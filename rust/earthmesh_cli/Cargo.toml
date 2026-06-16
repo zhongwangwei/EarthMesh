@@ -8,3 +8,9 @@ earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
 netcdf = { version = "0.12.0", default-features = false }
+
+[features]
+# Statically bundle netCDF-c + HDF5 + zlib so dependents (e.g. earthmesh_gui)
+# can produce a self-contained, zero-runtime-dependency binary. Off by default
+# so the normal CLI build keeps linking the system NetCDF.
+static-netcdf = ["netcdf/static"]
