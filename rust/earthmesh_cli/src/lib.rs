@@ -14429,6 +14429,15 @@ pub fn namelist_sets_landtype_file(contents: &str) -> bool {
         .any(|line| line.to_ascii_lowercase().contains("landtype_file"))
 }
 
+/// Whether `landtype_file` names a real data file rather than the conventional
+/// "unset" sentinel. EarthMesh namelists use `'none'` (and the GUI an empty
+/// string) to mean "no land-type input"; the refine dispatch must not try to
+/// open such a path. Mirrors how `mode_file='none'` is treated elsewhere.
+pub fn landtype_file_is_real(landtype_file: &str) -> bool {
+    let trimmed = landtype_file.trim();
+    !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("none")
+}
+
 /// Classify the no-explicit-mode restart-refine handoff that the top-level
 /// `mkgrd.x` front-end should run, including standard initial-gridfile
 /// inference.  This keeps restart/refine branching reusable by callers other
@@ -14447,7 +14456,7 @@ pub fn infer_default_restart_refine_handoff_from_config(
         let source = if has_restart_refine_source_state {
             MkgrdDefaultRestartRefineSource::SourceState
         } else if namelist_sets_landtype_file(namelist_contents)
-            && !config.landtype_file.trim().is_empty()
+            && landtype_file_is_real(&config.landtype_file)
         {
             MkgrdDefaultRestartRefineSource::LandtypeFile
         } else {
@@ -14465,7 +14474,7 @@ pub fn infer_default_restart_refine_handoff_from_config(
     if config.mask_restart
         && config.refine
         && namelist_sets_landtype_file(namelist_contents)
-        && !config.landtype_file.trim().is_empty()
+        && landtype_file_is_real(&config.landtype_file)
     {
         if let Some(initial_gridfile) =
             maybe_infer_restart_refine_initial_gridfile_from_config(config)?
@@ -14544,7 +14553,7 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         if !config.mask_restart
             && config.refine
             && namelist_sets_landtype_file(&contents)
-            && !config.landtype_file.trim().is_empty()
+            && landtype_file_is_real(&config.landtype_file)
         {
             return run_mkgrd_refine_landtype_source_namelist(
                 namelist_source,
