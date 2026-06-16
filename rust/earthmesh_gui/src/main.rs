@@ -261,35 +261,65 @@ struct MeshOverlay<'m> {
     mesh: &'m earthmesh_cli::GridfileMeshPoints,
 }
 
+/// Web-Mercator's usable latitude bound; tiles cover only ±this.
+const MERCATOR_MAX_LAT: f64 = 85.05112878;
+
 impl walkers::Plugin for MeshOverlay<'_> {
     fn run(
         self: Box<Self>,
         ui: &mut egui::Ui,
-        _response: &egui::Response,
+        response: &egui::Response,
         projector: &walkers::Projector,
-        _map_memory: &walkers::MapMemory,
+        map_memory: &walkers::MapMemory,
     ) {
         let mesh = self.mesh;
         let wn = mesh.w_lon.len();
-        let painter = ui.painter();
+
+        // Clip the mesh to the basemap rectangle, bounded by the map widget itself
+        // (`response.rect`) so it never bleeds into surrounding UI. Web Mercator
+        // only reaches ±85.05°, so a global mesh's polar rows would otherwise spill
+        // into the empty margins above/below the tiles. The map is centred on its
+        // geo centre, so the world is `256·2^zoom` px wide around the widget centre.
+        let widget = response.rect;
+        let center_lon = map_memory.detached().map(|p| p.x()).unwrap_or(0.0);
+        let y_top = projector.project(walkers::lon_lat(center_lon, MERCATOR_MAX_LAT)).to_pos2().y;
+        let y_bot = projector.project(walkers::lon_lat(center_lon, -MERCATOR_MAX_LAT)).to_pos2().y;
+        let half_world = (256.0 * 2f64.powf(map_memory.zoom())) as f32 * 0.5;
+        let cx = widget.center().x;
+        let map_rect = egui::Rect::from_min_max(
+            egui::pos2(cx - half_world, y_top),
+            egui::pos2(cx + half_world, y_bot),
+        )
+        .intersect(widget);
+        let painter = ui.painter().with_clip_rect(map_rect);
+
         // Semi-transparent so the basemap underneath stays readable.
         let stroke = egui::Stroke::new(0.6, egui::Color32::from_rgba_unmultiplied(255, 120, 0, 150));
-        let project = |idx1: i32| -> Option<egui::Pos2> {
+        let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
+        let project = |idx1: i32| -> Option<(egui::Pos2, f64)> {
             let i = idx1 as usize;
             (idx1 >= 1 && i <= wn).then(|| {
-                projector
+                let pos = projector
                     .project(walkers::lon_lat(mesh.w_lon[i - 1], mesh.w_lat[i - 1]))
-                    .to_pos2()
+                    .to_pos2();
+                (pos, norm_lon(mesh.w_lon[i - 1]))
             })
         };
-        // Skip triangles whose screen edges span more than half the viewport —
-        // those wrap across the date line and would streak across the map.
-        let clip = ui.clip_rect();
-        let span_limit = clip.width().max(clip.height());
-        let near = |p: egui::Pos2, q: egui::Pos2| (p - q).length() < span_limit * 0.5;
         for t in mesh.m_to_w.chunks_exact(3) {
-            if let (Some(a), Some(b), Some(c)) = (project(t[0]), project(t[1]), project(t[2])) {
-                if near(a, b) && near(b, c) && near(a, c) {
+            if let (Some((a, la)), Some((b, lb)), Some((c, lc))) =
+                (project(t[0]), project(t[1]), project(t[2]))
+            {
+                // In Web Mercator screen-x is linear in longitude, so an edge
+                // spanning a wide longitude draws as a long horizontal streak
+                // regardless of latitude. Skip triangles with any edge over 90°
+                // of longitude: that covers both ±180° seam-crossers and the
+                // pole-cap rows whose cells fan across many degrees of longitude.
+                // Below ~85° this mesh's cells span <35°, so nothing real is cut.
+                const MAX_EDGE_LON: f64 = 90.0;
+                let streaks = (la - lb).abs() > MAX_EDGE_LON
+                    || (lb - lc).abs() > MAX_EDGE_LON
+                    || (la - lc).abs() > MAX_EDGE_LON;
+                if !streaks {
                     painter.line_segment([a, b], stroke);
                     painter.line_segment([b, c], stroke);
                     painter.line_segment([c, a], stroke);
@@ -1090,9 +1120,15 @@ impl eframe::App for EarthMeshApp {
             }
         }
 
+        // Cap the dock at half the window so it can never swallow the form (and
+        // a persisted oversized height gets clamped back). Big-map viewing is the
+        // detached window's job.
+        let dock_max = (ctx.screen_rect().height() * 0.5).max(200.0);
         egui::TopBottomPanel::bottom("results_dock")
             .resizable(true)
-            .default_height(170.0)
+            .default_height(220.0)
+            .min_height(120.0)
+            .max_height(dock_max)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
