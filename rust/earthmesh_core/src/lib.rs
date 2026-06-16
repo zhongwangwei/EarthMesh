@@ -51,12 +51,18 @@ pub const JTW_VADJ: usize = 7;
 
 /// Radians per degree: `atan(1.0_r8) / 45.0_r8` in Fortran.
 pub const PIO180: f64 = std::f64::consts::PI / 180.0;
+pub const PIO180_R8: f64 = PIO180;
 
 /// Degrees per radian: `45.0_r8 / atan(1.0_r8)` in Fortran.
 pub const PIU180: f64 = 180.0 / std::f64::consts::PI;
+pub const PIU180_R8: f64 = PIU180;
 
 /// Full turn in radians: `8.0_r8 * atan(1.0_r8)` in Fortran.
 pub const PI2: f64 = 2.0 * std::f64::consts::PI;
+pub const PI2_R8: f64 = PI2;
+
+/// Pi in double precision: `4.0_r8 * atan(1.0_r8)` in Fortran.
+pub const PI_R8: f64 = std::f64::consts::PI;
 
 /// Convert degrees to radians using the migrated Fortran conversion constant.
 #[inline]
@@ -400,6 +406,295 @@ impl Default for EarthRadii {
     }
 }
 
+/// Legacy mesh-memory allocation sizes used to replace the Fortran `mem_*`
+/// module globals with one explicit Rust-owned runtime state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LegacyMemoryShape {
+    pub nma: usize,
+    pub nua: usize,
+    pub nva: usize,
+    pub nwa: usize,
+    pub mma: usize,
+    pub mua: usize,
+    pub mva: usize,
+    pub mwa: usize,
+}
+
+/// Rust-owned replacement for `MOD_data_preprocess` source-grid globals kept in
+/// `consts_coms`.
+///
+/// Fortran derives `nlons_source` and `nlats_source` from
+/// `gridnum_perdegree`, then records `maxlc` after reading the landtype source.
+/// Keeping these values on the explicit runtime state removes another implicit
+/// handoff from the old module-global bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SourceGridState {
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub maxlc: usize,
+}
+
+/// Rust-owned replacement for `consts_coms` mask counter globals.
+///
+/// The Fortran driver mutates `mask_domain_ndm`, `mask_refine_ndm(0:9)`, and
+/// `mask_patch_ndm(0:9)` while applying `Mask_make`. Keeping the final counters
+/// on runtime state makes downstream Area_judge/refine handoffs explicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaskCounterState {
+    pub mask_domain_ndm: usize,
+    pub mask_refine_ndm: [usize; 10],
+    pub mask_patch_ndm: [usize; 10],
+}
+
+/// Rust-owned scalar defaults that used to live as `consts_coms` module
+/// globals or top-level `mkgrd` initialization assignments.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LegacyScalarState {
+    pub rinit: f32,
+    pub rinit8: f64,
+    pub iunit: i32,
+    pub io6: i32,
+    pub num_center: usize,
+}
+
+impl Default for LegacyScalarState {
+    fn default() -> Self {
+        Self {
+            rinit: 0.0,
+            rinit8: 0.0,
+            iunit: 10,
+            io6: 6,
+            num_center: 1,
+        }
+    }
+}
+
+/// Rust-owned replacement for the production `consts_coms` + `mem_*` global
+/// bundle used by the legacy Fortran driver.
+///
+/// The individual memory structs preserve the old allocation/default rules;
+/// this container makes the runtime dependency explicit so downstream mkgrd and
+/// refine code can receive state by value/reference instead of reading module
+/// globals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EarthmeshRuntimeState {
+    pub config: EarthmeshConfig,
+    pub refine: Option<RefineConfig>,
+    pub radii: EarthRadii,
+    pub grid: GridMemory,
+    pub ijtabs: IjTabs,
+    pub delaunay: DelaunayMemory,
+    pub source_grid: SourceGridState,
+    pub mask_counts: MaskCounterState,
+    pub scalars: LegacyScalarState,
+    pub pentagon_indices: [usize; 12],
+    pub step: usize,
+    pub num_vertex: usize,
+    pub num_mp_step: [usize; 10],
+    pub num_wp_step: [usize; 10],
+}
+
+impl EarthmeshRuntimeState {
+    /// Initialize the non-allocating runtime state that Fortran gets from
+    /// `consts_coms` defaults plus `mkgrd:init_consts`.
+    pub fn new(config: EarthmeshConfig) -> Self {
+        Self {
+            config,
+            refine: None,
+            radii: EarthRadii::default(),
+            grid: GridMemory::default(),
+            ijtabs: IjTabs::default(),
+            delaunay: DelaunayMemory::default(),
+            source_grid: SourceGridState::default(),
+            mask_counts: MaskCounterState::default(),
+            scalars: LegacyScalarState::default(),
+            pentagon_indices: [0; 12],
+            step: 1,
+            num_vertex: 0,
+            num_mp_step: [1; 10],
+            num_wp_step: [1; 10],
+        }
+    }
+
+    /// Attach the typed `refine_vars` replacement parsed from `/mkrefine/`.
+    pub fn with_refine_config(mut self, refine: RefineConfig) -> Self {
+        self.refine = Some(refine);
+        self
+    }
+
+    /// Return the configured `nxp` as a Rust index/count, rejecting the legacy
+    /// uninitialized or invalid non-positive values at the state boundary.
+    pub fn try_nxp(&self) -> Result<usize, String> {
+        if self.config.nxp <= 0 {
+            return Err(format!(
+                "EarthmeshRuntimeState requires positive NXP, got {}",
+                self.config.nxp
+            ));
+        }
+        usize::try_from(self.config.nxp).map_err(|_| {
+            format!(
+                "EarthmeshRuntimeState NXP {} cannot be represented as usize",
+                self.config.nxp
+            )
+        })
+    }
+
+    /// Convenience accessor for already-validated runtime states.
+    pub fn nxp(&self) -> usize {
+        self.try_nxp()
+            .expect("EarthmeshRuntimeState requires positive NXP")
+    }
+
+    /// Update the current `mkgrd` loop step in the Rust-owned runtime state.
+    pub fn with_step(mut self, step: usize) -> Self {
+        self.step = step;
+        self
+    }
+
+    /// Record real mesh point counts for a Fortran-style 1-based `mkgrd` step.
+    ///
+    /// Fortran stores `num_mp_step(step)` and `num_wp_step(step)` after reading
+    /// or generating a grid.  The Rust array uses `step - 1` as the storage
+    /// slot while keeping `self.step` in the same 1-based convention as the
+    /// migrated orchestration.
+    pub fn record_mesh_counts_for_step(
+        &mut self,
+        step: usize,
+        num_mp: usize,
+        num_wp: usize,
+    ) -> Result<(), String> {
+        let Some(slot) = step.checked_sub(1) else {
+            return Err("mkgrd step must be 1-based when recording mesh counts".to_string());
+        };
+        if slot >= self.num_mp_step.len() || slot >= self.num_wp_step.len() {
+            return Err(format!(
+                "mkgrd step {step} exceeds runtime mesh-count storage length {}",
+                self.num_mp_step.len()
+            ));
+        }
+        self.step = step;
+        self.num_mp_step[slot] = num_mp;
+        self.num_wp_step[slot] = num_wp;
+        Ok(())
+    }
+
+    /// Record the legacy `num_vertex` boundary reported by `Get_Contain`.
+    ///
+    /// Fortran kept this value in `consts_coms` as an implicit module-global
+    /// handoff between containment and postprocess code. Rust keeps it on the
+    /// explicit runtime state and rejects the uninitialized zero sentinel when a
+    /// production handoff attempts to record it.
+    pub fn record_num_vertex(&mut self, num_vertex: usize) -> Result<(), String> {
+        if num_vertex == 0 {
+            return Err("num_vertex must be positive when recording runtime state".to_string());
+        }
+        self.num_vertex = num_vertex;
+        Ok(())
+    }
+
+    /// Record the `MOD_GetContain` refine-area `num_center` handoff.
+    ///
+    /// Fortran derives `num_center = num_wp_step(step-1)` before computing
+    /// refine-area containment. Rust keeps `step` 1-based like the driver while
+    /// reading the previous step from the zero-based storage slot.
+    pub fn record_num_center_from_previous_step(&mut self, step: usize) -> Result<(), String> {
+        if step <= 1 {
+            return Err(
+                "Get_Contain refine num_center handoff requires step greater than 1".to_string(),
+            );
+        }
+        if step > self.num_wp_step.len() {
+            return Err(format!(
+                "mkgrd step {step} exceeds runtime mesh-count storage length {}",
+                self.num_wp_step.len()
+            ));
+        }
+        let previous_slot = step - 2;
+        if previous_slot >= self.num_wp_step.len() {
+            return Err(format!(
+                "mkgrd previous step for num_center handoff exceeds runtime mesh-count storage length {}",
+                self.num_wp_step.len()
+            ));
+        }
+        self.step = step;
+        self.scalars.num_center = self.num_wp_step[previous_slot];
+        Ok(())
+    }
+
+    /// Record the `icosahedron` `impent(12)` scratch handoff explicitly.
+    ///
+    /// The legacy Fortran icosahedron initializer stores the 12 pentagonal
+    /// M-point indices in `consts_coms:impent`; keeping them here avoids another
+    /// hidden module-global dependency when spring/grid kernels need the same
+    /// pentagon markers.
+    pub fn record_pentagon_indices_from_icosahedron(
+        &mut self,
+        indices: [usize; 12],
+    ) -> Result<(), String> {
+        if indices.iter().any(|&index| index == 0) {
+            return Err(
+                "icosahedron impent pentagon indices must be positive when recorded".to_string(),
+            );
+        }
+        self.pentagon_indices = indices;
+        Ok(())
+    }
+
+    /// Record source-grid dimensions and maximum land class from the
+    /// `MOD_data_preprocess` stage.
+    ///
+    /// Fortran stores `nlons_source = gridnum_perdegree * 360`,
+    /// `nlats_source = gridnum_perdegree * 180`, and `maxlc =
+    /// maxval(landtypes_global)` in `consts_coms`. Rust derives the dimensions
+    /// from the typed config and keeps the resulting handoff explicit.
+    pub fn record_data_preprocess_source_grid(&mut self, maxlc: usize) -> Result<(), String> {
+        if self.config.gridnum_perdegree <= 0 {
+            return Err(format!(
+                "gridnum_perdegree must be positive when recording source-grid state, got {}",
+                self.config.gridnum_perdegree
+            ));
+        }
+        let gridnum = usize::try_from(self.config.gridnum_perdegree).map_err(|_| {
+            format!(
+                "gridnum_perdegree {} cannot be represented as usize",
+                self.config.gridnum_perdegree
+            )
+        })?;
+        let nlons_source = gridnum
+            .checked_mul(360)
+            .ok_or_else(|| "nlons_source overflow while recording source-grid state".to_string())?;
+        let nlats_source = gridnum
+            .checked_mul(180)
+            .ok_or_else(|| "nlats_source overflow while recording source-grid state".to_string())?;
+        self.source_grid = SourceGridState {
+            nlons_source,
+            nlats_source,
+            maxlc,
+        };
+        Ok(())
+    }
+
+    /// Allocate all migrated `mem_grid`, `mem_ijtabs`, and `mem_delaunay`
+    /// buffers from one explicit shape.
+    pub fn allocate_legacy_memories(&mut self, shape: LegacyMemoryShape) {
+        self.grid.nma = shape.nma;
+        self.grid.nua = shape.nua;
+        self.grid.nva = shape.nva;
+        self.grid.nwa = shape.nwa;
+        self.grid.mma = shape.mma;
+        self.grid.mua = shape.mua;
+        self.grid.mva = shape.mva;
+        self.grid.mwa = shape.mwa;
+        self.grid.allocate_xyzem(shape.mma);
+        self.grid.allocate_xyzew(shape.mwa);
+        self.grid
+            .allocate_grid_lonlatmw(shape.mma, shape.mva, shape.mwa);
+        self.ijtabs = IjTabs::allocate(shape.mma, shape.mva, shape.mwa);
+        self.delaunay
+            .allocate_itabsd(shape.mma, shape.mua, shape.mwa);
+    }
+}
+
 /// Typed equivalent of `consts_coms:oname_vars` defaults.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EarthmeshConfig {
@@ -573,6 +868,69 @@ impl EarthmeshConfig {
         Ok(config)
     }
 
+    /// Serialize the configuration back into the `&mkgrd` namelist block that
+    /// `from_mkgrd_namelist` consumes. The round-trip
+    /// `from_mkgrd_namelist(&x.to_mkgrd_namelist())` reproduces `x`.
+    pub fn to_mkgrd_namelist(&self) -> String {
+        fn flag(value: bool) -> &'static str {
+            if value {
+                ".TRUE."
+            } else {
+                ".FALSE."
+            }
+        }
+
+        let mut out = String::new();
+        out.push_str("&mkgrd\n");
+        out.push_str(&format!("  NL%EXPNME = '{}'\n", self.experiment_name));
+        out.push_str(&format!("  NL%base_dir = '{}'\n", self.base_dir));
+        out.push_str(&format!("  NL%mesh_type = '{}'\n", self.mesh_type));
+        out.push_str(&format!("  NL%mode_grid = '{}'\n", self.mode_grid));
+        out.push_str(&format!("  NL%mode_file = '{}'\n", self.mode_file));
+        out.push_str(&format!(
+            "  NL%mode_file_description = '{}'\n",
+            self.mode_file_description
+        ));
+        out.push_str(&format!("  NL%NXP = {}\n", self.nxp));
+        out.push_str(&format!("  NL%refine = {}\n", flag(self.refine)));
+        out.push_str(&format!(
+            "  NL%gridnum_perdegree = {}\n",
+            self.gridnum_perdegree
+        ));
+        out.push_str(&format!("  NL%niter = {}\n", self.niter));
+        out.push_str(&format!("  NL%beta = {}\n", self.beta));
+        out.push_str(&format!("  NL%relax = {}\n", self.relax));
+        out.push_str(&format!("  NL%openmp = {}\n", self.openmp));
+        out.push_str(&format!("  NL%landtype_file = '{}'\n", self.landtype_file));
+        out.push_str(&format!(
+            "  NL%mask_domain_global = {}\n",
+            flag(self.mask_domain_global)
+        ));
+        out.push_str(&format!(
+            "  NL%mask_domain_type = '{}'\n",
+            self.mask_domain_type
+        ));
+        out.push_str(&format!(
+            "  NL%mask_domain_fprefix = '{}'\n",
+            self.mask_domain_fprefix
+        ));
+        out.push_str(&format!("  NL%mask_restart = {}\n", flag(self.mask_restart)));
+        out.push_str(&format!("  NL%mask_sea_ratio = {}\n", self.mask_sea_ratio));
+        out.push_str(&format!("  NL%mask_patch_on = {}\n", flag(self.mask_patch_on)));
+        out.push_str(&format!("  NL%mask_patch_type = '{}'\n", self.mask_patch_type));
+        out.push_str(&format!(
+            "  NL%mask_patch_fprefix = '{}'\n",
+            self.mask_patch_fprefix
+        ));
+        out.push_str(&format!(
+            "  NL%isolated_ocean = {}\n",
+            flag(self.isolated_ocean)
+        ));
+        out.push_str(&format!("  NL%output_format = '{}'\n", self.output_format));
+        out.push_str("/\n");
+        out
+    }
+
     /// Build the side-effect plan implied by `read_nl` without executing shell
     /// commands or touching the filesystem.
     pub fn read_nl_workspace_plan(
@@ -658,12 +1016,17 @@ impl EarthmeshConfig {
 
         match (self.mesh_type.as_str(), self.output_format.as_str()) {
             ("landmesh", "CoLM")
+            | ("earthmesh", "CoLM")
             | ("oceanmesh", "FVCOM")
             | ("atmosmesh", "MPAS")
             | ("atmosmesh", "MPAS-Simple")
             | ("LOCmesh", "CoLM") => Ok(()),
             ("landmesh", _) => Err(format!(
                 "landmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
+                self.output_format
+            )),
+            ("earthmesh", _) => Err(format!(
+                "earthmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
                 self.output_format
             )),
             ("oceanmesh", _) => Err(format!(
@@ -744,30 +1107,47 @@ fn parse_fortran_bool(field: &str, value: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_i32_array<const N: usize>(field: &str, value: &str) -> Result<[i32; N], String> {
+fn parse_i32_fortran_1_based_array<const N: usize>(
+    field: &str,
+    value: &str,
+) -> Result<[i32; N], String> {
     let values = value
         .split(',')
         .map(|part| parse_i32(field, part.trim()))
         .collect::<Result<Vec<_>, _>>()?;
-    values.try_into().map_err(|values: Vec<i32>| {
-        format!(
-            "invalid integer array length for {field}: expected {N}, got {}",
+    if values.len() >= N {
+        return Err(format!(
+            "invalid integer array length for {field}: expected at most {}, got {}",
+            N - 1,
             values.len()
-        )
-    })
+        ));
+    }
+    let mut parsed = [0; N];
+    for (index, value) in values.into_iter().enumerate() {
+        parsed[index + 1] = value;
+    }
+    Ok(parsed)
 }
 
-fn parse_f64_array<const N: usize>(field: &str, value: &str) -> Result<[f64; N], String> {
+fn parse_f64_array<const N: usize>(
+    field: &str,
+    value: &str,
+    mut parsed: [f64; N],
+) -> Result<[f64; N], String> {
     let values = value
         .split(',')
         .map(|part| parse_f64(field, part.trim()))
         .collect::<Result<Vec<_>, _>>()?;
-    values.try_into().map_err(|values: Vec<f64>| {
-        format!(
-            "invalid real array length for {field}: expected {N}, got {}",
+    if values.len() > N {
+        return Err(format!(
+            "invalid real array length for {field}: expected at most {N}, got {}",
             values.len()
-        )
-    })
+        ));
+    }
+    for (index, value) in values.into_iter().enumerate() {
+        parsed[index] = value;
+    }
+    Ok(parsed)
 }
 
 /// Typed equivalent of the operational `refine_vars` module state.
@@ -900,8 +1280,10 @@ impl RefineConfig {
                 }
                 "istransition" => config.is_transition = parse_fortran_bool(field, value)?,
                 "iterd" => config.iter_d = parse_fortran_bool(field, value)?,
-                "halo" => config.halo = parse_i32_array(field, value)?,
-                "max_transition_row" => config.max_transition_row = parse_i32_array(field, value)?,
+                "halo" => config.halo = parse_i32_fortran_1_based_array(field, value)?,
+                "max_transition_row" => {
+                    config.max_transition_row = parse_i32_fortran_1_based_array(field, value)?
+                }
                 "springglobal_type" => config.spring_global_type = parse_i32(field, value)?,
                 "springregional_type" => config.spring_regional_type = parse_i32(field, value)?,
                 "num_rc" => config.num_rc = parse_i32(field, value)?,
@@ -986,17 +1368,49 @@ impl RefineConfig {
                 "th_lai_s" => config.th_onelayer_lnd[1] = parse_f64(field, value)?,
                 "th_slope_m" => config.th_onelayer_lnd[2] = parse_f64(field, value)?,
                 "th_slope_s" => config.th_onelayer_lnd[3] = parse_f64(field, value)?,
-                "th_k_s_m" => config.th_twolayer_lnd[0] = parse_f64_array(field, value)?,
-                "th_k_s_s" => config.th_twolayer_lnd[1] = parse_f64_array(field, value)?,
-                "th_k_solids_m" => config.th_twolayer_lnd[2] = parse_f64_array(field, value)?,
-                "th_k_solids_s" => config.th_twolayer_lnd[3] = parse_f64_array(field, value)?,
-                "th_tkdry_m" => config.th_twolayer_lnd[4] = parse_f64_array(field, value)?,
-                "th_tkdry_s" => config.th_twolayer_lnd[5] = parse_f64_array(field, value)?,
-                "th_tksatf_m" => config.th_twolayer_lnd[6] = parse_f64_array(field, value)?,
-                "th_tksatf_s" => config.th_twolayer_lnd[7] = parse_f64_array(field, value)?,
-                "th_tksatu_m" => config.th_twolayer_lnd[8] = parse_f64_array(field, value)?,
-                "th_tksatu_s" => config.th_twolayer_lnd[9] = parse_f64_array(field, value)?,
-                "th_sea_ratio" => config.th_sea_ratio = parse_f64_array(field, value)?,
+                "th_k_s_m" => {
+                    config.th_twolayer_lnd[0] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[0])?
+                }
+                "th_k_s_s" => {
+                    config.th_twolayer_lnd[1] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[1])?
+                }
+                "th_k_solids_m" => {
+                    config.th_twolayer_lnd[2] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[2])?
+                }
+                "th_k_solids_s" => {
+                    config.th_twolayer_lnd[3] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[3])?
+                }
+                "th_tkdry_m" => {
+                    config.th_twolayer_lnd[4] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[4])?
+                }
+                "th_tkdry_s" => {
+                    config.th_twolayer_lnd[5] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[5])?
+                }
+                "th_tksatf_m" => {
+                    config.th_twolayer_lnd[6] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[6])?
+                }
+                "th_tksatf_s" => {
+                    config.th_twolayer_lnd[7] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[7])?
+                }
+                "th_tksatu_m" => {
+                    config.th_twolayer_lnd[8] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[8])?
+                }
+                "th_tksatu_s" => {
+                    config.th_twolayer_lnd[9] =
+                        parse_f64_array(field, value, config.th_twolayer_lnd[9])?
+                }
+                "th_sea_ratio" => {
+                    config.th_sea_ratio = parse_f64_array(field, value, config.th_sea_ratio)?
+                }
                 "th_sst_m" => config.th_onelayer_ocn[0] = parse_f64(field, value)?,
                 "th_sst_s" => config.th_onelayer_ocn[1] = parse_f64(field, value)?,
                 "th_ssh_m" => config.th_onelayer_ocn[2] = parse_f64(field, value)?,
@@ -1013,6 +1427,190 @@ impl RefineConfig {
 
         config.validate_like_read_nl(mesh_type, mode_grid)?;
         Ok(config)
+    }
+
+    /// Serialize the configuration back into the `&mkrefine` namelist block that
+    /// `from_mkrefine_namelist` consumes. For the same `mesh_type`/`mode_grid`,
+    /// `from_mkrefine_namelist(&x.to_mkrefine_namelist(), mesh_type, mode_grid)`
+    /// reproduces `x`.
+    ///
+    /// Derived/internal fields (`refine_setting`, `max_iter`, `mask_refine_ndm`,
+    /// `exit_loop_step`) are not namelist keys and are intentionally omitted; they
+    /// are recomputed during re-parse. `HALO`/`max_transition_row` are Fortran
+    /// 1-based arrays, so index 0 is the reserved sentinel and only indices 1..=9
+    /// are emitted.
+    pub fn to_mkrefine_namelist(&self) -> String {
+        fn flag(value: bool) -> &'static str {
+            if value {
+                ".TRUE."
+            } else {
+                ".FALSE."
+            }
+        }
+        fn ints_1_based(values: &[i32; 10]) -> String {
+            values[1..]
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        fn pair(values: [f64; 2]) -> String {
+            format!("{}, {}", values[0], values[1])
+        }
+
+        let mut out = String::new();
+        out.push_str("&mkrefine\n");
+
+        // common
+        out.push_str(&format!(
+            "  RL%weak_concav_eliminate = {}\n",
+            flag(self.weak_concav_eliminate)
+        ));
+        out.push_str(&format!("  RL%Istransition = {}\n", flag(self.is_transition)));
+        out.push_str(&format!("  RL%iterD = {}\n", flag(self.iter_d)));
+        out.push_str(&format!("  RL%HALO = {}\n", ints_1_based(&self.halo)));
+        out.push_str(&format!(
+            "  RL%max_transition_row = {}\n",
+            ints_1_based(&self.max_transition_row)
+        ));
+
+        // spring
+        out.push_str(&format!(
+            "  RL%SpringGlobal_type = {}\n",
+            self.spring_global_type
+        ));
+        out.push_str(&format!(
+            "  RL%SpringRegional_type = {}\n",
+            self.spring_regional_type
+        ));
+        out.push_str(&format!("  RL%num_rc = {}\n", self.num_rc));
+        out.push_str(&format!("  RL%set_dis_type = '{}'\n", self.set_dis_type));
+        out.push_str(&format!(
+            "  RL%vertex_pretect_layers = {}\n",
+            self.vertex_pretect_layers
+        ));
+        out.push_str(&format!("  RL%niter_refine = {}\n", self.niter_refine));
+
+        // specified / calculated control
+        out.push_str(&format!("  RL%refine_spc = {}\n", flag(self.refine_spc)));
+        out.push_str(&format!("  RL%refine_cal = {}\n", flag(self.refine_cal)));
+        out.push_str(&format!("  RL%max_iter_spc = {}\n", self.max_iter_spc));
+        out.push_str(&format!("  RL%max_iter_cal = {}\n", self.max_iter_cal));
+        out.push_str(&format!(
+            "  RL%mask_refine_spc_type = '{}'\n",
+            self.mask_refine_spc_type
+        ));
+        out.push_str(&format!(
+            "  RL%mask_refine_spc_fprefix = '{}'\n",
+            self.mask_refine_spc_fprefix
+        ));
+        out.push_str(&format!(
+            "  RL%mask_refine_cal_type = '{}'\n",
+            self.mask_refine_cal_type
+        ));
+        out.push_str(&format!(
+            "  RL%mask_refine_cal_fprefix = '{}'\n",
+            self.mask_refine_cal_fprefix
+        ));
+        out.push_str(&format!("  RL%threshold_dir = '{}'\n", self.threshold_dir));
+
+        // land one-layer
+        out.push_str(&format!(
+            "  RL%refine_num_landtypes = {}\n",
+            flag(self.refine_num_landtypes)
+        ));
+        out.push_str(&format!("  RL%th_num_landtypes = {}\n", self.th_num_landtypes));
+        out.push_str(&format!(
+            "  RL%refine_area_mainland = {}\n",
+            flag(self.refine_area_mainland)
+        ));
+        out.push_str(&format!("  RL%th_area_mainland = {}\n", self.th_area_mainland));
+        out.push_str(&format!(
+            "  RL%refine_lai_m = {}\n",
+            flag(self.refine_onelayer_lnd[0])
+        ));
+        out.push_str(&format!("  RL%th_lai_m = {}\n", self.th_onelayer_lnd[0]));
+        out.push_str(&format!(
+            "  RL%refine_lai_s = {}\n",
+            flag(self.refine_onelayer_lnd[1])
+        ));
+        out.push_str(&format!("  RL%th_lai_s = {}\n", self.th_onelayer_lnd[1]));
+        out.push_str(&format!(
+            "  RL%refine_slope_m = {}\n",
+            flag(self.refine_onelayer_lnd[2])
+        ));
+        out.push_str(&format!("  RL%th_slope_m = {}\n", self.th_onelayer_lnd[2]));
+        out.push_str(&format!(
+            "  RL%refine_slope_s = {}\n",
+            flag(self.refine_onelayer_lnd[3])
+        ));
+        out.push_str(&format!("  RL%th_slope_s = {}\n", self.th_onelayer_lnd[3]));
+
+        // land two-layer soil criteria (each threshold is a [f64; 2] pair)
+        let two = [
+            ("k_s_m", 0usize),
+            ("k_s_s", 1),
+            ("k_solids_m", 2),
+            ("k_solids_s", 3),
+            ("tkdry_m", 4),
+            ("tkdry_s", 5),
+            ("tksatf_m", 6),
+            ("tksatf_s", 7),
+            ("tksatu_m", 8),
+            ("tksatu_s", 9),
+        ];
+        for (name, idx) in two {
+            out.push_str(&format!(
+                "  RL%refine_{name} = {}\n",
+                flag(self.refine_twolayer_lnd[idx])
+            ));
+            out.push_str(&format!(
+                "  RL%th_{name} = {}\n",
+                pair(self.th_twolayer_lnd[idx])
+            ));
+        }
+
+        // ocean criteria
+        out.push_str(&format!(
+            "  RL%refine_sea_ratio = {}\n",
+            flag(self.refine_sea_ratio)
+        ));
+        out.push_str(&format!("  RL%th_sea_ratio = {}\n", pair(self.th_sea_ratio)));
+        let ocn = [
+            ("sst_m", 0usize),
+            ("sst_s", 1),
+            ("ssh_m", 2),
+            ("ssh_s", 3),
+            ("eke_m", 4),
+            ("eke_s", 5),
+            ("sea_slope_m", 6),
+            ("sea_slope_s", 7),
+        ];
+        for (name, idx) in ocn {
+            out.push_str(&format!(
+                "  RL%refine_{name} = {}\n",
+                flag(self.refine_onelayer_ocn[idx])
+            ));
+            out.push_str(&format!(
+                "  RL%th_{name} = {}\n",
+                self.th_onelayer_ocn[idx]
+            ));
+        }
+
+        // atmosphere criteria
+        out.push_str(&format!(
+            "  RL%refine_typhoon_m = {}\n",
+            flag(self.refine_onelayer_atmos[0])
+        ));
+        out.push_str(&format!("  RL%th_typhoon_m = {}\n", self.th_onelayer_atmos[0]));
+        out.push_str(&format!(
+            "  RL%refine_typhoon_s = {}\n",
+            flag(self.refine_onelayer_atmos[1])
+        ));
+        out.push_str(&format!("  RL%th_typhoon_s = {}\n", self.th_onelayer_atmos[1]));
+
+        out.push_str("/\n");
+        out
     }
 
     fn validate_like_read_nl(&mut self, mesh_type: &str, mode_grid: &str) -> Result<(), String> {
