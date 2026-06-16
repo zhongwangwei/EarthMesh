@@ -171,6 +171,7 @@ struct EarthMeshApp {
     last_phase: String,
     dom_bbox: [f64; 4],   // west, east, north, south (degrees)
     dom_circle: [f64; 3], // center lon, center lat, radius (km)
+    dom_close: Vec<[f64; 2]>, // close-curve polygon vertices [lon, lat]
     results_detached: bool,
     output_files: Vec<PathBuf>,
     mesh_view: Option<earthmesh_cli::GridfileMeshPoints>,
@@ -201,6 +202,7 @@ impl Default for EarthMeshApp {
             last_phase: String::new(),
             dom_bbox: [110.0, 120.0, 35.0, 20.0],
             dom_circle: [115.0, 25.0, 500.0],
+            dom_close: vec![[110.0, 15.0], [125.0, 15.0], [125.0, 30.0], [110.0, 30.0]],
             results_detached: false,
             output_files: Vec::new(),
             mesh_view: None,
@@ -626,6 +628,22 @@ impl EarthMeshApp {
                 earthmesh_cli::write_circle_mask_netcdf(&path, &mask).map_err(|e| e.to_string())?;
                 Ok(Some(path))
             }
+            "close" => {
+                if self.dom_close.len() < 3 {
+                    return Err("a close-curve domain needs at least 3 points".to_string());
+                }
+                let mask = earthmesh_cli::CloseMask {
+                    refine_degree: 0,
+                    points: self
+                        .dom_close
+                        .iter()
+                        .map(|p| earthmesh_cli::LonLatPoint { lon: p[0], lat: p[1] })
+                        .collect(),
+                };
+                let path = dir.join("earthmesh_domain_close.nc");
+                earthmesh_cli::write_close_mask_netcdf(&path, &mask).map_err(|e| e.to_string())?;
+                Ok(Some(path))
+            }
             _ => Ok(None),
         }
     }
@@ -919,6 +937,30 @@ impl EarthMeshApp {
                         f64_row(ui, tr(lang, "dom.clon"), &mut self.dom_circle[0]);
                         f64_row(ui, tr(lang, "dom.clat"), &mut self.dom_circle[1]);
                         f64_row(ui, tr(lang, "dom.radius"), &mut self.dom_circle[2]);
+                    }
+                    "close" => {
+                        ui.label(tr(lang, "dom.poly_points"));
+                        ui.vertical(|ui| {
+                            let mut remove = None;
+                            for i in 0..self.dom_close.len() {
+                                ui.horizontal(|ui| {
+                                    let p = &mut self.dom_close[i];
+                                    ui.add(egui::DragValue::new(&mut p[0]).speed(0.1).prefix("lon "));
+                                    ui.add(egui::DragValue::new(&mut p[1]).speed(0.1).prefix("lat "));
+                                    if self.dom_close.len() > 3 && ui.small_button("✕").clicked() {
+                                        remove = Some(i);
+                                    }
+                                });
+                            }
+                            if let Some(i) = remove {
+                                self.dom_close.remove(i);
+                            }
+                            if ui.button(tr(lang, "dom.add_point")).clicked() {
+                                let last = self.dom_close.last().copied().unwrap_or([115.0, 22.0]);
+                                self.dom_close.push(last);
+                            }
+                        });
+                        ui.end_row();
                     }
                     _ => {
                         ui.label("");
