@@ -10,6 +10,7 @@ earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_cli = { path = "../earthmesh_cli", features = ["static-netcdf"] }
 rfd = "0.17.2"
 open = "5.3.5"
+walkers = { version = "0.53.0", features = ["pmtiles", "mvt"] }
 
 [package.metadata.packager]
 product-name = "EarthMesh"
@@ -17,3 +18,5 @@ identifier = "edu.sysu.earthmesh.gui"
 icons = ["icons/icon.icns", "icons/icon.png"]
 category = "Education"
 authors = ["Zhongwang Wei @ SYSU"]
+# Offline Protomaps basemap (vector PMTiles, OSM/ODbL) bundled into Resources.
+resources = ["assets/world.pmtiles"]

@@ -37,7 +37,7 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("results.3d_soon", "Run a case to see its mesh here.", "运行一个算例后这里显示网格。"),
     ("results.cells", "cells", "单元"),
     ("results.vertices", "vertices", "顶点"),
-    ("results.map_hint", "Cell centres on a lon/lat map (denser = refined). 3D globe next.", "经纬度地图上的单元中心（越密=越细化）。3D 地球随后。"),
+    ("results.map_hint", "Mesh on an offline OpenStreetMap base — scroll to zoom, drag to pan.", "网格叠在离线 OpenStreetMap 底图上 —— 滚轮缩放、拖动平移。"),
     ("note.cancel_soon", "Cancel needs the progress seam (next)", "取消需引擎进度接缝（下一步）"),
     ("status.cancelled", "Run cancelled.", "已取消运行。"),
     ("log.cancel_req", "Cancel requested", "已请求取消"),

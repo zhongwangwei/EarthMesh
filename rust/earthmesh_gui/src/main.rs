@@ -48,6 +48,26 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Locate the bundled offline basemap (Protomaps vector PMTiles). Checks, in
+/// order: an explicit env override, the macOS `.app` Resources dir (next to the
+/// executable), and the dev `assets/` dir. Returns the first that exists so the
+/// map works both from a packaged bundle and from `cargo run`.
+fn basemap_path() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("EARTHMESH_BASEMAP") {
+        candidates.push(PathBuf::from(p));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // EarthMesh.app/Contents/MacOS/<bin> → Contents/Resources/world.pmtiles
+            candidates.push(dir.join("../Resources/world.pmtiles"));
+            candidates.push(dir.join("world.pmtiles"));
+        }
+    }
+    candidates.push(workspace_root().join("rust/earthmesh_gui/assets/world.pmtiles"));
+    candidates.into_iter().find(|p| p.exists())
+}
+
 fn output_formats_for(mesh_type: &str) -> &'static [&'static str] {
     match mesh_type {
         "atmosmesh" => &["MPAS", "MPAS-Simple"],
@@ -154,6 +174,8 @@ struct EarthMeshApp {
     results_detached: bool,
     output_files: Vec<PathBuf>,
     mesh_view: Option<earthmesh_cli::GridfileMeshPoints>,
+    tiles: Option<walkers::PmTiles>, // offline Protomaps basemap; None → wireframe fallback
+    map_memory: walkers::MapMemory,
 }
 
 impl Default for EarthMeshApp {
@@ -180,6 +202,8 @@ impl Default for EarthMeshApp {
             results_detached: false,
             output_files: Vec::new(),
             mesh_view: None,
+            tiles: None,
+            map_memory: walkers::MapMemory::default(),
         }
     }
 }
@@ -226,6 +250,49 @@ fn draw_mesh_2d(ui: &mut egui::Ui, mesh: &earthmesh_cli::GridfileMeshPoints) {
                 painter.line_segment([a, b], stroke);
                 painter.line_segment([b, c], stroke);
                 painter.line_segment([c, a], stroke);
+            }
+        }
+    }
+}
+
+/// Draws the mesh triangle wireframe on top of a walkers slippy map, projecting
+/// each W-vertex through the map's `Projector` so it tracks pan/zoom.
+struct MeshOverlay<'m> {
+    mesh: &'m earthmesh_cli::GridfileMeshPoints,
+}
+
+impl walkers::Plugin for MeshOverlay<'_> {
+    fn run(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        _response: &egui::Response,
+        projector: &walkers::Projector,
+        _map_memory: &walkers::MapMemory,
+    ) {
+        let mesh = self.mesh;
+        let wn = mesh.w_lon.len();
+        let painter = ui.painter();
+        let stroke = egui::Stroke::new(0.6, egui::Color32::from_rgb(255, 140, 0));
+        let project = |idx1: i32| -> Option<egui::Pos2> {
+            let i = idx1 as usize;
+            (idx1 >= 1 && i <= wn).then(|| {
+                projector
+                    .project(walkers::lon_lat(mesh.w_lon[i - 1], mesh.w_lat[i - 1]))
+                    .to_pos2()
+            })
+        };
+        // Skip triangles whose screen edges span more than half the viewport —
+        // those wrap across the date line and would streak across the map.
+        let clip = ui.clip_rect();
+        let span_limit = clip.width().max(clip.height());
+        let near = |p: egui::Pos2, q: egui::Pos2| (p - q).length() < span_limit * 0.5;
+        for t in mesh.m_to_w.chunks_exact(3) {
+            if let (Some(a), Some(b), Some(c)) = (project(t[0]), project(t[1]), project(t[2])) {
+                if near(a, b) && near(b, c) && near(a, c) {
+                    painter.line_segment([a, b], stroke);
+                    painter.line_segment([b, c], stroke);
+                    painter.line_segment([c, a], stroke);
+                }
             }
         }
     }
@@ -459,6 +526,7 @@ impl EarthMeshApp {
                             .find(|p| p.to_string_lossy().contains("gridfile"))
                             .or_else(|| self.output_files.first())
                             .and_then(|p| earthmesh_cli::read_gridfile_mesh_points(p).ok());
+                        self.frame_mesh_view();
                     }
                     Err(err) => {
                         self.set_status("status.run_failed", err.clone());
@@ -829,6 +897,31 @@ impl EarthMeshApp {
         }
     }
 
+    /// Centre the basemap on the freshly-loaded mesh and pick a zoom that frames
+    /// its lon/lat extent (clamped to the basemap's 0–8 zoom range).
+    fn frame_mesh_view(&mut self) {
+        let Some(mesh) = &self.mesh_view else { return };
+        if mesh.m_lon.is_empty() {
+            return;
+        }
+        let (mut lon_min, mut lon_max) = (f64::MAX, f64::MIN);
+        let (mut lat_min, mut lat_max) = (f64::MAX, f64::MIN);
+        for (&lo, &la) in mesh.m_lon.iter().zip(&mesh.m_lat) {
+            let lo = ((lo + 180.0).rem_euclid(360.0)) - 180.0;
+            lon_min = lon_min.min(lo);
+            lon_max = lon_max.max(lo);
+            lat_min = lat_min.min(la);
+            lat_max = lat_max.max(la);
+        }
+        let clon = 0.5 * (lon_min + lon_max);
+        let clat = 0.5 * (lat_min + lat_max);
+        let span = (lon_max - lon_min).max(lat_max - lat_min).max(0.5);
+        // Fit `span` degrees into a ~700 px viewport: world is 256·2^z px wide.
+        let zoom = (980.0 / span).log2().clamp(0.0, 8.0);
+        self.map_memory.center_at(walkers::lon_lat(clon, clat));
+        let _ = self.map_memory.set_zoom(zoom);
+    }
+
     fn results_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         if self.output_files.is_empty() {
@@ -857,9 +950,23 @@ impl EarthMeshApp {
             }
         });
         ui.separator();
-        if let Some(mesh) = &self.mesh_view {
+        if self.mesh_view.is_some() {
             ui.weak(tr(lang, "results.map_hint"));
-            draw_mesh_2d(ui, mesh);
+            if let Some(tiles) = &mut self.tiles {
+                // Offline Protomaps basemap with the mesh wireframe overlaid.
+                let mesh = self.mesh_view.as_ref().unwrap();
+                let map = walkers::Map::new(
+                    Some(tiles as &mut dyn walkers::Tiles),
+                    &mut self.map_memory,
+                    walkers::lon_lat(0.0, 0.0),
+                )
+                .with_plugin(MeshOverlay { mesh });
+                ui.add(map);
+                ui.weak("© OpenStreetMap contributors · Protomaps");
+            } else {
+                // No bundled basemap → equirectangular wireframe fallback.
+                draw_mesh_2d(ui, self.mesh_view.as_ref().unwrap());
+            }
         } else {
             ui.weak(tr(lang, "results.3d_soon"));
         }
@@ -1083,6 +1190,14 @@ fn main() -> eframe::Result {
             install_fonts(&cc.egui_ctx);
             configure_style(&cc.egui_ctx);
             let mut app = EarthMeshApp::default();
+            // Offline vector basemap, if bundled. Missing file → wireframe fallback.
+            app.tiles = basemap_path().map(|p| {
+                walkers::PmTiles::with_style(
+                    p,
+                    walkers::Style::protomaps_light(),
+                    cc.egui_ctx.clone(),
+                )
+            });
             app.load(workspace_root().join("examples/default/atmosphere_hex_global.nml"));
             Ok(Box::new(app))
         }),
