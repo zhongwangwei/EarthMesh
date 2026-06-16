@@ -272,7 +272,8 @@ impl walkers::Plugin for MeshOverlay<'_> {
         let mesh = self.mesh;
         let wn = mesh.w_lon.len();
         let painter = ui.painter();
-        let stroke = egui::Stroke::new(0.6, egui::Color32::from_rgb(255, 140, 0));
+        // Semi-transparent so the basemap underneath stays readable.
+        let stroke = egui::Stroke::new(0.6, egui::Color32::from_rgba_unmultiplied(255, 120, 0, 150));
         let project = |idx1: i32| -> Option<egui::Pos2> {
             let i = idx1 as usize;
             (idx1 >= 1 && i <= wn).then(|| {
@@ -1191,12 +1192,17 @@ fn main() -> eframe::Result {
             configure_style(&cc.egui_ctx);
             let mut app = EarthMeshApp::default();
             // Offline vector basemap, if bundled. Missing file → wireframe fallback.
+            // tile_size 256 makes the map zoom equal the source tile zoom and,
+            // crucially, zeroes walkers' tile-size zoom adjustment — its default
+            // 1024 subtracts 2 from the zoom in mercator::tile_id, which underflows
+            // (panics) for any map zoom below 2, e.g. a framed global mesh.
             app.tiles = basemap_path().map(|p| {
                 walkers::PmTiles::with_style(
                     p,
                     walkers::Style::protomaps_light(),
                     cc.egui_ctx.clone(),
                 )
+                .with_tile_size(256)
             });
             app.load(workspace_root().join("examples/default/atmosphere_hex_global.nml"));
             Ok(Box::new(app))
