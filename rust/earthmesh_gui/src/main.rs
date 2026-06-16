@@ -154,6 +154,47 @@ struct EarthMeshApp {
     results_detached: bool,
     output_files: Vec<PathBuf>,
     mesh_view: Option<earthmesh_cli::GridfileMeshPoints>,
+    tiles: Option<walkers::HttpTiles>,
+    map_memory: walkers::MapMemory,
+}
+
+/// walkers plugin that draws the mesh wireframe over the map using the projector.
+struct MeshOverlay<'m> {
+    mesh: &'m earthmesh_cli::GridfileMeshPoints,
+}
+
+impl walkers::Plugin for MeshOverlay<'_> {
+    fn run(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        _response: &egui::Response,
+        projector: &walkers::Projector,
+        _map_memory: &walkers::MapMemory,
+    ) {
+        let painter = ui.painter();
+        let mesh = self.mesh;
+        let wn = mesh.w_lon.len();
+        let max_edge = ui.max_rect().width() * 0.5;
+        let wpos = |idx1: i32| -> Option<egui::Pos2> {
+            let i = idx1 as usize;
+            (idx1 >= 1 && i <= wn).then(|| {
+                projector
+                    .project(walkers::lon_lat(mesh.w_lon[i - 1], mesh.w_lat[i - 1]))
+                    .to_pos2()
+            })
+        };
+        let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgb(255, 100, 70));
+        let ok = |p: egui::Pos2, q: egui::Pos2| (p - q).length() < max_edge;
+        for t in mesh.m_to_w.chunks_exact(3) {
+            if let (Some(a), Some(b), Some(c)) = (wpos(t[0]), wpos(t[1]), wpos(t[2])) {
+                if ok(a, b) && ok(b, c) && ok(a, c) {
+                    painter.line_segment([a, b], stroke);
+                    painter.line_segment([b, c], stroke);
+                    painter.line_segment([c, a], stroke);
+                }
+            }
+        }
+    }
 }
 
 impl Default for EarthMeshApp {
@@ -180,56 +221,12 @@ impl Default for EarthMeshApp {
             results_detached: false,
             output_files: Vec::new(),
             mesh_view: None,
+            tiles: None,
+            map_memory: walkers::MapMemory::default(),
         }
     }
 }
 
-/// Draw the mesh cell-centres on a simple equirectangular lon/lat map.
-fn draw_mesh_2d(ui: &mut egui::Ui, mesh: &earthmesh_cli::GridfileMeshPoints) {
-    let height = (ui.available_height() - 6.0).max(180.0);
-    let (rect, _resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(18, 28, 42));
-    let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
-    let to_screen = |lon: f64, lat: f64| {
-        let x = rect.left() + ((norm_lon(lon) + 180.0) / 360.0) as f32 * rect.width();
-        let y = rect.top() + ((90.0 - lat) / 180.0) as f32 * rect.height();
-        egui::pos2(x, y)
-    };
-    let grid = egui::Color32::from_gray(55);
-    for lon in (-180..=180).step_by(30) {
-        painter.line_segment(
-            [to_screen(lon as f64, 90.0), to_screen(lon as f64, -90.0)],
-            egui::Stroke::new(0.5, grid),
-        );
-    }
-    for lat in (-90..=90).step_by(30) {
-        painter.line_segment(
-            [to_screen(-180.0, lat as f64), to_screen(180.0, lat as f64)],
-            egui::Stroke::new(0.5, grid),
-        );
-    }
-    // Mesh wireframe: each triangle's three edges (W-vertices, 1-based ids).
-    let wn = mesh.w_lon.len();
-    let stroke = egui::Stroke::new(0.4, egui::Color32::from_rgb(110, 185, 220));
-    let wpos = |idx1: i32| -> Option<egui::Pos2> {
-        let i = idx1 as usize;
-        (idx1 >= 1 && i <= wn).then(|| to_screen(mesh.w_lon[i - 1], mesh.w_lat[i - 1]))
-    };
-    let half = rect.width() * 0.5;
-    let near = |p: egui::Pos2, q: egui::Pos2| (p.x - q.x).abs() < half;
-    for t in mesh.m_to_w.chunks_exact(3) {
-        if let (Some(a), Some(b), Some(c)) = (wpos(t[0]), wpos(t[1]), wpos(t[2])) {
-            // Skip date-line-wrapping triangles so they don't streak across the map.
-            if near(a, b) && near(b, c) && near(a, c) {
-                painter.line_segment([a, b], stroke);
-                painter.line_segment([b, c], stroke);
-                painter.line_segment([c, a], stroke);
-            }
-        }
-    }
-}
 
 fn collect_outputs(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -857,9 +854,22 @@ impl EarthMeshApp {
             }
         });
         ui.separator();
-        if let Some(mesh) = &self.mesh_view {
+        if self.mesh_view.is_some() {
             ui.weak(tr(lang, "results.map_hint"));
-            draw_mesh_2d(ui, mesh);
+            let center = {
+                let m = self.mesh_view.as_ref().unwrap();
+                let n = m.m_lon.len().max(1) as f64;
+                walkers::lon_lat(
+                    m.m_lon.iter().sum::<f64>() / n,
+                    m.m_lat.iter().sum::<f64>() / n,
+                )
+            };
+            let mesh = self.mesh_view.as_ref().unwrap();
+            let tiles = self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles);
+            ui.add(
+                walkers::Map::new(tiles, &mut self.map_memory, center)
+                    .with_plugin(MeshOverlay { mesh }),
+            );
         } else {
             ui.weak(tr(lang, "results.3d_soon"));
         }
@@ -1083,6 +1093,10 @@ fn main() -> eframe::Result {
             install_fonts(&cc.egui_ctx);
             configure_style(&cc.egui_ctx);
             let mut app = EarthMeshApp::default();
+            app.tiles = Some(walkers::HttpTiles::new(
+                walkers::sources::OpenStreetMap,
+                cc.egui_ctx.clone(),
+            ));
             app.load(workspace_root().join("examples/default/atmosphere_hex_global.nml"));
             Ok(Box::new(app))
         }),
