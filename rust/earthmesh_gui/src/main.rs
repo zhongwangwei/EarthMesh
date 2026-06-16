@@ -177,7 +177,7 @@ struct EarthMeshApp {
     tiles: Option<walkers::PmTiles>, // offline Protomaps basemap; None → wireframe fallback
     map_memory: walkers::MapMemory,
     frame_pending: bool, // re-frame the map on the next render, once the widget size is known
-    gen_mpas: bool,      // atmosmesh: also write a standard MPAS mesh NetCDF after the run
+    gen_output: bool,    // also write the selected model's standard file (MPAS/FVCOM…) after the run
 }
 
 impl Default for EarthMeshApp {
@@ -207,7 +207,7 @@ impl Default for EarthMeshApp {
             tiles: None,
             map_memory: walkers::MapMemory::default(),
             frame_pending: false,
-            gen_mpas: false,
+            gen_output: false,
         }
     }
 }
@@ -441,9 +441,14 @@ fn collect_outputs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Find the run's gridfile and write a standard MPAS mesh (+ graph.info) under
-/// `<out>/mpas/`, entirely in Rust. Returns the MPAS path or an error string.
-fn write_standard_mpas_for_output(out_dir: &str, nxp: usize, grid: &str) -> Result<String, String> {
+/// Find the run's gridfile and write the standard file for the selected model
+/// (MPAS / FVCOM …), entirely in Rust. Returns the written path or an error.
+fn write_standard_model_output(
+    out_dir: &str,
+    nxp: usize,
+    grid: &str,
+    fmt: &str,
+) -> Result<String, String> {
     let base = Path::new(out_dir);
     let mut gridfile = None;
     if let Ok(rd) = std::fs::read_dir(base.join("gridfile")) {
@@ -459,15 +464,26 @@ fn write_standard_mpas_for_output(out_dir: &str, nxp: usize, grid: &str) -> Resu
             }
         }
     }
-    let gridfile = gridfile.ok_or_else(|| "MPAS: gridfile not found in output".to_string())?;
-    let mpas_dir = base.join("mpas");
-    std::fs::create_dir_all(&mpas_dir).map_err(|e| e.to_string())?;
-    let stem = format!("MPASOUT_NXP{nxp:04}_{grid}");
-    let mesh_out = mpas_dir.join(format!("{stem}.nc4"));
-    let graph_out = mpas_dir.join(format!("{stem}.graph.info"));
-    earthmesh_cli::write_standard_mpas_from_gridfile(&gridfile, &mesh_out, &graph_out, nxp)
-        .map_err(|e| format!("MPAS write failed: {e}"))?;
-    Ok(mesh_out.display().to_string())
+    let gridfile = gridfile.ok_or_else(|| "gridfile not found in output".to_string())?;
+    let std_dir = base.join("standard");
+    std::fs::create_dir_all(&std_dir).map_err(|e| e.to_string())?;
+    let stem = format!("NXP{nxp:04}_{grid}");
+    if fmt.starts_with("MPAS") {
+        let mesh_out = std_dir.join(format!("MPASOUT_{stem}.nc4"));
+        let graph_out = std_dir.join(format!("MPASOUT_{stem}.graph.info"));
+        earthmesh_cli::write_standard_mpas_from_gridfile(&gridfile, &mesh_out, &graph_out, nxp)
+            .map_err(|e| format!("MPAS write failed: {e}"))?;
+        Ok(mesh_out.display().to_string())
+    } else if fmt == "FVCOM" {
+        let out_2dm = std_dir.join(format!("FVCOM_{stem}.2dm"));
+        earthmesh_cli::write_standard_fvcom_from_gridfile(&gridfile, &out_2dm)
+            .map_err(|e| format!("FVCOM write failed: {e}"))?;
+        Ok(out_2dm.display().to_string())
+    } else {
+        Err(format!(
+            "standard '{fmt}' output needs the data pipeline (not produced from a base gridfile yet)"
+        ))
+    }
 }
 
 impl EarthMeshApp {
@@ -609,9 +625,10 @@ impl EarthMeshApp {
         let cancel_worker = cancel.clone();
         let ctx = ctx.clone();
         let out_hint = self.output_dir().display().to_string();
-        let gen_mpas = self.gen_mpas && self.mkgrd.mesh_type == "atmosmesh";
+        let gen_output = self.gen_output;
         let nxp = self.mkgrd.nxp.max(0) as usize;
         let grid = self.mkgrd.mode_grid.clone();
+        let fmt = self.mkgrd.output_format.clone();
         let ptx_mpas = ptx.clone();
         thread::spawn(move || {
             earthmesh_core::progress::set(move |phase, done, total| {
@@ -624,11 +641,11 @@ impl EarthMeshApp {
                 );
             earthmesh_core::progress::clear();
             let msg = match result {
-                Ok(_) if gen_mpas => {
-                    // Pure-Rust standard MPAS write — can be slow on big meshes,
+                Ok(_) if gen_output => {
+                    // Pure-Rust standard model file — can be slow on big meshes,
                     // so it runs here in the worker, not on the UI thread.
-                    let _ = ptx_mpas.send(("mpas".to_string(), 0, 1));
-                    match write_standard_mpas_for_output(&out_hint, nxp, &grid) {
+                    let _ = ptx_mpas.send(("output".to_string(), 0, 1));
+                    match write_standard_model_output(&out_hint, nxp, &grid, &fmt) {
                         Ok(_) => Ok(out_hint),
                         Err(err) => Err(err),
                     }
@@ -821,10 +838,8 @@ impl EarthMeshApp {
             }
             combo_row(ui, tr(lang, "f.output_format"), &mut self.mkgrd.output_format, allowed);
 
-            // Standard MPAS output is produced in pure Rust from the gridfile.
-            if self.mkgrd.mesh_type == "atmosmesh" {
-                check_row(ui, tr(lang, "f.gen_mpas"), &mut self.gen_mpas);
-            }
+            // The selected model's standard file is produced in pure Rust.
+            check_row(ui, tr(lang, "f.gen_mpas"), &mut self.gen_output);
 
             let grids = grid_modes_for(&self.mkgrd.mesh_type);
             mapped_combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, grids, lang);

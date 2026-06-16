@@ -24291,6 +24291,16 @@ pub fn write_standard_mpas_from_gridfile(
     })
 }
 
+/// Write the standard FVCOM `.2dm` mesh straight from a base gridfile, in pure
+/// Rust. Open-boundary segments are omitted (none for a from-scratch mesh).
+pub fn write_standard_fvcom_from_gridfile(
+    gridfile: impl AsRef<Path>,
+    output_2dm: impl AsRef<Path>,
+) -> io::Result<FvcomMesh2dmWriteReport> {
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    write_fvcom_mesh_2dm(output_2dm, &mesh, &[])
+}
+
 /// Rust entry point for the `mask_postproc_Atmos` branch when
 /// `output_format == 'MPAS-Simple'`.
 ///
