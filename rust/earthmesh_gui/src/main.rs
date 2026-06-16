@@ -149,6 +149,8 @@ struct EarthMeshApp {
     cancel_flag: Option<Arc<AtomicBool>>,
     progress: Option<(String, usize, usize)>,
     last_phase: String,
+    dom_bbox: [f64; 4],   // west, east, north, south (degrees)
+    dom_circle: [f64; 3], // center lon, center lat, radius (km)
 }
 
 impl Default for EarthMeshApp {
@@ -170,6 +172,8 @@ impl Default for EarthMeshApp {
             cancel_flag: None,
             progress: None,
             last_phase: String::new(),
+            dom_bbox: [110.0, 120.0, 35.0, 20.0],
+            dom_circle: [115.0, 25.0, 500.0],
         }
     }
 }
@@ -248,9 +252,59 @@ impl EarthMeshApp {
         }
     }
 
+    /// Author the regional boundary NetCDF from the entered geometry, returning
+    /// its path. Returns Ok(None) for shapes the GUI doesn't yet author (close /
+    /// lambert), which keep using the user-set boundary file prefix.
+    fn generate_domain_file(&self) -> Result<Option<PathBuf>, String> {
+        let dir = std::env::temp_dir();
+        match self.mkgrd.mask_domain_type.as_str() {
+            "bbox" => {
+                let mask = earthmesh_cli::BBoxMask {
+                    refine_degree: 0,
+                    points: vec![earthmesh_cli::BBoxPoint {
+                        west: self.dom_bbox[0],
+                        east: self.dom_bbox[1],
+                        north: self.dom_bbox[2],
+                        south: self.dom_bbox[3],
+                    }],
+                };
+                let path = dir.join("earthmesh_domain_bbox.nc");
+                earthmesh_cli::write_bbox_mask_netcdf(&path, &mask).map_err(|e| e.to_string())?;
+                Ok(Some(path))
+            }
+            "circle" => {
+                let mask = earthmesh_cli::CircleMask {
+                    refine_degree: 0,
+                    points: vec![earthmesh_cli::LonLatPoint {
+                        lon: self.dom_circle[0],
+                        lat: self.dom_circle[1],
+                    }],
+                    radius_km: vec![self.dom_circle[2]],
+                };
+                let path = dir.join("earthmesh_domain_circle.nc");
+                earthmesh_cli::write_circle_mask_netcdf(&path, &mask).map_err(|e| e.to_string())?;
+                Ok(Some(path))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn start_run(&mut self, ctx: &egui::Context) {
         if self.running {
             return;
+        }
+        // Regional: author the boundary file from the entered geometry first so
+        // the namelist points at it.
+        if !self.mkgrd.mask_domain_global {
+            match self.generate_domain_file() {
+                Ok(Some(path)) => {
+                    let shown = path.display().to_string();
+                    self.mkgrd.mask_domain_fprefix = shown.clone();
+                    self.push_log("dom.generated", &shown);
+                }
+                Ok(None) => {}
+                Err(err) => return self.set_status("status.stage_error", err),
+            }
         }
         let nml_path = std::env::temp_dir().join("earthmesh_gui_run.nml");
         if let Err(err) = std::fs::write(&nml_path, self.combined_namelist()) {
@@ -468,7 +522,25 @@ impl EarthMeshApp {
             ui.end_row();
             if !self.mkgrd.mask_domain_global {
                 combo_row(ui, tr(lang, "f.domain_shape"), &mut self.mkgrd.mask_domain_type, REGION_TYPES);
-                text_row(ui, tr(lang, "f.domain_prefix"), &mut self.mkgrd.mask_domain_fprefix);
+                match self.mkgrd.mask_domain_type.as_str() {
+                    "bbox" => {
+                        f64_row(ui, tr(lang, "dom.west"), &mut self.dom_bbox[0]);
+                        f64_row(ui, tr(lang, "dom.east"), &mut self.dom_bbox[1]);
+                        f64_row(ui, tr(lang, "dom.north"), &mut self.dom_bbox[2]);
+                        f64_row(ui, tr(lang, "dom.south"), &mut self.dom_bbox[3]);
+                    }
+                    "circle" => {
+                        f64_row(ui, tr(lang, "dom.clon"), &mut self.dom_circle[0]);
+                        f64_row(ui, tr(lang, "dom.clat"), &mut self.dom_circle[1]);
+                        f64_row(ui, tr(lang, "dom.radius"), &mut self.dom_circle[2]);
+                    }
+                    _ => {
+                        ui.label("");
+                        ui.weak(tr(lang, "dom.poly_note"));
+                        ui.end_row();
+                        text_row(ui, tr(lang, "f.domain_prefix"), &mut self.mkgrd.mask_domain_fprefix);
+                    }
+                }
             }
 
             check_row(ui, tr(lang, "f.refine_master"), &mut self.mkgrd.refine);
