@@ -16175,23 +16175,34 @@ pub fn gridfile_mesh_from_fortran_indexed_state(
 
 /// Write the compact EarthMesh unstructured gridfile schema used by legacy
 /// refinement and mask post-processing code.
-/// Mesh node coordinates read from an EarthMesh gridfile, for visualisation.
+/// Mesh node coordinates + triangle→vertex connectivity read from an EarthMesh
+/// gridfile, for visualisation. `m_to_w` is flattened `sjx_points × 3` and holds
+/// the (1-based, Fortran-indexed) W-vertex ids of each triangle's three corners.
 pub struct GridfileMeshPoints {
     pub m_lon: Vec<f64>,
     pub m_lat: Vec<f64>,
     pub w_lon: Vec<f64>,
     pub w_lat: Vec<f64>,
+    pub m_to_w: Vec<i32>,
 }
 
-/// Read the M-point (cell-centre) and W-point (vertex) lon/lat arrays from an
-/// EarthMesh gridfile (`Unstructured_Mesh_Save` schema) for GUI visualisation.
+/// Read the M-point (cell-centre) and W-point (vertex) lon/lat arrays plus the
+/// triangle→vertex connectivity from an EarthMesh gridfile (`Unstructured_Mesh_Save`
+/// schema) for GUI visualisation.
 pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileMeshPoints> {
     let file = netcdf::open(path.as_ref()).map_err(netcdf_to_io_error)?;
+    let m_lon = required_values_f64(&file, "GLONM")?;
+    let m_lat = required_values_f64(&file, "GLATM")?;
+    let w_lon = required_values_f64(&file, "GLONW")?;
+    let w_lat = required_values_f64(&file, "GLATW")?;
+    let m_to_w =
+        required_values_i32_matrix(&file, "itab_m%iw", "sjx_points", "dimb", m_lon.len(), 3)?;
     Ok(GridfileMeshPoints {
-        m_lon: required_values_f64(&file, "GLONM")?,
-        m_lat: required_values_f64(&file, "GLATM")?,
-        w_lon: required_values_f64(&file, "GLONW")?,
-        w_lat: required_values_f64(&file, "GLATW")?,
+        m_lon,
+        m_lat,
+        w_lon,
+        w_lat,
+        m_to_w,
     })
 }
 

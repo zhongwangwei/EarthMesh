@@ -210,9 +210,24 @@ fn draw_mesh_2d(ui: &mut egui::Ui, mesh: &earthmesh_cli::GridfileMeshPoints) {
             egui::Stroke::new(0.5, grid),
         );
     }
-    let color = egui::Color32::from_rgb(120, 200, 230);
-    for (lon, lat) in mesh.m_lon.iter().zip(&mesh.m_lat) {
-        painter.circle_filled(to_screen(*lon, *lat), 0.8, color);
+    // Mesh wireframe: each triangle's three edges (W-vertices, 1-based ids).
+    let wn = mesh.w_lon.len();
+    let stroke = egui::Stroke::new(0.4, egui::Color32::from_rgb(110, 185, 220));
+    let wpos = |idx1: i32| -> Option<egui::Pos2> {
+        let i = idx1 as usize;
+        (idx1 >= 1 && i <= wn).then(|| to_screen(mesh.w_lon[i - 1], mesh.w_lat[i - 1]))
+    };
+    let half = rect.width() * 0.5;
+    let near = |p: egui::Pos2, q: egui::Pos2| (p.x - q.x).abs() < half;
+    for t in mesh.m_to_w.chunks_exact(3) {
+        if let (Some(a), Some(b), Some(c)) = (wpos(t[0]), wpos(t[1]), wpos(t[2])) {
+            // Skip date-line-wrapping triangles so they don't streak across the map.
+            if near(a, b) && near(b, c) && near(a, c) {
+                painter.line_segment([a, b], stroke);
+                painter.line_segment([b, c], stroke);
+                painter.line_segment([c, a], stroke);
+            }
+        }
     }
 }
 
