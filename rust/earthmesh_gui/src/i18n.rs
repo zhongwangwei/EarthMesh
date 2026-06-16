@@ -50,6 +50,7 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("mesh.land", "Land", "陆面"),
     ("mesh.ocean", "Ocean", "海洋"),
     ("mesh.atmos", "Atmosphere", "大气"),
+    ("mesh.loc", "Land-Ocean coupled", "陆海耦合"),
     ("mesh.earth", "Earth system", "地球系统"),
     ("mesh.custom_note", "Custom — engine support pending (reserved)", "Custom — 引擎暂不支持（预留）"),
     // friendly grid shapes
@@ -91,7 +92,7 @@ const TABLE: &[(&str, &str, &str)] = &[
     ("f.expnme", "Experiment name", "算例名称"),
     ("f.base_dir", "Base dir", "算例目录"),
     ("f.mesh_type", "Mesh type", "网格类型"),
-    ("f.output_format", "Output format", "输出格式"),
+    ("f.output_format", "Model", "模型"),
     ("f.mode_grid", "Grid mode", "网格形状"),
     ("f.nxp", "NXP (resolution)", "NXP（分辨率）"),
     ("f.gridnum", "Grid pts / degree", "每度网格点数"),

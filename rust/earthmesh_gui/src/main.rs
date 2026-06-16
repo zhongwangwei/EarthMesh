@@ -22,10 +22,24 @@ const MESH_TYPES: &[(&str, &str)] = &[
     ("landmesh", "mesh.land"),
     ("oceanmesh", "mesh.ocean"),
     ("atmosmesh", "mesh.atmos"),
+    ("LOCmesh", "mesh.loc"),
     ("earthmesh", "mesh.earth"),
 ];
-// Only hex and tri are actually implemented by the engine for mesh generation.
-const GRID_MODES: &[(&str, &str)] = &[("hex", "grid.hex"), ("tri", "grid.tri")];
+// Only hex and tri are implemented by the engine. The per-mesh-type sets below
+// encode the domain convention (MPAS atmosphere = hexagonal; FVCOM ocean =
+// triangular; land / coupled = either). The engine itself accepts hex or tri for
+// any mesh type, so a loaded file keeping an off-convention shape is preserved.
+const GRID_HEX: &[(&str, &str)] = &[("hex", "grid.hex")];
+const GRID_TRI: &[(&str, &str)] = &[("tri", "grid.tri")];
+const GRID_BOTH: &[(&str, &str)] = &[("hex", "grid.hex"), ("tri", "grid.tri")];
+
+fn grid_modes_for(mesh_type: &str) -> &'static [(&'static str, &'static str)] {
+    match mesh_type {
+        "atmosmesh" => GRID_HEX,
+        "oceanmesh" => GRID_TRI,
+        _ => GRID_BOTH,
+    }
+}
 const REGION_TYPES: &[&str] = &["bbox", "lambert", "close", "circle"];
 const SET_DIS_TYPES: &[&str] = &["linear", "nonlinear1", "nonlinear2", "nonlinear3"];
 const MODE_FILE_DESCS: &[&str] = &["none", "EarthMesh", "MPAS", "IAP-Ocean", "FVCOM"];
@@ -421,20 +435,31 @@ impl EarthMeshApp {
         ui.heading(tr(lang, "head.basics"));
         ui.separator();
         egui::Grid::new("basics").num_columns(2).show(ui, |ui| {
+            // Case identity first.
+            text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
+            text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
+            ui.label("");
+            ui.label("");
+            ui.end_row();
+
+            // Cascade: mesh type → model (output format) → grid shape.
             mapped_combo_row(ui, tr(lang, "f.mesh_type"), &mut self.mkgrd.mesh_type, MESH_TYPES, lang);
-            // keep output_format valid for the chosen mesh type
+            ui.label("");
+            ui.weak(tr(lang, "mesh.custom_note"));
+            ui.end_row();
+
             let allowed = output_formats_for(&self.mkgrd.mesh_type);
             if !allowed.contains(&self.mkgrd.output_format.as_str()) {
                 self.mkgrd.output_format = allowed[0].to_string();
             }
-            ui.label("");
-            ui.weak(tr(lang, "mesh.custom_note"));
-            ui.end_row();
-            mapped_combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, GRID_MODES, lang);
-            int_row(ui, tr(lang, "f.nxp"), &mut self.mkgrd.nxp, 1..=100_000);
             combo_row(ui, tr(lang, "f.output_format"), &mut self.mkgrd.output_format, allowed);
 
-            // Domain: global vs regional
+            let grids = grid_modes_for(&self.mkgrd.mesh_type);
+            mapped_combo_row(ui, tr(lang, "f.mode_grid"), &mut self.mkgrd.mode_grid, grids, lang);
+
+            int_row(ui, tr(lang, "f.nxp"), &mut self.mkgrd.nxp, 1..=100_000);
+
+            // Domain: global vs regional, with conditional boundary options.
             ui.label(tr(lang, "f.domain_mode"));
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.mkgrd.mask_domain_global, true, tr(lang, "opt.global"));
@@ -448,8 +473,6 @@ impl EarthMeshApp {
 
             check_row(ui, tr(lang, "f.refine_master"), &mut self.mkgrd.refine);
             int_row(ui, tr(lang, "f.threads"), &mut self.mkgrd.openmp, 1..=1024);
-            text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
-            text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
         });
     }
 
