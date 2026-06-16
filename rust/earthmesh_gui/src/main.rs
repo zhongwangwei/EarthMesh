@@ -176,6 +176,7 @@ struct EarthMeshApp {
     mesh_view: Option<earthmesh_cli::GridfileMeshPoints>,
     tiles: Option<walkers::PmTiles>, // offline Protomaps basemap; None → wireframe fallback
     map_memory: walkers::MapMemory,
+    frame_pending: bool, // re-frame the map on the next render, once the widget size is known
 }
 
 impl Default for EarthMeshApp {
@@ -204,6 +205,7 @@ impl Default for EarthMeshApp {
             mesh_view: None,
             tiles: None,
             map_memory: walkers::MapMemory::default(),
+            frame_pending: false,
         }
     }
 }
@@ -296,34 +298,60 @@ impl walkers::Plugin for MeshOverlay<'_> {
         // Semi-transparent so the basemap underneath stays readable.
         let stroke = egui::Stroke::new(0.6, egui::Color32::from_rgba_unmultiplied(255, 120, 0, 150));
         let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
-        let project = |idx1: i32| -> Option<(egui::Pos2, f64)> {
+        // (normalized lon, lat) for a 1-based W index, or None if out of range.
+        let vert = |idx1: i32| -> Option<(f64, f64)> {
             let i = idx1 as usize;
-            (idx1 >= 1 && i <= wn).then(|| {
-                let pos = projector
-                    .project(walkers::lon_lat(mesh.w_lon[i - 1], mesh.w_lat[i - 1]))
-                    .to_pos2();
-                (pos, norm_lon(mesh.w_lon[i - 1]))
-            })
+            (idx1 >= 1 && i <= wn).then(|| (norm_lon(mesh.w_lon[i - 1]), mesh.w_lat[i - 1]))
         };
+        // Bring `x` within ±180° of the reference so a triangle reads as one
+        // contiguous shape instead of wrapping the long way around the globe.
+        let unwrap = |x: f64, reference: f64| -> f64 {
+            if x - reference > 180.0 {
+                x - 360.0
+            } else if x - reference < -180.0 {
+                x + 360.0
+            } else {
+                x
+            }
+        };
+        let proj =
+            |lon: f64, lat: f64| projector.project(walkers::lon_lat(lon, lat)).to_pos2();
+
         for t in mesh.m_to_w.chunks_exact(3) {
-            if let (Some((a, la)), Some((b, lb)), Some((c, lc))) =
-                (project(t[0]), project(t[1]), project(t[2]))
-            {
-                // In Web Mercator screen-x is linear in longitude, so an edge
-                // spanning a wide longitude draws as a long horizontal streak
-                // regardless of latitude. Skip triangles with any edge over 90°
-                // of longitude: that covers both ±180° seam-crossers and the
-                // pole-cap rows whose cells fan across many degrees of longitude.
-                // Below ~85° this mesh's cells span <35°, so nothing real is cut.
-                const MAX_EDGE_LON: f64 = 90.0;
-                let streaks = (la - lb).abs() > MAX_EDGE_LON
-                    || (lb - lc).abs() > MAX_EDGE_LON
-                    || (la - lc).abs() > MAX_EDGE_LON;
-                if !streaks {
-                    painter.line_segment([a, b], stroke);
-                    painter.line_segment([b, c], stroke);
-                    painter.line_segment([c, a], stroke);
-                }
+            let (Some((l0, a0)), Some((l1, a1)), Some((l2, a2))) =
+                (vert(t[0]), vert(t[1]), vert(t[2]))
+            else {
+                continue;
+            };
+            // Unwrap relative to the first vertex so date-line-crossing triangles
+            // become contiguous (small span) rather than spanning the whole globe.
+            let u1 = unwrap(l1, l0);
+            let u2 = unwrap(l2, l0);
+            let umin = l0.min(u1).min(u2);
+            let umax = l0.max(u1).max(u2);
+            // After unwrapping, a still-wide triangle is a pole-cap fan (this mesh
+            // only exceeds ~45° span above 86° latitude, mostly outside the ±85°
+            // Mercator band already). Those project to ugly streaks — drop them.
+            if umax - umin > 45.0 {
+                continue;
+            }
+            let draw_at = |offset: f64| {
+                let pa = proj(l0 + offset, a0);
+                let pb = proj(u1 + offset, a1);
+                let pc = proj(u2 + offset, a2);
+                painter.line_segment([pa, pb], stroke);
+                painter.line_segment([pb, pc], stroke);
+                painter.line_segment([pc, pa], stroke);
+            };
+            // The unwrapped triangle (truncated by the clip rect), plus a wrapped
+            // copy on the opposite edge when it straddles ±180° so the seam fills
+            // continuously instead of leaving a blank strip.
+            draw_at(0.0);
+            if umax > 180.0 {
+                draw_at(-360.0);
+            }
+            if umin < -180.0 {
+                draw_at(360.0);
             }
         }
     }
@@ -557,7 +585,7 @@ impl EarthMeshApp {
                             .find(|p| p.to_string_lossy().contains("gridfile"))
                             .or_else(|| self.output_files.first())
                             .and_then(|p| earthmesh_cli::read_gridfile_mesh_points(p).ok());
-                        self.frame_mesh_view();
+                        self.frame_pending = true;
                     }
                     Err(err) => {
                         self.set_status("status.run_failed", err.clone());
@@ -929,8 +957,11 @@ impl EarthMeshApp {
     }
 
     /// Centre the basemap on the freshly-loaded mesh and pick a zoom that frames
-    /// its lon/lat extent (clamped to the basemap's 0–8 zoom range).
-    fn frame_mesh_view(&mut self) {
+    /// it within the actual map widget. A global mesh is sized to fill the width
+    /// (its poles are stretched/clipped anyway); a regional mesh is fit whole.
+    /// Web Mercator screen-x is linear in longitude, so 1° spans `256·2^z / 360`
+    /// px; latitude is non-linear but a linear estimate is fine for framing.
+    fn frame_mesh_view(&mut self, avail_w: f32, avail_h: f32) {
         let Some(mesh) = &self.mesh_view else { return };
         if mesh.m_lon.is_empty() {
             return;
@@ -946,11 +977,14 @@ impl EarthMeshApp {
         }
         let clon = 0.5 * (lon_min + lon_max);
         let clat = 0.5 * (lat_min + lat_max);
-        let span = (lon_max - lon_min).max(lat_max - lat_min).max(0.5);
-        // Fit `span` degrees into a ~700 px viewport: world is 256·2^z px wide.
-        let zoom = (980.0 / span).log2().clamp(0.0, 8.0);
+        let lon_span = (lon_max - lon_min).max(0.5);
+        let lat_span = (lat_max - lat_min).max(0.5);
+        let zoom_w = (avail_w as f64 * 360.0 / (256.0 * lon_span)).log2();
+        let zoom_h = (avail_h as f64 * 360.0 / (256.0 * lat_span)).log2();
+        // Near-global meshes fill the width; smaller domains fit both axes.
+        let zoom = if lon_span >= 350.0 { zoom_w } else { zoom_w.min(zoom_h) };
         self.map_memory.center_at(walkers::lon_lat(clon, clat));
-        let _ = self.map_memory.set_zoom(zoom);
+        let _ = self.map_memory.set_zoom(zoom.clamp(0.0, 8.0));
     }
 
     fn results_ui(&mut self, ui: &mut egui::Ui) {
@@ -983,6 +1017,13 @@ impl EarthMeshApp {
         ui.separator();
         if self.mesh_view.is_some() {
             ui.weak(tr(lang, "results.map_hint"));
+            // Frame on the first render after a run, now that the map widget's
+            // real size is known (the dock and the detached window differ).
+            if self.frame_pending {
+                let (w, h) = (ui.available_width(), ui.available_height());
+                self.frame_mesh_view(w, h);
+                self.frame_pending = false;
+            }
             if let Some(tiles) = &mut self.tiles {
                 // Offline Protomaps basemap with the mesh wireframe overlaid.
                 let mesh = self.mesh_view.as_ref().unwrap();
@@ -1117,6 +1158,7 @@ impl eframe::App for EarthMeshApp {
             );
             if close {
                 self.results_detached = false;
+                self.frame_pending = true; // re-frame for the dock's size
             }
         }
 
@@ -1135,6 +1177,7 @@ impl eframe::App for EarthMeshApp {
                     ui.heading(tr(lang, "results.title"));
                     if ui.button(tr(lang, "results.detach")).clicked() {
                         self.results_detached = true;
+                        self.frame_pending = true; // re-frame for the window's size
                     }
                 });
                 ui.separator();
