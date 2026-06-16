@@ -893,17 +893,22 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 fn configure_style(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = egui::vec2(10.0, 8.0);
     style.spacing.button_padding = egui::vec2(8.0, 4.0);
     style.spacing.interact_size.y = 24.0;
     for (_s, font) in style.text_styles.iter_mut() {
         font.size *= 1.05;
     }
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 impl eframe::App for EarthMeshApp {
+    // eframe 0.34 requires `ui`; we keep the multi-panel layout in `update`
+    // (still invoked by the run loop) and leave `ui` empty.
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+
+    #[allow(deprecated)]
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_run();
         if self.running {

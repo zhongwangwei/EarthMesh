@@ -5,7 +5,7 @@ edition = "2021"
 description = "EarthMesh — unstructured mesh generation for land, ocean and atmosphere models"
 
 [dependencies]
-eframe = "0.31"
+eframe = "0.34"
 earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_cli = { path = "../earthmesh_cli", features = ["static-netcdf"] }
 rfd = "0.17.2"
