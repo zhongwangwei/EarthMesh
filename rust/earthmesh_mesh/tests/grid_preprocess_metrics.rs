@@ -260,6 +260,7 @@ fn spherical_cell_area_fans_vertices_like_fortran_getarea() {
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 1.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(120.0, 45.0)),
     ];
 
     approx_eq(
@@ -330,6 +331,7 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
     ];
     let cells_on_edge = vec![[0, 0], [0, 0], [2, 0], [2, 0]];
     let vertices_on_cell = vec![vec![], vec![], vec![2, 3, 4, 5]];
+    let n_edges_on_cell = vec![0, 0, 4];
 
     let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
         vertices: &vertices,
@@ -339,6 +341,7 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
         edges_on_vertex: &edges_on_vertex,
         cells_on_edge: &cells_on_edge,
         vertices_on_cell: &vertices_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
     })
     .expect("valid Fortran-indexed area input");
 
@@ -1222,6 +1225,71 @@ fn refine_sjx_regional_make_classifies_triangle_centers_from_source_mask() {
 }
 
 #[test]
+fn refine_sjx_regional_make_accepts_global_vertex_axes_one_longer_than_mask() {
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 45.0),
+    ];
+    let source_lon_vertices = vec![f64::NAN, -180.0, 0.0, 180.0];
+    let source_lat_vertices = vec![f64::NAN, 90.0, 0.0, -90.0];
+    let mut mask_patch = vec![vec![false; 3]; 3];
+    mask_patch[1][1] = true;
+
+    let refined =
+        earthmesh_mesh::refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
+            triangle_lonlat: &triangle_lonlat,
+            source_lon_vertices: &source_lon_vertices,
+            source_lat_vertices: &source_lat_vertices,
+            mask_patch: &mask_patch,
+            first_triangle_id: 2,
+        })
+        .expect("global source axes may have one more vertex than source-cell mask rows");
+
+    assert_eq!(refined, vec![false, false, true]);
+}
+
+#[test]
+fn dists_on_edge_layers_ignores_zero_padding_in_triangles_on_cell_rows() {
+    let unpadded_triangles_on_cell = vec![vec![], vec![], vec![2, 3], vec![3, 4]];
+    let padded_triangles_on_cell = vec![vec![], vec![], vec![2, 3, 1, 1], vec![3, 4, 1, 1]];
+    let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [5, 6, 7], [8, 9, 10]];
+    let cells_on_edge = vec![[0, 0]; 11];
+    let dist_layers = vec![10.0, 20.0, 30.0, 40.0];
+    let refinement_flags = vec![false, false, true, true, true];
+    let initial = vec![100.0; 11];
+
+    let expected = earthmesh_mesh::dists_on_edge_layers_fortran_indexed(
+        1,
+        1,
+        1,
+        2,
+        &unpadded_triangles_on_cell,
+        &edges_on_vertex,
+        &cells_on_edge,
+        &dist_layers,
+        &refinement_flags,
+        &initial,
+    )
+    .expect("unpadded rows");
+    let actual = earthmesh_mesh::dists_on_edge_layers_fortran_indexed(
+        1,
+        1,
+        1,
+        2,
+        &padded_triangles_on_cell,
+        &edges_on_vertex,
+        &cells_on_edge,
+        &dist_layers,
+        &refinement_flags,
+        &initial,
+    )
+    .expect("padded rows");
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn springjustment_regional_from_source_mask_classifies_then_runs_refinement_adapter() {
     let cells_on_triangle = vec![
         [0, 0, 0],
@@ -1588,6 +1656,7 @@ fn get_area_production_wrapper_includes_reconstruction_error_summary() {
     let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
     let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [3, 4], [4, 2]];
     let vertices_on_cell = vec![vec![], vec![]];
+    let n_edges_on_cell = vec![0; cell_points.len()];
 
     let output = get_area_production_fortran_indexed(GetAreaUnitInput {
         vertices: &vertices,
@@ -1597,6 +1666,7 @@ fn get_area_production_wrapper_includes_reconstruction_error_summary() {
         edges_on_vertex: &edges_on_vertex,
         cells_on_edge: &cells_on_edge,
         vertices_on_cell: &vertices_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
     })
     .expect("valid production GetArea input");
 
@@ -1618,4 +1688,41 @@ fn get_area_production_wrapper_includes_reconstruction_error_summary() {
         expected_error.avg_relative,
         1.0e-15,
     );
+}
+
+#[test]
+fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_fortran() {
+    let zero = CartesianPoint::new(0.0, 0.0, 0.0);
+    let vertices = vec![
+        zero,
+        zero,
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 1.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0)),
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(120.0, 45.0)),
+    ];
+    let edge_points = vec![zero; vertices.len()];
+    let cell_points = vec![zero, zero, lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.5))];
+    let cells_on_vertex = vec![[0, 0, 0]; vertices.len()];
+    let edges_on_vertex = vec![[0, 0, 0]; vertices.len()];
+    let cells_on_edge = vec![[0, 0]; vertices.len()];
+    let vertices_on_cell = vec![vec![], vec![], vec![2, 3, 4, 5, 6, 6, 6, 6, 6, 6]];
+    let n_edges_on_cell = vec![0, 0, 4];
+
+    let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
+        vertices: &vertices,
+        edge_points: &edge_points,
+        cell_points: &cell_points,
+        cells_on_vertex: &cells_on_vertex,
+        edges_on_vertex: &edges_on_vertex,
+        cells_on_edge: &cells_on_edge,
+        vertices_on_cell: &vertices_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+    })
+    .expect("valid padded Fortran-indexed area input");
+    let expected = spherical_cell_area_from_vertices_unit(&vertices[2..=5])
+        .expect("expected unpadded cell area");
+
+    approx_eq(output.area_cell[2], expected, 1.0e-15);
 }

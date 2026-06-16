@@ -86,3 +86,58 @@ fn getref_land_basic_ignores_maxlc_and_inactive_refine_cells() {
     assert_eq!(report.ref_sjx[4], 0);
     assert!(report.f_mainarea.is_none());
 }
+
+#[test]
+fn getref_land_basic_rejects_landtype_codes_outside_fortran_maxlc_class_range() {
+    let is_in_refine_sjx = vec![0, 0, 1];
+    let lnd_id = one_based_i32(&[[0, 0], [1, 1]]);
+    let lnd_ii = one_based_i32(&[[1, 1]]);
+    let mut landtypes = vec![vec![0; 2]; 2];
+    landtypes[1][1] = 10;
+
+    let err = calculate_getref_land_basic_fortran_indexed(
+        &is_in_refine_sjx,
+        &lnd_id,
+        &lnd_ii,
+        &landtypes,
+        GetRefLandBasicConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_num_landtypes: true,
+            th_num_landtypes: 0,
+            refine_area_mainland: false,
+            th_area_mainland: 0.0,
+        },
+    )
+    .expect_err("landtype above maxlc should be rejected like Fortran nlaa(0:maxlc) bounds");
+
+    assert!(
+        err.to_string()
+            .contains("landtypes value 10 at (1,1) outside 0..=maxlc 9"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn getref_land_basic_skips_lookup_width_when_basic_thresholds_are_disabled() {
+    let report = calculate_getref_land_basic_fortran_indexed(
+        &[0, 1, 1],
+        &[vec![0], vec![0], vec![0]],
+        &[vec![0], vec![1], vec![2]],
+        &[vec![0]],
+        GetRefLandBasicConfig {
+            num_vertex: 1,
+            maxlc: 99,
+            refine_num_landtypes: false,
+            th_num_landtypes: 0,
+            refine_area_mainland: false,
+            th_area_mainland: 0.0,
+        },
+    )
+    .expect("inactive land-basic thresholds should not require lookup tables");
+
+    assert_eq!(report.ref_colnum, 0);
+    assert_eq!(report.ref_sjx, vec![0, 0, 0]);
+    assert!(report.n_landtypes.is_none());
+    assert!(report.f_mainarea.is_none());
+}

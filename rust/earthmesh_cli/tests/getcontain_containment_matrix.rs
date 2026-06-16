@@ -1,4 +1,5 @@
 use earthmesh_cli::{
+    getcontain_containment_matrix_flat_fortran_indexed,
     getcontain_containment_matrix_fortran_indexed, GetContainMeshKind, LonLatPoint,
 };
 
@@ -34,6 +35,44 @@ fn source_grid() -> (Vec<f64>, Vec<f64>, Vec<Vec<i32>>, Vec<Vec<i32>>) {
     seaorland[2][1] = 1;
     seaorland[1][2] = 1;
     (lon_i, lat_i, is_in_area_grid, seaorland)
+}
+
+#[test]
+fn flat_containment_matches_legacy_contain_mesh_without_distortion() {
+    let (cell_to_vertices, n_edges, is_in_area_ustr) = one_cell_connectivity();
+    let (lon_i, lat_i, is_in_area_grid, seaorland) = source_grid();
+
+    let legacy = getcontain_containment_matrix_fortran_indexed(
+        GetContainMeshKind::Ocean,
+        &square_vertices(),
+        &cell_to_vertices,
+        &n_edges,
+        &is_in_area_ustr,
+        &is_in_area_grid,
+        &seaorland,
+        &lon_i,
+        &lat_i,
+        0,
+    )
+    .expect("calculate legacy ocean containment");
+
+    let flat = getcontain_containment_matrix_flat_fortran_indexed(
+        GetContainMeshKind::Ocean,
+        &square_vertices(),
+        &cell_to_vertices,
+        &n_edges,
+        &is_in_area_ustr,
+        &is_in_area_grid,
+        &seaorland,
+        &lon_i,
+        &lat_i,
+        0,
+    )
+    .expect("calculate flat ocean containment");
+
+    assert_eq!(flat.ustr_id_width, 3);
+    assert_eq!(flat.ustr_ii_width, 2);
+    assert_eq!(flat.to_contain_mesh().expect("flat to legacy"), legacy);
 }
 
 #[test]

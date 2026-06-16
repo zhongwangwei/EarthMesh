@@ -220,6 +220,7 @@ pub struct IcosahedronRelaxedGrid {
 pub struct VoronoiGridState {
     pub grid: GridMemory,
     pub tabs: IjTabs,
+    pub impent: [usize; 12],
 }
 
 /// Port the global icosahedron branch of `mkgrd.F90:voronoi`.
@@ -313,7 +314,11 @@ pub fn voronoi_grid_from_icosahedron_relaxed(
         };
     }
 
-    Ok(VoronoiGridState { grid, tabs })
+    Ok(VoronoiGridState {
+        grid,
+        tabs,
+        impent: relaxed.impent,
+    })
 }
 
 /// Port of `mkgrd.F90:pcvt` for the one-based Voronoi grid state.
@@ -1667,7 +1672,7 @@ pub fn spherical_circumcenter_from_barycenter(
     let earth_radius = earthmesh_core::EARTH_RADIUS_METERS;
     let raxis = barycenter.x.hypot(barycenter.y);
     if raxis == 0.0 {
-        return None;
+        return Some(barycenter);
     }
 
     let pole = PoleBasis {
@@ -1697,18 +1702,18 @@ pub fn spherical_circumcenter_from_barycenter(
 
     let y_denom = dx13 * p2.y - dx12 * p3.y - dx23 * p1.y;
     if y_denom == 0.0 {
-        return None;
+        return Some(barycenter);
     }
     let ycc = 0.5 * (dx13 * s2 - dx12 * s3 - dx23 * s1) / y_denom;
 
     let xcc = if dx12.abs() > dx13.abs() {
         if dx12 == 0.0 {
-            return None;
+            return Some(barycenter);
         }
         (s2 - s1 - ycc * 2.0 * (p2.y - p1.y)) / (2.0 * dx12)
     } else {
         if dx13 == 0.0 {
-            return None;
+            return Some(barycenter);
         }
         (s3 - s1 - ycc * 2.0 * (p3.y - p1.y)) / (2.0 * dx13)
     };
@@ -1722,7 +1727,7 @@ pub fn spherical_circumcenter_from_barycenter(
 
     let radius = magnitude(circumcenter);
     if radius == 0.0 {
-        return None;
+        return Some(barycenter);
     }
     let expansion = earth_radius / radius;
     circumcenter.x *= expansion;
@@ -1754,7 +1759,13 @@ pub fn circumcenter_spherical_mesh_fortran_indexed(
             *vertex_points.get(vertex_ids[2])?,
         ];
         centers[triangle_id] =
-            spherical_circumcenter_from_barycenter(centers[triangle_id], vertices)?;
+            match spherical_circumcenter_from_barycenter(centers[triangle_id], vertices) {
+                Some(center) => center,
+                None => {
+                    spring_global_debug(&format!("circumcenter failed for triangle {triangle_id}"));
+                    return None;
+                }
+            };
     }
 
     Some(centers)
@@ -1872,12 +1883,17 @@ fn boundary_cells_from_triangle_flags(
             continue;
         }
         let mut flagged = 0usize;
+        let mut active_triangles = 0usize;
         for &triangle_id in triangles {
+            if triangle_id <= 1 {
+                continue;
+            }
+            active_triangles += 1;
             if *triangle_flags.get(triangle_id)? {
                 flagged += 1;
             }
         }
-        boundary[cell_id] = flagged != 0 && flagged != triangles.len();
+        boundary[cell_id] = flagged != 0 && flagged != active_triangles;
     }
     Some(boundary)
 }
@@ -1929,7 +1945,16 @@ pub fn dists_on_edge_layers_fortran_indexed(
             }
         }
     }
+    spring_global_debug(&format!(
+        "dists layers after_rc active_after_vertex={}",
+        triangle_flags
+            .iter()
+            .enumerate()
+            .filter(|(idx, flag)| **flag && *idx > num_vertex_in)
+            .count()
+    ));
 
+    let mut direct_candidate_edges = 0usize;
     for triangle_id in (num_vertex_in + 1)..triangle_flags.len() {
         if !triangle_flags[triangle_id] {
             continue;
@@ -1938,10 +1963,14 @@ pub fn dists_on_edge_layers_fortran_indexed(
             if edge_id == 0 {
                 continue;
             }
+            direct_candidate_edges += 1;
             *dists_on_edge.get_mut(edge_id)? = mindist00;
             *edge_moved.get_mut(edge_id)? = true;
         }
     }
+    spring_global_debug(&format!(
+        "dists layers direct_candidate_edges={direct_candidate_edges}"
+    ));
 
     for layer_id in 0..=dist_len {
         let boundary =
@@ -2143,6 +2172,18 @@ pub fn set_dists_on_edge_global_fortran_indexed(
         if !step.active {
             continue;
         }
+        spring_global_debug(&format!(
+            "distance step halo={} num_vertex_in={} num_center_in={} flags={} active_after_vertex={}",
+            step.halo,
+            step.num_vertex_in,
+            step.num_center_in,
+            step.refinement_flags.len(),
+            step.refinement_flags
+                .iter()
+                .enumerate()
+                .filter(|(idx, flag)| **flag && *idx > step.num_vertex_in)
+                .count()
+        ));
         let dist_len = step.halo + input.num_rc;
         if dist_len == 0 {
             return None;
@@ -2151,6 +2192,10 @@ pub fn set_dists_on_edge_global_fortran_indexed(
         let current_edge_scale = edge_scale;
         edge_scale = current_edge_scale / 2.0;
         let edge_layers = distance_layers(2 * dist_len, current_edge_scale, input.spacing)?;
+        let before_changed = dists_on_edge
+            .iter()
+            .filter(|value| (**value - input.base_dists_on_edge).abs() > 1.0e-12)
+            .count();
         dists_on_edge = dists_on_edge_layers_fortran_indexed(
             step.num_vertex_in,
             step.num_center_in,
@@ -2163,6 +2208,13 @@ pub fn set_dists_on_edge_global_fortran_indexed(
             step.refinement_flags,
             &dists_on_edge,
         )?;
+        let after_changed = dists_on_edge
+            .iter()
+            .filter(|value| (**value - input.base_dists_on_edge).abs() > 1.0e-12)
+            .count();
+        spring_global_debug(&format!(
+            "distance step changed_edges before={before_changed} after={after_changed}"
+        ));
 
         if let (Some(current_cellwidth), Some(cells_on_triangle), Some(widths)) =
             (cellwidth_scale, input.cells_on_triangle, cellwidth.as_ref())
@@ -2359,7 +2411,15 @@ pub fn connect_on_cell_fortran_indexed(
     edges_on_vertex: &[[usize; 3]],
     vertices_on_cell: &[Vec<usize>],
 ) -> Option<CellConnectivityOnCell> {
+    let debug = std::env::var_os("EARTHMESH_MPAS_DEBUG").is_some();
     if n_edges_on_cell.len() < vertices_on_cell.len() {
+        if debug {
+            eprintln!(
+                "EARTHMESH_MPAS_DEBUG: n_edges_on_cell len {} < vertices_on_cell len {}",
+                n_edges_on_cell.len(),
+                vertices_on_cell.len()
+            );
+        }
         return None;
     }
 
@@ -2382,16 +2442,34 @@ pub fn connect_on_cell_fortran_indexed(
             let vertex2 = vertices_on_cell[cell_id][(vertex_slot + 1) % ne];
             let edges_vertex1 = *edges_on_vertex.get(vertex1)?;
             let edges_vertex2 = *edges_on_vertex.get(vertex2)?;
-            let edge_id = edges_vertex1
+            let edge_id = match edges_vertex1
                 .iter()
                 .copied()
-                .find(|edge| *edge > 0 && edges_vertex2.contains(edge))?;
+                .find(|edge| *edge > 0 && edges_vertex2.contains(edge))
+            {
+                Some(edge_id) => edge_id,
+                None => {
+                    if debug {
+                        eprintln!(
+                            "EARTHMESH_MPAS_DEBUG: no shared edge cell={cell_id} slot={vertex_slot} vertex1={vertex1} vertex2={vertex2} edges1={edges_vertex1:?} edges2={edges_vertex2:?} vertices={:?}",
+                            vertices_on_cell[cell_id]
+                        );
+                    }
+                    return None;
+                }
+            };
             let cells = *cells_on_edge.get(edge_id)?;
             let neighbor = if cells[0] == cell_id {
                 cells[1]
             } else if cells[1] == cell_id {
                 cells[0]
             } else {
+                if debug {
+                    eprintln!(
+                        "EARTHMESH_MPAS_DEBUG: edge cell mismatch cell={cell_id} slot={vertex_slot} edge={edge_id} cells_on_edge={cells:?} vertices={:?}",
+                        vertices_on_cell[cell_id]
+                    );
+                }
                 return None;
             };
             cell_edges.push(edge_id);
@@ -2405,6 +2483,87 @@ pub fn connect_on_cell_fortran_indexed(
         edges_on_cell,
         cells_on_cell,
     })
+}
+
+pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
+    vertices_on_cell: &[Vec<usize>],
+    n_edges_on_cell: &[usize],
+    edges_on_vertex: &[[usize; 3]],
+) -> Option<Vec<Vec<usize>>> {
+    if n_edges_on_cell.len() < vertices_on_cell.len() {
+        return None;
+    }
+    let mut ordered = vertices_on_cell.to_vec();
+    for cell_id in 2..vertices_on_cell.len() {
+        let ne = n_edges_on_cell[cell_id];
+        if ne <= 2 {
+            continue;
+        }
+        if vertices_on_cell[cell_id].len() < ne {
+            return None;
+        }
+        let active = vertices_on_cell[cell_id][0..ne]
+            .iter()
+            .copied()
+            .filter(|vertex| *vertex > 0)
+            .collect::<Vec<_>>();
+        if active.len() != ne {
+            return None;
+        }
+
+        let start = *active.iter().min()?;
+        let mut start_neighbors = active
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                *candidate != start
+                    && vertices_share_edge(start, *candidate, edges_on_vertex).unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        if start_neighbors.len() != 2 {
+            return None;
+        }
+        start_neighbors.sort_unstable();
+
+        let mut cycle = vec![start, start_neighbors[0]];
+        while cycle.len() < ne {
+            let prev = cycle[cycle.len() - 2];
+            let current = cycle[cycle.len() - 1];
+            let mut next_candidates = active
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    *candidate != prev
+                        && !cycle.contains(candidate)
+                        && vertices_share_edge(current, *candidate, edges_on_vertex)
+                            .unwrap_or(false)
+                })
+                .collect::<Vec<_>>();
+            if next_candidates.len() != 1 {
+                return None;
+            }
+            cycle.push(next_candidates.remove(0));
+        }
+        if !vertices_share_edge(*cycle.last()?, start, edges_on_vertex)? {
+            return None;
+        }
+        ordered[cell_id][0..ne].copy_from_slice(&cycle);
+    }
+    Some(ordered)
+}
+
+fn vertices_share_edge(
+    vertex1: usize,
+    vertex2: usize,
+    edges_on_vertex: &[[usize; 3]],
+) -> Option<bool> {
+    let edges_vertex1 = edges_on_vertex.get(vertex1)?;
+    let edges_vertex2 = edges_on_vertex.get(vertex2)?;
+    Some(
+        edges_vertex1
+            .iter()
+            .any(|edge| *edge > 0 && edges_vertex2.contains(edge)),
+    )
 }
 
 /// Port of `MOD_grid_preprocess:orderVerticesOnCell`.
@@ -2859,7 +3018,14 @@ pub fn spring_edge_adjustment_fortran(
     neighbor_distance_3: f64,
     neighbor_distance_4: f64,
 ) -> Option<SpringEdgeAdjustment> {
-    let edge_vector = vector_between(cell1, cell2);
+    // Fortran assigns the edge vector with `real(...)` and no kind argument
+    // even though `dx/dy/dz` are real(r8), so each component is rounded through
+    // default real before distance and displacement calculations.
+    let edge_vector = CartesianPoint::new(
+        (cell2.x - cell1.x) as f32 as f64,
+        (cell2.y - cell1.y) as f32 as f64,
+        (cell2.z - cell1.z) as f32 as f64,
+    );
     let distance = magnitude(edge_vector);
     if distance == 0.0
         || neighbor_distance_1 == 0.0
@@ -3699,8 +3865,17 @@ pub fn area_judge_closed_curve_fill_fortran_indexed(
         gridnum_perdegree,
         nlats_source,
     )?;
-    if maxlat_source >= minlat_source || minlat_source > lat_vertex.len() {
+    if minlat_source > lat_vertex.len() {
         return None;
+    }
+    if maxlat_source > minlat_source {
+        return None;
+    }
+    if maxlat_source == minlat_source {
+        return Some(AreaJudgeClosedCurveFill {
+            cells: Vec::new(),
+            patch_count: 0,
+        });
     }
 
     let mut cells = Vec::new();
@@ -3821,7 +3996,7 @@ pub fn refine_sjx_regional_make_fortran_indexed(
 ) -> Option<Vec<bool>> {
     if input.source_lon_vertices.len() < 2
         || input.source_lat_vertices.len() < 2
-        || input.mask_patch.len() < input.source_lon_vertices.len()
+        || input.mask_patch.is_empty()
     {
         return None;
     }
@@ -3960,41 +4135,73 @@ pub fn springjustment_global_core_fortran_indexed(
         || input.triangles_on_cell.len() != input.n_edges_on_cell.len()
         || input.cell_lonlat.len() != input.n_edges_on_cell.len()
     {
+        spring_global_debug("input dimension check failed");
         return None;
     }
 
-    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+    let triangle_neighbors = match triangle_neighbors_from_cell_membership_fortran_indexed(
         input.cells_on_triangle,
         input.triangles_on_cell,
         input.n_edges_on_cell,
-    )?;
-    let edge_output = get_edge_production_fortran_indexed(
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("triangle_neighbors_from_cell_membership failed");
+            return None;
+        }
+    };
+    let edge_output = match get_edge_production_fortran_indexed(
         &triangle_neighbors,
         input.cells_on_triangle,
         input.triangle_lonlat,
         input.cell_lonlat,
-    )?;
-    let cell_connectivity = connect_on_cell_fortran_indexed(
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("get_edge_production failed");
+            return None;
+        }
+    };
+    let cell_connectivity = match connect_on_cell_fortran_indexed(
         input.n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
         input.triangles_on_cell,
-    )?;
-    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("connect_on_cell failed");
+            return None;
+        }
+    };
+    let edges_on_edge_tri = match edges_on_edge_tri_fortran_indexed(
         &edge_output.vertices_on_edge,
         &edge_output.edges_on_vertex,
-    )?;
-    let distance_output = set_dists_on_edge_global_fortran_indexed(SetDistsOnEdgeGlobalInput {
-        base_dists_on_edge: input.base_dists_on_edge,
-        base_cellwidth: input.base_cellwidth,
-        num_rc: input.distance_num_rc,
-        spacing: input.distance_spacing,
-        triangles_on_cell: input.triangles_on_cell,
-        cells_on_triangle: Some(input.cells_on_triangle),
-        edges_on_vertex: &edge_output.edges_on_vertex,
-        cells_on_edge: &edge_output.cells_on_edge,
-        steps: input.distance_steps,
-    })?;
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("edges_on_edge_tri failed");
+            return None;
+        }
+    };
+    let distance_output =
+        match set_dists_on_edge_global_fortran_indexed(SetDistsOnEdgeGlobalInput {
+            base_dists_on_edge: input.base_dists_on_edge,
+            base_cellwidth: input.base_cellwidth,
+            num_rc: input.distance_num_rc,
+            spacing: input.distance_spacing,
+            triangles_on_cell: input.triangles_on_cell,
+            cells_on_triangle: Some(input.cells_on_triangle),
+            edges_on_vertex: &edge_output.edges_on_vertex,
+            cells_on_edge: &edge_output.cells_on_edge,
+            steps: input.distance_steps,
+        }) {
+            Some(value) => value,
+            None => {
+                spring_global_debug("set_dists_on_edge_global failed");
+                return None;
+            }
+        };
     let cell_points = input
         .cell_lonlat
         .iter()
@@ -4008,7 +4215,7 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let spring = spring_dynamics_global_fortran_indexed(
+    let spring = match spring_dynamics_global_fortran_indexed(
         &cell_points,
         input.n_edges_on_cell,
         &cell_connectivity.edges_on_cell,
@@ -4019,7 +4226,13 @@ pub fn springjustment_global_core_fortran_indexed(
         input.relax,
         input.radius,
         input.diagnostic_every,
-    )?;
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("spring_dynamics_global failed");
+            return None;
+        }
+    };
     let updated_cell_lonlat = spring
         .updated_cell_points
         .iter()
@@ -4027,8 +4240,16 @@ pub fn springjustment_global_core_fortran_indexed(
         .map(xyz_to_lonlat_degrees)
         .collect::<Vec<_>>();
 
-    let centroid_lonlat =
-        centroid_spherical_mesh_fortran_indexed(&updated_cell_lonlat, input.cells_on_triangle)?;
+    let centroid_lonlat = match centroid_spherical_mesh_fortran_indexed(
+        &updated_cell_lonlat,
+        input.cells_on_triangle,
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("centroid_spherical_mesh failed");
+            return None;
+        }
+    };
     let centroid_cartesian = centroid_lonlat
         .iter()
         .copied()
@@ -4041,11 +4262,17 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+    let circumcenters = match circumcenter_spherical_mesh_fortran_indexed(
         &centroid_cartesian,
         &spring.updated_cell_points,
         input.cells_on_triangle,
-    )?;
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("circumcenter_spherical_mesh failed");
+            return None;
+        }
+    };
     let updated_triangle_lonlat = circumcenters
         .iter()
         .copied()
@@ -4076,13 +4303,19 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let final_ordered = order_vertex_arrays_fortran_indexed(
+    let final_ordered = match order_vertex_arrays_fortran_indexed(
         &updated_triangle_points,
         &edge_points_cartesian,
         &edge_output.edges_on_vertex,
         &edge_output.vertices_on_edge,
         &edge_output.cells_on_edge,
-    )?;
+    ) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("order_vertex_arrays failed");
+            return None;
+        }
+    };
 
     Some(SpringjustmentGlobalCoreOutput {
         updated_triangle_lonlat,
@@ -4100,6 +4333,12 @@ pub fn springjustment_global_core_fortran_indexed(
         edge_lonlat: edge_output.edge_points,
         spring,
     })
+}
+
+fn spring_global_debug(message: &str) {
+    if std::env::var_os("EARTHMESH_SPRING_DEBUG").is_some() {
+        eprintln!("EARTHMESH_SPRING_DEBUG: {message}");
+    }
 }
 
 /// Pure Rust adapter for the in-memory calculation sequence inside
@@ -4816,6 +5055,7 @@ pub struct GetAreaUnitInput<'a> {
     pub edges_on_vertex: &'a [[usize; 3]],
     pub cells_on_edge: &'a [[usize; 2]],
     pub vertices_on_cell: &'a [Vec<usize>],
+    pub n_edges_on_cell: &'a [usize],
 }
 
 /// Unit-sphere area outputs from the Fortran-indexed `GetArea` subset.
@@ -4849,6 +5089,10 @@ pub fn get_area_unit_fortran_indexed(input: GetAreaUnitInput<'_>) -> Option<GetA
 
     let mut kite_areas_on_vertex = vec![[0.0; 3]; input.vertices.len()];
     let mut area_triangle = vec![0.0; input.vertices.len()];
+    if input.n_edges_on_cell.len() < input.cell_points.len() {
+        return None;
+    }
+
     let mut area_cell = vec![0.0; input.cell_points.len()];
 
     for vertex_id in 2..input.vertices.len() {
@@ -4892,8 +5136,13 @@ pub fn get_area_unit_fortran_indexed(input: GetAreaUnitInput<'_>) -> Option<GetA
         if vertex_ids.len() < 3 {
             continue;
         }
+        let num_edges = *input.n_edges_on_cell.get(cell_id)?;
+        if num_edges < 3 || num_edges > vertex_ids.len() {
+            continue;
+        }
         let vertices = vertex_ids
             .iter()
+            .take(num_edges)
             .map(|vertex_id| input.vertices.get(*vertex_id).copied())
             .collect::<Option<Vec<_>>>()?;
         area_cell[cell_id] = spherical_cell_area_from_vertices_unit(&vertices)?;
@@ -6873,6 +7122,12 @@ pub fn refine_iter_b_judge_fortran_indexed(
     Ok(ref_sjx)
 }
 
+/// Port of the empty `MOD_refine.F90:orial_vertices_protect` placeholder.
+///
+/// The Fortran subroutine has no executable statements, so the Rust migration
+/// intentionally preserves all caller-owned refinement markers unchanged.
+pub fn refine_orial_vertices_protect_fortran_indexed(_ref_sjx: &mut [i32]) {}
+
 /// Port of `MOD_refine.F90:iterG_judge`.
 ///
 /// Inputs preserve Fortran indexing: row 0 is unused, polygon/cell ids start
@@ -8463,17 +8718,25 @@ pub fn refine_onedivide_two_fortran_indexed(
             format!("iter {iter} must address num_mp/num_wp previous and current slots"),
         ));
     }
-    let sjx_points = num_mp[iter - 1];
+    let previous_sjx_points = num_mp[iter - 1];
+    let sjx_points = mrl_new.len().saturating_sub(1);
     if sjx_points >= triangle_neighbors.len()
         || sjx_points >= cells_on_triangle.len()
         || sjx_points >= ref_sjx.len()
         || sjx_points >= mrl_new.len()
-        || sjx_points >= cells_on_triangle_new.len()
         || sjx_points >= sjx_child.len()
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("previous sjx_points {sjx_points} must be addressable in triangle arrays"),
+            format!("base sjx_points {sjx_points} must be addressable in triangle arrays"),
+        ));
+    }
+    if previous_sjx_points >= cells_on_triangle_new.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "previous sjx_points {previous_sjx_points} must be addressable in renewed triangle connectivity"
+            ),
         ));
     }
     if num_mp[iter] >= triangle_points.len() || num_mp[iter] >= cells_on_triangle_new.len() {

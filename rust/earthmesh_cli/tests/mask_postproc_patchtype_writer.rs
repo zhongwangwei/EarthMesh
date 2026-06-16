@@ -38,6 +38,36 @@ fn mask_postproc_patchtype_writer_uses_plan_path_and_coordinate_builder() {
 }
 
 #[test]
+fn mask_postproc_patchtype_writer_accepts_full_domain_north_latitude_start() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mask_postproc_patchtype_full_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "earthmesh", false)
+        .expect("earth plan");
+
+    let report = earthmesh_cli::write_mask_postproc_patchtype_netcdf(
+        &plan,
+        vec![vec![2, 0], vec![3, 4]],
+        1,
+        1,
+        &[10.0, 11.0, 12.0, 13.0],
+        &[50.0, 49.0, 48.0, 47.0],
+        &[10.5, 11.5, 12.5],
+        &[49.5, 48.5, 47.5],
+    )
+    .expect("write full-domain north-start patchtype");
+
+    let file = netcdf::open(&report.output).expect("open patchtype");
+    assert_eq!(read_f64(&file, "lat_n"), vec![49.0, 48.0]);
+    assert_eq!(read_f64(&file, "lat_s"), vec![48.0, 47.0]);
+    assert_eq!(read_f64(&file, "latitude"), vec![48.5, 47.5]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn mask_postproc_patchtype_writer_rejects_plans_without_patchtype_output() {
     let root = std::env::temp_dir().join("earthmesh_cli_no_patchtype_plan");
     let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "oceanmesh", false)

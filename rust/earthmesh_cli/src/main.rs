@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -14,20 +16,135 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    let namelist = args
+    let first = args
         .next()
-        .ok_or_else(|| usage("missing mkgrd namelist path"))?;
+        .ok_or_else(|| usage("missing command or mkgrd namelist path"))?;
+    if first == "--cama-reach-jsonl" || first == "--cama-reach-geojson" {
+        return run_cama_reach_export(&first, args);
+    }
+    if first == "--merit-hydro-geojson" {
+        return run_merit_hydro_geojson(args);
+    }
+    if first == "--hydro-close-recipe" {
+        return run_hydro_close_recipe(args);
+    }
+    if first == "--hydro-close-mask-nmls" {
+        return run_hydro_close_mask_nmls(args);
+    }
+    if first == "--hydro-composite-close-mask-nmls" {
+        return run_hydro_composite_close_mask_nmls(args);
+    }
+    if first == "--colm-coupling-csv-to-netcdf" {
+        return run_colm_coupling_csv_to_netcdf(args);
+    }
+    let namelist = first;
     let mut max_tris = 100_000usize;
+    let mut run_refine_passthrough = false;
+    let mut run_refine_landtype_source = false;
+    let mut run_mask_restart_ocean = false;
+    let mut run_mask_restart_patch = false;
+    let mut run_mask_restart_area_judge = false;
+    let mut run_mask_restart_area_judge_refine = false;
+    let mut run_mask_restart_area_judge_refine_landtype_source = false;
+    let mut source_gridnum_perdegree: Option<usize> = None;
+    let mut source_nlons: Option<usize> = None;
+    let mut source_nlats: Option<usize> = None;
+    let mut source_first_triangle_id: usize = 1;
+    let mut source_state_path: Option<PathBuf> = None;
+    let mut restart_refine_source_state_path: Option<PathBuf> = None;
+    let mut restart_refine_initial_gridfile: Option<PathBuf> = None;
+    let mut mask_restart_max_iter: i32 = 0;
+    let mut mask_postproc_num_vertex: Option<usize> = None;
+    let mut quiet = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--quiet" => {
+                quiet = true;
+            }
             "--max-tris" => {
                 let value = args
                     .next()
                     .ok_or_else(|| usage("--max-tris requires a value"))?;
-                max_tris = value
-                    .parse::<usize>()
-                    .map_err(|_| usage("--max-tris must be a positive integer"))?;
+                max_tris = parse_positive_usize("--max-tris", &value)?;
+            }
+            "--run-refine-passthrough" => {
+                run_refine_passthrough = true;
+            }
+            "--run-refine-landtype-source" => {
+                run_refine_landtype_source = true;
+            }
+            "--run-mask-restart-ocean" => {
+                run_mask_restart_ocean = true;
+            }
+            "--run-mask-restart-patch" => {
+                run_mask_restart_patch = true;
+            }
+            "--run-mask-restart-area-judge" => {
+                run_mask_restart_area_judge = true;
+            }
+            "--run-mask-restart-area-judge-refine" => {
+                run_mask_restart_area_judge_refine = true;
+            }
+            "--run-mask-restart-area-judge-refine-landtype-source" => {
+                run_mask_restart_area_judge_refine_landtype_source = true;
+            }
+            "--run-refine-source-state" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--run-refine-source-state requires a value"))?;
+                source_state_path = Some(PathBuf::from(value));
+            }
+            "--restart-refine-source-state" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--restart-refine-source-state requires a value"))?;
+                restart_refine_source_state_path = Some(PathBuf::from(value));
+            }
+            "--restart-refine-initial-gridfile" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--restart-refine-initial-gridfile requires a value"))?;
+                restart_refine_initial_gridfile = Some(PathBuf::from(value));
+            }
+            "--source-gridnum-perdegree" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--source-gridnum-perdegree requires a value"))?;
+                source_gridnum_perdegree =
+                    Some(parse_positive_usize("--source-gridnum-perdegree", &value)?);
+            }
+            "--source-nlons" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--source-nlons requires a value"))?;
+                source_nlons = Some(parse_positive_usize("--source-nlons", &value)?);
+            }
+            "--source-nlats" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--source-nlats requires a value"))?;
+                source_nlats = Some(parse_positive_usize("--source-nlats", &value)?);
+            }
+            "--source-first-triangle-id" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--source-first-triangle-id requires a value"))?;
+                source_first_triangle_id =
+                    parse_positive_usize("--source-first-triangle-id", &value)?;
+            }
+            "--mask-restart-max-iter" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--mask-restart-max-iter requires a value"))?;
+                mask_restart_max_iter = parse_nonnegative_i32("--mask-restart-max-iter", &value)?;
+            }
+            "--mask-postproc-num-vertex" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--mask-postproc-num-vertex requires a value"))?;
+                mask_postproc_num_vertex =
+                    Some(parse_positive_usize("--mask-postproc-num-vertex", &value)?);
             }
             "-h" | "--help" => return Err(usage("")),
             other => return Err(usage(&format!("unknown argument {other}"))),
@@ -35,17 +152,1539 @@ fn run() -> Result<(), String> {
     }
 
     let workdir = env::current_dir().map_err(|err| err.to_string())?;
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(
-        PathBuf::from(namelist),
+    let has_explicit_execution_mode = run_refine_passthrough
+        || run_refine_landtype_source
+        || source_state_path.is_some()
+        || run_mask_restart_ocean
+        || run_mask_restart_patch
+        || run_mask_restart_area_judge
+        || run_mask_restart_area_judge_refine
+        || run_mask_restart_area_judge_refine_landtype_source;
+    if !has_explicit_execution_mode {
+        let report =
+            earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+                PathBuf::from(&namelist),
+                &workdir,
+                max_tris,
+                mask_restart_max_iter,
+                restart_refine_source_state_path.as_deref(),
+                restart_refine_initial_gridfile.as_deref(),
+                source_gridnum_perdegree,
+                source_first_triangle_id,
+                mask_postproc_num_vertex,
+            )
+            .map_err(|err| err.to_string())?;
+        if !quiet {
+            match report {
+                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
+                    print_top_level_dispatch_report(&report);
+                }
+                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(
+                    run,
+                ) => {
+                    println!("refine_source=landtype_file");
+                    print_refine_landtype_source_report(&run);
+                }
+                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(
+                    run,
+                ) => {
+                    print_restart_refine_report(&run.report, Some("source_state"))?;
+                }
+                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(
+                    run,
+                ) => {
+                    print_restart_refine_report(&run.report, Some("landtype_file"))?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let refine_modes = run_refine_passthrough as u8
+        + source_state_path.is_some() as u8
+        + run_refine_landtype_source as u8;
+    if refine_modes > 1 {
+        return Err(usage("refine execution flags are mutually exclusive"));
+    }
+    let mask_restart_modes = run_mask_restart_ocean as u8
+        + run_mask_restart_patch as u8
+        + run_mask_restart_area_judge as u8
+        + run_mask_restart_area_judge_refine as u8
+        + run_mask_restart_area_judge_refine_landtype_source as u8;
+    if run_mask_restart_ocean && refine_modes > 0 {
+        return Err(usage(
+            "--run-mask-restart-ocean cannot be combined with refine execution flags",
+        ));
+    }
+    if run_mask_restart_patch && refine_modes > 0 {
+        return Err(usage(
+            "--run-mask-restart-patch cannot be combined with refine execution flags",
+        ));
+    }
+    if run_mask_restart_area_judge && refine_modes > 0 {
+        return Err(usage(
+            "--run-mask-restart-area-judge cannot be combined with refine execution flags",
+        ));
+    }
+    if run_mask_restart_area_judge_refine && refine_modes > 0 {
+        return Err(usage(
+            "--run-mask-restart-area-judge-refine cannot be combined with other refine execution flags",
+        ));
+    }
+    if run_mask_restart_area_judge_refine_landtype_source && refine_modes > 0 {
+        return Err(usage(
+            "--run-mask-restart-area-judge-refine-landtype-source cannot be combined with other refine execution flags",
+        ));
+    }
+    if mask_restart_modes > 1 {
+        return Err(usage("mask-restart execution flags are mutually exclusive"));
+    }
+    if run_mask_restart_ocean {
+        let contents = fs::read_to_string(&namelist)
+            .map_err(|err| format!("failed to read namelist {namelist}: {err}"))?;
+        let config = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&contents)
+            .map_err(|err| format!("failed to parse namelist {namelist}: {err}"))?;
+        let num_vertex = match mask_postproc_num_vertex {
+            Some(value) => value,
+            None => earthmesh_cli::infer_mask_restart_ocean_num_vertex_from_config(&config)
+                .map_err(|err| err.to_string())?,
+        };
+        let report = earthmesh_cli::run_mkgrd_mask_restart_ocean_namelist(
+            PathBuf::from(&namelist),
+            &workdir,
+            mask_restart_max_iter,
+            earthmesh_cli::MaskPostprocOceanRunOptions {
+                mask_sea_ratio: config.mask_sea_ratio,
+                num_vertex,
+            },
+        )
+        .map_err(|err| err.to_string())?;
+
+        println!("mask_restart_action={:?}", report.plan.remask.action);
+        println!(
+            "mask_postproc_result_gridfile={}",
+            report.postproc.final_gridfile.output.display()
+        );
+        if let Some(obc) = &report.postproc.obc {
+            println!("mask_postproc_obc={}", obc.output.display());
+        }
+        if let Some(obcv2) = &report.postproc.obcv2 {
+            println!("mask_postproc_obcv2={}", obcv2.output.display());
+        }
+        return Ok(());
+    }
+    if run_mask_restart_patch {
+        let report = earthmesh_cli::run_mkgrd_mask_restart_patch_namelist(
+            PathBuf::from(&namelist),
+            &workdir,
+            mask_restart_max_iter,
+        )
+        .map_err(|err| err.to_string())?;
+
+        println!("mask_restart_action={:?}", report.plan.remask.action);
+        println!(
+            "mask_patch_reports={}",
+            report.workspace_mask.mask_reports.len()
+        );
+        println!(
+            "mask_patch_ndm={}",
+            report.workspace_mask.mask_counts.mask_patch_ndm[0]
+        );
+        return Ok(());
+    }
+    if run_mask_restart_area_judge {
+        let report = match (source_gridnum_perdegree, source_nlons, source_nlats) {
+            (Some(gridnum_perdegree), Some(nlons_source), Some(nlats_source)) => {
+                earthmesh_cli::run_mkgrd_mask_restart_area_judge_global_source_namelist(
+                    PathBuf::from(&namelist),
+                    &workdir,
+                    mask_restart_max_iter,
+                    gridnum_perdegree,
+                    nlons_source,
+                    nlats_source,
+                    mask_postproc_num_vertex,
+                )
+            }
+            (None, None, None) => {
+                earthmesh_cli::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist(
+                    PathBuf::from(&namelist),
+                    &workdir,
+                    mask_restart_max_iter,
+                    mask_postproc_num_vertex,
+                )
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--run-mask-restart-area-judge source-grid override requires all of --source-gridnum-perdegree, --source-nlons, and --source-nlats",
+            )),
+        }
+        .map_err(|err| err.to_string())?;
+        let restart = &report.restart;
+
+        println!("mask_restart_action={:?}", restart.plan.remask.action);
+        println!(
+            "mask_patch_reports={}",
+            restart.workspace_mask.mask_reports.len()
+        );
+        println!(
+            "mask_restart_area_selected_cells={}",
+            restart.area_write.selected_cells
+        );
+        println!(
+            "mask_restart_area_grid={}",
+            restart.area_write.output.display()
+        );
+        if let Some(postproc_report) = &report.postproc {
+            println!(
+                "mask_restart_contain={}",
+                postproc_report.contain.output.display()
+            );
+            match &postproc_report.postproc {
+                earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(postproc) => {
+                    println!(
+                        "mask_restart_postproc_gridfile={}",
+                        postproc.final_gridfile.output.display()
+                    );
+                    println!(
+                        "mask_restart_postproc_patchtype={}",
+                        postproc.patchtype.output.display()
+                    );
+                    println!(
+                        "mask_restart_postproc_earthmesh_info={}",
+                        postproc.earthmesh_info.output.display()
+                    );
+                }
+                earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+                    println!(
+                        "mask_restart_postproc_gridfile={}",
+                        postproc.final_gridfile.output.display()
+                    );
+                    println!(
+                        "mask_restart_postproc_patchtype={}",
+                        postproc.patchtype.output.display()
+                    );
+                }
+                earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
+                    println!(
+                        "mask_restart_postproc_gridfile={}",
+                        postproc.final_gridfile.output.display()
+                    );
+                    if let Some(obc) = &postproc.obc {
+                        println!("mask_restart_postproc_obc={}", obc.output.display());
+                    }
+                    if let Some(obcv2) = &postproc.obcv2 {
+                        println!("mask_restart_postproc_obcv2={}", obcv2.output.display());
+                    }
+                }
+                earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
+                    println!(
+                        "mask_restart_postproc_mpas_simple={}",
+                        postproc.output.display()
+                    );
+                }
+                earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
+                    println!(
+                        "mask_restart_postproc_mpas={}",
+                        postproc.mesh.output.display()
+                    );
+                    println!(
+                        "mask_restart_postproc_mpas_graph={}",
+                        postproc.graph_info.output.display()
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+    if run_mask_restart_area_judge_refine {
+        let source_state_path = restart_refine_source_state_path.ok_or_else(|| {
+            usage("--run-mask-restart-area-judge-refine requires --restart-refine-source-state")
+        })?;
+        let initial_gridfile = infer_restart_refine_initial_gridfile_arg(
+            &namelist,
+            restart_refine_initial_gridfile.as_deref(),
+        )?;
+        let run = earthmesh_cli::run_mkgrd_restart_refine_compact_source_state_namelist(
+            PathBuf::from(&namelist),
+            &workdir,
+            &source_state_path,
+            &initial_gridfile,
+            mask_postproc_num_vertex,
+        )
+        .map_err(|err| err.to_string())?;
+        let report = run.report;
+
+        println!("mask_restart_action=RefineHandoff");
+        println!("restart_refine_source=source_state");
+        let domain_write = report.restart.domain_write.as_ref().ok_or_else(|| {
+            "restart refine handoff did not write domain Area_judge grid".to_string()
+        })?;
+        println!(
+            "restart_refine_area_selected_cells={}",
+            domain_write.selected_cells
+        );
+        println!("restart_refine_area_grid={}", domain_write.output.display());
+        if let Some(refine_write) = &report.restart.refine_write {
+            println!(
+                "restart_refine_calculated_grid={}",
+                refine_write.output.display()
+            );
+        }
+        println!(
+            "restart_refine_steps={}",
+            report.execution.executed_refine_steps
+        );
+        println!(
+            "restart_refine_sources={}",
+            report.execution.executed_sources
+        );
+        println!(
+            "restart_refine_final_gridfile={}",
+            report.prepare.plan.final_result_gridfile.display()
+        );
+        if report.execution.final_handoff.generated_contain.is_some() {
+            println!(
+                "restart_refine_final_contain={}",
+                report.prepare.plan.final_domain_contain_output.display()
+            );
+        }
+        if let Some(postproc) = &report.execution.final_handoff.postproc {
+            print_restart_refine_postproc_outputs(postproc);
+        }
+        return Ok(());
+    }
+    if run_mask_restart_area_judge_refine_landtype_source {
+        let initial_gridfile = infer_restart_refine_initial_gridfile_arg(
+            &namelist,
+            restart_refine_initial_gridfile.as_deref(),
+        )?;
+        let run = earthmesh_cli::run_mkgrd_restart_refine_landtype_source_namelist(
+            PathBuf::from(&namelist),
+            &workdir,
+            &initial_gridfile,
+            source_gridnum_perdegree,
+            source_first_triangle_id,
+            mask_postproc_num_vertex,
+        )
+        .map_err(|err| err.to_string())?;
+        let report = run.report;
+
+        println!("mask_restart_action=RefineHandoff");
+        println!("restart_refine_source=landtype_file");
+        let domain_write = report.restart.domain_write.as_ref().ok_or_else(|| {
+            "restart refine handoff did not write domain Area_judge grid".to_string()
+        })?;
+        println!(
+            "restart_refine_area_selected_cells={}",
+            domain_write.selected_cells
+        );
+        println!("restart_refine_area_grid={}", domain_write.output.display());
+        if let Some(refine_write) = &report.restart.refine_write {
+            println!(
+                "restart_refine_calculated_grid={}",
+                refine_write.output.display()
+            );
+        }
+        println!(
+            "restart_refine_steps={}",
+            report.execution.executed_refine_steps
+        );
+        println!(
+            "restart_refine_sources={}",
+            report.execution.executed_sources
+        );
+        println!(
+            "restart_refine_final_gridfile={}",
+            report.prepare.plan.final_result_gridfile.display()
+        );
+        if report.execution.final_handoff.generated_contain.is_some() {
+            println!(
+                "restart_refine_final_contain={}",
+                report.prepare.plan.final_domain_contain_output.display()
+            );
+        }
+        if let Some(postproc) = &report.execution.final_handoff.postproc {
+            print_restart_refine_postproc_outputs(postproc);
+        }
+        return Ok(());
+    }
+    if run_refine_landtype_source {
+        let namelist_path = PathBuf::from(&namelist);
+        let report = earthmesh_cli::run_mkgrd_refine_landtype_source_namelist(
+            &namelist_path,
+            &workdir,
+            max_tris,
+            source_gridnum_perdegree,
+            source_first_triangle_id,
+            earthmesh_cli::MkgrdRefineLoopWorkingStateExecutor::default(),
+        )
+        .map_err(|err| err.to_string())?;
+        print_refine_landtype_source_report(&report);
+        return Ok(());
+    }
+
+    if let Some(source_state_path) = source_state_path {
+        let report = earthmesh_cli::run_mkgrd_refine_compact_source_state_namelist(
+            PathBuf::from(&namelist),
+            &workdir,
+            &source_state_path,
+            max_tris,
+            earthmesh_cli::MkgrdRefineLoopWorkingStateExecutor::default(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        println!("gridfile={}", report.gridinit.gridfile.output.display());
+        println!("sjx_points={}", report.gridinit.gridfile.sjx_points);
+        println!("lbx_points={}", report.gridinit.gridfile.lbx_points);
+        if let Some(refine) = report.refine {
+            println!("refine_steps={}", refine.execution.executed_refine_steps);
+            println!("refine_sources={}", refine.execution.executed_sources);
+            println!(
+                "refine_final_gridfile={}",
+                refine.prepare.plan.final_result_gridfile.display()
+            );
+            if refine.execution.final_handoff.generated_contain.is_some() {
+                println!(
+                    "refine_final_contain={}",
+                    refine.prepare.plan.final_domain_contain_output.display()
+                );
+            }
+            if let Some(postproc) = &refine.execution.final_handoff.postproc {
+                print_refine_final_postproc_outputs(postproc);
+            }
+        } else {
+            println!("refine_steps=0");
+        }
+        return Ok(());
+    }
+    if run_refine_passthrough {
+        let gridnum_perdegree = source_gridnum_perdegree
+            .ok_or_else(|| usage("--run-refine-passthrough requires --source-gridnum-perdegree"))?;
+        let nlons_source = source_nlons
+            .ok_or_else(|| usage("--run-refine-passthrough requires --source-nlons"))?;
+        let nlats_source = source_nlats
+            .ok_or_else(|| usage("--run-refine-passthrough requires --source-nlats"))?;
+        let report = earthmesh_cli::run_mkgrd_refine_passthrough_global_source_namelist(
+            PathBuf::from(namelist),
+            &workdir,
+            max_tris,
+            gridnum_perdegree,
+            nlons_source,
+            nlats_source,
+            source_first_triangle_id,
+        )
+        .map_err(|err| err.to_string())?;
+
+        println!("gridfile={}", report.gridinit.gridfile.output.display());
+        println!("sjx_points={}", report.gridinit.gridfile.sjx_points);
+        println!("lbx_points={}", report.gridinit.gridfile.lbx_points);
+        if let Some(refine) = report.refine {
+            println!("refine_steps={}", refine.execution.executed_refine_steps);
+            println!("refine_sources={}", refine.execution.executed_sources);
+            println!(
+                "refine_final_gridfile={}",
+                refine.prepare.plan.final_result_gridfile.display()
+            );
+        } else {
+            println!("refine_steps=0");
+        }
+        return Ok(());
+    }
+
+    let report = earthmesh_cli::run_mkgrd_top_level_namelist(
+        PathBuf::from(&namelist),
         &workdir,
         max_tris,
+        mask_restart_max_iter,
     )
     .map_err(|err| err.to_string())?;
 
-    println!("gridfile={}", report.gridfile.output.display());
-    println!("sjx_points={}", report.gridfile.sjx_points);
-    println!("lbx_points={}", report.gridfile.lbx_points);
+    match report {
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::Gridinit(report) => {
+            println!("gridfile={}", report.gridfile.output.display());
+            println!("sjx_points={}", report.gridfile.sjx_points);
+            println!("lbx_points={}", report.gridfile.lbx_points);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
+            println!("mask_restart_action={:?}", report.plan.remask.action);
+            println!(
+                "mask_patch_reports={}",
+                report.workspace_mask.mask_reports.len()
+            );
+            println!(
+                "mask_patch_ndm={}",
+                report.workspace_mask.mask_counts.mask_patch_ndm[0]
+            );
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => {
+            println!("mask_restart_action={:?}", report.plan.remask.action);
+            println!(
+                "mask_postproc_result_gridfile={}",
+                report.postproc.final_gridfile.output.display()
+            );
+            if let Some(obc) = &report.postproc.obc {
+                println!("mask_postproc_obc={}", obc.output.display());
+            }
+            if let Some(obcv2) = &report.postproc.obcv2 {
+                println!("mask_postproc_obcv2={}", obcv2.output.display());
+            }
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
+            print_mask_restart_area_judge_report(&report);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report) => {
+            println!("mask_restart_action={:?}", report.remask.action);
+            println!("mask_restart_step={}", report.remask.step);
+            println!("mask_restart_file_dir={}", report.remask.file_dir.display());
+        }
+    }
     Ok(())
+}
+
+fn print_top_level_dispatch_report(report: &earthmesh_cli::MkgrdTopLevelDispatchRunReport) {
+    match report {
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::Gridinit(report) => {
+            println!("gridfile={}", report.gridfile.output.display());
+            println!("sjx_points={}", report.gridfile.sjx_points);
+            println!("lbx_points={}", report.gridfile.lbx_points);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
+            println!("mask_restart_action={:?}", report.plan.remask.action);
+            println!(
+                "mask_patch_reports={}",
+                report.workspace_mask.mask_reports.len()
+            );
+            println!(
+                "mask_patch_ndm={}",
+                report.workspace_mask.mask_counts.mask_patch_ndm[0]
+            );
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => {
+            println!("mask_restart_action={:?}", report.plan.remask.action);
+            println!(
+                "mask_postproc_result_gridfile={}",
+                report.postproc.final_gridfile.output.display()
+            );
+            if let Some(obc) = &report.postproc.obc {
+                println!("mask_postproc_obc={}", obc.output.display());
+            }
+            if let Some(obcv2) = &report.postproc.obcv2 {
+                println!("mask_postproc_obcv2={}", obcv2.output.display());
+            }
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
+            print_mask_restart_area_judge_report(report);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report) => {
+            println!("mask_restart_action={:?}", report.remask.action);
+            println!("mask_restart_step={}", report.remask.step);
+            println!("mask_restart_file_dir={}", report.remask.file_dir.display());
+        }
+    }
+}
+
+fn print_refine_landtype_source_report(
+    report: &earthmesh_cli::MkgrdRefineLandtypeSourceNamelistRunReport,
+) {
+    println!("gridfile={}", report.gridinit.gridfile.output.display());
+    println!("sjx_points={}", report.gridinit.gridfile.sjx_points);
+    println!("lbx_points={}", report.gridinit.gridfile.lbx_points);
+    let Some(refine) = report.refine.as_ref() else {
+        println!("refine_steps=0");
+        return;
+    };
+
+    let execution = &refine.execution;
+    println!("refine_steps={}", execution.executed_refine_steps);
+    println!("refine_sources={}", execution.executed_sources);
+    println!(
+        "refine_final_gridfile={}",
+        refine.prepare.plan.final_result_gridfile.display()
+    );
+    if execution.final_handoff.generated_contain.is_some() {
+        println!(
+            "refine_final_contain={}",
+            refine.prepare.plan.final_domain_contain_output.display()
+        );
+    }
+    if let Some(postproc) = &execution.final_handoff.postproc {
+        print_refine_final_postproc_outputs(postproc);
+    }
+}
+
+fn print_refine_final_postproc_outputs(postproc: &earthmesh_cli::MkgrdFinalDomainPostprocReport) {
+    let output = match postproc {
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) => {
+            &report.final_gridfile.output
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) => {
+            &report.final_gridfile.output
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) => {
+            &report.final_gridfile.output
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(report) => &report.output,
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) => &report.mesh.output,
+    };
+    println!("refine_final_postproc_gridfile={}", output.display());
+    match postproc {
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) => {
+            println!(
+                "refine_final_postproc_patchtype={}",
+                report.patchtype.output.display()
+            );
+            println!(
+                "refine_final_postproc_earthmesh_info={}",
+                report.earthmesh_info.output.display()
+            );
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) => {
+            println!(
+                "refine_final_postproc_patchtype={}",
+                report.patchtype.output.display()
+            );
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) => {
+            if let Some(obc) = &report.obc {
+                println!("refine_final_postproc_obc={}", obc.output.display());
+            }
+            if let Some(obcv2) = &report.obcv2 {
+                println!("refine_final_postproc_obcv2={}", obcv2.output.display());
+            }
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) => {
+            println!(
+                "refine_final_postproc_mpas={}",
+                report.mesh.output.display()
+            );
+            println!(
+                "refine_final_postproc_mpas_graph={}",
+                report.graph_info.output.display()
+            );
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(_) => {}
+    }
+}
+
+fn print_mask_restart_area_judge_report(
+    report: &earthmesh_cli::MkgrdRestartAreaJudgeGlobalSourceRunReport,
+) {
+    let restart = &report.restart;
+    println!("mask_restart_action={:?}", restart.plan.remask.action);
+    println!(
+        "mask_patch_reports={}",
+        restart.workspace_mask.mask_reports.len()
+    );
+    println!(
+        "mask_restart_area_selected_cells={}",
+        restart.area_write.selected_cells
+    );
+    println!(
+        "mask_restart_area_grid={}",
+        restart.area_write.output.display()
+    );
+    if let Some(postproc_report) = &report.postproc {
+        println!(
+            "mask_restart_contain={}",
+            postproc_report.contain.output.display()
+        );
+        match &postproc_report.postproc {
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(postproc) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.final_gridfile.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_patchtype={}",
+                    postproc.patchtype.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_earthmesh_info={}",
+                    postproc.earthmesh_info.output.display()
+                );
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.final_gridfile.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_patchtype={}",
+                    postproc.patchtype.output.display()
+                );
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.final_gridfile.output.display()
+                );
+                if let Some(obc) = &postproc.obc {
+                    println!("mask_restart_postproc_obc={}", obc.output.display());
+                }
+                if let Some(obcv2) = &postproc.obcv2 {
+                    println!("mask_restart_postproc_obcv2={}", obcv2.output.display());
+                }
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
+                println!(
+                    "mask_restart_postproc_mpas_simple={}",
+                    postproc.output.display()
+                );
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
+                println!(
+                    "mask_restart_postproc_mpas={}",
+                    postproc.mesh.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_mpas_graph={}",
+                    postproc.graph_info.output.display()
+                );
+            }
+        }
+    }
+}
+
+fn print_restart_refine_postproc_outputs(postproc: &earthmesh_cli::MkgrdFinalDomainPostprocReport) {
+    let output = match postproc {
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) => {
+            &report.final_gridfile.output
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) => {
+            &report.final_gridfile.output
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) => {
+            &report.final_gridfile.output
+        }
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(report) => &report.output,
+        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) => &report.mesh.output,
+    };
+    println!(
+        "restart_refine_final_postproc_gridfile={}",
+        output.display()
+    );
+    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) = postproc {
+        println!(
+            "restart_refine_final_postproc_patchtype={}",
+            report.patchtype.output.display()
+        );
+        println!(
+            "restart_refine_final_postproc_earthmesh_info={}",
+            report.earthmesh_info.output.display()
+        );
+    }
+    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) = postproc {
+        println!(
+            "restart_refine_final_postproc_patchtype={}",
+            report.patchtype.output.display()
+        );
+    }
+    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) = postproc {
+        println!(
+            "restart_refine_final_postproc_mpas={}",
+            report.mesh.output.display()
+        );
+        println!(
+            "restart_refine_final_postproc_mpas_graph={}",
+            report.graph_info.output.display()
+        );
+    }
+    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) = postproc {
+        if let Some(obc) = &report.obc {
+            println!("restart_refine_final_postproc_obc={}", obc.output.display());
+        }
+        if let Some(obcv2) = &report.obcv2 {
+            println!(
+                "restart_refine_final_postproc_obcv2={}",
+                obcv2.output.display()
+            );
+        }
+    }
+}
+
+fn print_restart_refine_report(
+    report: &earthmesh_cli::MkgrdAreaJudgeRestartRefineLoopRunReport,
+    source_label: Option<&str>,
+) -> Result<(), String> {
+    println!("mask_restart_action=RefineHandoff");
+    if let Some(source_label) = source_label {
+        println!("restart_refine_source={source_label}");
+    }
+    let domain_write =
+        report.restart.domain_write.as_ref().ok_or_else(|| {
+            "restart refine handoff did not write domain Area_judge grid".to_string()
+        })?;
+    println!(
+        "restart_refine_area_selected_cells={}",
+        domain_write.selected_cells
+    );
+    println!("restart_refine_area_grid={}", domain_write.output.display());
+    if let Some(refine_write) = &report.restart.refine_write {
+        println!(
+            "restart_refine_calculated_grid={}",
+            refine_write.output.display()
+        );
+    }
+    println!(
+        "restart_refine_steps={}",
+        report.execution.executed_refine_steps
+    );
+    println!(
+        "restart_refine_sources={}",
+        report.execution.executed_sources
+    );
+    println!(
+        "restart_refine_final_gridfile={}",
+        report.prepare.plan.final_result_gridfile.display()
+    );
+    if report.execution.final_handoff.generated_contain.is_some() {
+        println!(
+            "restart_refine_final_contain={}",
+            report.prepare.plan.final_domain_contain_output.display()
+        );
+    }
+    if let Some(postproc) = &report.execution.final_handoff.postproc {
+        print_restart_refine_postproc_outputs(postproc);
+    }
+    Ok(())
+}
+
+fn infer_restart_refine_initial_gridfile_arg(
+    namelist: &str,
+    explicit: Option<&std::path::Path>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        return Ok(path.to_path_buf());
+    }
+    let contents = fs::read_to_string(namelist)
+        .map_err(|err| format!("failed to read namelist {namelist}: {err}"))?;
+    let config = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| format!("failed to parse namelist {namelist}: {err}"))?;
+    earthmesh_cli::infer_restart_refine_initial_gridfile_from_config(&config)
+        .map_err(|err| err.to_string())
+}
+
+fn run_merit_hydro_geojson(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    let merit_root = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--merit-hydro-geojson requires a MERIT root directory"))?,
+    );
+    let output_dir = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--merit-hydro-geojson requires an output directory"))?,
+    );
+    let mut bbox: Option<earthmesh_cli::MeritLonLatBbox> = None;
+    let mut stride = 1_usize;
+    let mut thresholds = earthmesh_cli::MeritMaskThresholds::default();
+    let mut include_surface_masks = true;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--bbox" => {
+                let west =
+                    parse_f64_arg("--bbox west", &next_required_arg(&mut args, "--bbox west")?)?;
+                let south = parse_f64_arg(
+                    "--bbox south",
+                    &next_required_arg(&mut args, "--bbox south")?,
+                )?;
+                let east =
+                    parse_f64_arg("--bbox east", &next_required_arg(&mut args, "--bbox east")?)?;
+                let north = parse_f64_arg(
+                    "--bbox north",
+                    &next_required_arg(&mut args, "--bbox north")?,
+                )?;
+                bbox = Some(earthmesh_cli::MeritLonLatBbox {
+                    west,
+                    east,
+                    south,
+                    north,
+                });
+            }
+            "--stride" => {
+                let value = next_required_arg(&mut args, "--stride")?;
+                stride = parse_positive_usize("--stride", &value)?;
+            }
+            "--r2-width-m" => {
+                let value = next_required_arg(&mut args, "--r2-width-m")?;
+                thresholds.r2_width_m = parse_positive_f64("--r2-width-m", &value)?;
+            }
+            "--r3-width-m" => {
+                let value = next_required_arg(&mut args, "--r3-width-m")?;
+                thresholds.r3_width_m = parse_positive_f64("--r3-width-m", &value)?;
+            }
+            "--r2-upa-km2" => {
+                let value = next_required_arg(&mut args, "--r2-upa-km2")?;
+                thresholds.r2_upa_km2 = parse_positive_f64("--r2-upa-km2", &value)?;
+            }
+            "--r3-upa-km2" => {
+                let value = next_required_arg(&mut args, "--r3-upa-km2")?;
+                thresholds.r3_upa_km2 = parse_positive_f64("--r3-upa-km2", &value)?;
+            }
+            "--skip-surface-mask" => {
+                include_surface_masks = false;
+            }
+            "-h" | "--help" => return Err(usage("")),
+            other => return Err(usage(&format!("unknown MERIT-Hydro argument {other}"))),
+        }
+    }
+
+    let bbox = bbox.ok_or_else(|| usage("--merit-hydro-geojson requires --bbox W S E N"))?;
+    let tile_paths = earthmesh_cli::select_merit_hydro_tiles(&merit_root, bbox)
+        .map_err(|err| err.to_string())?;
+    if tile_paths.is_empty() {
+        return Err(format!(
+            "no MERIT-Hydro tiles in {} intersect bbox",
+            merit_root.display()
+        ));
+    }
+    let mut windows = Vec::with_capacity(tile_paths.len());
+    for tile in &tile_paths {
+        windows.push(
+            earthmesh_cli::read_merit_hydro_window(tile, bbox, stride)
+                .map_err(|err| err.to_string())?,
+        );
+    }
+    let report = earthmesh_cli::write_merit_hydro_mask_geojson_layers(
+        &windows,
+        thresholds,
+        &output_dir,
+        include_surface_masks,
+    )
+    .map_err(|err| err.to_string())?;
+    println!("merit_tile_count={}", report.window_count);
+    println!("merit_masks={}", report.combined_geojson.display());
+    println!("merit_river_masks={}", report.river_geojson.display());
+    println!("merit_coast_masks={}", report.coast_geojson.display());
+    if let Some(surface) = &report.surface_geojson {
+        println!("merit_surface_masks={}", surface.display());
+    }
+    println!("merit_summary={}", report.summary_json.display());
+    println!("merit_features={}", report.combined_feature_count);
+    Ok(())
+}
+
+fn run_cama_reach_export(
+    command: &str,
+    mut args: impl Iterator<Item = String>,
+) -> Result<(), String> {
+    let output_label = match command {
+        "--cama-reach-jsonl" => "JSONL",
+        "--cama-reach-geojson" => "GeoJSON",
+        _ => {
+            return Err(usage(&format!(
+                "unknown CaMa reach export command {command}"
+            )))
+        }
+    };
+    let map_dir = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage(&format!("{command} requires a map_dir")))?,
+    );
+    let output = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage(&format!("{command} requires an output {output_label} path")))?,
+    );
+    let mut bbox: Option<earthmesh_cli::CamaLonLatBbox> = None;
+    let mut target_dx_km: Option<f64> = None;
+    let mut uparea_to_km2 = 1.0e-6_f64;
+    let mut y_reversed_storage = true;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--bbox" => {
+                let west =
+                    parse_f64_arg("--bbox west", &next_required_arg(&mut args, "--bbox west")?)?;
+                let south = parse_f64_arg(
+                    "--bbox south",
+                    &next_required_arg(&mut args, "--bbox south")?,
+                )?;
+                let east =
+                    parse_f64_arg("--bbox east", &next_required_arg(&mut args, "--bbox east")?)?;
+                let north = parse_f64_arg(
+                    "--bbox north",
+                    &next_required_arg(&mut args, "--bbox north")?,
+                )?;
+                bbox = Some(earthmesh_cli::CamaLonLatBbox {
+                    west,
+                    east,
+                    south,
+                    north,
+                });
+            }
+            "--target-dx-km" => {
+                let value = next_required_arg(&mut args, "--target-dx-km")?;
+                target_dx_km = Some(parse_positive_f64("--target-dx-km", &value)?);
+            }
+            "--uparea-to-km2" => {
+                let value = next_required_arg(&mut args, "--uparea-to-km2")?;
+                uparea_to_km2 = parse_positive_f64("--uparea-to-km2", &value)?;
+            }
+            "--no-yrev" => {
+                y_reversed_storage = false;
+            }
+            "-h" | "--help" => return Err(usage("")),
+            other => {
+                return Err(usage(&format!(
+                    "unknown CaMa reach export argument {other}"
+                )))
+            }
+        }
+    }
+
+    let bbox = bbox.ok_or_else(|| usage(&format!("{command} requires --bbox W S E N")))?;
+    let target_dx_km =
+        target_dx_km.ok_or_else(|| usage(&format!("{command} requires --target-dx-km")))?;
+    let inventory = earthmesh_cli::read_cama_reach_inventory_from_map_dir(
+        &map_dir,
+        bbox,
+        target_dx_km,
+        uparea_to_km2,
+        y_reversed_storage,
+    )
+    .map_err(|err| err.to_string())?;
+    match command {
+        "--cama-reach-jsonl" => {
+            let report = earthmesh_cli::write_cama_reach_inventory_jsonl(&inventory, &output)
+                .map_err(|err| err.to_string())?;
+            println!("cama_reach_jsonl={}", report.output.display());
+            println!("cama_reach_records={}", report.record_count);
+        }
+        "--cama-reach-geojson" => {
+            let report =
+                earthmesh_cli::write_cama_reach_inventory_point_geojson(&inventory, &output)
+                    .map_err(|err| err.to_string())?;
+            println!("cama_reach_geojson={}", report.output.display());
+            println!("cama_reach_features={}", report.feature_count);
+        }
+        _ => unreachable!("validated CaMa reach export command"),
+    }
+    Ok(())
+}
+
+fn run_hydro_close_recipe(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut args = args.collect::<Vec<_>>().into_iter();
+    let input_geojson = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-close-recipe requires an input GeoJSON"))?,
+    );
+    let output_prefix = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-close-recipe requires an output prefix"))?,
+    );
+    let output_json = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-close-recipe requires an output recipe JSON"))?,
+    );
+    let rest = args.collect::<Vec<_>>();
+    let mut class_refine: Option<BTreeMap<String, usize>> = None;
+    let mut buffer_deg_by_refine_degree = BTreeMap::<usize, f64>::new();
+    let mut simplify_tolerance_deg = 0.0_f64;
+    let mut example_namelist: Option<String> = None;
+
+    let mut index = 0_usize;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--class-refine" => {
+                index += 1;
+                let start = index;
+                let mut parsed = BTreeMap::<String, usize>::new();
+                while index < rest.len() && !rest[index].starts_with("--") {
+                    let (class, degree) = parse_key_usize_pair("--class-refine", &rest[index])?;
+                    parsed.insert(class, degree);
+                    index += 1;
+                }
+                if index == start {
+                    return Err(usage("--class-refine requires at least one CLASS=DEGREE"));
+                }
+                class_refine = Some(parsed);
+            }
+            "--buffer-deg-by-refine-degree" => {
+                index += 1;
+                let start = index;
+                while index < rest.len() && !rest[index].starts_with("--") {
+                    let (degree, buffer) =
+                        parse_usize_f64_pair("--buffer-deg-by-refine-degree", &rest[index])?;
+                    if buffer < 0.0 {
+                        return Err(usage(
+                            "--buffer-deg-by-refine-degree buffers must be non-negative",
+                        ));
+                    }
+                    buffer_deg_by_refine_degree.insert(degree, buffer);
+                    index += 1;
+                }
+                if index == start {
+                    return Err(usage(
+                        "--buffer-deg-by-refine-degree requires at least one DEGREE=BUFFER",
+                    ));
+                }
+            }
+            "--simplify-tolerance-deg" => {
+                index += 1;
+                let value = rest
+                    .get(index)
+                    .ok_or_else(|| usage("--simplify-tolerance-deg requires a value"))?;
+                simplify_tolerance_deg = parse_nonnegative_f64("--simplify-tolerance-deg", value)?;
+                index += 1;
+            }
+            "--example-namelist" => {
+                index += 1;
+                example_namelist = Some(
+                    rest.get(index)
+                        .ok_or_else(|| usage("--example-namelist requires a value"))?
+                        .clone(),
+                );
+                index += 1;
+            }
+            "-h" | "--help" => return Err(usage("")),
+            other => {
+                return Err(usage(&format!(
+                    "unknown hydro close recipe argument {other}"
+                )))
+            }
+        }
+    }
+
+    let report = earthmesh_cli::write_hydro_close_refinement_recipe_json(
+        &output_json,
+        earthmesh_cli::HydroCloseRefinementRecipeOptions {
+            input_geojson,
+            output_prefix,
+            class_refine: class_refine
+                .unwrap_or_else(earthmesh_cli::default_hydro_close_class_refine),
+            buffer_deg_by_refine_degree,
+            simplify_tolerance_deg,
+            example_namelist,
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    println!("hydro_close_recipe={}", report.output_json.display());
+    println!("hydro_close_max_iter_spc={}", report.max_iter_spc);
+    println!("hydro_close_class_count={}", report.class_count);
+    println!("hydro_close_buffer_count={}", report.buffer_count);
+    Ok(())
+}
+
+fn run_hydro_close_mask_nmls(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut args = args.collect::<Vec<_>>().into_iter();
+    let input_geojson = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-close-mask-nmls requires an input GeoJSON"))?,
+    );
+    let output_prefix = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-close-mask-nmls requires an output prefix"))?,
+    );
+    let rest = args.collect::<Vec<_>>();
+    let mut class_refine: Option<BTreeMap<String, usize>> = None;
+    let mut max_rings_per_class: Option<usize> = None;
+    let mut max_rings_by_class = BTreeMap::<String, usize>::new();
+    let mut max_masks_per_refine_degree = Some(999_usize);
+    let mut min_ring_separation_deg = 0.0_f64;
+    let mut buffer_deg_by_refine_degree = BTreeMap::<usize, f64>::new();
+    let mut simplify_tolerance_deg = 0.0_f64;
+    let mut dissolve_overlapping_envelopes = false;
+    let mut cumulative_refine = true;
+
+    let mut index = 0_usize;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--class-refine" => {
+                index += 1;
+                let start = index;
+                let mut parsed = BTreeMap::<String, usize>::new();
+                while index < rest.len() && !rest[index].starts_with("--") {
+                    let (class, degree) = parse_key_usize_pair("--class-refine", &rest[index])?;
+                    parsed.insert(class, degree);
+                    index += 1;
+                }
+                if index == start {
+                    return Err(usage("--class-refine requires at least one CLASS=DEGREE"));
+                }
+                class_refine = Some(parsed);
+            }
+            "--max-rings-per-class" => {
+                index += 1;
+                let value = rest
+                    .get(index)
+                    .ok_or_else(|| usage("--max-rings-per-class requires a value"))?;
+                max_rings_per_class =
+                    Some(parse_nonnegative_usize("--max-rings-per-class", value)?);
+                index += 1;
+            }
+            "--max-rings-by-class" => {
+                index += 1;
+                let start = index;
+                while index < rest.len() && !rest[index].starts_with("--") {
+                    let (class, cap) =
+                        parse_key_nonnegative_usize_pair("--max-rings-by-class", &rest[index])?;
+                    max_rings_by_class.insert(class, cap);
+                    index += 1;
+                }
+                if index == start {
+                    return Err(usage(
+                        "--max-rings-by-class requires at least one CLASS=COUNT",
+                    ));
+                }
+            }
+            "--max-masks-per-refine-degree" => {
+                index += 1;
+                let value = rest
+                    .get(index)
+                    .ok_or_else(|| usage("--max-masks-per-refine-degree requires a value"))?;
+                max_masks_per_refine_degree = Some(parse_nonnegative_usize(
+                    "--max-masks-per-refine-degree",
+                    value,
+                )?);
+                index += 1;
+            }
+            "--no-max-masks-per-refine-degree" => {
+                max_masks_per_refine_degree = None;
+                index += 1;
+            }
+            "--min-ring-separation-deg" => {
+                index += 1;
+                let value = rest
+                    .get(index)
+                    .ok_or_else(|| usage("--min-ring-separation-deg requires a value"))?;
+                min_ring_separation_deg =
+                    parse_nonnegative_f64("--min-ring-separation-deg", value)?;
+                index += 1;
+            }
+            "--buffer-deg-by-refine-degree" => {
+                index += 1;
+                let start = index;
+                while index < rest.len() && !rest[index].starts_with("--") {
+                    let (degree, buffer) =
+                        parse_usize_f64_pair("--buffer-deg-by-refine-degree", &rest[index])?;
+                    if degree == 0 || buffer < 0.0 {
+                        return Err(usage(
+                            "--buffer-deg-by-refine-degree requires positive degrees and non-negative buffers",
+                        ));
+                    }
+                    buffer_deg_by_refine_degree.insert(degree, buffer);
+                    index += 1;
+                }
+                if index == start {
+                    return Err(usage(
+                        "--buffer-deg-by-refine-degree requires at least one DEGREE=BUFFER",
+                    ));
+                }
+            }
+            "--simplify-tolerance-deg" => {
+                index += 1;
+                let value = rest
+                    .get(index)
+                    .ok_or_else(|| usage("--simplify-tolerance-deg requires a value"))?;
+                simplify_tolerance_deg = parse_nonnegative_f64("--simplify-tolerance-deg", value)?;
+                index += 1;
+            }
+            "--dissolve-overlapping-envelopes" => {
+                dissolve_overlapping_envelopes = true;
+                index += 1;
+            }
+            "--non-cumulative-refine" => {
+                cumulative_refine = false;
+                index += 1;
+            }
+            "-h" | "--help" => return Err(usage("")),
+            other => {
+                return Err(usage(&format!(
+                    "unknown hydro close-mask NML argument {other}"
+                )))
+            }
+        }
+    }
+
+    let report = earthmesh_cli::write_hydro_close_mask_nmls(
+        &input_geojson,
+        &output_prefix,
+        earthmesh_cli::HydroCloseMaskNmlOptions {
+            class_refine: class_refine
+                .unwrap_or_else(earthmesh_cli::default_hydro_close_class_refine),
+            max_rings_per_class,
+            max_rings_by_class,
+            max_masks_per_refine_degree,
+            min_ring_separation_deg,
+            buffer_deg_by_refine_degree,
+            simplify_tolerance_deg,
+            dissolve_overlapping_envelopes,
+            cumulative_refine,
+        },
+    )
+    .map_err(|err| err.to_string())?;
+    println!("hydro_close_mask_prefix={}", report.output_prefix.display());
+    println!("hydro_close_mask_files={}", report.files.len());
+    println!("hydro_close_mask_specs={}", report.spec_count);
+    for file in &report.files {
+        println!("hydro_close_mask_file={}", file.display());
+    }
+    Ok(())
+}
+
+fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut args = args.collect::<Vec<_>>().into_iter();
+    let recipe_json = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-composite-close-mask-nmls requires a recipe JSON"))?,
+    );
+    let output_prefix = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--hydro-composite-close-mask-nmls requires an output prefix"))?,
+    );
+    let rest = args.collect::<Vec<_>>();
+    let mut summary_json: Option<PathBuf> = None;
+    let mut index = 0_usize;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--summary-json" => {
+                index += 1;
+                summary_json = Some(PathBuf::from(
+                    rest.get(index)
+                        .ok_or_else(|| usage("--summary-json requires a value"))?,
+                ));
+                index += 1;
+            }
+            "-h" | "--help" => return Err(usage("")),
+            other => {
+                return Err(usage(&format!(
+                    "unknown hydro composite close-mask NML argument {other}"
+                )))
+            }
+        }
+    }
+
+    let report = earthmesh_cli::write_hydro_composite_close_mask_nmls(
+        &recipe_json,
+        &output_prefix,
+        summary_json.as_ref(),
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "hydro_composite_close_mask_prefix={}",
+        report.output_prefix.display()
+    );
+    println!("hydro_composite_close_mask_files={}", report.files.len());
+    if let Some(path) = &report.summary_json {
+        println!("hydro_composite_close_mask_summary={}", path.display());
+    }
+    for file in &report.files {
+        println!("hydro_composite_close_mask_file={}", file.display());
+    }
+    Ok(())
+}
+
+fn run_colm_coupling_csv_to_netcdf(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut args = args.collect::<Vec<_>>().into_iter();
+    let input_csv = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--colm-coupling-csv-to-netcdf requires an input CSV"))?,
+    );
+    let output_netcdf = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--colm-coupling-csv-to-netcdf requires an output NetCDF"))?,
+    );
+    let rest = args.collect::<Vec<_>>();
+    let mut case_name = String::new();
+    let mut delivery_manifest = PathBuf::new();
+    let mut restart_template_netcdf: Option<PathBuf> = None;
+    let mut forcing_template_netcdf: Option<PathBuf> = None;
+    let mut index = 0_usize;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--case-name" => {
+                index += 1;
+                case_name = rest
+                    .get(index)
+                    .ok_or_else(|| usage("--case-name requires a value"))?
+                    .clone();
+                index += 1;
+            }
+            "--delivery-manifest" => {
+                index += 1;
+                delivery_manifest = PathBuf::from(
+                    rest.get(index)
+                        .ok_or_else(|| usage("--delivery-manifest requires a value"))?,
+                );
+                index += 1;
+            }
+            "--restart-template-netcdf" => {
+                index += 1;
+                restart_template_netcdf =
+                    Some(PathBuf::from(rest.get(index).ok_or_else(|| {
+                        usage("--restart-template-netcdf requires a value")
+                    })?));
+                index += 1;
+            }
+            "--forcing-template-netcdf" => {
+                index += 1;
+                forcing_template_netcdf =
+                    Some(PathBuf::from(rest.get(index).ok_or_else(|| {
+                        usage("--forcing-template-netcdf requires a value")
+                    })?));
+                index += 1;
+            }
+            "-h" | "--help" => return Err(usage("")),
+            other => {
+                return Err(usage(&format!(
+                    "unknown CoLM coupling NetCDF argument {other}"
+                )))
+            }
+        }
+    }
+
+    let report = earthmesh_cli::write_colm_coupling_netcdf_from_csv(
+        &input_csv,
+        &output_netcdf,
+        &case_name,
+        &delivery_manifest,
+    )
+    .map_err(|err| err.to_string())?;
+    println!("colm_coupling_netcdf={}", report.output.display());
+    println!("colm_coupling_rows={}", report.rows);
+    let mut restart_template_output: Option<PathBuf> = None;
+    let mut forcing_template_output: Option<PathBuf> = None;
+    if let Some(restart_template_netcdf) = restart_template_netcdf {
+        let restart_report = earthmesh_cli::write_colm_restart_template_netcdf_from_csv(
+            &input_csv,
+            &restart_template_netcdf,
+            &case_name,
+        )
+        .map_err(|err| err.to_string())?;
+        println!(
+            "colm_restart_template_netcdf={}",
+            restart_report.output.display()
+        );
+        println!("colm_restart_template_rows={}", restart_report.rows);
+        restart_template_output = Some(restart_report.output);
+    }
+    if let Some(forcing_template_netcdf) = forcing_template_netcdf {
+        let forcing_report = earthmesh_cli::write_colm_forcing_template_netcdf_from_csv(
+            &input_csv,
+            &forcing_template_netcdf,
+            &case_name,
+        )
+        .map_err(|err| err.to_string())?;
+        println!(
+            "colm_forcing_template_netcdf={}",
+            forcing_report.output.display()
+        );
+        println!("colm_forcing_template_rows={}", forcing_report.rows);
+        forcing_template_output = Some(forcing_report.output);
+    }
+    if !delivery_manifest.as_os_str().is_empty() {
+        let manifest = earthmesh_cli::write_colm_package_delivery_manifest(
+            &delivery_manifest,
+            &case_name,
+            report.rows,
+            &report.output,
+            restart_template_output.as_deref(),
+            forcing_template_output.as_deref(),
+        )
+        .map_err(|err| err.to_string())?;
+        println!("colm_delivery_manifest={}", manifest.display());
+    }
+    Ok(())
+}
+
+fn next_required_arg(
+    args: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<String, String> {
+    args.next()
+        .ok_or_else(|| usage(&format!("{flag} requires a value")))
+}
+
+fn parse_f64_arg(flag: &str, value: &str) -> Result<f64, String> {
+    value
+        .parse::<f64>()
+        .map_err(|_| usage(&format!("{flag} must be a finite number")))
+        .and_then(|parsed| {
+            if parsed.is_finite() {
+                Ok(parsed)
+            } else {
+                Err(usage(&format!("{flag} must be a finite number")))
+            }
+        })
+}
+
+fn parse_positive_f64(flag: &str, value: &str) -> Result<f64, String> {
+    let parsed = parse_f64_arg(flag, value)?;
+    if parsed <= 0.0 {
+        return Err(usage(&format!("{flag} must be positive")));
+    }
+    Ok(parsed)
+}
+
+fn parse_nonnegative_f64(flag: &str, value: &str) -> Result<f64, String> {
+    let parsed = parse_f64_arg(flag, value)?;
+    if parsed < 0.0 {
+        return Err(usage(&format!("{flag} must be non-negative")));
+    }
+    Ok(parsed)
+}
+
+fn parse_positive_usize(flag: &str, value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| usage(&format!("{flag} must be a positive integer")))?;
+    if parsed == 0 {
+        return Err(usage(&format!("{flag} must be a positive integer")));
+    }
+    Ok(parsed)
+}
+
+fn parse_nonnegative_usize(flag: &str, value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| usage(&format!("{flag} must be a non-negative integer")))
+}
+
+fn parse_key_usize_pair(flag: &str, value: &str) -> Result<(String, usize), String> {
+    let (key, raw_value) = value
+        .split_once('=')
+        .ok_or_else(|| usage(&format!("{flag} values must use KEY=VALUE syntax")))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(usage(&format!("{flag} keys must not be empty")));
+    }
+    Ok((
+        key.to_string(),
+        parse_positive_usize(flag, raw_value.trim())?,
+    ))
+}
+
+fn parse_key_nonnegative_usize_pair(flag: &str, value: &str) -> Result<(String, usize), String> {
+    let (key, raw_value) = value
+        .split_once('=')
+        .ok_or_else(|| usage(&format!("{flag} values must use KEY=VALUE syntax")))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(usage(&format!("{flag} keys must not be empty")));
+    }
+    Ok((
+        key.to_string(),
+        parse_nonnegative_usize(flag, raw_value.trim())?,
+    ))
+}
+
+fn parse_usize_f64_pair(flag: &str, value: &str) -> Result<(usize, f64), String> {
+    let (raw_key, raw_value) = value
+        .split_once('=')
+        .ok_or_else(|| usage(&format!("{flag} values must use DEGREE=VALUE syntax")))?;
+    Ok((
+        parse_positive_usize(flag, raw_key.trim())?,
+        parse_f64_arg(flag, raw_value.trim())?,
+    ))
+}
+
+fn parse_nonnegative_i32(flag: &str, value: &str) -> Result<i32, String> {
+    let parsed = value
+        .parse::<i32>()
+        .map_err(|_| usage(&format!("{flag} must be a non-negative integer")))?;
+    if parsed < 0 {
+        return Err(usage(&format!("{flag} must be a non-negative integer")));
+    }
+    Ok(parsed)
 }
 
 fn usage(message: &str) -> String {
@@ -54,5 +1693,14 @@ fn usage(message: &str) -> String {
     } else {
         format!("{message}\n")
     };
-    format!("{prefix}usage: earthmesh_cli <mkgrd.nml> [--max-tris N]")
+    format!(
+        "{prefix}usage: earthmesh_cli --cama-reach-jsonl <map_dir> <output.jsonl> --bbox W S E N --target-dx-km KM [--uparea-to-km2 SCALE] [--no-yrev]
+       earthmesh_cli --cama-reach-geojson <map_dir> <output.geojson> --bbox W S E N --target-dx-km KM [--uparea-to-km2 SCALE] [--no-yrev]
+       earthmesh_cli --merit-hydro-geojson <merit_root> <output_dir> --bbox W S E N [--stride N] [--r2-width-m M] [--r3-width-m M] [--r2-upa-km2 KM2] [--r3-upa-km2 KM2] [--skip-surface-mask]
+       earthmesh_cli --hydro-close-recipe <input.geojson> <output_prefix> <recipe.json> [--class-refine CLASS=DEGREE ...] [--buffer-deg-by-refine-degree DEGREE=BUFFER ...] [--simplify-tolerance-deg DEG] [--example-namelist FILE]
+       earthmesh_cli --hydro-close-mask-nmls <input.geojson> <output_prefix> [--class-refine CLASS=DEGREE ...] [--max-rings-per-class N] [--max-rings-by-class CLASS=COUNT ...] [--max-masks-per-refine-degree N | --no-max-masks-per-refine-degree] [--min-ring-separation-deg DEG] [--buffer-deg-by-refine-degree DEGREE=BUFFER ...] [--simplify-tolerance-deg DEG] [--dissolve-overlapping-envelopes] [--non-cumulative-refine]
+       earthmesh_cli --hydro-composite-close-mask-nmls <recipe.json> <output_prefix> [--summary-json PATH]
+       earthmesh_cli --colm-coupling-csv-to-netcdf <colm_coupling_cells.csv> <colm_coupling_cells.nc> [--case-name NAME] [--delivery-manifest PATH] [--restart-template-netcdf PATH] [--forcing-template-netcdf PATH]
+       earthmesh_cli <mkgrd.nml> [--quiet] [--max-tris N] [--run-refine-passthrough --source-gridnum-perdegree N --source-nlons N --source-nlats N [--source-first-triangle-id N] | --run-refine-source-state PATH | --run-refine-landtype-source [--source-gridnum-perdegree N] [--source-first-triangle-id N] | --run-mask-restart-ocean [--mask-postproc-num-vertex N] [--mask-restart-max-iter N] | --run-mask-restart-patch [--mask-restart-max-iter N] | --run-mask-restart-area-judge [--source-gridnum-perdegree N --source-nlons N --source-nlats N] [--mask-restart-max-iter N] | --run-mask-restart-area-judge-refine --restart-refine-source-state PATH [--restart-refine-initial-gridfile PATH] | --run-mask-restart-area-judge-refine-landtype-source [--restart-refine-initial-gridfile PATH] [--source-gridnum-perdegree N] [--source-first-triangle-id N] | --restart-refine-initial-gridfile PATH [--restart-refine-source-state PATH] [--source-gridnum-perdegree N] [--source-first-triangle-id N]]"
+    )
 }

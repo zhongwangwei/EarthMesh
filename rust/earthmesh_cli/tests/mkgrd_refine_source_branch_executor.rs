@@ -3,11 +3,11 @@ use std::fs;
 use earthmesh_cli::{
     plan_mkgrd_refine_loop_io, write_bbox_mask_netcdf, write_unstructured_mesh_netcdf, BBoxMask,
     BBoxPoint, GetRefAtmosThresholdConfig, GetRefLandBasicConfig, GetRefOceanThresholdConfig,
-    LonLatPoint, MkgrdCalculatedRefineSourceExecutorOptions, MkgrdRefineSource,
-    MkgrdRefineSourceBranchExecutor, MkgrdRefineSourceBranchExecutorOptions,
+    LonLatPoint, MkgrdCalculatedRefineSourceExecutorOptions, MkgrdRefineLoopExecutor,
+    MkgrdRefineSource, MkgrdRefineSourceBranchExecutor, MkgrdRefineSourceBranchExecutorOptions,
     MkgrdRefineSourceBranchReport, MkgrdSpecifiedRefineSourceExecutorOptions, UnstructuredMesh,
 };
-use earthmesh_core::{EarthmeshConfig, RefineConfig};
+use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, RefineConfig};
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 fn mkgrd_config(base_dir: &str) -> EarthmeshConfig {
@@ -19,7 +19,7 @@ fn mkgrd_config(base_dir: &str) -> EarthmeshConfig {
 
 fn refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
-        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
         "landmesh",
         "tri",
     )
@@ -178,6 +178,7 @@ fn source_branch_executor_dispatches_calculated_then_specified_sources() {
             mesh_type: &plan.mesh_type,
             mask_refine_spc_type: "bbox",
             mask_refine_ndm: 1,
+            mask_refine_ndm_by_iter: &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
             is_in_domain: &is_in_domain,
             seaorland: &seaorland,
             lon_vertex: &lon_vertex,
@@ -239,12 +240,86 @@ fn source_branch_executor_dispatches_calculated_then_specified_sources() {
         }
         other => panic!("expected specified report, got {other:?}"),
     }
-    assert!(step.sources[0].threshold_outputs[0].exists());
-    assert!(step.sources[1]
-        .specified_threshold_output
-        .as_ref()
-        .unwrap()
-        .exists());
+    let mut recording_dispatcher =
+        MkgrdRefineSourceBranchExecutor::new(MkgrdRefineSourceBranchExecutorOptions {
+            calculated: Some(MkgrdCalculatedRefineSourceExecutorOptions {
+                file_dir: &plan.file_dir,
+                mesh_type: &plan.mesh_type,
+                threshold_dir: &threshold_dir,
+                calculated_refine: (&calculated_refine, bounds),
+                seaorland: &seaorland,
+                lon_vertex: &lon_vertex,
+                lat_vertex: &lat_vertex,
+                lon_i: &lon_i,
+                lat_i: &lat_i,
+                num_vertex: 1,
+                landtypes_global: &landtypes,
+                refine_onelayer_lnd: &[false, false, false, false],
+                th_onelayer_lnd: &[0.0, 0.0, 0.0, 0.0],
+                refine_twolayer_lnd: &[false; 10],
+                th_twolayer_lnd: &[[0.0, 0.0]; 10],
+                refine_onelayer_ocn: &[false, false, false, false],
+                th_onelayer_ocn: &[0.0, 0.0, 0.0, 0.0],
+                refine_onelayer_atmos: &[false, false, false, false],
+                th_onelayer_atmos: &[0.0, 0.0, 0.0, 0.0],
+                land_basic_config: GetRefLandBasicConfig {
+                    num_vertex: 1,
+                    maxlc: 99,
+                    refine_num_landtypes: true,
+                    th_num_landtypes: 0,
+                    refine_area_mainland: false,
+                    th_area_mainland: 0.0,
+                },
+                ocean_config: GetRefOceanThresholdConfig {
+                    num_vertex: 1,
+                    maxlc: 99,
+                    refine_sea_ratio: false,
+                    th_sea_ratio: [0.0, 1.0],
+                },
+                atmos_config: GetRefAtmosThresholdConfig {
+                    num_vertex: 1,
+                    maxlc: 99,
+                },
+            }),
+            specified: None,
+        })
+        .with_runtime_state(EarthmeshRuntimeState::new(mkgrd.clone()));
+    recording_dispatcher
+        .run_source_branch(step, &step.sources[0])
+        .expect("record calculated source branch report through trait path");
+    let recorded = recording_dispatcher.source_branch_reports();
+    assert_eq!(recorded.len(), 1);
+    let MkgrdRefineSourceBranchReport::Calculated(recorded_calculated) = &recorded[0] else {
+        panic!("expected recorded calculated branch, got {:?}", recorded[0]);
+    };
+    assert_eq!(
+        recorded_calculated
+            .contain
+            .runtime_counts
+            .current_num_mp_step,
+        1
+    );
+    assert_eq!(
+        recorded_calculated
+            .contain
+            .runtime_counts
+            .current_num_wp_step,
+        3
+    );
+    assert_eq!(
+        recorded_calculated
+            .contain
+            .runtime_counts
+            .previous_num_vertex,
+        1
+    );
+    let runtime_state = recording_dispatcher
+        .runtime_state()
+        .expect("source branch executor should keep runtime state");
+    assert_eq!(runtime_state.step, step.step);
+    assert_eq!(runtime_state.num_vertex, 1);
+    assert_eq!(runtime_state.num_mp_step[step.step - 1], 1);
+    assert_eq!(runtime_state.num_wp_step[step.step - 1], 3);
 
     let _ = fs::remove_dir_all(&root);
 }

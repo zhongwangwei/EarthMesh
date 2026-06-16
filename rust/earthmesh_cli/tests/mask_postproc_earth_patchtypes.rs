@@ -23,6 +23,23 @@ fn earth_patchtypes_follow_land_ratio_and_fortran_pixel_mapping() {
 }
 
 #[test]
+fn earth_patchtypes_allows_empty_pixels_when_no_domain_cells_reference_pixels() {
+    let contain = earthmesh_cli::ContainMesh {
+        ustr_id: vec![vec![0, 0, 0], vec![0, 0, 0], vec![0, 1, 0]],
+        ustr_ii: Vec::new(),
+        is_in_area_ustr: vec![0, 0, 0],
+    };
+
+    let result = earthmesh_cli::build_earth_patchtypes_fortran_indexed(&contain, 0.4, 10, 20, 2, 2)
+        .expect("empty inactive earth patchtypes");
+
+    assert_eq!(result.seaorland_ustr, vec![0, 0, 0]);
+    assert_eq!(result.sum_land_ustr, 0);
+    assert_eq!(result.sum_sea_ustr, 0);
+    assert_eq!(result.patchtypes_select, vec![vec![0, 0], vec![0, 0]]);
+}
+
+#[test]
 fn earth_patchtypes_reject_bad_schema_and_out_of_range_pixels() {
     let short_pixels = earthmesh_cli::ContainMesh {
         ustr_id: vec![vec![0, 0], vec![1, 1]],

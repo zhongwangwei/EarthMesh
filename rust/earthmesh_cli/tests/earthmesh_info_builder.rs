@@ -61,6 +61,43 @@ fn earthmesh_info_builder_matches_hex_refine_loop_from_center_neighbors() {
 }
 
 #[test]
+fn earthmesh_info_builder_accepts_hex_role_masks_at_cell_grain() {
+    let mut layout = sample_layout();
+    layout.ustr_points = 24;
+    layout.ustr_bounds = 30;
+    layout.center_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 24];
+    layout.vertex_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 30];
+    layout.center_neighbors = (0..24)
+        .map(|source_id| match source_id {
+            2 => vec![1, 2, 3],
+            4 => vec![5, 6, 7],
+            6 => vec![8, 9, 10],
+            8 => vec![13, 14, 15],
+            _ => vec![1, 1, 1],
+        })
+        .collect();
+    layout.vertex_neighbors = vec![vec![1]; 30];
+    layout.center_neighbor_counts = vec![3; 24];
+    layout.vertex_neighbor_counts = vec![0; 30];
+    let is_in_domain = vec![0, 0, 1, -1, 1, 0, 1, -1, 1];
+    let seaorland = vec![0, 0, 1, 0, -1, 0, 1, 0, -1];
+
+    let info = earthmesh_cli::build_earthmesh_info_fortran_indexed(
+        "hex",
+        &[3, 6, 10],
+        24,
+        &layout,
+        &is_in_domain,
+        &seaorland,
+    )
+    .expect("build hex earthmesh info from cell-grain masks");
+
+    assert_eq!(info.num_step_f, vec![3, 6, 10, 24]);
+    assert_eq!(info.seaorland_ustr_f, vec![0, 0, 1, -1, 1, -1]);
+    assert_eq!(info.refine_degree_f, vec![0, 0, 0, 1, 1, 2]);
+}
+
+#[test]
 fn earthmesh_info_builder_rejects_short_role_mask() {
     let layout = sample_layout();
     let err = earthmesh_cli::build_earthmesh_info_fortran_indexed(

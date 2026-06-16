@@ -60,3 +60,93 @@ fn single_mesh_wiring_calculates_land_report_and_top_level_aggregate() {
     assert_eq!(report.aggregate.column_names, ["n_landtypes"]);
     assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 1, 0]);
 }
+
+#[test]
+fn single_mesh_wiring_allows_oceanmesh_with_no_enabled_threshold_columns() {
+    let is_in_refine_sjx = vec![0, 0, 1, 1];
+    let ocn_id = vec![vec![0, 0, 0], vec![0, 0, 0], vec![2, 0, 4], vec![3, 0, 4]];
+    let ocn_ii = one_based_i32(&[[0, 0], [1, 1], [1, 2], [2, 1]]);
+    let landtypes = vec![vec![1; 3]; 3];
+
+    let report = calculate_getref_single_mesh_threshold_reports_fortran_indexed(
+        "oceanmesh",
+        &is_in_refine_sjx,
+        &ocn_id,
+        &ocn_ii,
+        &landtypes,
+        GetRefLandBasicConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_num_landtypes: false,
+            th_num_landtypes: 0,
+            refine_area_mainland: false,
+            th_area_mainland: 0.0,
+        },
+        &[],
+        &[],
+        GetRefOceanThresholdConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_sea_ratio: false,
+            th_sea_ratio: [0.0, 0.0],
+        },
+        &[],
+        GetRefAtmosThresholdConfig {
+            num_vertex: 1,
+            maxlc: 9,
+        },
+        &[],
+    )
+    .expect("oceanmesh with no enabled threshold columns should be a no-op");
+
+    assert_eq!(report.mesh_type, "oceanmesh");
+    assert_eq!(report.aggregate.ref_colnum, 0);
+    assert!(report.aggregate.column_sources.is_empty());
+    assert!(report.aggregate.column_names.is_empty());
+    assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 0, 0]);
+}
+
+#[test]
+fn single_mesh_wiring_uses_ocean_num_vertex_for_oceanmesh_target_aggregation() {
+    let is_in_refine_sjx = vec![0, 0, 1, 1];
+    let ocn_id = vec![vec![0, 0, 0], vec![0, 0, 0], vec![2, 0, 4], vec![4, 0, 4]];
+    let ocn_ii = one_based_i32(&[[0, 0], [1, 1], [1, 2], [2, 1]]);
+    let landtypes = vec![vec![1; 3]; 3];
+
+    let report = calculate_getref_single_mesh_threshold_reports_fortran_indexed(
+        "oceanmesh",
+        &is_in_refine_sjx,
+        &ocn_id,
+        &ocn_ii,
+        &landtypes,
+        GetRefLandBasicConfig {
+            num_vertex: 2,
+            maxlc: 9,
+            refine_num_landtypes: false,
+            th_num_landtypes: 0,
+            refine_area_mainland: false,
+            th_area_mainland: 0.0,
+        },
+        &[],
+        &[],
+        GetRefOceanThresholdConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_sea_ratio: true,
+            th_sea_ratio: [0.4, 0.6],
+        },
+        &[],
+        GetRefAtmosThresholdConfig {
+            num_vertex: 2,
+            maxlc: 9,
+        },
+        &[],
+    )
+    .expect("calculate oceanmesh GetRef report");
+
+    assert_eq!(
+        report.ocean.as_ref().expect("ocean report").ref_sjx,
+        vec![0, 0, 1, 0]
+    );
+    assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 1, 0]);
+}

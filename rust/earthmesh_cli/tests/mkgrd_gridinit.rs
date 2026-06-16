@@ -28,6 +28,23 @@ fn run_mkgrd_gridinit_global_namelist_writes_initial_gridfile() {
     assert!(report.workspace_mask.mask_reports.is_empty());
     assert_eq!(report.gridfile.sjx_points, 21);
     assert_eq!(report.gridfile.lbx_points, 13);
+    let runtime_state = report
+        .runtime_state
+        .as_ref()
+        .expect("generated gridinit should return Rust-owned runtime state");
+    assert_eq!(runtime_state.nxp(), 1);
+    assert_eq!(runtime_state.grid.nma, 21);
+    assert_eq!(runtime_state.grid.nwa, 13);
+    assert_eq!(runtime_state.num_mp_step[0], 21);
+    assert_eq!(runtime_state.num_wp_step[0], 13);
+    assert_eq!(
+        runtime_state.pentagon_indices,
+        [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    );
+    assert_eq!(runtime_state.grid.xem.len(), 22);
+    assert_eq!(runtime_state.grid.xew.len(), 14);
+    assert_eq!(runtime_state.ijtabs.m.len(), 22);
+    assert_eq!(runtime_state.ijtabs.w.len(), 14);
     assert_eq!(
         report.gridfile.output,
         root.join("case_gridinit/gridfile/gridfile_NXP0001_01_hex.nc4")
@@ -122,6 +139,20 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
 
     assert_eq!(report.gridfile.sjx_points, 1);
     assert_eq!(report.gridfile.lbx_points, 1);
+    let runtime_state = report
+        .runtime_state
+        .as_ref()
+        .expect("existing EarthMesh mode_file should return Rust-owned runtime state");
+    assert_eq!(runtime_state.grid.nma, 1);
+    assert_eq!(runtime_state.grid.nwa, 1);
+    assert_eq!(runtime_state.num_mp_step[0], 1);
+    assert_eq!(runtime_state.num_wp_step[0], 1);
+    assert_eq!(runtime_state.grid.glonm, vec![0.0]);
+    assert_eq!(runtime_state.grid.glatm, vec![1.0]);
+    assert_eq!(runtime_state.grid.glonw, vec![2.0]);
+    assert_eq!(runtime_state.grid.glatw, vec![3.0]);
+    assert_eq!(runtime_state.ijtabs.m[0].iw, [1, 1, 1]);
+    assert_eq!(runtime_state.ijtabs.w[0].im, [1, 1, 1, 1, 1, 1, 1]);
     assert_eq!(
         report.gridfile.output,
         root.join("case_existing/gridfile/gridfile_NXP0001_01_hex.nc4")

@@ -1,7 +1,13 @@
 use earthmesh_cli::{
-    write_getref_specified_threshold_netcdf, LonLatPoint, MkgrdRefineLoopWorkingStateExecutor,
+    apply_onedivide_two_fortran_indexed, write_getref_specified_threshold_netcdf,
+    AreaJudgeGridWriteReport, AreaJudgeRefineGridRunReport, AreaJudgeRefineStepReport,
+    ContainWriteReport, GetContainRefineFileRunReport, GetContainRuntimeCounts,
+    GetRefSpecifiedThresholdWriteReport, LonLatPoint, MkgrdRefineLoopExecutor,
+    MkgrdRefineLoopStepIoPlan, MkgrdRefineLoopWorkingStateExecutor, MkgrdRefineSource,
+    MkgrdRefineSourceBranchReport, MkgrdRefineSourceIoPlan, MkgrdSpecifiedRefineSourceBranchReport,
     RefineLoopWorkingState, UnstructuredMesh,
 };
+use earthmesh_mesh::AreaJudgeSourceBounds;
 
 fn point(lon: f64, lat: f64) -> LonLatPoint {
     LonLatPoint { lon, lat }
@@ -103,6 +109,7 @@ fn working_state_prologue_reads_gridfile_copies_snapshot_and_returns_state() {
     let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
     let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
         step: 1,
+        max_transition_row: 1,
         sources: Vec::new(),
         refine_loop_input_gridfile: gridfile.clone(),
         refine_loop_original_tmpfile: original_tmpfile.clone(),
@@ -642,6 +649,7 @@ fn working_state_executor_runs_file_backed_passthrough_refine_step() {
     let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
     let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
         step: 1,
+        max_transition_row: 1,
         sources: Vec::new(),
         refine_loop_input_gridfile: input_gridfile.clone(),
         refine_loop_original_tmpfile: original_tmpfile.clone(),
@@ -786,7 +794,7 @@ fn working_state_applies_array_length_calculation_and_close_mesh_outputs() {
 }
 
 #[test]
-fn working_state_executor_runs_configured_one_into_four_refinement_pipeline() {
+fn working_state_executor_exits_one_into_four_pipeline_for_isolated_marker() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_refine_loop_working_state_onefour_{}",
         std::process::id()
@@ -797,6 +805,7 @@ fn working_state_executor_runs_configured_one_into_four_refinement_pipeline() {
     let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
     let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
         step: 1,
+        max_transition_row: 0,
         sources: Vec::new(),
         refine_loop_input_gridfile: input_gridfile.clone(),
         refine_loop_original_tmpfile: original_tmpfile.clone(),
@@ -833,15 +842,15 @@ fn working_state_executor_runs_configured_one_into_four_refinement_pipeline() {
             .as_ref()
             .unwrap()
             .refined_triangles,
-        vec![2]
+        Vec::<usize>::new()
     );
-    assert_eq!(report.ngr_renew.as_ref().unwrap().num_sjx, 5);
-    assert_eq!(report.ngr_renew.as_ref().unwrap().num_dbx, 8);
+    assert_eq!(report.ngr_renew.as_ref().unwrap().num_sjx, 2);
+    assert_eq!(report.ngr_renew.as_ref().unwrap().num_dbx, 4);
     let output = earthmesh_cli::read_unstructured_mesh_netcdf(&output_gridfile)
         .expect("read refined output gridfile");
-    assert_eq!(output.m_points.len(), 5);
-    assert_eq!(output.w_points.len(), 8);
-    assert_eq!(output.m_points[1], point(1.0, 1.0));
+    assert_eq!(output.m_points.len(), 2);
+    assert_eq!(output.w_points.len(), 4);
+    assert_eq!(output.m_points[1], point(2.0, 2.0));
     assert!(output.m_to_w.iter().all(|row| row.iter().all(|&id| id > 0)));
 
     let _ = std::fs::remove_dir_all(&root);
@@ -859,6 +868,7 @@ fn working_state_executor_runs_configured_one_into_two_transition_pipeline() {
     let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
     let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
         step: 1,
+        max_transition_row: 1,
         sources: Vec::new(),
         refine_loop_input_gridfile: input_gridfile.clone(),
         refine_loop_original_tmpfile: original_tmpfile.clone(),
@@ -939,6 +949,7 @@ fn working_state_executor_reads_specified_threshold_file_for_one_into_four_marke
     let threshold_file = root.join("threshold/threshold_specified_NXP0004_01.nc4");
     let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
         step: 1,
+        max_transition_row: 1,
         sources: Vec::new(),
         refine_loop_input_gridfile: input_gridfile.clone(),
         refine_loop_original_tmpfile: original_tmpfile.clone(),
@@ -995,6 +1006,124 @@ fn working_state_executor_reads_specified_threshold_file_for_one_into_four_marke
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn working_state_executor_accepts_specified_source_threshold_for_next_step() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_source_threshold_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let input_gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
+    let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
+    let threshold_file = root.join("threshold/threshold_specified_NXP0004_01.nc4");
+    let source = MkgrdRefineSourceIoPlan {
+        source: MkgrdRefineSource::SpecifiedStep,
+        area_judge_iter: 1,
+        get_contain_iter: 1,
+        getref_iter: 1,
+        area_judge_output: root.join("tmpfile/refine_area.nc4"),
+        contain_output: root.join("tmpfile/contain.nc4"),
+        threshold_outputs: Vec::new(),
+        specified_threshold_output: Some(threshold_file.clone()),
+    };
+    let step = MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        max_transition_row: 1,
+        sources: vec![source.clone()],
+        refine_loop_input_gridfile: input_gridfile.clone(),
+        refine_loop_original_tmpfile: original_tmpfile,
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: output_gridfile.clone(),
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![point(0.0, 0.0), point(2.0, 2.0)],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+            point(6.0, 0.0),
+            point(0.0, 6.0),
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+        n_w_to_m: vec![1, 1, 1, 1],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input_gridfile, &mesh)
+        .expect("write input gridfile");
+    write_getref_specified_threshold_netcdf(&threshold_file, &[0, 0, 1])
+        .expect("write specified threshold marker file");
+
+    let mut executor = MkgrdRefineLoopWorkingStateExecutor::default();
+    let bounds = AreaJudgeSourceBounds {
+        minlon_source: 1,
+        maxlon_source: 1,
+        maxlat_source: 1,
+        minlat_source: 1,
+    };
+    let report = MkgrdRefineSourceBranchReport::Specified(MkgrdSpecifiedRefineSourceBranchReport {
+        area: AreaJudgeRefineGridRunReport {
+            refine_step: AreaJudgeRefineStepReport {
+                is_in_refine: vec![vec![0, 1]],
+                bounds,
+                nlons_select: 1,
+                nlats_select: 1,
+                selected_cells: 1,
+                source_numpatch: None,
+            },
+            refine_write: AreaJudgeGridWriteReport {
+                output: source.area_judge_output.clone(),
+                bounds,
+                nlons_select: 1,
+                nlats_select: 1,
+                selected_cells: 1,
+                has_seaorland: false,
+            },
+        },
+        contain: GetContainRefineFileRunReport {
+            output: source.contain_output.clone(),
+            active_unstructured_cells: 1,
+            contained_source_pixels: 1,
+            runtime_counts: GetContainRuntimeCounts {
+                current_num_mp_step: 2,
+                current_num_wp_step: 4,
+                previous_num_vertex: 1,
+            },
+            write: ContainWriteReport {
+                output: source.contain_output.clone(),
+                num_ustr: 1,
+                num_ii: 1,
+                dim_a: 1,
+                dim_b: 1,
+            },
+        },
+        specified_threshold: GetRefSpecifiedThresholdWriteReport {
+            output: threshold_file.clone(),
+            sjx_points: 2,
+        },
+    });
+    executor
+        .accept_source_branch_report(&step, &source, &report)
+        .expect("accept source threshold handoff");
+    let report = executor
+        .run_refine_loop_step_report(&step)
+        .expect("run refine-loop from accepted specified source threshold");
+
+    assert_eq!(report.loaded_ref_sjx, Some(vec![0, 0, 1]));
+    assert_eq!(report.ngr_renew.as_ref().unwrap().num_sjx, 5);
+    assert_eq!(
+        earthmesh_cli::read_unstructured_mesh_netcdf(&output_gridfile)
+            .expect("read refined output")
+            .m_points
+            .len(),
+        5
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn write_ref_th_matrix(
     path: &std::path::Path,
     var_name: &str,
@@ -1028,6 +1157,7 @@ fn working_state_executor_reads_calculated_threshold_files_for_one_into_four_mar
     write_ref_th_matrix(&land_threshold, "ref_th_Lnd", 2, 2, &[0, 0, 1, 0]);
     let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
         step: 1,
+        max_transition_row: 1,
         sources: Vec::new(),
         refine_loop_input_gridfile: input_gridfile.clone(),
         refine_loop_original_tmpfile: original_tmpfile.clone(),
@@ -1071,6 +1201,181 @@ fn working_state_executor_reads_calculated_threshold_files_for_one_into_four_mar
         vec![2]
     );
     assert_eq!(report.ngr_renew.as_ref().unwrap().num_sjx, 5);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn working_state_executor_keeps_non_isolated_one_into_four_transition_band() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_iterb_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let input_gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let original_tmpfile = root.join("tmpfile/gridfile_NXP0004_01_ori.nc4");
+    let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
+    let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        max_transition_row: 1,
+        sources: Vec::new(),
+        refine_loop_input_gridfile: input_gridfile.clone(),
+        refine_loop_original_tmpfile: original_tmpfile,
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: output_gridfile,
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.0, 1.0),
+            point(1.0, 1.0),
+        ],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.0, 1.0),
+            point(1.0, 1.0),
+        ],
+        m_to_w: vec![[1, 2, 3], [1, 4, 2], [2, 4, 3], [3, 4, 1]],
+        w_to_m: vec![vec![1, 2, 4], vec![1, 3, 2], vec![1, 4, 3], vec![2, 3, 4]],
+        n_w_to_m: vec![3, 3, 3, 3],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input_gridfile, &mesh)
+        .expect("write input gridfile");
+
+    let executor =
+        MkgrdRefineLoopWorkingStateExecutor::with_one_into_four_ref_sjx(vec![0, 0, 1, 1, 1], 1, 1);
+    let report = executor
+        .run_refine_loop_step_report(&step)
+        .expect("run one-into-four refine-loop step with iterB transition expansion");
+
+    assert_eq!(
+        report
+            .onedivide_four_renew
+            .as_ref()
+            .unwrap()
+            .refined_triangles,
+        vec![2, 3, 4]
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn one_into_two_accepts_base_length_refinement_markers_after_one_into_four() {
+    let num_mp = vec![0, 4, 8, 10];
+    let num_wp = vec![0, 4, 6, 7];
+    let triangle_neighbors = vec![
+        vec![0, 0, 0],
+        vec![2, 3, 4],
+        vec![3, 4, 1],
+        vec![4, 2, 1],
+        vec![2, 3, 1],
+    ];
+    let ngrmw = vec![
+        vec![0; 5],
+        vec![0, 1, 1, 2, 3],
+        vec![0, 2, 4, 4, 4],
+        vec![0, 3, 2, 3, 1],
+    ];
+    let ref_sjx = vec![0, 0, 0, 0, 1];
+    let mrl_new = vec![0, 1, 4, 4, 1];
+    let mut mp_new = vec![point(0.0, 0.0); 11];
+    let mut wp_new = vec![point(0.0, 0.0); 8];
+    wp_new[1] = point(0.0, 0.0);
+    wp_new[2] = point(1.0, 0.0);
+    wp_new[3] = point(0.0, 1.0);
+    wp_new[4] = point(1.0, 1.0);
+    let mut ngrmw_new = vec![vec![0; 11]; 4];
+    for row in 1..=3 {
+        for triangle in 1..=4 {
+            ngrmw_new[row][triangle] = ngrmw[row][triangle];
+        }
+    }
+    let mut sjx_child = vec![[0, 0]; 5];
+
+    let report = apply_onedivide_two_fortran_indexed(
+        3,
+        false,
+        1,
+        &num_mp,
+        &num_wp,
+        &triangle_neighbors,
+        &ngrmw,
+        &ref_sjx,
+        &mrl_new,
+        &mut mp_new,
+        &mut wp_new,
+        &mut ngrmw_new,
+        &mut sjx_child,
+    )
+    .expect("one-into-two should use base-length mrl_new markers like Fortran");
+
+    assert_eq!(report.split_triangles, vec![4]);
+    assert_eq!(report.new_triangle_ids, vec![9, 10]);
+    assert_eq!(report.new_vertex_ids, vec![7]);
+}
+
+#[test]
+fn working_state_executor_removes_isolated_one_into_four_markers_like_fortran() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_refine_loop_working_state_isolated_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let input_gridfile = root.join("gridfile/gridfile_NXP0004_01_tri.nc4");
+    let output_gridfile = root.join("gridfile/gridfile_NXP0004_02_tri.nc4");
+    let step = earthmesh_cli::MkgrdRefineLoopStepIoPlan {
+        step: 1,
+        max_transition_row: 0,
+        sources: Vec::new(),
+        refine_loop_input_gridfile: input_gridfile.clone(),
+        refine_loop_original_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_ori.nc4"),
+        refine_loop_stage2_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_2.nc4"),
+        refine_loop_stage5_tmpfile: root.join("tmpfile/gridfile_NXP0004_01_5.nc4"),
+        refine_loop_output_gridfile: output_gridfile.clone(),
+        run_refine_loop: true,
+        stop_after_step: false,
+    };
+    let mesh = UnstructuredMesh {
+        m_points: vec![
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.0, 1.0),
+            point(1.0, 1.0),
+        ],
+        w_points: vec![
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.0, 1.0),
+            point(1.0, 1.0),
+        ],
+        m_to_w: vec![[1, 2, 3], [1, 4, 2], [2, 4, 3], [3, 4, 1]],
+        w_to_m: vec![vec![1, 2, 4], vec![1, 3, 2], vec![1, 4, 3], vec![2, 3, 4]],
+        n_w_to_m: vec![3, 3, 3, 3],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input_gridfile, &mesh)
+        .expect("write input gridfile");
+
+    let executor =
+        MkgrdRefineLoopWorkingStateExecutor::with_one_into_four_ref_sjx(vec![0, 0, 1, 0, 0], 1, 0);
+    let report = executor
+        .run_refine_loop_step_report(&step)
+        .expect("run one-into-four refine-loop step with isolated marker removal");
+
+    assert_eq!(
+        report
+            .onedivide_four_renew
+            .as_ref()
+            .unwrap()
+            .refined_triangles,
+        Vec::<usize>::new()
+    );
+    assert_eq!(report.ngr_renew.as_ref().unwrap().num_sjx, 4);
 
     let _ = std::fs::remove_dir_all(&root);
 }

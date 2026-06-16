@@ -1,8 +1,66 @@
-use earthmesh_cli::build_area_judge_seaorland_fortran_indexed;
+use earthmesh_cli::{
+    build_area_judge_seaorland_fortran_indexed, classify_area_judge_landtype_fortran_indexed,
+    AreaJudgeLandtypeClass,
+};
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 fn one_based_landtypes(nx: usize, ny: usize) -> Vec<Vec<i32>> {
     vec![vec![0; ny + 1]; nx + 1]
+}
+
+#[test]
+fn seaorland_builder_treats_ocean_land_river_and_coast_codes_like_fortran_binary_mask() {
+    // MOD_Area_judge.F90 uses `landtypes_global(i, j) /= 0` for seaorland.
+    // That means river/coast-coded cells remain land in this binary Area_judge mask.
+    assert_eq!(
+        classify_area_judge_landtype_fortran_indexed(0),
+        AreaJudgeLandtypeClass::Ocean
+    );
+    assert_eq!(
+        classify_area_judge_landtype_fortran_indexed(1),
+        AreaJudgeLandtypeClass::Land
+    );
+    assert_eq!(
+        classify_area_judge_landtype_fortran_indexed(2),
+        AreaJudgeLandtypeClass::Land
+    );
+    assert_eq!(
+        classify_area_judge_landtype_fortran_indexed(7),
+        AreaJudgeLandtypeClass::Land
+    );
+
+    let mut domain = vec![vec![0; 5]; 5];
+    let mut landtypes = one_based_landtypes(4, 4);
+    for i in 1..=4 {
+        for j in 1..=4 {
+            domain[i][j] = 1;
+        }
+    }
+
+    landtypes[1][1] = 0; // ocean code
+    landtypes[2][1] = 1; // ordinary land code
+    landtypes[3][1] = 2; // river-like nonzero code
+    landtypes[4][1] = 7; // coast-like nonzero code
+
+    let report = build_area_judge_seaorland_fortran_indexed(
+        &domain,
+        &landtypes,
+        AreaJudgeSourceBounds {
+            minlon_source: 1,
+            maxlon_source: 4,
+            maxlat_source: 1,
+            minlat_source: 1,
+        },
+        "landmesh",
+        true,
+    )
+    .expect("build seaorland classification parity report");
+
+    assert_eq!(report.sum_land_grid, 3);
+    assert_eq!(report.seaorland[1][1], 0);
+    assert_eq!(report.seaorland[2][1], 1);
+    assert_eq!(report.seaorland[3][1], 1);
+    assert_eq!(report.seaorland[4][1], 1);
 }
 
 #[test]

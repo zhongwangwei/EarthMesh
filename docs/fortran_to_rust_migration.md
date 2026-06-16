@@ -633,3 +633,747 @@ Added `run_springjustment_regional_from_unstructured_gridfile`, `run_springjustm
 ### 2026-06-12: Full MPAS mesh calculation pipeline ported
 
 Added `build_mpas_mesh_from_unstructured_fortran_indexed` and `write_mpas_mesh_from_netcdf_inputs` in `rust/earthmesh_cli`, covering the file-level `MOD_mask_postproc.F90:MPAS_Mesh_Cal` path before the final top-level atmosphere dispatch is wired. The builder composes migrated GetEdge, ordered verticesOnCell, GetArea, edge distance/angle, set_weightsOnEdge, MPAS zero-based connectivity conversion, cellwidth-derived meshDensity, nominalMinDc, the full MPAS NetCDF writer, and graph.info writer from legacy `Unstructured_Mesh_Read` plus `cellwidth_read` inputs. Remaining `MOD_mask_postproc.F90` manifest work is now Earth/Lnd/Ocn top-level execution composition around the already migrated domain helpers.
+
+### 2026-06-13: mask_restart Area_judge final postprocess library runner
+
+Promoted the previously CLI-local mask_restart ContinueMkgrd final handoff into `rust/earthmesh_cli` as `run_mkgrd_mask_restart_area_judge_postproc_namelist`. The runner composes restarted `Area_judge`, final `Get_Contain(0)`, and the land/ocean/earth `mask_postproc` branches from one typed options bundle, and the binary now delegates to that library surface while preserving its output lines. This narrows the remaining `mkgrd.F90` restart work to true refine-enabled restart loop handoff, rather than duplicated final postprocess wiring.
+
+### 2026-06-13: Area_judge restart refine-loop handoff
+
+Added `run_mkgrd_refine_loop_namelist_with_area_judge_restart_grids_and_migrated_executor`, a library-level handoff from saved `Area_judge` restart grids into the migrated refine-loop executor stack. The runner prepares the namelist/workspace, restores the domain and sea-land state from `IsInDmArea_grid`, optionally rebuilds the iter-zero calculated refine selected grid, seeds the first refine-loop gridfile, derives source-branch options from the restored restart state, and then executes the migrated source/refine/final handoff pipeline. The remaining `mkgrd.F90` restart work is now focused on broad binary/top-level exposure and any additional initial-gridfile restart variants.
+
+### 2026-06-13: Area_judge restart refine-loop CLI exposure
+
+Exposed the restart-grid handoff through the `earthmesh_cli` binary as `--run-mask-restart-area-judge-refine` with `--restart-refine-source-state` and `--restart-refine-initial-gridfile`. The CLI now reads a compact source-state file for source-grid geometry/landtype metadata, derives the standard `result/IsInDmArea_grid.nc4` restart input from the namelist file_dir, restores the restart domain/sea-land grid, seeds the first refine-loop gridfile, and runs the migrated source/refine executor stack. The library runner also now backfills refine `Mask_make` operations for `NL%mask_restart=.true.` namelists, because the legacy restart read_nl plan intentionally skips normal refine-mask preparation. Remaining restart-refine work is production data_preprocess/landtype-file wiring beyond compact source-state inputs and any additional post-initial-gridfile variants.
+
+### 2026-06-13: Area_judge restart refine-loop landtype source CLI
+
+Added `--run-mask-restart-area-judge-refine-landtype-source`, a production-facing variant of the restart-refine handoff that reads `NL%landtype_file` through the migrated Rust data_preprocess reader instead of requiring a compact source-state text file. The binary derives source axes, `landtypes_global`, `maxlc`, and mode-grid `num_vertex`, reuses the saved `result/IsInDmArea_grid.nc4` restart payload for domain/sea-land state, and then enters the same migrated Area_judge-refine/Get_Contain/GetRef/refine_loop stack. This leaves compact source-state as a debugging/fixture path while giving restart-refine production cases a direct landtype-file route.
+
+### 2026-06-13: Area_judge restart refine-loop final postprocess handoff
+
+Extended the Area_judge restart-refine runner so the migrated refine-loop handoff can optionally compose the final `Get_Contain(0)` domain contain file and land/ocean `mask_postproc` output after the final refine step. The `earthmesh_cli --run-mask-restart-area-judge-refine-landtype-source` path now uses `--mask-postproc-num-vertex` to trigger this final handoff while still deriving source geometry and landtype metadata directly from `NL%landtype_file`. For landmesh postprocess, the selected sea/land mask and selected-domain bounds are read from the restart `IsInDmArea_grid.nc4` payload so patchtype construction is tied to the restored Area_judge window rather than the full global source raster. The PatchID selected-domain coordinate builder was also corrected to advance latitude source indices southward from `maxlat_DmArea`, matching the existing `patchtype_indices` convention and preventing multi-row selected domains from underflowing latitude coordinates.
+
+### 2026-06-13: Native hydro close-mask ring simplification
+
+Extended the Rust-native hydro/coast close-mask NML exporter with `--simplify-tolerance-deg`, moving the simplification control from recipe metadata into the actual `.nml` generation path. The exporter now validates a finite non-negative tolerance, simplifies closed GeoJSON exterior rings with a tolerance-based line-distance pass, preserves at least three vertices, and writes the simplified coordinates directly to `close_num`/`close_refine` mask files. Existing cumulative refine, class caps, per-degree caps, and ring-separation behavior remain unchanged. Remaining close-mask geometry work is true buffer/offset generation and any topology-aware dissolve/union behavior; no new geometry dependency was introduced for this simplification slice.
+
+### 2026-06-13: Native hydro close-mask envelope buffer export
+
+Extended the Rust-native hydro/coast close-mask NML exporter with `--buffer-deg-by-refine-degree`, so the same per-refine-degree buffer controls that were already written into recipe JSON now affect generated `.nml` masks directly. The current Rust implementation uses a conservative lon/lat bounding-envelope expansion per ring and per refine degree, which avoids under-covering hydro/coast refinement corridors without adding a new topology dependency. This works with cumulative refine masks, class caps, ring-separation filtering, and the native simplification pass. Remaining close-mask geometry work is higher-fidelity polygon offset plus topology-aware dissolve/union for overlapping corridor buffers.
+
+### 2026-06-13: top-level mask_restart dispatcher avoids gridinit fallthrough
+
+Added an option-free `run_mkgrd_top_level_namelist` dispatcher in `rust/earthmesh_cli` so `mkgrd.x` mask-restart namelists are classified before the normal gridinit branch. The dispatcher executes the already migrated `mask_patch_on` restart preprocessing branch directly and returns a typed restart plan for option-dependent restart branches. The default `earthmesh_cli <mkgrd.nml>` entry now uses this dispatcher, so `mask_restart=.true.`/`mask_patch_on=.true.` no longer falls through to the old `mask_restart mkgrd branch is not yet migrated to Rust` gridinit error.
+
+### 2026-06-13: Native hydro close-mask envelope dissolve
+
+Extended the Rust-native hydro/coast close-mask exporter with `--dissolve-overlapping-envelopes` and a matching `dissolve_overlapping_envelopes` composite-recipe component option. When enabled, the exporter merges overlapping or touching close-mask envelopes that share the same class, refine degree, and target refine degree before writing `.nml` files. This covers the current CaMa/MERIT envelope-buffer workflow and reduces duplicate hydro/coast refinement masks without changing default output behavior. Remaining close-mask geometry work is still true arbitrary-polygon offset, dissolve, and union beyond axis-aligned envelope merging.
+
+### 2026-06-13: default mkgrd restart-refine handoff dispatch
+
+The default `earthmesh_cli <mkgrd.nml>` path now recognizes restart-refine handoff inputs without requiring the explicit debug flags. Supplying `--restart-refine-initial-gridfile` plus either `--restart-refine-source-state` or an `NL%landtype_file`-backed namelist enters the migrated Area_judge restart/refine stack directly, including the production landtype-file source route and optional final land/ocean postprocess controls. This moves the Rust CLI closer to the real `mkgrd.x` top-level restart flow instead of stopping at a `ContinueMkgrd` plan for refine-enabled restarts.
+
+### 2026-06-13: runtime state carries refine final handoff step
+
+`EarthmeshRuntimeState` now exposes a typed `with_step` update and the migrated refine-loop namelist prepare path stores the planned final `mkgrd` handoff step in `runtime_state.step`. This removes another implicit `consts_coms`/module-global style handoff from the refine orchestration: downstream Rust callers can read the current loop step from the explicit runtime state while `num_mp_step`/`num_wp_step` remain reserved for real mesh point counts instead of being overloaded as step sentinels.
+
+
+### 2026-06-13: runtime state records initial mesh counts
+
+Added `EarthmeshRuntimeState::record_mesh_counts_for_step` for Fortran-style 1-based `mkgrd` step counters and wired the initial gridinit plus existing/converted `mode_file` ingestion paths to store real `num_mp_step`/`num_wp_step` counts. This replaces another `consts_coms` module-global handoff with explicit Rust state: generated NXP grids and compact mode-file conversions now carry the triangle/cell counts needed by later `Get_Contain`/`refine_loop` style adapters instead of leaving the count arrays at their legacy placeholder defaults.
+
+### 2026-06-13: Get_Contain reports explicit runtime counters
+
+Extended the file-backed `Get_Contain` refine adapter report with `GetContainRuntimeCounts`, carrying the current input grid triangle/cell counts plus the caller-provided previous `num_vertex` boundary. This makes the `MOD_GetContain.F90` handoff that previously mutated `consts_coms:num_mp_step`, `num_wp_step`, and `num_vertex` visible to Rust orchestration and later `refine_loop` adapters, without reintroducing module-global mutable state.
+
+### 2026-06-13: source-branch executor preserves Get_Contain counters
+
+The migrated `MkgrdRefineSourceBranchExecutor` now records calculated/specified source-branch reports when called through the generic `MkgrdRefineLoopExecutor` trait path. This prevents the Rust orchestration layer from discarding `GetContainRuntimeCounts` during normal `Area_judge_refine -> Get_Contain -> GetRef` dispatch, keeping the former `consts_coms` `num_mp_step`/`num_wp_step` handoff inspectable after source-branch execution.
+
+### 2026-06-13: migrated refine executor exposes source reports
+
+Added a `source_branch_reports()` accessor on the standard `MkgrdMigratedRefineLoopExecutor`. Callers using the normal migrated source/working-state executor stack can now inspect recorded calculated/specified branch reports, including `GetContainRuntimeCounts`, without unpacking the generic composite executor. This keeps the replacement for `consts_coms` mesh-count handoffs available at the Rust orchestration boundary.
+
+### 2026-06-13: refine-loop execution returns source reports
+
+Extended `MkgrdRefineLoopExecutionReport` with `source_branch_reports` and added a default `MkgrdRefineLoopExecutor::source_branch_reports()` accessor. Generic refine-loop execution now returns any recorded calculated/specified branch reports from the executor, so the explicit `GetContainRuntimeCounts` handoff survives not only the source executor but also the top-level `mkgrd` refine-loop report boundary.
+
+### 2026-06-13: namelist/top-level reports expose source reports
+
+Added `source_branch_reports()` forwarding on `MkgrdRefineLoopNamelistRunReport` and `MkgrdTopLevelNamelistRunReport`. Source-branch reports, including migrated `GetContainRuntimeCounts`, now survive the standard executor, refine-loop execution report, namelist runner, and top-level `mkgrd.x` runner API boundaries without callers unpacking nested execution structs. This further replaces implicit `consts_coms` mesh-count handoffs with explicit Rust report surfaces.
+
+### 2026-06-13: default restart-refine dispatch validates source inputs
+
+Hardened the default `earthmesh_cli <mkgrd.nml> --restart-refine-initial-gridfile ...` dispatch so it only infers the landtype-file restart-refine path when the namelist explicitly provides `NL%landtype_file`. If neither `--restart-refine-source-state` nor an explicit landtype file is present, the binary now stops with a clear source-input error before attempting to open a default or unrelated NetCDF path. This makes the top-level restart-refine handoff safer for production `mkgrd.x` replacement workflows.
+
+### 2026-06-13: hydro close-mask ring-aware offset buffering
+
+Replaced the close-mask buffer path's envelope-only expansion with a ring-aware planar offset for valid GeoJSON exterior rings. The Rust exporter now shifts each polygon edge outward and intersects adjacent shifted edges, so non-axis-aligned hydro/coast corridors keep their original ring shape when buffered instead of being forced into a coarse bounding rectangle. Axis-aligned rectangles still produce the previous envelope-equivalent output, and the older envelope fallback remains for degenerate rings. Remaining close-mask geometry work is topology-aware arbitrary-polygon dissolve/union beyond the current same-degree envelope dissolve.
+
+### 2026-06-13: hydro close-mask rectilinear rectangle union
+
+Extended close-mask dissolve beyond pure bounding-envelope merging for a common hydro/coast case: touching or overlapping axis-aligned rectangle rings now trace the rectilinear union boundary before writing `.nml` files. This preserves L-shaped corridor unions rather than over-covering them with a coarse bbox, while retaining the previous envelope fallback for non-rectangular or degenerate cases. Remaining close-mask geometry work is full arbitrary-polygon topology-aware dissolve/union.
+
+### 2026-06-13: hydro close-mask chained rectilinear union
+
+Extended close-mask dissolve so multi-segment axis-aligned rectangle corridors do not collapse back to a coarse bounding box after the first pairwise merge. Previously a two-rectangle L-shape could be preserved, but adding a third touching rectangle caused the merged L-shaped mask to lose rectangle identity and fall back to bbox merging. The Rust exporter now decomposes rectilinear merged masks into covered cells, unions those cells with the next rectangle/ring, and retraces the exterior boundary. This keeps chained river/coast corridor masks tighter while leaving full arbitrary-polygon topology-aware dissolve/union as the remaining geometry gap.
+
+### 2026-06-13: hydro close-mask shared-edge polygon union
+
+Extended close-mask dissolve beyond rectilinear corridors for a first non-rectangular topology case: two same-class polygons that share a complete boundary edge are now merged by cancelling the shared reversed edge and tracing the remaining exterior boundary. This prevents triangular or skewed hydro/coast refinement corridors from being over-covered by a bounding box when their polygons tile along a full edge. The remaining geometry gap is still full arbitrary-polygon topology-aware dissolve/union for partial overlaps, crossing edges, holes, and more complex multi-polygon arrangements.
+
+### 2026-06-13: hydro close-mask partial shared-edge polygon union
+
+Extended the native close-mask dissolve path from exact shared-edge cancellation to partial shared-edge polygon union. The Rust exporter now splits each polygon edge at vertices from the adjacent polygon before cancelling reversed boundary segments, so a triangular/skewed hydro corridor that only shares part of an edge with the next polygon can be merged and traced without falling back to a bounding envelope. This is another step toward arbitrary-polygon dissolve while the remaining gap still includes crossing-edge intersections, true overlap topology, holes, and complex multi-polygon union.
+
+### 2026-06-13: hydro close-mask contained polygon union
+
+Extended native close-mask dissolve for containment topology: when one same-class polygon is fully inside another polygon, the Rust exporter now keeps the outer ring as the union boundary instead of falling back to the combined bounding envelope. This covers contained hydro/coast refinement islands or duplicate nested features for non-rectangular rings. Remaining arbitrary-polygon dissolve work still includes crossing-edge intersections, true partial overlaps, holes, and complex multi-polygon topology.
+
+### 2026-06-13: hydro close-mask crossing-edge polygon union
+
+Extended native close-mask dissolve for simple overlapping non-rectangular polygons whose boundaries cross. The Rust exporter now splits polygon edges at true segment intersections, removes split edge segments whose midpoints lie strictly inside the adjacent polygon, cancels reversed shared edges, and traces the remaining exterior boundary. This avoids bounding-box fallback for a common hydro/coast overlap topology while keeping remaining arbitrary-polygon work focused on holes, multi-component unions, and more complex self/overlap arrangements.
+
+### 2026-06-13: source-branch Get_Contain counts update runtime state
+
+Extended `MkgrdRefineSourceBranchExecutor` with an optional `EarthmeshRuntimeState` owner so the generic source-branch execution path no longer only preserves `GetContainRuntimeCounts` in reports. After calculated or specified source dispatch, the executor now writes the current `Get_Contain` mesh counts into `EarthmeshRuntimeState::num_mp_step` and `num_wp_step` for the active 1-based mkgrd step. This moves another former `consts_coms` mutable-global handoff into explicit Rust-owned state while keeping report-only callers unchanged.
+
+### 2026-06-13: refine-loop execution returns runtime state snapshots
+
+Added a default `MkgrdRefineLoopExecutor::runtime_state()` hook and carried its cloned value into `MkgrdRefineLoopExecutionReport`. Composite and standard migrated executors forward the source executor runtime state, so the `Get_Contain` mesh-count writeback performed during source dispatch now survives the generic refine-loop execution boundary. This keeps former `consts_coms` step/count state visible through the normal Rust orchestration API rather than only through concrete executor internals.
+
+### 2026-06-13: namelist and top-level reports expose runtime state
+
+Added `runtime_state()` accessors to `MkgrdRefineLoopNamelistRunReport` and `MkgrdTopLevelNamelistRunReport`. The refine report returns the execution runtime-state snapshot when the executor provides one, falling back to the prepared state; the top-level report forwards the refine runtime state when present and otherwise exposes gridinit state. This keeps the Rust-owned replacement for former `consts_coms` step/count state available through the same namelist/top-level API boundary that already forwards source-branch reports.
+
+### 2026-06-13: standard migrated executor seeds runtime state
+
+Added a seeded standard migrated refine-loop executor builder and wired the namelist/top-level migrated-stack runners to pass `prepare.runtime_state` into `MkgrdRefineSourceBranchExecutor`. The production migrated stack now updates `EarthmeshRuntimeState::num_mp_step` and `num_wp_step` from source-branch `Get_Contain` counts, instead of only supporting that writeback for manually constructed source executors. This closes another `consts_coms` handoff gap in the normal Rust replacement path.
+
+### 2026-06-13: default restart-refine infers existing case gridfile
+
+Extended the default `earthmesh_cli <mkgrd.nml>` restart-refine handoff so a source-state restart can use the standard existing case gridfile path `gridfile/gridfile_NXP####_01_<mode>.nc4` when `--restart-refine-initial-gridfile` is omitted. The Area_judge restart-refine runner also skips the initial-gridfile copy when the inferred source already equals the first refine-loop input path, avoiding NetCDF self-copy corruption. This moves another mask_restart/refine continuation case closer to Fortran `ContinueMkgrd` behavior while preserving the explicit initial-gridfile override.
+
+### 2026-06-13: default landtype restart-refine infers existing case gridfile
+
+Extended the default `earthmesh_cli <mkgrd.nml>` restart-refine dispatch for `NL%landtype_file` sources so it can reuse the standard existing case gridfile path `gridfile/gridfile_NXP####_01_<mode>.nc4` when `--restart-refine-initial-gridfile` is omitted. The auto-handoff is intentionally conservative: it only activates for `mask_restart + refine + NL%landtype_file` when the standard gridfile already exists, so ordinary restart continuations without a prepared refine grid keep their prior path.
+
+### 2026-06-13: default mask_restart ocean postprocess executes
+
+Extended the default `earthmesh_cli <mkgrd.nml>` mask-restart dispatcher so the `oceanmesh + mask_patch_on=.false.` `RunMaskPostproc` branch now runs the migrated ocean `mask_postproc` path instead of only printing a typed plan. When `--mask-postproc-num-vertex` is omitted, the CLI infers the legacy `num_vertex` boundary from the restart contain file's `ustr_ii` rows, then writes the final ocean gridfile and tri OBC outputs through the existing Rust runner. This moves another production `mkgrd.F90` restart branch from advisory planning into executable Rust behavior.
+
+### 2026-06-13: explicit mask_restart ocean infers num_vertex
+
+Relaxed the explicit `earthmesh_cli <mkgrd.nml> --run-mask-restart-ocean` path so `--mask-postproc-num-vertex` is now optional. When omitted, the CLI uses the same Rust inference as the default mask-restart ocean branch: it reads the restart contain file and uses the `ustr_ii` row count as the legacy `num_vertex` boundary before executing the migrated ocean `mask_postproc` runner. This removes another debug-only manual argument from the production restart path while keeping the explicit override available for unusual fixtures.
+
+### 2026-06-13: top-level dispatcher owns mask_restart ocean postprocess
+
+Moved the default mask-restart ocean execution from a CLI-only fallback into `rust/earthmesh_cli::run_mkgrd_top_level_namelist`. The library dispatcher now returns a `MaskRestartOcean` report and writes the migrated ocean `mask_postproc` outputs directly for `oceanmesh + mask_patch_on=.false.`, inferring `num_vertex` from the contain file. The CLI now only formats the returned report, so the Rust API boundary itself owns this `mkgrd.F90` top-level restart branch.
+
+### 2026-06-13: mask_restart ocean num_vertex inference is reusable
+
+Promoted the restart-ocean `num_vertex` reconstruction into `rust/earthmesh_cli::infer_mask_restart_ocean_num_vertex_from_config`. The helper reads the persisted restart contain file and derives the legacy boundary from `ustr_ii`, matching the state that Fortran previously kept in modules. Both the library top-level dispatcher and the explicit CLI ocean restart path now use the same Rust API instead of duplicating inference logic in `main.rs`.
+
+### 2026-06-13: restart-refine initial gridfile inference is reusable
+
+Promoted the standard restart-refine initial gridfile inference into `rust/earthmesh_cli` library helpers: `restart_refine_initial_gridfile_path_from_config`, `infer_restart_refine_initial_gridfile_from_config`, and `maybe_infer_restart_refine_initial_gridfile_from_config`. The CLI default restart-refine dispatcher now reuses these APIs instead of carrying local path-building logic in `main.rs`, keeping another piece of former `mkgrd.F90` restart/refine state reconstruction at the Rust library boundary.
+
+### 2026-06-13: default restart-refine handoff classification is reusable
+
+Moved the default `mkgrd.x` restart-refine source selection into `rust/earthmesh_cli::infer_default_restart_refine_handoff_from_config`. The reusable API now owns the source-state vs `NL%landtype_file` decision, standard initial-gridfile inference, conservative implicit landtype auto-handoff, and the missing-source validation that was previously embedded only in the CLI front-end. The binary now only maps the typed library decision to the existing execution branch flags, reducing CLI-only restart/refine orchestration logic.
+
+### 2026-06-13: restart land selected-domain reconstruction is reusable
+
+Promoted the restart-refine land postprocess selected-domain reconstruction into `rust/earthmesh_cli::selected_land_domain_from_area_judge_grid_payload`. The library API now validates the saved Area_judge restart payload, requires `seaorland_select`, carries the selected source bounds, and returns the exact sea/land matrix needed by land `mask_postproc`. The CLI restart-refine final land handoff now reuses this API instead of keeping the state reconstruction only in `main.rs`.
+
+### 2026-06-13: restart/refine source axes are reusable
+
+Promoted the CLI-local global source-axis reconstruction into `rust/earthmesh_cli::build_global_source_axes_fortran_indexed` and `GlobalSourceAxes`. Restart/refine handoffs that still need source-state geometry now obtain one-based `lon_vertex`, `lat_vertex`, `lon_i`, and `lat_i` from the library, and the CLI no longer owns a separate `SourceAxes` builder. The landtype data_preprocess reader also reuses the same axis builder, keeping source geometry reconstruction consistent across data_preprocess, source-state, and restart-refine paths.
+
+### 2026-06-13: compact source-state parsing is reusable
+
+Promoted the source-state text parser used by migrated `mkgrd` source-state and restart-refine handoffs into `rust/earthmesh_cli::parse_mkgrd_compact_source_state` / `read_mkgrd_compact_source_state`. The typed `MkgrdCompactSourceState` now owns source dimensions, first-triangle and `num_vertex` handoffs, optional calculated-refine bounds, final contain/postprocess requests, and the `is_in_domain`/`seaorland`/`landtypes_global` matrices. The CLI now reads this library state directly instead of carrying a private parser and private final-postprocess enum in `main.rs`.
+
+### 2026-06-13: compact source-state selected matrix extraction is reusable
+
+Promoted the compact source-state selected-matrix extraction used by land final `mask_postproc` into `rust/earthmesh_cli::compact_source_state_selected_matrix_fortran_order`. The library now owns the one-based matrix shape check and the Fortran postprocess ordering that writes longitude rows with latitude reversed from `nlats_source` down to `1`. The CLI source-state branch now reuses this helper instead of keeping a private matrix-ordering function.
+
+### 2026-06-13: compact source-state final postprocess request is reusable
+
+Promoted compact source-state final postprocess request construction into `rust/earthmesh_cli::compact_source_state_final_postproc_request`. The library now validates the required `final_domain_contain` handoff for land/ocean postprocess requests, owns the land selected-domain matrix normalization plus selected-domain dimensions, and returns a typed request consumed by the CLI. This removes another source-state final `mask_postproc` orchestration detail from `main.rs` while preserving the existing axes borrowing and output writer composition.
+
+### 2026-06-13: compact source-state final contain request is reusable
+
+Promoted compact source-state final contain payload/options construction into `rust/earthmesh_cli::compact_source_state_final_domain_area_payload_fortran_indexed` and `compact_source_state_final_contain_options`. The library now owns the full-source Area_judge selection window and typed `MkgrdFinalDomainContainOptions` borrowing for source-state final `Get_Contain(0)`, while the CLI only supplies the output path and forwards the resulting options. This keeps source-state final-domain contain orchestration aligned with the reusable source axes and final postprocess request helpers.
+
+### 2026-06-13: data-preprocess source-state land-domain selection is reusable
+
+Promoted the `--run-refine-landtype-source` final land `mask_postproc` selected-domain reconstruction into `rust/earthmesh_cli::selected_land_domain_from_full_source_seaorland_fortran_order`. The library now owns the full-source `seaorland` shape check, minimal nonzero land bounding window, empty-land fallback, and selected matrix extraction used by data_preprocess-derived source-state handoffs. This removes another private `main.rs` state-reconstruction helper and aligns landtype-source final postprocess with the reusable Area_judge restart selected-domain API.
+
+### 2026-06-14: data-preprocess source-state final contain request is reusable
+
+Promoted the `--run-refine-landtype-source` final-domain contain payload/options construction into `rust/earthmesh_cli::data_preprocess_source_state_final_domain_area_payload_fortran_indexed` and `data_preprocess_source_state_final_contain_options`. The library now owns the full-source Area_judge selection window plus mesh-type-to-`GetContainMeshKind` option mapping for data_preprocess-derived source-state handoffs, preserving the previous no-contain behavior for unsupported mesh types. The CLI now only writes the generated payload and forwards the typed options into the migrated final handoff.
+
+### 2026-06-14: data-preprocess source-state final postprocess request is reusable
+
+Promoted the `--run-refine-landtype-source` final land/ocean `mask_postproc` request construction into `rust/earthmesh_cli::data_preprocess_source_state_final_postproc_request`. The library now owns the landmesh selected-domain reconstruction, selected-domain integer bounds, ocean `num_vertex` handoff, and unsupported-mesh no-postprocess behavior for data_preprocess-derived source-state handoffs. The CLI now only maps the typed request to existing borrowed runner options, removing another `mesh_type` postprocess branch from `main.rs`.
+
+### 2026-06-14: landtype source mode and sea-land conversion are reusable
+
+Promoted the migrated landtype-source `NL%mode_grid` to `num_vertex` inference and landtype-to-`seaorland` conversion into `rust/earthmesh_cli::mkgrd_mode_grid_num_vertex` and `seaorland_from_landtypes_global_fortran_indexed`. Restart-refine and direct landtype-source handoffs now share the same Rust API for tri/hex boundary inference and one-based land/ocean mask construction instead of keeping these Fortran-state reconstruction details as private CLI helpers.
+
+### 2026-06-14: restart-refine final postprocess request is reusable
+
+Promoted the Area_judge restart-refine final land/ocean `mask_postproc` request construction into `rust/earthmesh_cli::restart_refine_final_postproc_request`. The library now owns the no-request gating, land selected-domain bounds/state copy, ocean `mask_sea_ratio` and `num_vertex` handoff, and unsupported-mesh error. The source-state and landtype-source CLI branches now only map the typed request to their axes-specific borrowed runner options, removing duplicated postprocess `mesh_type` branching from `main.rs`.
+
+### 2026-06-14: restart-refine final contain options are reusable
+
+Promoted the Area_judge restart-refine final `Get_Contain(0)` options construction into `rust/earthmesh_cli::restart_refine_final_contain_options`. The library now owns requested/no-request gating, restart mesh-type mapping for land/ocean/atmos/LOC, borrowed sea-land/source-axis option assembly, and the unsupported-mesh error used by restart-refine handoffs. Both source-state and landtype-source CLI restart-refine branches now reuse this API before their axes-specific final postprocess mapping.
+
+### 2026-06-14: compact source-state restart axes are reusable
+
+Added `MkgrdCompactSourceState::build_global_source_axes` so compact source-state refine and restart-refine handoffs reconstruct their one-based source geometry through the Rust library API instead of manually passing dimensions through the CLI front-end. The source-state direct-refine and restart-refine branches now build axes from the typed compact state and derive `MkgrdRefinePrepareSourceGridOptions` through `GlobalSourceAxes::refine_prepare_source_grid`, keeping another `mkgrd.F90` source-state recovery detail out of `main.rs`.
+
+### 2026-06-14: landtype preprocess source-grid options are reusable
+
+Added `LandtypeDataPreprocessReport::refine_prepare_source_grid` and carried `gridnum_perdegree` in the data_preprocess report so landtype-file refine/restart handoffs can borrow source axes through a typed Rust library API. The restart-refine landtype-source CLI branch now uses this helper instead of manually assembling `MkgrdRefinePrepareSourceGridOptions`, moving another `MOD_data_preprocess.F90` / `mkgrd.F90` source-state handoff detail out of `main.rs`.
+
+### 2026-06-14: restart Area_judge options are reusable
+
+Added `GlobalSourceAxes::restart_area_judge_options` so the mask-restart Area_judge continuation can borrow source axes through a typed Rust library API. The explicit `--run-mask-restart-area-judge` CLI branch now passes the library-built options into `run_mkgrd_mask_restart_area_judge_namelist` instead of manually expanding `lon_vertex`, `lat_vertex`, `lon_i`, `lat_i`, and source dimensions in `main.rs`.
+
+### 2026-06-14: data-preprocess final postprocess runner options are reusable
+
+Promoted the data_preprocess-derived final postprocess request-to-runner-options mapping into `rust/earthmesh_cli::data_preprocess_source_state_final_postproc_options`. The direct `--run-refine-landtype-source` CLI branch now asks the library to convert typed land/ocean final postprocess requests into borrowed `MkgrdFinalDomainPostprocOptions`, so `main.rs` no longer needs to unpack selected land-domain bounds or ocean `num_vertex` handoffs for this migrated `mkgrd.F90` final-domain path.
+
+### 2026-06-14: data-preprocess final contain write is reusable
+
+Promoted the direct `--run-refine-landtype-source` final-domain contain write into `rust/earthmesh_cli::write_data_preprocess_source_state_final_domain_contain_options`. The library now owns the Area_judge payload generation, NetCDF write, and `Get_Contain(0)` contain-option assembly for data_preprocess-derived source-state handoffs; the CLI only supplies the output path and forwards typed options into the migrated final-domain execution.
+
+### 2026-06-14: data-preprocess final-domain handoff runner is reusable
+
+Promoted the direct `--run-refine-landtype-source` final-domain execution composition into `rust/earthmesh_cli::run_mkgrd_refine_loop_execution_with_data_preprocess_final_domain_handoff`. The library now composes data_preprocess Area_judge payload writing, final `Get_Contain(0)` options, final land/ocean postprocess request mapping, and the migrated refine-loop final handoff in one API; the CLI branch no longer assembles contain/postprocess options by hand.
+
+### 2026-06-14: data-preprocess calculated-refine source is reusable
+
+Promoted the direct `--run-refine-landtype-source` iter-zero calculated-refine Area_judge construction into `rust/earthmesh_cli::data_preprocess_source_state_calculated_refine_from_prepare`. The library now reads the prepared mkgrd/read_nl runtime refine controls, validates `mask_refine_ndm(0)`, and expands the data_preprocess source-state axes/domain into the calculated refine report; the CLI no longer parses `RefineConfig` or hand-expands `build_area_judge_calculated_refine_fortran_indexed` arguments for this path.
+
+### 2026-06-14: data-preprocess source-branch options callback is reusable
+
+Promoted the direct `--run-refine-landtype-source` source-branch option assembly into `rust/earthmesh_cli::with_data_preprocess_source_state_refine_source_branch_options_from_prepare`. The library now owns the calculated-refine report lifetime, calculated/specifed source-branch option selection, and data_preprocess source-state borrowing for `Area_judge_refine/Get_Contain/GetRef`; the CLI only supplies a closure that runs the migrated executor/final handoff.
+
+### 2026-06-14: data-preprocess refine execution runner is reusable
+
+Promoted the direct `--run-refine-landtype-source` refine execution composition into `rust/earthmesh_cli::run_mkgrd_refine_loop_execution_with_data_preprocess_source_state`. The library now seeds the first refine-loop gridfile from the initial mesh, constructs data_preprocess source-branch executors, and runs the migrated refine/final-domain handoff through one reusable API; the CLI no longer writes the first refine input or builds the migrated executor directly for this path.
+
+### 2026-06-14: data-preprocess source-state config expansion is reusable
+
+Promoted the direct `--run-refine-landtype-source` mkgrd config expansion into `rust/earthmesh_cli::build_mkgrd_data_preprocess_source_state_from_config_fortran_indexed`. The library now owns `NL%landtype_file`, `NL%gridnum_perdegree`/override selection, domain flags, `NL%mode_grid` to `num_vertex`, and source first-triangle wiring before building the typed data_preprocess source state; the CLI no longer manually expands those namelist fields for this path.
+
+### 2026-06-14: data-preprocess landtype-source namelist runner is reusable
+
+Promoted the direct `--run-refine-landtype-source` orchestration into `rust/earthmesh_cli::run_mkgrd_refine_landtype_source_namelist`. The library now composes parsed mkgrd config, data_preprocess source-state construction, gridinit, refine prepare, first-grid seeding, migrated source execution, and final-domain handoff into one report; the CLI branch now only invokes the runner and formats its report fields.
+
+### 2026-06-14: compact source-state namelist runner is reusable
+
+Promoted the direct `--run-refine-source-state` compact source-state orchestration into `rust/earthmesh_cli::run_mkgrd_refine_compact_source_state_namelist`. The library now owns compact source-state parsing, global source-axis reconstruction, calculated-refine metadata wiring, final-domain contain/postprocess option construction, final-domain Area_judge payload writing, and migrated top-level refine execution; the CLI branch now only invokes the runner and formats its report fields.
+
+### 2026-06-14: compact source-state restart-refine options are reusable
+
+Promoted compact source-state restart-refine option construction into `rust/earthmesh_cli::read_mkgrd_compact_restart_refine_source_state` and `MkgrdCompactRestartRefineSourceState::area_judge_restart_refine_loop_options`. The library now owns source-state parsing, global source-axis reconstruction, source-grid derivation, and `MkgrdAreaJudgeRestartRefineLoopOptions` assembly for restart Area_judge refine handoffs; the CLI no longer manually expands those fields before invoking the migrated restart-refine runner.
+
+### 2026-06-14: compact source-state restart-refine runner is reusable
+
+Promoted the direct `--run-mask-restart-area-judge-refine` compact source-state orchestration into `rust/earthmesh_cli::run_mkgrd_restart_refine_compact_source_state_namelist`. The library now owns mkgrd config parsing, restart Area_judge grid discovery, compact source-state/axis reconstruction, final `Get_Contain(0)` option construction, land/ocean final postprocess option mapping, and standard migrated restart-refine execution; the CLI branch now only validates required paths, invokes the runner, and formats the report.
+
+### 2026-06-14: landtype-source restart-refine runner is reusable
+
+Promoted the direct `--run-mask-restart-area-judge-refine-landtype-source` orchestration into `rust/earthmesh_cli::run_mkgrd_restart_refine_landtype_source_namelist`. The library now owns mkgrd config parsing, `NL%landtype_file` data_preprocess reading, source-grid derivation, restart Area_judge grid discovery, final `Get_Contain(0)` option construction, land/ocean final postprocess option mapping, and standard migrated restart-refine execution; the CLI branch now only validates the initial gridfile, invokes the runner, and formats the report.
+
+### 2026-06-14: global-source mask-restart Area_judge runner is reusable
+
+Promoted the direct `--run-mask-restart-area-judge` source-axis expansion into `rust/earthmesh_cli::run_mkgrd_mask_restart_area_judge_global_source_namelist`. The library now owns global source-axis reconstruction from compact dimensions and optional final `Get_Contain(0)`/`mask_postproc` continuation for this restart path; the CLI branch now only validates scalar inputs, invokes the runner, and formats the report.
+
+### 2026-06-14: global-source refine passthrough runner is reusable
+
+Promoted the direct `--run-refine-passthrough` source-axis expansion and smoke executor into `rust/earthmesh_cli::run_mkgrd_refine_passthrough_global_source_namelist` plus `MkgrdPassthroughRefineExecutor`. The library now owns global source-axis reconstruction and top-level gridinit/refine passthrough orchestration for this smoke path; the CLI branch now only validates scalar inputs, invokes the runner, and formats the report.
+
+### 2026-06-14: default restart-refine dispatch runner is reusable
+
+Promoted the no-explicit-mode restart-refine handoff dispatch into `rust/earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff`. The library now owns reading/parsing the mkgrd namelist, applying default source-state or landtype restart-refine handoff classification, invoking the corresponding restart-refine runner, or falling back to normal top-level dispatch; the CLI no longer mutates execution-mode flags for this default path.
+
+### 2026-06-14: configured global-source Area_judge continuation is reusable
+
+Added `rust/earthmesh_cli::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist` for the mask-restart ContinueMkgrd Area_judge path. The runner now reconstructs regular global source dimensions from `NL%gridnum_perdegree` (`360*gpd` by `180*gpd`) and delegates to the reusable global-source Area_judge continuation; the CLI accepts `--run-mask-restart-area-judge` without manual `--source-*` dimensions unless the caller wants to override all three values explicitly.
+
+### 2026-06-14: explicit restart-refine initial gridfile inference is wired
+
+Extended the explicit `--run-mask-restart-area-judge-refine` and `--run-mask-restart-area-judge-refine-landtype-source` CLI branches to reuse `rust/earthmesh_cli::infer_restart_refine_initial_gridfile_from_config` when `--restart-refine-initial-gridfile` is omitted. Both source-state and landtype restart-refine paths can now recover the standard `<case>/gridfile/gridfile_NXP####_01_<mode_grid>.nc4` handoff path from the mkgrd namelist instead of requiring users to restate Fortran module state on the command line.
+
+### 2026-06-14: default non-ocean restart Area_judge dispatch executes
+
+Extended the option-free `rust/earthmesh_cli::run_mkgrd_top_level_namelist` dispatcher so `mask_restart=.true.`, `mask_patch_on=.false.`, non-ocean `ContinueMkgrd` cases now run the configured global-source restarted `Area_judge` continuation instead of returning only `MaskRestartPlan`. This keeps the normal CLI entry point moving through the same Rust Area_judge restart path already used by the explicit `--run-mask-restart-area-judge` mode while still leaving final non-ocean postprocess gated on a proven `num_vertex` handoff.
+
+### 2026-06-14: default non-ocean restart final postprocess can run with supplied boundary
+
+Extended `rust/earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff` so the no-explicit-mode restart path forwards a supplied `mask_postproc_num_vertex` into the configured global-source `Area_judge` continuation for non-ocean `ContinueMkgrd` cases. The default CLI/library entry can now continue through restarted `Area_judge`, final `Get_Contain(0)`, and land `mask_postproc` when the caller supplies the persisted legacy `num_vertex` boundary, instead of stopping at an Area_judge-only continuation.
+
+### 2026-06-14: default land restart final postprocess infers persisted boundary
+
+Added `maybe_infer_mask_restart_non_ocean_num_vertex_from_config` so top-level non-ocean `mask_restart ContinueMkgrd` can recover the legacy `num_vertex` boundary from the existing final contain file's `ustr_ii` row count before rerunning final `Get_Contain(0)`. The default dispatcher now uses this persisted-boundary recovery for landmesh restart cases and continues through final land `mask_postproc` without requiring a manual `--mask-postproc-num-vertex`; if the contain file is absent, it safely preserves the existing Area_judge-only continuation instead of guessing from `mode_grid`.
+
+### 2026-06-14: default land restart final postprocess is reported by CLI
+
+Updated the default `earthmesh_cli <mkgrd.nml>` report formatting for `MaskRestartAreaJudge` so an inferred non-ocean final postprocess handoff prints the generated final contain path and mesh-specific postprocess outputs, matching the explicit restart Area_judge mode. This makes the Rust-owned landmesh `mask_restart ContinueMkgrd` final `Get_Contain(0)`/`mask_postproc` continuation visible to users instead of reporting only the restarted Area_judge grid.
+
+### 2026-06-14: restart-refine final postprocess infers persisted boundary
+
+Extended the migrated restart-refine compact source-state and landtype-source runners so non-ocean final `Get_Contain(0)`/`mask_postproc` handoffs can recover the legacy `num_vertex` boundary from the existing final contain file when `mask_postproc_num_vertex` is not supplied. The runners still prefer an explicit boundary and still skip final postprocess when no persisted contain exists, avoiding unsafe guesses from `mode_grid` while allowing Rust-owned restart-refine handoffs to resume from Fortran-compatible persisted state.
+
+### 2026-06-14: explicit Area_judge restart final postprocess infers persisted boundary
+
+Extended `run_mkgrd_mask_restart_area_judge_configured_global_source_namelist` so the explicit `--run-mask-restart-area-judge` path matches the default dispatcher for non-ocean `ContinueMkgrd` restarts. When `--mask-postproc-num-vertex` is omitted, the runner now recovers the final postprocess boundary from the existing final contain file and continues through final `Get_Contain(0)` plus land `mask_postproc`; if that persisted contain is absent, the explicit path still remains an Area_judge-only continuation instead of guessing.
+
+### 2026-06-14: explicit Area_judge source override infers persisted boundary
+
+Moved non-ocean persisted-boundary recovery into `run_mkgrd_mask_restart_area_judge_global_source_namelist` so both configured global-source and explicit `--source-gridnum-perdegree/--source-nlons/--source-nlats` restart `Area_judge` continuations can resume final `Get_Contain(0)` plus land `mask_postproc` without a manual `--mask-postproc-num-vertex`. Existing behavior is preserved when the contain file is absent: the path remains an Area_judge-only continuation instead of guessing the legacy boundary.
+
+### 2026-06-14: ocean Area_judge restart final postprocess infers persisted boundary
+
+Extended the explicit global-source `mask_restart Area_judge` continuation so oceanmesh final `Get_Contain(0)` plus `mask_postproc_ocean` can recover its legacy `num_vertex` boundary from the existing final contain file when `--mask-postproc-num-vertex` is omitted. The global-source runner now uses the ocean-specific persisted-boundary helper for ocean cases and the non-ocean helper for land/earth cases, reducing another manual Fortran module-state argument from the Rust CLI handoff.
+
+### 2026-06-14: ocean Area_judge restart preserves area-only fallback
+
+Added an optional ocean persisted-boundary helper for explicit `mask_restart Area_judge` continuations. Oceanmesh Area_judge handoffs now infer `num_vertex` and run final ocean postprocess only when the persisted final contain file exists; if that file is absent, the Rust runner preserves the previous Area_judge-only continuation rather than failing while trying to recover a boundary that has not been written yet. The strict ocean inference helper remains available for entry points where final postprocess is mandatory.
+
+### 2026-06-14: default restart-refine dispatcher forwards runtime state
+
+Added `source_branch_reports()` and `runtime_state()` accessors to `MkgrdTopLevelDefaultRestartRefineRunReport`, plus dispatch-level runtime-state forwarding for the gridinit branch. The default restart-refine top-level API now exposes source-branch `Get_Contain` reports and the latest `EarthmeshRuntimeState` for compact source-state and landtype-source handoffs, so mesh-count writeback no longer disappears behind the default restart-refine dispatcher enum.
+
+### 2026-06-14: direct restart-refine reports forward runtime state
+
+Added `source_branch_reports()` and `runtime_state()` accessors to the direct compact source-state and landtype-source restart-refine report types. Library callers can now inspect migrated `Get_Contain` source-branch reports and the latest `EarthmeshRuntimeState` without reaching through nested execution fields; the default restart-refine top-level report now delegates to those report-level accessors.
+
+### 2026-06-14: direct refine reports forward runtime state
+
+Added `source_branch_reports()` and `runtime_state()` accessors to the direct compact source-state and landtype-source refine report types. Non-restart library callers now get the same flat API surface as the top-level namelist and restart-refine reports, preserving migrated `Get_Contain` source-branch reports and latest `EarthmeshRuntimeState` across direct reusable runner boundaries.
+
+### 2026-06-14: default mask-restart reports forward final contain counters
+
+Added `final_domain_contain_runtime_counts()` to the top-level default restart-refine and dispatch report APIs. Default `mask_restart ContinueMkgrd` Area_judge continuations now expose the final-domain `Get_Contain(0)` runtime counters, including the recovered `previous_num_vertex`, without forcing callers to traverse nested postprocess fields.
+
+### 2026-06-14: direct Area_judge reports forward final contain counters
+
+Added `final_domain_contain_runtime_counts()` to the direct mask-restart Area_judge postprocess and global-source report APIs. Explicit `ContinueMkgrd` Area_judge runs now expose final-domain `Get_Contain(0)` runtime counters, and the top-level dispatch accessor delegates to the direct report instead of reaching through nested postprocess fields.
+
+### 2026-06-14: restart-refine ocean final postprocess infers persisted boundary
+
+Extended the compact source-state restart-refine runner so oceanmesh final `Get_Contain(0)`/`mask_postproc_ocean` handoffs can recover `num_vertex` from the persisted final contain file when `mask_postproc_num_vertex` is omitted. The same optional ocean inference is wired through the landtype-source restart-refine runner path, preserving the no-contain fallback while covering another `mkgrd.x` restart/final-postprocess combination.
+
+### 2026-06-14: direct ocean mask-restart infers persisted boundary
+
+Added `run_mkgrd_mask_restart_ocean_inferred_namelist`, an option-free library wrapper for the direct `oceanmesh` `mask_restart` postprocess branch. The runner recovers the legacy `num_vertex` boundary from the persisted final contain file and then reuses the typed ocean postprocess executor, so reusable Rust callers no longer need to manually restate the Fortran module-state boundary for this mandatory ocean restart path.
+
+### 2026-06-14: hydro close-mask point-touch dissolve guard
+
+Tightened native hydro/coast close-mask dissolve so same-class polygons that only touch at a single vertex are no longer collapsed into one coarse bounding box. The dissolve gate now allows the old bbox fallback only when bounding boxes overlap with positive area; zero-area contact must be proven by a real rectilinear, containment, or shared-edge polygon union. This preserves separate close-mask rings for point-only hydro/coast contacts and avoids over-refining the square envelope between diagonally adjacent corridors.
+
+### 2026-06-14: hydro close-mask rectangular holes split into rings
+
+Extended the native hydro/coast GeoJSON close-mask exporter beyond exterior-only polygons for a first hole topology: an axis-aligned rectangular Polygon exterior with one axis-aligned rectangular interior ring is decomposed into multiple rectangular close-mask rings around the hole. This avoids refining the hole interior as part of a single outer-envelope mask while preserving the legacy close-mask format's single-ring constraint. Non-rectangular or multi-hole polygons still fall back to the previous exterior-ring behavior until more general polygon-with-holes decomposition is migrated.
+
+### 2026-06-14: hydro close-mask multiple rectangular holes split into grid rings
+
+Extended the native hydro/coast GeoJSON close-mask exporter from one rectangular interior ring to multiple axis-aligned rectangular holes. For this supported topology, Rust now partitions the exterior rectangle by all hole edges and emits close-mask rectangles only for grid cells whose centers are inside the exterior and outside every hole, avoiding the previous exterior-only fallback that refined hole interiors. Non-rectangular holes and more complex multi-component polygon topology remain explicit follow-up gaps.
+
+### 2026-06-14: hydro close-mask rectilinear holes split into grid rings
+
+Generalized the rectangular-hole close-mask path for axis-aligned rectangular exteriors with rectilinear interior rings. Rust now partitions the exterior by every hole vertex x/y coordinate and emits only cell rectangles whose centers are outside all hole rings, so non-rectangular orthogonal holes such as L-shaped exclusions no longer collapse to one exterior mask that refines the hole interior. Non-rectilinear holes and more complex multi-component topology remain follow-up work.
+
+### 2026-06-14: hydro close-mask upward triangular holes split into rings
+
+Added a bounded non-rectilinear hole topology to the native hydro/coast close-mask exporter: an axis-aligned rectangular exterior with one fully contained triangular interior ring whose base is horizontal and whose apex points upward. Rust now decomposes that case into bottom, top, left, and right close-mask rings that trace the triangular hole boundary, avoiding the previous exterior-only fallback that refined the triangular hole interior. Other non-rectilinear holes and more complex polygon topology remain explicit follow-up gaps.
+
+### 2026-06-14: hydro close-mask horizontal-base triangular holes support both orientations
+
+Generalized the bounded triangular-hole close-mask decomposition so an axis-aligned rectangular exterior with one fully contained triangular interior ring can be handled when the horizontal edge is either the lower base or the upper edge. Rust now mirrors the four-ring split for upward and downward triangular holes, tracing the apex in either orientation and avoiding the exterior-only fallback that would refine the triangular hole interior. Arbitrary slanted-edge/non-horizontal-base holes remain follow-up work.
+
+### 2026-06-14: hydro close-mask vertical-base triangular holes split into rings
+
+Extended the bounded triangular-hole close-mask decomposition from horizontal-edge triangles to vertical-edge triangles. For an axis-aligned rectangular exterior with one fully contained triangular interior ring whose base edge is vertical and whose apex points left or right, Rust now emits left/right rectangle masks plus top/bottom polygon masks that trace the triangular hole boundary. This avoids the exterior-only fallback for another common non-rectilinear hole orientation while still leaving arbitrary non-axis-aligned holes and complex topology as explicit follow-up work.
+
+### 2026-06-14: hydro close-mask slanted triangular holes split into slab rings
+
+Generalized the bounded single-triangle close-mask hole support beyond horizontal or vertical triangle edges. For an axis-aligned rectangular exterior with one fully contained triangular interior ring, Rust now falls back to a vertical slab partition when the axis-edge special cases do not apply: it splits on the exterior and triangle vertex x coordinates, computes the triangle y-span at each slab boundary, and emits lower/upper slab rings outside the triangular hole. This avoids refining the interior of slanted triangular holes while keeping broader arbitrary polygon holes and multi-hole non-rectilinear cases as explicit follow-up work.
+
+### 2026-06-14: hydro close-mask multiple triangular holes split into slab rings
+
+Extended the triangular-hole close-mask decomposition from one interior triangle to multiple contained triangular holes. Rust now builds one vertical slab partition from the exterior and all triangle vertex x coordinates, computes each active triangular hole's y-span at slab boundaries, sorts active spans, and emits the outside slab segments as separate close-mask rings. This covers separated multi-triangle non-rectilinear holes without falling back to one exterior mask, while overlapping/stacked non-rectilinear holes and general non-triangular hole topology remain follow-up gaps.
+
+
+### 2026-06-14: hydro close-mask single-span polygon holes split into slab rings
+
+Extended the native hydro/coast close-mask hole exporter from triangular non-rectilinear interiors to bounded single-span polygon holes such as convex diamond/quadrilateral exclusions inside an axis-aligned rectangular exterior. Rust now partitions on exterior and hole vertex x coordinates, computes each active hole y-span at slab boundaries, and emits the lower/upper outside slab rings so the hole interior is not refined. Multi-span concave holes, overlapping/stacked non-rectilinear holes, and more complex multi-component topology remain explicit follow-up gaps.
+
+
+### 2026-06-14: hydro close-mask overlapping single-span holes merge slab spans
+
+Extended the bounded single-span polygon-hole slab exporter so overlapping non-rectilinear interiors such as overlapping diamond holes no longer force an exterior-mask fallback. Within each vertical slab, Rust now merges active hole spans that overlap at both slab boundaries before emitting the outside lower/upper close-mask rings. This covers stacked/overlapping single-span exclusions while still rejecting ambiguous crossing-order spans and leaving multi-span concave holes plus broader polygon topology for follow-up work.
+
+
+### 2026-06-14: hydro close-mask concave multi-span holes preserve notch slabs
+
+Generalized the bounded non-rectilinear hole slab exporter from one y-span per vertical slab to multiple ordered y-spans. Concave interior rings with a slanted notch can now preserve the open notch as its own close-mask slab instead of over-excluding everything between the lowest and highest ring intersections. The implementation samples slab boundaries just inside the slab when an exact vertex boundary changes span count, keeping single-span diamond/triangle cases and overlapping span merges intact while still leaving crossing-order slabs and fully general polygon topology as follow-up work.
+
+
+### 2026-06-14: hydro close-mask crossing-order slabs split at hole-edge crossings
+
+Extended the bounded non-rectilinear hole slab exporter for crossing-order cases where two interior hole spans exchange vertical order inside a slab. Rust now detects intersections between low/high boundary edges from different non-rectilinear holes, inserts those crossing x coordinates into the slab partition, and then applies the existing ordered span merge on the smaller slabs. This avoids falling back to one exterior close-mask ring for X-shaped overlapping non-rectilinear exclusions while still leaving multi-component polygon unions and fully general topology as follow-up work.
+
+
+### 2026-06-14: hydro close-mask rectilinear multi-component unions preserve holes
+
+Extended the native hydro/coast close-mask dissolve path so rectilinear multi-component unions that would create an interior hole are not collapsed into one coarse outer ring. The dissolve merge can now return multiple close-mask specs for rectilinear components when a precise single-ring merge would drop a component or over-refine an interior gap; contained-rectilinear checks now compare decomposed cells instead of trusting bbox-level point-in-ring containment. This preserves donut-like hydro/coast refinement masks while leaving fully general multi-component polygon topology as follow-up work.
+
+
+### 2026-06-14: hydro close-mask non-rectilinear dissolve requires real union evidence
+
+Tightened the native hydro/coast close-mask dissolve gate for non-rectilinear multi-component inputs. Same-class masks whose bounding boxes overlap with positive area are no longer automatically collapsed into one coarse envelope; Rust now requires a real rectilinear, containment, shared-edge, or crossing-edge union path before dissolving. This preserves separate close-mask rings for bbox-overlapping but geometrically disjoint slanted polygons and avoids over-refining the gap between components. Fully general non-rectilinear multi-component polygon topology remains a follow-up gap.
+
+
+### 2026-06-14: hydro close-mask non-axis exterior holes split into slabs
+
+Extended the native hydro/coast close-mask hole exporter beyond axis-aligned rectangular exteriors for a bounded arbitrary-polygon case. Rust now decomposes non-axis-aligned exterior rings with contained non-rectilinear holes into vertical slab close-mask rings, using exterior and hole y-spans at each slab boundary so the hole interior is not refined by one coarse exterior mask. This moves another polygon-with-holes path out of the Fortran-era preprocessing gap while still leaving fully general non-rectilinear multi-component unions and more complex topology as follow-up work.
+
+
+### 2026-06-14: hydro close-mask GeometryCollection polygons are parsed
+
+Extended the native hydro/coast close-mask GeoJSON reader to recurse into `GeometryCollection` geometries before generating EarthMesh `.nml` masks. Polygon and MultiPolygon members embedded by GIS preprocessing are now exported through the same Rust close-mask path instead of being silently dropped, while non-polygon members remain ignored. This improves the v3 data-source boundary for hydro/coast layers without reintroducing Python/Fortran preprocessing.
+
+
+### 2026-06-14: hydro close-mask single Feature sources are parsed
+
+Extended the native hydro/coast close-mask GeoJSON input boundary so a top-level `Feature` with class properties is accepted in addition to `FeatureCollection`. Single-feature GIS exports now flow through the same Rust close-mask `.nml` generation path instead of being ignored because they lack a `features` array. This keeps more v3 hydro/coast source-layer variants inside the Rust preprocessing path.
+
+
+### 2026-06-14: v3 hydro GeoJSON summary accepts Rust exporter class keys
+
+Aligned the v3 hydro/coast source summary reader with the Rust MERIT/CaMa source exporters. Hydro GeoJSON summaries now collect classes from `hydro_class`, `river_class`, and `mask_class`, so MERIT river masks written with `mask_class=R2/R3` and CaMa reach-derived layers using `river_class` are visible at the Rust data_preprocess boundary instead of producing empty class summaries. This removes another mismatch between the new Rust source exporters and the v3 source-state abstraction.
+
+
+### 2026-06-14: v3 GeoJSON summaries use feature-scoped class parsing
+
+Replaced the v3 hydro/coast GeoJSON summary reader's string-level class scan with the existing Rust JSON parser and feature-scoped `Feature.properties` traversal. Summary feature counts and class sets now come only from actual GeoJSON `Feature` objects, so collection-level metadata or other non-feature JSON properties can no longer pollute the Rust data_preprocess source-state summary. This tightens the native v3 source boundary before broader hydro/coast mesh generation consumes those summaries.
+
+### 2026-06-14: restart-refine earthmesh final handoff is typed
+
+Extended the mkgrd restart-refine final-domain handoff so `mesh_type='earthmesh'` is no longer rejected by the Rust helper layer. Restart-refine final `Get_Contain(0)` now maps earthmesh to the same `Loc` containment kind used by the migrated explicit Area_judge earth final-postprocess branch, and the final `mask_postproc_Earth` request carries selected-domain bounds plus `mask_sea_ratio` through a typed `EarthFromFinalGrid` option. The handoff reads the copied final gridfile at postprocess time to recover `num_mp_step`/`sjx_points`, avoiding another legacy `consts_coms` mesh-count argument while preserving land/ocean behavior.
+
+### 2026-06-14: default patch-on mask-restart continues through Area_judge final postprocess
+
+Extended the option-free top-level mkgrd dispatcher so `mask_restart=.true.` with `mask_patch_on=.true.` no longer stops at patch `Mask_make` when the restarted `Area_judge` grid already exists. The default handoff now runs the same configured global-source restart continuation used by explicit modes, preserving patch preprocessing, restarted `Area_judge`, persisted-boundary recovery, final `Get_Contain(0)`, and land final `mask_postproc` output generation. If the restart Area_judge grid is absent, the dispatcher still preserves the older patch-only preprocessing behavior instead of guessing a continuation target.
+
+### 2026-06-14: data_preprocess source-state supports earthmesh final handoff
+
+Extended the data_preprocess-derived source-state final-domain handoff so `mesh_type='earthmesh'` now builds both final `Get_Contain(0)` options and final `mask_postproc_Earth` runner options. The source-state path maps earthmesh containment to the Rust `Loc` containment kind and derives selected-domain bounds from the same source sea/land matrix used by landmesh, while `EarthFromFinalGrid` recovers final mesh counts after the result gridfile is copied. This removes another land/ocean-only assumption from the Rust source-state boundary needed by future sea-land integrated CoLM/EarthMesh workflows.
+
+### 2026-06-14: default source-state restart-refine reports inferred final postprocess
+
+Extended the default `earthmesh_cli <mkgrd.nml>` restart-refine binary path for compact source-state inputs so the emitted run summary identifies `restart_refine_source=source_state` and exposes final `Get_Contain(0)` plus final `mask_postproc` outputs when the persisted contain boundary already exists. This makes the option-free source-state restart-refine handoff observable at the same level as the landtype-source branch while preserving automatic `num_vertex` recovery from the existing contain file.
+
+### 2026-06-14: mask_restart Area_judge dispatch forwards runtime state
+
+Extended the Rust top-level `mkgrd` dispatch report for the restarted `Area_judge` continuation so it no longer drops runtime state at the `MaskRestartAreaJudge` enum boundary. The restarted Area_judge run report now carries an `EarthmeshRuntimeState` built from the parsed namelist config, and `MkgrdTopLevelDispatchRunReport::runtime_state()` forwards it to callers. This removes another `consts_coms`-style implicit-state gap for restart/postprocess orchestration while preserving existing final `Get_Contain(0)` and mask_postproc behavior.
+
+### 2026-06-14: mask_restart patch and ocean dispatch forward runtime state
+
+Extended the remaining executable `mask_restart` top-level dispatch branches so patch preprocessing and direct ocean postprocess reports also carry `EarthmeshRuntimeState` derived from the parsed namelist config. `MkgrdTopLevelDispatchRunReport::runtime_state()` now forwards state for patch, ocean, and restarted Area_judge branches, leaving plan-only reports as the only intentional `None`. This closes another top-level `consts_coms` runtime-state forwarding gap while keeping branch-specific file outputs unchanged.
+
+### 2026-06-14: mask_restart final Get_Contain writes runtime mesh counts
+
+Extended the restarted `Area_judge` final-domain handoff so final `Get_Contain(0)` no longer only returns `GetContainRuntimeCounts` in the contain report. The top-level runtime state now records the current mesh cell/vertex counts into `num_mp_step(1)` and `num_wp_step(1)` through `EarthmeshRuntimeState::record_mesh_counts_for_step`, matching the legacy `consts_coms` counter update without relying on hidden module globals.
+
+### mkgrd default landtype refine dispatch
+
+Extended the default no-explicit-mode `earthmesh_cli <mkgrd.nml>` path for non-restart `NL%refine=.true.` namelists that provide `NL%landtype_file`. The top-level default handoff now runs the migrated data-preprocess landtype-source refine stack, prints `refine_source=landtype_file`, and reports the executed refine steps/source branches instead of stopping after the initial gridinit output. This closes one more `mkgrd.x` production-entry gap where a Fortran-style namelist could already describe the source state without a debug/source-state flag.
+
+### data_preprocess hydro_class close-mask metadata
+
+Aligned the Rust hydro/coast close-mask NML exporter with the v3/MERIT source summary vocabulary by accepting `hydro_class` feature properties alongside the legacy `river_class` and `mask_class` keys. MERIT/CaMa-derived hydro GeoJSON can now flow directly from source-summary style metadata into EarthMesh close-mask refine NML generation without a separate property-renaming preprocessing step.
+
+### 2026-06-14: direct top-level patch-on restart continues final postprocess
+
+Extended the reusable Rust `run_mkgrd_top_level_namelist` dispatcher for `mask_restart=.true.` plus `mask_patch_on=.true.` when the restarted `Area_judge` grid already exists. The direct library entry now follows the same migrated continuation as the option-free binary/default handoff: apply patch preprocessing, rerun configured global-source restarted `Area_judge`, infer the persisted final contain boundary, and continue through final `Get_Contain(0)` plus land `mask_postproc`. Patch-only preprocessing remains the fallback when no restarted `Area_judge` grid exists.
+
+### 2026-06-14: hydro close-mask non-rectilinear multi-component gap preservation
+
+Extended the native hydro/coast close-mask dissolve guard for a bounded non-rectilinear multi-component topology case. When several same-class non-rectilinear polygons form a ring around an interior gap, Rust now rejects the unsafe single-ring/bbox-style dissolve and preserves the coverage as multiple close-mask specs. This prevents hydro/coast refinement from filling an interior gap that the `.nml` single-ring format cannot represent precisely, while still keeping existing crossing-edge and chained non-rectilinear merges when they produce a safe ring. Exact polygon-union rings with holes remain a follow-up topology gap.
+
+### 2026-06-14: mask_restart plan reports preserve runtime state
+
+`MkgrdMaskRestartPlanReport` now carries an `EarthmeshRuntimeState`, and `MkgrdTopLevelDispatchRunReport::runtime_state()` returns it even for `MaskRestartPlan` branches. The executable mask_restart patch and ocean runners now clone the plan-owned state instead of reconstructing fresh config-only state locally. This closes another `consts_coms` migration seam: deferred or plan-only restart continuations no longer drop explicit Rust runtime/config state at the API boundary.
+
+### 2026-06-14: mask_restart runtime state records remask step
+
+`plan_mkgrd_mask_restart_namelist` now initializes its `EarthmeshRuntimeState.step` from the Fortran restart handoff step `max_iter + 1` instead of leaving the state at the default initial-grid step. The plan also rejects non-positive remask steps at the Rust state boundary. Because executable patch/ocean restart runners and `MkgrdTopLevelDispatchRunReport::runtime_state()` reuse the plan-owned state, plan-only and executable mask_restart branches now preserve the same explicit remask step that Fortran previously kept in module-global state.
+
+### 2026-06-14: mask_restart runtime state mirrors refine override
+
+The Rust mask_restart plan now builds its `EarthmeshRuntimeState` from a restart-specific config where `refine` is forced to `false`, matching the top-level `mkgrd.F90` restart branch even if `NL%refine=.true.` was present in the namelist. The original parsed config remains available on the plan, while execution-facing runtime state now carries the Fortran module-global override explicitly together with the remask step.
+
+### 2026-06-14: mask_restart Area_judge atmos MPAS-Simple final postprocess
+
+Extended the mask_restart Area_judge final handoff to `atmosmesh` for `MPAS-Simple`: the Rust runner now writes the final Atmos `Get_Contain(0)` contain file and then invokes the existing MPAS-Simple atmosphere writer to produce `result/MPASOUT_NXP####_global_Simple.nc4`. This covers another `mkgrd.F90` ContinueMkgrd final postprocess combination beyond land/ocean/earth.
+
+### 2026-06-14: mask_restart Area_judge atmos full MPAS final postprocess
+
+Extended the `atmosmesh` mask_restart Area_judge final handoff beyond `MPAS-Simple` to the full `MPAS` branch. The Rust runner now carries the restart remask step into the MPAS nominal resolution calculation, reads the final atmosphere gridfile plus cellwidth file, and writes both `result/MPASOUT_NXP####_global.nc4` and `result/MPASOUT_NXP####_global.graph.info` through the migrated MPAS writer path. This closes another Fortran `mask_postproc_Atmos` output-format combination inside the `mkgrd.F90` ContinueMkgrd restart path.
+
+### 2026-06-14: restart-refine atmos MPAS-Simple final handoff
+
+Extended the generic refine-loop final-domain handoff so `atmosmesh` postprocessing can run through the MPAS branch instead of requiring a land/ocean/earth domain `mask_postproc` plan. `MkgrdFinalDomainPostprocOptions::Atmos` now dispatches `MPAS-Simple` through the migrated atmosphere writer after the final gridfile is copied into `result/gridfile_NXP####_<mode>.nc4`, and restart-refine final postprocess request construction now accepts `atmosmesh`. This moves another refine-enabled restart final postprocess combination out of the Fortran-only `mask_postproc_Atmos` path.
+
+### 2026-06-14: data_preprocess atmos final postprocess handoff
+
+Extended the data_preprocess-derived source-state final-domain handoff so `mesh_type='atmosmesh'` is no longer dropped at the postprocess request boundary. The reusable Rust request/options helpers now carry an Atmos request with the caller's `output_format`, and the refine-loop data_preprocess runner forwards `NL%output_format` into the existing Atmos MPAS/MPAS-Simple final handoff. A new execution regression covers `data_preprocess -> atmosmesh -> MPAS-Simple`, including final Get_Contain(0) generation and MPAS-Simple output writing.
+
+### 2026-06-14: restart-refine atmos full MPAS final handoff coverage
+
+Added explicit regression coverage for the migrated refine-loop final-domain handoff when `mesh_type='atmosmesh'` and `output_format='MPAS'`. The test verifies the Atmos branch bypasses land/ocean domain postprocess planning, copies the final gridfile, reads the full MPAS cellwidth input, and writes both `MPASOUT_NXP####_global.nc4` and `MPASOUT_NXP####_global.graph.info`. This locks the full MPAS variant beside the existing MPAS-Simple refine handoff coverage.
+
+
+### 2026-06-14: landtype-source atmos MPAS-Simple final handoff covered
+
+Added a direct `run_mkgrd_refine_landtype_source_namelist` regression for `NL%landtype_file -> mesh_type='atmosmesh' -> output_format='MPAS-Simple'`. The test runs the production landtype-source/data_preprocess refine entry, injects the legacy final-quality cellwidth side effect through the existing executor boundary, and verifies the final Atmos MPAS-Simple postprocess report plus `MPASOUT_NXP0002_global_Simple.nc4`. The MPAS adapters now normalize generated one-based gridfiles that omit Rust legacy placeholder rows before consuming connectivity/cellwidth, so production gridinit/refine outputs can reach the migrated MPAS writer instead of only hand-built placeholder fixtures.
+
+### 2026-06-14: final quality accepts generated one-based gridfiles
+
+Extended the migrated `Final_Grid_Quality_Check` executor so file-backed final quality and spring adjustment normalize generated one-based gridfiles that omit Rust legacy placeholder rows before running global/regional quality kernels. A compact-gridfile regression now writes a production-shaped no-placeholder `Unstructured_Mesh_Save` input, runs the real working-state final-quality executor, and verifies the adjusted output is persisted with the legacy placeholder topology expected by downstream quality, spring, and MPAS adapter paths. This closes the handoff mismatch where MPAS postprocessing could normalize generated gridfiles but final quality itself still rejected the same compact connectivity.
+
+### 2026-06-14: landtype-source atmos full MPAS binary handoff covered
+
+Extended the production `earthmesh_cli <mkgrd.nml> --run-refine-landtype-source` path with regression coverage for `NL%landtype_file -> mesh_type='atmosmesh' -> output_format='MPAS'`. The test drives real gridinit, source/refine execution, final quality, full MPAS NetCDF generation, and `graph.info` writing through the binary surface. This exposed and fixed two final-quality handoff mismatches: generated one-placeholder gridfiles now normalize by adding only the missing Rust placeholder row without shifting Fortran IDs, and `Grid_Quality_Check_Global` now passes M-point triangle-center coordinates to polygon quality groups instead of reusing W-point cell coordinates. The CLI report now prints both `refine_final_postproc_mpas` and `refine_final_postproc_mpas_graph`, making the full MPAS final-postprocess side effects visible at the top-level Rust replacement boundary.
+
+### 2026-06-14: compact source-state atmos full MPAS binary handoff covered
+
+Extended the production `earthmesh_cli <mkgrd.nml> --run-refine-source-state <state>` path so compact source-state files can request `final_domain_postproc=atmos` for `mesh_type='atmosmesh'` and `output_format='MPAS'`. The compact source-state postprocess parser/request builder now carries Atmos through to `MkgrdFinalDomainPostprocOptions::Atmos`, and the source-state CLI report prints both `refine_final_postproc_mpas` and `refine_final_postproc_mpas_graph`. A binary regression drives real gridinit, source/refine execution, final `Get_Contain(0)`, final quality, MPAS NetCDF writing, and `graph.info` generation from a compact source-state file, matching the already-covered landtype-source full MPAS handoff at the other production source boundary.
+
+### 2026-06-14: restart-refine compact source-state atmos full MPAS binary report covered
+
+Extended the production `earthmesh_cli <mkgrd.nml> --run-mask-restart-area-judge-refine --restart-refine-source-state <state>` path for `mesh_type='atmosmesh'` and `output_format='MPAS'`. The restart-refine prepare step now defers specified-mask validation for `mask_restart=.true.` until the restart branch applies the requested mask sources, matching the Fortran continuation ordering. The CLI report now prints both `restart_refine_final_postproc_mpas` and `restart_refine_final_postproc_mpas_graph`, and the regression verifies the generated `MPASOUT_NXP####_global.nc4` plus `graph.info` files through the migrated Rust stack.
+
+### 2026-06-14: restart-refine Atmos full MPAS entry coverage completed
+
+Added binary coverage for the restart-refine `atmosmesh` full `MPAS` postprocess through the remaining production entry variants: explicit landtype-source restart-refine, default compact source-state restart-refine, and default landtype-source restart-refine. These tests verify the generated `MPASOUT_NXP####_global.nc4` and `MPASOUT_NXP####_global.graph.info` files and assert that the CLI reports both `restart_refine_final_postproc_mpas` and `restart_refine_final_postproc_mpas_graph`. This closes the observable-reporting gap around the full MPAS restart-refine handoff; broader restart/ContinueMkgrd combinations remain tracked separately.
+
+### 2026-06-14: mask_restart land/earth patchtype artifacts reported
+
+Extended the migrated `mask_restart` restarted `Area_judge` final-postprocess CLI reporting for land and earth branches. The binary now prints `mask_restart_postproc_patchtype=` whenever the migrated land/earth `mask_postproc` runner writes the patchtype NetCDF output, so ContinueMkgrd restart handoffs expose all adapter-facing artifacts rather than only the final gridfile. The regression first failed on the missing stdout key and now covers the inferred-boundary default land restart path.
+
+### 2026-06-14: non-restart refine land/earth patchtype artifacts reported
+
+Extended the non-restart refine final-postprocess CLI reporting shared by compact source-state and landtype-source entries. Land and Earth final-domain postprocess reports now expose `refine_final_postproc_patchtype=` alongside the final gridfile output, and Earth additionally exposes `refine_final_postproc_earthmesh_info=`, so adapter-facing artifacts are visible at the same top-level Rust replacement boundary as ocean OBC and atmosphere MPAS outputs. The regression first failed on the missing land patchtype stdout key and now passes through the production binary landtype-source path.
+
+### 2026-06-14: safe convex non-rectilinear close-mask dissolve
+
+Extended the native hydro/coast close-mask dissolve path for a bounded non-rectilinear overlap case. When two same-class convex polygon masks overlap and their combined convex hull has the same area as the polygon union, Rust now emits one dissolved close-mask ring instead of preserving two separate masks. The merge is guarded by convexity, positive intersection area, and an area equality check between the hull and `area(left)+area(right)-area(intersection)`, so point-touch, disjoint bbox overlap, interior-gap, and hole-preserving cases remain on the existing conservative paths.
+
+### 2026-06-14: Rust CoLM coupling CSV-to-NetCDF handoff
+
+Added a Rust-native CoLM2024/CoLM20XX coupling metadata NetCDF writer behind `earthmesh_cli --colm-coupling-csv-to-netcdf`. The new path reads the package-style `colm_coupling_cells.csv` handoff table and writes the same core `earthmesh_colm_coupling_netcdf` numeric/code schema used by the Python package exporter: `cell`, `cell_index`, center lon/lat, surface/river/coast class codes, river/coast flags, fractions, and area metadata. This moves one more v3 hydro/coast/CoLM adapter boundary out of Python-only tooling and into the Rust CLI while keeping the file as coupling metadata, not a complete CoLM forcing/restart product.
+
+### 2026-06-14: runtime state records Get_Contain num_vertex boundary
+
+`EarthmeshRuntimeState` now carries the legacy `num_vertex` containment boundary explicitly instead of leaving it as an implicit `consts_coms` module-global handoff. Source-branch `Get_Contain` execution records `previous_num_vertex` beside `num_mp_step`/`num_wp_step`, and the mask-restart final `Get_Contain(0)` handoff writes the same boundary into runtime state when a persisted nonzero value is available. This closes another concrete `consts_coms` seam needed by restart/refine and postprocess callers that need to preserve containment boundaries across Rust execution APIs.
+
+### 2026-06-14: refine-loop final Get_Contain writes runtime state
+
+Extended the generic migrated refine-loop final-domain handoff so final `Get_Contain(0)` no longer only returns containment evidence in `MkgrdRefineLoopFinalDomainHandoffReport`. When the executor provides an `EarthmeshRuntimeState`, the execution report now records the final-domain `Get_Contain` mesh counts at the final mask-postprocess step and preserves a nonzero `previous_num_vertex` boundary. This closes the same `consts_coms` counter/num_vertex seam for ordinary refine-loop final handoffs that was already closed for source-branch and mask-restart final containment paths.
+
+### 2026-06-14: compact source-state final contain exposes runtime counters
+
+Extended the direct migrated refine report APIs so `MkgrdRefineLoopNamelistRunReport`, `MkgrdTopLevelNamelistRunReport`, `MkgrdRefineLandtypeSourceNamelistRunReport`, and `MkgrdRefineCompactSourceStateNamelistRunReport` expose final-domain `Get_Contain` runtime counters without callers traversing nested execution fields. The compact source-state final contain options now forward the persisted source-state `num_vertex` boundary into `Get_Contain(0)`, so final contain reports and runtime-state writeback preserve the same boundary that Fortran previously carried through `consts_coms`.
+
+### 2026-06-14: compact source-state ocean postprocess preserves num_vertex
+
+Extended the compact source-state final-domain ocean postprocess request so it carries the persisted `num_vertex` boundary from the source-state bundle into `MaskPostprocOceanRunOptions`. This removes the remaining `num_vertex: 0` reset on the compact source-state ocean postprocess path and keeps the boundary consistent with the already migrated final-domain `Get_Contain(0)` runtime-counter handoff.
+
+### 2026-06-14: patch-on ocean restart final postprocess covered at top level
+
+Added coverage for the option-free top-level `mkgrd` dispatcher when `mask_restart=.true.`, `mask_patch_on=.true.`, and `mesh_type='oceanmesh'` already has a persisted restart Area_judge grid and final contain boundary. The test verifies that Rust continues through patch preprocessing, restarted Area_judge, final `Get_Contain(0)`, and ocean `mask_postproc` OBC outputs from the normal top-level dispatcher rather than relying on explicit debug-mode CLI flags.
+
+### 2026-06-14: CoLM restart-template NetCDF handoff added
+
+Extended the Rust CoLM package handoff beyond metadata-only coupling NetCDF. The `earthmesh_cli --colm-coupling-csv-to-netcdf` path now accepts `--restart-template-netcdf` and writes a Rust-generated CoLM restart-template NetCDF carrying cell indices, centers, land fraction, river fraction, coastal fraction, and normalized cell area from the package CSV. This gives CoLM2024/CoLM20XX a concrete Rust-side restart seed boundary while the remaining CoLM gap stays focused on full model-specific forcing/restart products and parity fixtures.
+
+### 2026-06-14: CoLM forcing-template NetCDF handoff added
+
+Extended the Rust CoLM package handoff with `--forcing-template-netcdf`. The `earthmesh_cli --colm-coupling-csv-to-netcdf` path can now write a Rust-generated CoLM forcing-template NetCDF with cell indices, centers, land forcing area, river forcing area, and coastal forcing area derived from the package CSV. Empty or non-finite river-area fields are normalized to zero in this forcing handoff so downstream model inputs do not inherit CSV missing-value NaNs. This is still a template/handoff product, not the final fully model-specific CoLM forcing/restart package.
+
+### 2026-06-14: CoLM package delivery manifest JSON added
+
+Extended the Rust CoLM package handoff so `--delivery-manifest` now writes a real `earthmesh_colm_package_manifest` JSON file instead of only being copied into NetCDF metadata. The manifest records the case name, row count, coupling NetCDF path, and any restart/forcing template paths generated in the same CLI run. This makes the Rust-generated CoLM handoff products discoverable as a package while the remaining gap still includes full model-specific CoLM forcing/restart semantics and parity fixtures.
+
+### 2026-06-14: direct restart Area_judge runtime state exposed
+
+Extended `MkgrdRestartAreaJudgeGlobalSourceRunReport` with a typed `runtime_state()` accessor and routed `MkgrdTopLevelDispatchRunReport::runtime_state()` through it. Direct mask-restart global-source `Area_judge` callers can now observe the final `Get_Contain(0)` `num_mp_step`/`num_wp_step` writeback without reaching into nested restart internals, closing another explicit `consts_coms` runtime-counter seam at the Rust report boundary.
+
+### 2026-06-14: restart-refine land patchtype artifact reported
+
+Extended the restart-refine final-postprocess CLI reporting for the migrated land branch. `earthmesh_cli` now prints `restart_refine_final_postproc_patchtype=` when the restart-refine land `mask_postproc` handoff writes the CoLM patchtype NetCDF file, matching the already exposed normal refine and direct mask-restart report boundaries. This closes one more observable `mkgrd.x` replacement gap for restart/refine/ContinueMkgrd land handoffs.
+
+### 2026-06-14: restart-refine earthmesh final outputs reported
+
+Extended the default restart-refine landtype-source path for `mesh_type='earthmesh'`. Calculated-refine threshold planning, GetRef orchestration, and final `Get_Contain(0)` now treat `earthmesh` as the LOC-style land/ocean/atmos composite alias used elsewhere in the Rust port, instead of accepting only literal `LOCmesh`. The CLI also reports `restart_refine_final_postproc_patchtype=` and `restart_refine_final_postproc_earthmesh_info=` after the migrated Earth final postprocess writes CoLM patchtype and `earthmesh_info.nc4`, closing another restart/refine/ContinueMkgrd observability gap at the `mkgrd.x` replacement boundary.
+
+### 2026-06-14: compact source-state earthmesh final postprocess request
+
+Extended compact source-state restart/refine metadata so `final_domain_contain=earthmesh` and `final_domain_postproc=earthmesh` are accepted as LOC-style Earth handoff requests. The parser now records an Earth final-postprocess request, and the compact source-state runner maps it to `MkgrdFinalDomainPostprocOptions::EarthFromFinalGrid` with the namelist `mask_sea_ratio` plus reconstructed source axes. This removes another source-state-only limitation in the migrated `mkgrd.x` restart/refine path.
+
+### 2026-06-14: compact source-state earthmesh binary final postprocess covered
+
+Added binary coverage for `earthmesh_cli <mkgrd.nml> --run-refine-source-state <state>` with `mesh_type='earthmesh'`, `final_domain_contain=earthmesh`, and `final_domain_postproc=earthmesh`. The regression drives real gridinit, specified source/refine execution, LOC-style final `Get_Contain(0)`, Earth `mask_postproc`, CoLM patchtype NetCDF writing, and `earthmesh_info.nc4` generation through the compact source-state binary boundary. The test exposed a compact source-state Earth postprocess bounds mismatch: the final-domain Area_judge payload starts at north-latitude source index `1`, so the Earth patchtype context now uses the same `maxlat_dm_area=1` instead of the southern `nlats_source` edge.
+
+### 2026-06-14: compact source-state land postprocess bounds aligned
+
+Aligned compact source-state land final-postprocess context with the Area_judge selected-grid convention used by restart and data_preprocess paths. The compact land selected `seaorland` matrix now keeps latitude in north-to-south source-index order, and the compact land patchtype context starts from `maxlat_dm_area=1` for full compact source windows instead of using the southern `nlats_source` edge. This fixes the same latitude-boundary class of bug exposed by the compact Earth final-postprocess binary regression while leaving full binary land parity fixture construction as a separate coverage task.
+
+### 2026-06-14: compact source-state land binary final postprocess covered
+
+Added binary coverage for `earthmesh_cli <mkgrd.nml> --run-refine-source-state <state>` with `mesh_type='landmesh'`, `final_domain_contain=land`, and `final_domain_postproc=land`. The regression drives real gridinit, specified source/refine execution, final `Get_Contain(0)`, land `mask_postproc`, and CoLM patchtype NetCDF writing through the compact source-state binary boundary. The fixture uses a sparse land mask matching the generated final containment pixels, avoiding invalid all-land source windows where `mask_postproc_Lnd` must reject land pixels that do not map to any final unstructured cell.
+
+### 2026-06-14: restart-refine compact source-state earthmesh binary covered
+
+Added direct binary coverage for `earthmesh_cli <mkgrd.nml> --run-mask-restart-area-judge-refine --restart-refine-source-state <state>` with `mesh_type='earthmesh'` and final postprocess enabled. The regression drives the compact source-state Area_judge restart/refine handoff through LOC-style final `Get_Contain(0)`, Earth `mask_postproc`, CoLM patchtype NetCDF writing, and `earthmesh_info.nc4` generation, asserting the explicit `restart_refine_source=source_state`, final gridfile, patchtype, and earthmesh_info report lines. Added matching default-dispatcher coverage for `earthmesh_cli <mkgrd.nml> --restart-refine-source-state <state> --restart-refine-initial-gridfile <gridfile>` so the option-free `mkgrd.x` replacement boundary exercises the same Earth final postprocess outputs. The behavior was already present, so this closes direct matrix coverage gaps rather than changing production code.
+
+### 2026-06-14: restart-refine earthmesh hex final postprocess role masks
+
+Closed the hex-specific final postprocess mismatch exposed by the default `mkgrd.x` restart-refine compact source-state path for `mesh_type='earthmesh'` and `mode_grid='hex'`. In this handoff, the final hex grid layout reports `ustr_points` at the swapped polygon-grid size while `Get_Contain(0)`/Earth role masks remain at the center/cell-grain contain size. The Rust final compaction and `earthmesh_info.nc4` builders now use the role-mask grain for hex while keeping the existing stricter tri short-mask rejection. A binary regression now drives the option-free default dispatcher through LOC-style final contain, Earth `mask_postproc`, CoLM patchtype output, and `earthmesh_info.nc4` for the compact source-state hex case.
+
+### 2026-06-15: default restart-refine landtype earthmesh hex coverage
+
+Added explicit binary coverage for the production `NL%landtype_file` restart-refine handoff when `mesh_type='earthmesh'` and `mode_grid='hex'`. The option-free `earthmesh_cli <mkgrd.nml>` dispatcher now has a regression proving it can enter the landtype-file source path, reuse the supplied restart-refine initial gridfile, run the migrated LOC-style final contain and Earth final postprocess, and report/write the final gridfile, CoLM patchtype NetCDF, and `earthmesh_info.nc4` outputs for the hex case. This complements the compact source-state hex coverage and narrows the remaining `mkgrd.F90` matrix gap without claiming full `mkgrd.x` replacement parity.
+
+### 2026-06-15: v3 Rust geometry concave-mask PyO3 overlay
+
+Extended the `rust/earthmesh_geometry` PyO3 runtime path beyond convex-only clipping for simple polygon overlap. `intersection_area` now triangulates both simple polygons and sums triangle-pair intersections, so convex mesh cells clipped by concave hydro/coast masks such as L-shaped river corridors preserve the full overlap area instead of losing area through convex-clip assumptions. The new Rust crate regression first failed with `0.25` instead of the expected `1.75`, then passed after the triangulated path; the Python `RustGeometryBackend` now has a matching PyO3 boundary test for the same concave hydro mask fraction. This improves the v3 Python+Rust handoff for hydro/coast/CoLM mask attribution, while arbitrary close-mask dissolve/union with holes and complex multi-component topology remains an explicit follow-up gap.
+
+### 2026-06-15: v3 Rust geometry overlay-cell PyO3 runtime boundary
+
+Moved the v3 Rust geometry backend one layer closer to Rust-owned hydro/coast attribution. The PyO3 module now exposes `overlay_cell(cell_vertices, masks)` and returns the winning class, winning priority, per-class fractions, source feature ids, and quality flags from Rust. `RustGeometryBackend` now calls this single Rust boundary instead of looping in Python over scalar `intersection_area` calls. New tests cover the direct PyO3 payload for a concave R2 river mask, the Python `RustGeometryBackend` wrapper, and the Rust crate-level `overlay_cell` API. This reduces Python orchestration in the v3 hydro/coast/CoLM mask attribution path while preserving the broader follow-up gap for arbitrary close-mask dissolve/union and full model-specific CoLM forcing/restart semantics.
+
+### 2026-06-15: v3 Rust geometry batched overlay-cells PyO3 boundary
+
+Extended the v3 Rust geometry runtime from a single-cell PyO3 overlay call to a batched `overlay_cells(cells, masks)` boundary. Python now sends multiple cell ids and polygons plus shared hydro/coast masks across the PyO3 boundary once, and Rust returns per-cell winning class, priority, class fractions, source feature ids, and quality flags. `RustGeometryBackend.overlay_cells` now uses this batch call instead of looping over one Rust call per cell. New Rust and Python tests cover a wet cell with a concave R2 river overlap plus a dry cell that returns `UNKNOWN`/`missing_mask`. This continues moving v3 hydro/coast/CoLM attribution toward the intended Python-orchestration/Rust-computation split; fully general close-mask dissolve/union and model-specific CoLM forcing/restart products remain separate follow-up work.
+
+### 2026-06-15: v3 geometry backend recorded in main manifest
+
+Extended the v3 pipeline manifest contract so `manifest.json` records the effective geometry backend used for hydro/coast mask attribution. The pipeline already wrote the backend to `overlay_summary.json` and the MERIT smoke pipeline summary; now the core `V3RunManifest` carries the same `geometry_backend` field, so CoLM2024/CoLM20XX, MPAS, and FVCOM adapter packages can prove from their primary manifest whether attribution ran through the Python reference backend or the Rust/PyO3 backend. A regression first failed on the missing manifest field and missing sidecar key, then passed after wiring the backend name into `V3RunManifest` construction.
+
+### 2026-06-15: MERIT v3 summary records resolved Rust backend
+
+Tightened the MERIT-Hydro v3 regional pipeline backend provenance. When callers request the `rust` backend alias, `manifest.json` and `overlay_summary.json` already report the effective `rust_pyo3` backend; `pipeline_summary.json` now records that same resolved backend instead of the input alias. The new regression runs the real MERIT fixture through `geometry_backend="rust"` after building the PyO3 extension and verifies all three summary artifacts agree on `rust_pyo3`.
+
+### 2026-06-15: MOD_Area_judge manifest status closed
+
+Audited the `src/MOD_Area_judge.F90` migration manifest entry against the current Rust surfaces and tests. The entry already listed the pure geometry helpers, source-window helpers, area-mask builders, domain/seaorland composition, restart grid persistence, restart/refine handoffs, and MOD_data_preprocess landtype bridge as completed Rust surfaces, and it had no remaining Area_judge-specific surfaces. The manifest now marks `MOD_Area_judge.F90` as `completed`; a manifest consistency regression prevents future entries from staying in `started` status with an empty remaining list.
+
+### 2026-06-15: data_preprocess source-grid globals moved into Rust runtime state
+
+Migrated another `consts_coms` global-state handoff used by `MOD_data_preprocess.F90`: `EarthmeshRuntimeState` now owns a `SourceGridState` carrying `nlons_source`, `nlats_source`, and `maxlc`. The refine prepare path records source-grid dimensions from the typed source-grid bundle, and the landtype-source refine/restart paths write the real data_preprocess `maxlc` into the runtime state before execution, so callers no longer need to infer those values from implicit Fortran globals.
+
+### 2026-06-15: mask counter globals copied into Rust runtime state
+
+Migrated another `consts_coms` global-state handoff: `EarthmeshRuntimeState` now carries explicit mask counters for `mask_domain_ndm`, `mask_refine_ndm(0:9)`, and `mask_patch_ndm(0:9)`. The refine prepare path copies the counters produced by Rust `Mask_make` workspace execution into runtime state, so downstream Area_judge/refine handoffs can read the same values without relying on implicit Fortran module globals.
+
+### 2026-06-15: scalar consts_coms runtime defaults and num_center handoff added
+
+Moved another set of scalar `consts_coms` globals into explicit Rust runtime state. `EarthmeshRuntimeState` now carries `rinit`, `rinit8`, `iunit`, `io6`, and `num_center` defaults matching `consts_coms.F90` plus `mkgrd.F90` top-level initialization. It also provides a `record_num_center_from_previous_step` handoff mirroring `MOD_GetContain.F90`, where refine-area containment derives `num_center` from `num_wp_step(step-1)` rather than reading a hidden module global.
+
+### 2026-06-15: impent pentagon-index scratch state moved into Rust runtime state
+
+Migrated another `consts_coms` global-state handoff used by `icosahedron.F90`: `EarthmeshRuntimeState` now owns the twelve `impent(12)` pentagonal M-point indices as `pentagon_indices`. The Rust state starts with the legacy zero scratch defaults and records completed icosahedron values only through `record_pentagon_indices_from_icosahedron`, which rejects zero sentinels before replacing the hidden module-global array with explicit runtime state.
+
+### 2026-06-15: consts_coms double-precision π constants named in Rust
+
+Added explicit Rust names for the double-precision mathematical constants from `consts_coms.F90`: `PIO180_R8`, `PIU180_R8`, `PI2_R8`, and `PI_R8`. These mirror the Fortran `pio180_r8`, `piu180_r8`, `pi2_r8`, and `pi_r8` names so migrated grid-quality and spherical-area kernels can depend on typed Rust constants instead of reintroducing local copies or reaching back to module globals.
+
+### 2026-06-15: generated gridinit writes impent into runtime state
+
+Closed the production wiring gap for the newly explicit `impent(12)` state. `VoronoiGridState` now carries the pentagonal M-point indices copied from the relaxed icosahedron state, and `run_mkgrd_gridinit_global_namelist` records them into `EarthmeshRuntimeState::pentagon_indices` before returning the generated-grid report. The gridinit runtime state therefore preserves the same pentagon-index handoff that Fortran stored in `consts_coms:impent`, instead of leaving the Rust state at the zero scratch default after a real grid generation.
+
+### 2026-06-15: restart-refine compact source-state ocean postprocess uses source num_vertex
+
+Closed a default-dispatcher gap for `mesh_type='oceanmesh'` restart-refine handoffs driven by compact source-state files. The compact source-state metadata already carries the legacy `num_vertex` boundary, so the Rust runner now falls back to that value when no manual `--mask-postproc-num-vertex` argument or persisted contain file is available. A binary regression drives `earthmesh_cli <mkgrd.nml> --restart-refine-source-state <state> --restart-refine-initial-gridfile <gridfile>` through final `Get_Contain(0)`, ocean `mask_postproc`, and OBC/OBDv2 output reporting, narrowing the remaining `mkgrd.x` replacement gap to broader combination coverage and release-scale parity rather than this source-state boundary handoff.
+
+### 2026-06-15: restart-refine compact source-state land postprocess uses source num_vertex
+
+Closed the corresponding default-dispatcher gap for `mesh_type='landmesh'` restart-refine handoffs driven by compact source-state files. The compact source-state `num_vertex` field now drives final `Get_Contain(0)` and land `mask_postproc` when no manual `--mask-postproc-num-vertex` argument or persisted contain file is available. A binary regression drives `earthmesh_cli <mkgrd.nml> --restart-refine-source-state <state> --restart-refine-initial-gridfile <gridfile>` through final contain generation, land gridfile output, and CoLM patchtype reporting with the same sparse selected-domain fixture used by existing land postprocess coverage.
+
+### 2026-06-15: restart-refine landtype-source ocean postprocess uses mode-grid num_vertex
+
+Closed the matching default-dispatcher gap for `mesh_type='oceanmesh'` restart-refine handoffs driven directly by `NL%landtype_file`. When neither `--mask-postproc-num-vertex` nor a persisted final contain file is available, the landtype-source runner now falls back to the existing `NL%mode_grid` to `num_vertex` inference. A binary regression drives `earthmesh_cli <mkgrd.nml> --restart-refine-initial-gridfile <gridfile>` through final `Get_Contain(0)`, ocean `mask_postproc`, and OBC/OBDv2 output reporting without requiring the explicit debug execution flag or a manual postprocess boundary.
+
+### 2026-06-15: restart-refine landtype-source land postprocess uses default num_vertex
+
+Closed the non-ocean side of the default restart-refine `NL%landtype_file` handoff. The landtype-source restart runner now falls back from missing manual `--mask-postproc-num-vertex` and missing persisted final contain metadata to the land handoff's default `num_vertex=1`, while retaining the existing `NL%mode_grid` tri/hex fallback for ocean/Earth-style handoffs. The default binary landmesh regression no longer passes a manual postprocess boundary and still drives final `Get_Contain(0)`, land `mask_postproc`, and CoLM patchtype reporting from the landtype-derived source state.
+
+### 2026-06-15: default mask_restart wrapper supplies mode-grid postprocess boundary
+
+Tightened the option-free default wrapper used by the CLI before falling back to plain dispatch. When a mask-restart `ContinueMkgrd` path has a restart Area_judge grid but no manual postprocess boundary, the wrapper can now pass the `NL%mode_grid`-derived tri/hex `num_vertex` into the configured global-source Area_judge final handoff. The lower-level explicit Area_judge runner remains capable of area-only execution when callers omit the boundary deliberately.
+
+### 2026-06-15: hydro close-mask LineString and MultiLineString centerlines
+
+Extended the native Rust hydro/coast close-mask exporter beyond pre-polygonized GeoJSON inputs. `LineString` and `MultiLineString` source features are now accepted alongside Polygon/MultiPolygon/GeometryCollection/Feature inputs; when a refine degree has a configured `--buffer-deg-by-refine-degree` value, the line centerline is converted to a mitered corridor polygon and then follows the existing cumulative refine, simplify, dissolve, and `.nml` export path. This lets MERIT/CaMa-style river or coastline centerline layers drive EarthMesh close-mask refinement without a separate Python polygonization step. Lines without an explicit buffer remain skipped to avoid zero-area masks.
+
+### 2026-06-15: FVCOM 2dm mesh save writer ported
+
+Ported `MOD_file_preprocess.F90:FVCOM_Mesh_Save` into Rust as a typed `.2dm` writer. The new path writes the legacy `result/fvcom.2dm` file with `MESH2D`/`MESHNAME`, `E3T` triangle records, `ND` node records, and `NS` open-boundary segments read from either `obc.nc4` or `obc_patch.nc4` according to `mask_patch_on`. The writer keeps the Fortran-indexed EarthMesh placeholder convention and subtracts one only at the final FVCOM text boundary, matching the original `i=2..` Fortran loops without adding speculative `.dat` output.
+
+### 2026-06-15: IAP mesh reader payload ported
+
+Added a typed Rust reader for `MOD_file_preprocess.F90:IAP_Mesh_Read`. The reader loads `sjx_points`, `lbx_points`, `GLONW`, `GLATW`, `itab_m%im`, and `itab_m%iw`, reconstructs the legacy first placeholder row, converts radians to degrees, normalizes longitudes into `[-180, 180]`, and applies the Fortran `+1` offset to triangle-neighbor and triangle-vertex connectivity. This closes the direct IAP read payload boundary alongside the already migrated IAP-Ocean mode-file-to-EarthMesh converter.
+
+### 2026-06-15: vendored BLAS/LAPACK externalized by reachability gate
+
+Closed the `blas.F90` and `lapack.F90` migration entries without hand-translating Netlib routines or adding a speculative dependency. A static regression now enumerates every bundled BLAS/LAPACK entry point and proves no other `src/*.F90` EarthMesh source calls them. Under the manifest's `external_crate` strategy, that means the current Rust port needs no BLAS/LAPACK shim; if a future migrated kernel reintroduces one of those calls, the test fails and forces an explicit maintained-provider decision instead of silently depending on the vendored Fortran files.
+
+### 2026-06-15: MOD_GetRef manifest completion guarded
+
+Closed the `MOD_GetRef.F90` migration manifest entry after adding a static completion gate. The gate enumerates every `MOD_GetRef.F90` subroutine (`GetRef`, `GetRef_Lnd`, `GetRef_Ocn`, `GetRef_Atmos`, `GetRef_LOC`, `mean_std_cal2d`, and `mean_std_cal3d`) and requires each name to remain anchored in the Rust implementation or migration evidence before the manifest can stay marked `completed`. This records the already-migrated threshold builders, file runners, calculated/specified NetCDF readers and writers, LOC aggregation path, and fixture-parity checks as a closed GetRef surface while leaving broader `mkgrd.x` release parity under the `mkgrd.F90` entry.
+
+### 2026-06-15: MOD_GetContain manifest completion guarded
+
+Closed the `MOD_GetContain.F90` migration manifest entry after adding a static completion gate. The gate enumerates the file's subroutines (`Get_Contain`, `IsInArea_ustr_Calculation`, `Contain_Calculation`, and `Data_Updata`) and requires each name to remain anchored in Rust code or migration evidence before the manifest can stay marked `completed`. This records the already-migrated area selector, containment matrix core, dateline and south-pole handling, file-backed refine/final-domain containment runners, and runtime counter handoffs as a closed GetContain surface while broader restart/refine release parity remains tracked under `mkgrd.F90`.
+
+### 2026-06-15: MOD_refine manifest completion guarded
+
+Closed the `MOD_refine.F90` migration manifest entry after migrating the last unanchored placeholder, `orial_vertices_protect`, as an explicit Rust no-op. The Fortran routine contains no executable statements, so `earthmesh_mesh::refine_orial_vertices_protect_fortran_indexed` intentionally preserves caller-owned refinement markers unchanged and has fixture coverage for that behavior. A static completion gate now enumerates every `MOD_refine.F90` subroutine and requires each name to remain anchored in Rust code or migration evidence before the manifest can stay marked `completed`. This closes the per-subroutine refine surface while larger restart/refine production-matrix parity remains tracked under `mkgrd.F90`.
+### 2026-06-15: MOD_file_preprocess bbox/circle mesh schemas ported
+
+Added Rust NetCDF readers and writers for `MOD_file_preprocess.F90:bbox_Mesh_Read`, `bbox_Mesh_Save`, `circle_Mesh_Read`, and `circle_Mesh_Save`. These file-level mesh adapters intentionally preserve the legacy mesh schemas without the mask-only `bbox_refine` and `circle_refine` metadata, so bbox/circle geometry can round-trip independently from `mkgrd.F90` refinement masks. The existing mode4 reader is now explicitly anchored as `Mode4_Mesh_Read`; broader release-scale file-preprocess parity remains tracked under the MOD_file_preprocess manifest entry.
+
+### 2026-06-15: MOD_data_preprocess threshold readers and initial quality check ported
+
+Added direct Rust readers for `MOD_data_preprocess.F90:data_read_onelayer` and `data_read_twolayer`, preserving the Fortran one-based `start/count` window semantics for threshold NetCDF variables. The new `Threshold_Read_Lnd`, `Threshold_Read_Ocn`, and `Threshold_Read_Atmos` adapters keep the Fortran flag-pair selection behavior but return explicit Rust reports instead of allocating hidden module globals. Also added `run_mkgrd_initial_grid_quality_check` for `mkgrd.F90:Inital_Grid_Quality_Check`, composing the migrated unstructured grid reader and `Grid_Quality_Check_Global` writer for the legacy `_global_orial.nc4` initial quality side effect. The legacy `mkgrd.F90:CHECK` NetCDF status subroutine is represented by Rust `Result` propagation through `netcdf_to_io_error`, not by a separate panic/stop wrapper.
+
+### 2026-06-15: MOD_file_preprocess manifest completion guarded
+
+Closed `src/MOD_file_preprocess.F90` after adding a completion gate that enumerates all 25 Fortran file-preprocess subroutines and requires each to remain anchored in Rust code, migration notes, manifest evidence, or focused adapter fixtures. The gate also requires the key release-parity fixture files for bbox/circle/close mesh schemas, FVCOM `.2dm` output, IAP payload reads, MPAS full/simple/graph/edge-reference adapters, and mode4 mesh generation. This records the file-preprocess replacement as completed while broader `mkgrd.x`, `MOD_data_preprocess`, and `consts_coms` release parity remain tracked separately.
+
+### 2026-06-15: MOD_data_preprocess manifest completion guarded
+
+Closed `src/MOD_data_preprocess.F90` after adding a completion gate that requires all six Fortran data-preprocess subroutines to remain anchored and requires evidence across landtype loading, threshold window readers, MERIT/CaMa data sources, native hydro/coast close-mask topology, CoLM NetCDF/package handoffs, and v3 Rust/PyO3 hydro attribution. The gate fixes the previously broad release-parity remaining item to concrete tests for LineString/MultiLineString buffering, non-rectilinear holes, multi-component union gap preservation, shared/partial/chained polygon dissolve, bbox-overlap disjoint guards, convex overlap dissolve, CoLM delivery manifest output, and effective Rust geometry backend provenance.
+
+### 2026-06-15: consts_coms manifest completion guarded
+
+Closed `src/consts_coms.F90` after adding a completion gate for the Rust-owned replacements of legacy constants, memory allocators, and mutable module-global handoffs. The gate requires evidence for mathematical constants, `mem_grid`/`mem_ijtabs`/`mem_delaunay` allocation defaults, `EarthmeshRuntimeState` config/refine/grid/itab/delaunay ownership, mesh-count and `num_vertex` counters, scalar defaults and `num_center`, source-grid/maxlc, mask counters, `impent(12)` pentagon indices, gridinit writeback, source-branch/runtime-state propagation, final-domain writeback, and restart/top-level runtime-state forwarding.
+
+### 2026-06-15: mkgrd manifest completion guarded
+
+Closed `src/mkgrd.F90` after adding a completion gate for the Rust `mkgrd.x` replacement surface. The gate requires every mkgrd subroutine name to remain anchored and fixes the former restart/refine/ContinueMkgrd matrix remaining item to concrete evidence across gridinit, initial/final quality, calculated/specified source branches, compact source-state and landtype-source refine runners, default option-free dispatch, mask_restart patch/ocean/non-ocean Area_judge continuation, restart-refine compact/landtype handoffs, persisted and inferred `num_vertex` boundaries, land/ocean/atmos/earth final postprocess, MPAS full/simple outputs, graph.info, CoLM patchtype, and earthmesh_info outputs.
+
+### 2026-06-15: root build entrypoint switched to Rust
+
+Closed the delivery-layer gap after the migration manifest reached `completed`. The root `Makefile` now builds `rust/earthmesh_cli` through Cargo and copies the Rust binary to `./mkgrd.x`, preserving the old executable name without compiling `src/*.F90` objects. `make.sh`, `make_gnu.sh`, and `switch_compiler.sh` are retained only as compatibility wrappers/no-ops for old workflows, and a build-entrypoint regression ensures those scripts do not reintroduce active Fortran compiler or object-build hooks.

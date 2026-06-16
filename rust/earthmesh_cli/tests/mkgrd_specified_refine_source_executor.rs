@@ -17,7 +17,7 @@ fn mkgrd_config(base_dir: &str) -> EarthmeshConfig {
 
 fn refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
-        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n/\n",
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n/\n",
         "landmesh",
         "tri",
     )
@@ -118,6 +118,7 @@ fn specified_refine_source_executor_runs_area_contain_and_getref_files() {
             mesh_type: &plan.mesh_type,
             mask_refine_spc_type: "bbox",
             mask_refine_ndm: 1,
+            mask_refine_ndm_by_iter: &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
             is_in_domain: &is_in_domain,
             seaorland: &seaorland,
             lon_vertex: &lon_vertex,

@@ -1,8 +1,7 @@
-#!/bin/bash
-#SBATCH -p first
+#!/usr/bin/env bash
+set -euo pipefail
+
 ulimit -s unlimited
-source ~/.bashrc_CoLM202X_intel
-#make clean
-make &> logmake
+make "$@" 2>&1 | tee logmake
 wait
 echo "make finish"

@@ -81,6 +81,7 @@ def run_merit_v3_pipeline(
         geometry_backend_name=geometry_backend,
     )
     sidecars = result.write_sidecars(v3_dir)
+    effective_geometry_backend = result.manifest.geometry_backend
     canonical_cells_json = v3_dir / "canonical_cells.json"
     canonical_cells_json.write_text(json.dumps([asdict(cell) for cell in result.cells], indent=2, sort_keys=True) + "\n")
     canonical_cells_geojson = write_cells_geojson(result.cells, v3_dir / "canonical_cells.geojson")
@@ -118,7 +119,7 @@ def run_merit_v3_pipeline(
         ny=ny,
         cell_id_prefix=cell_id_prefix,
         adapters=list(adapters),
-        geometry_backend=geometry_backend,
+        geometry_backend=effective_geometry_backend,
         stride=stride,
         thresholds={
             "r2_width_m": r2_width_m,

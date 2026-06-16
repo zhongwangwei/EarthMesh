@@ -40,60 +40,49 @@ class RustGeometryBackend:
     def overlay_cells(
         self, cells: list[CanonicalCell], masks: list[MaskFeature]
     ) -> list[OverlayResult]:
-        return [self._overlay_cell(cell, masks) for cell in cells]
+        results = self._rust_geometry.overlay_cells(
+            [(cell.cell_id, cell.vertices) for cell in cells],
+            [
+                (mask.feature_id, mask.mask_class, mask.priority, mask.polygon)
+                for mask in masks
+            ],
+        )
+        return [
+            OverlayResult(
+                cell_id=cell_id,
+                winning_class=winning_class,
+                winning_priority=winning_priority,
+                class_fractions=dict(class_fractions),
+                source_feature_ids=source_feature_ids,
+                quality_flags=quality_flags,
+            )
+            for (
+                cell_id,
+                winning_class,
+                winning_priority,
+                class_fractions,
+                source_feature_ids,
+                quality_flags,
+            ) in results
+        ]
 
     def _overlay_cell(self, cell: CanonicalCell, masks: list[MaskFeature]) -> OverlayResult:
-        cell_area = float(self._rust_geometry.polygon_area(cell.vertices))
-        if cell_area <= 0.0:
-            return OverlayResult(
-                cell_id=cell.cell_id,
-                winning_class="",
-                winning_priority=0,
-                class_fractions={},
-                source_feature_ids=[],
-                quality_flags=["zero_area_cell"],
+        winning_class, winning_priority, class_fractions, source_feature_ids, quality_flags = (
+            self._rust_geometry.overlay_cell(
+                cell.vertices,
+                [
+                    (mask.feature_id, mask.mask_class, mask.priority, mask.polygon)
+                    for mask in masks
+                ],
             )
-
-        class_fractions: dict[str, float] = {}
-        source_feature_ids: list[str] = []
-        winning_class = ""
-        winning_priority = 0
-
-        for mask in masks:
-            intersection_area = float(
-                self._rust_geometry.intersection_area(cell.vertices, mask.polygon)
-            )
-            if intersection_area <= 1.0e-12:
-                continue
-            fraction = min(1.0, intersection_area / cell_area)
-            class_fractions[mask.mask_class] = (
-                class_fractions.get(mask.mask_class, 0.0) + fraction
-            )
-            source_feature_ids.append(mask.feature_id)
-            if mask.priority >= winning_priority:
-                winning_class = mask.mask_class
-                winning_priority = mask.priority
-
-        if not class_fractions:
-            return OverlayResult(
-                cell_id=cell.cell_id,
-                winning_class="UNKNOWN",
-                winning_priority=0,
-                class_fractions={"UNKNOWN": 1.0},
-                source_feature_ids=[],
-                quality_flags=["missing_mask"],
-            )
-
+        )
         return OverlayResult(
             cell_id=cell.cell_id,
             winning_class=winning_class,
             winning_priority=winning_priority,
-            class_fractions={
-                mask_class: min(1.0, fraction)
-                for mask_class, fraction in class_fractions.items()
-            },
+            class_fractions=dict(class_fractions),
             source_feature_ids=source_feature_ids,
-            quality_flags=[],
+            quality_flags=quality_flags,
         )
 
 

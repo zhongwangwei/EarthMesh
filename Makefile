@@ -1,53 +1,44 @@
-# Makefile for EarthMesh
+# Rust build entrypoint for EarthMesh.
+# The executable is built from rust/earthmesh_cli. Legacy Fortran sources are
+# archived outside the active tree and tracked only by the migration manifest.
 
-include ./Makeoptions
-
-# Suppress macOS deployment version warnings
-export MACOSX_DEPLOYMENT_TARGET = 26.0
-
-# Source directory
-SRCDIR = src
-
-# Executable name
+CARGO ?= cargo
+CLI_MANIFEST = rust/earthmesh_cli/Cargo.toml
+CARGO_TARGET_DIR ?= rust/earthmesh_cli/target
+BUILD_PROFILE ?= release
 EXECUTABLE = mkgrd.x
 
-####################################################################
-.DEFAULT :
+export CARGO_TARGET_DIR
 
-# Source files
-SRCS = \
-	$(SRCDIR)/consts_coms.F90 \
-	$(SRCDIR)/MOD_file_preprocess.F90 \
-	$(SRCDIR)/icosahedron.F90 \
-	$(SRCDIR)/blas.F90 \
-	$(SRCDIR)/lapack.F90 \
-	$(SRCDIR)/MOD_data_preprocess.F90 \
-	$(SRCDIR)/MOD_Area_judge.F90 \
-	$(SRCDIR)/MOD_grid_preprocess.F90 \
-	$(SRCDIR)/MOD_GetContain.F90 \
-	$(SRCDIR)/MOD_GetRef.F90 \
-	$(SRCDIR)/MOD_refine.F90 \
-	$(SRCDIR)/MOD_mask_postproc.F90 \
-	$(SRCDIR)/mkgrd.F90
+ifeq ($(BUILD_PROFILE),release)
+CARGO_PROFILE_FLAG = --release
+CLI_BINARY = $(CARGO_TARGET_DIR)/release/earthmesh_cli
+else
+CARGO_PROFILE_FLAG =
+CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
+endif
 
-# Object files (in current directory)
-OBJS = $(notdir $(SRCS:.F90=.o))
+.PHONY: all build clean test fmt
 
-####################################################################
+all: build
 
-all: $(EXECUTABLE)
-
-$(EXECUTABLE): $(OBJS)
-	${FF} ${FOPTS} ${OBJS} -o $@ ${LDFLAGS}
-	@echo 'EarthMesh has been compiled successfully!'
+build:
+	$(CARGO) build --manifest-path $(CLI_MANIFEST) $(CARGO_PROFILE_FLAG)
+	cp $(CLI_BINARY) $(EXECUTABLE)
+	@echo 'EarthMesh Rust executable has been built successfully.'
 	@echo 'Executable: $(EXECUTABLE)'
 
-# Pattern rule for compilation
-%.o: $(SRCDIR)/%.F90
-	${FF} -c ${FOPTS} $(INCLUDE_DIR) -o $@ $<
+fmt:
+	$(CARGO) fmt --manifest-path rust/earthmesh_core/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_mesh/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
+
+test:
+	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --lib
+	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --lib
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --lib
 
 clean:
-	${RM} -f *.o *.mod ${EXECUTABLE}
-	@echo 'Clean complete!'
-
-.PHONY: all clean
+	$(CARGO) clean --manifest-path $(CLI_MANIFEST)
+	rm -f $(EXECUTABLE) logmake logmake_gnu logmake_rust *.o *.mod
+	@echo 'Clean complete.'

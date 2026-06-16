@@ -116,6 +116,23 @@ def test_pipeline_records_effective_geometry_backend_name():
     )
 
     assert result.overlay_summary["geometry_backend"] == "fixture_backend"
+    assert result.manifest.geometry_backend == "fixture_backend"
+
+
+def test_pipeline_manifest_sidecar_records_geometry_backend(tmp_path):
+    result = build_v3_pipeline_result(
+        case_name="backend_manifest_case",
+        recipe_hash="abc123",
+        cells=[CanonicalCell.minimal("land", cell_type="TRI")],
+        masks=[MaskFeature("land-mask", "LAND", 1, [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)])],
+        adapter_names=["colm2024"],
+        geometry_backend_name="python_reference",
+    )
+
+    paths = result.write_sidecars(tmp_path)
+    manifest_payload = json.loads(paths["manifest"].read_text())
+
+    assert manifest_payload["geometry_backend"] == "python_reference"
 
 
 def test_pipeline_sidecars_include_mpas_and_fvcom_mesh_artifacts(tmp_path):

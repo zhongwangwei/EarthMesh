@@ -1,4 +1,7 @@
+import importlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import netCDF4
@@ -261,6 +264,33 @@ def test_run_merit_v3_pipeline_records_geometry_backend(tmp_path):
     assert pipeline_summary["geometry_backend"] == "python_reference"
 
 
+def test_run_merit_v3_pipeline_records_effective_rust_geometry_backend(tmp_path):
+    _develop_rust_geometry_extension()
+    merit_root = tmp_path / "merit_rust_backend"
+    output_dir = tmp_path / "out_rust_backend"
+    merit_root.mkdir()
+    _write_merit_fixture(merit_root / "n20e110.nc")
+
+    outputs = run_merit_v3_pipeline(
+        merit_root=merit_root,
+        bbox=(110.0, 20.0, 110.005, 20.005),
+        nx=3,
+        ny=2,
+        output_dir=output_dir,
+        case_name="fixture_merit_v3_rust_backend",
+        recipe_hash="fixture_recipe_rust_backend",
+        adapters=["colm2024"],
+        geometry_backend="rust",
+    )
+
+    manifest = json.loads(outputs["manifest"].read_text())
+    overlay_summary = json.loads(outputs["overlay_summary"].read_text())
+    pipeline_summary = json.loads(outputs["pipeline_summary"].read_text())
+    assert manifest["geometry_backend"] == "rust_pyo3"
+    assert overlay_summary["geometry_backend"] == "rust_pyo3"
+    assert pipeline_summary["geometry_backend"] == "rust_pyo3"
+
+
 def test_hydro_merit_pipeline_cli_accepts_geometry_backend(tmp_path):
     merit_root = tmp_path / "merit_backend_cli"
     output_dir = tmp_path / "out_backend_cli"
@@ -298,3 +328,20 @@ def test_hydro_merit_pipeline_cli_accepts_geometry_backend(tmp_path):
     assert exit_code == 0
     summary = json.loads((output_dir / "pipeline_summary.json").read_text())
     assert summary["geometry_backend"] == "python_reference"
+
+
+def _develop_rust_geometry_extension() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "maturin",
+            "develop",
+            "--manifest-path",
+            "rust/earthmesh_geometry/Cargo.toml",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    importlib.invalidate_caches()

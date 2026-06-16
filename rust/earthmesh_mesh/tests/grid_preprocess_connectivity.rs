@@ -194,6 +194,35 @@ fn spring_edge_adjustment_matches_fortran_ratio_and_displacement_formula() {
 }
 
 #[test]
+fn spring_edge_adjustment_truncates_edge_vector_to_default_real_like_fortran() {
+    let point_a = CartesianPoint::new(6_371_000.123_456_789, -12.345_678_901, 99.000_000_1);
+    let point_b = CartesianPoint::new(6_371_017.987_654_321, 27.891_234_567, 101.000_000_9);
+
+    let adjustment =
+        spring_edge_adjustment_fortran(point_a, point_b, 64.0, 31.25, 29.75, 33.5, 28.125)
+            .expect("valid spring edge adjustment");
+
+    // Fortran's dx/dy/dz assignment uses REAL(...) without a kind argument:
+    //   dx(iu) = real(xew8(iw2) - xew8(iw1))
+    // so each edge-vector component is rounded to default real before the
+    // distance and displacement are calculated.
+    let dx = (point_b.x - point_a.x) as f32 as f64;
+    let dy = (point_b.y - point_a.y) as f32 as f64;
+    let dz = (point_b.z - point_a.z) as f32 as f64;
+    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+    let twocosphi3 = (31.25_f64.powi(2) + 29.75_f64.powi(2) - distance.powi(2)) / (31.25 * 29.75);
+    let twocosphi4 = (33.5_f64.powi(2) + 28.125_f64.powi(2) - distance.powi(2)) / (33.5 * 28.125);
+    let ratio = (twocosphi3 + twocosphi4).clamp(0.15, 1.2);
+    let target_distance = 64.0 / 1.2 * ratio;
+    let frac_change = (target_distance - distance) / distance;
+
+    approx_eq(adjustment.distance, distance, 1.0e-12);
+    approx_eq(adjustment.displacement.x, dx * frac_change, 1.0e-12);
+    approx_eq(adjustment.displacement.y, dy * frac_change, 1.0e-12);
+    approx_eq(adjustment.displacement.z, dz * frac_change, 1.0e-12);
+}
+
+#[test]
 fn spring_edge_directions_match_fortran_cell_side_sign_rule() {
     let n_edges_on_cell = vec![0, 0, 2, 2];
     let edges_on_cell = vec![vec![], vec![], vec![2, 3], vec![2, 4]];

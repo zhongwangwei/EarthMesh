@@ -137,6 +137,49 @@ fn mask_postproc_finalize_report_exposes_vertex_mapping_for_ocean_boundary_write
 }
 
 #[test]
+fn mask_postproc_finalize_accepts_hex_role_masks_at_cell_grain() {
+    let layout = earthmesh_cli::MaskPostprocLayout {
+        ustr_points: 24,
+        ustr_bounds: 14,
+        center_points: (0..24)
+            .map(|idx| earthmesh_cli::LonLatPoint {
+                lon: idx as f64,
+                lat: idx as f64,
+            })
+            .collect(),
+        vertex_points: (0..14)
+            .map(|idx| earthmesh_cli::LonLatPoint {
+                lon: 100.0 + idx as f64,
+                lat: 100.0 + idx as f64,
+            })
+            .collect(),
+        center_neighbors: (0..24)
+            .map(|source_id| match source_id {
+                2 => vec![2, 3, 4, 5, 6, 7],
+                4 => vec![2, 3, 8, 9, 10, 11],
+                6 => vec![4, 5, 8, 9, 12, 13],
+                8 => vec![6, 7, 10, 11, 12, 13],
+                _ => vec![1, 1, 1, 1, 1, 1],
+            })
+            .collect(),
+        vertex_neighbors: vec![vec![1; 6]; 14],
+        center_neighbor_counts: vec![6; 24],
+        vertex_neighbor_counts: vec![0; 14],
+    };
+    let is_in_domain = vec![0, 0, 1, -1, 1, 0, 1, -1, 1];
+
+    let report = earthmesh_cli::finalize_mask_postproc_layout_with_reindex_report(
+        &layout,
+        &is_in_domain,
+        "hex",
+    )
+    .expect("finalize hex layout from cell-grain masks");
+
+    assert_eq!(report.final_data.points_final, 5);
+    assert_eq!(report.mesh.w_points.len(), 6);
+}
+
+#[test]
 fn mask_postproc_finalize_pipeline_rejects_mask_length_mismatch() {
     let layout = earthmesh_cli::MaskPostprocLayout {
         ustr_points: 2,

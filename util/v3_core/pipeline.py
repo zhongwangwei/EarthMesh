@@ -86,6 +86,7 @@ def build_v3_pipeline_result(
         case_name=case_name,
         recipe_hash=recipe_hash,
         adapter_versions=adapter_versions,
+        geometry_backend=backend.name,
         mask_counts=dict(overlay_summary["winning_class_counts"]),
         cell_counts_by_class=_count_cell_types(updated_cells),
         missing_mask_count=int(overlay_summary["missing_mask_count"]),

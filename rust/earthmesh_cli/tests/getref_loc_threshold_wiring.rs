@@ -75,3 +75,49 @@ fn loc_threshold_wiring_splits_components_calculates_reports_and_aggregates_colu
     assert_eq!(&report.aggregate.ref_th[3][1..=3], &[0, 0, 1]);
     assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 1, 1]);
 }
+
+#[test]
+fn loc_threshold_wiring_allows_no_enabled_component_thresholds_as_noop() {
+    let is_in_refine_sjx = vec![0, 0, 1, 1];
+    let loc_id = one_based_i32(&[[0, 0, 0], [3, 1, 0], [2, 4, 0]]);
+    let loc_ii = one_based_i32(&[[1, 1, 1], [1, 2, 0], [2, 1, 1], [2, 2, 0], [3, 1, 0]]);
+    let landtypes = vec![vec![1; 3]; 4];
+
+    let report = calculate_getref_loc_threshold_reports_fortran_indexed(
+        &is_in_refine_sjx,
+        &loc_id,
+        &loc_ii,
+        &landtypes,
+        GetRefLandBasicConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_num_landtypes: false,
+            th_num_landtypes: 0,
+            refine_area_mainland: false,
+            th_area_mainland: 0.0,
+        },
+        &[],
+        &[],
+        GetRefOceanThresholdConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_sea_ratio: false,
+            th_sea_ratio: [0.0, 0.0],
+        },
+        &[],
+        GetRefAtmosThresholdConfig {
+            num_vertex: 1,
+            maxlc: 9,
+        },
+        &[],
+    )
+    .expect("LOCmesh with no enabled component thresholds should be a no-op");
+
+    assert!(report.land.is_none());
+    assert!(report.ocean.is_none());
+    assert!(report.atmos.is_none());
+    assert_eq!(report.aggregate.ref_colnum, 0);
+    assert!(report.aggregate.column_sources.is_empty());
+    assert!(report.aggregate.column_names.is_empty());
+    assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 0, 0]);
+}

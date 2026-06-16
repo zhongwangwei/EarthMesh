@@ -1,11 +1,13 @@
 //! Rust orchestration adapters for replacing `mkgrd.x` side effects.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use earthmesh_core::{
-    EarthmeshConfig, GridMemory, IjTabs, MaskOperation, MkgrdWorkspacePlan, RefineConfig,
+    EarthmeshConfig, EarthmeshRuntimeState, GridMemory, IjTabs, MaskCounterState, MaskOperation,
+    MkgrdWorkspacePlan, RefineConfig, SourceGridState,
 };
 use earthmesh_geometry::{
     area_judge_first_self_intersection_fortran_indexed, is_point_in_circle_km,
@@ -18,10 +20,13 @@ use earthmesh_mesh::{
     circumcenter_spherical_mesh_fortran_indexed, classify_boundary_orders_fortran_indexed,
     connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, order_vertices_on_cell_fortran_indexed,
-    refine_array_length_calculation_fortran_indexed,
+    lonlat_points_to_unit_xyz, order_vertices_on_cell_by_shared_edges_fortran_indexed,
+    order_vertices_on_cell_fortran_indexed, refine_array_length_calculation_fortran_indexed,
+    refine_boundary_segments_make_fortran_indexed,
     refine_delaunay_lop_fortran_indexed as refine_delaunay_lop_mesh_fortran_indexed,
     refine_isreverse_judge_fortran_indexed as refine_isreverse_judge_mesh_fortran_indexed,
+    refine_iter_b_judge_fortran_indexed, refine_iter_c_judge_fortran_indexed,
+    refine_iter_e_judge_fortran_indexed, refine_iter_g_judge_fortran_indexed,
     refine_m1w1_to_m11w11_fortran_indexed as refine_m1w1_to_m11w11_mesh_fortran_indexed,
     refine_ngr_renew_fortran_indexed as refine_ngr_renew_mesh_fortran_indexed,
     refine_onedivide_two_fortran_indexed as refine_onedivide_two_mesh_fortran_indexed,
@@ -34,26 +39,6242 @@ use earthmesh_mesh::{
     springjustment_regional_core_fortran_indexed,
     standardize_vertices_on_cell_rotation_fortran_indexed,
     triangle_neighbors_from_cell_membership_fortran_indexed, widen_narrow_waterway_fortran_indexed,
-    xyz_to_lonlat_degrees, AreaJudgeAxis, AreaJudgeSourceBounds, BoundaryConnection,
-    BoundaryOrders, CartesianPoint, DistanceLayerSpacing, GetAreaProductionOutput,
-    GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep, IsolatedOceanRenewal,
-    LonLatDegrees, MaskPostprocRenewedData, RefineArrayLengthCalculation,
-    SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput, SpringjustmentRegionalCoreInput,
-    SpringjustmentRegionalCoreOutput,
+    xyz_to_lonlat_degrees, AreaJudgeAxis, AreaJudgeSourceBounds, BoundaryClosedCurves,
+    BoundaryConnection, BoundaryOrders, CartesianPoint, DistanceLayerSpacing,
+    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep,
+    IsolatedOceanRenewal, LonLatDegrees, MaskPostprocRenewedData, RefineArrayLengthCalculation,
+    RefineArrayLengthHalo, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
+    SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
 };
 
 /// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdGridinitRunReport {
     pub config: EarthmeshConfig,
+    pub runtime_state: Option<EarthmeshRuntimeState>,
     pub workspace_mask: WorkspaceMaskApplyReport,
     pub gridfile: UnstructuredMeshWriteReport,
+}
+
+/// Source-grid geometry needed to complete prepare-time refine-loop
+/// enrichments that Fortran derives from module state after `read_nl`.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdRefinePrepareSourceGridOptions<'a> {
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub first_triangle_id: usize,
+}
+
+/// Prepared state for the migrated `mkgrd.F90` refine path after namelist
+/// parsing and `read_nl` workspace/mask side effects.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLoopPrepareReport {
+    pub config: EarthmeshConfig,
+    pub refine: RefineConfig,
+    pub runtime_state: EarthmeshRuntimeState,
+    pub workspace_mask: WorkspaceMaskApplyReport,
+    pub plan: MkgrdRefineLoopIoPlan,
+    pub final_source_mask_injected: bool,
+}
+
+/// Evidence from running the namelist-level migrated refine path with a
+/// supplied refine-loop executor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLoopNamelistRunReport {
+    pub prepare: MkgrdRefineLoopPrepareReport,
+    pub execution: MkgrdRefineLoopExecutionReport,
+}
+
+impl MkgrdRefineLoopNamelistRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &self.execution.source_branch_reports
+    }
+
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        self.execution
+            .final_handoff
+            .generated_contain
+            .as_ref()
+            .map(|contain| &contain.runtime_counts)
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        self.execution
+            .runtime_state
+            .as_ref()
+            .unwrap_or(&self.prepare.runtime_state)
+    }
+}
+
+/// Branch selected by the migrated top-level `mkgrd.x` namelist dispatcher.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MkgrdTopLevelDispatchRunReport {
+    /// Normal non-restart grid initialization branch.
+    Gridinit(MkgrdGridinitRunReport),
+    /// `mask_restart=.true.` with `mask_patch_on=.true.` runs the migrated patch `Mask_make`
+    /// pre-processing and then hands control back to later restart continuation surfaces.
+    MaskRestartPatch(MkgrdMaskRestartPatchRunReport),
+    /// `mask_restart=.true.` oceanmesh without mask patches runs the migrated ocean
+    /// `mask_postproc` branch directly.
+    MaskRestartOcean(MkgrdMaskRestartOceanRunReport),
+    /// `mask_restart=.true.` non-ocean continuation without patch preprocessing
+    /// can reconstruct configured global source axes and rerun restarted
+    /// `Area_judge` without caller-supplied CLI geometry overrides.
+    MaskRestartAreaJudge(MkgrdRestartAreaJudgeGlobalSourceRunReport),
+    /// Restart branches that need caller-supplied postprocess/source-grid options are planned
+    /// but not executed by the option-free dispatcher.
+    MaskRestartPlan(MkgrdMaskRestartPlanReport),
+}
+
+/// Evidence from the top-level `mkgrd.x` dispatcher after applying the
+/// default restart-refine handoff rules used by the CLI front-end.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MkgrdTopLevelDefaultRestartRefineRunReport {
+    /// No default restart-refine handoff was selected; normal top-level
+    /// dispatch handled the namelist.
+    Dispatch(MkgrdTopLevelDispatchRunReport),
+    /// Default non-restart refine handoff driven by `NL%landtype_file`.
+    RefineLandtypeSource(MkgrdRefineLandtypeSourceNamelistRunReport),
+    /// Default restart-refine handoff driven by a compact source-state file.
+    RestartRefineCompact(MkgrdRestartRefineCompactSourceStateNamelistRunReport),
+    /// Default restart-refine handoff driven by `NL%landtype_file`.
+    RestartRefineLandtype(MkgrdRestartRefineLandtypeSourceNamelistRunReport),
+}
+
+impl MkgrdTopLevelDispatchRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &[]
+    }
+
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        match self {
+            MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
+                report.final_domain_contain_runtime_counts()
+            }
+            MkgrdTopLevelDispatchRunReport::Gridinit(_)
+            | MkgrdTopLevelDispatchRunReport::MaskRestartPatch(_)
+            | MkgrdTopLevelDispatchRunReport::MaskRestartOcean(_)
+            | MkgrdTopLevelDispatchRunReport::MaskRestartPlan(_) => None,
+        }
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        match self {
+            MkgrdTopLevelDispatchRunReport::Gridinit(report) => report.runtime_state.as_ref(),
+            MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => Some(&report.runtime_state),
+            MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => Some(&report.runtime_state),
+            MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
+                Some(report.runtime_state())
+            }
+            MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report) => Some(&report.runtime_state),
+        }
+    }
+}
+
+impl MkgrdTopLevelDefaultRestartRefineRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        match self {
+            MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
+                report.source_branch_reports()
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(run) => {
+                run.source_branch_reports()
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) => {
+                run.source_branch_reports()
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(run) => {
+                run.source_branch_reports()
+            }
+        }
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        match self {
+            MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => report.runtime_state(),
+            MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(run) => {
+                run.runtime_state()
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) => {
+                Some(run.runtime_state())
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(run) => {
+                Some(run.runtime_state())
+            }
+        }
+    }
+
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        match self {
+            MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
+                report.final_domain_contain_runtime_counts()
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(run) => {
+                run.refine.as_ref().and_then(|refine| {
+                    refine
+                        .execution
+                        .final_handoff
+                        .generated_contain
+                        .as_ref()
+                        .map(|contain| &contain.runtime_counts)
+                })
+            }
+            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) => run
+                .report
+                .execution
+                .final_handoff
+                .generated_contain
+                .as_ref()
+                .map(|contain| &contain.runtime_counts),
+            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(run) => run
+                .report
+                .execution
+                .final_handoff
+                .generated_contain
+                .as_ref()
+                .map(|contain| &contain.runtime_counts),
+        }
+    }
+}
+
+/// Evidence from the migrated top-level `mkgrd.x` namelist path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdTopLevelNamelistRunReport {
+    pub gridinit: MkgrdGridinitRunReport,
+    pub refine: Option<MkgrdRefineLoopNamelistRunReport>,
+}
+
+/// Evidence from the direct `--run-refine-landtype-source` migrated namelist
+/// path, including the owned data_preprocess source state that replaces
+/// Fortran module globals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineLandtypeSourceNamelistRunReport {
+    pub source_state: MkgrdDataPreprocessSourceState,
+    pub gridinit: MkgrdGridinitRunReport,
+    pub refine: Option<MkgrdRefineLoopNamelistRunReport>,
+}
+
+/// Evidence from the direct compact source-state migrated namelist path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRefineCompactSourceStateNamelistRunReport {
+    pub source_state: MkgrdCompactSourceState,
+    pub gridinit: MkgrdGridinitRunReport,
+    pub refine: Option<MkgrdRefineLoopNamelistRunReport>,
+}
+
+impl MkgrdTopLevelNamelistRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.refine
+            .as_ref()
+            .map(MkgrdRefineLoopNamelistRunReport::source_branch_reports)
+            .unwrap_or(&[])
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.refine
+            .as_ref()
+            .map(MkgrdRefineLoopNamelistRunReport::runtime_state)
+            .or(self.gridinit.runtime_state.as_ref())
+    }
+
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        self.refine
+            .as_ref()
+            .and_then(MkgrdRefineLoopNamelistRunReport::final_domain_contain_runtime_counts)
+    }
+}
+
+impl MkgrdRefineLandtypeSourceNamelistRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.refine
+            .as_ref()
+            .map(MkgrdRefineLoopNamelistRunReport::source_branch_reports)
+            .unwrap_or(&[])
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.refine
+            .as_ref()
+            .map(MkgrdRefineLoopNamelistRunReport::runtime_state)
+            .or(self.gridinit.runtime_state.as_ref())
+    }
+
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        self.refine
+            .as_ref()
+            .and_then(MkgrdRefineLoopNamelistRunReport::final_domain_contain_runtime_counts)
+    }
+}
+
+impl MkgrdRefineCompactSourceStateNamelistRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.refine
+            .as_ref()
+            .map(MkgrdRefineLoopNamelistRunReport::source_branch_reports)
+            .unwrap_or(&[])
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.refine
+            .as_ref()
+            .map(MkgrdRefineLoopNamelistRunReport::runtime_state)
+            .or(self.gridinit.runtime_state.as_ref())
+    }
+
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        self.refine
+            .as_ref()
+            .and_then(MkgrdRefineLoopNamelistRunReport::final_domain_contain_runtime_counts)
+    }
+}
+
+/// Data-preprocess source-grid report from `MOD_data_preprocess.F90:data_preprocess`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LandtypeDataPreprocessReport {
+    pub source: V3DataSourceDescriptor,
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub lon_i: Vec<f64>,
+    pub lat_i: Vec<f64>,
+    pub lon_vertex: Vec<f64>,
+    pub lat_vertex: Vec<f64>,
+    pub landtypes_global: Vec<Vec<i32>>,
+    pub maxlc: i32,
+}
+
+impl LandtypeDataPreprocessReport {
+    /// Borrow the data_preprocess source axes as the source-grid options needed
+    /// by migrated `mkgrd` refine/restart handoffs.
+    pub fn refine_prepare_source_grid(
+        &self,
+        first_triangle_id: usize,
+    ) -> MkgrdRefinePrepareSourceGridOptions<'_> {
+        MkgrdRefinePrepareSourceGridOptions {
+            lon_vertex: &self.lon_vertex,
+            lat_vertex: &self.lat_vertex,
+            lon_i: &self.lon_i,
+            lat_i: &self.lat_i,
+            gridnum_perdegree: self.gridnum_perdegree,
+            nlons_source: self.nlons_source,
+            nlats_source: self.nlats_source,
+            first_triangle_id,
+        }
+    }
+}
+
+/// Flat v3 source categories that can feed data_preprocess-style source state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V3DataSourceKind {
+    Landtype,
+    Threshold,
+    Hydro,
+    Coast,
+}
+
+/// Normalized v3 data-source descriptor used before concrete readers are bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V3DataSourceDescriptor {
+    pub kind: V3DataSourceKind,
+    pub path: PathBuf,
+    pub semantic_layers: Vec<String>,
+}
+
+/// Summary from reading a v3 hydro/coast GeoJSON layer produced by MERIT/CaMa tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V3GeoJsonSourceSummary {
+    pub source: V3DataSourceDescriptor,
+    pub feature_count: usize,
+    pub classes: Vec<String>,
+}
+
+/// Paired hydro/coast v3 source evidence carried as Rust-owned state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V3HydroCoastSourceBundle {
+    pub sources: Vec<V3DataSourceDescriptor>,
+    pub hydro: V3GeoJsonSourceSummary,
+    pub coast: V3GeoJsonSourceSummary,
+    pub total_feature_count: usize,
+}
+
+/// Lon/lat bounding box used to select native MERIT-Hydro NetCDF windows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeritLonLatBbox {
+    pub west: f64,
+    pub east: f64,
+    pub south: f64,
+    pub north: f64,
+}
+
+/// Native Rust MERIT-Hydro tile window read from NetCDF.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeritHydroWindowReport {
+    pub tile: PathBuf,
+    pub tile_name: String,
+    pub lon: Vec<f64>,
+    pub lat: Vec<f64>,
+    pub width: usize,
+    pub height: usize,
+    pub dir: Vec<i32>,
+    pub upa_km2: Vec<f64>,
+    pub elv_m: Vec<f64>,
+    pub width_m: Vec<f64>,
+    pub landtype_igbp: Vec<i32>,
+}
+
+/// Default MERIT-Hydro mask thresholds used by the Python v3 hydro prototype.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeritMaskThresholds {
+    pub r2_width_m: f64,
+    pub r3_width_m: f64,
+    pub r2_upa_km2: f64,
+    pub r3_upa_km2: f64,
+}
+
+impl Default for MeritMaskThresholds {
+    fn default() -> Self {
+        Self {
+            r2_width_m: 50.0,
+            r3_width_m: 300.0,
+            r2_upa_km2: 5_000.0,
+            r3_upa_km2: 50_000.0,
+        }
+    }
+}
+
+/// Classification summary for one native MERIT-Hydro window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeritHydroMaskClassificationReport {
+    pub classes: Vec<String>,
+    pub r3_cells: usize,
+    pub r2_cells: usize,
+    pub coast_land_cells: usize,
+    pub coast_ocean_cells: usize,
+    pub land_cells: usize,
+    pub ocean_cells: usize,
+    pub unknown_cells: usize,
+}
+
+/// Paths and counts produced by native MERIT-Hydro GeoJSON/layer export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeritHydroGeoJsonLayerWriteReport {
+    pub output_dir: PathBuf,
+    pub combined_geojson: PathBuf,
+    pub river_geojson: PathBuf,
+    pub coast_geojson: PathBuf,
+    pub surface_geojson: Option<PathBuf>,
+    pub summary_json: PathBuf,
+    pub window_count: usize,
+    pub combined_feature_count: usize,
+    pub river_feature_count: usize,
+    pub coast_feature_count: usize,
+    pub surface_feature_count: usize,
+    pub mask_counts: std::collections::BTreeMap<String, usize>,
+}
+
+/// Rust-owned control surface for Python-compatible hydro close-refinement masks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HydroCloseRefinementRecipeOptions {
+    pub input_geojson: PathBuf,
+    pub output_prefix: PathBuf,
+    pub class_refine: BTreeMap<String, usize>,
+    pub buffer_deg_by_refine_degree: BTreeMap<usize, f64>,
+    pub simplify_tolerance_deg: f64,
+    pub example_namelist: Option<String>,
+}
+
+/// Summary from writing a hydro close-refinement recipe JSON file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydroCloseRefinementRecipeWriteReport {
+    pub output_json: PathBuf,
+    pub max_iter_spc: usize,
+    pub class_count: usize,
+    pub buffer_count: usize,
+}
+
+/// One EarthMesh close-refinement mask derived from a hydro/coast GeoJSON ring.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HydroCloseMaskSpec {
+    pub river_class: String,
+    pub refine_degree: usize,
+    pub target_refine_degree: usize,
+    pub coordinates: Vec<(f64, f64)>,
+    pub source_feature_index: usize,
+    pub ring_index: usize,
+}
+
+/// Native Rust options for exporting GeoJSON rings as close-mask `.nml` files.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HydroCloseMaskNmlOptions {
+    pub class_refine: BTreeMap<String, usize>,
+    pub max_rings_per_class: Option<usize>,
+    pub max_rings_by_class: BTreeMap<String, usize>,
+    pub max_masks_per_refine_degree: Option<usize>,
+    pub min_ring_separation_deg: f64,
+    pub buffer_deg_by_refine_degree: BTreeMap<usize, f64>,
+    pub simplify_tolerance_deg: f64,
+    pub dissolve_overlapping_envelopes: bool,
+    pub cumulative_refine: bool,
+}
+
+impl Default for HydroCloseMaskNmlOptions {
+    fn default() -> Self {
+        Self {
+            class_refine: default_hydro_close_class_refine(),
+            max_rings_per_class: None,
+            max_rings_by_class: BTreeMap::new(),
+            max_masks_per_refine_degree: Some(999),
+            min_ring_separation_deg: 0.0,
+            buffer_deg_by_refine_degree: BTreeMap::new(),
+            simplify_tolerance_deg: 0.0,
+            dissolve_overlapping_envelopes: false,
+            cumulative_refine: true,
+        }
+    }
+}
+
+/// Summary from writing native Rust close-mask `.nml` files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydroCloseMaskNmlWriteReport {
+    pub output_prefix: PathBuf,
+    pub files: Vec<PathBuf>,
+    pub spec_count: usize,
+}
+
+/// Per-component summary from a composite close-mask recipe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydroCompositeCloseMaskComponentSummary {
+    pub name: String,
+    pub input_geojson: String,
+    pub files_selected: usize,
+    pub class_refine: BTreeMap<String, usize>,
+    pub max_rings_by_class: BTreeMap<String, usize>,
+    pub max_rings_per_class: Option<usize>,
+    pub dissolve_overlapping_envelopes: bool,
+}
+
+/// Summary from composing multiple hydro/coast sources into one close-mask set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydroCompositeCloseMaskNmlWriteReport {
+    pub output_prefix: PathBuf,
+    pub files: Vec<PathBuf>,
+    pub counts_by_component: BTreeMap<String, usize>,
+    pub counts_by_class_degree: BTreeMap<String, usize>,
+    pub components: Vec<HydroCompositeCloseMaskComponentSummary>,
+    pub summary_json: Option<PathBuf>,
+}
+
+/// Summary from writing a CoLM2024/CoLM20XX coupling metadata NetCDF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColmCouplingNetcdfWriteReport {
+    pub output: PathBuf,
+    pub rows: usize,
+}
+
+/// Summary from writing a CoLM2024/CoLM20XX restart-template NetCDF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColmRestartTemplateNetcdfWriteReport {
+    pub output: PathBuf,
+    pub rows: usize,
+}
+
+/// Summary from writing a CoLM2024/CoLM20XX forcing-template NetCDF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColmForcingTemplateNetcdfWriteReport {
+    pub output: PathBuf,
+    pub rows: usize,
+}
+
+/// Build a normalized v3 data-source descriptor.
+///
+/// This keeps the migrated Fortran `landtype_file` and `threshold_dir` inputs
+/// on the same flat source boundary as newer hydro/coast products, so later
+/// MERIT/CaMa readers can plug in without reintroducing module-global handoff.
+pub fn build_v3_data_source_descriptor(
+    kind: V3DataSourceKind,
+    path: impl AsRef<Path>,
+) -> io::Result<V3DataSourceDescriptor> {
+    let semantic_layers = match kind {
+        V3DataSourceKind::Landtype => ["landtype"].as_slice(),
+        V3DataSourceKind::Threshold => ["threshold_fields"].as_slice(),
+        V3DataSourceKind::Hydro => ["river_r2", "river_r3", "estuary"].as_slice(),
+        V3DataSourceKind::Coast => ["coast_land", "coast_ocean", "shoreline"].as_slice(),
+    }
+    .iter()
+    .map(|layer| (*layer).to_string())
+    .collect();
+    Ok(V3DataSourceDescriptor {
+        kind,
+        path: path.as_ref().to_path_buf(),
+        semantic_layers,
+    })
+}
+
+/// Read a standardized v3 hydro/coast GeoJSON source and summarize its classes.
+///
+/// The existing Python MERIT/CaMa utilities emit bounded GeoJSON feature
+/// collections with `hydro_class`, `mask_class`, or `coast_class` properties.
+/// This reader gives the Rust migration a concrete source boundary without
+/// adding a JSON dependency or reintroducing Fortran module globals.
+pub fn read_v3_geojson_source_summary(
+    kind: V3DataSourceKind,
+    path: impl AsRef<Path>,
+) -> io::Result<V3GeoJsonSourceSummary> {
+    match kind {
+        V3DataSourceKind::Hydro | V3DataSourceKind::Coast => {}
+        V3DataSourceKind::Landtype | V3DataSourceKind::Threshold => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "v3 GeoJSON source summaries are only defined for hydro/coast sources",
+            ));
+        }
+    }
+    let path = path.as_ref();
+    let text = fs::read_to_string(path)?;
+    let root = JsonParser::new(&text).parse()?;
+    let mut classes = std::collections::BTreeSet::new();
+    let keys: &[&str] = match kind {
+        V3DataSourceKind::Hydro => &["hydro_class", "river_class", "mask_class"],
+        V3DataSourceKind::Coast => &["mask_class", "coast_class"],
+        V3DataSourceKind::Landtype | V3DataSourceKind::Threshold => unreachable!(),
+    };
+    let features = geojson_feature_nodes(&root);
+    for feature in &features {
+        let Some(properties) = feature
+            .as_object()
+            .and_then(|object| object.get("properties"))
+            .and_then(JsonNode::as_object)
+        else {
+            continue;
+        };
+        for key in keys {
+            if let Some(value) = properties.get(*key).and_then(JsonNode::as_str) {
+                classes.insert(value.to_string());
+            }
+        }
+    }
+    Ok(V3GeoJsonSourceSummary {
+        source: build_v3_data_source_descriptor(kind, path)?,
+        feature_count: features.len(),
+        classes: classes.into_iter().collect(),
+    })
+}
+
+fn geojson_feature_nodes(root: &JsonNode) -> Vec<&JsonNode> {
+    match root
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(JsonNode::as_str)
+    {
+        Some("FeatureCollection") => root
+            .as_object()
+            .and_then(|object| object.get("features"))
+            .and_then(JsonNode::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter(|feature| {
+                        feature
+                            .as_object()
+                            .and_then(|object| object.get("type"))
+                            .and_then(JsonNode::as_str)
+                            == Some("Feature")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Some("Feature") => vec![root],
+        _ => Vec::new(),
+    }
+}
+
+/// Read paired standardized v3 hydro/coast GeoJSON layers as one source bundle.
+pub fn read_v3_hydro_coast_source_bundle(
+    hydro_path: impl AsRef<Path>,
+    coast_path: impl AsRef<Path>,
+) -> io::Result<V3HydroCoastSourceBundle> {
+    let hydro = read_v3_geojson_source_summary(V3DataSourceKind::Hydro, hydro_path)?;
+    let coast = read_v3_geojson_source_summary(V3DataSourceKind::Coast, coast_path)?;
+    let total_feature_count = hydro.feature_count + coast.feature_count;
+    let sources = vec![hydro.source.clone(), coast.source.clone()];
+    Ok(V3HydroCoastSourceBundle {
+        sources,
+        hydro,
+        coast,
+        total_feature_count,
+    })
+}
+
+/// Read a MERIT-Hydro NetCDF tile into a bbox-selected, lon-major Rust window.
+pub fn read_merit_hydro_window(
+    tile_path: impl AsRef<Path>,
+    bbox: MeritLonLatBbox,
+    stride: usize,
+) -> io::Result<MeritHydroWindowReport> {
+    if stride == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MERIT-Hydro stride must be positive",
+        ));
+    }
+    let tile = tile_path.as_ref().to_path_buf();
+    let file = netcdf::open(&tile).map_err(netcdf_to_io_error)?;
+    let lon_all = required_values_f64_any(&file, "longitude")?;
+    let lat_all = required_values_f64_any(&file, "latitude")?;
+    let lon_indices = indices_between_inclusive(&lon_all, bbox.west, bbox.east, stride);
+    let lat_indices = indices_between_inclusive(&lat_all, bbox.south, bbox.north, stride);
+    if lon_indices.is_empty() || lat_indices.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("bbox does not overlap MERIT-Hydro tile {}", tile.display()),
+        ));
+    }
+    let lon_len = lon_all.len();
+    let lat_len = lat_all.len();
+    let dir_all = required_values_i32_any_matrix(&file, "dir", lon_len, lat_len)?;
+    let upa_all = required_values_f64_any_matrix(&file, "upa", lon_len, lat_len)?;
+    let elv_all = required_values_f64_any_matrix(&file, "elv", lon_len, lat_len)?;
+    let wth_all = required_values_f64_any_matrix(&file, "wth", lon_len, lat_len)?;
+    let landtype_all = required_values_i32_any_matrix(&file, "landtype_igbp", lon_len, lat_len)?;
+
+    let width = lon_indices.len();
+    let height = lat_indices.len();
+    let mut dir = Vec::with_capacity(width * height);
+    let mut upa_km2 = Vec::with_capacity(width * height);
+    let mut elv_m = Vec::with_capacity(width * height);
+    let mut width_m = Vec::with_capacity(width * height);
+    let mut landtype_igbp = Vec::with_capacity(width * height);
+    for &lon_index in &lon_indices {
+        for &lat_index in &lat_indices {
+            let offset = lon_index
+                .checked_mul(lat_len)
+                .and_then(|base| base.checked_add(lat_index))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "MERIT-Hydro index overflow")
+                })?;
+            dir.push(dir_all[offset]);
+            upa_km2.push(clean_merit_fill(upa_all[offset]));
+            elv_m.push(clean_merit_fill(elv_all[offset]));
+            width_m.push(clean_merit_fill(wth_all[offset]));
+            landtype_igbp.push(landtype_all[offset]);
+        }
+    }
+    let tile_name = tile
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| tile.display().to_string());
+    Ok(MeritHydroWindowReport {
+        tile,
+        tile_name,
+        lon: lon_indices.iter().map(|&index| lon_all[index]).collect(),
+        lat: lat_indices.iter().map(|&index| lat_all[index]).collect(),
+        width,
+        height,
+        dir,
+        upa_km2,
+        elv_m,
+        width_m,
+        landtype_igbp,
+    })
+}
+
+/// Parse a MERIT-Hydro tile filename such as `n10e100.nc` into its 5-degree bounds.
+pub fn merit_tile_bounds_from_name(name: impl AsRef<str>) -> io::Result<MeritLonLatBbox> {
+    let raw = Path::new(name.as_ref())
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid MERIT tile name"))?;
+    let stem = raw.strip_suffix(".nc").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a MERIT-Hydro tile name: {raw}"),
+        )
+    })?;
+    if stem.len() != 7 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a MERIT-Hydro tile name: {raw}"),
+        ));
+    }
+    let lat_sign = &stem[0..1];
+    let lat_value: f64 = stem[1..3].parse().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a MERIT-Hydro tile name: {raw}"),
+        )
+    })?;
+    let lon_sign = &stem[3..4];
+    let lon_value: f64 = stem[4..7].parse().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a MERIT-Hydro tile name: {raw}"),
+        )
+    })?;
+    let south = match lat_sign {
+        "n" => lat_value,
+        "s" => -lat_value,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a MERIT-Hydro tile name: {raw}"),
+            ))
+        }
+    };
+    let west = match lon_sign {
+        "e" => lon_value,
+        "w" => -lon_value,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a MERIT-Hydro tile name: {raw}"),
+            ))
+        }
+    };
+    Ok(MeritLonLatBbox {
+        west,
+        south,
+        east: west + 5.0,
+        north: south + 5.0,
+    })
+}
+
+/// Select MERIT-Hydro NetCDF tiles under a root directory whose 5-degree bounds intersect a bbox.
+pub fn select_merit_hydro_tiles(
+    root: impl AsRef<Path>,
+    bbox: MeritLonLatBbox,
+) -> io::Result<Vec<PathBuf>> {
+    let mut selected = Vec::new();
+    for entry in fs::read_dir(root.as_ref())? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Ok(bounds) = merit_tile_bounds_from_name(name) else {
+            continue;
+        };
+        if merit_bbox_intersects(bounds, bbox) {
+            selected.push(path);
+        }
+    }
+    selected.sort();
+    Ok(selected)
+}
+
+/// Classify a native MERIT-Hydro window into river/coast/surface mask classes.
+pub fn classify_merit_hydro_window(
+    window: &MeritHydroWindowReport,
+    thresholds: MeritMaskThresholds,
+) -> io::Result<MeritHydroMaskClassificationReport> {
+    let expected = window.width.checked_mul(window.height).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MERIT-Hydro window shape overflows usize",
+        )
+    })?;
+    for (name, len) in [
+        ("dir", window.dir.len()),
+        ("upa", window.upa_km2.len()),
+        ("elv", window.elv_m.len()),
+        ("wth", window.width_m.len()),
+        ("landtype_igbp", window.landtype_igbp.len()),
+    ] {
+        require_len(name, len, expected)?;
+    }
+
+    let mut classes = Vec::with_capacity(expected);
+    let mut report = MeritHydroMaskClassificationReport {
+        classes: Vec::new(),
+        r3_cells: 0,
+        r2_cells: 0,
+        coast_land_cells: 0,
+        coast_ocean_cells: 0,
+        land_cells: 0,
+        ocean_cells: 0,
+        unknown_cells: 0,
+    };
+
+    for lon_index in 0..window.width {
+        for lat_index in 0..window.height {
+            let offset = lon_index * window.height + lat_index;
+            let class = classify_merit_cell(
+                window.width_m[offset],
+                window.upa_km2[offset],
+                window.landtype_igbp[offset],
+                merit_cell_adjacent_to_other_surface(window, lon_index, lat_index),
+                thresholds,
+            );
+            match class {
+                "R3" => report.r3_cells += 1,
+                "R2" => report.r2_cells += 1,
+                "COAST_LAND" => report.coast_land_cells += 1,
+                "COAST_OCEAN" => report.coast_ocean_cells += 1,
+                "LAND" => report.land_cells += 1,
+                "OCEAN" => report.ocean_cells += 1,
+                "UNKNOWN" => report.unknown_cells += 1,
+                _ => unreachable!("MERIT-Hydro classifier returns a closed class set"),
+            }
+            classes.push(class.to_string());
+        }
+    }
+    report.classes = classes;
+    Ok(report)
+}
+
+/// Write native MERIT-Hydro classified windows as combined and split GeoJSON layers.
+pub fn write_merit_hydro_mask_geojson_layers(
+    windows: &[MeritHydroWindowReport],
+    thresholds: MeritMaskThresholds,
+    output_dir: impl AsRef<Path>,
+    include_surface_masks: bool,
+) -> io::Result<MeritHydroGeoJsonLayerWriteReport> {
+    let output_dir = output_dir.as_ref().to_path_buf();
+    fs::create_dir_all(&output_dir)?;
+    let combined_geojson = output_dir.join("merit_masks.geojson");
+    let river_geojson = output_dir.join("merit_river_masks.geojson");
+    let coast_geojson = output_dir.join("merit_coast_masks.geojson");
+    let surface_geojson =
+        include_surface_masks.then(|| output_dir.join("merit_surface_masks.geojson"));
+    let summary_json = output_dir.join("merit_mask_summary.json");
+
+    let mut combined_features = Vec::new();
+    let mut river_features = Vec::new();
+    let mut coast_features = Vec::new();
+    let mut surface_features = Vec::new();
+    let mut mask_counts = std::collections::BTreeMap::<String, usize>::new();
+
+    for window in windows {
+        let classification = classify_merit_hydro_window(window, thresholds)?;
+        for lon_index in 0..window.width {
+            for lat_index in 0..window.height {
+                let offset = lon_index * window.height + lat_index;
+                let class = &classification.classes[offset];
+                if class == "UNKNOWN" {
+                    continue;
+                }
+                *mask_counts.entry(class.clone()).or_insert(0) += 1;
+                if matches!(class.as_str(), "LAND" | "OCEAN") && !include_surface_masks {
+                    continue;
+                }
+                let feature = merit_mask_feature_json(window, lon_index, lat_index, class);
+                combined_features.push(feature.clone());
+                match class.as_str() {
+                    "R2" | "R3" => river_features.push(feature),
+                    "COAST_LAND" | "COAST_OCEAN" => coast_features.push(feature),
+                    "LAND" | "OCEAN" => surface_features.push(feature),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    write_geojson_feature_collection(&combined_geojson, &combined_features)?;
+    write_geojson_feature_collection(&river_geojson, &river_features)?;
+    write_geojson_feature_collection(&coast_geojson, &coast_features)?;
+    if let Some(path) = &surface_geojson {
+        write_geojson_feature_collection(path, &surface_features)?;
+    }
+    write_merit_mask_summary_json(
+        &summary_json,
+        windows.len(),
+        combined_features.len(),
+        &mask_counts,
+        thresholds,
+    )?;
+
+    Ok(MeritHydroGeoJsonLayerWriteReport {
+        output_dir,
+        combined_geojson,
+        river_geojson,
+        coast_geojson,
+        surface_geojson,
+        summary_json,
+        window_count: windows.len(),
+        combined_feature_count: combined_features.len(),
+        river_feature_count: river_features.len(),
+        coast_feature_count: coast_features.len(),
+        surface_feature_count: surface_features.len(),
+        mask_counts,
+    })
+}
+
+/// Default hydro class-to-refine-degree mapping used by the Python v3 prototype.
+pub fn default_hydro_close_class_refine() -> BTreeMap<String, usize> {
+    BTreeMap::from([("R2".to_string(), 1_usize), ("R3".to_string(), 2_usize)])
+}
+
+/// Write the Python-compatible close-refinement recipe consumed by the hydro mesh tools.
+///
+/// This migrates the downstream control-surface adapter from
+/// `util.hydro_mesh.refinement_recipe` into Rust without yet replacing the
+/// close-mask polygon/ring generator itself.
+pub fn write_hydro_close_refinement_recipe_json(
+    output_json: impl AsRef<Path>,
+    options: HydroCloseRefinementRecipeOptions,
+) -> io::Result<HydroCloseRefinementRecipeWriteReport> {
+    if options.class_refine.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hydro close recipe requires at least one class refine mapping",
+        ));
+    }
+    if !options.simplify_tolerance_deg.is_finite() || options.simplify_tolerance_deg < 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "simplify_tolerance_deg must be a finite non-negative number",
+        ));
+    }
+    for (degree, buffer) in &options.buffer_deg_by_refine_degree {
+        if *degree == 0 || !buffer.is_finite() || *buffer < 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "buffer_deg_by_refine_degree requires positive degrees and finite non-negative buffers",
+            ));
+        }
+    }
+    let max_iter_spc = *options
+        .class_refine
+        .values()
+        .max()
+        .expect("class_refine was checked non-empty");
+    let output_json = output_json.as_ref().to_path_buf();
+    if let Some(parent) = output_json.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut close_mask_command = vec![
+        "python3".to_string(),
+        "-m".to_string(),
+        "util.hydro_mesh.refine_mask_export".to_string(),
+        options.input_geojson.display().to_string(),
+        options.output_prefix.display().to_string(),
+    ];
+    if !options.class_refine.is_empty() {
+        close_mask_command.push("--class-refine".to_string());
+        for (class, degree) in &options.class_refine {
+            close_mask_command.push(format!("{class}={degree}"));
+        }
+    }
+    if !options.buffer_deg_by_refine_degree.is_empty() {
+        close_mask_command.push("--buffer-deg-by-refine-degree".to_string());
+        for (degree, buffer_deg) in &options.buffer_deg_by_refine_degree {
+            close_mask_command.push(format!("{degree}={}", json_number(*buffer_deg)));
+        }
+    }
+    if options.simplify_tolerance_deg > 0.0 {
+        close_mask_command.push("--simplify-tolerance-deg".to_string());
+        close_mask_command.push(json_number(options.simplify_tolerance_deg));
+    }
+
+    let smoke_run_command = options
+        .example_namelist
+        .as_ref()
+        .map(|namelist| vec!["./mkgrd.x".to_string(), namelist.clone()]);
+    let notes = vec![
+        "Buffers are mesh-generation envelopes, not CoLM river-area estimates.".to_string(),
+        "Use cumulative close masks for nested refinement unless deliberately testing non-cumulative behavior.".to_string(),
+    ];
+
+    let mut text = String::new();
+    text.push_str("{\"kind\":\"earthmesh_hydro_close_refinement_recipe\"");
+    text.push_str(",\"input_geojson\":\"");
+    text.push_str(&json_escape_string(
+        &options.input_geojson.display().to_string(),
+    ));
+    text.push('"');
+    text.push_str(",\"output_prefix\":\"");
+    text.push_str(&json_escape_string(
+        &options.output_prefix.display().to_string(),
+    ));
+    text.push('"');
+    text.push_str(",\"class_refine\":");
+    text.push_str(&json_usize_map(&options.class_refine));
+    text.push_str(",\"buffer_deg_by_refine_degree\":");
+    text.push_str(&json_usize_f64_map(&options.buffer_deg_by_refine_degree));
+    text.push_str(",\"simplify_tolerance_deg\":");
+    text.push_str(&json_number(options.simplify_tolerance_deg));
+    text.push_str(",\"close_mask_command\":");
+    text.push_str(&json_string_array(&close_mask_command));
+    text.push_str(",\"earthmesh_namelist_overrides\":{");
+    text.push_str("\"RL%mask_refine_spc_fprefix\":\"'");
+    text.push_str(&json_escape_string(
+        &options.output_prefix.display().to_string(),
+    ));
+    text.push_str("'\",\"RL%mask_refine_spc_type\":\"'close'\"");
+    text.push_str(",\"RL%max_iter_spc\":\"");
+    text.push_str(&max_iter_spc.to_string());
+    text.push_str("\",\"RL%refine_spc\":\".TRUE.\"}");
+    text.push_str(",\"notes\":");
+    text.push_str(&json_string_array(&notes));
+    if let Some(command) = &smoke_run_command {
+        text.push_str(",\"smoke_run_command\":");
+        text.push_str(&json_string_array(command));
+    }
+    text.push_str("}\n");
+
+    fs::write(&output_json, text)?;
+    Ok(HydroCloseRefinementRecipeWriteReport {
+        output_json,
+        max_iter_spc,
+        class_count: options.class_refine.len(),
+        buffer_count: options.buffer_deg_by_refine_degree.len(),
+    })
+}
+
+/// Write EarthMesh close-mask `.nml` files from hydro/coast GeoJSON polygons.
+///
+/// This is the Rust-native core of `util.hydro_mesh.refine_mask_export` for
+/// polygon and multipolygon exterior rings. Optional Shapely-style
+/// buffer/simplification remains a higher-level Python feature until a Rust
+/// geometry dependency is selected deliberately.
+pub fn write_hydro_close_mask_nmls(
+    input_geojson: impl AsRef<Path>,
+    output_prefix: impl AsRef<Path>,
+    options: HydroCloseMaskNmlOptions,
+) -> io::Result<HydroCloseMaskNmlWriteReport> {
+    let specs = read_hydro_close_mask_specs(input_geojson, options)?;
+    write_hydro_close_mask_specs(output_prefix, &specs)
+}
+
+/// Read hydro/coast GeoJSON polygon rings into close-mask specs without writing files.
+pub fn read_hydro_close_mask_specs(
+    input_geojson: impl AsRef<Path>,
+    options: HydroCloseMaskNmlOptions,
+) -> io::Result<Vec<HydroCloseMaskSpec>> {
+    let text = fs::read_to_string(input_geojson.as_ref())?;
+    geojson_text_to_hydro_close_mask_specs(&text, &options)
+}
+
+/// Write already-selected close-mask specs to EarthMesh `.nml` files.
+pub fn write_hydro_close_mask_specs(
+    output_prefix: impl AsRef<Path>,
+    specs: &[HydroCloseMaskSpec],
+) -> io::Result<HydroCloseMaskNmlWriteReport> {
+    let output_prefix = output_prefix.as_ref().to_path_buf();
+    if let Some(parent) = output_prefix.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    remove_stale_close_mask_nmls(&output_prefix)?;
+
+    let mut counts_by_class_degree = BTreeMap::<(String, usize), usize>::new();
+    let mut files = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let count_key = (spec.river_class.clone(), spec.refine_degree);
+        let count = counts_by_class_degree.entry(count_key).or_insert(0);
+        *count += 1;
+        let file_name = format!(
+            "{}_{}_d{}_{:03}.nml",
+            output_prefix
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("refine_spc_hydro"),
+            spec.river_class,
+            spec.refine_degree,
+            *count
+        );
+        let path = output_prefix.with_file_name(file_name);
+        fs::write(&path, hydro_close_mask_text(spec))?;
+        files.push(path);
+    }
+
+    Ok(HydroCloseMaskNmlWriteReport {
+        output_prefix,
+        files,
+        spec_count: specs.len(),
+    })
+}
+
+/// Compose a JSON recipe of multiple hydro/coast sources into one close-mask NML set.
+pub fn write_hydro_composite_close_mask_nmls(
+    recipe_json: impl AsRef<Path>,
+    output_prefix: impl AsRef<Path>,
+    summary_json: Option<impl AsRef<Path>>,
+) -> io::Result<HydroCompositeCloseMaskNmlWriteReport> {
+    let recipe_text = fs::read_to_string(recipe_json.as_ref())?;
+    let recipe = JsonParser::new(&recipe_text).parse()?;
+    let recipe_object = recipe.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "composite close-mask recipe must be a JSON object",
+        )
+    })?;
+    let components = recipe_object
+        .get("components")
+        .and_then(JsonNode::as_array)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "composite close-mask recipe requires a components array",
+            )
+        })?;
+    if components.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "composite close-mask recipe requires a non-empty components array",
+        ));
+    }
+
+    let mut tagged_specs = Vec::<(String, HydroCloseMaskSpec)>::new();
+    let mut component_summaries = Vec::new();
+    for (index, component) in components.iter().enumerate() {
+        let component = component.as_object().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "each component must be an object",
+            )
+        })?;
+        let component_name = component
+            .get("name")
+            .and_then(JsonNode::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("component_{}", index + 1));
+        let input_geojson = component
+            .get("input_geojson")
+            .and_then(JsonNode::as_str)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "each component requires input_geojson",
+                )
+            })?
+            .to_string();
+        let default_class_refine = default_hydro_close_class_refine();
+        let class_refine =
+            json_string_usize_map(component.get("class_refine"), Some(&default_class_refine))?;
+        let max_rings_by_class = json_string_usize_map(component.get("max_rings_by_class"), None)?;
+        let max_rings_per_class = component
+            .get("max_rings_per_class")
+            .map(json_node_to_usize)
+            .transpose()?;
+        let cumulative_refine = component
+            .get("cumulative_refine")
+            .and_then(JsonNode::as_bool)
+            .unwrap_or(true);
+        let min_ring_separation_deg = component
+            .get("min_ring_separation_deg")
+            .map(json_node_to_f64)
+            .transpose()?
+            .unwrap_or(0.0);
+        let buffer_deg_by_refine_degree =
+            json_usize_f64_map_node(component.get("buffer_deg_by_refine_degree"), None)?;
+        let simplify_tolerance_deg = component
+            .get("simplify_tolerance_deg")
+            .map(json_node_to_f64)
+            .transpose()?
+            .unwrap_or(0.0);
+        let dissolve_overlapping_envelopes = component
+            .get("dissolve_overlapping_envelopes")
+            .and_then(JsonNode::as_bool)
+            .unwrap_or(false);
+        let specs = read_hydro_close_mask_specs(
+            &input_geojson,
+            HydroCloseMaskNmlOptions {
+                class_refine: class_refine.clone(),
+                max_rings_per_class,
+                max_rings_by_class: max_rings_by_class.clone(),
+                max_masks_per_refine_degree: None,
+                min_ring_separation_deg,
+                buffer_deg_by_refine_degree,
+                simplify_tolerance_deg,
+                dissolve_overlapping_envelopes,
+                cumulative_refine,
+            },
+        )?;
+        tagged_specs.extend(
+            specs
+                .iter()
+                .cloned()
+                .map(|spec| (component_name.clone(), spec)),
+        );
+        component_summaries.push(HydroCompositeCloseMaskComponentSummary {
+            name: component_name,
+            input_geojson,
+            files_selected: specs.len(),
+            class_refine,
+            max_rings_by_class,
+            max_rings_per_class,
+            dissolve_overlapping_envelopes,
+        });
+    }
+
+    let max_masks_per_refine_degree = recipe_object
+        .get("max_masks_per_refine_degree")
+        .map(json_node_to_usize)
+        .transpose()?
+        .or(Some(999));
+    let capped_specs = apply_composite_refine_degree_cap(tagged_specs, max_masks_per_refine_degree);
+    let mut sorted_specs = capped_specs;
+    sorted_specs.sort_by(|left, right| {
+        left.1
+            .river_class
+            .cmp(&right.1.river_class)
+            .then_with(|| left.1.refine_degree.cmp(&right.1.refine_degree))
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| {
+                left.1
+                    .source_feature_index
+                    .cmp(&right.1.source_feature_index)
+            })
+            .then_with(|| left.1.ring_index.cmp(&right.1.ring_index))
+    });
+    let write_report = write_hydro_close_mask_specs(
+        output_prefix.as_ref(),
+        &sorted_specs
+            .iter()
+            .map(|(_, spec)| spec.clone())
+            .collect::<Vec<_>>(),
+    )?;
+
+    let mut counts_by_component = BTreeMap::<String, usize>::new();
+    let mut counts_by_class_degree = BTreeMap::<String, usize>::new();
+    for (component_name, spec) in &sorted_specs {
+        *counts_by_component
+            .entry(component_name.clone())
+            .or_insert(0) += 1;
+        *counts_by_class_degree
+            .entry(format!("{}_d{}", spec.river_class, spec.refine_degree))
+            .or_insert(0) += 1;
+    }
+
+    let summary_json = summary_json.map(|path| path.as_ref().to_path_buf());
+    let report = HydroCompositeCloseMaskNmlWriteReport {
+        output_prefix: write_report.output_prefix,
+        files: write_report.files,
+        counts_by_component,
+        counts_by_class_degree,
+        components: component_summaries,
+        summary_json,
+    };
+    if let Some(path) = &report.summary_json {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, hydro_composite_close_mask_summary_json(&report))?;
+    }
+    Ok(report)
+}
+
+fn apply_composite_refine_degree_cap(
+    mut items: Vec<(String, HydroCloseMaskSpec)>,
+    max_masks_per_refine_degree: Option<usize>,
+) -> Vec<(String, HydroCloseMaskSpec)> {
+    let Some(max_masks_per_refine_degree) = max_masks_per_refine_degree else {
+        return items;
+    };
+    items.sort_by(|left, right| {
+        left.1
+            .refine_degree
+            .cmp(&right.1.refine_degree)
+            .then_with(|| {
+                right
+                    .1
+                    .target_refine_degree
+                    .cmp(&left.1.target_refine_degree)
+            })
+            .then_with(|| left.1.river_class.cmp(&right.1.river_class))
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| {
+                left.1
+                    .source_feature_index
+                    .cmp(&right.1.source_feature_index)
+            })
+            .then_with(|| left.1.ring_index.cmp(&right.1.ring_index))
+    });
+    let mut counts = BTreeMap::<usize, usize>::new();
+    let mut kept = Vec::new();
+    for item in items {
+        let count = counts.entry(item.1.refine_degree).or_insert(0);
+        if *count >= max_masks_per_refine_degree {
+            continue;
+        }
+        *count += 1;
+        kept.push(item);
+    }
+    kept
+}
+
+fn hydro_composite_close_mask_summary_json(
+    report: &HydroCompositeCloseMaskNmlWriteReport,
+) -> String {
+    let mut text = String::from("{\"kind\":\"earthmesh_composite_close_mask_summary\"");
+    text.push_str(",\"output_prefix\":\"");
+    text.push_str(&json_escape_string(
+        &report.output_prefix.display().to_string(),
+    ));
+    text.push('"');
+    text.push_str(",\"files_written\":");
+    text.push_str(&report.files.len().to_string());
+    text.push_str(",\"files\":[");
+    for (index, path) in report.files.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push_str(&json_escape_string(&path.display().to_string()));
+        text.push('"');
+    }
+    text.push(']');
+    text.push_str(",\"counts_by_component\":");
+    text.push_str(&json_usize_map(&report.counts_by_component));
+    text.push_str(",\"counts_by_class_degree\":");
+    text.push_str(&json_usize_map(&report.counts_by_class_degree));
+    text.push_str(",\"components\":[");
+    for (index, component) in report.components.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push_str("{\"name\":\"");
+        text.push_str(&json_escape_string(&component.name));
+        text.push_str("\",\"input_geojson\":\"");
+        text.push_str(&json_escape_string(&component.input_geojson));
+        text.push_str("\",\"files_selected\":");
+        text.push_str(&component.files_selected.to_string());
+        text.push_str(",\"class_refine\":");
+        text.push_str(&json_usize_map(&component.class_refine));
+        text.push_str(",\"max_rings_by_class\":");
+        text.push_str(&json_usize_map(&component.max_rings_by_class));
+        text.push_str(",\"max_rings_per_class\":");
+        match component.max_rings_per_class {
+            Some(value) => text.push_str(&value.to_string()),
+            None => text.push_str("null"),
+        }
+        text.push('}');
+    }
+    text.push_str("]}\n");
+    text
+}
+
+fn geojson_text_to_hydro_close_mask_specs(
+    text: &str,
+    options: &HydroCloseMaskNmlOptions,
+) -> io::Result<Vec<HydroCloseMaskSpec>> {
+    if !options.simplify_tolerance_deg.is_finite() || options.simplify_tolerance_deg < 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "simplify_tolerance_deg must be a finite non-negative number",
+        ));
+    }
+    for (degree, buffer) in &options.buffer_deg_by_refine_degree {
+        if *degree == 0 || !buffer.is_finite() || *buffer < 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "buffer_deg_by_refine_degree requires positive degrees and finite non-negative buffers",
+            ));
+        }
+    }
+    let root = JsonParser::new(text).parse()?;
+    let features = match root
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(JsonNode::as_str)
+    {
+        Some("FeatureCollection") => root
+            .as_object()
+            .and_then(|object| object.get("features"))
+            .and_then(JsonNode::as_array)
+            .map(|features| features.iter().collect::<Vec<_>>())
+            .unwrap_or_default(),
+        Some("Feature") => vec![&root],
+        _ => Vec::new(),
+    };
+    if features.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::<(f64, HydroCloseMaskSpec)>::new();
+    for (feature_index, feature) in features.into_iter().enumerate() {
+        let Some(feature_object) = feature.as_object() else {
+            continue;
+        };
+        let river_class = feature_object
+            .get("properties")
+            .and_then(JsonNode::as_object)
+            .and_then(|properties| {
+                properties
+                    .get("river_class")
+                    .and_then(JsonNode::as_str)
+                    .or_else(|| properties.get("hydro_class").and_then(JsonNode::as_str))
+                    .or_else(|| properties.get("mask_class").and_then(JsonNode::as_str))
+            })
+            .unwrap_or("")
+            .to_string();
+        let Some(&target_refine_degree) = options.class_refine.get(&river_class) else {
+            continue;
+        };
+        let Some(geometry) = feature_object.get("geometry").and_then(JsonNode::as_object) else {
+            continue;
+        };
+        let mut geometry_index = 0_usize;
+        for coordinates in geojson_close_mask_rings(geometry) {
+            let coordinates = simplify_closed_ring(coordinates, options.simplify_tolerance_deg);
+            if coordinates.len() < 3 {
+                continue;
+            }
+            if options.cumulative_refine {
+                for refine_degree in 1..=target_refine_degree {
+                    let spec = HydroCloseMaskSpec {
+                        river_class: river_class.clone(),
+                        refine_degree,
+                        target_refine_degree,
+                        coordinates: buffer_close_mask_ring_for_refine_degree(
+                            &coordinates,
+                            refine_degree,
+                            &options.buffer_deg_by_refine_degree,
+                        ),
+                        source_feature_index: feature_index,
+                        ring_index: geometry_index,
+                    };
+                    candidates.push((ring_area(&spec.coordinates), spec));
+                }
+            } else {
+                let spec = HydroCloseMaskSpec {
+                    river_class: river_class.clone(),
+                    refine_degree: target_refine_degree,
+                    target_refine_degree,
+                    coordinates: buffer_close_mask_ring_for_refine_degree(
+                        &coordinates,
+                        target_refine_degree,
+                        &options.buffer_deg_by_refine_degree,
+                    ),
+                    source_feature_index: feature_index,
+                    ring_index: geometry_index,
+                };
+                candidates.push((ring_area(&spec.coordinates), spec));
+            }
+            geometry_index += 1;
+        }
+        for line in geojson_close_mask_lines(geometry) {
+            if options.cumulative_refine {
+                for refine_degree in 1..=target_refine_degree {
+                    let Some(coordinates) = buffer_close_mask_line_for_refine_degree(
+                        &line,
+                        refine_degree,
+                        &options.buffer_deg_by_refine_degree,
+                    ) else {
+                        continue;
+                    };
+                    let coordinates =
+                        simplify_closed_ring(coordinates, options.simplify_tolerance_deg);
+                    if coordinates.len() < 3 {
+                        continue;
+                    }
+                    let spec = HydroCloseMaskSpec {
+                        river_class: river_class.clone(),
+                        refine_degree,
+                        target_refine_degree,
+                        coordinates,
+                        source_feature_index: feature_index,
+                        ring_index: geometry_index,
+                    };
+                    candidates.push((ring_area(&spec.coordinates), spec));
+                }
+            } else {
+                let Some(coordinates) = buffer_close_mask_line_for_refine_degree(
+                    &line,
+                    target_refine_degree,
+                    &options.buffer_deg_by_refine_degree,
+                ) else {
+                    continue;
+                };
+                let coordinates = simplify_closed_ring(coordinates, options.simplify_tolerance_deg);
+                if coordinates.len() < 3 {
+                    continue;
+                }
+                let spec = HydroCloseMaskSpec {
+                    river_class: river_class.clone(),
+                    refine_degree: target_refine_degree,
+                    target_refine_degree,
+                    coordinates,
+                    source_feature_index: feature_index,
+                    ring_index: geometry_index,
+                };
+                candidates.push((ring_area(&spec.coordinates), spec));
+            }
+            geometry_index += 1;
+        }
+    }
+
+    if options.dissolve_overlapping_envelopes {
+        candidates = dissolve_overlapping_envelope_candidates(candidates);
+    }
+
+    candidates.sort_by(|left, right| {
+        left.1
+            .refine_degree
+            .cmp(&right.1.refine_degree)
+            .then_with(|| {
+                right
+                    .1
+                    .target_refine_degree
+                    .cmp(&left.1.target_refine_degree)
+            })
+            .then_with(|| {
+                right
+                    .0
+                    .partial_cmp(&left.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.1.river_class.cmp(&right.1.river_class))
+            .then_with(|| {
+                left.1
+                    .source_feature_index
+                    .cmp(&right.1.source_feature_index)
+            })
+            .then_with(|| left.1.ring_index.cmp(&right.1.ring_index))
+    });
+
+    let mut emitted_rings_by_class = BTreeMap::<String, BTreeSet<(usize, usize)>>::new();
+    let mut emitted_by_refine_degree = BTreeMap::<usize, usize>::new();
+    let mut emitted_specs_by_refine_degree = BTreeMap::<usize, Vec<HydroCloseMaskSpec>>::new();
+    let mut specs = Vec::new();
+    for (_, spec) in candidates {
+        let ring_key = (spec.source_feature_index, spec.ring_index);
+        let class_rings = emitted_rings_by_class
+            .entry(spec.river_class.clone())
+            .or_default();
+        let class_cap = options
+            .max_rings_by_class
+            .get(&spec.river_class)
+            .copied()
+            .or(options.max_rings_per_class);
+        if let Some(class_cap) = class_cap {
+            if !class_rings.contains(&ring_key) && class_rings.len() >= class_cap {
+                continue;
+            }
+        }
+        if let Some(max_masks) = options.max_masks_per_refine_degree {
+            if emitted_by_refine_degree
+                .get(&spec.refine_degree)
+                .copied()
+                .unwrap_or(0)
+                >= max_masks
+            {
+                continue;
+            }
+        }
+        if options.min_ring_separation_deg > 0.0
+            && is_close_mask_ring_too_close(
+                &spec,
+                emitted_specs_by_refine_degree
+                    .get(&spec.refine_degree)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                options.min_ring_separation_deg,
+            )
+        {
+            continue;
+        }
+        class_rings.insert(ring_key);
+        *emitted_by_refine_degree
+            .entry(spec.refine_degree)
+            .or_insert(0) += 1;
+        emitted_specs_by_refine_degree
+            .entry(spec.refine_degree)
+            .or_default()
+            .push(spec.clone());
+        specs.push(spec);
+    }
+    specs.sort_by(|left, right| {
+        left.river_class
+            .cmp(&right.river_class)
+            .then_with(|| left.refine_degree.cmp(&right.refine_degree))
+            .then_with(|| left.source_feature_index.cmp(&right.source_feature_index))
+            .then_with(|| left.ring_index.cmp(&right.ring_index))
+    });
+    Ok(specs)
+}
+
+fn remove_stale_close_mask_nmls(output_prefix: &Path) -> io::Result<()> {
+    let Some(parent) = output_prefix.parent() else {
+        return Ok(());
+    };
+    let Some(prefix_name) = output_prefix.file_name().and_then(|value| value.to_str()) else {
+        return Ok(());
+    };
+    let stale_prefix = format!("{prefix_name}_");
+    for entry in fs::read_dir(parent)? {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name.starts_with(&stale_prefix) && name.ends_with(".nml") {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn hydro_close_mask_text(spec: &HydroCloseMaskSpec) -> String {
+    let mut text = format!(
+        "close_num = {}\nclose_refine = {}\n",
+        spec.coordinates.len(),
+        spec.refine_degree
+    );
+    for (lon, lat) in &spec.coordinates {
+        text.push_str(&format!("{lon:.8} {lat:.8}\n"));
+    }
+    text
+}
+
+fn geojson_close_mask_rings(geometry: &BTreeMap<String, JsonNode>) -> Vec<Vec<(f64, f64)>> {
+    let geometry_type = geometry
+        .get("type")
+        .and_then(JsonNode::as_str)
+        .unwrap_or("");
+    if geometry_type == "GeometryCollection" {
+        return geometry
+            .get("geometries")
+            .and_then(JsonNode::as_array)
+            .into_iter()
+            .flat_map(|geometries| geometries.iter())
+            .filter_map(JsonNode::as_object)
+            .flat_map(geojson_close_mask_rings)
+            .collect();
+    }
+    let Some(coordinates) = geometry.get("coordinates").and_then(JsonNode::as_array) else {
+        return Vec::new();
+    };
+    match geometry_type {
+        "Polygon" => geojson_polygon_close_mask_rings(coordinates),
+        "MultiPolygon" => coordinates
+            .iter()
+            .filter_map(JsonNode::as_array)
+            .flat_map(|rings| geojson_polygon_close_mask_rings(rings))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn geojson_close_mask_lines(geometry: &BTreeMap<String, JsonNode>) -> Vec<Vec<(f64, f64)>> {
+    let geometry_type = geometry
+        .get("type")
+        .and_then(JsonNode::as_str)
+        .unwrap_or("");
+    if geometry_type == "GeometryCollection" {
+        return geometry
+            .get("geometries")
+            .and_then(JsonNode::as_array)
+            .into_iter()
+            .flat_map(|geometries| geometries.iter())
+            .filter_map(JsonNode::as_object)
+            .flat_map(geojson_close_mask_lines)
+            .collect();
+    }
+    let Some(coordinates) = geometry.get("coordinates").and_then(JsonNode::as_array) else {
+        return Vec::new();
+    };
+    match geometry_type {
+        "LineString" => {
+            let line = normalize_geojson_line(coordinates);
+            if line.len() >= 2 {
+                vec![line]
+            } else {
+                Vec::new()
+            }
+        }
+        "MultiLineString" => coordinates
+            .iter()
+            .filter_map(JsonNode::as_array)
+            .map(|line| normalize_geojson_line(line))
+            .filter(|line| line.len() >= 2)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn geojson_polygon_close_mask_rings(polygon_rings: &[JsonNode]) -> Vec<Vec<(f64, f64)>> {
+    let mut rings = polygon_rings
+        .iter()
+        .filter_map(JsonNode::as_array)
+        .map(|ring| normalize_geojson_ring(ring))
+        .filter(|ring| ring.len() >= 3)
+        .collect::<Vec<_>>();
+    if rings.is_empty() {
+        return Vec::new();
+    }
+    let exterior = rings.remove(0);
+    if rings.is_empty() {
+        return vec![exterior];
+    }
+    decompose_axis_aligned_rectangular_hole(&exterior, &rings)
+        .or_else(|| decompose_non_axis_aligned_exterior_holes_vertical_slabs(&exterior, &rings))
+        .unwrap_or_else(|| vec![exterior])
+}
+
+fn decompose_non_axis_aligned_exterior_holes_vertical_slabs(
+    exterior: &[(f64, f64)],
+    holes: &[Vec<(f64, f64)>],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if holes.is_empty()
+        || exterior.len() < 3
+        || !exterior
+            .iter()
+            .all(|(lon, lat)| lon.is_finite() && lat.is_finite())
+        || axis_aligned_rectangle_from_ring(exterior).is_some()
+        || holes.iter().any(|hole| {
+            hole.len() < 3
+                || !hole
+                    .iter()
+                    .all(|(lon, lat)| lon.is_finite() && lat.is_finite())
+                || !ring_contains_ring(exterior, hole)
+        })
+    {
+        return None;
+    }
+
+    let exterior_bbox = ring_bbox(exterior);
+    let mut xs = exterior.iter().map(|(lon, _)| *lon).collect::<Vec<_>>();
+    for hole in holes {
+        xs.extend(hole.iter().map(|(lon, _)| *lon));
+    }
+    append_non_rectilinear_hole_edge_crossing_xs(&mut xs, holes, exterior_bbox);
+    sort_dedup_f64(&mut xs);
+    if xs.len() < 2 {
+        return None;
+    }
+
+    let mut rings = Vec::new();
+    for col in 0..(xs.len() - 1) {
+        let xl = xs[col];
+        let xr = xs[col + 1];
+        if xr - xl <= 1.0e-12 {
+            continue;
+        }
+        let center_x = (xl + xr) * 0.5;
+        let exterior_center_spans = ring_y_spans_at_x(exterior, center_x);
+        if exterior_center_spans.is_empty() {
+            continue;
+        }
+        let exterior_left_spans =
+            ring_y_spans_at_slab_boundary(exterior, xl, center_x, exterior_center_spans.len())?;
+        let exterior_right_spans =
+            ring_y_spans_at_slab_boundary(exterior, xr, center_x, exterior_center_spans.len())?;
+        if exterior_left_spans.len() != exterior_center_spans.len()
+            || exterior_right_spans.len() != exterior_center_spans.len()
+        {
+            return None;
+        }
+
+        let mut hole_spans = Vec::<((f64, f64), (f64, f64), (f64, f64))>::new();
+        for hole in holes {
+            let center_spans = ring_y_spans_at_x(hole, center_x);
+            if center_spans.is_empty() {
+                continue;
+            }
+            let left_spans = ring_y_spans_at_slab_boundary(hole, xl, center_x, center_spans.len())?;
+            let right_spans =
+                ring_y_spans_at_slab_boundary(hole, xr, center_x, center_spans.len())?;
+            if left_spans.len() != center_spans.len() || right_spans.len() != center_spans.len() {
+                return None;
+            }
+            for (center, left, right) in center_spans
+                .into_iter()
+                .zip(left_spans.into_iter())
+                .zip(right_spans.into_iter())
+                .map(|((center, left), right)| (center, left, right))
+            {
+                hole_spans.push((center, left, right));
+            }
+        }
+
+        for span_index in 0..exterior_center_spans.len() {
+            let (outer_center_low, outer_center_high) = exterior_center_spans[span_index];
+            let (outer_left_low, outer_left_high) = exterior_left_spans[span_index];
+            let (outer_right_low, outer_right_high) = exterior_right_spans[span_index];
+            let mut spans = hole_spans
+                .iter()
+                .copied()
+                .filter(|(center, left, right)| {
+                    center.0 >= outer_center_low - 1.0e-12
+                        && center.1 <= outer_center_high + 1.0e-12
+                        && left.0 >= outer_left_low - 1.0e-12
+                        && left.1 <= outer_left_high + 1.0e-12
+                        && right.0 >= outer_right_low - 1.0e-12
+                        && right.1 <= outer_right_high + 1.0e-12
+                })
+                .map(|(_, left, right)| (left, right))
+                .collect::<Vec<_>>();
+            spans.sort_by(|left, right| {
+                let left_center = (left.0 .0 + left.0 .1 + left.1 .0 + left.1 .1) * 0.25;
+                let right_center = (right.0 .0 + right.0 .1 + right.1 .0 + right.1 .1) * 0.25;
+                left_center
+                    .partial_cmp(&right_center)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            let mut current_left = outer_left_low;
+            let mut current_right = outer_right_low;
+            for ((left_low, left_high), (right_low, right_high)) in spans {
+                let starts_above_current =
+                    left_low >= current_left - 1.0e-12 && right_low >= current_right - 1.0e-12;
+                let overlaps_current =
+                    left_low <= current_left + 1.0e-12 && right_low <= current_right + 1.0e-12;
+                if starts_above_current {
+                    push_vertical_slab_ring(
+                        &mut rings,
+                        xl,
+                        xr,
+                        (current_left, current_right),
+                        (left_low, right_low),
+                    );
+                    current_left = left_high;
+                    current_right = right_high;
+                } else if overlaps_current {
+                    current_left = current_left.max(left_high);
+                    current_right = current_right.max(right_high);
+                } else {
+                    return None;
+                }
+            }
+            push_vertical_slab_ring(
+                &mut rings,
+                xl,
+                xr,
+                (current_left, current_right),
+                (outer_left_high, outer_right_high),
+            );
+        }
+    }
+    (!rings.is_empty()).then_some(rings)
+}
+
+fn push_vertical_slab_ring(
+    rings: &mut Vec<Vec<(f64, f64)>>,
+    xl: f64,
+    xr: f64,
+    lower: (f64, f64),
+    upper: (f64, f64),
+) {
+    let segment = vec![(xl, lower.0), (xr, lower.1), (xr, upper.1), (xl, upper.0)];
+    if ring_area(&segment).abs() > 1.0e-12 {
+        rings.push(segment);
+    }
+}
+
+fn decompose_axis_aligned_rectangular_hole(
+    exterior: &[(f64, f64)],
+    holes: &[Vec<(f64, f64)>],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if holes.is_empty() {
+        return Some(vec![exterior.to_vec()]);
+    }
+    let outer = axis_aligned_rectangle_from_ring(exterior)?;
+    let inner_rectangles = holes
+        .iter()
+        .map(|hole| axis_aligned_rectangle_from_ring(hole))
+        .collect::<Option<Vec<_>>>();
+    if let Some(inner_rectangles) = inner_rectangles {
+        if inner_rectangles
+            .iter()
+            .all(|inner| ring_rectangle_strictly_inside_rectangle(*inner, outer))
+        {
+            if inner_rectangles.len() == 1 {
+                let inner = inner_rectangles[0];
+                let rectangles = [
+                    (outer.0, outer.1, outer.2, inner.1),
+                    (outer.0, inner.3, outer.2, outer.3),
+                    (outer.0, inner.1, inner.0, inner.3),
+                    (inner.2, inner.1, outer.2, inner.3),
+                ];
+                let rings = rectangles
+                    .into_iter()
+                    .filter(|rect| rect.2 - rect.0 > 1.0e-12 && rect.3 - rect.1 > 1.0e-12)
+                    .map(rectangle_ring)
+                    .collect::<Vec<_>>();
+                return (!rings.is_empty()).then_some(rings);
+            }
+            return decompose_axis_aligned_exterior_rectilinear_holes_grid(outer, holes);
+        }
+    }
+    if holes.len() == 1 {
+        if let Some(rings) =
+            decompose_axis_aligned_exterior_horizontal_base_triangular_hole(outer, &holes[0])
+        {
+            return Some(rings);
+        }
+        if let Some(rings) =
+            decompose_axis_aligned_exterior_vertical_base_triangular_hole(outer, &holes[0])
+        {
+            return Some(rings);
+        }
+        if let Some(rings) =
+            decompose_axis_aligned_exterior_triangular_hole_vertical_slabs(outer, &holes[0])
+        {
+            return Some(rings);
+        }
+    }
+    if let Some(rings) =
+        decompose_axis_aligned_exterior_triangular_holes_vertical_slabs(outer, holes)
+    {
+        return Some(rings);
+    }
+    if let Some(rings) =
+        decompose_axis_aligned_exterior_non_rectilinear_holes_vertical_slabs(outer, holes)
+    {
+        return Some(rings);
+    }
+    decompose_axis_aligned_exterior_rectilinear_holes_grid(outer, holes)
+}
+
+fn decompose_axis_aligned_exterior_horizontal_base_triangular_hole(
+    outer: (f64, f64, f64, f64),
+    hole: &[(f64, f64)],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if hole.len() != 3 || !ring_strictly_inside_rectangle(hole, outer) {
+        return None;
+    }
+    let mut base = None;
+    let mut apex = None;
+    for index in 0..3 {
+        let left = hole[index];
+        let right = hole[(index + 1) % 3];
+        let candidate_apex = hole[(index + 2) % 3];
+        if (left.1 - right.1).abs() <= 1.0e-12 {
+            base = Some(if left.0 <= right.0 {
+                (left, right)
+            } else {
+                (right, left)
+            });
+            apex = Some(candidate_apex);
+            break;
+        }
+    }
+    let ((base_left, base_right), apex) = (base?, apex?);
+    if base_left.0 >= apex.0 || apex.0 >= base_right.0 {
+        return None;
+    }
+    let base_y = base_left.1;
+    let apex_y = apex.1;
+    if (apex_y - base_y).abs() <= 1.0e-12 {
+        return None;
+    }
+    let rectangles_and_polygons = if apex_y > base_y {
+        [
+            vec![
+                (outer.0, outer.1),
+                (outer.2, outer.1),
+                (outer.2, base_y),
+                (outer.0, base_y),
+            ],
+            vec![
+                (outer.0, apex_y),
+                (outer.2, apex_y),
+                (outer.2, outer.3),
+                (outer.0, outer.3),
+            ],
+            vec![(outer.0, base_y), base_left, apex, (outer.0, apex_y)],
+            vec![base_right, (outer.2, base_y), (outer.2, apex_y), apex],
+        ]
+    } else {
+        [
+            vec![
+                (outer.0, outer.1),
+                (outer.2, outer.1),
+                (outer.2, apex_y),
+                (outer.0, apex_y),
+            ],
+            vec![
+                (outer.0, base_y),
+                (outer.2, base_y),
+                (outer.2, outer.3),
+                (outer.0, outer.3),
+            ],
+            vec![(outer.0, apex_y), apex, base_left, (outer.0, base_y)],
+            vec![apex, (outer.2, apex_y), (outer.2, base_y), base_right],
+        ]
+    };
+    let rings = rectangles_and_polygons
+        .into_iter()
+        .filter(|ring| ring_area(ring).abs() > 1.0e-12)
+        .collect::<Vec<_>>();
+    (!rings.is_empty()).then_some(rings)
+}
+
+fn decompose_axis_aligned_exterior_vertical_base_triangular_hole(
+    outer: (f64, f64, f64, f64),
+    hole: &[(f64, f64)],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if hole.len() != 3 || !ring_strictly_inside_rectangle(hole, outer) {
+        return None;
+    }
+    let mut base = None;
+    let mut apex = None;
+    for index in 0..3 {
+        let bottom = hole[index];
+        let top = hole[(index + 1) % 3];
+        let candidate_apex = hole[(index + 2) % 3];
+        if (bottom.0 - top.0).abs() <= 1.0e-12 {
+            base = Some(if bottom.1 <= top.1 {
+                (bottom, top)
+            } else {
+                (top, bottom)
+            });
+            apex = Some(candidate_apex);
+            break;
+        }
+    }
+    let ((base_bottom, base_top), apex) = (base?, apex?);
+    if base_bottom.1 >= apex.1 || apex.1 >= base_top.1 {
+        return None;
+    }
+    let base_x = base_bottom.0;
+    let apex_x = apex.0;
+    if (apex_x - base_x).abs() <= 1.0e-12 {
+        return None;
+    }
+    let rectangles_and_polygons = if apex_x > base_x {
+        [
+            vec![
+                (outer.0, outer.1),
+                (base_x, outer.1),
+                (base_x, outer.3),
+                (outer.0, outer.3),
+            ],
+            vec![
+                (apex_x, outer.1),
+                (outer.2, outer.1),
+                (outer.2, outer.3),
+                (apex_x, outer.3),
+            ],
+            vec![(base_x, outer.1), (apex_x, outer.1), apex, base_bottom],
+            vec![base_top, apex, (apex_x, outer.3), (base_x, outer.3)],
+        ]
+    } else {
+        [
+            vec![
+                (outer.0, outer.1),
+                (apex_x, outer.1),
+                (apex_x, outer.3),
+                (outer.0, outer.3),
+            ],
+            vec![
+                (base_x, outer.1),
+                (outer.2, outer.1),
+                (outer.2, outer.3),
+                (base_x, outer.3),
+            ],
+            vec![(apex_x, outer.1), (base_x, outer.1), base_bottom, apex],
+            vec![apex, base_top, (base_x, outer.3), (apex_x, outer.3)],
+        ]
+    };
+    let rings = rectangles_and_polygons
+        .into_iter()
+        .filter(|ring| ring_area(ring).abs() > 1.0e-12)
+        .collect::<Vec<_>>();
+    (!rings.is_empty()).then_some(rings)
+}
+
+fn decompose_axis_aligned_exterior_triangular_hole_vertical_slabs(
+    outer: (f64, f64, f64, f64),
+    hole: &[(f64, f64)],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    decompose_axis_aligned_exterior_triangular_holes_vertical_slabs(outer, &[hole.to_vec()])
+}
+
+fn decompose_axis_aligned_exterior_triangular_holes_vertical_slabs(
+    outer: (f64, f64, f64, f64),
+    holes: &[Vec<(f64, f64)>],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if holes.is_empty()
+        || holes
+            .iter()
+            .any(|hole| hole.len() != 3 || !ring_strictly_inside_rectangle(hole, outer))
+    {
+        return None;
+    }
+    let mut xs = vec![outer.0, outer.2];
+    for hole in holes {
+        xs.extend(hole.iter().map(|(lon, _)| *lon));
+    }
+    sort_dedup_f64(&mut xs);
+    if xs.len() < 2 {
+        return None;
+    }
+
+    let mut rings = Vec::new();
+    for col in 0..(xs.len() - 1) {
+        let xl = xs[col];
+        let xr = xs[col + 1];
+        if xr - xl <= 1.0e-12 {
+            continue;
+        }
+        let center_x = (xl + xr) * 0.5;
+        let mut spans = Vec::<((f64, f64), (f64, f64))>::new();
+        for hole in holes {
+            if triangle_y_span_at_x(hole, center_x).is_none() {
+                continue;
+            }
+            let left_span = triangle_y_span_at_x(hole, xl)?;
+            let right_span = triangle_y_span_at_x(hole, xr)?;
+            spans.push((left_span, right_span));
+        }
+        if spans.is_empty() {
+            rings.push(rectangle_ring((xl, outer.1, xr, outer.3)));
+            continue;
+        }
+        spans.sort_by(|left, right| {
+            let left_center = (left.0 .0 + left.0 .1 + left.1 .0 + left.1 .1) * 0.25;
+            let right_center = (right.0 .0 + right.0 .1 + right.1 .0 + right.1 .1) * 0.25;
+            left_center
+                .partial_cmp(&right_center)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut current_left = outer.1;
+        let mut current_right = outer.1;
+        for ((left_low, left_high), (right_low, right_high)) in spans {
+            let segment = vec![
+                (xl, current_left),
+                (xr, current_right),
+                (xr, right_low),
+                (xl, left_low),
+            ];
+            if ring_area(&segment).abs() > 1.0e-12 {
+                rings.push(segment);
+            }
+            current_left = left_high;
+            current_right = right_high;
+        }
+        let top_segment = vec![
+            (xl, current_left),
+            (xr, current_right),
+            (xr, outer.3),
+            (xl, outer.3),
+        ];
+        if ring_area(&top_segment).abs() > 1.0e-12 {
+            rings.push(top_segment);
+        }
+    }
+    (!rings.is_empty()).then_some(rings)
+}
+
+fn decompose_axis_aligned_exterior_non_rectilinear_holes_vertical_slabs(
+    outer: (f64, f64, f64, f64),
+    holes: &[Vec<(f64, f64)>],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if holes.is_empty()
+        || holes.iter().any(|hole| {
+            hole.len() < 3
+                || is_rectilinear_ring(hole)
+                || !ring_strictly_inside_rectangle(hole, outer)
+        })
+    {
+        return None;
+    }
+    let mut xs = vec![outer.0, outer.2];
+    for hole in holes {
+        xs.extend(hole.iter().map(|(lon, _)| *lon));
+    }
+    append_non_rectilinear_hole_edge_crossing_xs(&mut xs, holes, outer);
+    sort_dedup_f64(&mut xs);
+    if xs.len() < 2 {
+        return None;
+    }
+
+    let mut rings = Vec::new();
+    for col in 0..(xs.len() - 1) {
+        let xl = xs[col];
+        let xr = xs[col + 1];
+        if xr - xl <= 1.0e-12 {
+            continue;
+        }
+        let center_x = (xl + xr) * 0.5;
+        let mut spans = Vec::<((f64, f64), (f64, f64))>::new();
+        for hole in holes {
+            let center_spans = ring_y_spans_at_x(hole, center_x);
+            if center_spans.is_empty() {
+                continue;
+            }
+            let left_spans = ring_y_spans_at_slab_boundary(hole, xl, center_x, center_spans.len())?;
+            let right_spans =
+                ring_y_spans_at_slab_boundary(hole, xr, center_x, center_spans.len())?;
+            if left_spans.len() != center_spans.len() || right_spans.len() != center_spans.len() {
+                return None;
+            }
+            spans.extend(left_spans.into_iter().zip(right_spans.into_iter()));
+        }
+        if spans.is_empty() {
+            rings.push(rectangle_ring((xl, outer.1, xr, outer.3)));
+            continue;
+        }
+        spans.sort_by(|left, right| {
+            let left_center = (left.0 .0 + left.0 .1 + left.1 .0 + left.1 .1) * 0.25;
+            let right_center = (right.0 .0 + right.0 .1 + right.1 .0 + right.1 .1) * 0.25;
+            left_center
+                .partial_cmp(&right_center)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut current_left = outer.1;
+        let mut current_right = outer.1;
+        for ((left_low, left_high), (right_low, right_high)) in spans {
+            let starts_above_current =
+                left_low >= current_left - 1.0e-12 && right_low >= current_right - 1.0e-12;
+            let overlaps_current =
+                left_low <= current_left + 1.0e-12 && right_low <= current_right + 1.0e-12;
+            if starts_above_current {
+                let segment = vec![
+                    (xl, current_left),
+                    (xr, current_right),
+                    (xr, right_low),
+                    (xl, left_low),
+                ];
+                if ring_area(&segment).abs() > 1.0e-12 {
+                    rings.push(segment);
+                }
+                current_left = left_high;
+                current_right = right_high;
+            } else if overlaps_current {
+                current_left = current_left.max(left_high);
+                current_right = current_right.max(right_high);
+            } else {
+                return None;
+            }
+        }
+        let top_segment = vec![
+            (xl, current_left),
+            (xr, current_right),
+            (xr, outer.3),
+            (xl, outer.3),
+        ];
+        if ring_area(&top_segment).abs() > 1.0e-12 {
+            rings.push(top_segment);
+        }
+    }
+    (!rings.is_empty()).then_some(rings)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RingVerticalBoundaryRole {
+    Low,
+    High,
+}
+
+fn append_non_rectilinear_hole_edge_crossing_xs(
+    xs: &mut Vec<f64>,
+    holes: &[Vec<(f64, f64)>],
+    outer: (f64, f64, f64, f64),
+) {
+    for left_hole_index in 0..holes.len() {
+        for right_hole_index in (left_hole_index + 1)..holes.len() {
+            let left_hole = &holes[left_hole_index];
+            let right_hole = &holes[right_hole_index];
+            for left_edge_index in 0..left_hole.len() {
+                let left_start = left_hole[left_edge_index];
+                let left_end = left_hole[(left_edge_index + 1) % left_hole.len()];
+                let Some(left_role) =
+                    ring_edge_vertical_boundary_role(left_hole, left_start, left_end)
+                else {
+                    continue;
+                };
+                for right_edge_index in 0..right_hole.len() {
+                    let right_start = right_hole[right_edge_index];
+                    let right_end = right_hole[(right_edge_index + 1) % right_hole.len()];
+                    let Some(right_role) =
+                        ring_edge_vertical_boundary_role(right_hole, right_start, right_end)
+                    else {
+                        continue;
+                    };
+                    if left_role == right_role {
+                        continue;
+                    }
+                    let Some((x, _)) =
+                        segment_intersection_point(left_start, left_end, right_start, right_end)
+                    else {
+                        continue;
+                    };
+                    if x > outer.0 + 1.0e-12 && x < outer.2 - 1.0e-12 {
+                        xs.push(x);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn ring_edge_vertical_boundary_role(
+    ring: &[(f64, f64)],
+    start: (f64, f64),
+    end: (f64, f64),
+) -> Option<RingVerticalBoundaryRole> {
+    if (end.0 - start.0).abs() <= 1.0e-12 {
+        return None;
+    }
+    let sample_x = (start.0 + end.0) * 0.5;
+    let edge_y = line_segment_y_at_x(start, end, sample_x)?;
+    let spans = ring_y_spans_at_x(ring, sample_x);
+    for (low, high) in spans {
+        if (edge_y - low).abs() <= 1.0e-9 {
+            return Some(RingVerticalBoundaryRole::Low);
+        }
+        if (edge_y - high).abs() <= 1.0e-9 {
+            return Some(RingVerticalBoundaryRole::High);
+        }
+    }
+    None
+}
+
+fn line_segment_y_at_x(start: (f64, f64), end: (f64, f64), x: f64) -> Option<f64> {
+    let dx = end.0 - start.0;
+    if dx.abs() <= 1.0e-12 {
+        return None;
+    }
+    let t = (x - start.0) / dx;
+    if !(-1.0e-12..=1.0 + 1.0e-12).contains(&t) {
+        return None;
+    }
+    Some(start.1 + t * (end.1 - start.1))
+}
+
+fn ring_y_spans_at_slab_boundary(
+    ring: &[(f64, f64)],
+    boundary_x: f64,
+    interior_x: f64,
+    expected_spans: usize,
+) -> Option<Vec<(f64, f64)>> {
+    let exact = ring_y_spans_at_x(ring, boundary_x);
+    if exact.len() == expected_spans {
+        return Some(exact);
+    }
+    let width = (interior_x - boundary_x).abs();
+    if width <= 1.0e-12 {
+        return None;
+    }
+    let direction = if interior_x >= boundary_x { 1.0 } else { -1.0 };
+    let sampled_x = boundary_x + direction * width * 1.0e-9;
+    let sampled = ring_y_spans_at_x(ring, sampled_x);
+    (sampled.len() == expected_spans).then_some(sampled)
+}
+
+fn ring_y_spans_at_x(ring: &[(f64, f64)], x: f64) -> Vec<(f64, f64)> {
+    let mut ys = Vec::new();
+    for index in 0..ring.len() {
+        let start = ring[index];
+        let end = ring[(index + 1) % ring.len()];
+        let min_x = start.0.min(end.0);
+        let max_x = start.0.max(end.0);
+        if x < min_x - 1.0e-12 || x > max_x + 1.0e-12 {
+            continue;
+        }
+        let dx = end.0 - start.0;
+        if dx.abs() <= 1.0e-12 {
+            if (x - start.0).abs() <= 1.0e-12 {
+                ys.push(start.1);
+                ys.push(end.1);
+            }
+            continue;
+        }
+        let t = (x - start.0) / dx;
+        if !(-1.0e-12..=1.0 + 1.0e-12).contains(&t) {
+            continue;
+        }
+        ys.push(start.1 + t * (end.1 - start.1));
+    }
+    sort_dedup_f64(&mut ys);
+    if ys.len() == 1 {
+        return vec![(ys[0], ys[0])];
+    }
+    if ys.len() < 2 || ys.len() % 2 != 0 {
+        return Vec::new();
+    }
+    ys.chunks(2)
+        .filter_map(|pair| match pair {
+            [low, high] => Some((*low, *high)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn triangle_y_span_at_x(triangle: &[(f64, f64)], x: f64) -> Option<(f64, f64)> {
+    ring_y_span_at_x(triangle, x)
+}
+
+fn ring_y_span_at_x(ring: &[(f64, f64)], x: f64) -> Option<(f64, f64)> {
+    let mut ys = Vec::new();
+    for index in 0..ring.len() {
+        let start = ring[index];
+        let end = ring[(index + 1) % ring.len()];
+        let min_x = start.0.min(end.0);
+        let max_x = start.0.max(end.0);
+        if x < min_x - 1.0e-12 || x > max_x + 1.0e-12 {
+            continue;
+        }
+        let dx = end.0 - start.0;
+        if dx.abs() <= 1.0e-12 {
+            if (x - start.0).abs() <= 1.0e-12 {
+                ys.push(start.1);
+                ys.push(end.1);
+            }
+            continue;
+        }
+        let t = (x - start.0) / dx;
+        if !(-1.0e-12..=1.0 + 1.0e-12).contains(&t) {
+            continue;
+        }
+        ys.push(start.1 + t * (end.1 - start.1));
+    }
+    sort_dedup_f64(&mut ys);
+    match ys.as_slice() {
+        [] => None,
+        [one] => Some((*one, *one)),
+        values => Some((*values.first()?, *values.last()?)),
+    }
+}
+
+fn decompose_axis_aligned_exterior_rectilinear_holes_grid(
+    outer: (f64, f64, f64, f64),
+    holes: &[Vec<(f64, f64)>],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if holes
+        .iter()
+        .any(|hole| !is_rectilinear_ring(hole) || !ring_strictly_inside_rectangle(hole, outer))
+    {
+        return None;
+    }
+    let mut xs = vec![outer.0, outer.2];
+    let mut ys = vec![outer.1, outer.3];
+    for hole in holes {
+        xs.extend(hole.iter().map(|(lon, _)| *lon));
+        ys.extend(hole.iter().map(|(_, lat)| *lat));
+    }
+    sort_dedup_f64(&mut xs);
+    sort_dedup_f64(&mut ys);
+    if xs.len() < 2 || ys.len() < 2 {
+        return None;
+    }
+
+    let mut rings = Vec::new();
+    for row in 0..(ys.len() - 1) {
+        for col in 0..(xs.len() - 1) {
+            let rect = (xs[col], ys[row], xs[col + 1], ys[row + 1]);
+            if rect.2 - rect.0 <= 1.0e-12 || rect.3 - rect.1 <= 1.0e-12 {
+                continue;
+            }
+            let center = ((rect.0 + rect.2) * 0.5, (rect.1 + rect.3) * 0.5);
+            if !point_in_rectangle(center, outer)
+                || holes.iter().any(|hole| point_in_ring(center, hole))
+            {
+                continue;
+            }
+            rings.push(rectangle_ring(rect));
+        }
+    }
+    (!rings.is_empty()).then_some(rings)
+}
+
+fn ring_rectangle_strictly_inside_rectangle(
+    inner: (f64, f64, f64, f64),
+    outer: (f64, f64, f64, f64),
+) -> bool {
+    inner.0 > outer.0 && inner.1 > outer.1 && inner.2 < outer.2 && inner.3 < outer.3
+}
+
+fn ring_strictly_inside_rectangle(ring: &[(f64, f64)], rectangle: (f64, f64, f64, f64)) -> bool {
+    ring.iter()
+        .all(|point| point_in_rectangle(*point, rectangle))
+}
+
+fn rectangle_ring(rect: (f64, f64, f64, f64)) -> Vec<(f64, f64)> {
+    vec![
+        (rect.0, rect.1),
+        (rect.2, rect.1),
+        (rect.2, rect.3),
+        (rect.0, rect.3),
+    ]
+}
+
+fn normalize_geojson_ring(ring: &[JsonNode]) -> Vec<(f64, f64)> {
+    let mut coordinates = Vec::new();
+    for point in ring {
+        let Some(point) = point.as_array() else {
+            continue;
+        };
+        let (Some(lon), Some(lat)) = (
+            point.first().and_then(JsonNode::as_f64),
+            point.get(1).and_then(JsonNode::as_f64),
+        ) else {
+            continue;
+        };
+        coordinates.push((lon, lat));
+    }
+    if coordinates.len() > 1 && coordinates.first() == coordinates.last() {
+        coordinates.pop();
+    }
+    coordinates
+}
+
+fn normalize_geojson_line(line: &[JsonNode]) -> Vec<(f64, f64)> {
+    let mut coordinates = Vec::new();
+    for point in line {
+        let Some(point) = point.as_array() else {
+            continue;
+        };
+        let (Some(lon), Some(lat)) = (
+            point.first().and_then(JsonNode::as_f64),
+            point.get(1).and_then(JsonNode::as_f64),
+        ) else {
+            continue;
+        };
+        if coordinates
+            .last()
+            .copied()
+            .is_some_and(|existing| points_equal(existing, (lon, lat)))
+        {
+            continue;
+        }
+        coordinates.push((lon, lat));
+    }
+    if coordinates.len() > 1
+        && coordinates
+            .first()
+            .zip(coordinates.last())
+            .is_some_and(|(first, last)| points_equal(*first, *last))
+    {
+        coordinates.pop();
+    }
+    coordinates
+}
+
+fn simplify_closed_ring(coordinates: Vec<(f64, f64)>, tolerance_deg: f64) -> Vec<(f64, f64)> {
+    if tolerance_deg <= 0.0 || coordinates.len() <= 3 {
+        return coordinates;
+    }
+    let mut keep = vec![false; coordinates.len()];
+    keep[0] = true;
+    simplify_ring_segment(
+        &coordinates,
+        0,
+        coordinates.len() - 1,
+        tolerance_deg,
+        &mut keep,
+    );
+    simplify_ring_segment(
+        &coordinates,
+        coordinates.len() - 1,
+        0,
+        tolerance_deg,
+        &mut keep,
+    );
+    let simplified = coordinates
+        .iter()
+        .copied()
+        .zip(keep)
+        .filter_map(|(point, keep)| keep.then_some(point))
+        .collect::<Vec<_>>();
+    let simplified = remove_near_collinear_closed_ring_vertices(simplified, tolerance_deg);
+    if simplified.len() >= 3 {
+        simplified
+    } else {
+        coordinates
+    }
+}
+
+fn remove_near_collinear_closed_ring_vertices(
+    mut coordinates: Vec<(f64, f64)>,
+    tolerance_deg: f64,
+) -> Vec<(f64, f64)> {
+    if coordinates.len() <= 3 {
+        return coordinates;
+    }
+    loop {
+        let mut removed = false;
+        let len = coordinates.len();
+        for index in 0..len {
+            let previous = coordinates[(index + len - 1) % len];
+            let current = coordinates[index];
+            let next = coordinates[(index + 1) % len];
+            if point_line_distance_deg(current, previous, next) <= tolerance_deg {
+                coordinates.remove(index);
+                removed = true;
+                break;
+            }
+        }
+        if !removed || coordinates.len() <= 3 {
+            return coordinates;
+        }
+    }
+}
+
+fn buffer_close_mask_line_for_refine_degree(
+    coordinates: &[(f64, f64)],
+    refine_degree: usize,
+    buffer_deg_by_refine_degree: &BTreeMap<usize, f64>,
+) -> Option<Vec<(f64, f64)>> {
+    let buffer_deg = buffer_deg_by_refine_degree.get(&refine_degree).copied()?;
+    if buffer_deg <= 0.0 {
+        return None;
+    }
+    buffer_open_line_to_ring(coordinates, buffer_deg)
+}
+
+fn buffer_open_line_to_ring(
+    coordinates: &[(f64, f64)],
+    buffer_deg: f64,
+) -> Option<Vec<(f64, f64)>> {
+    if coordinates.len() < 2 || buffer_deg <= 0.0 {
+        return None;
+    }
+    let mut normals = Vec::with_capacity(coordinates.len() - 1);
+    for pair in coordinates.windows(2) {
+        let dx = pair[1].0 - pair[0].0;
+        let dy = pair[1].1 - pair[0].1;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length <= f64::EPSILON {
+            return None;
+        }
+        normals.push((-dy / length, dx / length));
+    }
+
+    let mut left_side = Vec::with_capacity(coordinates.len());
+    let mut right_side = Vec::with_capacity(coordinates.len());
+    for index in 0..coordinates.len() {
+        left_side.push(buffered_polyline_vertex(
+            coordinates,
+            &normals,
+            index,
+            buffer_deg,
+            1.0,
+        )?);
+        right_side.push(buffered_polyline_vertex(
+            coordinates,
+            &normals,
+            index,
+            buffer_deg,
+            -1.0,
+        )?);
+    }
+    right_side.reverse();
+    left_side.extend(right_side);
+    let ring = remove_collinear_boundary_vertices(left_side);
+    (ring.len() >= 3 && ring_area(&ring) > 1.0e-12).then_some(ring)
+}
+
+fn buffered_polyline_vertex(
+    coordinates: &[(f64, f64)],
+    normals: &[(f64, f64)],
+    index: usize,
+    buffer_deg: f64,
+    side: f64,
+) -> Option<(f64, f64)> {
+    let point = coordinates[index];
+    if index == 0 {
+        return Some((
+            point.0 + normals[0].0 * buffer_deg * side,
+            point.1 + normals[0].1 * buffer_deg * side,
+        ));
+    }
+    if index + 1 == coordinates.len() {
+        let normal = normals[index - 1];
+        return Some((
+            point.0 + normal.0 * buffer_deg * side,
+            point.1 + normal.1 * buffer_deg * side,
+        ));
+    }
+    let previous = normals[index - 1];
+    let current = normals[index];
+    let previous_start = (
+        coordinates[index - 1].0 + previous.0 * buffer_deg * side,
+        coordinates[index - 1].1 + previous.1 * buffer_deg * side,
+    );
+    let previous_end = (
+        point.0 + previous.0 * buffer_deg * side,
+        point.1 + previous.1 * buffer_deg * side,
+    );
+    let current_start = (
+        point.0 + current.0 * buffer_deg * side,
+        point.1 + current.1 * buffer_deg * side,
+    );
+    let current_end = (
+        coordinates[index + 1].0 + current.0 * buffer_deg * side,
+        coordinates[index + 1].1 + current.1 * buffer_deg * side,
+    );
+    if let Some(intersection) =
+        line_intersection(previous_start, previous_end, current_start, current_end)
+    {
+        return intersection
+            .0
+            .is_finite()
+            .then_some(intersection)
+            .filter(|point| point.1.is_finite());
+    }
+    let average = (previous.0 + current.0, previous.1 + current.1);
+    let length = (average.0 * average.0 + average.1 * average.1).sqrt();
+    if length <= f64::EPSILON {
+        Some((
+            point.0 + current.0 * buffer_deg * side,
+            point.1 + current.1 * buffer_deg * side,
+        ))
+    } else {
+        Some((
+            point.0 + average.0 / length * buffer_deg * side,
+            point.1 + average.1 / length * buffer_deg * side,
+        ))
+    }
+}
+
+fn buffer_close_mask_ring_for_refine_degree(
+    coordinates: &[(f64, f64)],
+    refine_degree: usize,
+    buffer_deg_by_refine_degree: &BTreeMap<usize, f64>,
+) -> Vec<(f64, f64)> {
+    let buffer_deg = buffer_deg_by_refine_degree
+        .get(&refine_degree)
+        .copied()
+        .unwrap_or(0.0);
+    if buffer_deg <= 0.0 || coordinates.len() < 3 {
+        return coordinates.to_vec();
+    }
+    offset_close_mask_ring(coordinates, buffer_deg).unwrap_or_else(|| {
+        let (min_lon, min_lat, max_lon, max_lat) = ring_bbox(coordinates);
+        vec![
+            (min_lon - buffer_deg, min_lat - buffer_deg),
+            (max_lon + buffer_deg, min_lat - buffer_deg),
+            (max_lon + buffer_deg, max_lat + buffer_deg),
+            (min_lon - buffer_deg, max_lat + buffer_deg),
+        ]
+    })
+}
+
+fn offset_close_mask_ring(coordinates: &[(f64, f64)], offset_deg: f64) -> Option<Vec<(f64, f64)>> {
+    if coordinates.len() < 3 || offset_deg <= 0.0 {
+        return Some(coordinates.to_vec());
+    }
+    let signed_area = signed_ring_area(coordinates);
+    if signed_area.abs() <= f64::EPSILON {
+        return None;
+    }
+    let clockwise = signed_area < 0.0;
+    let mut shifted_edges = Vec::with_capacity(coordinates.len());
+    for index in 0..coordinates.len() {
+        let start = coordinates[index];
+        let end = coordinates[(index + 1) % coordinates.len()];
+        let dx = end.0 - start.0;
+        let dy = end.1 - start.1;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length <= f64::EPSILON {
+            return None;
+        }
+        let outward = if clockwise {
+            (-dy / length, dx / length)
+        } else {
+            (dy / length, -dx / length)
+        };
+        shifted_edges.push((
+            (
+                start.0 + outward.0 * offset_deg,
+                start.1 + outward.1 * offset_deg,
+            ),
+            (
+                end.0 + outward.0 * offset_deg,
+                end.1 + outward.1 * offset_deg,
+            ),
+            outward,
+        ));
+    }
+    let mut offset_ring = Vec::with_capacity(coordinates.len());
+    for index in 0..coordinates.len() {
+        let previous = &shifted_edges[(index + shifted_edges.len() - 1) % shifted_edges.len()];
+        let current = &shifted_edges[index];
+        let point = line_intersection(previous.0, previous.1, current.0, current.1).unwrap_or((
+            coordinates[index].0 + (previous.2 .0 + current.2 .0) * 0.5 * offset_deg,
+            coordinates[index].1 + (previous.2 .1 + current.2 .1) * 0.5 * offset_deg,
+        ));
+        if !point.0.is_finite() || !point.1.is_finite() {
+            return None;
+        }
+        offset_ring.push(point);
+    }
+    Some(offset_ring)
+}
+
+fn signed_ring_area(coordinates: &[(f64, f64)]) -> f64 {
+    if coordinates.len() < 3 {
+        return 0.0;
+    }
+    let mut twice_area = 0.0;
+    for (index, (lon1, lat1)) in coordinates.iter().enumerate() {
+        let (lon2, lat2) = coordinates[(index + 1) % coordinates.len()];
+        twice_area += lon1 * lat2 - lon2 * lat1;
+    }
+    twice_area / 2.0
+}
+
+fn line_intersection(
+    a1: (f64, f64),
+    a2: (f64, f64),
+    b1: (f64, f64),
+    b2: (f64, f64),
+) -> Option<(f64, f64)> {
+    let dax = a2.0 - a1.0;
+    let day = a2.1 - a1.1;
+    let dbx = b2.0 - b1.0;
+    let dby = b2.1 - b1.1;
+    let denominator = dax * dby - day * dbx;
+    if denominator.abs() <= 1.0e-12 {
+        return None;
+    }
+    let dx = b1.0 - a1.0;
+    let dy = b1.1 - a1.1;
+    let t = (dx * dby - dy * dbx) / denominator;
+    Some((a1.0 + t * dax, a1.1 + t * day))
+}
+
+fn simplify_ring_segment(
+    coordinates: &[(f64, f64)],
+    start: usize,
+    end: usize,
+    tolerance_deg: f64,
+    keep: &mut [bool],
+) {
+    let segment_indices = ring_segment_indices(coordinates.len(), start, end);
+    if segment_indices.len() <= 2 {
+        keep[start] = true;
+        keep[end] = true;
+        return;
+    }
+    let start_point = coordinates[start];
+    let end_point = coordinates[end];
+    let mut farthest_index = start;
+    let mut farthest_distance = 0.0_f64;
+    for &index in segment_indices
+        .iter()
+        .skip(1)
+        .take(segment_indices.len() - 2)
+    {
+        let distance = point_line_distance_deg(coordinates[index], start_point, end_point);
+        if distance > farthest_distance {
+            farthest_distance = distance;
+            farthest_index = index;
+        }
+    }
+    keep[start] = true;
+    keep[end] = true;
+    if farthest_distance > tolerance_deg {
+        keep[farthest_index] = true;
+        simplify_ring_segment(coordinates, start, farthest_index, tolerance_deg, keep);
+        simplify_ring_segment(coordinates, farthest_index, end, tolerance_deg, keep);
+    }
+}
+
+fn ring_segment_indices(len: usize, start: usize, end: usize) -> Vec<usize> {
+    let mut indices = vec![start];
+    let mut index = start;
+    while index != end {
+        index = (index + 1) % len;
+        indices.push(index);
+    }
+    indices
+}
+
+fn point_line_distance_deg(point: (f64, f64), line_start: (f64, f64), line_end: (f64, f64)) -> f64 {
+    let (px, py) = point;
+    let (x1, y1) = line_start;
+    let (x2, y2) = line_end;
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let length_sq = dx * dx + dy * dy;
+    if length_sq == 0.0 {
+        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    }
+    let t = (((px - x1) * dx + (py - y1) * dy) / length_sq).clamp(0.0, 1.0);
+    let proj_x = x1 + t * dx;
+    let proj_y = y1 + t * dy;
+    ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt()
+}
+
+fn ring_area(coordinates: &[(f64, f64)]) -> f64 {
+    if coordinates.len() < 3 {
+        return 0.0;
+    }
+    let mut twice_area = 0.0;
+    for (index, (lon1, lat1)) in coordinates.iter().enumerate() {
+        let (lon2, lat2) = coordinates[(index + 1) % coordinates.len()];
+        twice_area += lon1 * lat2 - lon2 * lat1;
+    }
+    twice_area.abs() / 2.0
+}
+
+fn dissolve_overlapping_envelope_candidates(
+    candidates: Vec<(f64, HydroCloseMaskSpec)>,
+) -> Vec<(f64, HydroCloseMaskSpec)> {
+    let mut dissolved = Vec::<HydroCloseMaskSpec>::new();
+    for (_, spec) in candidates {
+        insert_dissolved_close_mask_spec(&mut dissolved, spec);
+    }
+    dissolved
+        .into_iter()
+        .map(|spec| (ring_area(&spec.coordinates), spec))
+        .collect()
+}
+
+fn insert_dissolved_close_mask_spec(
+    dissolved: &mut Vec<HydroCloseMaskSpec>,
+    mut spec: HydroCloseMaskSpec,
+) {
+    let mut index = 0_usize;
+    while index < dissolved.len() {
+        if close_mask_specs_can_dissolve(&dissolved[index], &spec) {
+            let other = dissolved.remove(index);
+            match merge_close_mask_envelopes(other, spec) {
+                CloseMaskMergeResult::Single(merged) => {
+                    spec = merged;
+                    index = 0;
+                }
+                CloseMaskMergeResult::Multiple(mut merged) => {
+                    dissolved.append(&mut merged);
+                    return;
+                }
+            }
+        } else {
+            index += 1;
+        }
+    }
+    dissolved.push(spec);
+}
+
+fn close_mask_specs_can_dissolve(left: &HydroCloseMaskSpec, right: &HydroCloseMaskSpec) -> bool {
+    if left.river_class != right.river_class
+        || left.refine_degree != right.refine_degree
+        || left.target_refine_degree != right.target_refine_degree
+    {
+        return false;
+    }
+    let left_bbox = ring_bbox(&left.coordinates);
+    let right_bbox = ring_bbox(&right.coordinates);
+    if bbox_distance_deg(left_bbox, right_bbox) != 0.0 {
+        return false;
+    }
+    merge_rectilinear_close_masks(&left.coordinates, &right.coordinates).is_some()
+        || merge_contained_polygon_close_masks(&left.coordinates, &right.coordinates).is_some()
+        || merge_shared_edge_polygon_close_masks(&left.coordinates, &right.coordinates).is_some()
+        || merge_convex_overlapping_close_masks(&left.coordinates, &right.coordinates).is_some()
+}
+
+enum CloseMaskMergeResult {
+    Single(HydroCloseMaskSpec),
+    Multiple(Vec<HydroCloseMaskSpec>),
+}
+
+fn merge_close_mask_envelopes(
+    left: HydroCloseMaskSpec,
+    right: HydroCloseMaskSpec,
+) -> CloseMaskMergeResult {
+    if let Some(coordinates) =
+        split_rectilinear_hole_union_cells(&left.coordinates, &right.coordinates)
+    {
+        let source_feature_index = left.source_feature_index.min(right.source_feature_index);
+        let ring_index = left.ring_index.min(right.ring_index);
+        return CloseMaskMergeResult::Multiple(
+            coordinates
+                .into_iter()
+                .enumerate()
+                .map(|(offset, coordinates)| HydroCloseMaskSpec {
+                    river_class: left.river_class.clone(),
+                    refine_degree: left.refine_degree,
+                    target_refine_degree: left.target_refine_degree,
+                    coordinates,
+                    source_feature_index,
+                    ring_index: ring_index + offset,
+                })
+                .collect(),
+        );
+    }
+    if let Some(coordinates) = merge_rectilinear_close_masks(&left.coordinates, &right.coordinates)
+    {
+        return CloseMaskMergeResult::Single(HydroCloseMaskSpec {
+            river_class: left.river_class,
+            refine_degree: left.refine_degree,
+            target_refine_degree: left.target_refine_degree,
+            coordinates,
+            source_feature_index: left.source_feature_index.min(right.source_feature_index),
+            ring_index: left.ring_index.min(right.ring_index),
+        });
+    }
+    if let Some(coordinates) =
+        merge_contained_polygon_close_masks(&left.coordinates, &right.coordinates)
+    {
+        return CloseMaskMergeResult::Single(HydroCloseMaskSpec {
+            river_class: left.river_class,
+            refine_degree: left.refine_degree,
+            target_refine_degree: left.target_refine_degree,
+            coordinates,
+            source_feature_index: left.source_feature_index.min(right.source_feature_index),
+            ring_index: left.ring_index.min(right.ring_index),
+        });
+    }
+    if let Some(coordinates) =
+        merge_shared_edge_polygon_close_masks(&left.coordinates, &right.coordinates)
+    {
+        if (!is_rectilinear_ring(&left.coordinates) || !is_rectilinear_ring(&right.coordinates))
+            && ring_has_all_bbox_corners_and_interior_vertices(&coordinates)
+        {
+            return CloseMaskMergeResult::Multiple(vec![left, right]);
+        }
+        return CloseMaskMergeResult::Single(HydroCloseMaskSpec {
+            river_class: left.river_class,
+            refine_degree: left.refine_degree,
+            target_refine_degree: left.target_refine_degree,
+            coordinates,
+            source_feature_index: left.source_feature_index.min(right.source_feature_index),
+            ring_index: left.ring_index.min(right.ring_index),
+        });
+    }
+    if let Some(coordinates) =
+        merge_convex_overlapping_close_masks(&left.coordinates, &right.coordinates)
+    {
+        return CloseMaskMergeResult::Single(HydroCloseMaskSpec {
+            river_class: left.river_class,
+            refine_degree: left.refine_degree,
+            target_refine_degree: left.target_refine_degree,
+            coordinates,
+            source_feature_index: left.source_feature_index.min(right.source_feature_index),
+            ring_index: left.ring_index.min(right.ring_index),
+        });
+    }
+    if rectilinear_ring_cells(&left.coordinates).is_some()
+        && rectilinear_ring_cells(&right.coordinates).is_some()
+    {
+        return CloseMaskMergeResult::Multiple(vec![left, right]);
+    }
+    if !is_rectilinear_ring(&left.coordinates) || !is_rectilinear_ring(&right.coordinates) {
+        return CloseMaskMergeResult::Multiple(vec![left, right]);
+    }
+    let (left_min_lon, left_min_lat, left_max_lon, left_max_lat) = ring_bbox(&left.coordinates);
+    let (right_min_lon, right_min_lat, right_max_lon, right_max_lat) =
+        ring_bbox(&right.coordinates);
+    let min_lon = left_min_lon.min(right_min_lon);
+    let min_lat = left_min_lat.min(right_min_lat);
+    let max_lon = left_max_lon.max(right_max_lon);
+    let max_lat = left_max_lat.max(right_max_lat);
+    CloseMaskMergeResult::Single(HydroCloseMaskSpec {
+        river_class: left.river_class,
+        refine_degree: left.refine_degree,
+        target_refine_degree: left.target_refine_degree,
+        coordinates: vec![
+            (min_lon, min_lat),
+            (max_lon, min_lat),
+            (max_lon, max_lat),
+            (min_lon, max_lat),
+        ],
+        source_feature_index: left.source_feature_index.min(right.source_feature_index),
+        ring_index: left.ring_index.min(right.ring_index),
+    })
+}
+
+fn merge_rectilinear_close_masks(
+    left: &[(f64, f64)],
+    right: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    let mut rectangles = rectilinear_ring_cells(left)?;
+    rectangles.extend(rectilinear_ring_cells(right)?);
+    rectilinear_union_boundary(&rectangles)
+}
+
+fn split_rectilinear_hole_union_cells(
+    left: &[(f64, f64)],
+    right: &[(f64, f64)],
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    let mut rectangles = rectilinear_ring_cells(left)?;
+    rectangles.extend(rectilinear_ring_cells(right)?);
+    let boundary = rectilinear_union_boundary(&rectangles)?;
+    let rectangle_area = rectangles
+        .iter()
+        .map(|rect| (rect.2 - rect.0) * (rect.3 - rect.1))
+        .sum::<f64>();
+    if ring_area(&boundary) <= rectangle_area + 1.0e-12 {
+        return None;
+    }
+    let mut cells = rectilinear_union_cells(&rectangles)?;
+    cells.sort_by(|left, right| {
+        left.1
+            .partial_cmp(&right.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    Some(cells.into_iter().map(rectangle_ring).collect())
+}
+
+fn merge_contained_polygon_close_masks(
+    left: &[(f64, f64)],
+    right: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    match (rectilinear_ring_cells(left), rectilinear_ring_cells(right)) {
+        (Some(left_cells), Some(right_cells)) => {
+            if rectilinear_cells_contain_cells(&left_cells, &right_cells) {
+                return Some(left.to_vec());
+            }
+            if rectilinear_cells_contain_cells(&right_cells, &left_cells) {
+                return Some(right.to_vec());
+            }
+            return None;
+        }
+        _ => {}
+    }
+    if ring_contains_ring(left, right) {
+        return Some(left.to_vec());
+    }
+    if ring_contains_ring(right, left) {
+        return Some(right.to_vec());
+    }
+    None
+}
+
+fn merge_convex_overlapping_close_masks(
+    left: &[(f64, f64)],
+    right: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    if !is_convex_ring(left) || !is_convex_ring(right) {
+        return None;
+    }
+    let intersection_area = convex_polygon_intersection_area(left, right)?;
+    if intersection_area <= 1.0e-9 {
+        return None;
+    }
+    let hull = convex_hull_points(left.iter().chain(right.iter()).copied())?;
+    let hull_area = ring_area(&hull);
+    let union_area = ring_area(left) + ring_area(right) - intersection_area;
+    if (hull_area - union_area).abs() > 1.0e-8_f64.max(union_area * 1.0e-9) {
+        return None;
+    }
+    Some(remove_collinear_boundary_vertices(hull))
+}
+
+fn convex_polygon_intersection_area(left: &[(f64, f64)], right: &[(f64, f64)]) -> Option<f64> {
+    let mut points = Vec::<(f64, f64)>::new();
+    points.extend(
+        left.iter()
+            .copied()
+            .filter(|point| point_in_ring(*point, right) || point_on_ring_boundary(*point, right)),
+    );
+    points.extend(
+        right
+            .iter()
+            .copied()
+            .filter(|point| point_in_ring(*point, left) || point_on_ring_boundary(*point, left)),
+    );
+    for (left_start, left_end) in polygon_ring_edges(left)? {
+        for (right_start, right_end) in polygon_ring_edges(right)? {
+            if let Some(point) =
+                segment_intersection_point(left_start, left_end, right_start, right_end)
+            {
+                points.push(point);
+            }
+        }
+    }
+    convex_hull_points(points).map(|ring| ring_area(&ring))
+}
+
+fn convex_hull_points<I>(points: I) -> Option<Vec<(f64, f64)>>
+where
+    I: IntoIterator<Item = (f64, f64)>,
+{
+    let mut points = points
+        .into_iter()
+        .filter(|(lon, lat)| lon.is_finite() && lat.is_finite())
+        .collect::<Vec<_>>();
+    points.sort_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    points.dedup_by(|left, right| points_equal(*left, *right));
+    if points.len() < 3 {
+        return None;
+    }
+
+    let mut lower = Vec::<(f64, f64)>::new();
+    for point in &points {
+        while lower.len() >= 2
+            && cross_2d(lower[lower.len() - 2], lower[lower.len() - 1], *point) <= 1.0e-12
+        {
+            lower.pop();
+        }
+        lower.push(*point);
+    }
+    let mut upper = Vec::<(f64, f64)>::new();
+    for point in points.iter().rev() {
+        while upper.len() >= 2
+            && cross_2d(upper[upper.len() - 2], upper[upper.len() - 1], *point) <= 1.0e-12
+        {
+            upper.pop();
+        }
+        upper.push(*point);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    (lower.len() >= 3 && ring_area(&lower) > 1.0e-12).then_some(lower)
+}
+
+fn is_convex_ring(coordinates: &[(f64, f64)]) -> bool {
+    if coordinates.len() < 3
+        || !coordinates
+            .iter()
+            .all(|(lon, lat)| lon.is_finite() && lat.is_finite())
+        || ring_area(coordinates) <= 1.0e-12
+    {
+        return false;
+    }
+    let mut sign = 0_i8;
+    for index in 0..coordinates.len() {
+        let previous = coordinates[(index + coordinates.len() - 1) % coordinates.len()];
+        let current = coordinates[index];
+        let next = coordinates[(index + 1) % coordinates.len()];
+        let cross = cross_2d(previous, current, next);
+        if cross.abs() <= 1.0e-12 {
+            continue;
+        }
+        let current_sign = if cross > 0.0 { 1 } else { -1 };
+        if sign == 0 {
+            sign = current_sign;
+        } else if sign != current_sign {
+            return false;
+        }
+    }
+    sign != 0
+}
+
+fn cross_2d(origin: (f64, f64), left: (f64, f64), right: (f64, f64)) -> f64 {
+    (left.0 - origin.0) * (right.1 - origin.1) - (left.1 - origin.1) * (right.0 - origin.0)
+}
+
+fn rectilinear_cells_contain_cells(
+    outer_cells: &[(f64, f64, f64, f64)],
+    inner_cells: &[(f64, f64, f64, f64)],
+) -> bool {
+    inner_cells.iter().all(|inner| {
+        let center = ((inner.0 + inner.2) * 0.5, (inner.1 + inner.3) * 0.5);
+        outer_cells
+            .iter()
+            .any(|outer| point_in_rectangle(center, *outer))
+    })
+}
+
+fn ring_contains_ring(outer: &[(f64, f64)], inner: &[(f64, f64)]) -> bool {
+    outer.len() >= 3
+        && inner.len() >= 3
+        && inner
+            .iter()
+            .all(|point| point_on_ring_boundary(*point, outer) || point_in_ring(*point, outer))
+}
+
+fn point_on_ring_boundary(point: (f64, f64), coordinates: &[(f64, f64)]) -> bool {
+    coordinates.iter().enumerate().any(|(index, start)| {
+        let end = coordinates[(index + 1) % coordinates.len()];
+        point_on_segment(point, *start, end)
+    })
+}
+
+fn merge_shared_edge_polygon_close_masks(
+    left: &[(f64, f64)],
+    right: &[(f64, f64)],
+) -> Option<Vec<(f64, f64)>> {
+    let mut edges = Vec::<((f64, f64), (f64, f64))>::new();
+    let mut removed_interior_edge = false;
+    for edge in split_polygon_ring_edges_for_union(left, right)? {
+        if edge_midpoint_is_strictly_inside_ring(edge, right) {
+            removed_interior_edge = true;
+        } else {
+            edges.push(edge);
+        }
+    }
+    for edge in split_polygon_ring_edges_for_union(right, left)? {
+        if edge_midpoint_is_strictly_inside_ring(edge, left) {
+            removed_interior_edge = true;
+        } else {
+            edges.push(edge);
+        }
+    }
+    let mut index = 0_usize;
+    let mut removed_shared_edge = false;
+    while index < edges.len() {
+        if let Some(reverse_index) = edges.iter().enumerate().find_map(|(candidate, edge)| {
+            (candidate != index
+                && points_equal(edges[index].0, edge.1)
+                && points_equal(edges[index].1, edge.0))
+            .then_some(candidate)
+        }) {
+            let high = index.max(reverse_index);
+            let low = index.min(reverse_index);
+            edges.remove(high);
+            edges.remove(low);
+            removed_shared_edge = true;
+            index = 0;
+        } else {
+            index += 1;
+        }
+    }
+    if !removed_shared_edge && !removed_interior_edge {
+        return None;
+    }
+    let merged = trace_polygon_boundary(edges).map(remove_collinear_boundary_vertices)?;
+    if removed_shared_edge && !removed_interior_edge {
+        let input_area = ring_area(left) + ring_area(right);
+        if ring_area(&merged) + 1.0e-9 < input_area {
+            return None;
+        }
+    }
+    Some(merged)
+}
+
+fn ring_has_all_bbox_corners_and_interior_vertices(coordinates: &[(f64, f64)]) -> bool {
+    if coordinates.len() < 5 {
+        return false;
+    }
+    let (min_lon, min_lat, max_lon, max_lat) = ring_bbox(coordinates);
+    let corners = [
+        (min_lon, min_lat),
+        (max_lon, min_lat),
+        (max_lon, max_lat),
+        (min_lon, max_lat),
+    ];
+    corners.iter().all(|corner| {
+        coordinates
+            .iter()
+            .any(|point| points_equal(*point, *corner))
+    }) && coordinates.iter().any(|(lon, lat)| {
+        *lon > min_lon + 1.0e-9
+            && *lon < max_lon - 1.0e-9
+            && *lat > min_lat + 1.0e-9
+            && *lat < max_lat - 1.0e-9
+    })
+}
+
+fn split_polygon_ring_edges_for_union(
+    coordinates: &[(f64, f64)],
+    other: &[(f64, f64)],
+) -> Option<Vec<((f64, f64), (f64, f64))>> {
+    if coordinates.len() < 3
+        || !coordinates
+            .iter()
+            .all(|(lon, lat)| lon.is_finite() && lat.is_finite())
+        || other.len() < 3
+        || !other
+            .iter()
+            .all(|(lon, lat)| lon.is_finite() && lat.is_finite())
+    {
+        return None;
+    }
+    let other_edges = polygon_ring_edges(other)?;
+    let mut edges = Vec::<((f64, f64), (f64, f64))>::new();
+    for index in 0..coordinates.len() {
+        let start = coordinates[index];
+        let end = coordinates[(index + 1) % coordinates.len()];
+        if points_equal(start, end) {
+            return None;
+        }
+        let mut edge_points = vec![start, end];
+        edge_points.extend(
+            other
+                .iter()
+                .copied()
+                .filter(|point| !points_equal(*point, start) && !points_equal(*point, end))
+                .filter(|point| point_on_segment(*point, start, end)),
+        );
+        for (other_start, other_end) in &other_edges {
+            if let Some(point) = segment_intersection_point(start, end, *other_start, *other_end) {
+                edge_points.push(point);
+            }
+        }
+        edge_points.sort_by(|left, right| {
+            segment_parameter(*left, start, end)
+                .partial_cmp(&segment_parameter(*right, start, end))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        edge_points.dedup_by(|left, right| points_equal(*left, *right));
+        for pair in edge_points.windows(2) {
+            if !points_equal(pair[0], pair[1]) {
+                edges.push((pair[0], pair[1]));
+            }
+        }
+    }
+    Some(edges)
+}
+
+fn polygon_ring_edges(coordinates: &[(f64, f64)]) -> Option<Vec<((f64, f64), (f64, f64))>> {
+    if coordinates.len() < 3 {
+        return None;
+    }
+    let mut edges = Vec::<((f64, f64), (f64, f64))>::new();
+    for index in 0..coordinates.len() {
+        let start = coordinates[index];
+        let end = coordinates[(index + 1) % coordinates.len()];
+        if points_equal(start, end) {
+            return None;
+        }
+        edges.push((start, end));
+    }
+    Some(edges)
+}
+
+fn edge_midpoint_is_strictly_inside_ring(
+    edge: ((f64, f64), (f64, f64)),
+    coordinates: &[(f64, f64)],
+) -> bool {
+    let midpoint = ((edge.0 .0 + edge.1 .0) * 0.5, (edge.0 .1 + edge.1 .1) * 0.5);
+    point_in_ring(midpoint, coordinates) && !point_on_ring_boundary(midpoint, coordinates)
+}
+
+fn segment_intersection_point(
+    a1: (f64, f64),
+    a2: (f64, f64),
+    b1: (f64, f64),
+    b2: (f64, f64),
+) -> Option<(f64, f64)> {
+    let point = line_intersection(a1, a2, b1, b2)?;
+    if point_on_segment(point, a1, a2) && point_on_segment(point, b1, b2) {
+        Some(point)
+    } else {
+        None
+    }
+}
+
+fn point_on_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> bool {
+    are_collinear(start, point, end)
+        && point.0 >= start.0.min(end.0) - 1.0e-12
+        && point.0 <= start.0.max(end.0) + 1.0e-12
+        && point.1 >= start.1.min(end.1) - 1.0e-12
+        && point.1 <= start.1.max(end.1) + 1.0e-12
+}
+
+fn segment_parameter(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f64 {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    if dx.abs() >= dy.abs() {
+        if dx.abs() <= 1.0e-12 {
+            0.0
+        } else {
+            (point.0 - start.0) / dx
+        }
+    } else if dy.abs() <= 1.0e-12 {
+        0.0
+    } else {
+        (point.1 - start.1) / dy
+    }
+}
+
+fn axis_aligned_rectangle_from_ring(coordinates: &[(f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    if coordinates.len() != 4 {
+        return None;
+    }
+    let bbox = ring_bbox(coordinates);
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    if min_lon >= max_lon || min_lat >= max_lat {
+        return None;
+    }
+    let corners = [
+        (min_lon, min_lat),
+        (max_lon, min_lat),
+        (max_lon, max_lat),
+        (min_lon, max_lat),
+    ];
+    coordinates
+        .iter()
+        .all(|point| corners.iter().any(|corner| points_equal(*point, *corner)))
+        .then_some(bbox)
+}
+
+fn rectilinear_ring_cells(coordinates: &[(f64, f64)]) -> Option<Vec<(f64, f64, f64, f64)>> {
+    if let Some(rectangle) = axis_aligned_rectangle_from_ring(coordinates) {
+        return Some(vec![rectangle]);
+    }
+    if coordinates.len() < 4 || !is_rectilinear_ring(coordinates) {
+        return None;
+    }
+    let mut xs = coordinates.iter().map(|(lon, _)| *lon).collect::<Vec<_>>();
+    let mut ys = coordinates.iter().map(|(_, lat)| *lat).collect::<Vec<_>>();
+    sort_dedup_f64(&mut xs);
+    sort_dedup_f64(&mut ys);
+    if xs.len() < 2 || ys.len() < 2 {
+        return None;
+    }
+    let mut rectangles = Vec::<(f64, f64, f64, f64)>::new();
+    for col in 0..(xs.len() - 1) {
+        for row in 0..(ys.len() - 1) {
+            let center = ((xs[col] + xs[col + 1]) * 0.5, (ys[row] + ys[row + 1]) * 0.5);
+            if point_in_ring(center, coordinates) {
+                rectangles.push((xs[col], ys[row], xs[col + 1], ys[row + 1]));
+            }
+        }
+    }
+    (!rectangles.is_empty()).then_some(rectangles)
+}
+
+fn is_rectilinear_ring(coordinates: &[(f64, f64)]) -> bool {
+    coordinates
+        .iter()
+        .all(|(lon, lat)| lon.is_finite() && lat.is_finite())
+        && coordinates.iter().enumerate().all(|(index, point)| {
+            let next = coordinates[(index + 1) % coordinates.len()];
+            !points_equal(*point, next)
+                && ((point.0 - next.0).abs() <= 1.0e-12 || (point.1 - next.1).abs() <= 1.0e-12)
+        })
+}
+
+fn rectilinear_union_cells(
+    rectangles: &[(f64, f64, f64, f64)],
+) -> Option<Vec<(f64, f64, f64, f64)>> {
+    let mut xs = rectangles
+        .iter()
+        .flat_map(|(min_lon, _, max_lon, _)| [*min_lon, *max_lon])
+        .collect::<Vec<_>>();
+    let mut ys = rectangles
+        .iter()
+        .flat_map(|(_, min_lat, _, max_lat)| [*min_lat, *max_lat])
+        .collect::<Vec<_>>();
+    sort_dedup_f64(&mut xs);
+    sort_dedup_f64(&mut ys);
+    if xs.len() < 2 || ys.len() < 2 {
+        return None;
+    }
+    let mut cells = Vec::new();
+    for col in 0..(xs.len() - 1) {
+        for row in 0..(ys.len() - 1) {
+            let rect = (xs[col], ys[row], xs[col + 1], ys[row + 1]);
+            let center = ((rect.0 + rect.2) * 0.5, (rect.1 + rect.3) * 0.5);
+            if rectangles
+                .iter()
+                .any(|candidate| point_in_rectangle(center, *candidate))
+            {
+                cells.push(rect);
+            }
+        }
+    }
+    (!cells.is_empty()).then_some(cells)
+}
+
+fn rectilinear_union_boundary(rectangles: &[(f64, f64, f64, f64)]) -> Option<Vec<(f64, f64)>> {
+    let mut xs = rectangles
+        .iter()
+        .flat_map(|(min_lon, _, max_lon, _)| [*min_lon, *max_lon])
+        .collect::<Vec<_>>();
+    let mut ys = rectangles
+        .iter()
+        .flat_map(|(_, min_lat, _, max_lat)| [*min_lat, *max_lat])
+        .collect::<Vec<_>>();
+    sort_dedup_f64(&mut xs);
+    sort_dedup_f64(&mut ys);
+    if xs.len() < 2 || ys.len() < 2 {
+        return None;
+    }
+    let cols = xs.len() - 1;
+    let rows = ys.len() - 1;
+    let mut covered = vec![vec![false; rows]; cols];
+    for col in 0..cols {
+        for row in 0..rows {
+            let center = ((xs[col] + xs[col + 1]) * 0.5, (ys[row] + ys[row + 1]) * 0.5);
+            covered[col][row] = rectangles
+                .iter()
+                .any(|rect| point_in_rectangle(center, *rect));
+        }
+    }
+
+    let mut edges = Vec::<((f64, f64), (f64, f64))>::new();
+    for col in 0..cols {
+        for row in 0..rows {
+            if !covered[col][row] {
+                continue;
+            }
+            if row == 0 || !covered[col][row - 1] {
+                edges.push(((xs[col], ys[row]), (xs[col + 1], ys[row])));
+            }
+            if col == cols - 1 || !covered[col + 1][row] {
+                edges.push(((xs[col + 1], ys[row]), (xs[col + 1], ys[row + 1])));
+            }
+            if row == rows - 1 || !covered[col][row + 1] {
+                edges.push(((xs[col + 1], ys[row + 1]), (xs[col], ys[row + 1])));
+            }
+            if col == 0 || !covered[col - 1][row] {
+                edges.push(((xs[col], ys[row + 1]), (xs[col], ys[row])));
+            }
+        }
+    }
+    trace_rectilinear_boundary(edges)
+}
+
+fn trace_rectilinear_boundary(edges: Vec<((f64, f64), (f64, f64))>) -> Option<Vec<(f64, f64)>> {
+    trace_polygon_boundary(edges).map(remove_collinear_boundary_vertices)
+}
+
+fn trace_polygon_boundary(mut edges: Vec<((f64, f64), (f64, f64))>) -> Option<Vec<(f64, f64)>> {
+    if edges.is_empty() {
+        return None;
+    }
+    let start = edges
+        .iter()
+        .map(|(start, _)| *start)
+        .min_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    left.0
+                        .partial_cmp(&right.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })?;
+    let mut current = start;
+    let mut boundary = Vec::<(f64, f64)>::new();
+    while !edges.is_empty() {
+        boundary.push(current);
+        let edge_index = edges
+            .iter()
+            .position(|(edge_start, _)| points_equal(*edge_start, current))?;
+        let (_, next) = edges.remove(edge_index);
+        current = next;
+        if points_equal(current, start) {
+            break;
+        }
+    }
+    if !edges.is_empty() || boundary.len() < 4 {
+        return None;
+    }
+    Some(boundary)
+}
+
+fn remove_collinear_boundary_vertices(mut boundary: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    if boundary.len() <= 3 {
+        return boundary;
+    }
+    loop {
+        let mut removed = false;
+        let len = boundary.len();
+        for index in 0..len {
+            let previous = boundary[(index + len - 1) % len];
+            let current = boundary[index];
+            let next = boundary[(index + 1) % len];
+            if are_collinear(previous, current, next) {
+                boundary.remove(index);
+                removed = true;
+                break;
+            }
+        }
+        if !removed || boundary.len() <= 3 {
+            return boundary;
+        }
+    }
+}
+
+fn point_in_rectangle(point: (f64, f64), rect: (f64, f64, f64, f64)) -> bool {
+    point.0 > rect.0 && point.0 < rect.2 && point.1 > rect.1 && point.1 < rect.3
+}
+
+fn point_in_ring(point: (f64, f64), coordinates: &[(f64, f64)]) -> bool {
+    let (x, y) = point;
+    let mut inside = false;
+    for index in 0..coordinates.len() {
+        let (xi, yi) = coordinates[index];
+        let (xj, yj) = coordinates[(index + 1) % coordinates.len()];
+        if (yi > y) != (yj > y) {
+            let intersection_x = (xj - xi) * (y - yi) / (yj - yi) + xi;
+            if x < intersection_x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn sort_dedup_f64(values: &mut Vec<f64>) {
+    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    values.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-12);
+}
+
+fn points_equal(left: (f64, f64), right: (f64, f64)) -> bool {
+    (left.0 - right.0).abs() <= 1.0e-12 && (left.1 - right.1).abs() <= 1.0e-12
+}
+
+fn are_collinear(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
+    ((b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0)).abs() <= 1.0e-12
+}
+
+fn is_close_mask_ring_too_close(
+    spec: &HydroCloseMaskSpec,
+    emitted_specs: &[HydroCloseMaskSpec],
+    min_ring_separation_deg: f64,
+) -> bool {
+    let spec_bbox = ring_bbox(&spec.coordinates);
+    emitted_specs.iter().any(|emitted| {
+        bbox_distance_deg(spec_bbox, ring_bbox(&emitted.coordinates)) < min_ring_separation_deg
+    })
+}
+
+fn ring_bbox(coordinates: &[(f64, f64)]) -> (f64, f64, f64, f64) {
+    let mut min_lon = f64::INFINITY;
+    let mut min_lat = f64::INFINITY;
+    let mut max_lon = f64::NEG_INFINITY;
+    let mut max_lat = f64::NEG_INFINITY;
+    for (lon, lat) in coordinates {
+        min_lon = min_lon.min(*lon);
+        min_lat = min_lat.min(*lat);
+        max_lon = max_lon.max(*lon);
+        max_lat = max_lat.max(*lat);
+    }
+    (min_lon, min_lat, max_lon, max_lat)
+}
+
+fn bbox_distance_deg(left: (f64, f64, f64, f64), right: (f64, f64, f64, f64)) -> f64 {
+    let (left_min_lon, left_min_lat, left_max_lon, left_max_lat) = left;
+    let (right_min_lon, right_min_lat, right_max_lon, right_max_lat) = right;
+    let lon_gap = 0.0_f64
+        .max(right_min_lon - left_max_lon)
+        .max(left_min_lon - right_max_lon);
+    let lat_gap = 0.0_f64
+        .max(right_min_lat - left_max_lat)
+        .max(left_min_lat - right_max_lat);
+    (lon_gap * lon_gap + lat_gap * lat_gap).sqrt()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonNode {
+    Object(BTreeMap<String, JsonNode>),
+    Array(Vec<JsonNode>),
+    String(String),
+    Number(f64),
+    Bool(bool),
+    Null,
+}
+
+impl JsonNode {
+    fn as_object(&self) -> Option<&BTreeMap<String, JsonNode>> {
+        match self {
+            JsonNode::Object(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&Vec<JsonNode>> {
+        match self {
+            JsonNode::Array(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            JsonNode::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            JsonNode::Number(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            JsonNode::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+fn json_string_usize_map(
+    value: Option<&JsonNode>,
+    default: Option<&BTreeMap<String, usize>>,
+) -> io::Result<BTreeMap<String, usize>> {
+    let Some(value) = value else {
+        return Ok(default.cloned().unwrap_or_default());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a JSON object mapping string keys to integer values",
+        )
+    })?;
+    let mut output = BTreeMap::new();
+    for (key, value) in object {
+        output.insert(key.clone(), json_node_to_usize(value)?);
+    }
+    Ok(output)
+}
+
+fn json_usize_f64_map_node(
+    value: Option<&JsonNode>,
+    default: Option<&BTreeMap<usize, f64>>,
+) -> io::Result<BTreeMap<usize, f64>> {
+    let Some(value) = value else {
+        return Ok(default.cloned().unwrap_or_default());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a JSON object mapping integer keys to numeric values",
+        )
+    })?;
+    let mut output = BTreeMap::new();
+    for (key, value) in object {
+        let degree = key.parse::<usize>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected JSON object keys to be non-negative integers",
+            )
+        })?;
+        output.insert(degree, json_node_to_f64(value)?);
+    }
+    Ok(output)
+}
+
+fn json_node_to_usize(value: &JsonNode) -> io::Result<usize> {
+    let value = json_node_to_f64(value)?;
+    if value < 0.0 || value.fract() != 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a non-negative integer JSON number",
+        ));
+    }
+    Ok(value as usize)
+}
+
+fn json_node_to_f64(value: &JsonNode) -> io::Result<f64> {
+    let value = value
+        .as_f64()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected a JSON number"))?;
+    if !value.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a finite JSON number",
+        ));
+    }
+    Ok(value)
+}
+
+struct JsonParser<'a> {
+    text: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text: text.as_bytes(),
+            pos: 0,
+        }
+    }
+
+    fn parse(mut self) -> io::Result<JsonNode> {
+        let value = self.parse_value()?;
+        self.skip_ws();
+        if self.pos != self.text.len() {
+            return Err(json_parse_error("trailing JSON content"));
+        }
+        Ok(value)
+    }
+
+    fn parse_value(&mut self) -> io::Result<JsonNode> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(),
+            Some(b'"') => self.parse_string().map(JsonNode::String),
+            Some(b'-') | Some(b'0'..=b'9') => self.parse_number().map(JsonNode::Number),
+            Some(b't') => {
+                self.expect_literal(b"true")?;
+                Ok(JsonNode::Bool(true))
+            }
+            Some(b'f') => {
+                self.expect_literal(b"false")?;
+                Ok(JsonNode::Bool(false))
+            }
+            Some(b'n') => {
+                self.expect_literal(b"null")?;
+                Ok(JsonNode::Null)
+            }
+            _ => Err(json_parse_error("expected JSON value")),
+        }
+    }
+
+    fn parse_object(&mut self) -> io::Result<JsonNode> {
+        self.expect_byte(b'{')?;
+        let mut object = BTreeMap::new();
+        self.skip_ws();
+        if self.consume_if(b'}') {
+            return Ok(JsonNode::Object(object));
+        }
+        loop {
+            self.skip_ws();
+            let key = self.parse_string()?;
+            self.skip_ws();
+            self.expect_byte(b':')?;
+            let value = self.parse_value()?;
+            object.insert(key, value);
+            self.skip_ws();
+            if self.consume_if(b'}') {
+                break;
+            }
+            self.expect_byte(b',')?;
+        }
+        Ok(JsonNode::Object(object))
+    }
+
+    fn parse_array(&mut self) -> io::Result<JsonNode> {
+        self.expect_byte(b'[')?;
+        let mut array = Vec::new();
+        self.skip_ws();
+        if self.consume_if(b']') {
+            return Ok(JsonNode::Array(array));
+        }
+        loop {
+            array.push(self.parse_value()?);
+            self.skip_ws();
+            if self.consume_if(b']') {
+                break;
+            }
+            self.expect_byte(b',')?;
+        }
+        Ok(JsonNode::Array(array))
+    }
+
+    fn parse_string(&mut self) -> io::Result<String> {
+        self.expect_byte(b'"')?;
+        let mut output = String::new();
+        while let Some(byte) = self.next() {
+            match byte {
+                b'"' => return Ok(output),
+                b'\\' => {
+                    let Some(escaped) = self.next() else {
+                        return Err(json_parse_error("unterminated JSON escape"));
+                    };
+                    match escaped {
+                        b'"' => output.push('"'),
+                        b'\\' => output.push('\\'),
+                        b'/' => output.push('/'),
+                        b'b' => output.push('\u{0008}'),
+                        b'f' => output.push('\u{000c}'),
+                        b'n' => output.push('\n'),
+                        b'r' => output.push('\r'),
+                        b't' => output.push('\t'),
+                        b'u' => {
+                            if self.pos + 4 > self.text.len() {
+                                return Err(json_parse_error("short JSON unicode escape"));
+                            }
+                            let hex = std::str::from_utf8(&self.text[self.pos..self.pos + 4])
+                                .map_err(|_| json_parse_error("invalid JSON unicode escape"))?;
+                            let codepoint = u16::from_str_radix(hex, 16)
+                                .map_err(|_| json_parse_error("invalid JSON unicode escape"))?;
+                            self.pos += 4;
+                            if let Some(ch) = char::from_u32(u32::from(codepoint)) {
+                                output.push(ch);
+                            }
+                        }
+                        _ => return Err(json_parse_error("invalid JSON escape")),
+                    }
+                }
+                byte if byte < 0x20 => return Err(json_parse_error("control byte in JSON string")),
+                _ => output.push(byte as char),
+            }
+        }
+        Err(json_parse_error("unterminated JSON string"))
+    }
+
+    fn parse_number(&mut self) -> io::Result<f64> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        self.consume_digits();
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            self.consume_digits();
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            self.consume_digits();
+        }
+        let raw = std::str::from_utf8(&self.text[start..self.pos])
+            .map_err(|_| json_parse_error("invalid JSON number"))?;
+        raw.parse::<f64>()
+            .map_err(|_| json_parse_error("invalid JSON number"))
+    }
+
+    fn consume_digits(&mut self) {
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.pos += 1;
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.pos += 1;
+        }
+    }
+
+    fn expect_literal(&mut self, literal: &[u8]) -> io::Result<()> {
+        if self.text.get(self.pos..self.pos + literal.len()) == Some(literal) {
+            self.pos += literal.len();
+            Ok(())
+        } else {
+            Err(json_parse_error("invalid JSON literal"))
+        }
+    }
+
+    fn expect_byte(&mut self, expected: u8) -> io::Result<()> {
+        match self.next() {
+            Some(byte) if byte == expected => Ok(()),
+            _ => Err(json_parse_error("unexpected JSON byte")),
+        }
+    }
+
+    fn consume_if(&mut self, expected: u8) -> bool {
+        if self.peek() == Some(expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.text.get(self.pos).copied()
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let byte = self.peek()?;
+        self.pos += 1;
+        Some(byte)
+    }
+}
+
+fn json_parse_error(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn json_usize_map(values: &BTreeMap<String, usize>) -> String {
+    let mut text = String::from("{");
+    for (index, (key, value)) in values.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push_str(&json_escape_string(key));
+        text.push_str("\":");
+        text.push_str(&value.to_string());
+    }
+    text.push('}');
+    text
+}
+
+fn json_usize_f64_map(values: &BTreeMap<usize, f64>) -> String {
+    let mut text = String::from("{");
+    for (index, (key, value)) in values.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push_str(&key.to_string());
+        text.push_str("\":");
+        text.push_str(&json_number(*value));
+    }
+    text.push('}');
+    text
+}
+
+fn merit_mask_feature_json(
+    window: &MeritHydroWindowReport,
+    lon_index: usize,
+    lat_index: usize,
+    mask_class: &str,
+) -> String {
+    let offset = lon_index * window.height + lat_index;
+    let lon = window.lon[lon_index];
+    let lat = window.lat[lat_index];
+    let dlon = merit_cell_delta(&window.lon, lon_index);
+    let dlat = merit_cell_delta(&window.lat, lat_index);
+    let lon0 = lon - dlon / 2.0;
+    let lon1 = lon + dlon / 2.0;
+    let lat0 = lat - dlat / 2.0;
+    let lat1 = lat + dlat / 2.0;
+    let stem = window
+        .tile
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| window.tile_name.trim_end_matches(".nc").to_string());
+    let feature_id = format!("{stem}:{lon_index}:{lat_index}:{mask_class}");
+    format!(
+        "{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{},{}],[{},{}],[{},{}],[{},{}],[{},{}]]]}},\"properties\":{{\"elevation_m\":{},\"feature_id\":\"{}\",\"landtype_igbp\":{},\"mask_class\":\"{}\",\"source\":\"MERIT-Hydro\",\"tile\":\"{}\",\"upstream_area_km2\":{},\"width_m\":{}}}}}",
+        json_number(lon0),
+        json_number(lat0),
+        json_number(lon1),
+        json_number(lat0),
+        json_number(lon1),
+        json_number(lat1),
+        json_number(lon0),
+        json_number(lat1),
+        json_number(lon0),
+        json_number(lat0),
+        json_number(window.elv_m[offset]),
+        json_escape_string(&feature_id),
+        window.landtype_igbp[offset],
+        json_escape_string(mask_class),
+        json_escape_string(&window.tile_name),
+        json_number(window.upa_km2[offset]),
+        json_number(window.width_m[offset]),
+    )
+}
+
+fn merit_cell_delta(values: &[f64], index: usize) -> f64 {
+    if values.len() <= 1 {
+        return 0.000_833_333_333_333_333_4;
+    }
+    if index == 0 {
+        (values[1] - values[0]).abs()
+    } else {
+        (values[index] - values[index - 1]).abs()
+    }
+}
+
+fn write_geojson_feature_collection(path: &Path, features: &[String]) -> io::Result<()> {
+    let mut handle = fs::File::create(path)?;
+    write!(handle, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
+    for (index, feature) in features.iter().enumerate() {
+        if index > 0 {
+            write!(handle, ",")?;
+        }
+        write!(handle, "{feature}")?;
+    }
+    writeln!(handle, "]}}")?;
+    Ok(())
+}
+
+fn write_merit_mask_summary_json(
+    path: &Path,
+    tile_count: usize,
+    feature_count: usize,
+    mask_counts: &std::collections::BTreeMap<String, usize>,
+    thresholds: MeritMaskThresholds,
+) -> io::Result<()> {
+    let mut text = format!("{{\"feature_count\":{},\"mask_counts\":{{", feature_count);
+    for (index, (class, count)) in mask_counts.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push_str(&json_escape_string(class));
+        text.push_str("\":");
+        text.push_str(&count.to_string());
+    }
+    text.push_str(&format!(
+        "}},\"thresholds\":{{\"r2_upa_km2\":{},\"r2_width_m\":{},\"r3_upa_km2\":{},\"r3_width_m\":{}}},\"tile_count\":{}}}\n",
+        json_number(thresholds.r2_upa_km2),
+        json_number(thresholds.r2_width_m),
+        json_number(thresholds.r3_upa_km2),
+        json_number(thresholds.r3_width_m),
+        tile_count,
+    ));
+    fs::write(path, text)
+}
+
+fn indices_between_inclusive(values: &[f64], low: f64, high: f64, stride: usize) -> Vec<usize> {
+    values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            if value.is_finite() && *value >= low && *value <= high {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .step_by(stride)
+        .collect()
+}
+
+fn clean_merit_fill(value: f64) -> f64 {
+    if value <= -9990.0 {
+        f64::NAN
+    } else {
+        value
+    }
+}
+
+fn merit_bbox_intersects(a: MeritLonLatBbox, b: MeritLonLatBbox) -> bool {
+    a.west < b.east && a.east > b.west && a.south < b.north && a.north > b.south
+}
+
+fn classify_merit_cell(
+    width_m: f64,
+    upa_km2: f64,
+    landtype_igbp: i32,
+    adjacent_to_other_surface: bool,
+    thresholds: MeritMaskThresholds,
+) -> &'static str {
+    if width_m.is_finite() && upa_km2.is_finite() {
+        if width_m >= thresholds.r3_width_m || upa_km2 >= thresholds.r3_upa_km2 {
+            return "R3";
+        }
+        if width_m >= thresholds.r2_width_m || upa_km2 >= thresholds.r2_upa_km2 {
+            return "R2";
+        }
+    }
+    if is_merit_ocean_landtype(landtype_igbp) {
+        if adjacent_to_other_surface {
+            "COAST_OCEAN"
+        } else {
+            "OCEAN"
+        }
+    } else if landtype_igbp > 0 {
+        if adjacent_to_other_surface {
+            "COAST_LAND"
+        } else {
+            "LAND"
+        }
+    } else {
+        "UNKNOWN"
+    }
+}
+
+fn merit_cell_adjacent_to_other_surface(
+    window: &MeritHydroWindowReport,
+    lon_index: usize,
+    lat_index: usize,
+) -> bool {
+    let offset = lon_index * window.height + lat_index;
+    let cell_ocean = is_merit_ocean_landtype(window.landtype_igbp[offset]);
+    let cell_land = window.landtype_igbp[offset] > 0 && !cell_ocean;
+    if !cell_ocean && !cell_land {
+        return false;
+    }
+    let lon_min = lon_index.saturating_sub(1);
+    let lon_max = (lon_index + 1).min(window.width.saturating_sub(1));
+    let lat_min = lat_index.saturating_sub(1);
+    let lat_max = (lat_index + 1).min(window.height.saturating_sub(1));
+    for ni in lon_min..=lon_max {
+        for nj in lat_min..=lat_max {
+            if ni == lon_index && nj == lat_index {
+                continue;
+            }
+            let neighbor = window.landtype_igbp[ni * window.height + nj];
+            let neighbor_ocean = is_merit_ocean_landtype(neighbor);
+            let neighbor_land = neighbor > 0 && !neighbor_ocean;
+            if (cell_land && neighbor_ocean) || (cell_ocean && neighbor_land) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_merit_ocean_landtype(value: i32) -> bool {
+    value == 0 || value == 17
+}
+
+/// CaMa binary grid geometry for native Rust hydro/coast preprocessing readers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CamaBinaryGridSpec {
+    pub nx: usize,
+    pub ny: usize,
+    pub west: f64,
+    pub south: f64,
+    pub grid_size_deg: f64,
+    pub little_endian: bool,
+    pub y_reversed_storage: bool,
+}
+
+impl CamaBinaryGridSpec {
+    /// Longitude at the center of a zero-based CaMa x index.
+    pub fn lon_center(&self, x_index: usize) -> f64 {
+        self.west + (x_index as f64 + 0.5) * self.grid_size_deg
+    }
+
+    /// Latitude at the center of a zero-based CaMa y index.
+    pub fn lat_center(&self, y_index: usize) -> f64 {
+        self.south + (y_index as f64 + 0.5) * self.grid_size_deg
+    }
+
+    /// Return a logical south-to-north window for a lon/lat bounding box.
+    pub fn window_for_bbox(
+        &self,
+        west: f64,
+        east: f64,
+        south: f64,
+        north: f64,
+    ) -> io::Result<CamaBinaryWindow> {
+        if self.nx == 0 || self.ny == 0 || self.grid_size_deg <= 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa grid dimensions and grid_size_deg must be positive",
+            ));
+        }
+        let x0 = (((west - self.west) / self.grid_size_deg).floor() as isize).max(0) as usize;
+        let x1 = (((east - self.west) / self.grid_size_deg).ceil() as isize)
+            .clamp(0, self.nx as isize) as usize;
+        let y0 = (((south - self.south) / self.grid_size_deg).floor() as isize).max(0) as usize;
+        let y1 = (((north - self.south) / self.grid_size_deg).ceil() as isize)
+            .clamp(0, self.ny as isize) as usize;
+        if x1 <= x0 || y1 <= y0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bbox does not overlap grid",
+            ));
+        }
+        Ok(CamaBinaryWindow {
+            x_start: x0,
+            y_start: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        })
+    }
+
+    fn storage_y_index(&self, logical_y_index: usize) -> usize {
+        if self.y_reversed_storage {
+            self.ny - 1 - logical_y_index
+        } else {
+            logical_y_index
+        }
+    }
+}
+
+/// Rectangular logical CaMa binary window in zero-based x/y indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CamaBinaryWindow {
+    pub x_start: usize,
+    pub y_start: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// LAND/OCEAN class derived from CaMa `elevtn.bin` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CamaSurfaceClass {
+    Land,
+    Ocean,
+}
+
+/// Lon/lat bounding box used to select a logical CaMa window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CamaLonLatBbox {
+    pub west: f64,
+    pub east: f64,
+    pub south: f64,
+    pub north: f64,
+}
+
+/// CaMa float32 metric grids used to identify and size river reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CamaMetricKind {
+    UpstreamArea,
+    RiverWidth,
+    RiverLength,
+}
+
+/// One Rust-owned CaMa river reach source record assembled from native binary windows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamaReachRecord {
+    pub reach_id: String,
+    pub x_index: usize,
+    pub y_index: usize,
+    pub lon: f64,
+    pub lat: f64,
+    pub upstream_area_km2: f64,
+    pub width_m: f64,
+    pub floodplain_width_m: f64,
+    pub target_dx_km: f64,
+    pub is_estuary: bool,
+    pub river_length_m: f64,
+    pub downstream_x: i32,
+    pub downstream_y: i32,
+}
+
+/// Conservative default thresholds for promoting CaMa reaches into R0/R1/R2/R3 classes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CamaReachClassificationThresholds {
+    pub explicit_2d_width_fraction: f64,
+    pub refine_width_fraction: f64,
+    pub explicit_2d_upstream_area_km2: f64,
+    pub refine_upstream_area_km2: f64,
+    pub keep_1d_upstream_area_km2: f64,
+}
+
+impl Default for CamaReachClassificationThresholds {
+    fn default() -> Self {
+        Self {
+            explicit_2d_width_fraction: 0.25,
+            refine_width_fraction: 0.10,
+            explicit_2d_upstream_area_km2: 50_000.0,
+            refine_upstream_area_km2: 10_000.0,
+            keep_1d_upstream_area_km2: 1_000.0,
+        }
+    }
+}
+
+/// Point-level river classification attached to exported CaMa reach source records.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamaReachClassification {
+    pub reach_id: String,
+    pub river_class: String,
+    pub effective_width_m: f64,
+    pub reasons: Vec<String>,
+}
+
+/// Report from exporting Rust-owned CaMa reach inventory records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CamaReachInventoryJsonlWriteReport {
+    pub output: PathBuf,
+    pub record_count: usize,
+}
+
+/// Report from exporting Rust-owned CaMa reach inventory records to point GeoJSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CamaReachInventoryGeoJsonWriteReport {
+    pub output: PathBuf,
+    pub feature_count: usize,
+}
+
+/// Rust-owned CaMa reach inventory assembled from metric and topology windows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamaReachInventoryReport {
+    pub grid: CamaBinaryGridSpec,
+    pub window: CamaBinaryWindow,
+    pub records: Vec<CamaReachRecord>,
+    pub valid_channel_cells: usize,
+    pub skipped_cells: usize,
+}
+
+/// Native Rust report for one CaMa float32 river metric window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamaMetricWindowReport {
+    pub grid: CamaBinaryGridSpec,
+    pub window: CamaBinaryWindow,
+    pub kind: CamaMetricKind,
+    pub values: Vec<Vec<f32>>,
+    pub positive_cells: usize,
+    pub non_positive_or_invalid_cells: usize,
+}
+
+/// Native Rust report for a CaMa `nextxy.bin` downstream-topology window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamaNextxyWindowReport {
+    pub grid: CamaBinaryGridSpec,
+    pub window: CamaBinaryWindow,
+    pub next_x: Vec<Vec<i32>>,
+    pub next_y: Vec<Vec<i32>>,
+    pub valid_downstream_links: usize,
+    pub terminal_or_ocean_links: usize,
+}
+
+/// Native Rust report for a CaMa `elevtn.bin` surface-mask window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamaElevtnSurfaceWindowReport {
+    pub grid: CamaBinaryGridSpec,
+    pub window: CamaBinaryWindow,
+    pub elevation: Vec<Vec<f32>>,
+    pub surface_mask: Vec<Vec<CamaSurfaceClass>>,
+    pub land_cells: usize,
+    pub ocean_cells: usize,
+}
+
+/// Read a CaMa `elevtn.bin` float32 window and classify valid cells as LAND.
+///
+/// This mirrors the Python `land_mask_from_elevation` rule: a cell is land when
+/// the elevation value is finite and not equal to the supplied CaMa undef value.
+pub fn read_cama_elevtn_surface_window(
+    path: impl AsRef<Path>,
+    grid: CamaBinaryGridSpec,
+    window: CamaBinaryWindow,
+    undef: f64,
+) -> io::Result<CamaElevtnSurfaceWindowReport> {
+    validate_cama_binary_window(grid, window)?;
+    let row_stride = grid
+        .nx
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "CaMa row stride overflow"))?;
+    let window_bytes = window
+        .width
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa window byte width overflow",
+            )
+        })?;
+    let mut handle = fs::File::open(path)?;
+    let mut elevation = Vec::with_capacity(window.height);
+    let mut surface_mask = Vec::with_capacity(window.height);
+    let mut land_cells = 0_usize;
+    let mut ocean_cells = 0_usize;
+
+    for logical_y in window.y_start..window.y_start + window.height {
+        let storage_y = grid.storage_y_index(logical_y);
+        let row_offset = storage_y
+            .checked_mul(row_stride)
+            .and_then(|offset| offset.checked_add(window.x_start * std::mem::size_of::<f32>()))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "CaMa file offset overflow")
+            })?;
+        handle.seek(SeekFrom::Start(row_offset as u64))?;
+        let mut bytes = vec![0_u8; window_bytes];
+        handle.read_exact(&mut bytes).map_err(|err| {
+            if err.kind() == io::ErrorKind::UnexpectedEof {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "binary file ended before requested window was read",
+                )
+            } else {
+                err
+            }
+        })?;
+
+        let mut row = Vec::with_capacity(window.width);
+        let mut mask_row = Vec::with_capacity(window.width);
+        for chunk in bytes.chunks_exact(std::mem::size_of::<f32>()) {
+            let value = if grid.little_endian {
+                f32::from_le_bytes(chunk.try_into().expect("f32 chunk size"))
+            } else {
+                f32::from_be_bytes(chunk.try_into().expect("f32 chunk size"))
+            };
+            let class = if value.is_finite() && f64::from(value) != undef {
+                land_cells += 1;
+                CamaSurfaceClass::Land
+            } else {
+                ocean_cells += 1;
+                CamaSurfaceClass::Ocean
+            };
+            row.push(value);
+            mask_row.push(class);
+        }
+        elevation.push(row);
+        surface_mask.push(mask_row);
+    }
+
+    Ok(CamaElevtnSurfaceWindowReport {
+        grid,
+        window,
+        elevation,
+        surface_mask,
+        land_cells,
+        ocean_cells,
+    })
+}
+
+/// Classify one CaMa reach using the same default R0/R1/R2/R3 policy as the Python prototype.
+pub fn classify_cama_reach_record(
+    record: &CamaReachRecord,
+    thresholds: CamaReachClassificationThresholds,
+) -> io::Result<CamaReachClassification> {
+    if !record.target_dx_km.is_finite() || record.target_dx_km <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "target_dx_km must be positive for CaMa reach classification",
+        ));
+    }
+    let effective_width_m = record.width_m.max(record.floodplain_width_m);
+    let target_dx_m = record.target_dx_km * 1000.0;
+
+    if record.is_estuary {
+        return Ok(CamaReachClassification {
+            reach_id: record.reach_id.clone(),
+            river_class: "R3".to_string(),
+            effective_width_m,
+            reasons: vec!["estuary".to_string()],
+        });
+    }
+    if effective_width_m >= thresholds.explicit_2d_width_fraction * target_dx_m {
+        return Ok(CamaReachClassification {
+            reach_id: record.reach_id.clone(),
+            river_class: "R3".to_string(),
+            effective_width_m,
+            reasons: vec!["effective_width_fraction".to_string()],
+        });
+    }
+    if record.upstream_area_km2 >= thresholds.explicit_2d_upstream_area_km2 {
+        return Ok(CamaReachClassification {
+            reach_id: record.reach_id.clone(),
+            river_class: "R3".to_string(),
+            effective_width_m,
+            reasons: vec!["upstream_area_r3".to_string()],
+        });
+    }
+    if record.upstream_area_km2 >= thresholds.refine_upstream_area_km2 {
+        return Ok(CamaReachClassification {
+            reach_id: record.reach_id.clone(),
+            river_class: "R2".to_string(),
+            effective_width_m,
+            reasons: vec!["upstream_area_r2".to_string()],
+        });
+    }
+    if effective_width_m >= thresholds.refine_width_fraction * target_dx_m {
+        return Ok(CamaReachClassification {
+            reach_id: record.reach_id.clone(),
+            river_class: "R2".to_string(),
+            effective_width_m,
+            reasons: vec!["refine_width_fraction".to_string()],
+        });
+    }
+    if record.upstream_area_km2 >= thresholds.keep_1d_upstream_area_km2 {
+        return Ok(CamaReachClassification {
+            reach_id: record.reach_id.clone(),
+            river_class: "R1".to_string(),
+            effective_width_m,
+            reasons: vec!["upstream_area_r1".to_string()],
+        });
+    }
+    Ok(CamaReachClassification {
+        reach_id: record.reach_id.clone(),
+        river_class: "R0".to_string(),
+        effective_width_m,
+        reasons: vec!["below_explicit_thresholds".to_string()],
+    })
+}
+
+/// Write CaMa reach inventory records as hydro source JSON Lines.
+pub fn write_cama_reach_inventory_jsonl(
+    inventory: &CamaReachInventoryReport,
+    output: impl AsRef<Path>,
+) -> io::Result<CamaReachInventoryJsonlWriteReport> {
+    let output = output.as_ref().to_path_buf();
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut handle = fs::File::create(&output)?;
+    for record in &inventory.records {
+        writeln!(handle, "{}", cama_reach_record_json(record)?)?;
+    }
+    Ok(CamaReachInventoryJsonlWriteReport {
+        output,
+        record_count: inventory.records.len(),
+    })
+}
+
+/// Write CaMa reach inventory records as a GeoJSON point FeatureCollection.
+pub fn write_cama_reach_inventory_point_geojson(
+    inventory: &CamaReachInventoryReport,
+    output: impl AsRef<Path>,
+) -> io::Result<CamaReachInventoryGeoJsonWriteReport> {
+    let output = output.as_ref().to_path_buf();
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut handle = fs::File::create(&output)?;
+    write!(handle, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
+    for (index, record) in inventory.records.iter().enumerate() {
+        if index > 0 {
+            write!(handle, ",")?;
+        }
+        write!(
+            handle,
+            "{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Point\",\"coordinates\":[{},{}]}},\"properties\":{}}}",
+            json_number(record.lon),
+            json_number(record.lat),
+            cama_reach_record_json(record)?,
+        )?;
+    }
+    writeln!(handle, "]}}")?;
+    Ok(CamaReachInventoryGeoJsonWriteReport {
+        output,
+        feature_count: inventory.records.len(),
+    })
+}
+
+fn cama_reach_record_json(record: &CamaReachRecord) -> io::Result<String> {
+    let classification =
+        classify_cama_reach_record(record, CamaReachClassificationThresholds::default())?;
+    Ok(format!(
+        "{{\"class_reasons\":{},\"downstream_x\":{},\"downstream_y\":{},\"effective_width_m\":{},\"floodplain_width_m\":{},\"is_estuary\":{},\"lat\":{},\"lon\":{},\"reach_id\":\"{}\",\"river_class\":\"{}\",\"river_length_m\":{},\"source\":\"cama_reach_inventory\",\"target_dx_km\":{},\"upstream_area_km2\":{},\"width_m\":{},\"x_index\":{},\"y_index\":{}}}",
+        json_string_array(&classification.reasons),
+        record.downstream_x,
+        record.downstream_y,
+        json_number(classification.effective_width_m),
+        json_number(record.floodplain_width_m),
+        record.is_estuary,
+        json_number(record.lat),
+        json_number(record.lon),
+        json_escape_string(&record.reach_id),
+        json_escape_string(&classification.river_class),
+        json_number(record.river_length_m),
+        json_number(record.target_dx_km),
+        json_number(record.upstream_area_km2),
+        json_number(record.width_m),
+        record.x_index,
+        record.y_index,
+    ))
+}
+
+fn json_number(value: f64) -> String {
+    if value.is_finite() {
+        let mut text = value.to_string();
+        if text == "-0" {
+            text = "0".to_string();
+        }
+        text
+    } else {
+        "null".to_string()
+    }
+}
+
+fn json_escape_string(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn json_string_array(values: &[String]) -> String {
+    let mut text = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push_str(&json_escape_string(value));
+        text.push('"');
+    }
+    text.push(']');
+    text
+}
+
+/// Load a CaMa map directory into Rust-owned reach inventory source records.
+///
+/// The loader reads `params.txt`, selects a bbox window, prefers `rivwth.bin`
+/// over `width.bin`, and combines `uparea.bin`, river width, `rivlen.bin`, and
+/// `nextxy.bin` through the native Rust readers.
+pub fn read_cama_reach_inventory_from_map_dir(
+    map_dir: impl AsRef<Path>,
+    bbox: CamaLonLatBbox,
+    target_dx_km: f64,
+    uparea_to_km2: f64,
+    y_reversed_storage: bool,
+) -> io::Result<CamaReachInventoryReport> {
+    let root = map_dir.as_ref();
+    let mut grid = read_cama_grid_spec_from_params_file(root.join("params.txt"))?;
+    grid.y_reversed_storage = y_reversed_storage;
+    let window = grid.window_for_bbox(bbox.west, bbox.east, bbox.south, bbox.north)?;
+    let uparea = read_cama_float32_metric_window(
+        root.join("uparea.bin"),
+        grid,
+        window,
+        CamaMetricKind::UpstreamArea,
+    )?;
+    let width_path = preferred_cama_width_path(root);
+    let width =
+        read_cama_float32_metric_window(width_path, grid, window, CamaMetricKind::RiverWidth)?;
+    let rivlen = read_cama_float32_metric_window(
+        root.join("rivlen.bin"),
+        grid,
+        window,
+        CamaMetricKind::RiverLength,
+    )?;
+    let nextxy = read_cama_nextxy_window(root.join("nextxy.bin"), grid, window)?;
+    build_cama_reach_inventory(
+        grid,
+        window,
+        target_dx_km,
+        uparea_to_km2,
+        &uparea,
+        &width,
+        &rivlen,
+        &nextxy,
+    )
+}
+
+/// Parse a CaMa `params.txt` file into a Rust grid spec.
+pub fn read_cama_grid_spec_from_params_file(
+    path: impl AsRef<Path>,
+) -> io::Result<CamaBinaryGridSpec> {
+    parse_cama_params_text(&fs::read_to_string(path)?)
+}
+
+fn parse_cama_params_text(text: &str) -> io::Result<CamaBinaryGridSpec> {
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let payload = line.split("!!").next().unwrap_or_default().trim();
+        if payload.is_empty() {
+            continue;
+        }
+        let Some(first) = payload.split_whitespace().next() else {
+            continue;
+        };
+        let value = first.parse::<f64>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid numeric record in CaMa params.txt: {err}"),
+            )
+        })?;
+        values.push(value);
+    }
+    if values.len() < 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CaMa params text must contain at least 8 numeric records",
+        ));
+    }
+    Ok(CamaBinaryGridSpec {
+        nx: values[0] as usize,
+        ny: values[1] as usize,
+        west: values[4],
+        south: values[6],
+        grid_size_deg: values[3],
+        little_endian: true,
+        y_reversed_storage: false,
+    })
+}
+
+fn preferred_cama_width_path(root: &Path) -> PathBuf {
+    let rivwth = root.join("rivwth.bin");
+    if rivwth.exists() {
+        rivwth
+    } else {
+        root.join("width.bin")
+    }
+}
+
+/// Assemble CaMa river reach records from native Rust metric and topology windows.
+///
+/// This mirrors Python `build_reach_inventory`: only cells with positive
+/// upstream area, river width, and river length become records; downstream 0/0
+/// is treated as an estuary flag; upstream area can be scaled into km2.
+pub fn build_cama_reach_inventory(
+    grid: CamaBinaryGridSpec,
+    window: CamaBinaryWindow,
+    target_dx_km: f64,
+    uparea_to_km2: f64,
+    uparea: &CamaMetricWindowReport,
+    width: &CamaMetricWindowReport,
+    rivlen: &CamaMetricWindowReport,
+    nextxy: &CamaNextxyWindowReport,
+) -> io::Result<CamaReachInventoryReport> {
+    if target_dx_km <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "target_dx_km must be positive",
+        ));
+    }
+    validate_cama_reach_inventory_inputs(grid, window, uparea, width, rivlen, nextxy)?;
+
+    let mut records = Vec::new();
+    let mut skipped_cells = 0_usize;
+    for row_offset in 0..window.height {
+        for col_offset in 0..window.width {
+            let uparea_value = uparea.values[row_offset][col_offset];
+            let width_value = width.values[row_offset][col_offset];
+            let length_value = rivlen.values[row_offset][col_offset];
+            if !(uparea_value > 0.0 && width_value > 0.0 && length_value > 0.0) {
+                skipped_cells += 1;
+                continue;
+            }
+
+            let x_index = window.x_start + col_offset;
+            let y_index = window.y_start + row_offset;
+            let downstream_x = nextxy.next_x[row_offset][col_offset];
+            let downstream_y = nextxy.next_y[row_offset][col_offset];
+            records.push(CamaReachRecord {
+                reach_id: format!("cama-{y_index}-{x_index}"),
+                x_index,
+                y_index,
+                lon: grid.lon_center(x_index),
+                lat: grid.lat_center(y_index),
+                upstream_area_km2: f64::from(uparea_value) * uparea_to_km2,
+                width_m: f64::from(width_value),
+                floodplain_width_m: 0.0,
+                target_dx_km,
+                is_estuary: downstream_x == 0 && downstream_y == 0,
+                river_length_m: f64::from(length_value),
+                downstream_x,
+                downstream_y,
+            });
+        }
+    }
+
+    let valid_channel_cells = records.len();
+    Ok(CamaReachInventoryReport {
+        grid,
+        window,
+        records,
+        valid_channel_cells,
+        skipped_cells,
+    })
+}
+
+fn validate_cama_reach_inventory_inputs(
+    grid: CamaBinaryGridSpec,
+    window: CamaBinaryWindow,
+    uparea: &CamaMetricWindowReport,
+    width: &CamaMetricWindowReport,
+    rivlen: &CamaMetricWindowReport,
+    nextxy: &CamaNextxyWindowReport,
+) -> io::Result<()> {
+    if uparea.kind != CamaMetricKind::UpstreamArea
+        || width.kind != CamaMetricKind::RiverWidth
+        || rivlen.kind != CamaMetricKind::RiverLength
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa reach inventory requires upstream-area, river-width, and river-length metric reports",
+        ));
+    }
+    if uparea.grid != grid
+        || width.grid != grid
+        || rivlen.grid != grid
+        || nextxy.grid != grid
+        || uparea.window != window
+        || width.window != window
+        || rivlen.window != window
+        || nextxy.window != window
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "all CaMa reach inventory inputs must share the requested grid and window",
+        ));
+    }
+    if !cama_f32_grid_has_shape(&uparea.values, window.height, window.width)
+        || !cama_f32_grid_has_shape(&width.values, window.height, window.width)
+        || !cama_f32_grid_has_shape(&rivlen.values, window.height, window.width)
+        || !cama_i32_grid_has_shape(&nextxy.next_x, window.height, window.width)
+        || !cama_i32_grid_has_shape(&nextxy.next_y, window.height, window.width)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "all CaMa reach inventory arrays must match the requested window shape",
+        ));
+    }
+    Ok(())
+}
+
+fn cama_f32_grid_has_shape(values: &[Vec<f32>], height: usize, width: usize) -> bool {
+    values.len() == height && values.iter().all(|row| row.len() == width)
+}
+
+fn cama_i32_grid_has_shape(values: &[Vec<i32>], height: usize, width: usize) -> bool {
+    values.len() == height && values.iter().all(|row| row.len() == width)
+}
+
+/// Read a CaMa float32 metric window such as `uparea.bin`, `width.bin`, or `rivlen.bin`.
+///
+/// This intentionally stays at the source-data boundary: it preserves the raw
+/// metric values in logical south-to-north order and only reports a simple
+/// positive/non-positive split used by later reach-inventory assembly.
+pub fn read_cama_float32_metric_window(
+    path: impl AsRef<Path>,
+    grid: CamaBinaryGridSpec,
+    window: CamaBinaryWindow,
+    kind: CamaMetricKind,
+) -> io::Result<CamaMetricWindowReport> {
+    validate_cama_binary_window(grid, window)?;
+    let item_size = std::mem::size_of::<f32>();
+    let row_stride = grid.nx.checked_mul(item_size).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa metric row stride overflow",
+        )
+    })?;
+    let window_bytes = window.width.checked_mul(item_size).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa metric window byte width overflow",
+        )
+    })?;
+    let mut handle = fs::File::open(path)?;
+    let mut values = Vec::with_capacity(window.height);
+    let mut positive_cells = 0_usize;
+    let mut non_positive_or_invalid_cells = 0_usize;
+
+    for logical_y in window.y_start..window.y_start + window.height {
+        let storage_y = grid.storage_y_index(logical_y);
+        let row_offset = storage_y
+            .checked_mul(row_stride)
+            .and_then(|offset| offset.checked_add(window.x_start * item_size))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CaMa metric file offset overflow",
+                )
+            })?;
+        let row =
+            read_cama_f32_row_window(&mut handle, row_offset, window_bytes, grid.little_endian)?;
+        for value in &row {
+            if value.is_finite() && *value > 0.0 {
+                positive_cells += 1;
+            } else {
+                non_positive_or_invalid_cells += 1;
+            }
+        }
+        values.push(row);
+    }
+
+    Ok(CamaMetricWindowReport {
+        grid,
+        window,
+        kind,
+        values,
+        positive_cells,
+        non_positive_or_invalid_cells,
+    })
+}
+
+fn read_cama_f32_row_window(
+    handle: &mut fs::File,
+    offset: usize,
+    byte_len: usize,
+    little_endian: bool,
+) -> io::Result<Vec<f32>> {
+    handle.seek(SeekFrom::Start(offset as u64))?;
+    let mut bytes = vec![0_u8; byte_len];
+    handle.read_exact(&mut bytes).map_err(|err| {
+        if err.kind() == io::ErrorKind::UnexpectedEof {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "binary file ended before requested window was read",
+            )
+        } else {
+            err
+        }
+    })?;
+    Ok(bytes
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|chunk| {
+            if little_endian {
+                f32::from_le_bytes(chunk.try_into().expect("f32 chunk size"))
+            } else {
+                f32::from_be_bytes(chunk.try_into().expect("f32 chunk size"))
+            }
+        })
+        .collect())
+}
+
+/// Read CaMa `nextxy.bin` planar int32 downstream topology into logical indices.
+///
+/// The file is two full-grid planes: raw one-based downstream x, followed by
+/// raw one-based downstream y. Positive values are converted to zero-based
+/// logical indices. Non-positive values are preserved as terminal/ocean links.
+pub fn read_cama_nextxy_window(
+    path: impl AsRef<Path>,
+    grid: CamaBinaryGridSpec,
+    window: CamaBinaryWindow,
+) -> io::Result<CamaNextxyWindowReport> {
+    validate_cama_binary_window(grid, window)?;
+    let item_size = std::mem::size_of::<i32>();
+    let row_stride = grid.nx.checked_mul(item_size).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa nextxy row stride overflow",
+        )
+    })?;
+    let plane_stride = row_stride.checked_mul(grid.ny).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa nextxy plane stride overflow",
+        )
+    })?;
+    let window_bytes = window.width.checked_mul(item_size).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa nextxy window byte width overflow",
+        )
+    })?;
+    let mut handle = fs::File::open(path)?;
+    let mut next_x = Vec::with_capacity(window.height);
+    let mut next_y = Vec::with_capacity(window.height);
+    let mut valid_downstream_links = 0_usize;
+    let mut terminal_or_ocean_links = 0_usize;
+
+    for logical_y in window.y_start..window.y_start + window.height {
+        let storage_y = grid.storage_y_index(logical_y);
+        let row_base = storage_y
+            .checked_mul(row_stride)
+            .and_then(|offset| offset.checked_add(window.x_start * item_size))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CaMa nextxy file offset overflow",
+                )
+            })?;
+        let raw_x_row =
+            read_cama_i32_row_window(&mut handle, row_base, window_bytes, grid.little_endian)?;
+        let y_row_base = plane_stride.checked_add(row_base).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa nextxy y-plane file offset overflow",
+            )
+        })?;
+        let raw_y_row =
+            read_cama_i32_row_window(&mut handle, y_row_base, window_bytes, grid.little_endian)?;
+        let mut converted_x = Vec::with_capacity(window.width);
+        let mut converted_y = Vec::with_capacity(window.width);
+        for (raw_x, raw_y) in raw_x_row.into_iter().zip(raw_y_row) {
+            if raw_x > 0 && raw_y > 0 {
+                valid_downstream_links += 1;
+            } else {
+                terminal_or_ocean_links += 1;
+            }
+            converted_x.push(convert_cama_nextxy_x(raw_x));
+            converted_y.push(convert_cama_nextxy_y(raw_y, grid));
+        }
+        next_x.push(converted_x);
+        next_y.push(converted_y);
+    }
+
+    Ok(CamaNextxyWindowReport {
+        grid,
+        window,
+        next_x,
+        next_y,
+        valid_downstream_links,
+        terminal_or_ocean_links,
+    })
+}
+
+fn read_cama_i32_row_window(
+    handle: &mut fs::File,
+    offset: usize,
+    byte_len: usize,
+    little_endian: bool,
+) -> io::Result<Vec<i32>> {
+    handle.seek(SeekFrom::Start(offset as u64))?;
+    let mut bytes = vec![0_u8; byte_len];
+    handle.read_exact(&mut bytes).map_err(|err| {
+        if err.kind() == io::ErrorKind::UnexpectedEof {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "binary file ended before requested window was read",
+            )
+        } else {
+            err
+        }
+    })?;
+    Ok(bytes
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|chunk| {
+            if little_endian {
+                i32::from_le_bytes(chunk.try_into().expect("i32 chunk size"))
+            } else {
+                i32::from_be_bytes(chunk.try_into().expect("i32 chunk size"))
+            }
+        })
+        .collect())
+}
+
+fn convert_cama_nextxy_x(raw_x: i32) -> i32 {
+    if raw_x <= 0 {
+        raw_x
+    } else {
+        raw_x - 1
+    }
+}
+
+fn convert_cama_nextxy_y(raw_y: i32, grid: CamaBinaryGridSpec) -> i32 {
+    if raw_y <= 0 {
+        raw_y
+    } else if grid.y_reversed_storage {
+        grid.ny as i32 - raw_y
+    } else {
+        raw_y - 1
+    }
+}
+
+fn validate_cama_binary_window(
+    grid: CamaBinaryGridSpec,
+    window: CamaBinaryWindow,
+) -> io::Result<()> {
+    if grid.nx == 0 || grid.ny == 0 || grid.grid_size_deg <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa grid dimensions and grid_size_deg must be positive",
+        ));
+    }
+    if window.width == 0 || window.height == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa window dimensions must be positive",
+        ));
+    }
+    let x_end = window
+        .x_start
+        .checked_add(window.width)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "CaMa window x overflow"))?;
+    let y_end = window
+        .y_start
+        .checked_add(window.height)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "CaMa window y overflow"))?;
+    if x_end > grid.nx || y_end > grid.ny {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "requested window is outside grid",
+        ));
+    }
+    Ok(())
+}
+
+/// Combined `MOD_data_preprocess` + `MOD_Area_judge` source-grid state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataPreprocessAreaJudgeSourceReport {
+    pub preprocess: LandtypeDataPreprocessReport,
+    pub seaorland: AreaJudgeSeaOrLandReport,
+}
+
+/// Owned source state derived from `MOD_data_preprocess` and `Area_judge`
+/// that can be passed into the migrated `mkgrd` refine stack without an
+/// external source-state text file or Fortran module globals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdDataPreprocessSourceState {
+    pub lon_vertex: Vec<f64>,
+    pub lat_vertex: Vec<f64>,
+    pub lon_i: Vec<f64>,
+    pub lat_i: Vec<f64>,
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub first_triangle_id: usize,
+    pub num_vertex: usize,
+    pub sources: Vec<V3DataSourceDescriptor>,
+    pub is_in_domain: Vec<Vec<i32>>,
+    pub seaorland: Vec<Vec<i32>>,
+    pub landtypes_global: Vec<Vec<i32>>,
+    pub maxlc: i32,
+}
+
+/// Optional final postprocess target encoded in compact mkgrd source-state text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MkgrdCompactSourceStateFinalPostproc {
+    Land,
+    Ocean,
+    Atmos,
+    Earth,
+}
+
+/// Compact text source-state bundle used by migrated mkgrd source-state and
+/// restart-refine handoffs while the full Fortran module state is being
+/// replaced by typed Rust values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdCompactSourceState {
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub first_triangle_id: usize,
+    pub num_vertex: usize,
+    pub maxlc: i32,
+    pub final_domain_contain: Option<GetContainMeshKind>,
+    pub final_domain_postproc: Option<MkgrdCompactSourceStateFinalPostproc>,
+    pub calculated_refine: Option<Vec<Vec<i32>>>,
+    pub calculated_bounds: Option<AreaJudgeSourceBounds>,
+    pub is_in_domain: Vec<Vec<i32>>,
+    pub seaorland: Vec<Vec<i32>>,
+    pub landtypes_global: Vec<Vec<i32>>,
+}
+
+/// Compact source-state plus reconstructed global axes for restart-refine
+/// handoffs into migrated `mkgrd` loops.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdCompactRestartRefineSourceState {
+    pub source_state: MkgrdCompactSourceState,
+    pub axes: GlobalSourceAxes,
+}
+
+/// Read compact mkgrd source-state text from disk.
+pub fn read_mkgrd_compact_source_state(
+    path: impl AsRef<Path>,
+) -> io::Result<MkgrdCompactSourceState> {
+    let contents = fs::read_to_string(path.as_ref())?;
+    parse_mkgrd_compact_source_state(&contents)
+}
+
+/// Read compact source-state text and reconstruct the global source axes needed
+/// by restart-refine Area_judge handoffs.
+pub fn read_mkgrd_compact_restart_refine_source_state(
+    path: impl AsRef<Path>,
+) -> io::Result<MkgrdCompactRestartRefineSourceState> {
+    let source_state = read_mkgrd_compact_source_state(path)?;
+    let axes = source_state.build_global_source_axes()?;
+    Ok(MkgrdCompactRestartRefineSourceState { source_state, axes })
+}
+
+impl MkgrdCompactSourceState {
+    /// Reconstruct the one-based global source axes described by this compact
+    /// source-state handoff.
+    pub fn build_global_source_axes(&self) -> io::Result<GlobalSourceAxes> {
+        build_global_source_axes_fortran_indexed(
+            self.gridnum_perdegree,
+            self.nlons_source,
+            self.nlats_source,
+        )
+    }
+}
+
+impl MkgrdCompactRestartRefineSourceState {
+    /// Borrow this compact source-state bundle as the options needed to hand an
+    /// existing Area_judge restart grid into the migrated refine loop.
+    pub fn area_judge_restart_refine_loop_options<'a>(
+        &'a self,
+        restart_input: &'a Path,
+        initial_gridfile: &'a Path,
+    ) -> MkgrdAreaJudgeRestartRefineLoopOptions<'a> {
+        MkgrdAreaJudgeRestartRefineLoopOptions {
+            restart_input,
+            initial_gridfile,
+            source_grid: self
+                .axes
+                .refine_prepare_source_grid(self.source_state.first_triangle_id),
+            landtypes_global: &self.source_state.landtypes_global,
+            num_vertex: self.source_state.num_vertex,
+            maxlc: self.source_state.maxlc,
+        }
+    }
+}
+
+/// Extract a one-based compact source-state matrix into the full selected
+/// domain order consumed by land `mask_postproc`: longitude increases by row
+/// and latitude follows the same north-to-south source-index order used by
+/// `select_area_judge_grid_fortran_indexed`.
+pub fn compact_source_state_selected_matrix_fortran_order(
+    matrix: &[Vec<i32>],
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<Vec<Vec<i32>>> {
+    if matrix.len() < nlons_source + 1 || matrix.iter().any(|row| row.len() < nlats_source + 1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "source-state selected matrix is smaller than source dimensions",
+        ));
+    }
+    Ok((1..=nlons_source)
+        .map(|lon| (1..=nlats_source).map(|lat| matrix[lon][lat]).collect())
+        .collect())
+}
+
+/// Owned context required to construct land final-domain postprocessing from a
+/// compact source-state file. The coordinate axes stay separate so callers can
+/// borrow their already-built global source axes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdCompactSourceStateLandPostprocContext {
+    pub selected_seaorland: Vec<Vec<i32>>,
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+}
+
+/// Owned context required to construct earth final-domain postprocessing from
+/// a compact source-state file. Earth postprocessing reuses the full compact
+/// source window and final-grid sea ratio supplied by the mkgrd namelist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdCompactSourceStateEarthPostprocContext {
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+}
+
+/// Typed final-domain postprocess request inferred from compact source-state
+/// metadata, with the land selected-domain matrix already normalized into
+/// Fortran postprocess order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MkgrdCompactSourceStateFinalPostprocRequest {
+    Land(MkgrdCompactSourceStateLandPostprocContext),
+    Ocean { num_vertex: usize },
+    Atmos,
+    Earth(MkgrdCompactSourceStateEarthPostprocContext),
+}
+
+/// Build the reusable final-domain postprocess request encoded in compact
+/// source-state metadata.
+pub fn compact_source_state_final_postproc_request(
+    state: &MkgrdCompactSourceState,
+) -> io::Result<Option<MkgrdCompactSourceStateFinalPostprocRequest>> {
+    let Some(postproc) = state.final_domain_postproc else {
+        return Ok(None);
+    };
+    let require_contain = |kind: &str| {
+        if state.final_domain_contain.is_none() {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("source-state final_domain_postproc={kind} requires final_domain_contain"),
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    match postproc {
+        MkgrdCompactSourceStateFinalPostproc::Ocean => {
+            require_contain("ocean")?;
+            Ok(Some(MkgrdCompactSourceStateFinalPostprocRequest::Ocean {
+                num_vertex: state.num_vertex,
+            }))
+        }
+        MkgrdCompactSourceStateFinalPostproc::Atmos => {
+            require_contain("atmos")?;
+            Ok(Some(MkgrdCompactSourceStateFinalPostprocRequest::Atmos))
+        }
+        MkgrdCompactSourceStateFinalPostproc::Earth => {
+            require_contain("earth")?;
+            Ok(Some(MkgrdCompactSourceStateFinalPostprocRequest::Earth(
+                MkgrdCompactSourceStateEarthPostprocContext {
+                    minlon_dm_area: 1,
+                    maxlat_dm_area: 1,
+                    nlons_dm_select: state.nlons_source,
+                    nlats_dm_select: state.nlats_source,
+                },
+            )))
+        }
+        MkgrdCompactSourceStateFinalPostproc::Land => {
+            require_contain("land")?;
+            Ok(Some(MkgrdCompactSourceStateFinalPostprocRequest::Land(
+                MkgrdCompactSourceStateLandPostprocContext {
+                    selected_seaorland: compact_source_state_selected_matrix_fortran_order(
+                        &state.seaorland,
+                        state.nlons_source,
+                        state.nlats_source,
+                    )?,
+                    minlon_dm_area: 1,
+                    maxlat_dm_area: 1,
+                    nlons_dm_select: state.nlons_source,
+                    nlats_dm_select: state.nlats_source,
+                },
+            )))
+        }
+    }
+}
+
+/// Parse compact mkgrd source-state text into the same typed state consumed by
+/// migrated source-state and restart-refine runners.
+pub fn parse_mkgrd_compact_source_state(contents: &str) -> io::Result<MkgrdCompactSourceState> {
+    let mut gridnum_perdegree = None;
+    let mut nlons_source = None;
+    let mut nlats_source = None;
+    let mut first_triangle_id = Some(1usize);
+    let mut num_vertex = None;
+    let mut maxlc = None;
+    let mut final_domain_contain = None;
+    let mut final_domain_postproc = None;
+    let mut calculated_minlon_source = None;
+    let mut calculated_maxlon_source = None;
+    let mut calculated_maxlat_source = None;
+    let mut calculated_minlat_source = None;
+    let mut section = "";
+    let mut calculated_refine = Vec::new();
+    let mut is_in_domain = Vec::new();
+    let mut seaorland = Vec::new();
+    let mut landtypes_global = Vec::new();
+
+    for (line_number, raw_line) in contents.lines().enumerate() {
+        let line_number = line_number + 1;
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = &line[1..line.len() - 1];
+            match section {
+                "calculated_refine" | "is_in_domain" | "seaorland" | "landtypes_global" => {}
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("unknown source-state section [{other}] at line {line_number}"),
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if section.is_empty() {
+            let (key, value) = line.split_once('=').ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("source-state metadata line {line_number} must use key=value"),
+                )
+            })?;
+            let value = value.trim();
+            match key.trim() {
+                "gridnum_perdegree" => {
+                    gridnum_perdegree = Some(parse_source_state_positive_usize(
+                        "gridnum_perdegree",
+                        value,
+                    )?)
+                }
+                "nlons" => nlons_source = Some(parse_source_state_positive_usize("nlons", value)?),
+                "nlats" => nlats_source = Some(parse_source_state_positive_usize("nlats", value)?),
+                "first_triangle_id" => {
+                    first_triangle_id = Some(parse_source_state_positive_usize(
+                        "first_triangle_id",
+                        value,
+                    )?)
+                }
+                "num_vertex" => {
+                    num_vertex = Some(parse_source_state_positive_usize("num_vertex", value)?)
+                }
+                "calculated_minlon_source" => {
+                    calculated_minlon_source = Some(parse_source_state_positive_usize(
+                        "calculated_minlon_source",
+                        value,
+                    )?)
+                }
+                "calculated_maxlon_source" => {
+                    calculated_maxlon_source = Some(parse_source_state_positive_usize(
+                        "calculated_maxlon_source",
+                        value,
+                    )?)
+                }
+                "calculated_maxlat_source" => {
+                    calculated_maxlat_source = Some(parse_source_state_positive_usize(
+                        "calculated_maxlat_source",
+                        value,
+                    )?)
+                }
+                "calculated_minlat_source" => {
+                    calculated_minlat_source = Some(parse_source_state_positive_usize(
+                        "calculated_minlat_source",
+                        value,
+                    )?)
+                }
+                "maxlc" => {
+                    maxlc = Some(value.parse::<i32>().map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "maxlc must be an integer")
+                    })?);
+                }
+                "final_domain_contain" => {
+                    final_domain_contain = Some(parse_compact_source_state_contain_kind(value)?)
+                }
+                "final_domain_postproc" => {
+                    final_domain_postproc = Some(parse_compact_source_state_postproc_kind(value)?)
+                }
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("unknown source-state metadata key {other} at line {line_number}"),
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let row = line
+            .split_whitespace()
+            .map(|value| {
+                value.parse::<i32>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "source-state section [{section}] line {line_number} has non-integer value {value}"
+                        ),
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if row.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("source-state section [{section}] line {line_number} must not be empty"),
+            ));
+        }
+        match section {
+            "calculated_refine" => calculated_refine.push(row),
+            "is_in_domain" => is_in_domain.push(row),
+            "seaorland" => seaorland.push(row),
+            "landtypes_global" => landtypes_global.push(row),
+            _ => unreachable!(),
+        }
+    }
+
+    let gridnum_perdegree = require_source_state_metadata(gridnum_perdegree, "gridnum_perdegree")?;
+    let nlons_source = require_source_state_metadata(nlons_source, "nlons")?;
+    let nlats_source = require_source_state_metadata(nlats_source, "nlats")?;
+    let first_triangle_id = require_source_state_metadata(first_triangle_id, "first_triangle_id")?;
+    let num_vertex = require_source_state_metadata(num_vertex, "num_vertex")?;
+    let maxlc = require_source_state_metadata(maxlc, "maxlc")?;
+    let expected_lons = nlons_source + 1;
+    let expected_lats = nlats_source + 1;
+    validate_i32_matrix_shape("is_in_domain", &is_in_domain, expected_lons, expected_lats)?;
+    validate_i32_matrix_shape("seaorland", &seaorland, expected_lons, expected_lats)?;
+    validate_i32_matrix_shape(
+        "landtypes_global",
+        &landtypes_global,
+        expected_lons,
+        expected_lats,
+    )?;
+    let calculated_bounds = if calculated_refine.is_empty() {
+        if calculated_minlon_source.is_some()
+            || calculated_maxlon_source.is_some()
+            || calculated_maxlat_source.is_some()
+            || calculated_minlat_source.is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-state calculated bounds require a [calculated_refine] section",
+            ));
+        }
+        None
+    } else {
+        validate_i32_matrix_shape(
+            "calculated_refine",
+            &calculated_refine,
+            expected_lons,
+            expected_lats,
+        )?;
+        Some(AreaJudgeSourceBounds {
+            minlon_source: require_source_state_metadata(
+                calculated_minlon_source,
+                "calculated_minlon_source",
+            )?,
+            maxlon_source: require_source_state_metadata(
+                calculated_maxlon_source,
+                "calculated_maxlon_source",
+            )?,
+            maxlat_source: require_source_state_metadata(
+                calculated_maxlat_source,
+                "calculated_maxlat_source",
+            )?,
+            minlat_source: require_source_state_metadata(
+                calculated_minlat_source,
+                "calculated_minlat_source",
+            )?,
+        })
+    };
+
+    Ok(MkgrdCompactSourceState {
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+        first_triangle_id,
+        num_vertex,
+        maxlc,
+        final_domain_contain,
+        final_domain_postproc,
+        calculated_refine: (!calculated_refine.is_empty()).then_some(calculated_refine),
+        calculated_bounds,
+        is_in_domain,
+        seaorland,
+        landtypes_global,
+    })
+}
+
+fn parse_source_state_positive_usize(name: &str, value: &str) -> io::Result<usize> {
+    let parsed = value.parse::<usize>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must be a positive integer"),
+        )
+    })?;
+    if parsed == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must be a positive integer"),
+        ));
+    }
+    Ok(parsed)
+}
+
+fn require_source_state_metadata<T>(value: Option<T>, name: &str) -> io::Result<T> {
+    value.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source-state missing {name}"),
+        )
+    })
+}
+
+fn parse_compact_source_state_contain_kind(value: &str) -> io::Result<GetContainMeshKind> {
+    match value {
+        "land" | "landmesh" => Ok(GetContainMeshKind::Land),
+        "ocean" | "oceanmesh" => Ok(GetContainMeshKind::Ocean),
+        "atmos" | "atmosmesh" => Ok(GetContainMeshKind::Atmos),
+        "loc" | "LOCmesh" | "earthmesh" => Ok(GetContainMeshKind::Loc),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source-state final_domain_contain must be one of land/ocean/atmos/loc, got {other}"),
+        )),
+    }
+}
+
+fn parse_compact_source_state_postproc_kind(
+    value: &str,
+) -> io::Result<MkgrdCompactSourceStateFinalPostproc> {
+    match value {
+        "land" | "landmesh" => Ok(MkgrdCompactSourceStateFinalPostproc::Land),
+        "ocean" | "oceanmesh" => Ok(MkgrdCompactSourceStateFinalPostproc::Ocean),
+        "atmos" | "atmosmesh" => Ok(MkgrdCompactSourceStateFinalPostproc::Atmos),
+        "earth" | "earthmesh" => Ok(MkgrdCompactSourceStateFinalPostproc::Earth),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "source-state final_domain_postproc must be one of land/ocean/atmos/earth, got {other}"
+            ),
+        )),
+    }
+}
+
+/// One-based global lon/lat source axes reconstructed from source dimensions.
+///
+/// This is the Rust-owned replacement for restart/refine paths that used to
+/// rebuild `data_preprocess`-style source coordinate arrays in the CLI front-end
+/// before calling migrated `mkgrd` kernels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalSourceAxes {
+    pub lon_vertex: Vec<f64>,
+    pub lat_vertex: Vec<f64>,
+    pub lon_i: Vec<f64>,
+    pub lat_i: Vec<f64>,
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+}
+
+/// Rust data shape written by `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnstructuredMesh {
+    pub m_points: Vec<LonLatPoint>,
+    pub w_points: Vec<LonLatPoint>,
+    pub m_to_w: Vec<[i32; 3]>,
+    pub w_to_m: Vec<Vec<i32>>,
+    pub n_w_to_m: Vec<i32>,
+}
+
+/// Typed payload returned by `MOD_file_preprocess.F90:IAP_Mesh_Read`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IapMeshReadPayload {
+    pub w_points: Vec<LonLatPoint>,
+    pub triangle_neighbors: Vec<[i32; 3]>,
+    pub triangle_vertices: Vec<[i32; 3]>,
+}
+
+impl GlobalSourceAxes {
+    pub fn refine_prepare_source_grid(
+        &self,
+        first_triangle_id: usize,
+    ) -> MkgrdRefinePrepareSourceGridOptions<'_> {
+        MkgrdRefinePrepareSourceGridOptions {
+            lon_vertex: &self.lon_vertex,
+            lat_vertex: &self.lat_vertex,
+            lon_i: &self.lon_i,
+            lat_i: &self.lat_i,
+            gridnum_perdegree: self.gridnum_perdegree,
+            nlons_source: self.nlons_source,
+            nlats_source: self.nlats_source,
+            first_triangle_id,
+        }
+    }
+
+    pub fn restart_area_judge_options(&self) -> MkgrdRestartAreaJudgeOptions<'_> {
+        MkgrdRestartAreaJudgeOptions {
+            lon_vertex: &self.lon_vertex,
+            lat_vertex: &self.lat_vertex,
+            lon_i: &self.lon_i,
+            lat_i: &self.lat_i,
+            gridnum_perdegree: self.gridnum_perdegree,
+            nlons_source: self.nlons_source,
+            nlats_source: self.nlats_source,
+        }
+    }
+}
+
+/// Build Fortran-indexed global source axes for migrated restart/refine handoffs.
+pub fn build_global_source_axes_fortran_indexed(
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<GlobalSourceAxes> {
+    if gridnum_perdegree == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree must be positive for source axes",
+        ));
+    }
+    let step = 1.0 / gridnum_perdegree as f64;
+    let lon_vertex = std::iter::once(f64::NAN)
+        .chain((0..=nlons_source).map(|idx| -180.0 + idx as f64 * step))
+        .collect::<Vec<_>>();
+    let lat_vertex = std::iter::once(f64::NAN)
+        .chain((0..=nlats_source).map(|idx| 90.0 - idx as f64 * step))
+        .collect::<Vec<_>>();
+    let lon_i = std::iter::once(f64::NAN)
+        .chain((0..nlons_source).map(|idx| -180.0 + (idx as f64 + 0.5) * step))
+        .collect::<Vec<_>>();
+    let lat_i = std::iter::once(f64::NAN)
+        .chain((0..nlats_source).map(|idx| 90.0 - (idx as f64 + 0.5) * step))
+        .collect::<Vec<_>>();
+    Ok(GlobalSourceAxes {
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    })
+}
+
+/// Build the final-domain Area_judge payload requested by compact source-state
+/// metadata. This mirrors the full-source selected window used by the migrated
+/// source-state CLI path before final `Get_Contain(0)`.
+pub fn compact_source_state_final_domain_area_payload_fortran_indexed(
+    state: &MkgrdCompactSourceState,
+    axes: &GlobalSourceAxes,
+) -> io::Result<Option<AreaJudgeGridPayload>> {
+    if state.final_domain_contain.is_none() {
+        return Ok(None);
+    }
+    select_area_judge_grid_fortran_indexed(
+        &state.is_in_domain,
+        None,
+        &axes.lon_i,
+        &axes.lat_i,
+        AreaJudgeSourceBounds {
+            minlon_source: 1,
+            maxlon_source: state.nlons_source,
+            maxlat_source: 1,
+            minlat_source: state.nlats_source,
+        },
+    )
+    .map(Some)
+}
+
+/// Build final-domain contain options requested by compact source-state
+/// metadata while borrowing caller-owned axes and output paths.
+pub fn compact_source_state_final_contain_options<'a>(
+    state: &'a MkgrdCompactSourceState,
+    axes: &'a GlobalSourceAxes,
+    area_grid_file: &'a Path,
+) -> Option<MkgrdFinalDomainContainOptions<'a>> {
+    state
+        .final_domain_contain
+        .map(|mesh_kind| MkgrdFinalDomainContainOptions {
+            area_grid_file,
+            mesh_kind,
+            seaorland: &state.seaorland,
+            lon_vertex: &axes.lon_vertex,
+            lat_vertex: &axes.lat_vertex,
+            lon_i: &axes.lon_i,
+            lat_i: &axes.lat_i,
+            num_vertex: state.num_vertex,
+        })
+}
+
+/// Build the full-source final-domain Area_judge payload for a
+/// data_preprocess-derived source-state handoff.
+pub fn data_preprocess_source_state_final_domain_area_payload_fortran_indexed(
+    state: &MkgrdDataPreprocessSourceState,
+) -> io::Result<AreaJudgeGridPayload> {
+    select_area_judge_grid_fortran_indexed(
+        &state.is_in_domain,
+        None,
+        &state.lon_i,
+        &state.lat_i,
+        AreaJudgeSourceBounds {
+            minlon_source: 1,
+            maxlon_source: state.nlons_source,
+            maxlat_source: 1,
+            minlat_source: state.nlats_source,
+        },
+    )
+}
+
+/// Build final-domain contain options for a data_preprocess-derived
+/// source-state handoff while borrowing caller-owned output paths.
+pub fn data_preprocess_source_state_final_contain_options<'a>(
+    state: &'a MkgrdDataPreprocessSourceState,
+    mesh_type: &str,
+    area_grid_file: &'a Path,
+) -> io::Result<Option<MkgrdFinalDomainContainOptions<'a>>> {
+    let mesh_kind = match mesh_type.trim() {
+        "earthmesh" => GetContainMeshKind::Loc,
+        "landmesh" => GetContainMeshKind::Land,
+        "oceanmesh" => GetContainMeshKind::Ocean,
+        "atmosmesh" => GetContainMeshKind::Atmos,
+        "LOCmesh" => GetContainMeshKind::Loc,
+        _ => return Ok(None),
+    };
+    Ok(Some(MkgrdFinalDomainContainOptions {
+        area_grid_file,
+        mesh_kind,
+        seaorland: &state.seaorland,
+        lon_vertex: &state.lon_vertex,
+        lat_vertex: &state.lat_vertex,
+        lon_i: &state.lon_i,
+        lat_i: &state.lat_i,
+        num_vertex: state.num_vertex,
+    }))
+}
+
+/// Write the full-source final-domain Area_judge payload and return the
+/// matching contain options for a data_preprocess-derived source-state handoff.
+pub fn write_data_preprocess_source_state_final_domain_contain_options<'a>(
+    state: &'a MkgrdDataPreprocessSourceState,
+    mesh_type: &str,
+    area_grid_file: &'a Path,
+) -> io::Result<Option<MkgrdFinalDomainContainOptions<'a>>> {
+    let payload = data_preprocess_source_state_final_domain_area_payload_fortran_indexed(state)?;
+    if let Some(parent) = area_grid_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_area_judge_grid_netcdf(area_grid_file, &payload)?;
+    data_preprocess_source_state_final_contain_options(state, mesh_type, area_grid_file)
+}
+
+/// Build final-domain contain options shared by Area_judge restart-refine
+/// source-state and landtype-source handoffs while borrowing caller-owned axes.
+pub fn restart_refine_final_contain_options<'a>(
+    area_grid_file: &'a Path,
+    mesh_type: &str,
+    requested_num_vertex: Option<usize>,
+    seaorland: &'a [Vec<i32>],
+    lon_vertex: &'a [f64],
+    lat_vertex: &'a [f64],
+    lon_i: &'a [f64],
+    lat_i: &'a [f64],
+) -> io::Result<Option<MkgrdFinalDomainContainOptions<'a>>> {
+    let Some(num_vertex) = requested_num_vertex else {
+        return Ok(None);
+    };
+    let mesh_kind = match mesh_type.trim() {
+        "earthmesh" => GetContainMeshKind::Loc,
+        "landmesh" => GetContainMeshKind::Land,
+        "oceanmesh" => GetContainMeshKind::Ocean,
+        "atmosmesh" => GetContainMeshKind::Atmos,
+        "LOCmesh" => GetContainMeshKind::Loc,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("restart-refine final contain does not support mesh_type={other}"),
+            ))
+        }
+    };
+    Ok(Some(MkgrdFinalDomainContainOptions {
+        area_grid_file,
+        mesh_kind,
+        seaorland,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        num_vertex,
+    }))
+}
+
+/// Owned context required to construct land final-domain postprocessing from a
+/// data_preprocess-derived source-state bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdDataPreprocessSourceStateLandPostprocContext {
+    pub selected_seaorland: Vec<Vec<i32>>,
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+}
+
+/// Owned context required to construct earth final-domain postprocessing from a
+/// data_preprocess-derived source-state bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdDataPreprocessSourceStateEarthPostprocContext {
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+}
+
+/// Typed final-domain postprocess request inferred from a data_preprocess
+/// source-state bundle plus the target `NL%mesh_type`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MkgrdDataPreprocessSourceStateFinalPostprocRequest {
+    Earth(MkgrdDataPreprocessSourceStateEarthPostprocContext),
+    Land(MkgrdDataPreprocessSourceStateLandPostprocContext),
+    Atmos,
+    Ocean { num_vertex: usize },
+}
+
+/// Build the reusable final-domain postprocess request for
+/// data_preprocess-derived source-state handoffs.
+pub fn data_preprocess_source_state_final_postproc_request(
+    state: &MkgrdDataPreprocessSourceState,
+    mesh_type: &str,
+) -> io::Result<Option<MkgrdDataPreprocessSourceStateFinalPostprocRequest>> {
+    match mesh_type.trim() {
+        "earthmesh" => {
+            let selected = selected_land_domain_from_full_source_seaorland_fortran_order(
+                &state.seaorland,
+                state.nlons_source,
+                state.nlats_source,
+            )?;
+            Ok(Some(
+                MkgrdDataPreprocessSourceStateFinalPostprocRequest::Earth(
+                    MkgrdDataPreprocessSourceStateEarthPostprocContext {
+                        minlon_dm_area: i32::try_from(selected.minlon_source).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "earth source-state minlon does not fit i32",
+                            )
+                        })?,
+                        maxlat_dm_area: i32::try_from(selected.maxlat_source).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "earth source-state maxlat does not fit i32",
+                            )
+                        })?,
+                        nlons_dm_select: selected.nlons,
+                        nlats_dm_select: selected.nlats,
+                    },
+                ),
+            ))
+        }
+        "landmesh" => {
+            let selected = selected_land_domain_from_full_source_seaorland_fortran_order(
+                &state.seaorland,
+                state.nlons_source,
+                state.nlats_source,
+            )?;
+            Ok(Some(
+                MkgrdDataPreprocessSourceStateFinalPostprocRequest::Land(
+                    MkgrdDataPreprocessSourceStateLandPostprocContext {
+                        selected_seaorland: selected.seaorland,
+                        minlon_dm_area: i32::try_from(selected.minlon_source).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "landtype-source minlon does not fit i32",
+                            )
+                        })?,
+                        maxlat_dm_area: i32::try_from(selected.maxlat_source).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "landtype-source maxlat does not fit i32",
+                            )
+                        })?,
+                        nlons_dm_select: selected.nlons,
+                        nlats_dm_select: selected.nlats,
+                    },
+                ),
+            ))
+        }
+        "oceanmesh" => Ok(Some(
+            MkgrdDataPreprocessSourceStateFinalPostprocRequest::Ocean {
+                num_vertex: state.num_vertex,
+            },
+        )),
+        "atmosmesh" => Ok(Some(
+            MkgrdDataPreprocessSourceStateFinalPostprocRequest::Atmos,
+        )),
+        _ => Ok(None),
+    }
+}
+
+/// Map a typed data_preprocess final postprocess request into the borrowed
+/// runner options consumed by the migrated final-domain handoff.
+pub fn data_preprocess_source_state_final_postproc_options<'a>(
+    request: Option<&'a MkgrdDataPreprocessSourceStateFinalPostprocRequest>,
+    state: &'a MkgrdDataPreprocessSourceState,
+    mask_sea_ratio: f64,
+    output_format: &'a str,
+) -> io::Result<Option<MkgrdFinalDomainPostprocOptions<'a>>> {
+    match request {
+        Some(MkgrdDataPreprocessSourceStateFinalPostprocRequest::Earth(context)) => {
+            Ok(Some(MkgrdFinalDomainPostprocOptions::EarthFromFinalGrid(
+                MkgrdFinalDomainEarthAutoPostprocOptions {
+                    mask_sea_ratio,
+                    minlon_dm_area: context.minlon_dm_area,
+                    maxlat_dm_area: context.maxlat_dm_area,
+                    nlons_dm_select: context.nlons_dm_select,
+                    nlats_dm_select: context.nlats_dm_select,
+                    lon_vertex: &state.lon_vertex,
+                    lat_vertex: &state.lat_vertex,
+                    lon_i: &state.lon_i,
+                    lat_i: &state.lat_i,
+                },
+            )))
+        }
+        Some(MkgrdDataPreprocessSourceStateFinalPostprocRequest::Land(context)) => Ok(Some(
+            MkgrdFinalDomainPostprocOptions::Land(MaskPostprocLandRunOptions {
+                seaorland: &context.selected_seaorland,
+                minlon_dm_area: context.minlon_dm_area,
+                maxlat_dm_area: context.maxlat_dm_area,
+                nlons_dm_select: context.nlons_dm_select,
+                nlats_dm_select: context.nlats_dm_select,
+                lon_vertex: &state.lon_vertex,
+                lat_vertex: &state.lat_vertex,
+                lon_i: &state.lon_i,
+                lat_i: &state.lat_i,
+            }),
+        )),
+        Some(MkgrdDataPreprocessSourceStateFinalPostprocRequest::Ocean { num_vertex }) => Ok(Some(
+            MkgrdFinalDomainPostprocOptions::Ocean(MaskPostprocOceanRunOptions {
+                mask_sea_ratio,
+                num_vertex: *num_vertex,
+            }),
+        )),
+        Some(MkgrdDataPreprocessSourceStateFinalPostprocRequest::Atmos) => {
+            Ok(Some(MkgrdFinalDomainPostprocOptions::Atmos {
+                output_format: output_format.trim(),
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Infer the legacy `num_vertex` boundary from `NL%mode_grid` for migrated
+/// mkgrd paths that do not have a persisted mesh-count handoff yet.
+pub fn mkgrd_mode_grid_num_vertex(mode_grid: &str) -> io::Result<usize> {
+    match mode_grid.trim() {
+        "tri" => Ok(3),
+        "hex" => Ok(6),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported NL%mode_grid for migrated landtype-source execution: {other}"),
+        )),
+    }
+}
+
+/// Convert a Fortran-indexed landtype raster into the one-based sea/land mask
+/// consumed by restarted final-domain `Get_Contain` and land postprocess
+/// handoffs: `0` stays ocean/empty, any non-zero landtype becomes land `1`.
+pub fn seaorland_from_landtypes_global_fortran_indexed(landtypes: &[Vec<i32>]) -> Vec<Vec<i32>> {
+    landtypes
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|&landtype| if landtype == 0 { 0 } else { 1 })
+                .collect()
+        })
+        .collect()
+}
+
+impl MkgrdDataPreprocessSourceState {
+    pub fn refine_prepare_source_grid(&self) -> MkgrdRefinePrepareSourceGridOptions<'_> {
+        MkgrdRefinePrepareSourceGridOptions {
+            lon_vertex: &self.lon_vertex,
+            lat_vertex: &self.lat_vertex,
+            lon_i: &self.lon_i,
+            lat_i: &self.lat_i,
+            gridnum_perdegree: self.gridnum_perdegree,
+            nlons_source: self.nlons_source,
+            nlats_source: self.nlats_source,
+            first_triangle_id: self.first_triangle_id,
+        }
+    }
 }
 
 /// Report for the migrated top-level `mkgrd.F90` mask-restart branch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdMaskRestartPlanReport {
     pub config: EarthmeshConfig,
+    pub runtime_state: EarthmeshRuntimeState,
     pub workspace_plan: MkgrdWorkspacePlan,
     pub remask: MaskRestartRemaskPlan,
 }
@@ -63,6 +6284,7 @@ pub struct MkgrdMaskRestartPlanReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdMaskRestartOceanRunReport {
     pub plan: MkgrdMaskRestartPlanReport,
+    pub runtime_state: EarthmeshRuntimeState,
     pub postproc: MaskPostprocOceanDomainReport,
 }
 
@@ -70,6 +6292,7 @@ pub struct MkgrdMaskRestartOceanRunReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdMaskRestartPatchRunReport {
     pub plan: MkgrdMaskRestartPlanReport,
+    pub runtime_state: EarthmeshRuntimeState,
     pub workspace_mask: WorkspaceMaskApplyReport,
 }
 
@@ -91,10 +6314,129 @@ pub struct MkgrdRestartAreaJudgeOptions<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdRestartAreaJudgeRunReport {
     pub plan: MkgrdMaskRestartPlanReport,
+    pub runtime_state: EarthmeshRuntimeState,
     pub workspace_mask: WorkspaceMaskApplyReport,
     pub area: AreaJudgeRestartReport,
     pub area_write: AreaJudgeGridWriteReport,
     pub refine_write: Option<AreaJudgeGridWriteReport>,
+}
+
+/// Runtime options for composing restarted `Area_judge` with the final
+/// `Get_Contain(0)` + `mask_postproc(mesh_type)` handoff.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdRestartAreaJudgePostprocOptions<'a> {
+    pub area_judge: MkgrdRestartAreaJudgeOptions<'a>,
+    pub num_vertex: usize,
+}
+
+/// Evidence from the mask-restart ContinueMkgrd branch after the restarted
+/// `Area_judge` selected grid is handed directly to final domain postprocess.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRestartAreaJudgePostprocRunReport {
+    pub restart: MkgrdRestartAreaJudgeRunReport,
+    pub contain: GetContainRefineFileRunReport,
+    pub postproc: MkgrdFinalDomainPostprocReport,
+}
+
+/// Evidence for the restart `Area_judge` branch when the CLI/user supplies the
+/// global regular-source grid dimensions instead of pre-expanded coordinate
+/// arrays.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRestartAreaJudgeGlobalSourceRunReport {
+    pub restart: MkgrdRestartAreaJudgeRunReport,
+    pub postproc: Option<MkgrdRestartAreaJudgePostprocRunReport>,
+}
+
+impl MkgrdRestartAreaJudgePostprocRunReport {
+    pub fn final_domain_contain_runtime_counts(&self) -> &GetContainRuntimeCounts {
+        &self.contain.runtime_counts
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        &self.restart.runtime_state
+    }
+}
+
+impl MkgrdRestartAreaJudgeGlobalSourceRunReport {
+    pub fn final_domain_contain_runtime_counts(&self) -> Option<&GetContainRuntimeCounts> {
+        self.postproc
+            .as_ref()
+            .map(MkgrdRestartAreaJudgePostprocRunReport::final_domain_contain_runtime_counts)
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        self.postproc
+            .as_ref()
+            .map(MkgrdRestartAreaJudgePostprocRunReport::runtime_state)
+            .unwrap_or(&self.restart.runtime_state)
+    }
+}
+
+/// Inputs for entering a migrated refine loop from an already-saved
+/// `Area_judge` restart grid instead of a fresh non-restart `Area_judge` run.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdAreaJudgeRestartRefineLoopOptions<'a> {
+    pub restart_input: &'a Path,
+    pub initial_gridfile: &'a Path,
+    pub source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    pub landtypes_global: &'a [Vec<i32>],
+    pub num_vertex: usize,
+    pub maxlc: i32,
+}
+
+/// Evidence from a restart-grid handoff into the migrated refine-loop stack.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdAreaJudgeRestartRefineLoopRunReport {
+    pub prepare: MkgrdRefineLoopPrepareReport,
+    pub restart: AreaJudgeRestartGridsRunReport,
+    pub execution: MkgrdRefineLoopExecutionReport,
+}
+
+/// Evidence from the direct restart-refine compact source-state namelist path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRestartRefineCompactSourceStateNamelistRunReport {
+    pub source_bundle: MkgrdCompactRestartRefineSourceState,
+    pub report: MkgrdAreaJudgeRestartRefineLoopRunReport,
+}
+
+/// Evidence from the direct restart-refine landtype-source namelist path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdRestartRefineLandtypeSourceNamelistRunReport {
+    pub preprocess: LandtypeDataPreprocessReport,
+    pub report: MkgrdAreaJudgeRestartRefineLoopRunReport,
+}
+
+impl MkgrdAreaJudgeRestartRefineLoopRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &self.execution.source_branch_reports
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        self.execution
+            .runtime_state
+            .as_ref()
+            .unwrap_or(&self.prepare.runtime_state)
+    }
+}
+
+impl MkgrdRestartRefineCompactSourceStateNamelistRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.report.source_branch_reports()
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        self.report.runtime_state()
+    }
+}
+
+impl MkgrdRestartRefineLandtypeSourceNamelistRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.report.source_branch_reports()
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        self.report.runtime_state()
+    }
 }
 
 /// One source branch scheduled inside a `mkgrd.F90` refine-loop step.
@@ -110,6 +6452,7 @@ pub enum MkgrdRefineSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MkgrdRefineLoopStepPlan {
     pub step: usize,
+    pub max_transition_row: usize,
     pub sources: Vec<MkgrdRefineSource>,
     pub run_refine_loop: bool,
     pub stop_after_step: bool,
@@ -143,6 +6486,7 @@ pub struct MkgrdRefineSourceIoPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MkgrdRefineLoopStepIoPlan {
     pub step: usize,
+    pub max_transition_row: usize,
     pub sources: Vec<MkgrdRefineSourceIoPlan>,
     pub refine_loop_input_gridfile: PathBuf,
     pub refine_loop_original_tmpfile: PathBuf,
@@ -155,7 +6499,7 @@ pub struct MkgrdRefineLoopStepIoPlan {
 
 /// Non-destructive file-level I/O schedule for the top-level `mkgrd.F90` refine
 /// loop plus the final `Get_Contain(0)`/`mask_postproc(mesh_type)` handoff.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdRefineLoopIoPlan {
     pub file_dir: PathBuf,
     pub nxp: usize,
@@ -183,7 +6527,7 @@ pub enum MkgrdFinalQualitySpringMode {
 }
 
 /// Non-destructive file-level schedule for `Final_Grid_Quality_Check`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdFinalQualityCheckIoPlan {
     pub step: usize,
     pub run_quality_check: bool,
@@ -194,14 +6538,362 @@ pub struct MkgrdFinalQualityCheckIoPlan {
     pub quality_after_spring: Option<PathBuf>,
     pub output_gridfile: Option<PathBuf>,
     pub regional_set_dis: Option<i32>,
+    pub global_spring: Option<MkgrdFinalQualityGlobalSpringIoPlan>,
+    pub regional_spring: Option<MkgrdFinalQualityRegionalSpringIoPlan>,
+    pub regional_source_mask: Option<MkgrdFinalQualityRegionalSourceMaskIoPlan>,
+}
+
+/// Source-mask classification inputs for the final regional spring branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdFinalQualityRegionalSourceMaskIoPlan {
+    pub source_lon_vertices: Vec<f64>,
+    pub source_lat_vertices: Vec<f64>,
+    pub mask_patch: Vec<Vec<bool>>,
+    pub first_triangle_id: usize,
+}
+
+/// Build the source-mask classification input required by the final regional
+/// spring branch from the same numbered `mask_patch_*` sources used by the
+/// legacy area-judge path.
+pub fn build_mkgrd_final_quality_regional_source_mask_io(
+    file_dir: impl AsRef<Path>,
+    mask_patch_type: &str,
+    iter: usize,
+    mask_patch_ndm: usize,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+) -> io::Result<MkgrdFinalQualityRegionalSourceMaskIoPlan> {
+    let source = build_area_judge_area_sources_fortran_indexed(
+        file_dir,
+        "mask_patch",
+        mask_patch_type,
+        iter,
+        mask_patch_ndm,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )?;
+
+    Ok(MkgrdFinalQualityRegionalSourceMaskIoPlan {
+        source_lon_vertices: lon_vertex.to_vec(),
+        source_lat_vertices: lat_vertex.to_vec(),
+        mask_patch: bool_matrix_from_i32_area_mask(source.is_in_area),
+        first_triangle_id,
+    })
+}
+
+/// Attach a built final-regional source mask to an existing final quality plan.
+///
+/// Returns `true` when this call injected a new mask. Non-running, non-regional,
+/// or already-enriched plans are left unchanged and return `false`.
+pub fn enrich_mkgrd_final_quality_with_regional_source_mask_io(
+    plan: &mut MkgrdFinalQualityCheckIoPlan,
+    file_dir: impl AsRef<Path>,
+    mask_patch_type: &str,
+    iter: usize,
+    mask_patch_ndm: usize,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+) -> io::Result<bool> {
+    if !plan.run_quality_check
+        || plan.spring_mode != MkgrdFinalQualitySpringMode::RegionalFinal
+        || plan.regional_source_mask.is_some()
+    {
+        return Ok(false);
+    }
+
+    plan.regional_source_mask = Some(build_mkgrd_final_quality_regional_source_mask_io(
+        file_dir,
+        mask_patch_type,
+        iter,
+        mask_patch_ndm,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+        first_triangle_id,
+    )?);
+    Ok(true)
+}
+
+/// Attach a final-regional source mask to the final quality stage of a
+/// top-level refine-loop I/O plan, using the refine-loop plan's `file_dir` as
+/// the source for numbered legacy `mask_patch_*` files.
+pub fn enrich_mkgrd_refine_loop_final_quality_with_regional_source_mask_io(
+    plan: &mut MkgrdRefineLoopIoPlan,
+    mask_patch_type: &str,
+    iter: usize,
+    mask_patch_ndm: usize,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+) -> io::Result<bool> {
+    let file_dir = plan.file_dir.clone();
+    enrich_mkgrd_final_quality_with_regional_source_mask_io(
+        &mut plan.final_quality_check,
+        file_dir,
+        mask_patch_type,
+        iter,
+        mask_patch_ndm,
+        lon_vertex,
+        lat_vertex,
+        lon_i,
+        lat_i,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+        first_triangle_id,
+    )
+}
+
+/// Attach final-global spring distance masks by re-running the same source-mask
+/// classification that Fortran performs inside `set_distsOnEdge_global`.
+pub fn enrich_mkgrd_final_quality_with_global_distance_steps_io(
+    plan: &mut MkgrdFinalQualityCheckIoPlan,
+    runtime_state: &EarthmeshRuntimeState,
+    max_iter: usize,
+) -> io::Result<bool> {
+    if !plan.run_quality_check
+        || plan.spring_mode != MkgrdFinalQualitySpringMode::Global
+        || plan
+            .global_spring
+            .as_ref()
+            .is_some_and(|spring| !spring.distance_steps.is_empty())
+    {
+        return Ok(false);
+    }
+
+    let refine = runtime_state.refine.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "final global spring distance steps require runtime refine config",
+        )
+    })?;
+    let gridnum_perdegree =
+        usize::try_from(runtime_state.config.gridnum_perdegree).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "final global spring requires positive gridnum_perdegree",
+            )
+        })?;
+    let axes = build_global_source_axes_fortran_indexed(
+        gridnum_perdegree,
+        runtime_state.source_grid.nlons_source,
+        runtime_state.source_grid.nlats_source,
+    )?;
+    let mesh = normalize_unstructured_mesh_legacy_placeholders(&read_unstructured_mesh_netcdf(
+        &plan.input_gridfile,
+    )?)?;
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+
+    let mut distance_steps = Vec::new();
+    for iter in 1..=max_iter {
+        if iter > plan.step {
+            continue;
+        }
+        if refine.exit_loop_step.get(iter).copied().unwrap_or(false) {
+            continue;
+        }
+        let mut mask_patch_ndm = *runtime_state
+            .mask_counts
+            .mask_patch_ndm
+            .get(iter)
+            .unwrap_or(&0);
+        if mask_patch_ndm == 0 {
+            mask_patch_ndm = count_area_judge_area_sources(
+                &runtime_state.config.file_dir(),
+                "mask_patch",
+                &runtime_state.config.mask_patch_type,
+                iter,
+            );
+        }
+        if mask_patch_ndm == 0 {
+            continue;
+        }
+        let halo = usize::try_from(*refine.halo.get(iter).unwrap_or(&0)).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("final global spring halo({iter}) must be non-negative"),
+            )
+        })?;
+        let source = build_area_judge_area_sources_fortran_indexed(
+            &runtime_state.config.file_dir(),
+            "mask_patch",
+            &runtime_state.config.mask_patch_type,
+            iter,
+            mask_patch_ndm,
+            &axes.lon_vertex,
+            &axes.lat_vertex,
+            &axes.lon_i,
+            &axes.lat_i,
+            axes.gridnum_perdegree,
+            axes.nlons_source,
+            axes.nlats_source,
+        )?;
+        let refinement_flags = earthmesh_mesh::refine_sjx_regional_make_fortran_indexed(
+            earthmesh_mesh::RefineRegionalMaskInput {
+                triangle_lonlat: &triangle_lonlat,
+                source_lon_vertices: &axes.lon_vertex,
+                source_lat_vertices: &axes.lat_vertex,
+                mask_patch: &bool_matrix_from_i32_area_mask(source.is_in_area),
+                first_triangle_id: runtime_state.num_mp_step[iter - 1],
+            },
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to classify final global spring refinement flags for iter {iter}"),
+            )
+        })?;
+        if std::env::var_os("EARTHMESH_FINAL_GLOBAL_DEBUG").is_some() {
+            let refined_count = refinement_flags.iter().filter(|flag| **flag).count();
+            eprintln!(
+                "final_global_distance_step iter={iter} ndm={mask_patch_ndm} halo={halo} refined={refined_count} first_triangle={} first_cell={}",
+                runtime_state.num_mp_step[iter - 1],
+                runtime_state.num_wp_step[iter - 1]
+            );
+        }
+        distance_steps.push(MkgrdFinalQualityGlobalDistanceStepIoPlan {
+            active: true,
+            halo,
+            refinement_flags,
+            num_vertex_in: runtime_state.num_mp_step[iter - 1],
+            num_center_in: runtime_state.num_wp_step[iter - 1],
+        });
+    }
+
+    if let Some(global_spring) = plan.global_spring.as_mut() {
+        global_spring.distance_steps = distance_steps;
+        Ok(true)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check global spring requires global_spring controls",
+        ))
+    }
+}
+
+fn count_area_judge_area_sources(
+    file_dir: impl AsRef<Path>,
+    type_select: &str,
+    mask_type: &str,
+    iter: usize,
+) -> usize {
+    let file_dir = file_dir.as_ref();
+    let mut count = 0usize;
+    for source_index in 1.. {
+        let Ok(path) =
+            area_judge_area_source_path(file_dir, type_select, mask_type, iter, source_index)
+        else {
+            break;
+        };
+        if path.exists() {
+            count = source_index;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+fn bool_matrix_from_i32_area_mask(mask: Vec<Vec<i32>>) -> Vec<Vec<bool>> {
+    mask.into_iter()
+        .map(|row| row.into_iter().map(|value| value != 0).collect())
+        .collect()
+}
+
+/// One owned distance-step mask for the final global spring branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdFinalQualityGlobalDistanceStepIoPlan {
+    pub active: bool,
+    pub halo: usize,
+    pub refinement_flags: Vec<bool>,
+    pub num_vertex_in: usize,
+    pub num_center_in: usize,
+}
+
+/// Resolved namelist-derived controls for the final global spring branch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdFinalQualityGlobalSpringIoPlan {
+    pub base_dists_on_edge: f64,
+    pub base_cellwidth: Option<f64>,
+    pub distance_num_rc: usize,
+    pub distance_spacing: DistanceLayerSpacing,
+    pub distance_steps: Vec<MkgrdFinalQualityGlobalDistanceStepIoPlan>,
+    pub niter_refine: usize,
+    pub relax: f64,
+    pub radius: f64,
+}
+
+/// Resolved namelist-derived controls for the final regional spring branch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MkgrdFinalQualityRegionalSpringIoPlan {
+    pub niter_refine: usize,
+    pub radius: f64,
 }
 
 /// Runtime options for the final `mask_postproc(mesh_type)` call after
 /// `mkgrd.F90` has performed the final `Get_Contain(0)` domain handoff.
 pub enum MkgrdFinalDomainPostprocOptions<'a> {
     Earth(MaskPostprocEarthRunOptions<'a>),
+    EarthFromFinalGrid(MkgrdFinalDomainEarthAutoPostprocOptions<'a>),
     Land(MaskPostprocLandRunOptions<'a>),
     Ocean(MaskPostprocOceanRunOptions),
+    Atmos { output_format: &'a str },
+}
+
+/// Runtime controls for restart/refine earth final postprocess when the final
+/// unstructured grid count is only known after the refine handoff has copied
+/// `gridfile_NXP####_<mode>.nc4` into `result/`.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdFinalDomainEarthAutoPostprocOptions<'a> {
+    pub mask_sea_ratio: f64,
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+}
+
+/// Runtime inputs for the final `MOD_GetContain.F90:Get_Contain(0)` call after
+/// the refine loop has copied the selected final gridfile into `result/`.
+#[derive(Debug, Clone, Copy)]
+pub struct MkgrdFinalDomainContainOptions<'a> {
+    pub area_grid_file: &'a Path,
+    pub mesh_kind: GetContainMeshKind,
+    pub seaorland: &'a [Vec<i32>],
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub num_vertex: usize,
 }
 
 /// Evidence from the final `mask_postproc(mesh_type)` call after a refine loop.
@@ -210,6 +6902,8 @@ pub enum MkgrdFinalDomainPostprocReport {
     Earth(MaskPostprocEarthDomainReport),
     Land(MaskPostprocLandDomainReport),
     Ocean(MaskPostprocOceanDomainReport),
+    Atmos(MpasSimpleMeshWriteReport),
+    AtmosFull(MpasFullMeshPipelineReport),
 }
 
 /// Evidence from executing the final `Get_Contain(0)` gridfile handoff and,
@@ -219,6 +6913,7 @@ pub struct MkgrdRefineLoopFinalDomainHandoffReport {
     pub copied_result_gridfile: PathBuf,
     pub copied_bytes: u64,
     pub contain_domain: PathBuf,
+    pub generated_contain: Option<GetContainRefineFileRunReport>,
     pub postproc: Option<MkgrdFinalDomainPostprocReport>,
 }
 
@@ -255,6 +6950,7 @@ pub struct MkgrdRefineLoopWorkingStateStepReport {
     pub onedivide_four_renew: Option<OnedivideFourRenewReport>,
     pub onedivide_two: Option<OnedivideTwoReport>,
     pub ngr_renew: Option<NgrRenewReport>,
+    pub post_refine_counts: Option<(usize, usize)>,
 }
 
 /// File-backed refine-loop geometry executor backed by `RefineLoopWorkingState`.
@@ -273,6 +6969,7 @@ pub struct MkgrdRefineLoopWorkingStateExecutor {
     calculated_threshold_files: Vec<PathBuf>,
     num_vertex: usize,
     set_dis_in: usize,
+    last_post_refine_counts: Option<(usize, usize)>,
 }
 
 /// Evidence from applying `MOD_refine.F90:OnedivideFour_connection`.
@@ -377,12 +7074,122 @@ pub trait MkgrdRefineLoopExecutor {
     fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()>;
 
     fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()>;
+
+    fn accept_source_branch_outputs(
+        &mut self,
+        _step: &MkgrdRefineLoopStepIoPlan,
+        _source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn accept_source_branch_report(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+        _report: &MkgrdRefineSourceBranchReport,
+    ) -> io::Result<()> {
+        self.accept_source_branch_outputs(step, source)
+    }
+
+    fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &[]
+    }
+
+    fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        None
+    }
+
+    fn record_runtime_mesh_counts_for_step(
+        &mut self,
+        _step: usize,
+        _num_mp_step: usize,
+        _num_wp_step: usize,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn last_refine_step_post_counts(&self) -> Option<(usize, usize)> {
+        None
+    }
+}
+
+/// Lightweight file-copying refine executor used for smoke/passthrough
+/// namelist runs while the heavy geometry refine kernels are being migrated.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MkgrdPassthroughRefineExecutor;
+
+impl MkgrdRefineLoopExecutor for MkgrdPassthroughRefineExecutor {
+    fn run_source_branch(
+        &mut self,
+        _step: &MkgrdRefineLoopStepIoPlan,
+        _source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
+        let mesh = read_unstructured_mesh_netcdf(&step.refine_loop_input_gridfile)?;
+        write_unstructured_mesh_netcdf(&step.refine_loop_output_gridfile, &mesh).map(|_| ())
+    }
+
+    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<T> MkgrdRefineLoopExecutor for &mut T
+where
+    T: MkgrdRefineLoopExecutor + ?Sized,
+{
+    fn run_source_branch(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        (**self).run_source_branch(step, source)
+    }
+
+    fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
+        (**self).run_refine_loop_step(step)
+    }
+
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        (**self).run_final_quality_check(plan)
+    }
+
+    fn accept_source_branch_outputs(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        (**self).accept_source_branch_outputs(step, source)
+    }
+
+    fn accept_source_branch_report(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+        report: &MkgrdRefineSourceBranchReport,
+    ) -> io::Result<()> {
+        (**self).accept_source_branch_report(step, source, report)
+    }
+
+    fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        (**self).source_branch_reports()
+    }
+
+    fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        (**self).runtime_state()
+    }
 }
 
 /// Evidence from dispatching the migrated top-level `mkgrd.F90` refine loop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdRefineLoopExecutionReport {
     pub executed_sources: usize,
+    pub source_branch_reports: Vec<MkgrdRefineSourceBranchReport>,
+    pub runtime_state: Option<EarthmeshRuntimeState>,
     pub executed_refine_steps: usize,
     pub ran_final_quality_check: bool,
     pub final_handoff: MkgrdRefineLoopFinalDomainHandoffReport,
@@ -443,6 +7250,7 @@ pub struct MkgrdSpecifiedRefineSourceExecutorOptions<'a> {
     pub mesh_type: &'a str,
     pub mask_refine_spc_type: &'a str,
     pub mask_refine_ndm: usize,
+    pub mask_refine_ndm_by_iter: &'a [usize; 10],
     pub is_in_domain: &'a [Vec<i32>],
     pub seaorland: &'a [Vec<i32>],
     pub lon_vertex: &'a [f64],
@@ -516,6 +7324,15 @@ pub enum MkgrdRefineSourceBranchReport {
     Specified(MkgrdSpecifiedRefineSourceBranchReport),
 }
 
+impl MkgrdRefineSourceBranchReport {
+    fn contain_runtime_counts(&self) -> &GetContainRuntimeCounts {
+        match self {
+            Self::Calculated(report) => &report.contain.runtime_counts,
+            Self::Specified(report) => &report.contain.runtime_counts,
+        }
+    }
+}
+
 /// File-backed executor for the specified-refinement source branch.
 #[derive(Debug, Clone, Copy)]
 pub struct MkgrdSpecifiedRefineSourceExecutor<'a> {
@@ -551,13 +7368,36 @@ impl<'a> MkgrdSpecifiedRefineSourceExecutor<'a> {
             ));
         }
 
+        let mask_refine_ndm = *self
+            .options
+            .mask_refine_ndm_by_iter
+            .get(source.area_judge_iter)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "specified refine iter {} must fit mask_refine_ndm 0:9",
+                        source.area_judge_iter
+                    ),
+                )
+            })?;
+        if mask_refine_ndm == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "mask_refine_ndm({}) must be larger than zero",
+                    source.area_judge_iter
+                ),
+            ));
+        }
+
         let mesh_kind = getcontain_mesh_kind_from_mesh_type(self.options.mesh_type)?;
         let area = run_area_judge_refine_grid_fortran_indexed(AreaJudgeRefineGridRunConfig {
             file_dir: self.options.file_dir,
             iter: source.area_judge_iter,
             calculated_refine: None,
             mask_refine_spc_type: self.options.mask_refine_spc_type,
-            mask_refine_ndm: self.options.mask_refine_ndm,
+            mask_refine_ndm,
             is_in_domain: self.options.is_in_domain,
             lon_vertex: self.options.lon_vertex,
             lat_vertex: self.options.lat_vertex,
@@ -619,11 +7459,8 @@ impl MkgrdRefineLoopExecutor for MkgrdSpecifiedRefineSourceExecutor<'_> {
         ))
     }
 
-    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Final_Grid_Quality_Check is not implemented by MkgrdSpecifiedRefineSourceExecutor",
-        ))
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        run_mkgrd_final_quality_check(plan)
     }
 }
 
@@ -747,11 +7584,8 @@ impl MkgrdRefineLoopExecutor for MkgrdCalculatedRefineSourceExecutor<'_> {
         ))
     }
 
-    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Final_Grid_Quality_Check is not implemented by MkgrdCalculatedRefineSourceExecutor",
-        ))
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        run_mkgrd_final_quality_check(plan)
     }
 }
 
@@ -763,7 +7597,7 @@ fn mkgrd_calculated_getref_output_refs<'a>(
         "landmesh" => Ok((Some(required_output_at(outputs, 0, "land")?), None, None)),
         "oceanmesh" => Ok((None, Some(required_output_at(outputs, 0, "ocean")?), None)),
         "atmosmesh" => Ok((None, None, Some(required_output_at(outputs, 0, "atmos")?))),
-        "LOCmesh" => Ok((
+        "LOCmesh" | "earthmesh" => Ok((
             Some(required_output_at(outputs, 0, "land")?),
             Some(required_output_at(outputs, 1, "ocean")?),
             Some(required_output_at(outputs, 2, "atmos")?),
@@ -788,17 +7622,165 @@ fn required_output_at<'a>(
     })
 }
 
+/// Composite refine-loop executor that routes already-migrated source branches
+/// to one executor and geometry/final-quality work to another.
+///
+/// This is the Rust replacement glue for the top-level `mkgrd.F90` refine loop:
+/// callers can combine `MkgrdRefineSourceBranchExecutor` with
+/// `MkgrdRefineLoopWorkingStateExecutor` without writing a bespoke adapter.
+#[derive(Debug, Clone)]
+pub struct MkgrdCompositeRefineLoopExecutor<SourceExecutor, RefineExecutor> {
+    pub source_executor: SourceExecutor,
+    pub refine_executor: RefineExecutor,
+}
+
+impl<SourceExecutor, RefineExecutor>
+    MkgrdCompositeRefineLoopExecutor<SourceExecutor, RefineExecutor>
+{
+    pub fn new(source_executor: SourceExecutor, refine_executor: RefineExecutor) -> Self {
+        Self {
+            source_executor,
+            refine_executor,
+        }
+    }
+
+    pub fn into_parts(self) -> (SourceExecutor, RefineExecutor) {
+        (self.source_executor, self.refine_executor)
+    }
+}
+
+impl<SourceExecutor, RefineExecutor> MkgrdRefineLoopExecutor
+    for MkgrdCompositeRefineLoopExecutor<SourceExecutor, RefineExecutor>
+where
+    SourceExecutor: MkgrdRefineLoopExecutor,
+    RefineExecutor: MkgrdRefineLoopExecutor,
+{
+    fn run_source_branch(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        let report_count = self.source_executor.source_branch_reports().len();
+        self.source_executor.run_source_branch(step, source)?;
+        if let Some(report) = self
+            .source_executor
+            .source_branch_reports()
+            .get(report_count..)
+            .and_then(|reports| reports.last())
+        {
+            self.refine_executor
+                .accept_source_branch_report(step, source, report)
+        } else {
+            self.refine_executor
+                .accept_source_branch_outputs(step, source)
+        }
+    }
+
+    fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
+        self.refine_executor.run_refine_loop_step(step)?;
+        if let Some((num_mp_step, num_wp_step)) =
+            self.refine_executor.last_refine_step_post_counts()
+        {
+            self.source_executor.record_runtime_mesh_counts_for_step(
+                step.step,
+                num_mp_step,
+                num_wp_step,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        self.refine_executor.run_final_quality_check(plan)
+    }
+
+    fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.source_executor.source_branch_reports()
+    }
+
+    fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.source_executor
+            .runtime_state()
+            .or_else(|| self.refine_executor.runtime_state())
+    }
+}
+
+/// Standard migrated refine-loop executor shape: file-backed source-branch
+/// kernels plus Rust working-state geometry/final-quality kernels.
+pub type MkgrdMigratedRefineLoopExecutor<'a> = MkgrdCompositeRefineLoopExecutor<
+    MkgrdRefineSourceBranchExecutor<'a>,
+    MkgrdRefineLoopWorkingStateExecutor,
+>;
+
+impl<'a> MkgrdMigratedRefineLoopExecutor<'a> {
+    /// Return source-branch reports recorded through the generic refine-loop
+    /// executor path, including explicit `Get_Contain` runtime counter handoffs.
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        self.source_executor.source_branch_reports()
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.source_executor
+            .runtime_state()
+            .or_else(|| self.refine_executor.runtime_state())
+    }
+}
+
+/// Build the standard migrated refine-loop executor without exposing the generic
+/// composite shape to adapters or Python/Rust runtime callers.
+pub fn mkgrd_migrated_refine_loop_executor<'a>(
+    source_options: MkgrdRefineSourceBranchExecutorOptions<'a>,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+) -> MkgrdMigratedRefineLoopExecutor<'a> {
+    MkgrdCompositeRefineLoopExecutor::new(
+        MkgrdRefineSourceBranchExecutor::new(source_options),
+        refine_executor,
+    )
+}
+
+/// Build the standard migrated refine-loop executor and seed the source branch
+/// side with the Rust-owned runtime state prepared from namelists/read_nl.
+pub fn mkgrd_migrated_refine_loop_executor_with_runtime_state<'a>(
+    source_options: MkgrdRefineSourceBranchExecutorOptions<'a>,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    runtime_state: EarthmeshRuntimeState,
+) -> MkgrdMigratedRefineLoopExecutor<'a> {
+    MkgrdCompositeRefineLoopExecutor::new(
+        MkgrdRefineSourceBranchExecutor::new(source_options).with_runtime_state(runtime_state),
+        refine_executor,
+    )
+}
+
 /// File-backed dispatcher for migrated calculated/specified refine source
 /// branches. Geometry refinement and final quality are intentionally still
 /// separate executor responsibilities.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MkgrdRefineSourceBranchExecutor<'a> {
     options: MkgrdRefineSourceBranchExecutorOptions<'a>,
+    source_branch_reports: Vec<MkgrdRefineSourceBranchReport>,
+    runtime_state: Option<EarthmeshRuntimeState>,
 }
 
 impl<'a> MkgrdRefineSourceBranchExecutor<'a> {
     pub fn new(options: MkgrdRefineSourceBranchExecutorOptions<'a>) -> Self {
-        Self { options }
+        Self {
+            options,
+            source_branch_reports: Vec::new(),
+            runtime_state: None,
+        }
+    }
+
+    pub fn with_runtime_state(mut self, runtime_state: EarthmeshRuntimeState) -> Self {
+        self.runtime_state = Some(runtime_state);
+        self
+    }
+
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &self.source_branch_reports
+    }
+
+    pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.runtime_state.as_ref()
     }
 
     pub fn run_source_branch_report(
@@ -839,7 +7821,24 @@ impl MkgrdRefineLoopExecutor for MkgrdRefineSourceBranchExecutor<'_> {
         step: &MkgrdRefineLoopStepIoPlan,
         source: &MkgrdRefineSourceIoPlan,
     ) -> io::Result<()> {
-        self.run_source_branch_report(step, source).map(|_| ())
+        let report = self.run_source_branch_report(step, source)?;
+        if let Some(runtime_state) = self.runtime_state.as_mut() {
+            let counts = report.contain_runtime_counts();
+            runtime_state
+                .record_mesh_counts_for_step(
+                    step.step,
+                    counts.current_num_mp_step,
+                    counts.current_num_wp_step,
+                )
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+            if counts.previous_num_vertex > 0 {
+                runtime_state
+                    .record_num_vertex(counts.previous_num_vertex)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+            }
+        }
+        self.source_branch_reports.push(report);
+        Ok(())
     }
 
     fn run_refine_loop_step(&mut self, _step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
@@ -849,11 +7848,30 @@ impl MkgrdRefineLoopExecutor for MkgrdRefineSourceBranchExecutor<'_> {
         ))
     }
 
-    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Final_Grid_Quality_Check is not implemented by MkgrdRefineSourceBranchExecutor",
-        ))
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        run_mkgrd_final_quality_check(plan)
+    }
+
+    fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &self.source_branch_reports
+    }
+
+    fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
+        self.runtime_state.as_ref()
+    }
+
+    fn record_runtime_mesh_counts_for_step(
+        &mut self,
+        step: usize,
+        num_mp_step: usize,
+        num_wp_step: usize,
+    ) -> io::Result<()> {
+        if let Some(runtime_state) = self.runtime_state.as_mut() {
+            runtime_state
+                .record_mesh_counts_for_step(step, num_mp_step, num_wp_step)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        }
+        Ok(())
     }
 }
 
@@ -1015,9 +8033,23 @@ pub fn plan_mkgrd_mask_restart_namelist(
         refine: false,
         action,
     };
+    if remask.step <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart runtime step must be positive after max_iter + 1, got {}",
+                remask.step
+            ),
+        ));
+    }
+
+    let mut runtime_config = config.clone();
+    runtime_config.refine = false;
+    let runtime_state = EarthmeshRuntimeState::new(runtime_config).with_step(remask.step as usize);
 
     Ok(MkgrdMaskRestartPlanReport {
         config,
+        runtime_state,
         workspace_plan,
         remask,
     })
@@ -1056,8 +8088,11 @@ pub fn run_mkgrd_mask_restart_patch_namelist(
         false,
     )?;
 
+    let runtime_state = plan.runtime_state.clone();
+
     Ok(MkgrdMaskRestartPatchRunReport {
         plan,
+        runtime_state,
         workspace_mask,
     })
 }
@@ -1125,8 +8160,11 @@ pub fn run_mkgrd_mask_restart_area_judge_namelist(
         area.domain.bounds,
     )?;
 
+    let runtime_state = plan.runtime_state.clone();
+
     Ok(MkgrdRestartAreaJudgeRunReport {
         plan,
+        runtime_state,
         workspace_mask,
         area,
         area_write,
@@ -1140,6 +8178,425 @@ pub fn run_mkgrd_mask_restart_area_judge_namelist(
 /// Other restart continuations still return an explicit error because their
 /// downstream refine/postprocess loop is tracked separately in the migration
 /// manifest.
+fn select_area_judge_source_window_fortran_order(
+    values: &[Vec<i32>],
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<Vec<Vec<i32>>> {
+    if bounds.maxlon_source < bounds.minlon_source || bounds.minlat_source < bounds.maxlat_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Area_judge source bounds for selected matrix",
+        ));
+    }
+    let mut selected = Vec::with_capacity(bounds.maxlon_source - bounds.minlon_source + 1);
+    for lon_index in bounds.minlon_source..=bounds.maxlon_source {
+        let row = values.get(lon_index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "source matrix is missing longitude index {lon_index} for selected Area_judge bounds"
+                ),
+            )
+        })?;
+        let mut selected_row = Vec::with_capacity(bounds.minlat_source - bounds.maxlat_source + 1);
+        for lat_index in bounds.maxlat_source..=bounds.minlat_source {
+            selected_row.push(*row.get(lat_index).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "source matrix is missing latitude index {lat_index} for selected Area_judge bounds"
+                    ),
+                )
+            })?);
+        }
+        selected.push(selected_row);
+    }
+    Ok(selected)
+}
+
+/// Execute the mask-restart ContinueMkgrd branch through restarted `Area_judge`,
+/// final `Get_Contain(0)`, and the mesh-specific final `mask_postproc` branch.
+pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+    options: MkgrdRestartAreaJudgePostprocOptions<'_>,
+) -> io::Result<MkgrdRestartAreaJudgePostprocRunReport> {
+    let mut restart = run_mkgrd_mask_restart_area_judge_namelist(
+        namelist_source,
+        workdir,
+        max_iter,
+        options.area_judge,
+    )?;
+    let config = &restart.plan.config;
+    let mesh_type = config.mesh_type.trim();
+    let contain_kind = match mesh_type {
+        "earthmesh" => GetContainMeshKind::Loc,
+        "landmesh" => GetContainMeshKind::Land,
+        "oceanmesh" => GetContainMeshKind::Ocean,
+        "atmosmesh" => GetContainMeshKind::Atmos,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "mask_restart Area_judge final postproc supports earthmesh/landmesh/oceanmesh/atmosmesh; got {other}"
+                ),
+            ));
+        }
+    };
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be positive for mask_restart Area_judge postproc",
+        ));
+    }
+    let nxp = usize::try_from(config.nxp).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must fit usize for mask_restart Area_judge postproc",
+        )
+    })?;
+    let nxpc = format!("{nxp:04}");
+    let mode_grid = config.mode_grid.trim();
+    let atmos_source_gridfile = restart
+        .plan
+        .remask
+        .file_dir
+        .join("result")
+        .join(format!("gridfile_NXP{nxpc}_{mode_grid}.nc4"));
+    let atmos_contain_domain = restart.plan.remask.file_dir.join("contain").join(format!(
+        "contain_{mesh_type}_domain_NXP{nxpc}_{mode_grid}.nc4"
+    ));
+    let postproc_plan = if mesh_type == "atmosmesh" {
+        None
+    } else {
+        Some(plan_mask_postproc_domain_io(
+            &restart.plan.remask.file_dir,
+            nxp,
+            mode_grid,
+            mesh_type,
+            config.mask_patch_on,
+        )?)
+    };
+    let source_gridfile = postproc_plan
+        .as_ref()
+        .map(|plan| plan.source_gridfile.as_path())
+        .unwrap_or(atmos_source_gridfile.as_path());
+    let contain_domain = postproc_plan
+        .as_ref()
+        .map(|plan| plan.contain_domain.as_path())
+        .unwrap_or(atmos_contain_domain.as_path());
+    let contain = run_getcontain_refine_file_fortran_indexed(GetContainRefineFileRunConfig {
+        gridfile: source_gridfile,
+        area_grid_file: &restart.area_write.output,
+        output: contain_domain,
+        mesh_kind: contain_kind,
+        seaorland: &restart.area.seaorland.seaorland,
+        lon_vertex: options.area_judge.lon_vertex,
+        lat_vertex: options.area_judge.lat_vertex,
+        lon_i: options.area_judge.lon_i,
+        lat_i: options.area_judge.lat_i,
+        num_vertex: options.num_vertex,
+    })?;
+    restart
+        .runtime_state
+        .record_mesh_counts_for_step(
+            1,
+            contain.runtime_counts.current_num_mp_step,
+            contain.runtime_counts.current_num_wp_step,
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    if contain.runtime_counts.previous_num_vertex > 0 {
+        restart
+            .runtime_state
+            .record_num_vertex(contain.runtime_counts.previous_num_vertex)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    }
+
+    let bounds = restart.area.domain.bounds;
+    let minlon_dm_area = i32::try_from(bounds.minlon_source).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "minlon_source must fit i32 for mask_restart postproc",
+        )
+    })?;
+    let maxlat_dm_area = i32::try_from(bounds.maxlat_source).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "maxlat_source must fit i32 for mask_restart postproc",
+        )
+    })?;
+    let nlons_dm_select = bounds
+        .maxlon_source
+        .checked_sub(bounds.minlon_source)
+        .map(|value| value + 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid restart Area_judge longitude bounds",
+            )
+        })?;
+    let nlats_dm_select = bounds
+        .minlat_source
+        .checked_sub(bounds.maxlat_source)
+        .map(|value| value + 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid restart Area_judge latitude bounds",
+            )
+        })?;
+
+    let postproc = match mesh_type {
+        "earthmesh" => {
+            let postproc_plan = postproc_plan
+                .as_ref()
+                .expect("earthmesh postproc plan should be present");
+            let source_mesh = read_unstructured_mesh_netcdf(&postproc_plan.source_gridfile)?;
+            let num_mp_step = vec![source_mesh.m_points.len()];
+            MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
+                &postproc_plan,
+                MaskPostprocEarthRunOptions {
+                    mask_sea_ratio: config.mask_sea_ratio,
+                    minlon_dm_area,
+                    maxlat_dm_area,
+                    nlons_dm_select,
+                    nlats_dm_select,
+                    lon_vertex: options.area_judge.lon_vertex,
+                    lat_vertex: options.area_judge.lat_vertex,
+                    lon_i: options.area_judge.lon_i,
+                    lat_i: options.area_judge.lat_i,
+                    num_mp_step: &num_mp_step,
+                    sjx_points: source_mesh.m_points.len(),
+                },
+            )?)
+        }
+        "landmesh" => {
+            let postproc_plan = postproc_plan
+                .as_ref()
+                .expect("landmesh postproc plan should be present");
+            let selected_seaorland = select_area_judge_source_window_fortran_order(
+                &restart.area.seaorland.seaorland,
+                bounds,
+            )?;
+            MkgrdFinalDomainPostprocReport::Land(run_mask_postproc_land_domain(
+                &postproc_plan,
+                MaskPostprocLandRunOptions {
+                    seaorland: &selected_seaorland,
+                    minlon_dm_area,
+                    maxlat_dm_area,
+                    nlons_dm_select,
+                    nlats_dm_select,
+                    lon_vertex: options.area_judge.lon_vertex,
+                    lat_vertex: options.area_judge.lat_vertex,
+                    lon_i: options.area_judge.lon_i,
+                    lat_i: options.area_judge.lat_i,
+                },
+            )?)
+        }
+        "oceanmesh" => {
+            let postproc_plan = postproc_plan
+                .as_ref()
+                .expect("oceanmesh postproc plan should be present");
+            MkgrdFinalDomainPostprocReport::Ocean(run_mask_postproc_ocean_domain(
+                postproc_plan,
+                MaskPostprocOceanRunOptions {
+                    mask_sea_ratio: config.mask_sea_ratio,
+                    num_vertex: options.num_vertex,
+                },
+            )?)
+        }
+        "atmosmesh" => match config.output_format.trim() {
+            "MPAS" => {
+                MkgrdFinalDomainPostprocReport::AtmosFull(write_mask_postproc_atmos_mpas_netcdf(
+                    &restart.plan.remask.file_dir,
+                    nxp,
+                    usize::try_from(restart.plan.remask.step).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "mask_restart remask step must fit usize for MPAS postproc",
+                        )
+                    })?,
+                    mode_grid,
+                    mesh_type,
+                    config.output_format.trim(),
+                )?)
+            }
+            "MPAS-Simple" => {
+                MkgrdFinalDomainPostprocReport::Atmos(write_mask_postproc_atmos_mpas_simple_netcdf(
+                    &restart.plan.remask.file_dir,
+                    nxp,
+                    mode_grid,
+                    mesh_type,
+                    config.output_format.trim(),
+                )?)
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "atmosmesh final postproc supports output_format MPAS/MPAS-Simple, got {other}"
+                    ),
+                ));
+            }
+        },
+        _ => unreachable!("mesh_type matched before postproc dispatch"),
+    };
+
+    Ok(MkgrdRestartAreaJudgePostprocRunReport {
+        restart,
+        contain,
+        postproc,
+    })
+}
+
+/// Execute the migrated mask-restart `Area_judge` continuation from compact
+/// source-grid dimensions, optionally continuing through final domain
+/// `Get_Contain(0)` + `mask_postproc`.
+pub fn run_mkgrd_mask_restart_area_judge_global_source_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    postproc_num_vertex: Option<usize>,
+) -> io::Result<MkgrdRestartAreaJudgeGlobalSourceRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let effective_postproc_num_vertex = match postproc_num_vertex {
+        Some(num_vertex) => Some(num_vertex),
+        None => {
+            let contents = fs::read_to_string(namelist_source)?;
+            let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+            if config.mesh_type.trim() == "oceanmesh" {
+                maybe_infer_mask_restart_ocean_num_vertex_from_config(&config)?
+            } else {
+                maybe_infer_mask_restart_non_ocean_num_vertex_from_config(&config)?
+            }
+        }
+    };
+    let axes =
+        build_global_source_axes_fortran_indexed(gridnum_perdegree, nlons_source, nlats_source)?;
+    let area_judge = axes.restart_area_judge_options();
+    if let Some(num_vertex) = effective_postproc_num_vertex {
+        let postproc = run_mkgrd_mask_restart_area_judge_postproc_namelist(
+            namelist_source,
+            workdir,
+            max_iter,
+            MkgrdRestartAreaJudgePostprocOptions {
+                area_judge,
+                num_vertex,
+            },
+        )?;
+        let restart = postproc.restart.clone();
+        Ok(MkgrdRestartAreaJudgeGlobalSourceRunReport {
+            restart,
+            postproc: Some(postproc),
+        })
+    } else {
+        let restart = run_mkgrd_mask_restart_area_judge_namelist(
+            namelist_source,
+            workdir,
+            max_iter,
+            area_judge,
+        )?;
+        Ok(MkgrdRestartAreaJudgeGlobalSourceRunReport {
+            restart,
+            postproc: None,
+        })
+    }
+}
+
+/// Execute the mask-restart `Area_judge` continuation from the mkgrd namelist's
+/// regular global-source configuration.
+///
+/// This reconstructs the legacy module-state dimensions as
+/// `360*NL%gridnum_perdegree` by `180*NL%gridnum_perdegree`.  For non-ocean
+/// continuations the final postprocess boundary can be supplied explicitly or
+/// recovered from the persisted final contain file written by the previous
+/// handoff.
+pub fn run_mkgrd_mask_restart_area_judge_configured_global_source_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+    postproc_num_vertex: Option<usize>,
+) -> io::Result<MkgrdRestartAreaJudgeGlobalSourceRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "NL%gridnum_perdegree must be positive for configured global source axes, got {}",
+                config.gridnum_perdegree
+            ),
+        )
+    })?;
+    if gridnum_perdegree == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NL%gridnum_perdegree must be positive for configured global source axes",
+        ));
+    }
+    let nlons_source = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "configured global-source longitude count overflowed usize",
+        )
+    })?;
+    let nlats_source = gridnum_perdegree.checked_mul(180).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "configured global-source latitude count overflowed usize",
+        )
+    })?;
+    let effective_postproc_num_vertex = match postproc_num_vertex {
+        Some(num_vertex) => Some(num_vertex),
+        None if config.mesh_type.trim() != "oceanmesh" => {
+            maybe_infer_mask_restart_non_ocean_num_vertex_from_config(&config)?
+        }
+        None => None,
+    };
+    run_mkgrd_mask_restart_area_judge_global_source_namelist(
+        namelist_source,
+        workdir,
+        max_iter,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+        effective_postproc_num_vertex,
+    )
+}
+
+/// Execute the direct ocean `mask_restart` postprocess branch while recovering
+/// the legacy `num_vertex` boundary from the persisted contain file.
+///
+/// This is the option-free library equivalent of the top-level `mkgrd.x`
+/// dispatcher for `mesh_type='oceanmesh'` and `mask_patch_on=.false.`.
+pub fn run_mkgrd_mask_restart_ocean_inferred_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_iter: i32,
+) -> io::Result<MkgrdMaskRestartOceanRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let plan = plan_mkgrd_mask_restart_namelist(namelist_source, workdir, max_iter)?;
+    let num_vertex = infer_mask_restart_ocean_num_vertex_from_config(&plan.config)?;
+    run_mkgrd_mask_restart_ocean_namelist(
+        namelist_source,
+        workdir,
+        max_iter,
+        MaskPostprocOceanRunOptions {
+            mask_sea_ratio: plan.config.mask_sea_ratio,
+            num_vertex,
+        },
+    )
+}
+
 pub fn run_mkgrd_mask_restart_ocean_namelist(
     namelist_source: impl AsRef<Path>,
     workdir: impl AsRef<Path>,
@@ -1172,8 +8629,1601 @@ pub fn run_mkgrd_mask_restart_ocean_namelist(
         plan.config.mask_patch_on,
     )?;
     let postproc = run_mask_postproc_ocean_domain(&postproc_plan, options)?;
+    let runtime_state = plan.runtime_state.clone();
 
-    Ok(MkgrdMaskRestartOceanRunReport { plan, postproc })
+    Ok(MkgrdMaskRestartOceanRunReport {
+        plan,
+        runtime_state,
+        postproc,
+    })
+}
+
+/// Prepare the migrated refine-loop path from one namelist file.
+///
+/// This executes the Rust `read_nl` workspace/mask side effects, builds the
+/// refine-loop I/O plan, and enriches the final regional spring source mask
+/// from the Fortran `mask_patch_ndm(1)` convention when that final branch is
+/// active.
+pub fn prepare_mkgrd_refine_loop_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+) -> io::Result<MkgrdRefineLoopPrepareReport> {
+    prepare_mkgrd_refine_loop_namelist_with_source_grid(
+        namelist_source,
+        workdir,
+        MkgrdRefinePrepareSourceGridOptions {
+            lon_vertex,
+            lat_vertex,
+            lon_i,
+            lat_i,
+            gridnum_perdegree,
+            nlons_source,
+            nlats_source,
+            first_triangle_id,
+        },
+    )
+}
+
+/// Prepare the migrated refine-loop path from one namelist file using a typed
+/// source-grid options bundle.
+pub fn prepare_mkgrd_refine_loop_namelist_with_source_grid(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
+) -> io::Result<MkgrdRefineLoopPrepareReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    if !config.refine {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refine-loop preparation requires NL%refine=.true.",
+        ));
+    }
+    let refine = RefineConfig::from_mkrefine_namelist(
+        &contents,
+        config.mesh_type.trim(),
+        config.mode_grid.trim(),
+    )
+    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let mut runtime_state =
+        EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
+    runtime_state
+        .try_nxp()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    runtime_state.source_grid = SourceGridState {
+        nlons_source: source_grid.nlons_source,
+        nlats_source: source_grid.nlats_source,
+        maxlc: 0,
+    };
+    let workspace_plan = config.read_nl_workspace_plan(Some(&refine));
+    let max_iter_spc = final_quality_non_negative_usize(
+        refine.max_iter_spc,
+        "refine-loop preparation max_iter_spc must be non-negative",
+    )?;
+    let validate_refine_max_iter = refine.refine_spc && !config.mask_restart;
+    let workspace_mask = apply_workspace_and_mask_operations(
+        &workspace_plan,
+        namelist_source,
+        workdir,
+        max_iter_spc,
+        validate_refine_max_iter,
+    )?;
+    runtime_state.mask_counts = MaskCounterState {
+        mask_domain_ndm: workspace_mask.mask_counts.mask_domain_ndm,
+        mask_refine_ndm: workspace_mask.mask_counts.mask_refine_ndm,
+        mask_patch_ndm: workspace_mask.mask_counts.mask_patch_ndm,
+    };
+    let mut plan = plan_mkgrd_refine_loop_io(&config, &refine)?;
+    let runtime_state = runtime_state.with_step(plan.final_mask_postproc_step);
+    let final_source_mask_injected =
+        if plan.final_quality_check.spring_mode == MkgrdFinalQualitySpringMode::RegionalFinal {
+            enrich_mkgrd_refine_loop_final_quality_with_regional_source_mask_io(
+                &mut plan,
+                &config.mask_patch_type,
+                1,
+                workspace_mask.mask_counts.mask_patch_ndm[1],
+                source_grid.lon_vertex,
+                source_grid.lat_vertex,
+                source_grid.lon_i,
+                source_grid.lat_i,
+                source_grid.gridnum_perdegree,
+                source_grid.nlons_source,
+                source_grid.nlats_source,
+                source_grid.first_triangle_id,
+            )?
+        } else {
+            false
+        };
+
+    Ok(MkgrdRefineLoopPrepareReport {
+        config,
+        refine,
+        runtime_state,
+        workspace_mask,
+        plan,
+        final_source_mask_injected,
+    })
+}
+
+/// Run the migrated namelist-level refine path with an injected executor for
+/// the remaining heavy refine kernels.
+pub fn run_mkgrd_refine_loop_namelist_with_executor(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport> {
+    run_mkgrd_refine_loop_namelist_with_executor_and_source_grid(
+        namelist_source,
+        workdir,
+        MkgrdRefinePrepareSourceGridOptions {
+            lon_vertex,
+            lat_vertex,
+            lon_i,
+            lat_i,
+            gridnum_perdegree,
+            nlons_source,
+            nlats_source,
+            first_triangle_id,
+        },
+        executor,
+        postproc_options,
+    )
+}
+
+/// Run the migrated namelist-level refine path with typed source-grid options
+/// and an injected executor for the remaining heavy refine kernels.
+pub fn run_mkgrd_refine_loop_namelist_with_executor_and_source_grid(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport> {
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    let execution = run_mkgrd_refine_loop_execution(&prepare.plan, executor, postproc_options)?;
+    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
+}
+
+/// Run the migrated namelist-level refine path while allowing callers to
+/// provide the final `Get_Contain(0)` domain inputs after `read_nl` has prepared
+/// the workspace but before execution reaches the final handoff.
+pub fn run_mkgrd_refine_loop_namelist_with_executor_and_source_grid_and_final_domain_contain<F>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    after_prepare(&prepare)?;
+    let execution = run_mkgrd_refine_loop_execution_with_final_domain_contain(
+        &prepare.plan,
+        executor,
+        contain_options,
+        postproc_options,
+    )?;
+    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
+}
+
+/// Run the migrated top-level `mkgrd.x` namelist path through initial grid
+/// generation and, when `NL%refine=.true.`, the migrated refine-loop
+/// orchestration.
+///
+/// The legacy `read_nl`/workspace prepare step removes and recreates the case
+/// directory before refine execution.  To preserve the real top-level ordering
+/// without relying on stale files, this runner snapshots the initial gridfile
+/// into Rust memory after gridinit, runs refine prepare, then restores that mesh
+/// to the first refine-loop input path before executing the supplied refine
+/// executor.
+pub fn run_mkgrd_top_level_namelist_with_refine_executor_and_source_grid(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdTopLevelNamelistRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    if !gridinit.config.refine {
+        return Ok(MkgrdTopLevelNamelistRunReport {
+            gridinit,
+            refine: None,
+        });
+    }
+
+    let initial_mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    let first_step = prepare.plan.steps.first().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refine plan must include at least one refine-loop step",
+        )
+    })?;
+    write_unstructured_mesh_netcdf(&first_step.refine_loop_input_gridfile, &initial_mesh)?;
+    let execution = run_mkgrd_refine_loop_execution(&prepare.plan, executor, postproc_options)?;
+
+    Ok(MkgrdTopLevelNamelistRunReport {
+        gridinit,
+        refine: Some(MkgrdRefineLoopNamelistRunReport { prepare, execution }),
+    })
+}
+
+/// Execute the top-level refine path from compact global source-grid
+/// dimensions using a passthrough geometry executor.
+pub fn run_mkgrd_refine_passthrough_global_source_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+) -> io::Result<MkgrdTopLevelNamelistRunReport> {
+    let axes =
+        build_global_source_axes_fortran_indexed(gridnum_perdegree, nlons_source, nlats_source)?;
+    let source_grid = axes.refine_prepare_source_grid(first_triangle_id);
+    let mut executor = MkgrdPassthroughRefineExecutor;
+    run_mkgrd_top_level_namelist_with_refine_executor_and_source_grid(
+        namelist_source,
+        workdir,
+        max_tris,
+        source_grid,
+        &mut executor,
+        None,
+    )
+}
+
+/// Run the migrated top-level `mkgrd.x` namelist path with the standard
+/// migrated refine executor stack.
+///
+/// This combines the top-level gridinit/read_nl cleanup preservation with the
+/// prepared-state source-branch option derivation, so adapters can enter the
+/// Rust path without manually reconstructing Fortran module state for
+/// `Area_judge_refine`, `Get_Contain`, and `GetRef`.
+pub fn run_mkgrd_top_level_namelist_with_derived_migrated_executor_and_source_grid<'a>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    is_in_domain: Option<&'a [Vec<i32>]>,
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdTopLevelNamelistRunReport> {
+    run_mkgrd_top_level_namelist_with_derived_migrated_executor_and_source_grid_and_final_domain_contain_and_prepare_hook(
+        namelist_source,
+        workdir,
+        max_tris,
+        source_grid,
+        calculated_refine,
+        is_in_domain,
+        seaorland,
+        landtypes_global,
+        num_vertex,
+        maxlc,
+        refine_executor,
+        None,
+        postproc_options,
+        |_| Ok(()),
+    )
+}
+
+/// Run the migrated top-level `mkgrd.x` namelist path with the standard
+/// migrated refine executor stack and optional final `Get_Contain(0)` domain
+/// generation.
+///
+/// The hook runs after `read_nl` cleanup and after the initial gridinit mesh has
+/// been restored to the first refine input, so callers can provide file-backed
+/// final-domain inputs without racing the workspace recreation.
+pub fn run_mkgrd_top_level_namelist_with_derived_migrated_executor_and_source_grid_and_final_domain_contain_and_prepare_hook<
+    'a,
+    F,
+>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    is_in_domain: Option<&'a [Vec<i32>]>,
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdTopLevelNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    if !gridinit.config.refine {
+        return Ok(MkgrdTopLevelNamelistRunReport {
+            gridinit,
+            refine: None,
+        });
+    }
+
+    let initial_mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    let first_step = prepare.plan.steps.first().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refine plan must include at least one refine-loop step",
+        )
+    })?;
+    write_unstructured_mesh_netcdf(&first_step.refine_loop_input_gridfile, &initial_mesh)?;
+    after_prepare(&prepare)?;
+
+    let execution = {
+        let source_options = mkgrd_refine_source_branch_options_from_prepare(
+            &prepare,
+            source_grid,
+            calculated_refine,
+            is_in_domain,
+            seaorland,
+            landtypes_global,
+            num_vertex,
+            maxlc,
+        )?;
+        let mut executor = mkgrd_migrated_refine_loop_executor_with_runtime_state(
+            source_options,
+            refine_executor,
+            prepare.runtime_state.clone(),
+        );
+        run_mkgrd_refine_loop_execution_with_final_domain_contain(
+            &prepare.plan,
+            &mut executor,
+            contain_options,
+            postproc_options,
+        )?
+    };
+
+    Ok(MkgrdTopLevelNamelistRunReport {
+        gridinit,
+        refine: Some(MkgrdRefineLoopNamelistRunReport { prepare, execution }),
+    })
+}
+
+fn first_calculated_refine_area_output(plan: &MkgrdRefineLoopIoPlan) -> Option<&Path> {
+    plan.steps
+        .iter()
+        .flat_map(|step| step.sources.iter())
+        .find(|source| source.source == MkgrdRefineSource::CalculatedIterZero)
+        .map(|source| source.area_judge_output.as_path())
+}
+
+/// Run a migrated refine loop using domain/sea-land state restored from an
+/// `Area_judge` restart selected-grid file.
+///
+/// This is the Rust handoff for restart workflows that need the restored
+/// `IsInDmArea_grid` and optional iter-zero calculated `IsInRfArea_grid` state
+/// to feed the already-migrated `Area_judge_refine -> Get_Contain -> GetRef ->
+/// refine_loop` executor stack.  The initial gridfile is copied into the first
+/// planned refine-loop input after `read_nl` workspace preparation, preserving
+/// the Fortran ordering without requiring callers to rebuild source-branch
+/// options by hand.
+pub fn run_mkgrd_refine_loop_namelist_with_area_judge_restart_grids_and_migrated_executor<
+    RefineExecutor,
+>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    options: MkgrdAreaJudgeRestartRefineLoopOptions<'_>,
+    refine_executor: &mut RefineExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdAreaJudgeRestartRefineLoopRunReport>
+where
+    RefineExecutor: MkgrdRefineLoopExecutor,
+{
+    run_mkgrd_refine_loop_namelist_with_area_judge_restart_grids_and_migrated_executor_and_final_domain_contain(
+        namelist_source,
+        workdir,
+        options,
+        refine_executor,
+        None,
+        postproc_options,
+    )
+}
+
+/// Run a migrated restart-grid refine loop and optionally generate final
+/// domain containment before `mask_postproc(mesh_type)`.
+pub fn run_mkgrd_refine_loop_namelist_with_area_judge_restart_grids_and_migrated_executor_and_final_domain_contain<
+    RefineExecutor,
+>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    options: MkgrdAreaJudgeRestartRefineLoopOptions<'_>,
+    refine_executor: &mut RefineExecutor,
+    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdAreaJudgeRestartRefineLoopRunReport>
+where
+    RefineExecutor: MkgrdRefineLoopExecutor,
+{
+    let mut prepare = prepare_mkgrd_refine_loop_namelist_with_source_grid(
+        namelist_source,
+        workdir,
+        options.source_grid,
+    )?;
+    prepare.runtime_state.source_grid.maxlc = usize::try_from(options.maxlc).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "data_preprocess maxlc must be non-negative for runtime state, got {}",
+                options.maxlc
+            ),
+        )
+    })?;
+    let runtime_refine = runtime_refine_from_prepare(&prepare)?.clone();
+    if prepare.config.mask_restart {
+        let max_iter_spc = usize::try_from(runtime_refine.max_iter_spc).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "restart refine handoff max_iter_spc must be non-negative",
+            )
+        })?;
+        if runtime_refine.refine_setting == "specified" || runtime_refine.refine_setting == "mixed"
+        {
+            let operation = MaskOperation::new(
+                "mask_refine",
+                &runtime_refine.mask_refine_spc_type,
+                &runtime_refine.mask_refine_spc_fprefix,
+            );
+            let report = apply_mask_operation(
+                &operation,
+                &prepare.plan.file_dir,
+                max_iter_spc,
+                &mut prepare.workspace_mask.mask_counts,
+            )?;
+            prepare.workspace_mask.mask_reports.push(report);
+        }
+        if runtime_refine.refine_setting == "calculate" || runtime_refine.refine_setting == "mixed"
+        {
+            let operation = MaskOperation::new(
+                "mask_refine",
+                &runtime_refine.mask_refine_cal_type,
+                &runtime_refine.mask_refine_cal_fprefix,
+            );
+            let report = apply_mask_operation(
+                &operation,
+                &prepare.plan.file_dir,
+                max_iter_spc,
+                &mut prepare.workspace_mask.mask_counts,
+            )?;
+            prepare.workspace_mask.mask_reports.push(report);
+        }
+    }
+    let calculated_refine_config = if runtime_refine.refine_cal {
+        Some(AreaJudgeCalculatedRefineConfig {
+            refine_setting: &runtime_refine.refine_setting,
+            mask_refine_cal_type: &runtime_refine.mask_refine_cal_type,
+            mask_refine_ndm: prepare.workspace_mask.mask_counts.mask_refine_ndm[0],
+        })
+    } else {
+        None
+    };
+    let mask_patch = prepare
+        .config
+        .mask_patch_on
+        .then_some(AreaJudgePatchConfig {
+            mask_patch_type: &prepare.config.mask_patch_type,
+            mask_patch_ndm: prepare.workspace_mask.mask_counts.mask_patch_ndm[0],
+        });
+    let refine_output = first_calculated_refine_area_output(&prepare.plan);
+    let domain_output = prepare.plan.file_dir.join("result/IsInDmArea_grid.nc4");
+    let restart = run_area_judge_restart_grids_fortran_indexed(AreaJudgeRestartGridsRunConfig {
+        file_dir: &prepare.plan.file_dir,
+        restart_input: options.restart_input,
+        mask_patch,
+        refine: runtime_refine.refine_cal,
+        calculated_refine: calculated_refine_config,
+        lon_vertex: options.source_grid.lon_vertex,
+        lat_vertex: options.source_grid.lat_vertex,
+        lon_i: options.source_grid.lon_i,
+        lat_i: options.source_grid.lat_i,
+        gridnum_perdegree: options.source_grid.gridnum_perdegree,
+        nlons_source: options.source_grid.nlons_source,
+        nlats_source: options.source_grid.nlats_source,
+        domain_output: Some(&domain_output),
+        refine_output,
+    })?;
+
+    let first_step = prepare.plan.steps.first().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "restart refine handoff requires at least one refine-loop step",
+        )
+    })?;
+    if let Some(parent) = first_step.refine_loop_input_gridfile.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if options.initial_gridfile != first_step.refine_loop_input_gridfile {
+        fs::copy(
+            options.initial_gridfile,
+            &first_step.refine_loop_input_gridfile,
+        )?;
+    }
+
+    let calculated_refine = restart
+        .area
+        .calculated_refine
+        .as_ref()
+        .map(|calculated| (calculated.is_in_area.as_slice(), calculated.bounds));
+    let source_options = mkgrd_refine_source_branch_options_from_prepare(
+        &prepare,
+        options.source_grid,
+        calculated_refine,
+        Some(&restart.area.domain.is_in_domain),
+        &restart.area.seaorland.seaorland,
+        options.landtypes_global,
+        options.num_vertex,
+        options.maxlc,
+    )?;
+    let mut executor = MkgrdCompositeRefineLoopExecutor::new(
+        MkgrdRefineSourceBranchExecutor::new(source_options),
+        refine_executor,
+    );
+    let execution = run_mkgrd_refine_loop_execution_with_final_domain_contain(
+        &prepare.plan,
+        &mut executor,
+        contain_options,
+        postproc_options,
+    )?;
+
+    Ok(MkgrdAreaJudgeRestartRefineLoopRunReport {
+        prepare,
+        restart,
+        execution,
+    })
+}
+
+/// Run the migrated restart-refine path from a compact source-state handoff.
+///
+/// This is the library-owned counterpart to the direct
+/// `--run-mask-restart-area-judge-refine` CLI mode: it parses the mkgrd
+/// namelist, locates the restart Area_judge grid, reconstructs compact
+/// source-state axes, builds final-domain contain/postprocess options, and runs
+/// the migrated restart-refine stack with the standard Rust working-state
+/// executor.
+pub fn run_mkgrd_restart_refine_compact_source_state_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_state_path: impl AsRef<Path>,
+    initial_gridfile: impl AsRef<Path>,
+    mask_postproc_num_vertex: Option<usize>,
+) -> io::Result<MkgrdRestartRefineCompactSourceStateNamelistRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let initial_gridfile = initial_gridfile.as_ref();
+    let source_bundle = read_mkgrd_compact_restart_refine_source_state(source_state_path)?;
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let restart_input = PathBuf::from(config.file_dir()).join("result/IsInDmArea_grid.nc4");
+    let effective_mask_postproc_num_vertex = match mask_postproc_num_vertex {
+        Some(num_vertex) => Some(num_vertex),
+        None if config.mesh_type.trim() == "oceanmesh" => {
+            maybe_infer_mask_restart_ocean_num_vertex_from_config(&config)?
+                .or(Some(source_bundle.source_state.num_vertex))
+        }
+        None if matches!(config.mesh_type.trim(), "earthmesh" | "landmesh") => {
+            maybe_infer_mask_restart_non_ocean_num_vertex_from_config(&config)?
+                .or(Some(source_bundle.source_state.num_vertex))
+        }
+        None if config.mesh_type.trim() == "atmosmesh" => {
+            Some(source_bundle.source_state.num_vertex)
+        }
+        None => None,
+    };
+    let final_postproc_requested = effective_mask_postproc_num_vertex.is_some();
+    let derived_seaorland =
+        final_postproc_requested.then(|| source_bundle.source_state.seaorland.clone());
+    let contain_options = if let Some(seaorland) = derived_seaorland.as_ref() {
+        restart_refine_final_contain_options(
+            &restart_input,
+            config.mesh_type.trim(),
+            effective_mask_postproc_num_vertex,
+            seaorland,
+            &source_bundle.axes.lon_vertex,
+            &source_bundle.axes.lat_vertex,
+            &source_bundle.axes.lon_i,
+            &source_bundle.axes.lat_i,
+        )?
+    } else {
+        None
+    };
+    let selected_land_domain = if final_postproc_requested
+        && matches!(config.mesh_type.trim(), "earthmesh" | "landmesh")
+    {
+        let restart_payload = read_area_judge_grid_netcdf(&restart_input)?;
+        Some(selected_land_domain_from_area_judge_grid_payload(
+            &restart_payload,
+        )?)
+    } else {
+        None
+    };
+    let final_postproc_request = restart_refine_final_postproc_request(
+        config.mesh_type.trim(),
+        effective_mask_postproc_num_vertex,
+        config.mask_sea_ratio,
+        selected_land_domain.as_ref(),
+    )?;
+    let postproc_options = match &final_postproc_request {
+        Some(MkgrdRestartRefineFinalPostprocRequest::Earth {
+            mask_sea_ratio,
+            minlon_dm_area,
+            maxlat_dm_area,
+            nlons_dm_select,
+            nlats_dm_select,
+        }) => Some(MkgrdFinalDomainPostprocOptions::EarthFromFinalGrid(
+            MkgrdFinalDomainEarthAutoPostprocOptions {
+                mask_sea_ratio: *mask_sea_ratio,
+                minlon_dm_area: *minlon_dm_area,
+                maxlat_dm_area: *maxlat_dm_area,
+                nlons_dm_select: *nlons_dm_select,
+                nlats_dm_select: *nlats_dm_select,
+                lon_vertex: &source_bundle.axes.lon_vertex,
+                lat_vertex: &source_bundle.axes.lat_vertex,
+                lon_i: &source_bundle.axes.lon_i,
+                lat_i: &source_bundle.axes.lat_i,
+            },
+        )),
+        Some(MkgrdRestartRefineFinalPostprocRequest::Land(context)) => Some(
+            MkgrdFinalDomainPostprocOptions::Land(MaskPostprocLandRunOptions {
+                seaorland: &context.selected_seaorland,
+                minlon_dm_area: context.minlon_dm_area,
+                maxlat_dm_area: context.maxlat_dm_area,
+                nlons_dm_select: context.nlons_dm_select,
+                nlats_dm_select: context.nlats_dm_select,
+                lon_vertex: &source_bundle.axes.lon_vertex,
+                lat_vertex: &source_bundle.axes.lat_vertex,
+                lon_i: &source_bundle.axes.lon_i,
+                lat_i: &source_bundle.axes.lat_i,
+            }),
+        ),
+        Some(MkgrdRestartRefineFinalPostprocRequest::Ocean {
+            mask_sea_ratio,
+            num_vertex,
+        }) => Some(MkgrdFinalDomainPostprocOptions::Ocean(
+            MaskPostprocOceanRunOptions {
+                mask_sea_ratio: *mask_sea_ratio,
+                num_vertex: *num_vertex,
+            },
+        )),
+        Some(MkgrdRestartRefineFinalPostprocRequest::Atmos) => {
+            Some(MkgrdFinalDomainPostprocOptions::Atmos {
+                output_format: config.output_format.trim(),
+            })
+        }
+        None => None,
+    };
+    let mut executor = MkgrdRefineLoopWorkingStateExecutor::default();
+    let report = run_mkgrd_refine_loop_namelist_with_area_judge_restart_grids_and_migrated_executor_and_final_domain_contain(
+        namelist_source,
+        workdir,
+        source_bundle.area_judge_restart_refine_loop_options(&restart_input, initial_gridfile),
+        &mut executor,
+        contain_options,
+        postproc_options,
+    )?;
+
+    Ok(MkgrdRestartRefineCompactSourceStateNamelistRunReport {
+        source_bundle,
+        report,
+    })
+}
+
+/// Run the migrated restart-refine path from `NL%landtype_file` without
+/// CLI-side orchestration.
+///
+/// This is the library-owned counterpart to
+/// `--run-mask-restart-area-judge-refine-landtype-source`: it parses mkgrd
+/// config, reads `data_preprocess` landtype axes/landtypes, locates the restart
+/// Area_judge grid, builds final-domain contain/postprocess options, and runs
+/// the migrated restart-refine stack with the standard Rust working-state
+/// executor.
+pub fn run_mkgrd_restart_refine_landtype_source_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    initial_gridfile: impl AsRef<Path>,
+    source_gridnum_perdegree: Option<usize>,
+    source_first_triangle_id: usize,
+    mask_postproc_num_vertex: Option<usize>,
+) -> io::Result<MkgrdRestartRefineLandtypeSourceNamelistRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let initial_gridfile = initial_gridfile.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let gridnum_perdegree = match source_gridnum_perdegree {
+        Some(value) => value,
+        None => usize::try_from(config.gridnum_perdegree).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "NL%gridnum_perdegree must be positive for restart-refine landtype source, got {}",
+                    config.gridnum_perdegree
+                ),
+            )
+        })?,
+    };
+    let preprocess = read_landtype_data_preprocess_fortran_indexed(
+        Path::new(config.landtype_file.trim()),
+        gridnum_perdegree,
+    )?;
+    let source_grid = preprocess.refine_prepare_source_grid(source_first_triangle_id);
+    let restart_input = PathBuf::from(config.file_dir()).join("result/IsInDmArea_grid.nc4");
+    let mode_num_vertex = mkgrd_mode_grid_num_vertex(config.mode_grid.trim())?;
+    let effective_mask_postproc_num_vertex = match mask_postproc_num_vertex {
+        Some(num_vertex) => Some(num_vertex),
+        None if config.mesh_type.trim() == "oceanmesh" => {
+            maybe_infer_mask_restart_ocean_num_vertex_from_config(&config)?
+                .or(Some(mode_num_vertex))
+        }
+        None if matches!(config.mesh_type.trim(), "earthmesh" | "landmesh") => {
+            let default_num_vertex = if config.mesh_type.trim() == "landmesh" {
+                1
+            } else {
+                mode_num_vertex
+            };
+            maybe_infer_mask_restart_non_ocean_num_vertex_from_config(&config)?
+                .or(Some(default_num_vertex))
+        }
+        None if config.mesh_type.trim() == "atmosmesh" => Some(mode_num_vertex),
+        None => None,
+    };
+    let final_postproc_requested = effective_mask_postproc_num_vertex.is_some();
+    let derived_seaorland = final_postproc_requested
+        .then(|| seaorland_from_landtypes_global_fortran_indexed(&preprocess.landtypes_global));
+    let contain_options = if let Some(seaorland) = derived_seaorland.as_ref() {
+        restart_refine_final_contain_options(
+            &restart_input,
+            config.mesh_type.trim(),
+            effective_mask_postproc_num_vertex,
+            seaorland,
+            &preprocess.lon_vertex,
+            &preprocess.lat_vertex,
+            &preprocess.lon_i,
+            &preprocess.lat_i,
+        )?
+    } else {
+        None
+    };
+    let selected_land_domain = if final_postproc_requested
+        && matches!(config.mesh_type.trim(), "earthmesh" | "landmesh")
+    {
+        let restart_payload = read_area_judge_grid_netcdf(&restart_input)?;
+        Some(selected_land_domain_from_area_judge_grid_payload(
+            &restart_payload,
+        )?)
+    } else {
+        None
+    };
+    let final_postproc_request = restart_refine_final_postproc_request(
+        config.mesh_type.trim(),
+        effective_mask_postproc_num_vertex,
+        config.mask_sea_ratio,
+        selected_land_domain.as_ref(),
+    )?;
+    let postproc_options = match &final_postproc_request {
+        Some(MkgrdRestartRefineFinalPostprocRequest::Earth {
+            mask_sea_ratio,
+            minlon_dm_area,
+            maxlat_dm_area,
+            nlons_dm_select,
+            nlats_dm_select,
+        }) => Some(MkgrdFinalDomainPostprocOptions::EarthFromFinalGrid(
+            MkgrdFinalDomainEarthAutoPostprocOptions {
+                mask_sea_ratio: *mask_sea_ratio,
+                minlon_dm_area: *minlon_dm_area,
+                maxlat_dm_area: *maxlat_dm_area,
+                nlons_dm_select: *nlons_dm_select,
+                nlats_dm_select: *nlats_dm_select,
+                lon_vertex: &preprocess.lon_vertex,
+                lat_vertex: &preprocess.lat_vertex,
+                lon_i: &preprocess.lon_i,
+                lat_i: &preprocess.lat_i,
+            },
+        )),
+        Some(MkgrdRestartRefineFinalPostprocRequest::Land(context)) => Some(
+            MkgrdFinalDomainPostprocOptions::Land(MaskPostprocLandRunOptions {
+                seaorland: &context.selected_seaorland,
+                minlon_dm_area: context.minlon_dm_area,
+                maxlat_dm_area: context.maxlat_dm_area,
+                nlons_dm_select: context.nlons_dm_select,
+                nlats_dm_select: context.nlats_dm_select,
+                lon_vertex: &preprocess.lon_vertex,
+                lat_vertex: &preprocess.lat_vertex,
+                lon_i: &preprocess.lon_i,
+                lat_i: &preprocess.lat_i,
+            }),
+        ),
+        Some(MkgrdRestartRefineFinalPostprocRequest::Ocean {
+            mask_sea_ratio,
+            num_vertex,
+        }) => Some(MkgrdFinalDomainPostprocOptions::Ocean(
+            MaskPostprocOceanRunOptions {
+                mask_sea_ratio: *mask_sea_ratio,
+                num_vertex: *num_vertex,
+            },
+        )),
+        Some(MkgrdRestartRefineFinalPostprocRequest::Atmos) => {
+            Some(MkgrdFinalDomainPostprocOptions::Atmos {
+                output_format: config.output_format.trim(),
+            })
+        }
+        None => None,
+    };
+    let mut executor = MkgrdRefineLoopWorkingStateExecutor::default();
+    let report = run_mkgrd_refine_loop_namelist_with_area_judge_restart_grids_and_migrated_executor_and_final_domain_contain(
+        namelist_source,
+        workdir,
+        MkgrdAreaJudgeRestartRefineLoopOptions {
+            restart_input: &restart_input,
+            initial_gridfile,
+            source_grid,
+            landtypes_global: &preprocess.landtypes_global,
+            num_vertex: mode_num_vertex,
+            maxlc: preprocess.maxlc,
+        },
+        &mut executor,
+        contain_options,
+        postproc_options,
+    )?;
+
+    Ok(MkgrdRestartRefineLandtypeSourceNamelistRunReport { preprocess, report })
+}
+
+/// Run the migrated namelist-level refine path using the standard migrated
+/// executor stack: `MkgrdRefineSourceBranchExecutor` for source branches and
+/// `MkgrdRefineLoopWorkingStateExecutor` for geometry/final-quality work.
+pub fn run_mkgrd_refine_loop_namelist_with_migrated_executor<'a>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
+    source_options: MkgrdRefineSourceBranchExecutorOptions<'a>,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport> {
+    run_mkgrd_refine_loop_namelist_with_migrated_executor_and_prepare_hook(
+        namelist_source,
+        workdir,
+        source_grid,
+        source_options,
+        refine_executor,
+        postproc_options,
+        |_| Ok(()),
+    )
+}
+
+/// Run the standard migrated refine-loop stack with an explicit hook after
+/// namelist/workspace preparation and before file-backed execution.
+///
+/// This mirrors the Fortran ordering where `read_nl` prepares/cleans the working
+/// directory before downstream grid state is consumed, while still allowing a
+/// Rust gridinit or adapter caller to provide that state without hand-writing the
+/// execution orchestration.
+pub fn run_mkgrd_refine_loop_namelist_with_migrated_executor_and_prepare_hook<'a, F>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
+    source_options: MkgrdRefineSourceBranchExecutorOptions<'a>,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    after_prepare(&prepare)?;
+    let mut executor = mkgrd_migrated_refine_loop_executor_with_runtime_state(
+        source_options,
+        refine_executor,
+        prepare.runtime_state.clone(),
+    );
+    let execution =
+        run_mkgrd_refine_loop_execution(&prepare.plan, &mut executor, postproc_options)?;
+    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
+}
+
+fn runtime_refine_from_prepare(
+    prepare: &MkgrdRefineLoopPrepareReport,
+) -> io::Result<&RefineConfig> {
+    prepare.runtime_state.refine.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "prepared mkgrd runtime state is missing refine config",
+        )
+    })
+}
+
+/// Build the iter-zero calculated-refinement Area_judge source for a
+/// data_preprocess-derived source-state handoff using the already prepared
+/// mkgrd/read_nl workspace state.
+pub fn data_preprocess_source_state_calculated_refine_from_prepare(
+    prepare: &MkgrdRefineLoopPrepareReport,
+    state: &MkgrdDataPreprocessSourceState,
+) -> io::Result<Option<AreaJudgeAreaSourceReport>> {
+    let runtime_refine = runtime_refine_from_prepare(prepare)?;
+    if !runtime_refine.refine_cal {
+        return Ok(None);
+    }
+    let mask_refine_ndm = prepare.workspace_mask.mask_counts.mask_refine_ndm[0];
+    if mask_refine_ndm == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "data_preprocess calculated refine requires mask_refine_ndm(0) > 0",
+        ));
+    }
+    build_area_judge_calculated_refine_fortran_indexed(
+        &prepare.plan.file_dir,
+        0,
+        runtime_refine.mask_refine_cal_type.as_str(),
+        mask_refine_ndm,
+        &state.is_in_domain,
+        &state.lon_vertex,
+        &state.lat_vertex,
+        &state.lon_i,
+        &state.lat_i,
+        state.gridnum_perdegree,
+        state.nlons_source,
+        state.nlats_source,
+    )
+    .map(Some)
+}
+
+/// Derive migrated refine source-branch executor options for a
+/// data_preprocess-derived source-state handoff and keep any internally built
+/// calculated-refine report alive for the duration of the caller callback.
+pub fn with_data_preprocess_source_state_refine_source_branch_options_from_prepare<R, F>(
+    prepare: &MkgrdRefineLoopPrepareReport,
+    state: &MkgrdDataPreprocessSourceState,
+    run: F,
+) -> io::Result<R>
+where
+    F: FnOnce(MkgrdRefineSourceBranchExecutorOptions<'_>) -> io::Result<R>,
+{
+    let calculated_report =
+        data_preprocess_source_state_calculated_refine_from_prepare(prepare, state)?;
+    let calculated_refine = calculated_report
+        .as_ref()
+        .map(|report| (report.is_in_area.as_slice(), report.bounds));
+    let source_options = mkgrd_refine_source_branch_options_from_prepare(
+        prepare,
+        state.refine_prepare_source_grid(),
+        calculated_refine,
+        Some(&state.is_in_domain),
+        &state.seaorland,
+        &state.landtypes_global,
+        state.num_vertex,
+        state.maxlc,
+    )?;
+    run(source_options)
+}
+
+/// Seed the first refine-loop gridfile and run the migrated refine execution for
+/// a data_preprocess-derived source-state handoff.
+pub fn run_mkgrd_refine_loop_execution_with_data_preprocess_source_state<RefineExecutor>(
+    prepare: &MkgrdRefineLoopPrepareReport,
+    initial_mesh: &UnstructuredMesh,
+    state: &MkgrdDataPreprocessSourceState,
+    mesh_type: &str,
+    mask_sea_ratio: f64,
+    refine_executor: RefineExecutor,
+) -> io::Result<MkgrdRefineLoopExecutionReport>
+where
+    RefineExecutor: MkgrdRefineLoopExecutor,
+{
+    let first_step = prepare.plan.steps.first().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refine plan must include at least one refine-loop step",
+        )
+    })?;
+    write_unstructured_mesh_netcdf(&first_step.refine_loop_input_gridfile, initial_mesh)?;
+
+    let final_domain_area_grid = prepare
+        .plan
+        .file_dir
+        .join("tmpfile")
+        .join("final_domain_area_grid_from_landtype.nc4");
+    with_data_preprocess_source_state_refine_source_branch_options_from_prepare(
+        prepare,
+        state,
+        |source_options| {
+            let mut executor = MkgrdCompositeRefineLoopExecutor::new(
+                MkgrdRefineSourceBranchExecutor::new(source_options)
+                    .with_runtime_state(prepare.runtime_state.clone()),
+                refine_executor,
+            );
+            run_mkgrd_refine_loop_execution_with_data_preprocess_final_domain_handoff(
+                &prepare.plan,
+                &mut executor,
+                state,
+                mesh_type,
+                &final_domain_area_grid,
+                mask_sea_ratio,
+                &prepare.config.output_format,
+            )
+        },
+    )
+}
+
+/// Run the migrated direct landtype-source namelist path without CLI-side
+/// orchestration.
+///
+/// This composes parsed mkgrd config -> data_preprocess source state ->
+/// gridinit -> refine prepare -> migrated refine/final handoff, so command-line
+/// front-ends only need to format the returned report.
+pub fn run_mkgrd_refine_landtype_source_namelist<RefineExecutor>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    source_gridnum_perdegree: Option<usize>,
+    source_first_triangle_id: usize,
+    refine_executor: RefineExecutor,
+) -> io::Result<MkgrdRefineLandtypeSourceNamelistRunReport>
+where
+    RefineExecutor: MkgrdRefineLoopExecutor,
+{
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let source_state = build_mkgrd_data_preprocess_source_state_from_config_fortran_indexed(
+        workdir,
+        &config,
+        source_gridnum_perdegree,
+        source_first_triangle_id,
+    )?;
+
+    let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    if !gridinit.config.refine {
+        return Ok(MkgrdRefineLandtypeSourceNamelistRunReport {
+            source_state,
+            gridinit,
+            refine: None,
+        });
+    }
+
+    let initial_mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
+    let source_grid = source_state.refine_prepare_source_grid();
+    let mut prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    prepare.runtime_state.source_grid.maxlc =
+        usize::try_from(source_state.maxlc).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "data_preprocess maxlc must be non-negative for runtime state, got {}",
+                    source_state.maxlc
+                ),
+            )
+        })?;
+    let execution = run_mkgrd_refine_loop_execution_with_data_preprocess_source_state(
+        &prepare,
+        &initial_mesh,
+        &source_state,
+        config.mesh_type.trim(),
+        0.0,
+        refine_executor,
+    )?;
+
+    Ok(MkgrdRefineLandtypeSourceNamelistRunReport {
+        source_state,
+        gridinit,
+        refine: Some(MkgrdRefineLoopNamelistRunReport { prepare, execution }),
+    })
+}
+
+/// Run the migrated direct compact source-state namelist path without CLI-side
+/// orchestration.
+///
+/// This centralizes compact source-state parsing, source-axis reconstruction,
+/// calculated-refine metadata wiring, final-domain contain/postprocess option
+/// construction, and the final-domain Area_judge payload write hook before the
+/// migrated top-level refine runner executes.
+pub fn run_mkgrd_refine_compact_source_state_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_state_path: impl AsRef<Path>,
+    max_tris: usize,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+) -> io::Result<MkgrdRefineCompactSourceStateNamelistRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let source_state_path = source_state_path.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let source_state = read_mkgrd_compact_source_state(source_state_path)?;
+    let axes = source_state.build_global_source_axes()?;
+    let source_grid = axes.refine_prepare_source_grid(source_state.first_triangle_id);
+    let calculated_refine = source_state
+        .calculated_refine
+        .as_deref()
+        .map(|calculated_refine| {
+            (
+                calculated_refine,
+                source_state
+                    .calculated_bounds
+                    .expect("validated calculated bounds"),
+            )
+        });
+    let final_domain_area_grid = source_state_path.with_extension("final_domain_area_grid.nc4");
+    let final_domain_area_payload =
+        compact_source_state_final_domain_area_payload_fortran_indexed(&source_state, &axes)?;
+    let contain_options =
+        compact_source_state_final_contain_options(&source_state, &axes, &final_domain_area_grid);
+    let final_postproc_request = compact_source_state_final_postproc_request(&source_state)?;
+    let postproc_options = match &final_postproc_request {
+        None => None,
+        Some(MkgrdCompactSourceStateFinalPostprocRequest::Ocean { num_vertex }) => Some(
+            MkgrdFinalDomainPostprocOptions::Ocean(MaskPostprocOceanRunOptions {
+                mask_sea_ratio: 0.0,
+                num_vertex: *num_vertex,
+            }),
+        ),
+        Some(MkgrdCompactSourceStateFinalPostprocRequest::Atmos) => {
+            Some(MkgrdFinalDomainPostprocOptions::Atmos {
+                output_format: config.output_format.trim(),
+            })
+        }
+        Some(MkgrdCompactSourceStateFinalPostprocRequest::Earth(context)) => {
+            Some(MkgrdFinalDomainPostprocOptions::EarthFromFinalGrid(
+                MkgrdFinalDomainEarthAutoPostprocOptions {
+                    mask_sea_ratio: config.mask_sea_ratio,
+                    minlon_dm_area: context.minlon_dm_area,
+                    maxlat_dm_area: context.maxlat_dm_area,
+                    nlons_dm_select: context.nlons_dm_select,
+                    nlats_dm_select: context.nlats_dm_select,
+                    lon_vertex: &axes.lon_vertex,
+                    lat_vertex: &axes.lat_vertex,
+                    lon_i: &axes.lon_i,
+                    lat_i: &axes.lat_i,
+                },
+            ))
+        }
+        Some(MkgrdCompactSourceStateFinalPostprocRequest::Land(context)) => Some(
+            MkgrdFinalDomainPostprocOptions::Land(MaskPostprocLandRunOptions {
+                seaorland: &context.selected_seaorland,
+                minlon_dm_area: context.minlon_dm_area,
+                maxlat_dm_area: context.maxlat_dm_area,
+                nlons_dm_select: context.nlons_dm_select,
+                nlats_dm_select: context.nlats_dm_select,
+                lon_vertex: &axes.lon_vertex,
+                lat_vertex: &axes.lat_vertex,
+                lon_i: &axes.lon_i,
+                lat_i: &axes.lat_i,
+            }),
+        ),
+    };
+    let report = run_mkgrd_top_level_namelist_with_derived_migrated_executor_and_source_grid_and_final_domain_contain_and_prepare_hook(
+        namelist_source,
+        workdir,
+        max_tris,
+        source_grid,
+        calculated_refine,
+        Some(&source_state.is_in_domain),
+        &source_state.seaorland,
+        &source_state.landtypes_global,
+        source_state.num_vertex,
+        source_state.maxlc,
+        refine_executor,
+        contain_options,
+        postproc_options,
+        |_prepare| {
+            if let Some(payload) = final_domain_area_payload.as_ref() {
+                write_area_judge_grid_netcdf(&final_domain_area_grid, payload)?;
+            }
+            Ok(())
+        },
+    )?;
+
+    Ok(MkgrdRefineCompactSourceStateNamelistRunReport {
+        source_state,
+        gridinit: report.gridinit,
+        refine: report.refine,
+    })
+}
+
+/// Derive the specified-refinement source-branch options from a prepared
+/// namelist/workspace report and caller-provided source classification state.
+///
+/// This removes duplicated Fortran module-state glue from adapters: file_dir,
+/// mesh_type, mask_refine_spc_type, and mask_refine_ndm come from the prepared
+/// Rust namelist/workspace state rather than being hand-copied by each caller.
+pub fn mkgrd_specified_refine_source_options_from_prepare<'a>(
+    prepare: &'a MkgrdRefineLoopPrepareReport,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    is_in_domain: &'a [Vec<i32>],
+    seaorland: &'a [Vec<i32>],
+    num_vertex: usize,
+) -> io::Result<MkgrdSpecifiedRefineSourceExecutorOptions<'a>> {
+    let runtime_refine = runtime_refine_from_prepare(prepare)?;
+    if !runtime_refine.refine_spc {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "specified refine source options require RL%refine_spc=.true.",
+        ));
+    }
+    let max_iter_spc = final_quality_non_negative_usize(
+        runtime_refine.max_iter_spc,
+        "specified refine max_iter_spc must be non-negative",
+    )?;
+    if max_iter_spc == 0 || max_iter_spc >= prepare.workspace_mask.mask_counts.mask_refine_ndm.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "specified refine max_iter_spc must fit mask_refine_ndm 1:9",
+        ));
+    }
+    let mask_refine_ndm = prepare.workspace_mask.mask_counts.mask_refine_ndm[max_iter_spc];
+    if mask_refine_ndm == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("mask_refine_ndm({max_iter_spc}) must be larger than zero"),
+        ));
+    }
+
+    Ok(MkgrdSpecifiedRefineSourceExecutorOptions {
+        file_dir: &prepare.plan.file_dir,
+        mesh_type: &prepare.plan.mesh_type,
+        mask_refine_spc_type: &runtime_refine.mask_refine_spc_type,
+        mask_refine_ndm,
+        mask_refine_ndm_by_iter: &prepare.workspace_mask.mask_counts.mask_refine_ndm,
+        is_in_domain,
+        seaorland,
+        lon_vertex: source_grid.lon_vertex,
+        lat_vertex: source_grid.lat_vertex,
+        lon_i: source_grid.lon_i,
+        lat_i: source_grid.lat_i,
+        gridnum_perdegree: source_grid.gridnum_perdegree,
+        nlons_source: source_grid.nlons_source,
+        nlats_source: source_grid.nlats_source,
+        num_vertex,
+    })
+}
+
+/// Derive the calculated-refinement source-branch options from a prepared
+/// namelist/workspace report and caller-provided source classification state.
+///
+/// This keeps adapter glue flat: the `read_nl`-owned flags, thresholds,
+/// mesh/file paths, and GetRef component configs come from one prepared Rust
+/// state, while large source rasters still remain caller-owned inputs.
+pub fn mkgrd_calculated_refine_source_options_from_prepare<'a>(
+    prepare: &'a MkgrdRefineLoopPrepareReport,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: (&'a [Vec<i32>], AreaJudgeSourceBounds),
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+) -> io::Result<MkgrdCalculatedRefineSourceExecutorOptions<'a>> {
+    let runtime_refine = runtime_refine_from_prepare(prepare)?;
+    if !runtime_refine.refine_cal {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "calculated refine source options require RL%refine_cal=.true.",
+        ));
+    }
+    let max_iter_cal = final_quality_non_negative_usize(
+        runtime_refine.max_iter_cal,
+        "calculated refine max_iter_cal must be non-negative",
+    )?;
+    if max_iter_cal == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "calculated refine max_iter_cal must be larger than zero",
+        ));
+    }
+
+    Ok(MkgrdCalculatedRefineSourceExecutorOptions {
+        file_dir: &prepare.plan.file_dir,
+        mesh_type: &prepare.plan.mesh_type,
+        threshold_dir: Path::new(runtime_refine.threshold_dir.as_str()),
+        calculated_refine,
+        seaorland,
+        lon_vertex: source_grid.lon_vertex,
+        lat_vertex: source_grid.lat_vertex,
+        lon_i: source_grid.lon_i,
+        lat_i: source_grid.lat_i,
+        num_vertex,
+        landtypes_global,
+        refine_onelayer_lnd: &runtime_refine.refine_onelayer_lnd,
+        th_onelayer_lnd: &runtime_refine.th_onelayer_lnd,
+        refine_twolayer_lnd: &runtime_refine.refine_twolayer_lnd,
+        th_twolayer_lnd: &runtime_refine.th_twolayer_lnd,
+        refine_onelayer_ocn: &runtime_refine.refine_onelayer_ocn,
+        th_onelayer_ocn: &runtime_refine.th_onelayer_ocn,
+        refine_onelayer_atmos: &runtime_refine.refine_onelayer_atmos,
+        th_onelayer_atmos: &runtime_refine.th_onelayer_atmos,
+        land_basic_config: GetRefLandBasicConfig {
+            num_vertex,
+            maxlc,
+            refine_num_landtypes: runtime_refine.refine_num_landtypes,
+            th_num_landtypes: runtime_refine.th_num_landtypes,
+            refine_area_mainland: runtime_refine.refine_area_mainland,
+            th_area_mainland: runtime_refine.th_area_mainland,
+        },
+        ocean_config: GetRefOceanThresholdConfig {
+            num_vertex,
+            maxlc,
+            refine_sea_ratio: runtime_refine.refine_sea_ratio,
+            th_sea_ratio: runtime_refine.th_sea_ratio,
+        },
+        atmos_config: GetRefAtmosThresholdConfig { num_vertex, maxlc },
+    })
+}
+
+/// Derive all enabled migrated refine source-branch executors from a prepared
+/// namelist/workspace report.
+///
+/// This is the adapter-facing replacement for carrying Fortran module state
+/// across the `read_nl -> Area_judge_refine/Get_Contain/GetRef` boundary: the
+/// prepared report decides which branches are active, and callers provide only
+/// the large source-grid classification arrays still owned outside `mkgrd`.
+pub fn mkgrd_refine_source_branch_options_from_prepare<'a>(
+    prepare: &'a MkgrdRefineLoopPrepareReport,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    is_in_domain: Option<&'a [Vec<i32>]>,
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+) -> io::Result<MkgrdRefineSourceBranchExecutorOptions<'a>> {
+    let runtime_refine = runtime_refine_from_prepare(prepare)?;
+    let calculated = if runtime_refine.refine_cal {
+        Some(mkgrd_calculated_refine_source_options_from_prepare(
+            prepare,
+            source_grid,
+            calculated_refine.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "calculated refine branch is active but no calculated_refine state was provided",
+                )
+            })?,
+            seaorland,
+            landtypes_global,
+            num_vertex,
+            maxlc,
+        )?)
+    } else {
+        None
+    };
+    let specified = if runtime_refine.refine_spc {
+        Some(mkgrd_specified_refine_source_options_from_prepare(
+            prepare,
+            source_grid,
+            is_in_domain.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "specified refine branch is active but no is_in_domain state was provided",
+                )
+            })?,
+            seaorland,
+            num_vertex,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(MkgrdRefineSourceBranchExecutorOptions {
+        calculated,
+        specified,
+    })
+}
+
+/// Run a specified-refinement-only migrated namelist path while deriving the
+/// source branch executor options from the post-`read_nl` prepare state.
+pub fn run_mkgrd_refine_loop_namelist_with_specified_migrated_executor_and_prepare_hook<'a, F>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    is_in_domain: &'a [Vec<i32>],
+    seaorland: &'a [Vec<i32>],
+    num_vertex: usize,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    after_prepare(&prepare)?;
+    let source_options = mkgrd_specified_refine_source_options_from_prepare(
+        &prepare,
+        source_grid,
+        is_in_domain,
+        seaorland,
+        num_vertex,
+    )?;
+    let mut executor = mkgrd_migrated_refine_loop_executor_with_runtime_state(
+        MkgrdRefineSourceBranchExecutorOptions {
+            calculated: None,
+            specified: Some(source_options),
+        },
+        refine_executor,
+        prepare.runtime_state.clone(),
+    );
+    let execution =
+        run_mkgrd_refine_loop_execution(&prepare.plan, &mut executor, postproc_options)?;
+    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
+}
+
+/// Run a calculated-refinement-only migrated namelist path while deriving the
+/// source branch executor options from the post-`read_nl` prepare state.
+pub fn run_mkgrd_refine_loop_namelist_with_calculated_migrated_executor_and_prepare_hook<'a, F>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: (&'a [Vec<i32>], AreaJudgeSourceBounds),
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    after_prepare(&prepare)?;
+    let source_options = mkgrd_calculated_refine_source_options_from_prepare(
+        &prepare,
+        source_grid,
+        calculated_refine,
+        seaorland,
+        landtypes_global,
+        num_vertex,
+        maxlc,
+    )?;
+    let mut executor = mkgrd_migrated_refine_loop_executor_with_runtime_state(
+        MkgrdRefineSourceBranchExecutorOptions {
+            calculated: Some(source_options),
+            specified: None,
+        },
+        refine_executor,
+        prepare.runtime_state.clone(),
+    );
+    let execution =
+        run_mkgrd_refine_loop_execution(&prepare.plan, &mut executor, postproc_options)?;
+    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
+}
+
+/// Run the standard migrated namelist path while deriving every active source
+/// branch option from the post-`read_nl` prepare state.
+pub fn run_mkgrd_refine_loop_namelist_with_derived_migrated_executor_and_prepare_hook<'a, F>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    is_in_domain: Option<&'a [Vec<i32>]>,
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    run_mkgrd_refine_loop_namelist_with_derived_migrated_executor_and_final_domain_contain_and_prepare_hook(
+        namelist_source,
+        workdir,
+        source_grid,
+        calculated_refine,
+        is_in_domain,
+        seaorland,
+        landtypes_global,
+        num_vertex,
+        maxlc,
+        refine_executor,
+        None,
+        postproc_options,
+        after_prepare,
+    )
+}
+
+/// Run the standard migrated namelist path while deriving every active source
+/// branch option from the post-`read_nl` prepare state, and optionally generate
+/// the final `Get_Contain(0)` domain containment file before post-processing.
+pub fn run_mkgrd_refine_loop_namelist_with_derived_migrated_executor_and_final_domain_contain_and_prepare_hook<
+    'a,
+    F,
+>(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    source_grid: MkgrdRefinePrepareSourceGridOptions<'a>,
+    calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    is_in_domain: Option<&'a [Vec<i32>]>,
+    seaorland: &'a [Vec<i32>],
+    landtypes_global: &'a [Vec<i32>],
+    num_vertex: usize,
+    maxlc: i32,
+    refine_executor: MkgrdRefineLoopWorkingStateExecutor,
+    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+    after_prepare: F,
+) -> io::Result<MkgrdRefineLoopNamelistRunReport>
+where
+    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
+{
+    let prepare =
+        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
+    after_prepare(&prepare)?;
+    let source_options = mkgrd_refine_source_branch_options_from_prepare(
+        &prepare,
+        source_grid,
+        calculated_refine,
+        is_in_domain,
+        seaorland,
+        landtypes_global,
+        num_vertex,
+        maxlc,
+    )?;
+    let mut executor = mkgrd_migrated_refine_loop_executor_with_runtime_state(
+        source_options,
+        refine_executor,
+        prepare.runtime_state.clone(),
+    );
+    let execution = run_mkgrd_refine_loop_execution_with_final_domain_contain(
+        &prepare.plan,
+        &mut executor,
+        contain_options,
+        postproc_options,
+    )?;
+    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
 }
 
 /// Build the non-destructive step schedule for the `mkgrd.F90` refine loop.
@@ -1185,7 +10235,19 @@ pub fn run_mkgrd_mask_restart_ocean_namelist(
 /// also models the Fortran `all(exit_loop_step(1:max_iter))` early-exit check
 /// before incrementing `step`.
 pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLoopPlan> {
-    let max_iter_i32 = refine.max_iter_cal.max(refine.max_iter_spc);
+    let calculated_enabled = matches!(refine.refine_setting.as_str(), "calculate" | "mixed");
+    let specified_enabled = matches!(refine.refine_setting.as_str(), "specified" | "mixed");
+    let active_max_iter_cal = if calculated_enabled {
+        refine.max_iter_cal
+    } else {
+        0
+    };
+    let active_max_iter_spc = if specified_enabled {
+        refine.max_iter_spc
+    } else {
+        0
+    };
+    let max_iter_i32 = active_max_iter_cal.max(active_max_iter_spc);
     if max_iter_i32 <= 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1194,9 +10256,9 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
     }
     let max_iter = usize::try_from(max_iter_i32)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter must fit usize"))?;
-    let max_iter_cal = usize::try_from(refine.max_iter_cal.max(0))
+    let max_iter_cal = usize::try_from(active_max_iter_cal.max(0))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_cal must fit usize"))?;
-    let max_iter_spc = usize::try_from(refine.max_iter_spc.max(0))
+    let max_iter_spc = usize::try_from(active_max_iter_spc.max(0))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "max_iter_spc must fit usize"))?;
     validate_mkgrd_refine_loop_controls(refine, max_iter)?;
 
@@ -1205,10 +10267,10 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
     let mut final_mask_postproc_step = max_iter + 1;
     for step in 1..=max_iter {
         let mut sources = Vec::with_capacity(2);
-        if matches!(refine.refine_setting.as_str(), "calculate" | "mixed") && step <= max_iter_cal {
+        if calculated_enabled && step <= max_iter_cal {
             sources.push(MkgrdRefineSource::CalculatedIterZero);
         }
-        if matches!(refine.refine_setting.as_str(), "specified" | "mixed") && step <= max_iter_spc {
+        if specified_enabled && step <= max_iter_spc {
             sources.push(MkgrdRefineSource::SpecifiedStep);
         }
 
@@ -1222,6 +10284,12 @@ pub fn plan_mkgrd_refine_loop(refine: &RefineConfig) -> io::Result<MkgrdRefineLo
 
         steps.push(MkgrdRefineLoopStepPlan {
             step,
+            max_transition_row: usize::try_from(refine.max_transition_row[step]).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("max_transition_row({step}) must fit usize"),
+                )
+            })?,
             sources,
             run_refine_loop: true,
             stop_after_step,
@@ -1247,47 +10315,143 @@ pub fn run_mkgrd_refine_loop_final_domain_handoff(
     plan: &MkgrdRefineLoopIoPlan,
     postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
 ) -> io::Result<MkgrdRefineLoopFinalDomainHandoffReport> {
+    run_mkgrd_refine_loop_final_domain_handoff_with_domain_contain(plan, None, postproc_options)
+}
+
+/// Execute the final file-backed handoff after the top-level `mkgrd.F90` refine
+/// loop and, when requested, generate the final `Get_Contain(0)` domain
+/// containment file before optional `mask_postproc(mesh_type)`.
+pub fn run_mkgrd_refine_loop_final_domain_handoff_with_domain_contain(
+    plan: &MkgrdRefineLoopIoPlan,
+    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopFinalDomainHandoffReport> {
     if let Some(parent) = plan.final_result_gridfile.parent() {
         fs::create_dir_all(parent)?;
     }
     let copied_bytes = fs::copy(&plan.final_domain_gridfile, &plan.final_result_gridfile)?;
 
+    let generated_contain = contain_options
+        .map(|options| {
+            run_getcontain_refine_file_fortran_indexed(GetContainRefineFileRunConfig {
+                gridfile: &plan.final_result_gridfile,
+                area_grid_file: options.area_grid_file,
+                output: &plan.final_domain_contain_output,
+                mesh_kind: options.mesh_kind,
+                seaorland: options.seaorland,
+                lon_vertex: options.lon_vertex,
+                lat_vertex: options.lat_vertex,
+                lon_i: options.lon_i,
+                lat_i: options.lat_i,
+                num_vertex: options.num_vertex,
+            })
+        })
+        .transpose()?;
+
     let postproc = match postproc_options {
         None => None,
-        Some(options) => {
-            let postproc_plan = plan.final_mask_postproc_domain.as_ref().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "final domain mask_postproc plan is unavailable for this mesh_type",
-                )
-            })?;
-            Some(match options {
-                MkgrdFinalDomainPostprocOptions::Earth(options) => {
-                    MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
-                        postproc_plan,
-                        options,
-                    )?)
+        Some(options) => Some(match options {
+            MkgrdFinalDomainPostprocOptions::Atmos { output_format } => {
+                match output_format.trim() {
+                    "MPAS" => MkgrdFinalDomainPostprocReport::AtmosFull(
+                        write_mask_postproc_atmos_mpas_netcdf(
+                            &plan.file_dir,
+                            plan.nxp,
+                            plan.final_mask_postproc_step,
+                            &plan.mode_grid,
+                            &plan.mesh_type,
+                            output_format,
+                        )?,
+                    ),
+                    "MPAS-Simple" => MkgrdFinalDomainPostprocReport::Atmos(
+                        write_mask_postproc_atmos_mpas_simple_netcdf(
+                            &plan.file_dir,
+                            plan.nxp,
+                            &plan.mode_grid,
+                            &plan.mesh_type,
+                            output_format,
+                        )?,
+                    ),
+                    other => {
+                        return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!(
+                                    "atmosmesh final postproc supports output_format MPAS/MPAS-Simple, got {other}"
+                                ),
+                            ));
+                    }
                 }
-                MkgrdFinalDomainPostprocOptions::Land(options) => {
-                    MkgrdFinalDomainPostprocReport::Land(run_mask_postproc_land_domain(
-                        postproc_plan,
-                        options,
-                    )?)
-                }
-                MkgrdFinalDomainPostprocOptions::Ocean(options) => {
-                    MkgrdFinalDomainPostprocReport::Ocean(run_mask_postproc_ocean_domain(
-                        postproc_plan,
-                        options,
-                    )?)
-                }
-            })
-        }
+            }
+            MkgrdFinalDomainPostprocOptions::Earth(options) => {
+                let postproc_plan = plan.final_mask_postproc_domain.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "final domain mask_postproc plan is unavailable for this mesh_type",
+                    )
+                })?;
+                MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
+                    postproc_plan,
+                    options,
+                )?)
+            }
+            MkgrdFinalDomainPostprocOptions::EarthFromFinalGrid(options) => {
+                let postproc_plan = plan.final_mask_postproc_domain.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "final domain mask_postproc plan is unavailable for this mesh_type",
+                    )
+                })?;
+                let source_mesh = read_unstructured_mesh_netcdf(&postproc_plan.source_gridfile)?;
+                let num_mp_step = vec![source_mesh.m_points.len()];
+                MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
+                    postproc_plan,
+                    MaskPostprocEarthRunOptions {
+                        mask_sea_ratio: options.mask_sea_ratio,
+                        minlon_dm_area: options.minlon_dm_area,
+                        maxlat_dm_area: options.maxlat_dm_area,
+                        nlons_dm_select: options.nlons_dm_select,
+                        nlats_dm_select: options.nlats_dm_select,
+                        lon_vertex: options.lon_vertex,
+                        lat_vertex: options.lat_vertex,
+                        lon_i: options.lon_i,
+                        lat_i: options.lat_i,
+                        num_mp_step: &num_mp_step,
+                        sjx_points: source_mesh.m_points.len(),
+                    },
+                )?)
+            }
+            MkgrdFinalDomainPostprocOptions::Land(options) => {
+                let postproc_plan = plan.final_mask_postproc_domain.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "final domain mask_postproc plan is unavailable for this mesh_type",
+                    )
+                })?;
+                MkgrdFinalDomainPostprocReport::Land(run_mask_postproc_land_domain(
+                    postproc_plan,
+                    options,
+                )?)
+            }
+            MkgrdFinalDomainPostprocOptions::Ocean(options) => {
+                let postproc_plan = plan.final_mask_postproc_domain.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "final domain mask_postproc plan is unavailable for this mesh_type",
+                    )
+                })?;
+                MkgrdFinalDomainPostprocReport::Ocean(run_mask_postproc_ocean_domain(
+                    postproc_plan,
+                    options,
+                )?)
+            }
+        }),
     };
 
     Ok(MkgrdRefineLoopFinalDomainHandoffReport {
         copied_result_gridfile: plan.final_result_gridfile.clone(),
         copied_bytes,
         contain_domain: plan.final_domain_contain_output.clone(),
+        generated_contain,
         postproc,
     })
 }
@@ -1358,6 +10522,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             calculated_threshold_files: Vec::new(),
             num_vertex,
             set_dis_in,
+            last_post_refine_counts: None,
         }
     }
 
@@ -1377,6 +10542,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             calculated_threshold_files: Vec::new(),
             num_vertex,
             set_dis_in: 0,
+            last_post_refine_counts: None,
         }
     }
 
@@ -1403,6 +10569,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             calculated_threshold_files: Vec::new(),
             num_vertex,
             set_dis_in,
+            last_post_refine_counts: None,
         }
     }
 
@@ -1421,6 +10588,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             calculated_threshold_files: threshold_files.into_iter().collect(),
             num_vertex,
             set_dis_in,
+            last_post_refine_counts: None,
         }
     }
 
@@ -1436,6 +10604,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         let mut onedivide_four_renew = None;
         let mut onedivide_two = None;
         let mut ngr_renew = None;
+        let mut post_refine_counts = None;
 
         let ref_sjx = if let Some(ref_sjx) = &self.one_into_four_ref_sjx {
             Some(ref_sjx.clone())
@@ -1453,11 +10622,12 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         if let Some(ref_sjx) = ref_sjx {
             loaded_ref_sjx = Some(ref_sjx.clone());
             self.run_configured_one_into_four_pipeline(step, &mut state, &ref_sjx)
-                .map(|(connection, length, renew, ngr)| {
+                .map(|(connection, length, renew, ngr, counts)| {
                     onedivide_four_connection = Some(connection);
                     array_length = Some(length);
                     onedivide_four_renew = Some(renew);
                     ngr_renew = Some(ngr);
+                    post_refine_counts = counts;
                 })?;
         } else if let Some(ref_sjx) = &self.one_into_two_ref_sjx {
             loaded_ref_sjx = Some(ref_sjx.clone());
@@ -1484,6 +10654,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             onedivide_four_renew,
             onedivide_two,
             ngr_renew,
+            post_refine_counts,
         })
     }
 
@@ -1564,6 +10735,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         RefineArrayLengthCalculationRunReport,
         OnedivideFourRenewReport,
         NgrRenewReport,
+        Option<(usize, usize)>,
     )> {
         let old_mp = *state
             .num_mp
@@ -1579,17 +10751,6 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                 format!("one-into-four ref_sjx must include placeholder plus {old_mp} triangles"),
             ));
         }
-        state.num_vertex = self.num_vertex;
-        state.ref_sjx = ref_sjx[..=old_mp]
-            .iter()
-            .map(|&marker| if marker > 1 { 1 } else { marker })
-            .collect();
-        state.num_tranrow_sjx = state.ref_sjx[self.num_vertex + 1..=old_mp]
-            .iter()
-            .filter(|&&marker| marker != 0)
-            .count();
-
-        let connection = state.apply_onedivide_four_connection()?;
         let file_dir = step
             .refine_loop_input_gridfile
             .parent()
@@ -1600,7 +10761,73 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                     "refine_loop_input_gridfile must live under <file_dir>/gridfile",
                 )
             })?;
-        let length = state.apply_array_length_calculation(file_dir, step.step, self.set_dis_in)?;
+        let set_dis_in = if self.set_dis_in > 0 {
+            self.set_dis_in
+        } else {
+            step.max_transition_row
+        };
+        state.num_vertex = self.num_vertex;
+        state.ref_sjx = ref_sjx[..=old_mp]
+            .iter()
+            .map(|&marker| if marker > 1 { 1 } else { marker })
+            .collect();
+        if step.step > 1 {
+            apply_previous_refine_region_prefilter(
+                file_dir,
+                step.step - 1,
+                set_dis_in + 1,
+                old_mp,
+                old_wp,
+                state,
+            )?;
+        }
+        remove_isolated_one_into_four_markers(
+            self.num_vertex,
+            old_mp,
+            &state.triangle_neighbors,
+            &mut state.ref_sjx,
+        )?;
+        if !state.ref_sjx[self.num_vertex + 1..=old_mp]
+            .iter()
+            .any(|&marker| marker != 0)
+        {
+            return Ok((
+                OnedivideFourConnectionReport {
+                    marked_triangles: Vec::new(),
+                    marked_vertices: Vec::new(),
+                },
+                empty_refine_array_length_report(),
+                OnedivideFourRenewReport {
+                    refined_triangles: Vec::new(),
+                    new_triangle_ids: Vec::new(),
+                    new_vertex_ids: Vec::new(),
+                    dateline_adjusted: false,
+                },
+                identity_ngr_renew_report(old_mp, old_wp, state),
+                None,
+            ));
+        }
+        let mut ref_sjx_segment = state.ref_sjx.clone();
+        state.num_tranrow_sjx = ref_sjx_segment[self.num_vertex + 1..=old_mp]
+            .iter()
+            .filter(|&&marker| marker != 0)
+            .count();
+
+        let mut connection = state.apply_onedivide_four_connection()?;
+        self.expand_one_into_four_transition_band(
+            state,
+            old_mp,
+            old_wp,
+            set_dis_in,
+            &mut ref_sjx_segment,
+            &mut connection,
+        )?;
+        state.ref_sjx = ref_sjx_segment;
+        state.num_tranrow_sjx = state.ref_sjx[self.num_vertex + 1..=old_mp]
+            .iter()
+            .filter(|&&marker| marker != 0)
+            .count();
+        let length = state.apply_array_length_calculation(file_dir, step.step, set_dis_in)?;
 
         state.iter = 2;
         if state.num_mp.len() <= state.iter {
@@ -1609,9 +10836,9 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         if state.num_wp.len() <= state.iter {
             state.num_wp.resize(state.iter + 1, 0);
         }
-        let extra_capacity = state.num_tranrow_sjx * 4;
-        state.num_mp[state.iter] = old_mp + extra_capacity;
-        state.num_wp[state.iter] = old_wp + extra_capacity;
+        let reserved_capacity = state.num_tranrow_sjx * 4;
+        state.num_mp[state.iter] = old_mp + reserved_capacity;
+        state.num_wp[state.iter] = old_wp + reserved_capacity;
         state.mp_new.resize(
             state.num_mp[state.iter] + 1,
             LonLatPoint { lon: 0.0, lat: 0.0 },
@@ -1628,9 +10855,617 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         }
 
         let renew = state.apply_onedivide_four_renew()?;
+        state.num_mp[state.iter] = old_mp + renew.new_triangle_ids.len();
+        state.num_wp[state.iter] = old_wp + renew.new_vertex_ids.len();
+        let num_lop = self.apply_forward_transition_rows(state, set_dis_in, &length)?;
         let ngr = state.apply_ngr_renew()?;
-        Ok((connection, length, renew, ngr))
+        let output_mesh = state.to_unstructured_mesh()?;
+        let post_counts = Some(refine_loop_post_counts_fortran_indexed(
+            old_mp,
+            old_wp,
+            *state.num_mp.get(state.iter).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "refine working state is missing expanded num_mp(iter)",
+                )
+            })?,
+            &output_mesh,
+            num_lop,
+        )?);
+        Ok((connection, length, renew, ngr, post_counts))
     }
+
+    fn expand_one_into_four_transition_band(
+        &self,
+        state: &mut RefineLoopWorkingState,
+        old_mp: usize,
+        old_wp: usize,
+        set_dis_in: usize,
+        ref_sjx_segment: &mut [i32],
+        connection: &mut OnedivideFourConnectionReport,
+    ) -> io::Result<()> {
+        if set_dis_in == 0 {
+            return Ok(());
+        }
+
+        loop {
+            let mut changed_outer = false;
+
+            loop {
+                let markers = refine_iter_b_judge_fortran_indexed(
+                    set_dis_in,
+                    self.num_vertex,
+                    &state.triangle_neighbors,
+                    &state.mrl_new,
+                )?;
+                if !self.apply_transition_markers(
+                    state,
+                    old_mp,
+                    &markers,
+                    ref_sjx_segment,
+                    connection,
+                )? {
+                    break;
+                }
+                changed_outer = true;
+            }
+
+            loop {
+                let (cells_on_triangle, triangles_on_cell) =
+                    transition_cell_views(state, old_mp, old_wp)?;
+                let markers = refine_iter_c_judge_fortran_indexed(
+                    set_dis_in,
+                    self.num_vertex,
+                    self.num_vertex,
+                    old_wp,
+                    &state.triangle_neighbors,
+                    &triangles_on_cell,
+                    &state.n_ngrwm,
+                    &state.mrl_new,
+                    &state.ref_lbx,
+                )?;
+                drop(cells_on_triangle);
+                if !self.apply_transition_markers(
+                    state,
+                    old_mp,
+                    &markers,
+                    ref_sjx_segment,
+                    connection,
+                )? {
+                    break;
+                }
+                changed_outer = true;
+            }
+
+            let (cells_on_triangle, triangles_on_cell) =
+                transition_cell_views(state, old_mp, old_wp)?;
+            let markers = refine_iter_e_judge_fortran_indexed(
+                self.num_vertex,
+                old_wp,
+                &cells_on_triangle,
+                &triangles_on_cell,
+                &state.n_ngrwm,
+                &state.mrl_new,
+                &state.ref_lbx,
+            )?;
+            if self.apply_transition_markers(
+                state,
+                old_mp,
+                &markers,
+                ref_sjx_segment,
+                connection,
+            )? {
+                changed_outer = true;
+            }
+
+            if changed_outer {
+                continue;
+            }
+
+            loop {
+                let (_, triangles_on_cell) = transition_cell_views(state, old_mp, old_wp)?;
+                let markers = refine_iter_g_judge_fortran_indexed(
+                    self.num_vertex,
+                    old_wp,
+                    &triangles_on_cell,
+                    &state.n_ngrwm,
+                    &state.mrl_new,
+                )?;
+                if !self.apply_transition_markers(
+                    state,
+                    old_mp,
+                    &markers,
+                    ref_sjx_segment,
+                    connection,
+                )? {
+                    break;
+                }
+                changed_outer = true;
+            }
+
+            if !changed_outer {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_transition_markers(
+        &self,
+        state: &mut RefineLoopWorkingState,
+        old_mp: usize,
+        markers: &[i32],
+        ref_sjx_segment: &mut [i32],
+        connection: &mut OnedivideFourConnectionReport,
+    ) -> io::Result<bool> {
+        if markers.len() <= old_mp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("transition markers must include placeholder plus {old_mp} triangles"),
+            ));
+        }
+        state.ref_sjx.fill(0);
+        let mut any = false;
+        for triangle in (self.num_vertex + 1)..=old_mp {
+            if markers[triangle] == 0 || state.mrl_new[triangle] == 4 {
+                continue;
+            }
+            state.ref_sjx[triangle] = 1;
+            ref_sjx_segment[triangle] = 1;
+            any = true;
+        }
+        if !any {
+            return Ok(false);
+        }
+        let added = state.apply_onedivide_four_connection()?;
+        for triangle in added.marked_triangles {
+            if !connection.marked_triangles.contains(&triangle) {
+                connection.marked_triangles.push(triangle);
+            }
+        }
+        for vertex in added.marked_vertices {
+            if !connection.marked_vertices.contains(&vertex) {
+                connection.marked_vertices.push(vertex);
+            }
+        }
+        Ok(true)
+    }
+
+    fn apply_forward_transition_rows(
+        &self,
+        state: &mut RefineLoopWorkingState,
+        set_dis_in: usize,
+        length: &RefineArrayLengthCalculationRunReport,
+    ) -> io::Result<usize> {
+        if set_dis_in == 0 || length.calculation.boundary.curves.num_closed_curve == 0 {
+            return Ok(0);
+        }
+
+        let old_mp = *state
+            .num_mp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
+        let old_wp = *state
+            .num_wp
+            .get(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_wp[1] is required"))?;
+        let (_, triangles_on_cell) = transition_cell_views(state, old_mp, old_wp)?;
+        let close_curves = length.calculation.boundary.curves.close_curves
+            [1..=length.calculation.boundary.curves.num_closed_curve]
+            .to_vec();
+        let boundary_segments = refine_boundary_segments_make_fortran_indexed(
+            set_dis_in,
+            &close_curves,
+            &triangles_on_cell,
+            &state.n_ngrwm,
+            &state.mrl_new,
+        )?;
+        if boundary_segments.num_bdy_refine_segment == 0 {
+            return Ok(0);
+        }
+
+        let mut segments = boundary_segments.bdy_refine_segment;
+        for segment in &mut segments {
+            segment.resize(set_dis_in, 1);
+        }
+        let mut segment_lengths = boundary_segments.n_bdy_refine_segment;
+        state.sjx_child.resize(old_mp + 1, [0, 0]);
+        let mut num_lop = 0usize;
+
+        for transition_row in 1..=set_dis_in {
+            let segments_old = segments.clone();
+            state.ref_sjx.fill(0);
+            for (segment, remaining) in segments.iter().zip(segment_lengths.iter_mut()) {
+                if *remaining == 0 {
+                    continue;
+                }
+                for &triangle in segment.iter().take(*remaining) {
+                    if triangle != 0
+                        && triangle < state.ref_sjx.len()
+                        && state.mrl_new[triangle] != 4
+                    {
+                        state.ref_sjx[triangle] = 1;
+                    }
+                }
+                *remaining = remaining.saturating_sub(1);
+            }
+
+            let num_ref = state.ref_sjx.iter().filter(|&&marker| marker != 0).count();
+            if num_ref == 0 {
+                if transition_row == 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "transition row 1 has no forward one-into-two triangles",
+                    ));
+                }
+                break;
+            }
+
+            apply_transition_onedivide_two(state, num_ref, false)?;
+
+            if transition_row >= set_dis_in {
+                continue;
+            }
+
+            let reverse = apply_isreverse_judge_fortran_indexed(
+                set_dis_in,
+                segments.len(),
+                &state.triangle_neighbors,
+                &state.mrl_new,
+                &mut segments,
+                &segment_lengths,
+            )?;
+            state.ref_sjx = reverse.ref_sjx;
+            let reverse_ref = state.ref_sjx.iter().filter(|&&marker| marker != 0).count();
+            if reverse_ref != 0 {
+                apply_transition_onedivide_two(state, reverse_ref, true)?;
+            }
+
+            let num_end = 4 * (set_dis_in - 1);
+            if num_end == 0 {
+                continue;
+            }
+            let num_segment = segments.len();
+            let mut segment_temp = vec![vec![1_usize; num_end + 1]; num_segment + 1];
+            let mut n_segment_temp = Vec::with_capacity(num_segment + 1);
+            n_segment_temp.push(0);
+            n_segment_temp.extend(segment_lengths.iter().copied());
+            let bdy_segment = fortran_index_segments(&segments);
+            let bdy_segment_old = fortran_index_segments(&segments_old);
+            let mut n_bdy_segment = Vec::with_capacity(num_segment + 1);
+            n_bdy_segment.push(0);
+            n_bdy_segment.extend(segment_lengths.iter().copied());
+            let mut lop_ref = 0usize;
+            apply_sharp_concav_lop_judge_fortran_indexed(
+                &mut lop_ref,
+                num_segment,
+                state.num_mp[state.iter],
+                &state.mrl_new,
+                &state.triangle_neighbors,
+                &state.ngrmw_new,
+                &state.sjx_child,
+                &bdy_segment,
+                &bdy_segment_old,
+                &n_bdy_segment,
+                &mut segment_temp,
+                &mut n_segment_temp,
+            )?;
+            if lop_ref == 0 {
+                continue;
+            }
+            num_lop += lop_ref;
+            let mut lop_segment = vec![0usize];
+            for segment_id in 1..=num_segment {
+                let n = n_segment_temp[segment_id];
+                if n == 0 {
+                    continue;
+                }
+                lop_segment.extend_from_slice(&segment_temp[segment_id][1..=n]);
+            }
+            state.iter += 1;
+            if state.num_mp.len() <= state.iter {
+                state.num_mp.resize(state.iter + 1, 0);
+            }
+            if state.num_wp.len() <= state.iter {
+                state.num_wp.resize(state.iter + 1, 0);
+            }
+            state.num_mp[state.iter] = state.num_mp[state.iter - 1] + lop_ref;
+            state.num_wp[state.iter] = state.num_wp[state.iter - 1];
+            state.mp_new.resize(
+                state.num_mp[state.iter] + 1,
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+            );
+            if state.ngrmw_new.len() <= 3 {
+                state.ngrmw_new.resize_with(4, Vec::new);
+            }
+            for row in &mut state.ngrmw_new[1..=3] {
+                row.resize(state.num_mp[state.iter] + 1, 1);
+            }
+            state.num_ref = lop_ref;
+            state.ref_sjx_segment = lop_segment;
+            state.apply_delaunay_lop()?;
+        }
+
+        Ok(num_lop)
+    }
+}
+
+fn apply_transition_onedivide_two(
+    state: &mut RefineLoopWorkingState,
+    num_ref: usize,
+    is_reverse: bool,
+) -> io::Result<()> {
+    state.iter += 1;
+    if state.num_mp.len() <= state.iter {
+        state.num_mp.resize(state.iter + 1, 0);
+    }
+    if state.num_wp.len() <= state.iter {
+        state.num_wp.resize(state.iter + 1, 0);
+    }
+    state.num_mp[state.iter] = state.num_mp[state.iter - 1] + 2 * num_ref;
+    state.num_wp[state.iter] = state.num_wp[state.iter - 1] + num_ref;
+    state.mp_new.resize(
+        state.num_mp[state.iter] + 1,
+        LonLatPoint { lon: 0.0, lat: 0.0 },
+    );
+    state.wp_new.resize(
+        state.num_wp[state.iter] + 1,
+        LonLatPoint { lon: 0.0, lat: 0.0 },
+    );
+    if state.ngrmw_new.len() <= 3 {
+        state.ngrmw_new.resize_with(4, Vec::new);
+    }
+    for row in &mut state.ngrmw_new[1..=3] {
+        row.resize(state.num_mp[state.iter] + 1, 1);
+    }
+
+    state.apply_onedivide_two(is_reverse)?;
+    for triangle in 1..state.ref_sjx.len() {
+        if state.ref_sjx[triangle] != 0 {
+            state.mrl_new[triangle] = 4;
+        }
+    }
+    Ok(())
+}
+
+fn remove_isolated_one_into_four_markers(
+    num_vertex: usize,
+    old_mp: usize,
+    triangle_neighbors: &[Vec<usize>],
+    ref_sjx: &mut [i32],
+) -> io::Result<()> {
+    if triangle_neighbors.len() <= old_mp || ref_sjx.len() <= old_mp {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("old_mp {old_mp} requires one-based triangle neighbor and ref_sjx storage"),
+        ));
+    }
+    for triangle in (num_vertex + 1)..=old_mp {
+        if ref_sjx[triangle] != 1 {
+            continue;
+        }
+        let neighbors = &triangle_neighbors[triangle];
+        if neighbors.len() != 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("triangle neighbor row {triangle} must contain exactly three neighbors"),
+            ));
+        }
+        let mut neighbor_marker_sum = 0_i32;
+        for &neighbor in neighbors {
+            if neighbor == 0 {
+                continue;
+            }
+            if neighbor > old_mp {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("triangle {triangle} references invalid neighbor {neighbor}"),
+                ));
+            }
+            neighbor_marker_sum += ref_sjx[neighbor];
+        }
+        if neighbor_marker_sum <= 1 {
+            ref_sjx[triangle] = 0;
+        }
+    }
+    Ok(())
+}
+
+fn apply_previous_refine_region_prefilter(
+    file_dir: &Path,
+    previous_step: usize,
+    dist_len: usize,
+    old_mp: usize,
+    old_wp: usize,
+    state: &mut RefineLoopWorkingState,
+) -> io::Result<()> {
+    let mut close_curves = Vec::new();
+    for curve_id in 1.. {
+        let path = refine_array_length_close_mesh_output_path(file_dir, previous_step, curve_id);
+        if !path.exists() {
+            break;
+        }
+        close_curves.push(read_close_mesh_netcdf(path)?);
+    }
+    if close_curves.is_empty() {
+        return Ok(());
+    }
+    if state.mp_new.len() <= old_mp || state.n_ngrwm.len() <= old_wp {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "previous refine-region prefilter requires current mesh arrays",
+        ));
+    }
+    if state.ngrwm.iter().any(|row| row.len() <= old_wp) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "previous refine-region prefilter requires vertex-to-triangle rows",
+        ));
+    }
+
+    let mut mrl_bk = vec![0_i32; old_mp + 1];
+    for triangle in 1..=old_mp {
+        let point = state.mp_new[triangle];
+        if close_curves
+            .iter()
+            .any(|curve| point_in_close_curve_fortran(point, curve))
+        {
+            mrl_bk[triangle] = 1;
+        }
+    }
+
+    for _ in 0..dist_len {
+        let mut boundary = vec![false; old_wp + 1];
+        for cell in 1..=old_wp {
+            let num_edges = state.n_ngrwm[cell];
+            if num_edges == 0 || state.ngrwm.len() <= num_edges {
+                continue;
+            }
+            let mut marked = 0_i32;
+            for row in 1..=num_edges {
+                let triangle = state.ngrwm[row][cell];
+                if triangle <= old_mp {
+                    marked += mrl_bk[triangle];
+                }
+            }
+            if marked != 0 && marked != num_edges as i32 {
+                boundary[cell] = true;
+            }
+        }
+        for cell in 1..=old_wp {
+            if !boundary[cell] {
+                continue;
+            }
+            let num_edges = state.n_ngrwm[cell];
+            if state.ngrwm.len() <= num_edges {
+                continue;
+            }
+            for row in 1..=num_edges {
+                let triangle = state.ngrwm[row][cell];
+                if triangle <= old_mp && mrl_bk[triangle] != 0 {
+                    mrl_bk[triangle] = 0;
+                }
+            }
+        }
+    }
+
+    for triangle in 1..=old_mp {
+        if state.ref_sjx[triangle] != 0 && mrl_bk[triangle] != 1 {
+            state.ref_sjx[triangle] = 0;
+        }
+    }
+    Ok(())
+}
+
+fn point_in_close_curve_fortran(point: LonLatPoint, curve: &[LonLatPoint]) -> bool {
+    if curve.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = curve.len() - 1;
+    for current in 0..curve.len() {
+        let current_point = curve[current];
+        let previous_point = curve[previous];
+        if (current_point.lat > point.lat) != (previous_point.lat > point.lat) {
+            let denominator = previous_point.lat - current_point.lat;
+            if denominator != 0.0 {
+                let lon_intersect = (previous_point.lon - current_point.lon)
+                    * (point.lat - current_point.lat)
+                    / denominator
+                    + current_point.lon;
+                if point.lon < lon_intersect {
+                    inside = !inside;
+                }
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn empty_refine_array_length_report() -> RefineArrayLengthCalculationRunReport {
+    RefineArrayLengthCalculationRunReport {
+        calculation: RefineArrayLengthCalculation {
+            halo: RefineArrayLengthHalo {
+                expanded_mrl: Vec::new(),
+                initial_boundary_mask: Vec::new(),
+                transition_boundary_mask: Vec::new(),
+                boundary_refine: Vec::new(),
+                boundary_refine_transition: Vec::new(),
+                num_transition_row_triangles: 0,
+            },
+            boundary: BoundaryConnection {
+                bdy_num_in: 0,
+                boundary_order: Vec::new(),
+                boundary_neighbors: Vec::new(),
+                curves: BoundaryClosedCurves {
+                    num_closed_curve: 0,
+                    num_bdy_long: [0; 3],
+                    close_curves: vec![Vec::new()],
+                    n_close_curve: vec![0],
+                },
+            },
+        },
+        close_meshes: RefineArrayLengthCloseMeshesWriteReport {
+            mask_patch_ndm: 0,
+            outputs: Vec::new(),
+        },
+    }
+}
+
+fn identity_ngr_renew_report(
+    old_mp: usize,
+    old_wp: usize,
+    state: &RefineLoopWorkingState,
+) -> NgrRenewReport {
+    NgrRenewReport {
+        num_sjx: old_mp,
+        num_dbx: old_wp,
+        vertex_mapping: (0..=old_wp).collect(),
+        adjacency_capacity: state.ngrwm.len().saturating_sub(1).max(7),
+        boundary_refine: Vec::new(),
+        boundary_refine_transition: Vec::new(),
+    }
+}
+
+fn fortran_index_segments(segments: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut indexed = Vec::with_capacity(segments.len() + 1);
+    indexed.push(Vec::new());
+    for segment in segments {
+        let mut row = Vec::with_capacity(segment.len() + 1);
+        row.push(1);
+        row.extend(segment.iter().copied());
+        indexed.push(row);
+    }
+    indexed
+}
+
+fn transition_cell_views(
+    state: &RefineLoopWorkingState,
+    old_mp: usize,
+    old_wp: usize,
+) -> io::Result<(Vec<[usize; 3]>, Vec<Vec<usize>>)> {
+    let cells_on_triangle = fortran_rows_to_triangle_major(&state.ngrmw, old_mp)?;
+    if state.n_ngrwm.len() <= old_wp {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("old_wp {old_wp} requires one-based n_ngrwm storage"),
+        ));
+    }
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); old_wp + 1];
+    for cell in 1..=old_wp {
+        let count = state.n_ngrwm[cell];
+        if state.ngrwm.len() <= count || state.ngrwm[1..=count].iter().any(|row| row.len() <= cell)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("cell {cell} requires ngrwm rows 1..={count}"),
+            ));
+        }
+        triangles_on_cell[cell].extend((1..=count).map(|row| state.ngrwm[row][cell]));
+    }
+    Ok((cells_on_triangle, triangles_on_cell))
 }
 
 fn refresh_working_vertex_membership_from_ngrmw_new(
@@ -1690,14 +11525,59 @@ impl MkgrdRefineLoopExecutor for MkgrdRefineLoopWorkingStateExecutor {
     }
 
     fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
-        self.run_refine_loop_step_report(step).map(|_| ())
+        let report = self.run_refine_loop_step_report(step)?;
+        self.last_post_refine_counts = report.post_refine_counts;
+        Ok(())
     }
 
-    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Final_Grid_Quality_Check is not implemented by MkgrdRefineLoopWorkingStateExecutor",
-        ))
+    fn run_final_quality_check(&mut self, plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+        run_mkgrd_final_quality_check(plan)
+    }
+
+    fn accept_source_branch_outputs(
+        &mut self,
+        _step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+    ) -> io::Result<()> {
+        self.one_into_four_ref_sjx = None;
+        match source.source {
+            MkgrdRefineSource::SpecifiedStep => {
+                let threshold_file =
+                    source.specified_threshold_output.as_ref().ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "specified refine source handoff requires a threshold output path",
+                        )
+                    })?;
+                self.specified_threshold_file = Some(threshold_file.clone());
+                self.calculated_threshold_files.clear();
+            }
+            MkgrdRefineSource::CalculatedIterZero => {
+                if source.threshold_outputs.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "calculated refine source handoff requires threshold output paths",
+                    ));
+                }
+                self.specified_threshold_file = None;
+                self.calculated_threshold_files = source.threshold_outputs.clone();
+            }
+        }
+        Ok(())
+    }
+
+    fn accept_source_branch_report(
+        &mut self,
+        step: &MkgrdRefineLoopStepIoPlan,
+        source: &MkgrdRefineSourceIoPlan,
+        report: &MkgrdRefineSourceBranchReport,
+    ) -> io::Result<()> {
+        self.num_vertex = report.contain_runtime_counts().previous_num_vertex;
+        self.accept_source_branch_outputs(step, source)
+    }
+
+    fn last_refine_step_post_counts(&self) -> Option<(usize, usize)> {
+        self.last_post_refine_counts
     }
 }
 
@@ -3029,16 +12909,17 @@ pub fn apply_onedivide_two_fortran_indexed(
         ));
     }
     let old_mp = num_mp[iter - 1];
+    let base_mp = mrl_new.len().saturating_sub(1);
     let new_mp = num_mp[iter];
     let old_wp = num_wp[iter - 1];
     let new_wp = num_wp[iter];
-    if ref_sjx.len() <= old_mp || mrl_new.len() <= old_mp {
+    if ref_sjx.len() <= base_mp || mrl_new.len() <= base_mp {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("num_mp previous count {old_mp} requires one-based ref_sjx/mrl_new storage"),
+            format!("base triangle count {base_mp} requires one-based ref_sjx/mrl_new storage"),
         ));
     }
-    if mp_new.len() <= new_mp || wp_new.len() <= new_wp || sjx_child.len() <= old_mp {
+    if mp_new.len() <= new_mp || wp_new.len() <= new_wp || sjx_child.len() <= base_mp {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("num_mp[{iter}] {new_mp} and num_wp[{iter}] {new_wp} exceed one-based output storage"),
@@ -3050,12 +12931,12 @@ pub fn apply_onedivide_two_fortran_indexed(
             "ngrmw/ngrmw_new must expose one-based rows 1..=3",
         ));
     }
-    if ngrmw[1..=3].iter().any(|row| row.len() <= old_mp) {
+    if ngrmw[1..=3].iter().any(|row| row.len() <= base_mp) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "num_mp previous count {old_mp} requires ngrmw rows with at least {} columns",
-                old_mp + 1
+                "base triangle count {base_mp} requires ngrmw rows with at least {} columns",
+                base_mp + 1
             ),
         ));
     }
@@ -3069,7 +12950,7 @@ pub fn apply_onedivide_two_fortran_indexed(
         ));
     }
 
-    let split_triangles: Vec<usize> = ((num_vertex + 1)..=old_mp)
+    let split_triangles: Vec<usize> = ((num_vertex + 1)..=base_mp)
         .filter(|&triangle| ref_sjx[triangle] != 0)
         .collect();
     let mut new_triangle_ids = Vec::with_capacity(split_triangles.len() * 2);
@@ -3107,7 +12988,7 @@ pub fn apply_onedivide_two_fortran_indexed(
         new_vertex_ids.push(w4);
     }
 
-    let mut cells_on_triangle = fortran_rows_to_triangle_major(ngrmw, old_mp)?;
+    let mut cells_on_triangle = fortran_rows_to_triangle_major(ngrmw, base_mp)?;
     let mut cells_on_triangle_new = fortran_rows_to_triangle_major(ngrmw_new, new_mp)?;
     cells_on_triangle.resize(new_mp + 1, [0, 0, 0]);
     let mut triangle_points: Vec<LonLatDegrees> = mp_new
@@ -3255,6 +13136,64 @@ pub fn run_mkgrd_refine_loop_execution(
     executor: &mut impl MkgrdRefineLoopExecutor,
     postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
 ) -> io::Result<MkgrdRefineLoopExecutionReport> {
+    run_mkgrd_refine_loop_execution_with_final_domain_contain(
+        plan,
+        executor,
+        None,
+        postproc_options,
+    )
+}
+
+/// Execute the refine loop plus the data_preprocess-derived final-domain
+/// handoff. This keeps the final Area_judge write, `Get_Contain(0)` option
+/// assembly, and land/ocean postprocess option mapping inside the Rust library
+/// boundary instead of the CLI front-end.
+pub fn run_mkgrd_refine_loop_execution_with_data_preprocess_final_domain_handoff<'a>(
+    plan: &MkgrdRefineLoopIoPlan,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    state: &'a MkgrdDataPreprocessSourceState,
+    mesh_type: &str,
+    area_grid_file: &'a Path,
+    mask_sea_ratio: f64,
+    output_format: &'a str,
+) -> io::Result<MkgrdRefineLoopExecutionReport> {
+    let final_postproc_request =
+        data_preprocess_source_state_final_postproc_request(state, mesh_type)?;
+    let postproc_options = data_preprocess_source_state_final_postproc_options(
+        final_postproc_request.as_ref(),
+        state,
+        mask_sea_ratio,
+        output_format,
+    )?;
+    let contain_options = if matches!(
+        postproc_options,
+        Some(MkgrdFinalDomainPostprocOptions::Atmos { .. })
+    ) {
+        None
+    } else {
+        write_data_preprocess_source_state_final_domain_contain_options(
+            state,
+            mesh_type,
+            area_grid_file,
+        )?
+    };
+    run_mkgrd_refine_loop_execution_with_final_domain_contain(
+        plan,
+        executor,
+        contain_options,
+        postproc_options,
+    )
+}
+
+/// Execute the top-level `mkgrd.F90` refine-loop order and optionally generate
+/// the final `Get_Contain(0)` domain containment file before the final
+/// `mask_postproc(mesh_type)` handoff.
+pub fn run_mkgrd_refine_loop_execution_with_final_domain_contain(
+    plan: &MkgrdRefineLoopIoPlan,
+    executor: &mut impl MkgrdRefineLoopExecutor,
+    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
+    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
+) -> io::Result<MkgrdRefineLoopExecutionReport> {
     let mut executed_sources = 0;
     let mut executed_refine_steps = 0;
 
@@ -3272,14 +13211,48 @@ pub fn run_mkgrd_refine_loop_execution(
         }
     }
 
-    let ran_final_quality_check = plan.final_quality_check.run_quality_check;
+    let effective_plan = effective_mkgrd_refine_loop_io_plan(plan)?;
+    let ran_final_quality_check = effective_plan.final_quality_check.run_quality_check;
     if ran_final_quality_check {
-        executor.run_final_quality_check(&plan.final_quality_check)?;
+        let mut final_quality_check = effective_plan.final_quality_check.clone();
+        if let Some(runtime_state) = executor.runtime_state().cloned() {
+            enrich_mkgrd_final_quality_with_global_distance_steps_io(
+                &mut final_quality_check,
+                &runtime_state,
+                effective_plan.max_iter,
+            )?;
+        }
+        executor.run_final_quality_check(&final_quality_check)?;
     }
 
-    let final_handoff = run_mkgrd_refine_loop_final_domain_handoff(plan, postproc_options)?;
+    let final_handoff = run_mkgrd_refine_loop_final_domain_handoff_with_domain_contain(
+        &effective_plan,
+        contain_options,
+        postproc_options,
+    )?;
+    let mut runtime_state = executor.runtime_state().cloned();
+    if let (Some(runtime_state), Some(contain)) = (
+        runtime_state.as_mut(),
+        final_handoff.generated_contain.as_ref(),
+    ) {
+        let counts = &contain.runtime_counts;
+        runtime_state
+            .record_mesh_counts_for_step(
+                effective_plan.final_mask_postproc_step,
+                counts.current_num_mp_step,
+                counts.current_num_wp_step,
+            )
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        if counts.previous_num_vertex > 0 {
+            runtime_state
+                .record_num_vertex(counts.previous_num_vertex)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        }
+    }
     Ok(MkgrdRefineLoopExecutionReport {
         executed_sources,
+        source_branch_reports: executor.source_branch_reports().to_vec(),
+        runtime_state,
         executed_refine_steps,
         ran_final_quality_check,
         final_handoff,
@@ -3353,6 +13326,7 @@ pub fn plan_mkgrd_refine_loop_io(
         }
         steps.push(MkgrdRefineLoopStepIoPlan {
             step: step.step,
+            max_transition_row: step.max_transition_row,
             sources,
             refine_loop_input_gridfile: mkgrd_gridfile_path(&file_dir, nxp, step.step, &mode_grid),
             refine_loop_original_tmpfile: mkgrd_tmpfile_path(&file_dir, nxp, step.step, "ori"),
@@ -3402,6 +13376,103 @@ pub fn plan_mkgrd_refine_loop_io(
         final_quality_check,
         final_mask_postproc_domain,
     })
+}
+
+pub fn infer_mkgrd_effective_final_step_from_gridfiles(
+    plan: &MkgrdRefineLoopIoPlan,
+) -> io::Result<usize> {
+    let planned_step = plan.final_mask_postproc_step;
+    if planned_step != plan.max_iter + 1 || planned_step <= 1 {
+        return Ok(planned_step);
+    }
+    let previous_gridfile =
+        mkgrd_gridfile_path(&plan.file_dir, plan.nxp, planned_step - 1, &plan.mode_grid);
+    if !previous_gridfile.exists() || !plan.final_domain_gridfile.exists() {
+        return Ok(planned_step);
+    }
+    let previous_counts = read_gridfile_point_counts(&previous_gridfile)?;
+    let planned_counts = read_gridfile_point_counts(&plan.final_domain_gridfile)?;
+    if previous_counts == planned_counts {
+        Ok(planned_step - 1)
+    } else {
+        Ok(planned_step)
+    }
+}
+
+fn effective_mkgrd_refine_loop_io_plan(
+    plan: &MkgrdRefineLoopIoPlan,
+) -> io::Result<MkgrdRefineLoopIoPlan> {
+    let effective_step = infer_mkgrd_effective_final_step_from_gridfiles(plan)?;
+    if effective_step == plan.final_mask_postproc_step {
+        return Ok(plan.clone());
+    }
+    let mut effective = plan.clone();
+    effective.final_mask_postproc_step = effective_step;
+    effective.final_domain_gridfile = mkgrd_gridfile_path(
+        &effective.file_dir,
+        effective.nxp,
+        effective_step,
+        &effective.mode_grid,
+    );
+    effective.final_quality_check = retarget_final_quality_check_step(
+        &effective.final_quality_check,
+        &effective.file_dir,
+        effective.nxp,
+        &effective.mode_grid,
+        effective_step,
+    );
+    Ok(effective)
+}
+
+fn retarget_final_quality_check_step(
+    plan: &MkgrdFinalQualityCheckIoPlan,
+    file_dir: &Path,
+    nxp: usize,
+    mode_grid: &str,
+    step: usize,
+) -> MkgrdFinalQualityCheckIoPlan {
+    let mut retargeted = plan.clone();
+    retargeted.step = step;
+    if retargeted.run_quality_check {
+        let input_gridfile = mkgrd_gridfile_path(file_dir, nxp, step, mode_grid);
+        retargeted.input_gridfile = input_gridfile.clone();
+        retargeted.original_gridfile = Some(file_dir.join("gridfile").join(format!(
+            "gridfile_NXP{nxp:04}_{step:02}_{mode_grid}_orial.nc4"
+        )));
+        retargeted.quality_before_spring = Some(file_dir.join("result").join(format!(
+            "quality_NXP{nxp:04}_{step:02}_global_beforeSpring.nc4"
+        )));
+        retargeted.quality_after_spring = Some(
+            file_dir
+                .join("result")
+                .join(format!("quality_NXP{nxp:04}_{step:02}_global.nc4")),
+        );
+        retargeted.output_gridfile = Some(input_gridfile);
+    }
+    retargeted
+}
+
+fn read_gridfile_point_counts(path: &Path) -> io::Result<(usize, usize)> {
+    let file = netcdf::open(path).map_err(netcdf_to_io_error)?;
+    let triangles = file
+        .dimension("sjx_points")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is missing sjx_points", path.display()),
+            )
+        })?
+        .len();
+    let cells = file
+        .dimension("lbx_points")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is missing lbx_points", path.display()),
+            )
+        })?
+        .len();
+    Ok((triangles, cells))
 }
 
 fn plan_mkgrd_refine_source_io(
@@ -3464,7 +13535,7 @@ fn mkgrd_calculated_threshold_outputs(
             .push(threshold_dir.join(format!("threshold_calculate_ocean_NXP{nxp:04}_{stepc}.nc4"))),
         "atmosmesh" => outputs
             .push(threshold_dir.join(format!("threshold_calculate_atmos_NXP{nxp:04}_{stepc}.nc4"))),
-        "LOCmesh" => {
+        "LOCmesh" | "earthmesh" => {
             outputs.push(
                 threshold_dir.join(format!("threshold_calculate_land_NXP{nxp:04}_{stepc}.nc4")),
             );
@@ -3520,6 +13591,9 @@ pub fn plan_mkgrd_final_quality_check_io(
             quality_after_spring: None,
             output_gridfile: None,
             regional_set_dis: None,
+            global_spring: None,
+            regional_spring: None,
+            regional_source_mask: None,
         });
     }
 
@@ -3534,6 +13608,9 @@ pub fn plan_mkgrd_final_quality_check_io(
             quality_after_spring: None,
             output_gridfile: None,
             regional_set_dis: None,
+            global_spring: None,
+            regional_spring: None,
+            regional_source_mask: None,
         });
     }
 
@@ -3556,6 +13633,12 @@ pub fn plan_mkgrd_final_quality_check_io(
     };
     let regional_set_dis =
         (spring_mode == MkgrdFinalQualitySpringMode::RegionalFinal).then_some(refine.halo[1]);
+    let global_spring = (spring_mode == MkgrdFinalQualitySpringMode::Global)
+        .then(|| plan_mkgrd_final_quality_global_spring(config, refine, nxp))
+        .transpose()?;
+    let regional_spring = (spring_mode == MkgrdFinalQualitySpringMode::RegionalFinal)
+        .then(|| plan_mkgrd_final_quality_regional_spring(refine))
+        .transpose()?;
 
     Ok(MkgrdFinalQualityCheckIoPlan {
         step,
@@ -3575,6 +13658,451 @@ pub fn plan_mkgrd_final_quality_check_io(
         ),
         output_gridfile: Some(input_gridfile),
         regional_set_dis,
+        global_spring,
+        regional_spring,
+        regional_source_mask: None,
+    })
+}
+
+fn plan_mkgrd_final_quality_regional_spring(
+    refine: &RefineConfig,
+) -> io::Result<MkgrdFinalQualityRegionalSpringIoPlan> {
+    let niter_refine = final_quality_non_negative_usize(
+        refine.niter_refine,
+        "Final_Grid_Quality_Check niter_refine must be non-negative",
+    )?;
+    Ok(MkgrdFinalQualityRegionalSpringIoPlan {
+        niter_refine,
+        radius: earthmesh_core::EARTH_RADIUS_METERS,
+    })
+}
+
+fn plan_mkgrd_final_quality_global_spring(
+    config: &EarthmeshConfig,
+    refine: &RefineConfig,
+    nxp: usize,
+) -> io::Result<MkgrdFinalQualityGlobalSpringIoPlan> {
+    let distance_num_rc = final_quality_non_negative_usize(
+        refine.num_rc,
+        "Final_Grid_Quality_Check num_rc must be non-negative",
+    )?;
+    let niter_refine = final_quality_non_negative_usize(
+        refine.niter_refine,
+        "Final_Grid_Quality_Check niter_refine must be non-negative",
+    )?;
+    let distance_spacing = if distance_num_rc == 0 {
+        DistanceLayerSpacing::Linear
+    } else {
+        final_quality_distance_spacing(&refine.set_dis_type)?
+    };
+    let base_dists_on_edge =
+        f64::from(config.beta) * std::f64::consts::PI * 2.0 * earthmesh_core::EARTH_RADIUS_METERS
+            / (5.0 * nxp as f64);
+    let base_cellwidth = match config.output_format.trim() {
+        "MPAS" | "MPAS-Simple" => Some((7680 / nxp) as f64),
+        _ => None,
+    };
+
+    Ok(MkgrdFinalQualityGlobalSpringIoPlan {
+        base_dists_on_edge,
+        base_cellwidth,
+        distance_num_rc,
+        distance_spacing,
+        distance_steps: Vec::new(),
+        niter_refine,
+        relax: f64::from(config.relax),
+        radius: earthmesh_core::EARTH_RADIUS_METERS,
+    })
+}
+
+fn final_quality_non_negative_usize(value: i32, message: &str) -> io::Result<usize> {
+    usize::try_from(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, message))
+}
+
+fn final_quality_distance_spacing(set_dis_type: &str) -> io::Result<DistanceLayerSpacing> {
+    match set_dis_type.trim() {
+        "linear" => Ok(DistanceLayerSpacing::Linear),
+        "nonlinear1" => Ok(DistanceLayerSpacing::Power),
+        "nonlinear2" => Ok(DistanceLayerSpacing::Exponential),
+        "nonlinear3" => Ok(DistanceLayerSpacing::Logarithmic),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Final_Grid_Quality_Check set_dis_type must be linear, nonlinear1, nonlinear2, or nonlinear3; got {other}"),
+        )),
+    }
+}
+
+/// Execute `mkgrd.F90:Inital_Grid_Quality_Check` for an existing gridfile.
+///
+/// The Fortran entry reads the current unstructured grid and writes
+/// `quality_NXP####_##_global_orial.nc4`; this Rust wrapper keeps that side
+/// effect explicit without touching spring-adjustment state.
+pub fn run_mkgrd_initial_grid_quality_check(
+    input_gridfile: impl AsRef<Path>,
+    quality_output: impl AsRef<Path>,
+) -> io::Result<()> {
+    let mesh = normalize_unstructured_mesh_legacy_placeholders(&read_unstructured_mesh_netcdf(
+        input_gridfile.as_ref(),
+    )?)?;
+    let quality = grid_quality_global_from_unstructured_mesh(&mesh)?;
+    write_grid_quality_global_netcdf(quality_output, &quality).map(|_| ())
+}
+
+/// Execute the migrated file-backed subset of `mkgrd.F90:Final_Grid_Quality_Check`.
+///
+/// This preserves the legacy side-effect order: copy the pre-spring gridfile,
+/// write quality diagnostics before spring adjustment, run the selected
+/// global/final-regional spring path, write quality diagnostics after spring,
+/// then persist the adjusted mesh back to the planned output gridfile.
+pub fn run_mkgrd_final_quality_check(plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
+    if !plan.run_quality_check {
+        return Ok(());
+    }
+
+    let original_gridfile =
+        required_final_quality_path(plan.original_gridfile.as_deref(), "original gridfile")?;
+    let quality_before_spring = required_final_quality_path(
+        plan.quality_before_spring.as_deref(),
+        "quality before spring",
+    )?;
+    let quality_after_spring =
+        required_final_quality_path(plan.quality_after_spring.as_deref(), "quality after spring")?;
+    let output_gridfile =
+        required_final_quality_path(plan.output_gridfile.as_deref(), "output gridfile")?;
+
+    if let Some(parent) = original_gridfile.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&plan.input_gridfile, original_gridfile)?;
+
+    let raw_mesh = read_unstructured_mesh_netcdf(&plan.input_gridfile)?;
+    let mesh = normalize_unstructured_mesh_legacy_placeholders(&raw_mesh)?;
+    let before_quality = grid_quality_global_from_unstructured_mesh(&mesh)?;
+    write_grid_quality_global_netcdf(quality_before_spring, &before_quality)?;
+
+    let mut restored_global_cellwidth: Option<(PathBuf, Vec<f64>)> = None;
+    let adjusted_mesh = match plan.spring_mode {
+        MkgrdFinalQualitySpringMode::Global => {
+            let (file_dir, nxp) = final_quality_file_dir_and_nxp(plan)?;
+            let global_spring = plan.global_spring.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Final_Grid_Quality_Check global spring requires global_spring controls",
+                )
+            })?;
+            let distance_steps = final_quality_global_distance_steps(global_spring);
+            let report = run_springjustment_global_from_unstructured_mesh(
+                &mesh,
+                &file_dir,
+                nxp,
+                plan.step,
+                final_quality_global_spring_options(global_spring, &distance_steps),
+            )?;
+            if let Some(cellwidth) = report.core.cellwidth.as_ref() {
+                restored_global_cellwidth = Some((
+                    file_dir
+                        .join("result")
+                        .join(format!("cellwidth_NXP{nxp:04}_global.nc4")),
+                    restore_cellwidth_shape(&raw_mesh, cellwidth)?,
+                ));
+            }
+            report.mesh
+        }
+        MkgrdFinalQualitySpringMode::RegionalFinal => {
+            run_final_regional_spring_from_unstructured_mesh(plan, &mesh)?
+        }
+        MkgrdFinalQualitySpringMode::SkippedBothDisabled
+        | MkgrdFinalQualitySpringMode::SkippedRegionalEachStep => mesh.clone(),
+    };
+
+    let after_quality = grid_quality_global_from_unstructured_mesh(&adjusted_mesh)?;
+    write_grid_quality_global_netcdf(quality_after_spring, &after_quality)?;
+    let output_mesh = restore_unstructured_mesh_shape(&raw_mesh, &adjusted_mesh)?;
+    write_unstructured_mesh_netcdf(output_gridfile, &output_mesh)?;
+    if let Some((cellwidth_path, cellwidth)) = restored_global_cellwidth {
+        write_cellwidth_netcdf(
+            cellwidth_path,
+            &CellwidthMesh {
+                cell_points: raw_mesh.w_points.clone(),
+                cellwidth,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn restore_cellwidth_shape(original: &UnstructuredMesh, cellwidth: &[f64]) -> io::Result<Vec<f64>> {
+    if cellwidth.len() < original.w_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cellwidth is smaller than original mesh cell shape",
+        ));
+    }
+    let cell_offset = cellwidth.len() - original.w_points.len();
+    Ok(cellwidth[cell_offset..].to_vec())
+}
+
+/// Reproduce the post-`NGR_RENEW` counters that Fortran stores in
+/// `num_mp_step(step)` and `num_wp_step(step)` for later global distance layers.
+pub fn refine_loop_post_counts_fortran_indexed(
+    old_triangle_count: usize,
+    old_cell_count: usize,
+    expanded_triangle_count: usize,
+    compact_mesh: &UnstructuredMesh,
+    lop_triangle_count: usize,
+) -> io::Result<(usize, usize)> {
+    let compact_triangle_count = compact_mesh.m_points.len();
+    let removed_triangle_count = expanded_triangle_count
+        .checked_sub(compact_triangle_count)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expanded triangle count must be >= compact triangle count",
+            )
+        })?;
+    let num_vertex = old_triangle_count
+        .checked_sub(removed_triangle_count)
+        .and_then(|value| value.checked_add(lop_triangle_count))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "post-refine num_vertex calculation overflowed or underflowed",
+            )
+        })?;
+    let mut num_center = old_cell_count;
+    for triangle_id in (num_vertex + 1)..=compact_triangle_count {
+        let row = compact_mesh.m_to_w.get(triangle_id - 1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("compact mesh is missing triangle row {triangle_id}"),
+            )
+        })?;
+        for &cell_id in row {
+            if cell_id > 0 && (cell_id as usize) < num_center {
+                num_center = cell_id as usize;
+            }
+        }
+    }
+    Ok((num_vertex, num_center))
+}
+
+fn required_final_quality_path<'a>(path: Option<&'a Path>, label: &str) -> io::Result<&'a Path> {
+    path.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Final_Grid_Quality_Check requires {label} path"),
+        )
+    })
+}
+
+fn grid_quality_global_from_unstructured_mesh(
+    mesh: &UnstructuredMesh,
+) -> io::Result<earthmesh_mesh::GridQualityGlobalOutput> {
+    let cells_on_triangle = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
+    let triangles_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
+
+    earthmesh_mesh::grid_quality_check_global_fortran_indexed(
+        &cell_lonlat,
+        &cells_on_triangle,
+        &triangle_lonlat,
+        &triangles_on_cell,
+        &n_edges_on_cell,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to run Grid_Quality_Check_Global from unstructured mesh",
+        )
+    })
+}
+
+fn run_final_regional_spring_from_unstructured_mesh(
+    plan: &MkgrdFinalQualityCheckIoPlan,
+    mesh: &UnstructuredMesh,
+) -> io::Result<UnstructuredMesh> {
+    let set_dis = plan.regional_set_dis.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check regional spring requires regional_set_dis",
+        )
+    })?;
+    let regional_spring = plan.regional_spring.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check regional spring requires regional_spring controls",
+        )
+    })?;
+    if set_dis < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check regional_set_dis must be non-negative",
+        ));
+    }
+
+    let cells_on_triangle = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
+    let source_mask = plan.regional_source_mask.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check regional spring requires source mask classification inputs",
+        )
+    })?;
+    let refined_triangles = final_regional_refined_triangles_from_source_mask(mesh, source_mask)?;
+    let move_mask = final_regional_move_mask_from_refined_triangles(
+        mesh,
+        &cells_on_triangle,
+        &refined_triangles,
+        set_dis as usize,
+    )?;
+    let report = run_springjustment_regional_from_unstructured_mesh(
+        mesh,
+        SpringjustmentRegionalRunOptions {
+            move_mask: &move_mask,
+            niter_refine: regional_spring.niter_refine,
+            radius: regional_spring.radius,
+            diagnostic_every: 100,
+        },
+    )?;
+    Ok(report.mesh)
+}
+
+fn final_regional_refined_triangles_from_source_mask(
+    mesh: &UnstructuredMesh,
+    source_mask: &MkgrdFinalQualityRegionalSourceMaskIoPlan,
+) -> io::Result<Vec<bool>> {
+    let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    earthmesh_mesh::refine_sjx_regional_make_fortran_indexed(
+        earthmesh_mesh::RefineRegionalMaskInput {
+            triangle_lonlat: &triangle_lonlat,
+            source_lon_vertices: &source_mask.source_lon_vertices,
+            source_lat_vertices: &source_mask.source_lat_vertices,
+            mask_patch: &source_mask.mask_patch,
+            first_triangle_id: source_mask.first_triangle_id,
+        },
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to classify final regional refined triangles from source mask",
+        )
+    })
+}
+
+fn final_regional_move_mask_from_refined_triangles(
+    mesh: &UnstructuredMesh,
+    cells_on_triangle: &[[usize; 3]],
+    refined_triangles: &[bool],
+    set_dis: usize,
+) -> io::Result<Vec<bool>> {
+    let triangles_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
+    let mask = earthmesh_mesh::set_dbx_move_regional_step_fortran_indexed(
+        earthmesh_mesh::RegionalMoveMaskInput {
+            set_dis,
+            refined_triangles,
+            cells_on_triangle,
+            triangles_on_cell: &triangles_on_cell,
+            n_edges_on_cell: &n_edges_on_cell,
+            protected_seed_cells: &[],
+            vertex_protect_layers: 0,
+        },
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to derive final regional Springjustment move mask",
+        )
+    })?;
+    Ok(mask.move_mask)
+}
+
+fn final_quality_global_distance_steps(
+    plan: &MkgrdFinalQualityGlobalSpringIoPlan,
+) -> Vec<GlobalDistanceStep<'_>> {
+    plan.distance_steps
+        .iter()
+        .map(|step| GlobalDistanceStep {
+            active: step.active,
+            halo: step.halo,
+            refinement_flags: &step.refinement_flags,
+            num_vertex_in: step.num_vertex_in,
+            num_center_in: step.num_center_in,
+        })
+        .collect()
+}
+
+fn final_quality_global_spring_options<'a>(
+    plan: &'a MkgrdFinalQualityGlobalSpringIoPlan,
+    distance_steps: &'a [GlobalDistanceStep<'a>],
+) -> SpringjustmentGlobalRunOptions<'a> {
+    SpringjustmentGlobalRunOptions {
+        base_dists_on_edge: plan.base_dists_on_edge,
+        base_cellwidth: plan.base_cellwidth,
+        distance_num_rc: plan.distance_num_rc,
+        distance_spacing: plan.distance_spacing,
+        distance_steps,
+        niter_refine: plan.niter_refine,
+        relax: plan.relax,
+        radius: plan.radius,
+        diagnostic_every: 100,
+    }
+}
+
+fn final_quality_file_dir_and_nxp(
+    plan: &MkgrdFinalQualityCheckIoPlan,
+) -> io::Result<(PathBuf, usize)> {
+    let gridfile_dir = plan.input_gridfile.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check input_gridfile must have a parent directory",
+        )
+    })?;
+    let file_dir = gridfile_dir.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Final_Grid_Quality_Check input_gridfile must live under <file_dir>/gridfile",
+        )
+    })?;
+    let filename = plan
+        .input_gridfile
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Final_Grid_Quality_Check input_gridfile must have a UTF-8 file name",
+            )
+        })?;
+    Ok((
+        file_dir.to_path_buf(),
+        parse_nxp_from_gridfile_name(filename)?,
+    ))
+}
+
+fn parse_nxp_from_gridfile_name(filename: &str) -> io::Result<usize> {
+    let start = filename.find("NXP").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("gridfile name {filename} does not contain NXP"),
+        )
+    })? + 3;
+    let digits = filename[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("gridfile name {filename} does not contain NXP digits"),
+        ));
+    }
+    digits.parse::<usize>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("failed to parse NXP from gridfile name {filename}: {err}"),
+        )
     })
 }
 
@@ -3588,6 +14116,481 @@ fn mkgrd_tmpfile_path(file_dir: &Path, nxp: usize, step: usize, suffix: &str) ->
     file_dir
         .join("tmpfile")
         .join(format!("gridfile_NXP{nxp:04}_{step:02}_{suffix}.nc4"))
+}
+
+/// Run the migrated top-level `mkgrd.x` namelist dispatcher for option-free branches.
+///
+/// This is the Rust replacement for the first branch decision in `mkgrd.F90`:
+/// mask-restart namelists must not fall through to the normal gridinit path.
+/// Restart variants that require extra source-grid/postprocess options return a typed plan;
+/// the patch-preprocess branch is fully executable because it only depends on the namelist.
+pub fn run_mkgrd_top_level_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    mask_restart_max_iter: i32,
+) -> io::Result<MkgrdTopLevelDispatchRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+
+    if config.mask_restart {
+        if config.mask_patch_on {
+            let restart_area_grid =
+                PathBuf::from(config.file_dir()).join("result/IsInDmArea_grid.nc4");
+            if restart_area_grid.exists() {
+                return run_mkgrd_mask_restart_area_judge_configured_global_source_namelist(
+                    namelist_source,
+                    workdir,
+                    mask_restart_max_iter,
+                    None,
+                )
+                .map(MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge);
+            }
+            return run_mkgrd_mask_restart_patch_namelist(
+                namelist_source,
+                workdir,
+                mask_restart_max_iter,
+            )
+            .map(MkgrdTopLevelDispatchRunReport::MaskRestartPatch);
+        }
+        let plan =
+            plan_mkgrd_mask_restart_namelist(namelist_source, workdir, mask_restart_max_iter)?;
+        if plan.remask.action == MaskRestartAction::RunMaskPostproc
+            && plan.config.mesh_type.trim() == "oceanmesh"
+        {
+            let num_vertex = infer_mask_restart_ocean_num_vertex_from_config(&plan.config)?;
+            return run_mkgrd_mask_restart_ocean_namelist(
+                namelist_source,
+                workdir,
+                mask_restart_max_iter,
+                MaskPostprocOceanRunOptions {
+                    mask_sea_ratio: plan.config.mask_sea_ratio,
+                    num_vertex,
+                },
+            )
+            .map(MkgrdTopLevelDispatchRunReport::MaskRestartOcean);
+        }
+        if plan.remask.action == MaskRestartAction::ContinueMkgrd
+            && !plan.config.mask_patch_on
+            && plan.config.mesh_type.trim() != "oceanmesh"
+        {
+            let postproc_num_vertex =
+                maybe_infer_mask_restart_non_ocean_num_vertex_from_config(&plan.config)?;
+            return run_mkgrd_mask_restart_area_judge_configured_global_source_namelist(
+                namelist_source,
+                workdir,
+                mask_restart_max_iter,
+                postproc_num_vertex,
+            )
+            .map(MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge);
+        }
+        return Ok(MkgrdTopLevelDispatchRunReport::MaskRestartPlan(plan));
+    }
+
+    run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)
+        .map(MkgrdTopLevelDispatchRunReport::Gridinit)
+}
+
+/// Infer the legacy `num_vertex` boundary for mask-restart ocean postprocess
+/// from the restart contain file written by the previous `Get_Contain(0)`
+/// handoff.
+///
+/// The Fortran `mkgrd` restart path already has this boundary in module state.
+/// Rust callers reconstruct it from the persisted `ustr_ii` table so top-level
+/// restart execution does not require a debug-only manual argument.
+pub fn infer_mask_restart_ocean_num_vertex_from_config(
+    config: &EarthmeshConfig,
+) -> io::Result<usize> {
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart ocean postproc requires positive NL%NXP to infer num_vertex, got {}",
+                config.nxp
+            ),
+        ));
+    }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let postproc_plan = plan_mask_postproc_domain_io(
+        PathBuf::from(config.file_dir()),
+        nxp,
+        config.mode_grid.trim(),
+        config.mesh_type.trim(),
+        config.mask_patch_on,
+    )?;
+    let contain = read_contain_netcdf(&postproc_plan.contain_domain)?;
+    if contain.ustr_ii.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart ocean postproc cannot infer num_vertex from empty ustr_ii in {}",
+                postproc_plan.contain_domain.display()
+            ),
+        ));
+    }
+    Ok(contain.ustr_ii.len())
+}
+
+/// Try to recover the legacy `num_vertex` boundary for ocean mask-restart
+/// `Area_judge` final postprocess from the persisted final contain file.
+///
+/// Missing contain files mean the continuation has not reached a final
+/// postprocess handoff yet, so callers that can still run Area_judge-only should
+/// treat the boundary as absent.  Existing but empty contain files are invalid
+/// because they cannot prove a safe persisted boundary.
+pub fn maybe_infer_mask_restart_ocean_num_vertex_from_config(
+    config: &EarthmeshConfig,
+) -> io::Result<Option<usize>> {
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart ocean postproc requires positive NL%NXP to infer num_vertex, got {}",
+                config.nxp
+            ),
+        ));
+    }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let postproc_plan = plan_mask_postproc_domain_io(
+        PathBuf::from(config.file_dir()),
+        nxp,
+        config.mode_grid.trim(),
+        config.mesh_type.trim(),
+        config.mask_patch_on,
+    )?;
+    if !postproc_plan.contain_domain.exists() {
+        return Ok(None);
+    }
+    let contain = read_contain_netcdf(&postproc_plan.contain_domain)?;
+    if contain.ustr_ii.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart ocean postproc cannot infer num_vertex from empty ustr_ii in {}",
+                postproc_plan.contain_domain.display()
+            ),
+        ));
+    }
+    Ok(Some(contain.ustr_ii.len()))
+}
+
+/// Try to recover the legacy `num_vertex` boundary for non-ocean
+/// mask-restart `ContinueMkgrd` final postprocess from the persisted final
+/// contain file written by the previous handoff.
+///
+/// Missing contain files are treated as "not recoverable yet" so restart
+/// callers can still run the Area_judge-only continuation.  Existing but empty
+/// contain files are invalid because they cannot prove a safe boundary.
+pub fn maybe_infer_mask_restart_non_ocean_num_vertex_from_config(
+    config: &EarthmeshConfig,
+) -> io::Result<Option<usize>> {
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart non-ocean postproc requires positive NL%NXP to infer num_vertex, got {}",
+                config.nxp
+            ),
+        ));
+    }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let postproc_plan = plan_mask_postproc_domain_io(
+        PathBuf::from(config.file_dir()),
+        nxp,
+        config.mode_grid.trim(),
+        config.mesh_type.trim(),
+        config.mask_patch_on,
+    )?;
+    if !postproc_plan.contain_domain.exists() {
+        return Ok(None);
+    }
+    let contain = read_contain_netcdf(&postproc_plan.contain_domain)?;
+    if contain.ustr_ii.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "mask_restart non-ocean postproc cannot infer num_vertex from empty ustr_ii in {}",
+                postproc_plan.contain_domain.display()
+            ),
+        ));
+    }
+    Ok(Some(contain.ustr_ii.len()))
+}
+
+fn default_mask_restart_area_judge_postproc_num_vertex(
+    config: &EarthmeshConfig,
+    explicit_num_vertex: Option<usize>,
+) -> io::Result<Option<usize>> {
+    if explicit_num_vertex.is_some() {
+        return Ok(explicit_num_vertex);
+    }
+    let mode_num_vertex = mkgrd_mode_grid_num_vertex(config.mode_grid.trim())?;
+    if config.mesh_type.trim() == "oceanmesh" {
+        return Ok(
+            maybe_infer_mask_restart_ocean_num_vertex_from_config(config)?
+                .or(Some(mode_num_vertex)),
+        );
+    }
+    let default_num_vertex = if config.mesh_type.trim() == "landmesh" {
+        1
+    } else {
+        mode_num_vertex
+    };
+    Ok(
+        maybe_infer_mask_restart_non_ocean_num_vertex_from_config(config)?
+            .or(Some(default_num_vertex)),
+    )
+}
+
+/// Build the standard case-local restart-refine initial gridfile path used by
+/// the migrated top-level `mkgrd` restart handoff.
+pub fn restart_refine_initial_gridfile_path_from_config(
+    config: &EarthmeshConfig,
+) -> io::Result<PathBuf> {
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "restart-refine handoff requires positive NL%NXP to infer initial gridfile, got {}",
+                config.nxp
+            ),
+        ));
+    }
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    Ok(PathBuf::from(config.file_dir())
+        .join("gridfile")
+        .join(format!(
+            "gridfile_NXP{nxp:04}_01_{}.nc4",
+            config.mode_grid.trim()
+        )))
+}
+
+/// Strictly infer the standard restart-refine initial gridfile, requiring it to
+/// already exist on disk.
+pub fn infer_restart_refine_initial_gridfile_from_config(
+    config: &EarthmeshConfig,
+) -> io::Result<PathBuf> {
+    let path = restart_refine_initial_gridfile_path_from_config(config)?;
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "restart-refine handoff requires --restart-refine-initial-gridfile or existing initial gridfile {}",
+                path.display()
+            ),
+        ))
+    }
+}
+
+/// Optionally infer the standard restart-refine initial gridfile, returning
+/// `None` when the standard path has not yet been prepared.
+pub fn maybe_infer_restart_refine_initial_gridfile_from_config(
+    config: &EarthmeshConfig,
+) -> io::Result<Option<PathBuf>> {
+    let path = restart_refine_initial_gridfile_path_from_config(config)?;
+    Ok(path.exists().then_some(path))
+}
+
+/// Source branch selected by the default top-level `mkgrd.x` restart-refine
+/// handoff classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MkgrdDefaultRestartRefineSource {
+    SourceState,
+    LandtypeFile,
+}
+
+/// Reusable result for the default top-level restart-refine handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdDefaultRestartRefineHandoff {
+    pub source: MkgrdDefaultRestartRefineSource,
+    pub initial_gridfile: PathBuf,
+}
+
+/// Return true when the raw namelist explicitly sets `NL%landtype_file` outside
+/// comments.  The parsed config alone cannot distinguish an omitted key from an
+/// empty default, and the legacy restart branch only enters the landtype-source
+/// path when the namelist provided the field.
+pub fn namelist_sets_landtype_file(contents: &str) -> bool {
+    contents
+        .lines()
+        .map(|line| line.split('!').next().unwrap_or(""))
+        .any(|line| line.to_ascii_lowercase().contains("landtype_file"))
+}
+
+/// Classify the no-explicit-mode restart-refine handoff that the top-level
+/// `mkgrd.x` front-end should run, including standard initial-gridfile
+/// inference.  This keeps restart/refine branching reusable by callers other
+/// than the CLI binary.
+pub fn infer_default_restart_refine_handoff_from_config(
+    config: &EarthmeshConfig,
+    namelist_contents: &str,
+    has_restart_refine_source_state: bool,
+    restart_refine_initial_gridfile: Option<&Path>,
+) -> io::Result<Option<MkgrdDefaultRestartRefineHandoff>> {
+    if restart_refine_initial_gridfile.is_some() || has_restart_refine_source_state {
+        let initial_gridfile = match restart_refine_initial_gridfile {
+            Some(path) => path.to_path_buf(),
+            None => infer_restart_refine_initial_gridfile_from_config(config)?,
+        };
+        let source = if has_restart_refine_source_state {
+            MkgrdDefaultRestartRefineSource::SourceState
+        } else if namelist_sets_landtype_file(namelist_contents)
+            && !config.landtype_file.trim().is_empty()
+        {
+            MkgrdDefaultRestartRefineSource::LandtypeFile
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "default restart-refine handoff requires --restart-refine-source-state or NL%landtype_file",
+            ));
+        };
+        return Ok(Some(MkgrdDefaultRestartRefineHandoff {
+            source,
+            initial_gridfile,
+        }));
+    }
+
+    if config.mask_restart
+        && config.refine
+        && namelist_sets_landtype_file(namelist_contents)
+        && !config.landtype_file.trim().is_empty()
+    {
+        if let Some(initial_gridfile) =
+            maybe_infer_restart_refine_initial_gridfile_from_config(config)?
+        {
+            return Ok(Some(MkgrdDefaultRestartRefineHandoff {
+                source: MkgrdDefaultRestartRefineSource::LandtypeFile,
+                initial_gridfile,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Run the top-level dispatcher after applying the default restart-refine
+/// handoff classification used when the binary receives no explicit execution
+/// mode.  This keeps the restart/refine branch decision in the reusable Rust
+/// library instead of the CLI argument front-end.
+pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    mask_restart_max_iter: i32,
+    restart_refine_source_state: Option<&Path>,
+    restart_refine_initial_gridfile: Option<&Path>,
+    source_gridnum_perdegree: Option<usize>,
+    source_first_triangle_id: usize,
+    mask_postproc_num_vertex: Option<usize>,
+) -> io::Result<MkgrdTopLevelDefaultRestartRefineRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+
+    let Some(handoff) = infer_default_restart_refine_handoff_from_config(
+        &config,
+        &contents,
+        restart_refine_source_state.is_some(),
+        restart_refine_initial_gridfile,
+    )?
+    else {
+        let restart_area_grid = PathBuf::from(config.file_dir()).join("result/IsInDmArea_grid.nc4");
+        if config.mask_restart && config.mask_patch_on && restart_area_grid.exists() {
+            let postproc_num_vertex = default_mask_restart_area_judge_postproc_num_vertex(
+                &config,
+                mask_postproc_num_vertex,
+            )?;
+            return run_mkgrd_mask_restart_area_judge_configured_global_source_namelist(
+                namelist_source,
+                workdir,
+                mask_restart_max_iter,
+                postproc_num_vertex,
+            )
+            .map(MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge)
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
+        }
+        if config.mask_restart && !config.mask_patch_on {
+            let plan =
+                plan_mkgrd_mask_restart_namelist(namelist_source, workdir, mask_restart_max_iter)?;
+            if plan.remask.action == MaskRestartAction::ContinueMkgrd {
+                let postproc_num_vertex = default_mask_restart_area_judge_postproc_num_vertex(
+                    &config,
+                    mask_postproc_num_vertex,
+                )?;
+                return run_mkgrd_mask_restart_area_judge_configured_global_source_namelist(
+                    namelist_source,
+                    workdir,
+                    mask_restart_max_iter,
+                    postproc_num_vertex,
+                )
+                .map(MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge)
+                .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
+            }
+        }
+        if !config.mask_restart
+            && config.refine
+            && namelist_sets_landtype_file(&contents)
+            && !config.landtype_file.trim().is_empty()
+        {
+            return run_mkgrd_refine_landtype_source_namelist(
+                namelist_source,
+                workdir,
+                max_tris,
+                source_gridnum_perdegree,
+                source_first_triangle_id,
+                MkgrdRefineLoopWorkingStateExecutor::default(),
+            )
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource);
+        }
+        return run_mkgrd_top_level_namelist(
+            namelist_source,
+            workdir,
+            max_tris,
+            mask_restart_max_iter,
+        )
+        .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
+    };
+
+    match handoff.source {
+        MkgrdDefaultRestartRefineSource::SourceState => {
+            let source_state = restart_refine_source_state.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "default source-state restart-refine handoff requires a source-state path",
+                )
+            })?;
+            run_mkgrd_restart_refine_compact_source_state_namelist(
+                namelist_source,
+                workdir,
+                source_state,
+                &handoff.initial_gridfile,
+                mask_postproc_num_vertex,
+            )
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact)
+        }
+        MkgrdDefaultRestartRefineSource::LandtypeFile => {
+            run_mkgrd_restart_refine_landtype_source_namelist(
+                namelist_source,
+                workdir,
+                &handoff.initial_gridfile,
+                source_gridnum_perdegree,
+                source_first_triangle_id,
+                mask_postproc_num_vertex,
+            )
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype)
+        }
+    }
 }
 
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
@@ -3646,8 +14649,8 @@ pub fn run_mkgrd_gridinit_global_namelist(
         apply_workspace_and_mask_operations(&plan, namelist_source, workdir, 9, false)?;
 
     let mode_file = PathBuf::from(config.mode_file.trim());
-    let gridfile = if mode_file.exists() {
-        match config.mode_file_description.trim() {
+    let (gridfile, runtime_state) = if mode_file.exists() {
+        let gridfile = match config.mode_file_description.trim() {
             "EarthMesh" => copy_existing_earthmesh_mode_file(
                 &mode_file,
                 &config.file_dir(),
@@ -3678,7 +14681,10 @@ pub fn run_mkgrd_gridinit_global_namelist(
                     "only existing EarthMesh, MPAS, FVCOM, and IAP-Ocean mode_file ingestion are migrated to Rust",
                 ));
             }
-        }
+        };
+        let mesh = read_unstructured_mesh_netcdf(&gridfile.output)?;
+        let runtime_state = Some(earthmesh_runtime_state_from_compact_mesh(&config, &mesh)?);
+        (gridfile, runtime_state)
     } else {
         let state = earthmesh_mesh::gridinit_voronoi_state_fortran(
             nxp,
@@ -3687,31 +14693,328 @@ pub fn run_mkgrd_gridinit_global_namelist(
             f64::from(config.relax),
             max_tris,
         )?;
-        write_gridfile_from_fortran_indexed_state(
+        let gridfile = write_gridfile_from_fortran_indexed_state(
             config.file_dir(),
             nxp,
             1,
             &config.mode_grid,
             &state.grid,
             &state.tabs,
-        )?
+        )?;
+        let mut generated_runtime_state = EarthmeshRuntimeState::new(config.clone());
+        generated_runtime_state.grid = state.grid;
+        generated_runtime_state.ijtabs = state.tabs;
+        generated_runtime_state
+            .record_pentagon_indices_from_icosahedron(state.impent)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        generated_runtime_state
+            .record_mesh_counts_for_step(
+                1,
+                generated_runtime_state.grid.nma,
+                generated_runtime_state.grid.nwa,
+            )
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        (gridfile, Some(generated_runtime_state))
     };
 
     Ok(MkgrdGridinitRunReport {
         config,
+        runtime_state,
         workspace_mask,
         gridfile,
     })
 }
 
-/// Rust data shape written by `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UnstructuredMesh {
-    pub m_points: Vec<LonLatPoint>,
-    pub w_points: Vec<LonLatPoint>,
-    pub m_to_w: Vec<[i32; 3]>,
-    pub w_to_m: Vec<Vec<i32>>,
-    pub n_w_to_m: Vec<i32>,
+/// Read the landtype source and construct one-based source-grid arrays like
+/// `MOD_data_preprocess.F90:data_preprocess`.
+pub fn read_landtype_data_preprocess_fortran_indexed(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+) -> io::Result<LandtypeDataPreprocessReport> {
+    if gridnum_perdegree == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree must be positive for data_preprocess",
+        ));
+    }
+    let nlons_source = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree * 360 overflows usize",
+        )
+    })?;
+    let nlats_source = gridnum_perdegree.checked_mul(180).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree * 180 overflows usize",
+        )
+    })?;
+
+    let axes =
+        build_global_source_axes_fortran_indexed(gridnum_perdegree, nlons_source, nlats_source)?;
+    let file = netcdf::open(landtype_file.as_ref()).map_err(netcdf_to_io_error)?;
+    let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
+    let lat_dim = first_existing_dimension_len(&file, &["lat", "latitude"])?;
+    if lon_dim != nlons_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "nlons_source from landtype_file {lon_dim} != gridnum_perdegree * 360 {nlons_source}"
+            ),
+        ));
+    }
+    if lat_dim != nlats_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "nlats_source from landtype_file {lat_dim} != gridnum_perdegree * 180 {nlats_source}"
+            ),
+        ));
+    }
+    let values = required_values_i8_matrix(
+        &file,
+        "landtype",
+        "landtype_file longitude",
+        "landtype_file latitude",
+        nlons_source,
+        nlats_source,
+    )?;
+    let mut landtypes_global = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut maxlc = 0_i32;
+    for lon_offset in 0..nlons_source {
+        for lat_offset in 0..nlats_source {
+            let value = i32::from(values[lon_offset * nlats_source + lat_offset]);
+            landtypes_global[lon_offset + 1][lat_offset + 1] = value;
+            maxlc = maxlc.max(value);
+        }
+    }
+
+    Ok(LandtypeDataPreprocessReport {
+        source: build_v3_data_source_descriptor(V3DataSourceKind::Landtype, landtype_file)?,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+        lon_i: axes.lon_i,
+        lat_i: axes.lat_i,
+        lon_vertex: axes.lon_vertex,
+        lat_vertex: axes.lat_vertex,
+        landtypes_global,
+        maxlc,
+    })
+}
+
+/// Read the `data_preprocess` landtype source and immediately build the
+/// `Area_judge` sea/land source mask used by containment/refinement.
+pub fn read_data_preprocess_area_judge_source_fortran_indexed(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    is_in_domain: &[Vec<i32>],
+    bounds: AreaJudgeSourceBounds,
+    mesh_type: &str,
+    refine: bool,
+) -> io::Result<DataPreprocessAreaJudgeSourceReport> {
+    let preprocess =
+        read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
+    let expected_lon = preprocess.nlons_source + 1;
+    let expected_lat = preprocess.nlats_source + 1;
+    validate_i32_matrix_shape("IsInDmArea_grid", is_in_domain, expected_lon, expected_lat)?;
+    let seaorland = build_area_judge_seaorland_fortran_indexed(
+        is_in_domain,
+        &preprocess.landtypes_global,
+        bounds,
+        mesh_type,
+        refine,
+    )?;
+    Ok(DataPreprocessAreaJudgeSourceReport {
+        preprocess,
+        seaorland,
+    })
+}
+
+/// Read `data_preprocess` landtype data and build the non-restart
+/// `Area_judge` base state from file-level inputs, matching the Fortran
+/// `data_preprocess(); Area_judge()` handoff without module globals.
+pub fn read_data_preprocess_area_judge_base_state_fortran_indexed(
+    file_dir: impl AsRef<Path>,
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    mask_domain_global: bool,
+    mask_domain_type: &str,
+    mask_domain_ndm: usize,
+    mesh_type: &str,
+    refine: bool,
+) -> io::Result<AreaJudgeBaseStateReport> {
+    let preprocess =
+        read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
+    build_area_judge_base_state_fortran_indexed(
+        file_dir,
+        mask_domain_global,
+        mask_domain_type,
+        mask_domain_ndm,
+        &preprocess.landtypes_global,
+        mesh_type,
+        refine,
+        &preprocess.lon_vertex,
+        &preprocess.lat_vertex,
+        &preprocess.lon_i,
+        &preprocess.lat_i,
+        gridnum_perdegree,
+        preprocess.nlons_source,
+        preprocess.nlats_source,
+    )
+}
+
+/// Build the owned source-state bundle consumed by migrated `mkgrd` refine
+/// executors from `data_preprocess` landtype data plus `Area_judge` domain
+/// classification.
+pub fn build_mkgrd_data_preprocess_source_state_fortran_indexed(
+    file_dir: impl AsRef<Path>,
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    mask_domain_global: bool,
+    mask_domain_type: &str,
+    mask_domain_ndm: usize,
+    mesh_type: &str,
+    refine: bool,
+    num_vertex: usize,
+    first_triangle_id: usize,
+) -> io::Result<MkgrdDataPreprocessSourceState> {
+    let preprocess =
+        read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
+    let base = build_area_judge_base_state_fortran_indexed(
+        file_dir,
+        mask_domain_global,
+        mask_domain_type,
+        mask_domain_ndm,
+        &preprocess.landtypes_global,
+        mesh_type,
+        refine,
+        &preprocess.lon_vertex,
+        &preprocess.lat_vertex,
+        &preprocess.lon_i,
+        &preprocess.lat_i,
+        gridnum_perdegree,
+        preprocess.nlons_source,
+        preprocess.nlats_source,
+    )?;
+
+    Ok(MkgrdDataPreprocessSourceState {
+        lon_vertex: preprocess.lon_vertex,
+        lat_vertex: preprocess.lat_vertex,
+        lon_i: preprocess.lon_i,
+        lat_i: preprocess.lat_i,
+        gridnum_perdegree,
+        nlons_source: preprocess.nlons_source,
+        nlats_source: preprocess.nlats_source,
+        first_triangle_id,
+        num_vertex,
+        sources: vec![preprocess.source.clone()],
+        is_in_domain: base.domain.is_in_domain,
+        seaorland: base.seaorland.seaorland,
+        landtypes_global: preprocess.landtypes_global,
+        maxlc: preprocess.maxlc,
+    })
+}
+
+/// Build the owned `data_preprocess` source-state bundle from parsed mkgrd
+/// namelist config plus CLI/source-state overrides.
+///
+/// This centralizes the direct `mkgrd` front-end expansion of `NL%landtype_file`,
+/// `NL%gridnum_perdegree`, `NL%mode_grid`, domain flags, and source first-id
+/// values before the migrated refine executors consume typed Rust state.
+pub fn build_mkgrd_data_preprocess_source_state_from_config_fortran_indexed(
+    file_dir: impl AsRef<Path>,
+    config: &EarthmeshConfig,
+    source_gridnum_perdegree: Option<usize>,
+    source_first_triangle_id: usize,
+) -> io::Result<MkgrdDataPreprocessSourceState> {
+    let gridnum_perdegree = match source_gridnum_perdegree {
+        Some(value) => value,
+        None => usize::try_from(config.gridnum_perdegree).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "NL%gridnum_perdegree must be positive for data_preprocess source state, got {}",
+                    config.gridnum_perdegree
+                ),
+            )
+        })?,
+    };
+    if gridnum_perdegree == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "NL%gridnum_perdegree must be positive for data_preprocess source state, got {}",
+                config.gridnum_perdegree
+            ),
+        ));
+    }
+    build_mkgrd_data_preprocess_source_state_fortran_indexed(
+        file_dir,
+        Path::new(config.landtype_file.trim()),
+        gridnum_perdegree,
+        config.mask_domain_global,
+        config.mask_domain_type.trim(),
+        1,
+        config.mesh_type.trim(),
+        config.refine,
+        1,
+        source_first_triangle_id,
+    )
+}
+
+fn earthmesh_runtime_state_from_compact_mesh(
+    config: &EarthmeshConfig,
+    mesh: &UnstructuredMesh,
+) -> io::Result<EarthmeshRuntimeState> {
+    validate_unstructured_mesh(mesh)?;
+    let nma = mesh.m_points.len();
+    let nwa = mesh.w_points.len();
+    let mut state = EarthmeshRuntimeState::new(config.clone());
+    state.grid = GridMemory {
+        nma,
+        nua: 0,
+        nva: 0,
+        nwa,
+        mma: nma,
+        mua: 0,
+        mva: 0,
+        mwa: nwa,
+        ..GridMemory::default()
+    };
+    state.grid.allocate_xyzem(nma);
+    state.grid.allocate_xyzew(nwa);
+    state.grid.allocate_grid_lonlatmw(nma, 0, nwa);
+    for (idx, point) in mesh.m_points.iter().enumerate() {
+        state.grid.glonm[idx] = point.lon as f32;
+        state.grid.glatm[idx] = point.lat as f32;
+    }
+    for (idx, point) in mesh.w_points.iter().enumerate() {
+        state.grid.glonw[idx] = point.lon as f32;
+        state.grid.glatw[idx] = point.lat as f32;
+    }
+
+    state
+        .record_mesh_counts_for_step(1, nma, nwa)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+
+    state.ijtabs = IjTabs::allocate(nma, 0, nwa);
+    for (idx, row) in mesh.m_to_w.iter().enumerate() {
+        state.ijtabs.m[idx].imp = usize_to_i32("compact mesh M index", idx + 1)?;
+        state.ijtabs.m[idx].imglobe = state.ijtabs.m[idx].imp;
+        state.ijtabs.m[idx].npoly = 3;
+        state.ijtabs.m[idx].iw = *row;
+    }
+    for (idx, row) in mesh.w_to_m.iter().enumerate() {
+        state.ijtabs.w[idx].iwp = usize_to_i32("compact mesh W index", idx + 1)?;
+        state.ijtabs.w[idx].iwglobe = state.ijtabs.w[idx].iwp;
+        state.ijtabs.w[idx].npoly = *mesh.n_w_to_m.get(idx).unwrap_or(&0);
+        for (slot, value) in row.iter().copied().take(7).enumerate() {
+            state.ijtabs.w[idx].im[slot] = value;
+        }
+    }
+
+    Ok(state)
 }
 
 /// Rust data shape written by `MOD_file_preprocess.F90:Contain_Save`.
@@ -3720,6 +15023,42 @@ pub struct ContainMesh {
     pub ustr_id: Vec<Vec<i32>>,
     pub ustr_ii: Vec<Vec<i32>>,
     pub is_in_area_ustr: Vec<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlatContainMesh {
+    pub ustr_id_values: Vec<i32>,
+    pub ustr_id_width: usize,
+    pub ustr_ii_values: Vec<i32>,
+    pub ustr_ii_width: usize,
+    pub is_in_area_ustr: Vec<i32>,
+}
+
+impl FlatContainMesh {
+    pub fn num_ustr(&self) -> usize {
+        if self.ustr_id_width == 0 {
+            0
+        } else {
+            self.ustr_id_values.len() / self.ustr_id_width
+        }
+    }
+
+    pub fn num_ii(&self) -> usize {
+        if self.ustr_ii_width == 0 {
+            0
+        } else {
+            self.ustr_ii_values.len() / self.ustr_ii_width
+        }
+    }
+
+    pub fn to_contain_mesh(&self) -> io::Result<ContainMesh> {
+        validate_flat_contain_mesh(self)?;
+        Ok(ContainMesh {
+            ustr_id: rows_from_flat_i32(&self.ustr_id_values, self.ustr_id_width),
+            ustr_ii: rows_from_flat_i32(&self.ustr_ii_values, self.ustr_ii_width),
+            is_in_area_ustr: self.is_in_area_ustr.clone(),
+        })
+    }
 }
 
 /// Runtime inputs for a file-backed `MOD_GetContain.F90:Get_Contain(iter)`
@@ -3739,12 +15078,23 @@ pub struct GetContainRefineFileRunConfig<'a> {
     pub num_vertex: usize,
 }
 
+/// Explicit runtime counter handoff that Fortran stored in
+/// `consts_coms:num_mp_step`, `num_wp_step`, and `num_vertex` during
+/// `MOD_GetContain.F90:Get_Contain(iter)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetContainRuntimeCounts {
+    pub current_num_mp_step: usize,
+    pub current_num_wp_step: usize,
+    pub previous_num_vertex: usize,
+}
+
 /// Evidence from writing one refine `Contain_Save` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetContainRefineFileRunReport {
     pub output: PathBuf,
     pub active_unstructured_cells: usize,
     pub contained_source_pixels: usize,
+    pub runtime_counts: GetContainRuntimeCounts,
     pub write: ContainWriteReport,
 }
 
@@ -3765,19 +15115,20 @@ pub enum GetContainMeshKind {
     Land,
     Ocean,
     Atmos,
+    Loc,
 }
 
 impl GetContainMeshKind {
     fn ustr_id_width(self) -> usize {
         match self {
-            Self::Ocean => 3,
+            Self::Ocean | Self::Loc => 3,
             Self::Land | Self::Atmos => 2,
         }
     }
 
     fn ustr_ii_width(self) -> usize {
         match self {
-            Self::Atmos => 3,
+            Self::Atmos | Self::Loc => 3,
             Self::Land | Self::Ocean => 2,
         }
     }
@@ -3788,10 +15139,7 @@ fn getcontain_mesh_kind_from_mesh_type(mesh_type: &str) -> io::Result<GetContain
         "landmesh" => Ok(GetContainMeshKind::Land),
         "oceanmesh" => Ok(GetContainMeshKind::Ocean),
         "atmosmesh" => Ok(GetContainMeshKind::Atmos),
-        "LOCmesh" => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "LOCmesh refine containment is not supported by the single-kind specified source executor yet",
-        )),
+        "LOCmesh" | "earthmesh" => Ok(GetContainMeshKind::Loc),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported Get_Contain mesh_type {other}"),
@@ -3895,6 +15243,33 @@ pub fn getcontain_containment_matrix_fortran_indexed(
     lat_i: &[f64],
     num_vertex: usize,
 ) -> io::Result<ContainMesh> {
+    getcontain_containment_matrix_flat_fortran_indexed(
+        mesh_kind,
+        vertices,
+        cell_to_vertices,
+        n_edges,
+        is_in_area_ustr,
+        is_in_area_grid,
+        seaorland,
+        lon_i,
+        lat_i,
+        num_vertex,
+    )?
+    .to_contain_mesh()
+}
+
+pub fn getcontain_containment_matrix_flat_fortran_indexed(
+    mesh_kind: GetContainMeshKind,
+    vertices: &[LonLatPoint],
+    cell_to_vertices: &[Vec<i32>],
+    n_edges: &[i32],
+    is_in_area_ustr: &[i32],
+    is_in_area_grid: &[Vec<i32>],
+    seaorland: &[Vec<i32>],
+    lon_i: &[f64],
+    lat_i: &[f64],
+    num_vertex: usize,
+) -> io::Result<FlatContainMesh> {
     if is_in_area_ustr.len() != cell_to_vertices.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3926,8 +15301,9 @@ pub fn getcontain_containment_matrix_fortran_indexed(
     }
 
     let id_width = mesh_kind.ustr_id_width();
-    let mut ustr_id = vec![vec![0; id_width]; cell_to_vertices.len()];
-    let mut cell_entries = vec![Vec::<Vec<i32>>::new(); cell_to_vertices.len()];
+    let ii_width = mesh_kind.ustr_ii_width();
+    let mut ustr_id_values = vec![0_i32; cell_to_vertices.len() * id_width];
+    let mut ustr_ii_values = Vec::<i32>::new();
     let mut selected_mask = is_in_area_ustr.to_vec();
     let start_row = num_vertex.saturating_add(1);
 
@@ -3939,6 +15315,7 @@ pub fn getcontain_containment_matrix_fortran_indexed(
         let scan_polygons = getcontain_south_pole_scan_polygons(&polygon, global_min_lat);
 
         let mut total_inside = 0;
+        let entry_start = ustr_ii_values.len();
         for mut scan_polygon in scan_polygons {
             let (min_lon, max_lon) = scan_polygon.iter().fold(
                 (f64::INFINITY, f64::NEG_INFINITY),
@@ -3949,13 +15326,28 @@ pub fn getcontain_containment_matrix_fortran_indexed(
                 scan_polygon = shift_longitudes_for_dateline_crossing(&scan_polygon);
             }
 
-            for i in 1..lon_i.len() {
+            let (min_lon, max_lon) = scan_polygon.iter().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_lon, max_lon), point| (min_lon.min(point.x), max_lon.max(point.x)),
+            );
+            let (min_lat, max_lat) = scan_polygon.iter().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_lat, max_lat), point| (min_lat.min(point.y), max_lat.max(point.y)),
+            );
+            let Some(lon_range) = getcontain_axis_candidate_range(lon_i, min_lon, max_lon) else {
+                continue;
+            };
+            let Some(lat_range) = getcontain_axis_candidate_range(lat_i, min_lat, max_lat) else {
+                continue;
+            };
+
+            for i in lon_range {
                 let restored_i = if crosses_dateline {
                     getcontain_restore_dateline_source_index(i, lon_i.len() - 1)?
                 } else {
                     i
                 };
-                for j in 1..lat_i.len() {
+                for j in lat_range.clone() {
                     if is_in_area_grid[restored_i][j] == 0 {
                         continue;
                     }
@@ -3967,16 +15359,23 @@ pub fn getcontain_containment_matrix_fortran_indexed(
                     match mesh_kind {
                         GetContainMeshKind::Land => {
                             if seaorland[restored_i][j] == 1 {
-                                cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
+                                ustr_ii_values.extend_from_slice(&[restored_i as i32, j as i32]);
                             }
                         }
                         GetContainMeshKind::Ocean => {
                             if seaorland[restored_i][j] == 0 {
-                                cell_entries[cell_index].push(vec![restored_i as i32, j as i32]);
+                                ustr_ii_values.extend_from_slice(&[restored_i as i32, j as i32]);
                             }
                         }
                         GetContainMeshKind::Atmos => {
-                            cell_entries[cell_index].push(vec![
+                            ustr_ii_values.extend_from_slice(&[
+                                restored_i as i32,
+                                j as i32,
+                                if seaorland[restored_i][j] == 1 { 1 } else { 0 },
+                            ]);
+                        }
+                        GetContainMeshKind::Loc => {
+                            ustr_ii_values.extend_from_slice(&[
                                 restored_i as i32,
                                 j as i32,
                                 if seaorland[restored_i][j] == 1 { 1 } else { 0 },
@@ -3987,15 +15386,17 @@ pub fn getcontain_containment_matrix_fortran_indexed(
             }
         }
 
-        let contained = i32::try_from(cell_entries[cell_index].len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "contained source-pixel count exceeds i32",
-            )
-        })?;
-        ustr_id[cell_index][0] = contained;
+        let contained =
+            i32::try_from((ustr_ii_values.len() - entry_start) / ii_width).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "contained source-pixel count exceeds i32",
+                )
+            })?;
+        let id_offset = cell_index * id_width;
+        ustr_id_values[id_offset] = contained;
         if mesh_kind == GetContainMeshKind::Ocean {
-            ustr_id[cell_index][2] = total_inside;
+            ustr_id_values[id_offset + 2] = total_inside;
         }
         if contained == 0 {
             selected_mask[cell_index] = 0;
@@ -4003,13 +15404,15 @@ pub fn getcontain_containment_matrix_fortran_indexed(
     }
 
     let mut next_start = 1;
-    if num_vertex > 0 && num_vertex < ustr_id.len() {
-        ustr_id[num_vertex][1] = next_start;
-        next_start += ustr_id[num_vertex][0];
+    if num_vertex > 0 && num_vertex < cell_to_vertices.len() {
+        let id_offset = num_vertex * id_width;
+        ustr_id_values[id_offset + 1] = next_start;
+        next_start += ustr_id_values[id_offset];
     }
-    for row in start_row..ustr_id.len() {
-        ustr_id[row][1] = next_start;
-        next_start += ustr_id[row][0];
+    for row in start_row..cell_to_vertices.len() {
+        let id_offset = row * id_width;
+        ustr_id_values[id_offset + 1] = next_start;
+        next_start += ustr_id_values[id_offset];
     }
 
     let numpatch = usize::try_from(next_start - 1).map_err(|_| {
@@ -4018,24 +15421,49 @@ pub fn getcontain_containment_matrix_fortran_indexed(
             "contained source-pixel count exceeds usize",
         )
     })?;
-    let mut ustr_ii = Vec::with_capacity(numpatch);
-    for entries in cell_entries.into_iter().skip(start_row) {
-        for entry in entries {
-            if entry.len() != mesh_kind.ustr_ii_width() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "internal containment entry width mismatch",
-                ));
-            }
-            ustr_ii.push(entry);
-        }
+    if numpatch != ustr_ii_values.len() / ii_width {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "internal containment entry count mismatch",
+        ));
     }
 
-    Ok(ContainMesh {
-        ustr_id,
-        ustr_ii,
+    Ok(FlatContainMesh {
+        ustr_id_values,
+        ustr_id_width: id_width,
+        ustr_ii_values,
+        ustr_ii_width: ii_width,
         is_in_area_ustr: selected_mask,
     })
+}
+
+fn getcontain_axis_candidate_range(
+    axis: &[f64],
+    min_value: f64,
+    max_value: f64,
+) -> Option<std::ops::Range<usize>> {
+    if axis.len() < 2 || !min_value.is_finite() || !max_value.is_finite() {
+        return None;
+    }
+    let lower = min_value.min(max_value) - 1.0e-12;
+    let upper = min_value.max(max_value) + 1.0e-12;
+    let values = &axis[1..];
+    let first = values[0];
+    let last = *values.last()?;
+    let (start_offset, end_offset) = if first <= last {
+        (
+            values.partition_point(|value| *value < lower),
+            values.partition_point(|value| *value <= upper),
+        )
+    } else {
+        (
+            values.partition_point(|value| *value > upper),
+            values.partition_point(|value| *value >= lower),
+        )
+    };
+    let start = start_offset + 1;
+    let end = end_offset + 1;
+    (start < end).then_some(start..end)
 }
 
 fn getcontain_south_pole_scan_polygons(
@@ -4393,6 +15821,15 @@ pub struct MpasMeshWriteReport {
     pub n_cells: usize,
     pub n_vertices: usize,
     pub n_edges: usize,
+}
+
+/// Evidence report from writing `MOD_file_preprocess.F90:FVCOM_Mesh_Save` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FvcomMesh2dmWriteReport {
+    pub output: PathBuf,
+    pub triangles: usize,
+    pub nodes: usize,
+    pub boundary_segments: usize,
 }
 
 /// Evidence report from writing `MOD_file_preprocess.F90:cellwidth_save` output.
@@ -4876,6 +16313,159 @@ pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<Unst
     Ok(mesh)
 }
 
+/// Legacy output path for `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
+pub fn fvcom_mesh_2dm_output_path(file_dir: impl AsRef<Path>) -> PathBuf {
+    file_dir.as_ref().join("result/fvcom.2dm")
+}
+
+/// Read `obc_order` from the `obc.nc4`/`obc_patch.nc4` boundary file used by
+/// `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
+pub fn read_obc_order_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<usize>> {
+    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let bdy_num = required_dimension_len(&file, "bdy_num")?;
+    let values = required_values_i32(&file, "obc_order")?;
+    require_len("obc_order", values.len(), bdy_num)?;
+    values
+        .into_iter()
+        .map(|value| {
+            usize::try_from(value).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("obc_order contains negative value {value}"),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Write the SMS/FVCOM `.2dm` mesh generated by
+/// `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
+pub fn write_fvcom_mesh_2dm(
+    output: impl AsRef<Path>,
+    mesh: &UnstructuredMesh,
+    obc_order: &[usize],
+) -> io::Result<FvcomMesh2dmWriteReport> {
+    validate_unstructured_mesh(mesh)?;
+    validate_fvcom_mesh_2dm_connectivity(mesh)?;
+
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = fs::File::create(output)?;
+    writeln!(file, "MESH2D")?;
+    writeln!(file, "MESHNAME \"FVCOM Mesh\"")?;
+
+    for (idx, vertices) in mesh.m_to_w.iter().enumerate().skip(1) {
+        writeln!(
+            file,
+            "E3T {} {} {} {} 1",
+            idx,
+            vertices[0] - 1,
+            vertices[1] - 1,
+            vertices[2] - 1
+        )?;
+    }
+
+    for (idx, point) in mesh.w_points.iter().enumerate().skip(1) {
+        writeln!(
+            file,
+            "ND {} {:.6} {:.6} {:.6}",
+            idx, point.lon, point.lat, 0.0_f64
+        )?;
+    }
+
+    let boundary_segments = write_fvcom_ns_records(&mut file, obc_order)?;
+
+    Ok(FvcomMesh2dmWriteReport {
+        output: output.to_path_buf(),
+        triangles: mesh.m_to_w.len().saturating_sub(1),
+        nodes: mesh.w_points.len().saturating_sub(1),
+        boundary_segments,
+    })
+}
+
+/// File-level wrapper for `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
+pub fn write_fvcom_mesh_save_outputs(
+    file_dir: impl AsRef<Path>,
+    mesh: &UnstructuredMesh,
+    mask_patch_on: bool,
+) -> io::Result<FvcomMesh2dmWriteReport> {
+    let file_dir = file_dir.as_ref();
+    let obc_order = read_obc_order_netcdf(obc_boundary_output_path(file_dir, mask_patch_on))?;
+    write_fvcom_mesh_2dm(fvcom_mesh_2dm_output_path(file_dir), mesh, &obc_order)
+}
+
+fn validate_fvcom_mesh_2dm_connectivity(mesh: &UnstructuredMesh) -> io::Result<()> {
+    if mesh.m_points.is_empty() || mesh.w_points.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FVCOM .2dm writer expects Fortran-indexed mesh placeholders",
+        ));
+    }
+    let max_vertex = i32::try_from(mesh.w_points.len() - 1).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FVCOM .2dm writer vertex count exceeds i32 connectivity range",
+        )
+    })?;
+    for (triangle, vertices) in mesh.m_to_w.iter().enumerate().skip(1) {
+        for &vertex in vertices {
+            if vertex < 2 || vertex > max_vertex + 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "triangle {triangle} references vertex {vertex}, expected Fortran index 2..{}",
+                        max_vertex + 1
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_fvcom_ns_records(file: &mut fs::File, obc_order: &[usize]) -> io::Result<usize> {
+    if obc_order.is_empty() {
+        return Ok(0);
+    }
+
+    let mut order = obc_order.to_vec();
+    if order.last().copied() != Some(1) {
+        order.push(1);
+    }
+
+    let mut boundary_segments = 0_usize;
+    let mut position_in_record = 0_usize;
+    for idx in 1..order.len().saturating_sub(1) {
+        let current = order[idx];
+        if current == 1 {
+            continue;
+        }
+        if current == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "obc_order contains zero boundary vertex id",
+            ));
+        }
+        if position_in_record % 10 == 0 {
+            write!(file, "NS ")?;
+        }
+        if order[idx + 1] == 1 {
+            boundary_segments += 1;
+            let terminal = 1_isize - current as isize;
+            writeln!(file, "{terminal} {boundary_segments}")?;
+            position_in_record = 0;
+        } else {
+            write!(file, "{} ", current - 1)?;
+            position_in_record += 1;
+        }
+    }
+
+    Ok(boundary_segments)
+}
+
 /// Write the `distsOnEdge_NXP####_##_global.nc4` schema produced by
 /// `MOD_file_preprocess.F90:distsOnEdge_save`.
 pub fn write_dists_on_edge_netcdf(
@@ -5269,6 +16859,7 @@ pub fn get_area_from_unstructured_mesh(
     let cell_points = lonlat_points_to_unit_xyz(&cell_lonlat);
     let edge_points = lonlat_points_to_unit_xyz(&edge_lonlat);
     let vertices_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
 
     get_area_production_fortran_indexed(GetAreaUnitInput {
         vertices: &vertices,
@@ -5278,6 +16869,7 @@ pub fn get_area_from_unstructured_mesh(
         edges_on_vertex: &edge_output.edges_on_vertex,
         cells_on_edge: &edge_output.cells_on_edge,
         vertices_on_cell: &vertices_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
     })
     .ok_or_else(|| {
         io::Error::new(
@@ -5378,15 +16970,32 @@ pub fn write_contain_netcdf(
     contain: &ContainMesh,
 ) -> io::Result<ContainWriteReport> {
     validate_contain_mesh(contain)?;
+    write_flat_contain_netcdf(
+        output,
+        &FlatContainMesh {
+            ustr_id_values: flatten_i32_rows(&contain.ustr_id),
+            ustr_id_width: matrix_width("ustr_id", &contain.ustr_id)?,
+            ustr_ii_values: flatten_i32_rows(&contain.ustr_ii),
+            ustr_ii_width: matrix_width("ustr_ii", &contain.ustr_ii)?,
+            is_in_area_ustr: contain.is_in_area_ustr.clone(),
+        },
+    )
+}
+
+pub fn write_flat_contain_netcdf(
+    output: impl AsRef<Path>,
+    contain: &FlatContainMesh,
+) -> io::Result<ContainWriteReport> {
+    validate_flat_contain_mesh(contain)?;
     let output = output.as_ref();
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let num_ustr = contain.ustr_id.len();
-    let num_ii = contain.ustr_ii.len();
-    let dim_a = matrix_width("ustr_id", &contain.ustr_id)?;
-    let dim_b = matrix_width("ustr_ii", &contain.ustr_ii)?;
+    let num_ustr = contain.num_ustr();
+    let num_ii = contain.num_ii();
+    let dim_a = contain.ustr_id_width;
+    let dim_b = contain.ustr_ii_width;
 
     let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num_ustr", num_ustr)
@@ -5401,14 +17010,14 @@ pub fn write_contain_netcdf(
         let mut var = file
             .add_variable::<i32>("ustr_id", &["num_ustr", "dim_a"])
             .map_err(netcdf_to_io_error)?;
-        var.put_values(&flatten_i32_rows(&contain.ustr_id), (.., ..))
+        var.put_values(&contain.ustr_id_values, (.., ..))
             .map_err(netcdf_to_io_error)?;
     }
     {
         let mut var = file
             .add_variable::<i32>("ustr_ii", &["num_ii", "dim_b"])
             .map_err(netcdf_to_io_error)?;
-        var.put_values(&flatten_i32_rows(&contain.ustr_ii), (.., ..))
+        var.put_values(&contain.ustr_ii_values, (.., ..))
             .map_err(netcdf_to_io_error)?;
     }
     {
@@ -5441,6 +17050,235 @@ pub struct AreaJudgeGridPayload {
     pub latitude: Vec<f64>,
     pub is_in_area_select: Vec<Vec<i32>>,
     pub seaorland_select: Option<Vec<Vec<i32>>>,
+}
+
+/// Selected land-domain sea/land matrix reconstructed from an Area_judge
+/// restart payload for final land `mask_postproc` handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedLandDomainMatrix {
+    pub minlon_source: usize,
+    pub maxlat_source: usize,
+    pub nlons: usize,
+    pub nlats: usize,
+    pub seaorland: Vec<Vec<i32>>,
+}
+
+/// Reconstruct the selected-domain matrix required by land `mask_postproc`
+/// from a saved `IsInDmArea_grid.nc4`/Area_judge restart payload.
+pub fn selected_land_domain_from_area_judge_grid_payload(
+    payload: &AreaJudgeGridPayload,
+) -> io::Result<SelectedLandDomainMatrix> {
+    validate_area_judge_grid_payload(payload)?;
+    let seaorland = payload.seaorland_select.clone().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "restart-refine land postproc requires seaorland_select in IsInDmArea_grid.nc4",
+        )
+    })?;
+    let nlons = payload
+        .bounds
+        .maxlon_source
+        .checked_sub(payload.bounds.minlon_source)
+        .map(|value| value + 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "restart-refine land postproc restart payload has invalid longitude bounds",
+            )
+        })?;
+    let nlats = payload
+        .bounds
+        .minlat_source
+        .checked_sub(payload.bounds.maxlat_source)
+        .map(|value| value + 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "restart-refine land postproc restart payload has invalid latitude bounds",
+            )
+        })?;
+
+    Ok(SelectedLandDomainMatrix {
+        minlon_source: payload.bounds.minlon_source,
+        maxlat_source: payload.bounds.maxlat_source,
+        nlons,
+        nlats,
+        seaorland,
+    })
+}
+
+/// Derive the minimal selected land-domain sea/land matrix from a full
+/// Fortran-indexed source `seaorland` raster. This is used when land final
+/// `mask_postproc` is driven from an owned data_preprocess source-state rather
+/// than from a saved Area_judge restart selected-grid payload.
+pub fn selected_land_domain_from_full_source_seaorland_fortran_order(
+    matrix: &[Vec<i32>],
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<SelectedLandDomainMatrix> {
+    if matrix.len() < nlons_source + 1 || matrix.iter().any(|row| row.len() < nlats_source + 1) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "source-state selected matrix is smaller than source dimensions",
+        ));
+    }
+
+    let mut minlon = nlons_source + 1;
+    let mut maxlon = 0usize;
+    let mut north_lat = nlats_source + 1;
+    let mut south_lat = 0usize;
+    for (lon, row) in matrix.iter().enumerate().take(nlons_source + 1).skip(1) {
+        for (lat, &value) in row.iter().enumerate().take(nlats_source + 1).skip(1) {
+            if value != 0 {
+                minlon = minlon.min(lon);
+                maxlon = maxlon.max(lon);
+                north_lat = north_lat.min(lat);
+                south_lat = south_lat.max(lat);
+            }
+        }
+    }
+    if maxlon == 0 {
+        return Ok(SelectedLandDomainMatrix {
+            minlon_source: 1,
+            maxlat_source: 1,
+            nlons: 1,
+            nlats: 1,
+            seaorland: vec![vec![0]],
+        });
+    }
+
+    let nlons = maxlon - minlon + 1;
+    let nlats = south_lat - north_lat + 1;
+    let seaorland = (minlon..=maxlon)
+        .map(|lon| {
+            (north_lat..=south_lat)
+                .map(|lat| matrix[lon][lat])
+                .collect()
+        })
+        .collect();
+    Ok(SelectedLandDomainMatrix {
+        minlon_source: minlon,
+        maxlat_source: north_lat,
+        nlons,
+        nlats,
+        seaorland,
+    })
+}
+
+/// Owned context for a restart-refine final land `mask_postproc` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRestartRefineFinalLandPostprocContext {
+    pub selected_seaorland: Vec<Vec<i32>>,
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+}
+
+/// Owned context for a restart-refine final earth `mask_postproc` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdRestartRefineFinalEarthPostprocContext {
+    pub minlon_dm_area: i32,
+    pub maxlat_dm_area: i32,
+    pub nlons_dm_select: usize,
+    pub nlats_dm_select: usize,
+}
+
+/// Typed final `mask_postproc` request for migrated Area_judge restart-refine
+/// handoffs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MkgrdRestartRefineFinalPostprocRequest {
+    Earth {
+        mask_sea_ratio: f64,
+        minlon_dm_area: i32,
+        maxlat_dm_area: i32,
+        nlons_dm_select: usize,
+        nlats_dm_select: usize,
+    },
+    Land(MkgrdRestartRefineFinalLandPostprocContext),
+    Ocean {
+        mask_sea_ratio: f64,
+        num_vertex: usize,
+    },
+    Atmos,
+}
+
+/// Build the reusable final postprocess request shared by source-state and
+/// landtype-source Area_judge restart-refine handoffs.
+pub fn restart_refine_final_postproc_request(
+    mesh_type: &str,
+    requested_num_vertex: Option<usize>,
+    mask_sea_ratio: f64,
+    selected_land_domain: Option<&SelectedLandDomainMatrix>,
+) -> io::Result<Option<MkgrdRestartRefineFinalPostprocRequest>> {
+    let Some(num_vertex) = requested_num_vertex else {
+        return Ok(None);
+    };
+    match mesh_type.trim() {
+        "earthmesh" => {
+            let selected = selected_land_domain.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "restart-refine earth final postproc requires selected domain state",
+                )
+            })?;
+            Ok(Some(MkgrdRestartRefineFinalPostprocRequest::Earth {
+                mask_sea_ratio,
+                minlon_dm_area: i32::try_from(selected.minlon_source).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "restart-refine earth minlon does not fit i32",
+                    )
+                })?,
+                maxlat_dm_area: i32::try_from(selected.maxlat_source).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "restart-refine earth maxlat does not fit i32",
+                    )
+                })?,
+                nlons_dm_select: selected.nlons,
+                nlats_dm_select: selected.nlats,
+            }))
+        }
+        "landmesh" => {
+            let selected = selected_land_domain.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "restart-refine land final postproc requires selected land-domain state",
+                )
+            })?;
+            Ok(Some(MkgrdRestartRefineFinalPostprocRequest::Land(
+                MkgrdRestartRefineFinalLandPostprocContext {
+                    selected_seaorland: selected.seaorland.clone(),
+                    minlon_dm_area: i32::try_from(selected.minlon_source).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "restart-refine land minlon does not fit i32",
+                        )
+                    })?,
+                    maxlat_dm_area: i32::try_from(selected.maxlat_source).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "restart-refine land maxlat does not fit i32",
+                        )
+                    })?,
+                    nlons_dm_select: selected.nlons,
+                    nlats_dm_select: selected.nlats,
+                },
+            )))
+        }
+        "oceanmesh" => Ok(Some(MkgrdRestartRefineFinalPostprocRequest::Ocean {
+            mask_sea_ratio,
+            num_vertex,
+        })),
+        "atmosmesh" => Ok(Some(MkgrdRestartRefineFinalPostprocRequest::Atmos)),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "restart-refine final postproc currently supports earthmesh/landmesh/oceanmesh/atmosmesh, got {other}"
+            ),
+        )),
+    }
 }
 
 /// Full one-based source grids restored from an Area_judge restart payload.
@@ -5639,6 +17477,15 @@ pub struct AreaJudgeAreaSourceReport {
     pub numpatch: usize,
 }
 
+/// Sparse source-mask state for close-curve sources. This avoids allocating a
+/// full global source grid for every numbered close source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeSparseAreaSourceReport {
+    pub cells: Vec<(usize, usize)>,
+    pub bounds: AreaJudgeSourceBounds,
+    pub numpatch: usize,
+}
+
 /// Summary from building and applying a patch-source mask to `seaorland`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AreaJudgePatchSourceReport {
@@ -5745,6 +17592,26 @@ pub struct AreaJudgeSeaOrLandReport {
     pub sum_land_grid: i32,
 }
 
+/// Binary landtype class used by `MOD_Area_judge.F90` when building `seaorland`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaJudgeLandtypeClass {
+    Ocean,
+    Land,
+}
+
+/// Classify a source `landtypes_global` value using the Fortran Area_judge rule.
+///
+/// `MOD_Area_judge.F90` sets `seaorland(i,j)=1` exactly when
+/// `landtypes_global(i,j) /= 0`; therefore river/coast source codes remain
+/// binary land cells at this Area_judge stage.
+pub fn classify_area_judge_landtype_fortran_indexed(landtype: i32) -> AreaJudgeLandtypeClass {
+    if landtype == 0 {
+        AreaJudgeLandtypeClass::Ocean
+    } else {
+        AreaJudgeLandtypeClass::Land
+    }
+}
+
 /// Base `Area_judge` state after domain construction and sea/land classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaJudgeBaseStateReport {
@@ -5829,6 +17696,34 @@ pub struct AreaJudgeGridRunReport {
     pub refine_write: Option<AreaJudgeGridWriteReport>,
 }
 
+/// Runtime inputs for a restart Area_judge grid-file orchestration run.
+#[derive(Debug, Clone, Copy)]
+pub struct AreaJudgeRestartGridsRunConfig<'a> {
+    pub file_dir: &'a Path,
+    pub restart_input: &'a Path,
+    pub mask_patch: Option<AreaJudgePatchConfig<'a>>,
+    pub refine: bool,
+    pub calculated_refine: Option<AreaJudgeCalculatedRefineConfig<'a>>,
+    pub lon_vertex: &'a [f64],
+    pub lat_vertex: &'a [f64],
+    pub lon_i: &'a [f64],
+    pub lat_i: &'a [f64],
+    pub gridnum_perdegree: usize,
+    pub nlons_source: usize,
+    pub nlats_source: usize,
+    pub domain_output: Option<&'a Path>,
+    pub refine_output: Option<&'a Path>,
+}
+
+/// Evidence from a restart Area_judge run that writes selected grid files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaJudgeRestartGridsRunReport {
+    pub area: AreaJudgeRestartReport,
+    pub refine_step: Option<AreaJudgeRefineStepReport>,
+    pub domain_write: Option<AreaJudgeGridWriteReport>,
+    pub refine_write: Option<AreaJudgeGridWriteReport>,
+}
+
 /// File-backed adapter for the refinement branch of
 /// `MOD_GetContain.F90:Get_Contain(iter)`.
 ///
@@ -5880,7 +17775,7 @@ pub fn run_getcontain_refine_file_fortran_indexed(
         &n_edges,
         config.num_vertex,
     )?;
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_flat_fortran_indexed(
         config.mesh_kind,
         &vertices,
         &cell_to_vertices,
@@ -5897,13 +17792,18 @@ pub fn run_getcontain_refine_file_fortran_indexed(
         .iter()
         .filter(|value| **value != 0)
         .count();
-    let contained_source_pixels = contain.ustr_ii.len();
-    let write = write_contain_netcdf(config.output, &contain)?;
+    let contained_source_pixels = contain.num_ii();
+    let write = write_flat_contain_netcdf(config.output, &contain)?;
 
     Ok(GetContainRefineFileRunReport {
         output: config.output.to_path_buf(),
         active_unstructured_cells,
         contained_source_pixels,
+        runtime_counts: GetContainRuntimeCounts {
+            current_num_mp_step: mesh.m_points.len(),
+            current_num_wp_step: mesh.w_points.len(),
+            previous_num_vertex: config.num_vertex,
+        },
         write,
     })
 }
@@ -6043,6 +17943,50 @@ pub struct AreaJudgeThresholdInputsReport {
     pub atmos_onelayer: Vec<Option<AreaJudgeThreshold2D>>,
 }
 
+/// Configuration for `MOD_data_preprocess.F90:Threshold_Read_Lnd`.
+#[derive(Debug, Clone, Copy)]
+pub struct ThresholdReadLndConfig<'a> {
+    pub threshold_dir: &'a Path,
+    pub refine_onelayer_lnd: &'a [bool],
+    pub refine_twolayer_lnd: &'a [bool],
+    pub bounds: AreaJudgeSourceBounds,
+}
+
+/// Data loaded by `MOD_data_preprocess.F90:Threshold_Read_Lnd`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThresholdReadLndReport {
+    pub onelayer: Vec<Option<AreaJudgeThreshold2D>>,
+    pub twolayer: Vec<Option<AreaJudgeThreshold2Layer>>,
+}
+
+/// Configuration for `MOD_data_preprocess.F90:Threshold_Read_Ocn`.
+#[derive(Debug, Clone, Copy)]
+pub struct ThresholdReadOcnConfig<'a> {
+    pub threshold_dir: &'a Path,
+    pub refine_onelayer_ocn: &'a [bool],
+    pub bounds: AreaJudgeSourceBounds,
+}
+
+/// Data loaded by `MOD_data_preprocess.F90:Threshold_Read_Ocn`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThresholdReadOcnReport {
+    pub onelayer: Vec<Option<AreaJudgeThreshold2D>>,
+}
+
+/// Configuration for `MOD_data_preprocess.F90:Threshold_Read_Atmos`.
+#[derive(Debug, Clone, Copy)]
+pub struct ThresholdReadAtmosConfig<'a> {
+    pub threshold_dir: &'a Path,
+    pub refine_onelayer_atmos: &'a [bool],
+    pub bounds: AreaJudgeSourceBounds,
+}
+
+/// Data loaded by `MOD_data_preprocess.F90:Threshold_Read_Atmos`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThresholdReadAtmosReport {
+    pub onelayer: Vec<Option<AreaJudgeThreshold2D>>,
+}
+
 const AREA_JUDGE_LAND_ONELAYER_NAMES: [&str; 2] = ["lai", "slope_avg"];
 const AREA_JUDGE_LAND_TWOLAYER_NAMES: [&str; 5] = ["k_s", "k_solids", "tkdry", "tksatf", "tksatu"];
 const AREA_JUDGE_OCEAN_ONELAYER_NAMES: [&str; 4] = ["sst", "ssh", "eke", "sea_slope"];
@@ -6055,6 +17999,128 @@ fn area_judge_refine_flag_pair_enabled(flags: &[bool], pair_index: usize) -> boo
 
 fn area_judge_threshold_path(threshold_dir: &Path, name: &str) -> PathBuf {
     threshold_dir.join(format!("{name}.nc"))
+}
+
+/// Read one 2-D threshold window like `MOD_data_preprocess.F90:data_read_onelayer`.
+pub fn data_read_onelayer_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    var_name: &str,
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeThreshold2D> {
+    let values = data_read_onelayer_values_fortran_indexed(inputfile, var_name, bounds)?;
+    Ok(AreaJudgeThreshold2D {
+        name: var_name.to_string(),
+        values,
+    })
+}
+
+/// Read two layer-specific threshold variables like `MOD_data_preprocess.F90:data_read_twolayer`.
+pub fn data_read_twolayer_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    var_name: &str,
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<AreaJudgeThreshold2Layer> {
+    let inputfile = inputfile.as_ref();
+    let first =
+        data_read_onelayer_values_fortran_indexed(inputfile, &format!("{var_name}_l1"), bounds)?;
+    let second =
+        data_read_onelayer_values_fortran_indexed(inputfile, &format!("{var_name}_l2"), bounds)?;
+    Ok(AreaJudgeThreshold2Layer {
+        name: var_name.to_string(),
+        layers: vec![first, second],
+    })
+}
+
+fn data_read_onelayer_values_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    var_name: &str,
+    bounds: AreaJudgeSourceBounds,
+) -> io::Result<Vec<Vec<f64>>> {
+    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
+    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let variable = file.variable(var_name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {var_name} variable"),
+        )
+    })?;
+    let start_lon = bounds.minlon_source.checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "minlon_source must be one-based",
+        )
+    })?;
+    let start_lat = bounds.maxlat_source.checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "maxlat_source must be one-based",
+        )
+    })?;
+    let values = variable
+        .get_values::<f64, _>((
+            start_lon..start_lon + nlons_select,
+            start_lat..start_lat + nlats_select,
+        ))
+        .map_err(netcdf_to_io_error)?;
+    require_len(var_name, values.len(), nlons_select * nlats_select)?;
+
+    let mut selected = vec![vec![0.0; nlats_select + 1]; nlons_select + 1];
+    for lon_offset in 0..nlons_select {
+        for lat_offset in 0..nlats_select {
+            selected[lon_offset + 1][lat_offset + 1] =
+                values[lon_offset * nlats_select + lat_offset];
+        }
+    }
+    Ok(selected)
+}
+
+/// Read land thresholds like `MOD_data_preprocess.F90:Threshold_Read_Lnd`.
+pub fn threshold_read_lnd_fortran_indexed(
+    config: ThresholdReadLndConfig<'_>,
+) -> io::Result<ThresholdReadLndReport> {
+    Ok(ThresholdReadLndReport {
+        onelayer: read_area_judge_threshold_2d_group_fortran_indexed(
+            config.threshold_dir,
+            &AREA_JUDGE_LAND_ONELAYER_NAMES,
+            config.refine_onelayer_lnd,
+            config.bounds,
+        )?,
+        twolayer: read_area_judge_threshold_2layer_group_fortran_indexed(
+            config.threshold_dir,
+            &AREA_JUDGE_LAND_TWOLAYER_NAMES,
+            config.refine_twolayer_lnd,
+            config.bounds,
+        )?,
+    })
+}
+
+/// Read ocean thresholds like `MOD_data_preprocess.F90:Threshold_Read_Ocn`.
+pub fn threshold_read_ocn_fortran_indexed(
+    config: ThresholdReadOcnConfig<'_>,
+) -> io::Result<ThresholdReadOcnReport> {
+    Ok(ThresholdReadOcnReport {
+        onelayer: read_area_judge_threshold_2d_group_fortran_indexed(
+            config.threshold_dir,
+            &AREA_JUDGE_OCEAN_ONELAYER_NAMES,
+            config.refine_onelayer_ocn,
+            config.bounds,
+        )?,
+    })
+}
+
+/// Read atmosphere thresholds like `MOD_data_preprocess.F90:Threshold_Read_Atmos`.
+pub fn threshold_read_atmos_fortran_indexed(
+    config: ThresholdReadAtmosConfig<'_>,
+) -> io::Result<ThresholdReadAtmosReport> {
+    Ok(ThresholdReadAtmosReport {
+        onelayer: read_area_judge_threshold_2d_group_fortran_indexed(
+            config.threshold_dir,
+            &AREA_JUDGE_ATMOS_ONELAYER_NAMES,
+            config.refine_onelayer_atmos,
+            config.bounds,
+        )?,
+    })
 }
 
 fn read_area_judge_threshold_2d_window_fortran_indexed(
@@ -6135,44 +18201,11 @@ fn read_area_judge_threshold_2d_variable_window_fortran_indexed(
     var_name: &str,
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<Vec<Vec<f64>>> {
-    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
-    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
-    let file = netcdf::open(area_judge_threshold_path(threshold_dir, file_stem))
-        .map_err(netcdf_to_io_error)?;
-    let variable = file.variable(var_name).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("missing {var_name} variable"),
-        )
-    })?;
-    let start_lon = bounds.minlon_source.checked_sub(1).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "minlon_source must be one-based",
-        )
-    })?;
-    let start_lat = bounds.maxlat_source.checked_sub(1).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "maxlat_source must be one-based",
-        )
-    })?;
-    let values = variable
-        .get_values::<f64, _>((
-            start_lon..start_lon + nlons_select,
-            start_lat..start_lat + nlats_select,
-        ))
-        .map_err(netcdf_to_io_error)?;
-    require_len(var_name, values.len(), nlons_select * nlats_select)?;
-
-    let mut selected = vec![vec![0.0; nlats_select + 1]; nlons_select + 1];
-    for lon_offset in 0..nlons_select {
-        for lat_offset in 0..nlats_select {
-            selected[lon_offset + 1][lat_offset + 1] =
-                values[lon_offset * nlats_select + lat_offset];
-        }
-    }
-    Ok(selected)
+    data_read_onelayer_values_fortran_indexed(
+        area_judge_threshold_path(threshold_dir, file_stem),
+        var_name,
+        bounds,
+    )
 }
 
 fn read_area_judge_threshold_2d_group_fortran_indexed(
@@ -6290,7 +18323,7 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
                 bounds,
             )?;
         }
-        "LOCmesh" => {
+        "LOCmesh" | "earthmesh" => {
             land_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
                 config.threshold_dir,
                 &AREA_JUDGE_LAND_ONELAYER_NAMES,
@@ -6373,6 +18406,21 @@ fn require_getref_lookup_width(name: &str, rows: &[Vec<i32>], min_width: usize) 
     Ok(())
 }
 
+fn validate_getref_landtype_class(
+    landtype: i32,
+    maxlc: i32,
+    row: usize,
+    col: usize,
+) -> io::Result<()> {
+    if !(0..=maxlc).contains(&landtype) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("landtypes value {landtype} at ({row},{col}) outside 0..=maxlc {maxlc}"),
+        ));
+    }
+    Ok(())
+}
+
 /// Calculate `refine_num_landtypes` and `refine_area_mainland` like `GetRef_Lnd`.
 pub fn calculate_getref_land_basic_fortran_indexed(
     is_in_refine_sjx: &[i32],
@@ -6381,6 +18429,22 @@ pub fn calculate_getref_land_basic_fortran_indexed(
     landtypes: &[Vec<i32>],
     config: GetRefLandBasicConfig,
 ) -> io::Result<GetRefLandBasicReport> {
+    let sjx_points = is_in_refine_sjx.len().checked_sub(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IsInRfArea_sjx must include a Fortran placeholder element",
+        )
+    })?;
+    if !config.refine_num_landtypes && !config.refine_area_mainland {
+        return Ok(GetRefLandBasicReport {
+            ref_colnum: 0,
+            ref_th_land: vec![vec![0]; sjx_points + 1],
+            ref_sjx: vec![0; sjx_points + 1],
+            n_landtypes: None,
+            f_mainarea: None,
+        });
+    }
+
     require_getref_lookup_width("Lnd_id", lnd_id, 2)?;
     require_getref_lookup_width("Lnd_ii", lnd_ii, 2)?;
     if landtypes.is_empty() {
@@ -6390,12 +18454,6 @@ pub fn calculate_getref_land_basic_fortran_indexed(
         ));
     }
     let _ = matrix_width("landtypes", landtypes)?;
-    let sjx_points = is_in_refine_sjx.len().checked_sub(1).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "IsInRfArea_sjx must include a Fortran placeholder element",
-        )
-    })?;
     if lnd_id.len() <= sjx_points {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -6453,6 +18511,7 @@ pub fn calculate_getref_land_basic_fortran_indexed(
                             format!("landtypes missing ({row},{col_index})"),
                         )
                     })?;
+                validate_getref_landtype_class(*landtype, config.maxlc, row, col_index)?;
                 if *landtype != config.maxlc {
                     present.insert(*landtype);
                 }
@@ -6498,6 +18557,7 @@ pub fn calculate_getref_land_basic_fortran_indexed(
                             format!("landtypes missing ({row},{col_index})"),
                         )
                     })?;
+                validate_getref_landtype_class(landtype, config.maxlc, row, col_index)?;
                 if landtype != config.maxlc {
                     *counts.entry(landtype).or_insert(0) += 1;
                 }
@@ -7438,7 +19498,20 @@ pub fn write_getref_land_threshold_netcdf(
 }
 
 fn validate_getref_land_threshold_report(report: &GetRefLandThresholdReport) -> io::Result<()> {
-    if report.ref_colnum == 0 {
+    validate_getref_land_threshold_report_shape(report, false)
+}
+
+fn validate_getref_land_threshold_report_for_aggregation(
+    report: &GetRefLandThresholdReport,
+) -> io::Result<()> {
+    validate_getref_land_threshold_report_shape(report, true)
+}
+
+fn validate_getref_land_threshold_report_shape(
+    report: &GetRefLandThresholdReport,
+    allow_empty: bool,
+) -> io::Result<()> {
+    if report.ref_colnum == 0 && !allow_empty {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "GetRef land threshold writer requires at least one threshold column",
@@ -7813,7 +19886,7 @@ pub fn aggregate_getref_threshold_reports_fortran_indexed(
 ) -> io::Result<GetRefThresholdAggregationReport> {
     let mut components: Vec<(&str, &[String], &[Vec<i32>], usize)> = Vec::new();
     if let Some(report) = land {
-        validate_getref_land_threshold_report(report)?;
+        validate_getref_land_threshold_report_for_aggregation(report)?;
         components.push((
             "land",
             &report.column_names,
@@ -7822,7 +19895,7 @@ pub fn aggregate_getref_threshold_reports_fortran_indexed(
         ));
     }
     if let Some(report) = ocean {
-        validate_getref_ocean_threshold_report(report)?;
+        validate_getref_ocean_threshold_report_for_aggregation(report)?;
         components.push((
             "ocean",
             &report.column_names,
@@ -7831,7 +19904,7 @@ pub fn aggregate_getref_threshold_reports_fortran_indexed(
         ));
     }
     if let Some(report) = atmos {
-        validate_getref_atmos_threshold_report(report)?;
+        validate_getref_atmos_threshold_report_for_aggregation(report)?;
         components.push((
             "atmos",
             &report.column_names,
@@ -7897,6 +19970,27 @@ pub fn aggregate_getref_threshold_reports_fortran_indexed(
         ref_colnum,
         column_sources,
         column_names,
+        ref_th,
+        ref_sjx,
+    })
+}
+
+fn empty_getref_threshold_aggregation_fortran_indexed(
+    num_vertex: usize,
+    sjx_points: usize,
+) -> io::Result<GetRefThresholdAggregationReport> {
+    if num_vertex > sjx_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("num_vertex {num_vertex} exceeds sjx_points {sjx_points}"),
+        ));
+    }
+    let ref_th = vec![vec![0]; sjx_points + 1];
+    let ref_sjx = aggregate_getref_ref_sjx(&ref_th, num_vertex, 0)?;
+    Ok(GetRefThresholdAggregationReport {
+        ref_colnum: 0,
+        column_sources: Vec::new(),
+        column_names: Vec::new(),
         ref_th,
         ref_sjx,
     })
@@ -7969,8 +20063,14 @@ pub fn calculate_getref_single_mesh_threshold_reports_fortran_indexed(
             ));
         }
     };
+    let aggregate_num_vertex = match mesh_type {
+        "landmesh" => land_basic_config.num_vertex,
+        "oceanmesh" => ocean_config.num_vertex,
+        "atmosmesh" => atmos_config.num_vertex,
+        _ => unreachable!("validated non-LOC mesh_type"),
+    };
     let aggregate = aggregate_getref_threshold_reports_fortran_indexed(
-        land_basic_config.num_vertex,
+        aggregate_num_vertex,
         land.as_ref(),
         ocean.as_ref(),
         atmos.as_ref(),
@@ -7991,7 +20091,11 @@ pub fn run_getref_single_mesh_threshold_files_fortran_indexed(
 ) -> io::Result<GetRefSingleMeshFileRunReport> {
     let contain = read_contain_netcdf(config.contain_file)?;
     let mp_id = contain_rows_to_fortran_indexed("ustr_id", &contain.ustr_id)?;
-    let mp_ii = contain_rows_to_fortran_indexed("ustr_ii", &contain.ustr_ii)?;
+    let mp_ii = contain_rows_to_fortran_indexed_with_empty_width(
+        "ustr_ii",
+        &contain.ustr_ii,
+        getref_ustr_ii_width_for_mesh_type(config.mesh_type)?,
+    )?;
     let threshold = calculate_getref_single_mesh_threshold_reports_fortran_indexed(
         config.mesh_type,
         config.is_in_refine_sjx,
@@ -8075,7 +20179,8 @@ pub fn run_getref_loc_mesh_threshold_files_fortran_indexed(
 ) -> io::Result<GetRefLocMeshFileRunReport> {
     let contain = read_contain_netcdf(config.contain_file)?;
     let loc_id = contain_rows_to_fortran_indexed("LOC ustr_id", &contain.ustr_id)?;
-    let loc_ii = contain_rows_to_fortran_indexed("LOC ustr_ii", &contain.ustr_ii)?;
+    let loc_ii =
+        contain_rows_to_fortran_indexed_with_empty_width("LOC ustr_ii", &contain.ustr_ii, 3)?;
     let threshold = calculate_getref_loc_threshold_reports_fortran_indexed(
         config.is_in_refine_sjx,
         &loc_id,
@@ -8171,7 +20276,7 @@ pub fn run_getref_integrated_threshold_files_fortran_indexed(
             config.th_onelayer_atmos,
         )?;
 
-        if config.mesh_type == "LOCmesh" {
+        if matches!(config.mesh_type, "LOCmesh" | "earthmesh") {
             (
                 None,
                 Some(run_getref_loc_mesh_threshold_files_fortran_indexed(
@@ -8230,6 +20335,28 @@ fn contain_rows_to_fortran_indexed(name: &str, rows: &[Vec<i32>]) -> io::Result<
     indexed.push(vec![0; width]);
     indexed.extend(rows.iter().cloned());
     Ok(indexed)
+}
+
+fn contain_rows_to_fortran_indexed_with_empty_width(
+    name: &str,
+    rows: &[Vec<i32>],
+    empty_width: usize,
+) -> io::Result<Vec<Vec<i32>>> {
+    if rows.is_empty() {
+        return Ok(vec![vec![0; empty_width]]);
+    }
+    contain_rows_to_fortran_indexed(name, rows)
+}
+
+fn getref_ustr_ii_width_for_mesh_type(mesh_type: &str) -> io::Result<usize> {
+    match mesh_type {
+        "landmesh" | "oceanmesh" => Ok(2),
+        "atmosmesh" | "LOCmesh" | "earthmesh" => Ok(3),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported GetRef mesh_type {other}"),
+        )),
+    }
 }
 
 fn required_getref_output_path<'a>(
@@ -8345,12 +20472,16 @@ pub fn calculate_getref_loc_threshold_reports_fortran_indexed(
     } else {
         None
     };
-    let aggregate = aggregate_getref_threshold_reports_fortran_indexed(
-        num_vertex,
-        land.as_ref(),
-        ocean.as_ref(),
-        atmos.as_ref(),
-    )?;
+    let aggregate = if land.is_none() && ocean.is_none() && atmos.is_none() {
+        empty_getref_threshold_aggregation_fortran_indexed(num_vertex, split.sjx_points)?
+    } else {
+        aggregate_getref_threshold_reports_fortran_indexed(
+            num_vertex,
+            land.as_ref(),
+            ocean.as_ref(),
+            atmos.as_ref(),
+        )?
+    };
 
     Ok(GetRefLocThresholdReports {
         split,
@@ -8711,11 +20842,25 @@ pub fn write_getref_specified_threshold_netcdf(
 }
 
 fn validate_getref_ocean_threshold_report(report: &GetRefOceanThresholdReport) -> io::Result<()> {
+    validate_getref_ocean_threshold_report_shape(report, false)
+}
+
+fn validate_getref_ocean_threshold_report_for_aggregation(
+    report: &GetRefOceanThresholdReport,
+) -> io::Result<()> {
+    validate_getref_ocean_threshold_report_shape(report, true)
+}
+
+fn validate_getref_ocean_threshold_report_shape(
+    report: &GetRefOceanThresholdReport,
+    allow_empty: bool,
+) -> io::Result<()> {
     validate_getref_common_threshold_shape(
         "ref_th_Ocn",
         report.ref_colnum,
         &report.column_names,
         &report.ref_th,
+        allow_empty,
     )?;
     let sjx_points = report.ref_th.len() - 1;
     validate_optional_fortran_f64_len("sea_ratio", report.sea_ratio.as_deref(), sjx_points)?;
@@ -8724,11 +20869,25 @@ fn validate_getref_ocean_threshold_report(report: &GetRefOceanThresholdReport) -
 }
 
 fn validate_getref_atmos_threshold_report(report: &GetRefAtmosThresholdReport) -> io::Result<()> {
+    validate_getref_atmos_threshold_report_shape(report, false)
+}
+
+fn validate_getref_atmos_threshold_report_for_aggregation(
+    report: &GetRefAtmosThresholdReport,
+) -> io::Result<()> {
+    validate_getref_atmos_threshold_report_shape(report, true)
+}
+
+fn validate_getref_atmos_threshold_report_shape(
+    report: &GetRefAtmosThresholdReport,
+    allow_empty: bool,
+) -> io::Result<()> {
     validate_getref_common_threshold_shape(
         "ref_th_Atmos",
         report.ref_colnum,
         &report.column_names,
         &report.ref_th,
+        allow_empty,
     )?;
     let sjx_points = report.ref_th.len() - 1;
     validate_optional_fortran_i32_len("last_p_num", report.last_p_num.as_deref(), sjx_points)?;
@@ -8740,8 +20899,9 @@ fn validate_getref_common_threshold_shape(
     ref_colnum: usize,
     column_names: &[String],
     ref_th: &[Vec<i32>],
+    allow_empty: bool,
 ) -> io::Result<()> {
-    if ref_colnum == 0 {
+    if ref_colnum == 0 && !allow_empty {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{matrix_name} writer requires at least one threshold column"),
@@ -8919,12 +21079,13 @@ pub fn build_area_judge_seaorland_fortran_indexed(
     }
 
     let mut sum_land_grid = 0_i32;
-    for lat_index in bounds.maxlat_source..=bounds.minlat_source {
-        for lon_index in bounds.minlon_source..=bounds.maxlon_source {
-            if is_in_domain[lon_index][lat_index] != 0
-                && landtypes_global[lon_index][lat_index] != 0
-            {
-                seaorland[lon_index][lat_index] = 1;
+    for lon_index in bounds.minlon_source..=bounds.maxlon_source {
+        let domain_row = &is_in_domain[lon_index];
+        let landtype_row = &landtypes_global[lon_index];
+        let seaorland_row = &mut seaorland[lon_index];
+        for lat_index in bounds.maxlat_source..=bounds.minlat_source {
+            if domain_row[lat_index] != 0 && landtype_row[lat_index] != 0 {
+                seaorland_row[lat_index] = 1;
                 sum_land_grid += 1;
             }
         }
@@ -9235,6 +21396,92 @@ pub fn run_area_judge_non_restart_grids_fortran_indexed(
     };
 
     Ok(AreaJudgeGridRunReport {
+        area,
+        refine_step,
+        domain_write,
+        refine_write,
+    })
+}
+
+/// Compose the restart `Area_judge` branch, activate iter-zero calculated
+/// refine when available, and write selected grid payloads for restart-style
+/// downstream consumers.
+pub fn run_area_judge_restart_grids_fortran_indexed(
+    config: AreaJudgeRestartGridsRunConfig<'_>,
+) -> io::Result<AreaJudgeRestartGridsRunReport> {
+    let area = build_area_judge_restart_fortran_indexed(
+        config.file_dir,
+        config.restart_input,
+        config.mask_patch,
+        config.refine,
+        config.calculated_refine,
+        config.lon_vertex,
+        config.lat_vertex,
+        config.lon_i,
+        config.lat_i,
+        config.gridnum_perdegree,
+        config.nlons_source,
+        config.nlats_source,
+    )?;
+
+    let domain_write = config
+        .domain_output
+        .map(|output| {
+            write_area_judge_selected_grid_report(
+                output,
+                &area.domain.is_in_domain,
+                Some(&area.seaorland.seaorland),
+                config.lon_i,
+                config.lat_i,
+                area.domain.bounds,
+            )
+        })
+        .transpose()?;
+
+    let refine_step = if config.refine {
+        area.calculated_refine
+            .as_ref()
+            .map(|calculated| {
+                run_area_judge_refine_fortran_indexed(
+                    config.file_dir,
+                    0,
+                    Some((&calculated.is_in_area, calculated.bounds)),
+                    "",
+                    0,
+                    &area.domain.is_in_domain,
+                    config.lon_vertex,
+                    config.lat_vertex,
+                    config.lon_i,
+                    config.lat_i,
+                    config.gridnum_perdegree,
+                    config.nlons_source,
+                    config.nlats_source,
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+
+    let refine_write = match (config.refine_output, refine_step.as_ref()) {
+        (Some(output), Some(refine)) => Some(write_area_judge_selected_grid_report(
+            output,
+            &refine.is_in_refine,
+            None,
+            config.lon_i,
+            config.lat_i,
+            refine.bounds,
+        )?),
+        (Some(_), None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "restart Area_judge refine output requires calculated iter-zero refine state",
+            ));
+        }
+        (None, _) => None,
+    };
+
+    Ok(AreaJudgeRestartGridsRunReport {
         area,
         refine_step,
         domain_write,
@@ -9713,6 +21960,22 @@ pub fn build_area_judge_area_sources_fortran_indexed(
     for source_index in 1..=ndm {
         let source =
             area_judge_area_source_path(&file_dir, type_select, mask_type, iter, source_index)?;
+        if mask_type == "close" {
+            let report = build_area_judge_close_area_source_cells_fortran_indexed(
+                &source,
+                lon_vertex,
+                lat_vertex,
+                gridnum_perdegree,
+                nlons_source,
+                nlats_source,
+            )?;
+            for (lon_index, lat_index) in &report.cells {
+                is_in_area[*lon_index][*lat_index] = 1;
+            }
+            bounds = Some(merge_area_judge_source_bounds(bounds, report.bounds));
+            numpatch += report.numpatch;
+            continue;
+        }
         let report = match mask_type {
             "bbox" => build_area_judge_bbox_area_source_fortran_indexed(
                 &source,
@@ -9728,14 +21991,6 @@ pub fn build_area_judge_area_sources_fortran_indexed(
                 lat_vertex,
                 lon_i,
                 lat_i,
-                gridnum_perdegree,
-                nlons_source,
-                nlats_source,
-            )?,
-            "close" => build_area_judge_close_area_source_fortran_indexed(
-                &source,
-                lon_vertex,
-                lat_vertex,
                 gridnum_perdegree,
                 nlons_source,
                 nlats_source,
@@ -10160,23 +22415,30 @@ fn area_judge_check_crossing(points: &mut [LonLatDegrees]) {
     }
 }
 
-/// Build the close-curve `IsInArea_grid` source mask used by domain/refine/patch paths.
-pub fn build_area_judge_close_area_source_fortran_indexed(
+/// Build the close-curve source cells used by domain/refine/patch paths.
+pub fn build_area_judge_close_area_source_cells_fortran_indexed(
     inputfile: impl AsRef<Path>,
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,
-) -> io::Result<AreaJudgeAreaSourceReport> {
-    let mask = read_close_mask_netcdf(inputfile)?;
+) -> io::Result<AreaJudgeSparseAreaSourceReport> {
+    let inputfile = inputfile.as_ref();
+    let mask = match read_close_mask_netcdf(inputfile) {
+        Ok(mask) => mask,
+        Err(err) if err.to_string().contains("close_refine") => CloseMask {
+            refine_degree: 0,
+            points: read_close_mesh_netcdf(inputfile)?,
+        },
+        Err(err) => return Err(err),
+    };
     validate_close_mask(&mask).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid close area source: {err}"),
         )
     })?;
-    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
     let close_points = &mask.points;
     let geometry_points = close_points
         .iter()
@@ -10257,20 +22519,48 @@ pub fn build_area_judge_close_area_source_fortran_indexed(
             "close area source could not be converted to source-grid cells",
         )
     })?;
-    for (lon_index, lat_index) in fill.cells {
-        require_len("close area mask", is_in_area.len(), lon_index + 1)?;
-        require_len(
-            &format!("close area mask[{lon_index}]"),
-            is_in_area[lon_index].len(),
-            lat_index + 1,
-        )?;
-        is_in_area[lon_index][lat_index] = 1;
+    for &(lon_index, lat_index) in &fill.cells {
+        if lon_index > nlons_source || lat_index > nlats_source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("close area source cell ({lon_index},{lat_index}) is outside source grid"),
+            ));
+        }
+    }
+
+    Ok(AreaJudgeSparseAreaSourceReport {
+        cells: fill.cells,
+        bounds,
+        numpatch: fill.patch_count,
+    })
+}
+
+/// Build the close-curve `IsInArea_grid` source mask used by domain/refine/patch paths.
+pub fn build_area_judge_close_area_source_fortran_indexed(
+    inputfile: impl AsRef<Path>,
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<AreaJudgeAreaSourceReport> {
+    let sparse = build_area_judge_close_area_source_cells_fortran_indexed(
+        inputfile,
+        lon_vertex,
+        lat_vertex,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )?;
+    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    for (lon_index, lat_index) in &sparse.cells {
+        is_in_area[*lon_index][*lat_index] = 1;
     }
 
     Ok(AreaJudgeAreaSourceReport {
         is_in_area,
-        bounds,
-        numpatch: fill.patch_count,
+        bounds: sparse.bounds,
+        numpatch: sparse.numpatch,
     })
 }
 
@@ -11285,6 +23575,13 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
     nxp: usize,
     step: usize,
 ) -> io::Result<MpasMesh> {
+    let original_cell_rows = mesh.w_points.len();
+    let original_vertex_rows = mesh.m_points.len();
+    let (mesh, cellwidth) = normalize_mpas_legacy_placeholder_inputs(mesh, cellwidth)?;
+    let mesh = &mesh;
+    let extra_cell_rows = mesh.w_points.len().saturating_sub(original_cell_rows);
+    let extra_vertex_rows = mesh.m_points.len().saturating_sub(original_vertex_rows);
+    let cellwidth = cellwidth.as_slice();
     validate_unstructured_mesh(mesh)?;
     if cellwidth.len() != mesh.w_points.len() {
         return Err(io::Error::new(
@@ -11338,13 +23635,34 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
             "failed to order MPAS verticesOnCell from unstructured mesh",
         )
     })?;
-    let cell_connectivity = connect_on_cell_fortran_indexed(
+    let mut ordered_vertices_on_cell = ordered_vertices_on_cell;
+    let mut cell_connectivity = connect_on_cell_fortran_indexed(
         &n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
         &ordered_vertices_on_cell,
-    )
-    .ok_or_else(|| {
+    );
+    if cell_connectivity.is_none() {
+        if let Some(topological_order) = order_vertices_on_cell_by_shared_edges_fortran_indexed(
+            &vertices_on_cell,
+            &n_edges_on_cell,
+            &edge_output.edges_on_vertex,
+        )
+        .and_then(|ordered| {
+            standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, &n_edges_on_cell)
+        }) {
+            if let Some(topological_connectivity) = connect_on_cell_fortran_indexed(
+                &n_edges_on_cell,
+                &edge_output.cells_on_edge,
+                &edge_output.edges_on_vertex,
+                &topological_order,
+            ) {
+                ordered_vertices_on_cell = topological_order;
+                cell_connectivity = Some(topological_connectivity);
+            }
+        }
+    }
+    let cell_connectivity = cell_connectivity.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "failed to build MPAS cell connectivity from unstructured mesh",
@@ -11359,6 +23677,7 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         edges_on_vertex: &edge_output.edges_on_vertex,
         cells_on_edge: &edge_output.cells_on_edge,
         vertices_on_cell: &ordered_vertices_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
     })
     .ok_or_else(|| {
         io::Error::new(
@@ -11430,11 +23749,11 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         .iter()
         .map(|width| (min_cellwidth / width).powi(4))
         .collect::<Vec<_>>();
-    let nominal_min_dc =
-        7680.0 / nxp as f64 / 2.0_f64.powi((step - 1) as i32) / earthmesh_core::EARTH_RADIUS_METERS
-            * 1000.0;
+    let nominal_min_dc = (7680 / nxp / 2_usize.pow((step - 1) as u32)) as f64
+        / earthmesh_core::EARTH_RADIUS_METERS
+        * 1000.0;
 
-    let mpas = MpasMesh {
+    let mut mpas = MpasMesh {
         lat_cell,
         lon_cell,
         x_cell,
@@ -11488,14 +23807,70 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         nominal_min_dc,
         error_segment: weights.error_segment,
     };
+    trim_mpas_leading_placeholders(&mut mpas, extra_cell_rows, extra_vertex_rows);
     validate_mpas_mesh(&mpas)?;
     Ok(mpas)
+}
+
+fn trim_mpas_leading_placeholders(
+    mesh: &mut MpasMesh,
+    extra_cell_rows: usize,
+    extra_vertex_rows: usize,
+) {
+    if extra_cell_rows > 0 {
+        drain_prefix(&mut mesh.lat_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.lon_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.x_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.y_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.z_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.n_edges_on_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.cells_on_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.vertices_on_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.edges_on_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.area_cell, extra_cell_rows);
+        drain_prefix(&mut mesh.mesh_density, extra_cell_rows);
+    }
+    if extra_vertex_rows > 0 {
+        drain_prefix(&mut mesh.lat_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.lon_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.x_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.y_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.z_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.cells_on_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.edges_on_vertex, extra_vertex_rows);
+        drain_prefix(&mut mesh.area_triangle, extra_vertex_rows);
+        drain_prefix(&mut mesh.kite_areas_on_vertex, extra_vertex_rows);
+    }
+    let extra_edge_rows = extra_cell_rows.max(extra_vertex_rows);
+    if extra_edge_rows > 0 {
+        drain_prefix(&mut mesh.lat_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.lon_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.x_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.y_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.z_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.cells_on_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.vertices_on_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.n_edges_on_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.edges_on_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.dv_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.dc_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.angle_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.weights_on_edge, extra_edge_rows);
+        drain_prefix(&mut mesh.error_segment, extra_edge_rows);
+    }
+}
+
+fn drain_prefix<T>(values: &mut Vec<T>, count: usize) {
+    values.drain(0..count);
 }
 
 pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
     mesh: &UnstructuredMesh,
     cellwidth: &[f64],
 ) -> io::Result<MpasSimpleMesh> {
+    let (mesh, cellwidth) = normalize_mpas_legacy_placeholder_inputs(mesh, cellwidth)?;
+    let mesh = &mesh;
+    let cellwidth = cellwidth.as_slice();
     validate_unstructured_mesh(mesh)?;
     if cellwidth.len() != mesh.w_points.len() {
         return Err(io::Error::new(
@@ -11564,6 +23939,223 @@ pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
     };
     validate_mpas_simple_mesh(&simple)?;
     Ok(simple)
+}
+
+fn normalize_mpas_legacy_placeholder_inputs(
+    mesh: &UnstructuredMesh,
+    cellwidth: &[f64],
+) -> io::Result<(UnstructuredMesh, Vec<f64>)> {
+    if cellwidth.len() != mesh.w_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cellwidth length {} must match w_points length {}",
+                cellwidth.len(),
+                mesh.w_points.len()
+            ),
+        ));
+    }
+
+    let normalized = normalize_unstructured_mesh_legacy_placeholders(mesh)?;
+    let mut normalized_cellwidth = cellwidth.to_vec();
+    if normalized.w_points.len() > cellwidth.len() {
+        let missing_placeholders = normalized.w_points.len() - cellwidth.len();
+        let placeholder_cellwidth = normalized_cellwidth.first().copied().unwrap_or(1.0);
+        for _ in 0..missing_placeholders {
+            normalized_cellwidth.insert(0, placeholder_cellwidth);
+        }
+    }
+    if normalized_cellwidth.len() != normalized.w_points.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cellwidth length {} must match normalized w_points length {}",
+                normalized_cellwidth.len(),
+                normalized.w_points.len()
+            ),
+        ));
+    }
+
+    Ok((normalized, normalized_cellwidth))
+}
+
+fn normalize_unstructured_mesh_legacy_placeholders(
+    mesh: &UnstructuredMesh,
+) -> io::Result<UnstructuredMesh> {
+    validate_unstructured_mesh(mesh)?;
+    let max_cell_id = mesh
+        .m_to_w
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .filter_map(|value| usize::try_from(value).ok())
+        .max()
+        .unwrap_or(0);
+    let max_triangle_id = mesh
+        .w_to_m
+        .iter()
+        .flat_map(|row| row.iter().copied())
+        .filter_map(|value| usize::try_from(value).ok())
+        .max()
+        .unwrap_or(0);
+    let missing_cell_placeholder = max_cell_id >= mesh.w_points.len();
+    let missing_triangle_placeholder = max_triangle_id >= mesh.m_points.len();
+
+    if !missing_cell_placeholder && !missing_triangle_placeholder {
+        return Ok(mesh.clone());
+    }
+
+    let mut normalized = mesh.clone();
+    let placeholder = LonLatPoint { lon: 0.0, lat: 0.0 };
+    if has_single_legacy_placeholder_row(mesh) {
+        if missing_triangle_placeholder {
+            normalized.m_points.insert(0, placeholder);
+            normalized.m_to_w.insert(0, [1, 1, 1]);
+        }
+        if missing_cell_placeholder {
+            normalized.w_points.insert(0, placeholder);
+            normalized.w_to_m.insert(0, vec![1]);
+            normalized.n_w_to_m.insert(0, 1);
+        }
+        return Ok(normalized);
+    }
+
+    if missing_triangle_placeholder {
+        for row in &mut normalized.w_to_m {
+            for value in row {
+                if *value > 0 {
+                    *value = value.checked_add(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "triangle id overflow while inserting legacy placeholder rows",
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    if missing_cell_placeholder {
+        for row in &mut normalized.m_to_w {
+            for value in row {
+                if *value > 0 {
+                    *value = value.checked_add(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "cell id overflow while inserting legacy placeholder rows",
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    if missing_triangle_placeholder {
+        normalized.m_points.splice(0..0, [placeholder, placeholder]);
+        normalized.m_to_w.splice(0..0, [[1, 1, 1], [1, 1, 1]]);
+    }
+    if missing_cell_placeholder {
+        normalized.w_points.splice(0..0, [placeholder, placeholder]);
+        normalized.w_to_m.splice(0..0, [vec![1], vec![1]]);
+        normalized.n_w_to_m.splice(0..0, [1, 1]);
+    }
+    Ok(normalized)
+}
+
+fn restore_unstructured_mesh_shape(
+    original: &UnstructuredMesh,
+    adjusted: &UnstructuredMesh,
+) -> io::Result<UnstructuredMesh> {
+    if adjusted.m_points.len() < original.m_points.len()
+        || adjusted.w_points.len() < original.w_points.len()
+        || adjusted.m_to_w.len() < original.m_to_w.len()
+        || adjusted.w_to_m.len() < original.w_to_m.len()
+        || adjusted.n_w_to_m.len() < original.n_w_to_m.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "adjusted mesh is smaller than original mesh shape",
+        ));
+    }
+
+    let triangle_offset = adjusted.m_points.len() - original.m_points.len();
+    let cell_offset = adjusted.w_points.len() - original.w_points.len();
+    let mut restored = UnstructuredMesh {
+        m_points: adjusted.m_points[triangle_offset..].to_vec(),
+        w_points: adjusted.w_points[cell_offset..].to_vec(),
+        m_to_w: adjusted.m_to_w[triangle_offset..].to_vec(),
+        w_to_m: adjusted.w_to_m[cell_offset..].to_vec(),
+        n_w_to_m: adjusted.n_w_to_m[cell_offset..].to_vec(),
+    };
+
+    if triangle_offset > 0 {
+        let subtract = infer_connectivity_delta(
+            restored.w_to_m.iter().flat_map(|row| row.iter().copied()),
+            original.w_to_m.iter().flat_map(|row| row.iter().copied()),
+        )
+        .unwrap_or(0);
+        if subtract > 0 {
+            for row in &mut restored.w_to_m {
+                for value in row {
+                    if *value > 0 {
+                        *value -= subtract;
+                    }
+                }
+            }
+        }
+    }
+    if cell_offset > 0 {
+        let subtract = infer_connectivity_delta(
+            restored.m_to_w.iter().flat_map(|row| row.iter().copied()),
+            original.m_to_w.iter().flat_map(|row| row.iter().copied()),
+        )
+        .unwrap_or(0);
+        if subtract > 0 {
+            for row in &mut restored.m_to_w {
+                for value in row {
+                    if *value > 0 {
+                        *value -= subtract;
+                    }
+                }
+            }
+        }
+    }
+
+    validate_unstructured_mesh(&restored)?;
+    Ok(restored)
+}
+
+fn infer_connectivity_delta(
+    restored: impl Iterator<Item = i32>,
+    original: impl Iterator<Item = i32>,
+) -> Option<i32> {
+    let mut delta = None;
+    for (restored_id, original_id) in restored.zip(original) {
+        if restored_id <= 0 || original_id <= 0 {
+            continue;
+        }
+        let current = restored_id.checked_sub(original_id)?;
+        if current < 0 {
+            return None;
+        }
+        match delta {
+            Some(existing) if existing != current => return None,
+            Some(_) => {}
+            None => delta = Some(current),
+        }
+    }
+    delta
+}
+
+fn has_single_legacy_placeholder_row(mesh: &UnstructuredMesh) -> bool {
+    mesh.m_to_w
+        .first()
+        .is_some_and(|row| row.iter().all(|value| *value == 1))
+        && mesh
+            .w_to_m
+            .first()
+            .is_some_and(|row| !row.is_empty() && row.iter().all(|value| *value == 1))
+        && mesh
+            .n_w_to_m
+            .first()
+            .is_some_and(|value| matches!(*value, 0 | 1))
 }
 
 /// File-level replacement for the `MPAS_Mesh_Cal_Simple` path that reads the
@@ -11657,6 +24249,60 @@ pub fn write_mask_postproc_atmos_mpas_simple_netcdf(
         .join(format!("MPASOUT_NXP{nxpc}_global_Simple.nc4"));
 
     write_mpas_simple_mesh_from_netcdf_inputs(gridfile, cellwidth, output)
+}
+
+/// Rust entry point for the `mask_postproc_Atmos` branch when
+/// `output_format == 'MPAS'`.
+///
+/// This preserves the legacy result-file names used by `MPAS_Mesh_Cal`:
+/// `result/gridfile_NXP####_<mode_grid>.nc4`,
+/// `result/cellwidth_NXP####_global.nc4`,
+/// `result/MPASOUT_NXP####_global.nc4`, and
+/// `result/MPASOUT_NXP####_global.graph.info`.
+pub fn write_mask_postproc_atmos_mpas_netcdf(
+    file_dir: impl AsRef<Path>,
+    nxp: usize,
+    step: usize,
+    mode_grid: &str,
+    mesh_type: &str,
+    output_format: &str,
+) -> io::Result<MpasFullMeshPipelineReport> {
+    if mesh_type.trim() != "atmosmesh" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MPAS mask_postproc writer requires mesh_type atmosmesh",
+        ));
+    }
+    if output_format.trim() != "MPAS" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MPAS mask_postproc writer requires output_format MPAS",
+        ));
+    }
+    let mode_grid = mode_grid.trim();
+    if !matches!(mode_grid, "tri" | "hex") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MPAS mask_postproc writer supports tri or hex mode_grid only",
+        ));
+    }
+
+    let file_dir = file_dir.as_ref();
+    let nxpc = format!("{nxp:04}");
+    let gridfile = file_dir
+        .join("result")
+        .join(format!("gridfile_NXP{nxpc}_{mode_grid}.nc4"));
+    let cellwidth = file_dir
+        .join("result")
+        .join(format!("cellwidth_NXP{nxpc}_global.nc4"));
+    let mesh_output = file_dir
+        .join("result")
+        .join(format!("MPASOUT_NXP{nxpc}_global.nc4"));
+    let graph_output = file_dir
+        .join("result")
+        .join(format!("MPASOUT_NXP{nxpc}_global.graph.info"));
+
+    write_mpas_mesh_from_netcdf_inputs(gridfile, cellwidth, mesh_output, graph_output, nxp, step)
 }
 
 /// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Ocn` adjustment:
@@ -11890,6 +24536,21 @@ pub fn build_earth_patchtypes_fortran_indexed(
         ));
     }
     if dim_b < 3 {
+        let active_cell_references_pixels = contain
+            .ustr_id
+            .iter()
+            .zip(contain.is_in_area_ustr.iter())
+            .any(|(row, &active)| active == 1 && row.first().copied().unwrap_or(0) != 0);
+        if contain.ustr_ii.is_empty() && !active_cell_references_pixels {
+            let seaorland_ustr = vec![0_i32; contain.ustr_id.len()];
+            let patchtypes_select = vec![vec![0_i32; nlats_dm_select]; nlons_dm_select];
+            return Ok(EarthPatchtypes {
+                seaorland_ustr,
+                patchtypes_select,
+                sum_land_ustr: 0,
+                sum_sea_ustr: 0,
+            });
+        }
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "earth patchtype construction requires ustr_ii rows with at least three columns",
@@ -12059,20 +24720,31 @@ pub fn build_land_patchtypes_fortran_indexed(
             if seaorland[lon_idx][lat_idx] == 0 {
                 continue;
             }
-            if lat_idx == 0 {
+            let mut inherited_patch = if lat_idx > 0 {
+                patchtypes_select[lon_idx][lat_idx - 1]
+            } else {
+                0
+            };
+            if inherited_patch == 0 {
+                inherited_patch = (0..nlats_dm_select)
+                    .map(|candidate_lat| patchtypes_select[lon_idx][candidate_lat])
+                    .find(|patch| *patch != 0)
+                    .unwrap_or(0);
+            }
+            if inherited_patch == 0 {
+                inherited_patch = patchtypes_select
+                    .iter()
+                    .flat_map(|row| row.iter().copied())
+                    .find(|patch| *patch != 0)
+                    .unwrap_or(0);
+            }
+            if inherited_patch == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "ignored land pixel on first latitude row has no previous latitude patch id",
+                    "ignored land pixel has no neighboring patch id",
                 ));
             }
-            let previous_patch = patchtypes_select[lon_idx][lat_idx - 1];
-            if previous_patch == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "ignored land pixel previous latitude patch id is zero",
-                ));
-            }
-            patchtypes_select[lon_idx][lat_idx] = previous_patch;
+            patchtypes_select[lon_idx][lat_idx] = inherited_patch;
             seaorland[lon_idx][lat_idx] = 0;
             filled_ignored_land_pixels += 1;
         }
@@ -12096,23 +24768,36 @@ pub fn build_earthmesh_info_fortran_indexed(
     seaorland_ustr: &[i32],
 ) -> io::Result<EarthmeshInfo> {
     validate_mask_postproc_layout(layout)?;
-    if is_in_domain_ustr.len() < layout.ustr_points {
+    let mode_grid = mode_grid.trim();
+    let role_points = match mode_grid {
+        "tri" => {
+            if is_in_domain_ustr.len() < layout.ustr_points {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "IsInDmArea_ustr length {} must cover ustr_points {}",
+                        is_in_domain_ustr.len(),
+                        layout.ustr_points
+                    ),
+                ));
+            }
+            layout.ustr_points
+        }
+        "hex" => is_in_domain_ustr.len().min(layout.ustr_points),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("earthmesh_info supports tri or hex mode_grid only, got {other}"),
+            ));
+        }
+    };
+    if seaorland_ustr.len() < role_points {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "IsInDmArea_ustr length {} must cover ustr_points {}",
-                is_in_domain_ustr.len(),
-                layout.ustr_points
-            ),
-        ));
-    }
-    if seaorland_ustr.len() < layout.ustr_points {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "seaorland_ustr length {} must cover ustr_points {}",
+                "seaorland_ustr length {} must cover role points {}",
                 seaorland_ustr.len(),
-                layout.ustr_points
+                role_points
             ),
         ));
     }
@@ -12125,7 +24810,7 @@ pub fn build_earthmesh_info_fortran_indexed(
 
     let active_count = is_in_domain_ustr
         .iter()
-        .take(layout.ustr_points)
+        .take(role_points)
         .skip(2)
         .filter(|&&value| value == 1)
         .count();
@@ -12133,10 +24818,10 @@ pub fn build_earthmesh_info_fortran_indexed(
     let mut refine_degree_f = vec![0_i32; active_count + 2];
 
     let mut compact_id = 1_usize;
-    match mode_grid.trim() {
+    match mode_grid {
         "tri" => {
             let mut step_idx = 1_usize;
-            for source_id in 2..layout.ustr_points {
+            for source_id in 2..role_points {
                 if step_idx < num_step_f.len()
                     && usize::try_from(num_step_f[step_idx]).unwrap_or(usize::MAX) <= source_id
                 {
@@ -12153,7 +24838,7 @@ pub fn build_earthmesh_info_fortran_indexed(
             }
         }
         "hex" => {
-            for source_id in 2..layout.ustr_points {
+            for source_id in 2..role_points {
                 let max_center_vertex = layout.center_neighbors[source_id]
                     .iter()
                     .copied()
@@ -12226,17 +24911,26 @@ pub fn patchid_mesh_from_selected_domain(
     let mut lat_n = Vec::with_capacity(nlat);
     let mut lat_s = Vec::with_capacity(nlat);
     let mut latitude = Vec::with_capacity(nlat);
+    let nlat_i32 = i32::try_from(nlat).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("latitude count {nlat} does not fit i32"),
+        )
+    })?;
+    let can_descend_from_maxlat = maxlat_dm_area - nlat_i32 + 1 >= 1;
     for lat_offset in 0..nlat {
-        let source_lat = usize_from_i32_nonnegative(
-            maxlat_dm_area
-                - i32::try_from(lat_offset).map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("latitude offset {lat_offset} does not fit i32"),
-                    )
-                })?,
-            "Dmlats_source",
-        )?;
+        let lat_offset_i32 = i32::try_from(lat_offset).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("latitude offset {lat_offset} does not fit i32"),
+            )
+        })?;
+        let source_lat_i32 = if can_descend_from_maxlat {
+            maxlat_dm_area - lat_offset_i32
+        } else {
+            maxlat_dm_area + lat_offset_i32
+        };
+        let source_lat = usize_from_i32_nonnegative(source_lat_i32, "Dmlats_source")?;
         lat_n.push(lookup_f64(lat_vertex, source_lat, "lat_vertex")?);
         lat_s.push(lookup_f64(lat_vertex, source_lat + 1, "lat_vertex")?);
         latitude.push(lookup_f64(lat_i, source_lat, "lat_i")?);
@@ -12368,19 +25062,35 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
     mode_grid: &str,
 ) -> io::Result<MaskPostprocFinalizationReport> {
     validate_mask_postproc_layout(layout)?;
-    if is_in_domain_ustr.len() < layout.ustr_points {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "IsInDmArea_ustr length {} must cover ustr_points {}",
-                is_in_domain_ustr.len(),
-                layout.ustr_points
-            ),
-        ));
-    }
+    let mode_grid = mode_grid.trim();
+    let role_points = match mode_grid {
+        "tri" => {
+            if is_in_domain_ustr.len() < layout.ustr_points {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "IsInDmArea_ustr length {} must cover ustr_points {}",
+                        is_in_domain_ustr.len(),
+                        layout.ustr_points
+                    ),
+                ));
+            }
+            layout.ustr_points
+        }
+        "hex" => is_in_domain_ustr.len().min(layout.ustr_points),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "final mask_postproc gridfile supports tri or hex mode_grid only, got {other}"
+                ),
+            ));
+        }
+    };
 
     let active_centers = is_in_domain_ustr
         .iter()
+        .take(role_points)
         .map(|&value| value == 1)
         .collect::<Vec<_>>();
     let center_coordinates = lonlat_pairs_from_points(&layout.center_points);
@@ -12388,10 +25098,10 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
     let mut final_data = earthmesh_mesh::finalize_mask_postproc_data_fortran_indexed(
         mode_grid,
         &active_centers,
-        &center_coordinates,
+        &center_coordinates[..role_points],
         &vertex_coordinates,
-        &layout.center_neighbors,
-        &layout.center_neighbor_counts,
+        &layout.center_neighbors[..role_points],
+        &layout.center_neighbor_counts[..role_points],
         layout.ustr_bounds.saturating_sub(1),
     )?;
 
@@ -12519,8 +25229,11 @@ pub fn read_mask_postproc_domain_inputs(
     plan: &MaskPostprocDomainIoPlan,
 ) -> io::Result<MaskPostprocDomainInputs> {
     let source_mesh = read_unstructured_mesh_netcdf(&plan.source_gridfile)?;
-    let layout = mask_postproc_layout_from_unstructured_mesh(&source_mesh, &plan.mode_grid)?;
     let contain = read_contain_netcdf(&plan.contain_domain)?;
+    let layout = normalize_mask_postproc_layout_for_contain_domain(
+        mask_postproc_layout_from_unstructured_mesh(&source_mesh, &plan.mode_grid)?,
+        contain.is_in_area_ustr.len(),
+    );
     let is_in_domain_ustr = contain.is_in_area_ustr.clone();
 
     Ok(MaskPostprocDomainInputs {
@@ -12528,6 +25241,46 @@ pub fn read_mask_postproc_domain_inputs(
         contain,
         is_in_domain_ustr,
     })
+}
+
+fn normalize_mask_postproc_layout_for_contain_domain(
+    mut layout: MaskPostprocLayout,
+    contain_ustr_len: usize,
+) -> MaskPostprocLayout {
+    let max_vertex_id = layout
+        .center_neighbors
+        .iter()
+        .zip(layout.center_neighbor_counts.iter())
+        .flat_map(|(row, &count)| row.iter().take(count).copied())
+        .max()
+        .unwrap_or(0);
+    if contain_ustr_len <= layout.ustr_points || max_vertex_id < layout.ustr_bounds {
+        return layout;
+    }
+
+    layout.ustr_points += 1;
+    layout.ustr_bounds += 1;
+    layout
+        .center_points
+        .insert(0, LonLatPoint { lon: 0.0, lat: 0.0 });
+    layout
+        .vertex_points
+        .insert(0, LonLatPoint { lon: 0.0, lat: 0.0 });
+    let center_width = layout
+        .center_neighbors
+        .first()
+        .map(|row| row.len())
+        .unwrap_or(0);
+    let vertex_width = layout
+        .vertex_neighbors
+        .first()
+        .map(|row| row.len())
+        .unwrap_or(0);
+    layout.center_neighbors.insert(0, vec![1; center_width]);
+    layout.vertex_neighbors.insert(0, vec![1; vertex_width]);
+    layout.center_neighbor_counts.insert(0, 0);
+    layout.vertex_neighbor_counts.insert(0, 0);
+    layout
 }
 
 /// File-backed composition of the migrated
@@ -12914,6 +25667,559 @@ pub fn write_obcv2_boundary_netcdf(
     })
 }
 
+#[derive(Debug, Clone)]
+struct ColmCouplingCsvRow {
+    cell_id: String,
+    cell_index: i32,
+    center_lon: f64,
+    center_lat: f64,
+    surface_class: String,
+    has_river: bool,
+    river_class: String,
+    river_fraction: f64,
+    estimated_river_area_m2: f64,
+    has_coast: bool,
+    coast_class: String,
+    coastal_fraction: f64,
+    normalized_cell_area_m2: f64,
+    source_area_cell: f64,
+}
+
+/// Write the CoLM package coupling metadata NetCDF schema from the package CSV.
+///
+/// This is a Rust-native equivalent of the numeric/string-code boundary in
+/// `util.hydro_mesh.colm_coupling` so v3 hydro/coast package handoffs are not
+/// Python-only.
+pub fn write_colm_coupling_netcdf_from_csv(
+    input_csv: impl AsRef<Path>,
+    output_netcdf: impl AsRef<Path>,
+    case_name: &str,
+    delivery_manifest: impl AsRef<Path>,
+) -> io::Result<ColmCouplingNetcdfWriteReport> {
+    let rows = read_colm_coupling_csv_rows(input_csv)?;
+    let output = output_netcdf.as_ref().to_path_buf();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(&output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("cell", rows.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("kind", "earthmesh_colm_coupling_netcdf")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("case_name", case_name)
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute(
+        "delivery_manifest",
+        delivery_manifest.as_ref().to_string_lossy().as_ref(),
+    )
+    .map_err(netcdf_to_io_error)?;
+    file.add_attribute(
+        "surface_class_code_meanings",
+        "0=UNKNOWN 1=LAND 2=OCEAN 3=COAST",
+    )
+    .map_err(netcdf_to_io_error)?;
+    file.add_attribute("river_class_code_meanings", "0=none/R0 1=R1 2=R2 3=R3")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute(
+        "coast_class_code_meanings",
+        "0=none 1=COAST 2=COAST_LAND 3=COAST_OCEAN",
+    )
+    .map_err(netcdf_to_io_error)?;
+
+    {
+        let mut var = file
+            .add_string_variable("cell_id", &["cell"])
+            .map_err(netcdf_to_io_error)?;
+        for (index, row) in rows.iter().enumerate() {
+            var.put_string(&row.cell_id, index)
+                .map_err(netcdf_to_io_error)?;
+        }
+    }
+    write_colm_i32_var(
+        &mut file,
+        "cell_index",
+        &rows.iter().map(|row| row.cell_index).collect::<Vec<_>>(),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "center_lon",
+        &rows.iter().map(|row| row.center_lon).collect::<Vec<_>>(),
+        Some("degrees_east"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "center_lat",
+        &rows.iter().map(|row| row.center_lat).collect::<Vec<_>>(),
+        Some("degrees_north"),
+    )?;
+    write_colm_i8_var(
+        &mut file,
+        "surface_class_code",
+        &rows
+            .iter()
+            .map(|row| surface_class_code(&row.surface_class))
+            .collect::<Vec<_>>(),
+    )?;
+    write_colm_i8_var(
+        &mut file,
+        "has_river",
+        &rows
+            .iter()
+            .map(|row| i8::from(row.has_river))
+            .collect::<Vec<_>>(),
+    )?;
+    write_colm_i8_var(
+        &mut file,
+        "river_class_code",
+        &rows
+            .iter()
+            .map(|row| river_class_code(&row.river_class))
+            .collect::<Vec<_>>(),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "river_fraction",
+        &rows
+            .iter()
+            .map(|row| row.river_fraction)
+            .collect::<Vec<_>>(),
+        Some("1"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "estimated_river_area_m2",
+        &rows
+            .iter()
+            .map(|row| row.estimated_river_area_m2)
+            .collect::<Vec<_>>(),
+        Some("m2"),
+    )?;
+    write_colm_i8_var(
+        &mut file,
+        "has_coast",
+        &rows
+            .iter()
+            .map(|row| i8::from(row.has_coast))
+            .collect::<Vec<_>>(),
+    )?;
+    write_colm_i8_var(
+        &mut file,
+        "coast_class_code",
+        &rows
+            .iter()
+            .map(|row| coast_class_code(&row.coast_class))
+            .collect::<Vec<_>>(),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "coastal_fraction",
+        &rows
+            .iter()
+            .map(|row| row.coastal_fraction)
+            .collect::<Vec<_>>(),
+        Some("1"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "normalized_cell_area_m2",
+        &rows
+            .iter()
+            .map(|row| row.normalized_cell_area_m2)
+            .collect::<Vec<_>>(),
+        Some("m2"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "source_areaCell",
+        &rows
+            .iter()
+            .map(|row| row.source_area_cell)
+            .collect::<Vec<_>>(),
+        Some("source_areaCell_units from CSV when available"),
+    )?;
+
+    Ok(ColmCouplingNetcdfWriteReport {
+        output,
+        rows: rows.len(),
+    })
+}
+
+/// Write a small CoLM restart-template handoff from the same package CSV used
+/// by the coupling metadata exporter.
+///
+/// The template keeps EarthMesh hydro/coast fractions in model-ready NetCDF
+/// columns so CoLM2024/CoLM20XX adapters can consume a Rust-written restart
+/// seed without depending on Python-only postprocessing.
+pub fn write_colm_restart_template_netcdf_from_csv(
+    input_csv: impl AsRef<Path>,
+    output_netcdf: impl AsRef<Path>,
+    case_name: &str,
+) -> io::Result<ColmRestartTemplateNetcdfWriteReport> {
+    let rows = read_colm_coupling_csv_rows(input_csv)?;
+    let output = output_netcdf.as_ref().to_path_buf();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(&output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("cell", rows.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("kind", "earthmesh_colm_restart_template_netcdf")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("case_name", case_name)
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute(
+        "land_fraction_definition",
+        "LAND=1 OCEAN=0 COAST=1-coastal_fraction",
+    )
+    .map_err(netcdf_to_io_error)?;
+
+    write_colm_i32_var(
+        &mut file,
+        "cell_index",
+        &rows.iter().map(|row| row.cell_index).collect::<Vec<_>>(),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "center_lon",
+        &rows.iter().map(|row| row.center_lon).collect::<Vec<_>>(),
+        Some("degrees_east"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "center_lat",
+        &rows.iter().map(|row| row.center_lat).collect::<Vec<_>>(),
+        Some("degrees_north"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "land_fraction",
+        &rows.iter().map(colm_land_fraction).collect::<Vec<_>>(),
+        Some("1"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "river_fraction",
+        &rows
+            .iter()
+            .map(|row| row.river_fraction)
+            .collect::<Vec<_>>(),
+        Some("1"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "coastal_fraction",
+        &rows
+            .iter()
+            .map(|row| row.coastal_fraction)
+            .collect::<Vec<_>>(),
+        Some("1"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "normalized_cell_area_m2",
+        &rows
+            .iter()
+            .map(|row| row.normalized_cell_area_m2)
+            .collect::<Vec<_>>(),
+        Some("m2"),
+    )?;
+
+    Ok(ColmRestartTemplateNetcdfWriteReport {
+        output,
+        rows: rows.len(),
+    })
+}
+
+/// Write a CoLM forcing-template handoff from the package CSV.
+///
+/// This converts the EarthMesh surface/hydro/coast fractions into area-weighted
+/// model forcing columns so coupled-model adapters have a Rust-owned seed file
+/// before full model-specific forcing generation is completed.
+pub fn write_colm_forcing_template_netcdf_from_csv(
+    input_csv: impl AsRef<Path>,
+    output_netcdf: impl AsRef<Path>,
+    case_name: &str,
+) -> io::Result<ColmForcingTemplateNetcdfWriteReport> {
+    let rows = read_colm_coupling_csv_rows(input_csv)?;
+    let output = output_netcdf.as_ref().to_path_buf();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(&output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("cell", rows.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("kind", "earthmesh_colm_forcing_template_netcdf")
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute("case_name", case_name)
+        .map_err(netcdf_to_io_error)?;
+    file.add_attribute(
+        "area_definition",
+        "land_area=normalized_area*land_fraction river_area=estimated_river_area coastal_area=normalized_area*coastal_fraction",
+    )
+    .map_err(netcdf_to_io_error)?;
+
+    write_colm_i32_var(
+        &mut file,
+        "cell_index",
+        &rows.iter().map(|row| row.cell_index).collect::<Vec<_>>(),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "center_lon",
+        &rows.iter().map(|row| row.center_lon).collect::<Vec<_>>(),
+        Some("degrees_east"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "center_lat",
+        &rows.iter().map(|row| row.center_lat).collect::<Vec<_>>(),
+        Some("degrees_north"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "land_forcing_area_m2",
+        &rows
+            .iter()
+            .map(|row| row.normalized_cell_area_m2 * colm_land_fraction(row))
+            .collect::<Vec<_>>(),
+        Some("m2"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "river_forcing_area_m2",
+        &rows
+            .iter()
+            .map(|row| finite_or_zero(row.estimated_river_area_m2))
+            .collect::<Vec<_>>(),
+        Some("m2"),
+    )?;
+    write_colm_f64_var(
+        &mut file,
+        "coastal_forcing_area_m2",
+        &rows
+            .iter()
+            .map(|row| row.normalized_cell_area_m2 * row.coastal_fraction.clamp(0.0, 1.0))
+            .collect::<Vec<_>>(),
+        Some("m2"),
+    )?;
+
+    Ok(ColmForcingTemplateNetcdfWriteReport {
+        output,
+        rows: rows.len(),
+    })
+}
+
+/// Write the CoLM package delivery manifest tying together Rust-written
+/// coupling, restart-template, and forcing-template handoff products.
+pub fn write_colm_package_delivery_manifest(
+    output_manifest: impl AsRef<Path>,
+    case_name: &str,
+    rows: usize,
+    coupling_netcdf: impl AsRef<Path>,
+    restart_template_netcdf: Option<&Path>,
+    forcing_template_netcdf: Option<&Path>,
+) -> io::Result<PathBuf> {
+    let output_manifest = output_manifest.as_ref().to_path_buf();
+    if let Some(parent) = output_manifest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut text = String::from("{\"kind\":\"earthmesh_colm_package_manifest\"");
+    text.push_str(",\"case_name\":\"");
+    text.push_str(&json_escape_string(case_name));
+    text.push('"');
+    text.push_str(",\"rows\":");
+    text.push_str(&rows.to_string());
+    text.push_str(",\"products\":{");
+    text.push_str("\"coupling_netcdf\":\"");
+    text.push_str(&json_escape_string(
+        &coupling_netcdf.as_ref().display().to_string(),
+    ));
+    text.push('"');
+    if let Some(path) = restart_template_netcdf {
+        text.push_str(",\"restart_template_netcdf\":\"");
+        text.push_str(&json_escape_string(&path.display().to_string()));
+        text.push('"');
+    }
+    if let Some(path) = forcing_template_netcdf {
+        text.push_str(",\"forcing_template_netcdf\":\"");
+        text.push_str(&json_escape_string(&path.display().to_string()));
+        text.push('"');
+    }
+    text.push_str("}}\n");
+    fs::write(&output_manifest, text)?;
+    Ok(output_manifest)
+}
+
+fn read_colm_coupling_csv_rows(input_csv: impl AsRef<Path>) -> io::Result<Vec<ColmCouplingCsvRow>> {
+    let text = fs::read_to_string(input_csv)?;
+    let mut lines = text.lines();
+    let header = lines
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "CoLM coupling CSV is empty"))?;
+    let columns = split_simple_csv_line(header);
+    let mut rows = Vec::new();
+    for (line_index, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let values = split_simple_csv_line(line);
+        rows.push(ColmCouplingCsvRow {
+            cell_id: csv_field(&columns, &values, "cell_id").to_string(),
+            cell_index: parse_csv_i32(&columns, &values, "cell_index", line_index + 2)?,
+            center_lon: parse_csv_f64(&columns, &values, "center_lon", line_index + 2)?,
+            center_lat: parse_csv_f64(&columns, &values, "center_lat", line_index + 2)?,
+            surface_class: csv_field(&columns, &values, "surface_class").to_string(),
+            has_river: parse_csv_bool(csv_field(&columns, &values, "has_river")),
+            river_class: csv_field(&columns, &values, "river_class").to_string(),
+            river_fraction: parse_csv_f64(&columns, &values, "river_fraction", line_index + 2)?,
+            estimated_river_area_m2: parse_csv_f64(
+                &columns,
+                &values,
+                "estimated_river_area_m2",
+                line_index + 2,
+            )?,
+            has_coast: parse_csv_bool(csv_field(&columns, &values, "has_coast")),
+            coast_class: csv_field(&columns, &values, "coast_class").to_string(),
+            coastal_fraction: parse_csv_f64(&columns, &values, "coastal_fraction", line_index + 2)?,
+            normalized_cell_area_m2: parse_csv_f64(
+                &columns,
+                &values,
+                "normalized_cell_area_m2",
+                line_index + 2,
+            )?,
+            source_area_cell: parse_csv_f64(&columns, &values, "source_areaCell", line_index + 2)?,
+        });
+    }
+    Ok(rows)
+}
+
+fn split_simple_csv_line(line: &str) -> Vec<String> {
+    line.split(',')
+        .map(|part| part.trim().to_string())
+        .collect()
+}
+
+fn csv_field<'a>(columns: &[String], values: &'a [String], name: &str) -> &'a str {
+    columns
+        .iter()
+        .position(|column| column == name)
+        .and_then(|index| values.get(index))
+        .map(String::as_str)
+        .unwrap_or("")
+}
+
+fn parse_csv_i32(
+    columns: &[String],
+    values: &[String],
+    name: &str,
+    line_number: usize,
+) -> io::Result<i32> {
+    csv_field(columns, values, name)
+        .parse::<i32>()
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{name} on CSV line {line_number} must be an integer"),
+            )
+        })
+}
+
+fn parse_csv_f64(
+    columns: &[String],
+    values: &[String],
+    name: &str,
+    line_number: usize,
+) -> io::Result<f64> {
+    let value = csv_field(columns, values, name);
+    if value.is_empty() {
+        return Ok(f64::NAN);
+    }
+    value.parse::<f64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} on CSV line {line_number} must be numeric"),
+        )
+    })
+}
+
+fn parse_csv_bool(value: &str) -> bool {
+    value.eq_ignore_ascii_case("true") || value == "1"
+}
+
+fn surface_class_code(value: &str) -> i8 {
+    match value {
+        "LAND" => 1,
+        "OCEAN" => 2,
+        "COAST" => 3,
+        _ => 0,
+    }
+}
+
+fn colm_land_fraction(row: &ColmCouplingCsvRow) -> f64 {
+    match row.surface_class.trim().to_ascii_uppercase().as_str() {
+        "LAND" => 1.0,
+        "OCEAN" => 0.0,
+        "COAST" => (1.0 - row.coastal_fraction).clamp(0.0, 1.0),
+        _ => 0.0,
+    }
+}
+
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn river_class_code(value: &str) -> i8 {
+    match value {
+        "R1" => 1,
+        "R2" => 2,
+        "R3" => 3,
+        _ => 0,
+    }
+}
+
+fn coast_class_code(value: &str) -> i8 {
+    match value {
+        "COAST" => 1,
+        "COAST_LAND" => 2,
+        "COAST_OCEAN" => 3,
+        _ => 0,
+    }
+}
+
+fn write_colm_i32_var(file: &mut netcdf::FileMut, name: &str, values: &[i32]) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<i32>(name, &["cell"])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(values, ..).map_err(netcdf_to_io_error)
+}
+
+fn write_colm_i8_var(file: &mut netcdf::FileMut, name: &str, values: &[i8]) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<i8>(name, &["cell"])
+        .map_err(netcdf_to_io_error)?;
+    var.put_values(values, ..).map_err(netcdf_to_io_error)
+}
+
+fn write_colm_f64_var(
+    file: &mut netcdf::FileMut,
+    name: &str,
+    values: &[f64],
+    units: Option<&str>,
+) -> io::Result<()> {
+    let mut var = file
+        .add_variable::<f64>(name, &["cell"])
+        .map_err(netcdf_to_io_error)?;
+    if let Some(units) = units {
+        var.put_attribute("units", units)
+            .map_err(netcdf_to_io_error)?;
+    }
+    var.put_values(values, ..).map_err(netcdf_to_io_error)
+}
+
 /// Rust adapter for `mkgrd.F90:gridfile_write`: derive the unstructured
 /// gridfile payload from grid state and write the legacy output path.
 pub fn write_gridfile_from_state(
@@ -13159,6 +26465,68 @@ pub fn convert_fvcom_mode_file_to_earthmesh(
     write_unstructured_mesh_netcdf(output, &mesh)
 }
 
+/// Read the IAP-Ocean NetCDF payload used by `MOD_file_preprocess.F90:IAP_Mesh_Read`.
+pub fn read_iap_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<IapMeshReadPayload> {
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let source_triangles = required_dimension_len(&file, "sjx_points")?;
+    let source_vertices = required_dimension_len(&file, "lbx_points")?;
+
+    let glonw = required_values_f64(&file, "GLONW")?;
+    let glatw = required_values_f64(&file, "GLATW")?;
+    let source_neighbors = required_values_i32_matrix(
+        &file,
+        "itab_m%im",
+        "sjx_points",
+        "dimb",
+        source_triangles,
+        3,
+    )?;
+    let source_vertices_on_triangle = required_values_i32_matrix(
+        &file,
+        "itab_m%iw",
+        "sjx_points",
+        "dimb",
+        source_triangles,
+        3,
+    )?;
+
+    require_len("GLONW", glonw.len(), source_vertices)?;
+    require_len("GLATW", glatw.len(), source_vertices)?;
+
+    let mut w_points = Vec::with_capacity(source_vertices + 1);
+    w_points.push(LonLatPoint { lon: 0.0, lat: 0.0 });
+    for idx in 0..source_vertices {
+        w_points.push(LonLatPoint {
+            lon: normalize_degrees(rad_to_deg(glonw[idx])),
+            lat: rad_to_deg(glatw[idx]),
+        });
+    }
+
+    let mut triangle_neighbors = Vec::with_capacity(source_triangles + 1);
+    let mut triangle_vertices = Vec::with_capacity(source_triangles + 1);
+    triangle_neighbors.push([1, 1, 1]);
+    triangle_vertices.push([1, 1, 1]);
+    for idx in 0..source_triangles {
+        let base = idx * 3;
+        triangle_neighbors.push([
+            source_neighbors[base] + 1,
+            source_neighbors[base + 1] + 1,
+            source_neighbors[base + 2] + 1,
+        ]);
+        triangle_vertices.push([
+            source_vertices_on_triangle[base] + 1,
+            source_vertices_on_triangle[base + 1] + 1,
+            source_vertices_on_triangle[base + 2] + 1,
+        ]);
+    }
+
+    Ok(IapMeshReadPayload {
+        w_points,
+        triangle_neighbors,
+        triangle_vertices,
+    })
+}
+
 /// Convert an existing IAP-Ocean-style mesh NetCDF into the EarthMesh gridfile schema.
 ///
 /// This ports the `mkgrd.F90` branch that calls
@@ -13297,6 +26665,18 @@ fn required_dimension_len(file: &netcdf::File, name: &str) -> io::Result<usize> 
         })
 }
 
+fn first_existing_dimension_len(file: &netcdf::File, names: &[&str]) -> io::Result<usize> {
+    for name in names {
+        if let Some(dimension) = file.dimension(name) {
+            return Ok(dimension.len());
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("missing dimension; expected one of {}", names.join(", ")),
+    ))
+}
+
 fn required_values_f64(file: &netcdf::File, name: &str) -> io::Result<Vec<f64>> {
     file.variable(name)
         .ok_or_else(|| {
@@ -13307,6 +26687,59 @@ fn required_values_f64(file: &netcdf::File, name: &str) -> io::Result<Vec<f64>> 
         })?
         .get_values::<f64, _>(..)
         .map_err(netcdf_to_io_error)
+}
+
+fn required_values_f64_any(file: &netcdf::File, name: &str) -> io::Result<Vec<f64>> {
+    let variable = file.variable(name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {name} variable"),
+        )
+    })?;
+    if let Ok(values) = variable.get_values::<f64, _>(..) {
+        return Ok(values);
+    }
+    if let Ok(values) = variable.get_values::<f32, _>(..) {
+        return Ok(values.into_iter().map(f64::from).collect());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{name} variable must be readable as f64 or f32"),
+    ))
+}
+
+fn required_values_f64_any_matrix(
+    file: &netcdf::File,
+    name: &str,
+    outer_len: usize,
+    inner_len: usize,
+) -> io::Result<Vec<f64>> {
+    let variable = file.variable(name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {name} variable"),
+        )
+    })?;
+    let dimensions = variable.dimensions();
+    if dimensions.len() != 2 || dimensions[0].len() != outer_len || dimensions[1].len() != inner_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} dimensions must match longitude x latitude"),
+        ));
+    }
+    if let Ok(values) = variable.get_values::<f64, _>((.., ..)) {
+        require_len(name, values.len(), outer_len * inner_len)?;
+        return Ok(values);
+    }
+    if let Ok(values) = variable.get_values::<f32, _>((.., ..)) {
+        require_len(name, values.len(), outer_len * inner_len)?;
+        return Ok(values.into_iter().map(f64::from).collect());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{name} variable must be readable as f64 or f32"),
+    ))
 }
 
 fn required_values_i32(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> {
@@ -13321,6 +26754,44 @@ fn required_values_i32(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> 
         .map_err(netcdf_to_io_error)
 }
 
+fn required_values_i32_any_matrix(
+    file: &netcdf::File,
+    name: &str,
+    outer_len: usize,
+    inner_len: usize,
+) -> io::Result<Vec<i32>> {
+    let variable = file.variable(name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {name} variable"),
+        )
+    })?;
+    let dimensions = variable.dimensions();
+    if dimensions.len() != 2 || dimensions[0].len() != outer_len || dimensions[1].len() != inner_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} dimensions must match longitude x latitude"),
+        ));
+    }
+    if let Ok(values) = variable.get_values::<i32, _>((.., ..)) {
+        require_len(name, values.len(), outer_len * inner_len)?;
+        return Ok(values);
+    }
+    if let Ok(values) = variable.get_values::<i16, _>((.., ..)) {
+        require_len(name, values.len(), outer_len * inner_len)?;
+        return Ok(values.into_iter().map(i32::from).collect());
+    }
+    if let Ok(values) = variable.get_values::<i8, _>((.., ..)) {
+        require_len(name, values.len(), outer_len * inner_len)?;
+        return Ok(values.into_iter().map(i32::from).collect());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{name} variable must be readable as i32, i16, or i8"),
+    ))
+}
+
 fn required_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> {
     file.variable(name)
         .ok_or_else(|| {
@@ -13331,6 +26802,62 @@ fn required_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Vec<i32
         })?
         .get_values::<i32, _>((.., ..))
         .map_err(netcdf_to_io_error)
+}
+
+fn required_values_i8_matrix(
+    file: &netcdf::File,
+    name: &str,
+    outer_dim: &str,
+    inner_dim: &str,
+    outer_len: usize,
+    inner_len: usize,
+) -> io::Result<Vec<i8>> {
+    let variable = file.variable(name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {name} variable"),
+        )
+    })?;
+    let dimensions = variable.dimensions();
+    if dimensions.len() != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} must be 2-D over {outer_dim}, {inner_dim}"),
+        ));
+    }
+    let dimension_names = dimensions
+        .iter()
+        .map(|dimension| dimension.name())
+        .collect::<Vec<_>>();
+    let dimension_lengths = dimensions
+        .iter()
+        .map(|dimension| dimension.len())
+        .collect::<Vec<_>>();
+    let values = variable
+        .get_values::<i8, _>((.., ..))
+        .map_err(netcdf_to_io_error)?;
+    require_len(name, values.len(), outer_len * inner_len)?;
+
+    if dimension_names == [outer_dim, inner_dim] || dimension_lengths == [outer_len, inner_len] {
+        return Ok(values);
+    }
+    if dimension_names == [inner_dim, outer_dim] || dimension_lengths == [inner_len, outer_len] {
+        let mut transposed = vec![0; outer_len * inner_len];
+        for inner in 0..inner_len {
+            for outer in 0..outer_len {
+                transposed[outer * inner_len + inner] = values[inner * outer_len + outer];
+            }
+        }
+        return Ok(transposed);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "{name} dimensions {:?} with lengths {:?} do not match expected ({outer_dim}, {inner_dim})",
+            dimension_names, dimension_lengths
+        ),
+    ))
 }
 
 fn required_values_i32_matrix(
@@ -13861,6 +27388,44 @@ fn validate_contain_mesh(contain: &ContainMesh) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_flat_contain_mesh(contain: &FlatContainMesh) -> io::Result<()> {
+    if contain.ustr_id_width == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "flat ustr_id width must be positive",
+        ));
+    }
+    if contain.ustr_id_values.len() % contain.ustr_id_width != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "flat ustr_id length must be a multiple of row width",
+        ));
+    }
+    if contain.ustr_ii_width == 0 && !contain.ustr_ii_values.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "flat ustr_ii width must be positive when values are present",
+        ));
+    }
+    if contain.ustr_ii_width != 0 && contain.ustr_ii_values.len() % contain.ustr_ii_width != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "flat ustr_ii length must be a multiple of row width",
+        ));
+    }
+    if contain.is_in_area_ustr.len() != contain.num_ustr() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IsInArea_ustr length {} must match num_ustr {}",
+                contain.is_in_area_ustr.len(),
+                contain.num_ustr()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_patchid_mesh(patch: &PatchIdMesh) -> io::Result<()> {
     let nlon = patch.elmindex.len();
     let nlat = matrix_width("elmindex", &patch.elmindex)?;
@@ -14064,12 +27629,14 @@ fn unstructured_mesh_from_springjustment_global(
         m_points: output
             .updated_triangle_lonlat
             .iter()
+            .take(source.m_points.len())
             .copied()
             .map(lonlat_degrees_to_lonlat_point)
             .collect(),
         w_points: output
             .updated_cell_lonlat
             .iter()
+            .take(source.w_points.len())
             .copied()
             .map(lonlat_degrees_to_lonlat_point)
             .collect(),
@@ -14098,12 +27665,14 @@ fn unstructured_mesh_from_springjustment_regional(
         m_points: output
             .updated_triangle_lonlat
             .iter()
+            .take(source.m_points.len())
             .copied()
             .map(lonlat_degrees_to_lonlat_point)
             .collect(),
         w_points: output
             .updated_cell_lonlat
             .iter()
+            .take(source.w_points.len())
             .copied()
             .map(lonlat_degrees_to_lonlat_point)
             .collect(),
@@ -14926,6 +28495,84 @@ pub fn read_bbox_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize>
     Ok(refine as usize)
 }
 
+/// Read `MOD_file_preprocess.F90:bbox_Mesh_Read` NetCDF schema.
+pub fn read_bbox_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMesh> {
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let bbox_num = required_dimension_len(&file, "bbox_num")?;
+    let four = required_dimension_len(&file, "four")?;
+    if four != 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("bbox four dimension {four} must equal 4"),
+        ));
+    }
+    let values = required_values_f64(&file, "bbox_points")?;
+    let expected = bbox_num.checked_mul(4).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("bbox_points dimensions {bbox_num}x4 overflow"),
+        )
+    })?;
+    if values.len() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "bbox_points contains {} values, expected {expected}",
+                values.len()
+            ),
+        ));
+    }
+    let mesh = BBoxMesh {
+        points: values
+            .chunks_exact(4)
+            .map(|row| BBoxPoint {
+                west: row[0],
+                east: row[1],
+                north: row[2],
+                south: row[3],
+            })
+            .collect(),
+    };
+    validate_bbox_mesh(&mesh).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid bbox mesh NetCDF: {err}"),
+        )
+    })?;
+    Ok(mesh)
+}
+
+/// Write `MOD_file_preprocess.F90:bbox_Mesh_Save` NetCDF schema.
+pub fn write_bbox_mesh_netcdf(output: impl AsRef<Path>, mesh: &BBoxMesh) -> io::Result<()> {
+    validate_bbox_mesh(mesh).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid bbox mesh: {err}"),
+        )
+    })?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("bbox_num", mesh.points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("four", 4).map_err(netcdf_to_io_error)?;
+    let mut values = Vec::with_capacity(mesh.points.len() * 4);
+    for point in &mesh.points {
+        values.extend([point.west, point.east, point.north, point.south]);
+    }
+    {
+        let mut bbox_points = file
+            .add_variable::<f64>("bbox_points", &["bbox_num", "four"])
+            .map_err(netcdf_to_io_error)?;
+        bbox_points
+            .put_values(&values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    Ok(())
+}
+
 /// Read bbox mask points from the NetCDF schema produced by `bbox_mask_make`.
 pub fn read_bbox_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMask> {
     let inputfile = inputfile.as_ref();
@@ -15428,6 +29075,12 @@ pub struct BBoxMask {
     pub points: Vec<BBoxPoint>,
 }
 
+/// NetCDF payload for `MOD_file_preprocess.F90:bbox_Mesh_Read/Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BBoxMesh {
+    pub points: Vec<BBoxPoint>,
+}
+
 /// Parse the text `.nml` branch of `mkgrd.F90:bbox_mask_make`.
 ///
 /// Returns `Ok(None)` when `refine_degree > max_iter_spc`, matching the Fortran
@@ -15566,14 +29219,14 @@ fn validate_mode4_mesh_for_area_judge(mesh: &Mode4Mesh) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
-    if mask.points.len() != mask.radius_km.len() {
+fn validate_circle_mesh(mesh: &CircleMesh) -> io::Result<()> {
+    if mesh.points.len() != mesh.radius_km.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "circle points and radius arrays must have the same length",
         ));
     }
-    for (index, (point, radius)) in mask.points.iter().zip(mask.radius_km.iter()).enumerate() {
+    for (index, (point, radius)) in mesh.points.iter().zip(mesh.radius_km.iter()).enumerate() {
         if !point.lon.is_finite() || !point.lat.is_finite() || !radius.is_finite() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -15593,8 +29246,25 @@ fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_bbox_mask(mask: &BBoxMask) -> io::Result<()> {
-    for (index, point) in mask.points.iter().enumerate() {
+fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
+    validate_circle_mesh(&CircleMesh {
+        points: mask.points.clone(),
+        radius_km: mask.radius_km.clone(),
+    })
+}
+
+fn validate_bbox_mesh(mesh: &BBoxMesh) -> io::Result<()> {
+    for (index, point) in mesh.points.iter().enumerate() {
+        if !point.west.is_finite()
+            || !point.east.is_finite()
+            || !point.north.is_finite()
+            || !point.south.is_finite()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("bbox point {} coordinates must be finite", index + 1),
+            ));
+        }
         if point.west > point.east {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -15609,6 +29279,12 @@ fn validate_bbox_mask(mask: &BBoxMask) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_bbox_mask(mask: &BBoxMask) -> io::Result<()> {
+    validate_bbox_mesh(&BBoxMesh {
+        points: mask.points.clone(),
+    })
 }
 
 fn parse_value_after_equals<T>(line: &str, field: &str) -> io::Result<T>
@@ -15641,6 +29317,13 @@ pub struct LonLatPoint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CircleMask {
     pub refine_degree: usize,
+    pub points: Vec<LonLatPoint>,
+    pub radius_km: Vec<f64>,
+}
+
+/// NetCDF payload for `MOD_file_preprocess.F90:circle_Mesh_Read/Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CircleMesh {
     pub points: Vec<LonLatPoint>,
     pub radius_km: Vec<f64>,
 }
@@ -15743,6 +29426,101 @@ pub fn parse_close_mask_nml(
 
 pub fn read_circle_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
     read_nonnegative_refine_netcdf(inputfile, "circle_refine")
+}
+
+/// Read `MOD_file_preprocess.F90:circle_Mesh_Read` NetCDF schema.
+pub fn read_circle_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CircleMesh> {
+    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let circle_num = required_dimension_len(&file, "circle_num")?;
+    let two = required_dimension_len(&file, "two")?;
+    if two != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("circle two dimension {two} must equal 2"),
+        ));
+    }
+    let point_values = required_values_f64(&file, "circle_points")?;
+    let expected_points = circle_num.checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("circle_points dimensions {circle_num}x2 overflow"),
+        )
+    })?;
+    if point_values.len() != expected_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "circle_points contains {} values, expected {expected_points}",
+                point_values.len()
+            ),
+        ));
+    }
+    let radius_km = required_values_f64(&file, "circle_radius")?;
+    if radius_km.len() != circle_num {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "circle_radius contains {} values, expected {circle_num}",
+                radius_km.len()
+            ),
+        ));
+    }
+    let mesh = CircleMesh {
+        points: point_values
+            .chunks_exact(2)
+            .map(|row| LonLatPoint {
+                lon: row[0],
+                lat: row[1],
+            })
+            .collect(),
+        radius_km,
+    };
+    validate_circle_mesh(&mesh).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid circle mesh NetCDF: {err}"),
+        )
+    })?;
+    Ok(mesh)
+}
+
+/// Write `MOD_file_preprocess.F90:circle_Mesh_Save` NetCDF schema.
+pub fn write_circle_mesh_netcdf(output: impl AsRef<Path>, mesh: &CircleMesh) -> io::Result<()> {
+    validate_circle_mesh(mesh).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid circle mesh: {err}"),
+        )
+    })?;
+    let output = output.as_ref();
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    file.add_dimension("circle_num", mesh.points.len())
+        .map_err(netcdf_to_io_error)?;
+    file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;
+    let mut point_values = Vec::with_capacity(mesh.points.len() * 2);
+    for point in &mesh.points {
+        point_values.extend([point.lon, point.lat]);
+    }
+    {
+        let mut points = file
+            .add_variable::<f64>("circle_points", &["circle_num", "two"])
+            .map_err(netcdf_to_io_error)?;
+        points
+            .put_values(&point_values, (.., ..))
+            .map_err(netcdf_to_io_error)?;
+    }
+    {
+        let mut radius = file
+            .add_variable::<f64>("circle_radius", &["circle_num"])
+            .map_err(netcdf_to_io_error)?;
+        radius
+            .put_values(&mesh.radius_km, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    Ok(())
 }
 
 pub fn read_circle_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CircleMask> {
@@ -16326,6 +30104,7 @@ pub fn lambert_vertices_to_mode4_mesh(vertices: &LambertVertices) -> io::Result<
     })
 }
 
+/// Read the `MOD_file_preprocess.F90:Mode4_Mesh_Read` NetCDF schema.
 pub fn read_mode4_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Mode4Mesh> {
     let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let bound_points = required_dimension_len(&file, "bound_points")?;

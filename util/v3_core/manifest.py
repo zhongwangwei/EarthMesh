@@ -13,6 +13,7 @@ class V3RunManifest:
     component_versions: dict[str, str] = field(default_factory=dict)
     adapter_versions: dict[str, str] = field(default_factory=dict)
     input_sources: dict[str, str] = field(default_factory=dict)
+    geometry_backend: str = "python_reference"
     mask_counts: dict[str, int] = field(default_factory=dict)
     cell_counts_by_class: dict[str, int] = field(default_factory=dict)
     missing_mask_count: int = 0

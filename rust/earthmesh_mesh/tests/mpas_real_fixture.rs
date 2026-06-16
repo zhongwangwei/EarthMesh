@@ -170,6 +170,7 @@ fn get_area_matches_real_mpas_fixture_for_cell_and_vertex_areas() {
         vec![6, 5, 8, 9, 10, 11],
         vec![12, 7, 6, 11, 13, 14],
     ];
+    let n_edges_on_cell = vec![0, 0, 6, 6, 6];
 
     let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
         vertices: &vertices,
@@ -179,6 +180,7 @@ fn get_area_matches_real_mpas_fixture_for_cell_and_vertex_areas() {
         edges_on_vertex: &edges_on_vertex,
         cells_on_edge: &cells_on_edge,
         vertices_on_cell: &vertices_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
     })
     .expect("valid compact MPAS GetArea fixture");
 

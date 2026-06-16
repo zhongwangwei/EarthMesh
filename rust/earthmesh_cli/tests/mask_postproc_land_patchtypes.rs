@@ -19,7 +19,7 @@ fn land_patchtypes_map_active_cells_and_fill_ignored_land_pixels_from_previous_l
 }
 
 #[test]
-fn land_patchtypes_reject_bad_schema_and_unfillable_first_latitude_land_pixel() {
+fn land_patchtypes_reject_bad_schema_and_fill_or_reject_unmapped_latitude_land_pixel() {
     let short_pixels = earthmesh_cli::ContainMesh {
         ustr_id: vec![vec![0, 0], vec![1, 1]],
         ustr_ii: vec![vec![10]],
@@ -37,6 +37,24 @@ fn land_patchtypes_reject_bad_schema_and_unfillable_first_latitude_land_pixel() 
     .expect_err("missing latitude column rejected");
     assert!(err.to_string().contains("at least two columns"));
 
+    let first_row_contain = earthmesh_cli::ContainMesh {
+        ustr_id: vec![vec![0, 0], vec![1, 1]],
+        ustr_ii: vec![vec![10, 21]],
+        is_in_area_ustr: vec![0, 1],
+    };
+    let first_row_land = vec![vec![1, 0]];
+    let result = earthmesh_cli::build_land_patchtypes_fortran_indexed(
+        &first_row_contain,
+        &first_row_land,
+        10,
+        20,
+        1,
+        2,
+    )
+    .expect("first latitude row inherits next available patch id");
+    assert_eq!(result.patchtypes_select, vec![vec![2, 2]]);
+    assert_eq!(result.filled_ignored_land_pixels, 1);
+
     let no_active_cells = earthmesh_cli::ContainMesh {
         ustr_id: vec![vec![0, 0]],
         ustr_ii: vec![vec![10, 20]],
@@ -51,6 +69,6 @@ fn land_patchtypes_reject_bad_schema_and_unfillable_first_latitude_land_pixel() 
         1,
         1,
     )
-    .expect_err("first latitude row has no previous patch id to inherit");
-    assert!(err.to_string().contains("previous latitude"));
+    .expect_err("unmapped land with no neighboring patch id is rejected");
+    assert!(err.to_string().contains("neighboring patch"));
 }

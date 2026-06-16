@@ -1,11 +1,15 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
-use earthmesh_cli::{plan_mkgrd_refine_loop, plan_mkgrd_refine_loop_io, MkgrdRefineSource};
+use earthmesh_cli::{
+    infer_mkgrd_effective_final_step_from_gridfiles, plan_mkgrd_refine_loop,
+    plan_mkgrd_refine_loop_io, write_unstructured_mesh_netcdf, LonLatPoint, MkgrdRefineSource,
+    UnstructuredMesh,
+};
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 
 fn mixed_refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
-        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=3\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=3\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n  RL%set_dis_type='linear'\n/\n",
         "landmesh",
         "hex",
     )
@@ -27,6 +31,9 @@ fn refine_loop_plan_follows_mixed_calculated_and_specified_windows() {
 
     assert_eq!(plan.max_iter, 3);
     assert_eq!(plan.steps.len(), 3);
+    assert_eq!(plan.steps[0].max_transition_row, 1);
+    assert_eq!(plan.steps[1].max_transition_row, 1);
+    assert_eq!(plan.steps[2].max_transition_row, 1);
     assert_eq!(
         plan.steps[0].sources,
         vec![
@@ -46,6 +53,49 @@ fn refine_loop_plan_follows_mixed_calculated_and_specified_windows() {
         vec![MkgrdRefineSource::CalculatedIterZero]
     );
     assert_eq!(plan.final_mask_postproc_step, 4);
+}
+
+#[test]
+fn refine_loop_plan_ignores_disabled_calculated_window_like_real_atmos_example() {
+    let config = RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition=.true.\n RL%SpringGlobal_type=1\n RL%SpringRegional_type=0\n RL%refine_spc=.true.\n RL%max_iter_spc=2\n RL%refine_cal=.false.\n RL%max_iter_cal=4\n RL%HALO=4,4,3\n RL%max_transition_row=4,4,3\n/\n",
+        "atmosmesh",
+        "hex",
+    )
+    .expect("parse real atmos refine controls");
+
+    let plan = plan_mkgrd_refine_loop(&config)
+        .expect("disabled calculated window should not require unused halo entries");
+
+    assert_eq!(config.halo[..4], [0, 4, 4, 3]);
+    assert_eq!(config.max_transition_row[..4], [0, 4, 4, 3]);
+    assert_eq!(plan.max_iter, 2);
+    assert_eq!(plan.steps.len(), 2);
+    assert_eq!(
+        plan.steps[0].sources,
+        vec![MkgrdRefineSource::SpecifiedStep]
+    );
+    assert_eq!(
+        plan.steps[1].sources,
+        vec![MkgrdRefineSource::SpecifiedStep]
+    );
+}
+
+#[test]
+fn refine_loop_plan_accepts_three_fortran_prefix_halo_values_like_delta_cases() {
+    let config = RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition=.true.\n RL%SpringGlobal_type=1\n RL%SpringRegional_type=0\n RL%refine_spc=.true.\n RL%max_iter_spc=3\n RL%refine_cal=.false.\n RL%max_iter_cal=4\n RL%HALO=4,4,3\n RL%max_transition_row=4,4,3\n/\n",
+        "atmosmesh",
+        "hex",
+    )
+    .expect("parse real delta refine controls");
+
+    let plan =
+        plan_mkgrd_refine_loop(&config).expect("three specified refine steps should use halo(1:3)");
+
+    assert_eq!(config.halo[..4], [0, 4, 4, 3]);
+    assert_eq!(plan.max_iter, 3);
+    assert_eq!(plan.steps.len(), 3);
 }
 
 #[test]
@@ -110,6 +160,7 @@ fn refine_loop_io_plan_maps_fortran_step_files_and_final_postproc_inputs() {
 
     let step1 = &plan.steps[0];
     assert_eq!(step1.step, 1);
+    assert_eq!(step1.max_transition_row, 1);
     assert_eq!(
         step1.refine_loop_input_gridfile,
         root.join("gridfile/gridfile_NXP0016_01_hex.nc4")
@@ -249,6 +300,123 @@ fn final_quality_check_io_plan_matches_global_spring_paths() {
 }
 
 #[test]
+fn effective_final_step_uses_last_changed_gridfile_when_max_plus_one_did_not_refine() {
+    let root = temp_root("earthmesh_cli_effective_final_step");
+    let mut mkgrd = mkgrd_config();
+    mkgrd.base_dir = format!("{}/", root.display());
+    let mut refine = mixed_refine_config();
+    refine.refine_setting = "specified".to_string();
+    refine.refine_spc = true;
+    refine.refine_cal = false;
+    refine.max_iter_spc = 3;
+    refine.max_iter_cal = 0;
+    refine.spring_global_type = 1;
+    refine.spring_regional_type = 0;
+    let plan = plan_mkgrd_refine_loop_io(&mkgrd, &refine).expect("plan refine loop io");
+
+    write_unstructured_mesh_netcdf(
+        root.join("case_refine/gridfile/gridfile_NXP0016_03_hex.nc4"),
+        &small_mesh(2),
+    )
+    .expect("write step 3 gridfile");
+    write_unstructured_mesh_netcdf(
+        root.join("case_refine/gridfile/gridfile_NXP0016_04_hex.nc4"),
+        &small_mesh(2),
+    )
+    .expect("write unchanged step 4 gridfile");
+
+    let effective =
+        infer_mkgrd_effective_final_step_from_gridfiles(&plan).expect("infer effective step");
+
+    assert_eq!(effective, 3);
+}
+
+#[test]
+fn final_quality_global_spring_plan_uses_namelist_runtime_controls() {
+    let mut mkgrd = mkgrd_config();
+    mkgrd.mesh_type = "atmosmesh".to_string();
+    mkgrd.output_format = "MPAS-Simple".to_string();
+    mkgrd.beta = 2.4;
+    mkgrd.relax = 0.125;
+    let mut refine = mixed_refine_config();
+    refine.spring_global_type = 1;
+    refine.spring_regional_type = 0;
+    refine.num_rc = 2;
+    refine.set_dis_type = "nonlinear2".to_string();
+    refine.niter_refine = 1234;
+
+    let plan = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect("plan final quality global spring controls");
+    let spring = plan.global_spring.expect("global spring controls");
+
+    let expected_base =
+        f64::from(mkgrd.beta) * std::f64::consts::PI * 2.0 * earthmesh_core::EARTH_RADIUS_METERS
+            / (5.0 * f64::from(mkgrd.nxp));
+    assert!((spring.base_dists_on_edge - expected_base).abs() < 1.0e-6);
+    assert_eq!(spring.base_cellwidth, Some(7680.0 / f64::from(mkgrd.nxp)));
+    assert_eq!(spring.distance_num_rc, 2);
+    assert_eq!(
+        spring.distance_spacing,
+        earthmesh_mesh::DistanceLayerSpacing::Exponential
+    );
+    assert_eq!(spring.niter_refine, 1234);
+    assert_eq!(spring.relax, f64::from(mkgrd.relax));
+    assert_eq!(spring.radius, earthmesh_core::EARTH_RADIUS_METERS);
+}
+
+#[test]
+fn final_quality_global_spring_plan_uses_fortran_integer_cellwidth_base() {
+    let mut mkgrd = mkgrd_config();
+    mkgrd.nxp = 112;
+    mkgrd.mesh_type = "atmosmesh".to_string();
+    mkgrd.output_format = "MPAS".to_string();
+    let mut refine = mixed_refine_config();
+    refine.spring_global_type = 1;
+    refine.spring_regional_type = 0;
+
+    let plan = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect("plan final quality global spring controls");
+    let spring = plan.global_spring.expect("global spring controls");
+
+    assert_eq!(spring.base_cellwidth, Some(68.0));
+}
+
+#[test]
+fn final_quality_global_spring_plan_rejects_invalid_distance_controls() {
+    let mkgrd = mkgrd_config();
+    let mut refine = mixed_refine_config();
+    refine.spring_global_type = 1;
+    refine.spring_regional_type = 0;
+    refine.num_rc = 1;
+    refine.set_dis_type = "unknown".to_string();
+
+    let err = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect_err("unknown set_dis_type must be rejected");
+
+    assert!(err.to_string().contains("set_dis_type"));
+}
+
+#[test]
+fn final_quality_regional_spring_plan_uses_namelist_runtime_controls() {
+    let mkgrd = mkgrd_config();
+    let mut refine = mixed_refine_config();
+    refine.spring_global_type = 0;
+    refine.spring_regional_type = 2;
+    refine.halo[1] = 7;
+    refine.niter_refine = 456;
+
+    let plan = earthmesh_cli::plan_mkgrd_final_quality_check_io(&mkgrd, &refine, 4)
+        .expect("plan final regional spring controls");
+    let spring = plan.regional_spring.expect("regional spring controls");
+
+    assert_eq!(plan.global_spring, None);
+    assert_eq!(plan.regional_source_mask, None);
+    assert_eq!(plan.regional_set_dis, Some(7));
+    assert_eq!(spring.niter_refine, 456);
+    assert_eq!(spring.radius, earthmesh_core::EARTH_RADIUS_METERS);
+}
+
+#[test]
 fn final_quality_check_io_plan_preserves_fortran_skip_and_regional_final_modes() {
     let mkgrd = mkgrd_config();
     let mut refine = mixed_refine_config();
@@ -284,4 +452,36 @@ fn final_quality_check_io_plan_preserves_fortran_skip_and_regional_final_modes()
         skipped_regional_each_step.spring_mode,
         earthmesh_cli::MkgrdFinalQualitySpringMode::SkippedRegionalEachStep
     );
+}
+
+fn temp_root(prefix: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("{prefix}_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("case_refine/gridfile")).expect("create gridfile dir");
+    root
+}
+
+fn small_mesh(extra_triangle: usize) -> UnstructuredMesh {
+    let mut m_points = vec![
+        LonLatPoint { lon: 0.0, lat: 0.0 },
+        LonLatPoint { lon: 0.0, lat: 0.0 },
+        LonLatPoint { lon: 1.0, lat: 0.0 },
+    ];
+    let mut m_to_w = vec![[1, 1, 1], [1, 2, 3], [1, 2, 3]];
+    for _ in 0..extra_triangle {
+        m_points.push(LonLatPoint { lon: 0.5, lat: 0.5 });
+        m_to_w.push([1, 2, 3]);
+    }
+    UnstructuredMesh {
+        m_points,
+        w_points: vec![
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+            LonLatPoint { lon: 1.0, lat: 0.0 },
+            LonLatPoint { lon: 0.0, lat: 1.0 },
+        ],
+        m_to_w,
+        w_to_m: vec![vec![1], vec![1], vec![1], vec![1]],
+        n_w_to_m: vec![1, 1, 1, 1],
+    }
 }

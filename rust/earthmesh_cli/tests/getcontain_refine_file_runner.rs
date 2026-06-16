@@ -84,6 +84,9 @@ fn getcontain_refine_file_runner_reads_grid_and_area_then_writes_legacy_contain(
     assert_eq!(report.output, output);
     assert_eq!(report.active_unstructured_cells, 1);
     assert_eq!(report.contained_source_pixels, 3);
+    assert_eq!(report.runtime_counts.current_num_mp_step, 1);
+    assert_eq!(report.runtime_counts.current_num_wp_step, 3);
+    assert_eq!(report.runtime_counts.previous_num_vertex, 0);
 
     let contain = read_contain_netcdf(&report.output).expect("read contain output");
     assert_eq!(contain.is_in_area_ustr, vec![0, 1]);

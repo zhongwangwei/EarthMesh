@@ -112,7 +112,123 @@ pub fn clip_convex_polygon(subject: &[Point], clip: &[Point]) -> Vec<Point> {
 }
 
 pub fn intersection_area(a: &[Point], b: &[Point]) -> f64 {
-    polygon_area(&clip_convex_polygon(a, b))
+    let Some(a_triangles) = triangulate_simple_polygon(a) else {
+        return polygon_area(&clip_convex_polygon(a, b));
+    };
+    let Some(b_triangles) = triangulate_simple_polygon(b) else {
+        return polygon_area(&clip_convex_polygon(a, b));
+    };
+    a_triangles
+        .iter()
+        .flat_map(|a_triangle| {
+            b_triangles
+                .iter()
+                .map(move |b_triangle| polygon_area(&clip_convex_polygon(a_triangle, b_triangle)))
+        })
+        .sum()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayMask {
+    pub feature_id: String,
+    pub mask_class: String,
+    pub priority: u32,
+    pub polygon: Vec<Point>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayCellInput {
+    pub cell_id: String,
+    pub vertices: Vec<Point>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayCellResult {
+    pub cell_id: String,
+    pub winning_class: String,
+    pub winning_priority: u32,
+    pub class_fractions: Vec<(String, f64)>,
+    pub source_feature_ids: Vec<String>,
+    pub quality_flags: Vec<String>,
+}
+
+pub fn overlay_cell(cell_vertices: &[Point], masks: &[OverlayMask]) -> OverlayCellResult {
+    let cell_area = polygon_area(cell_vertices);
+    if cell_area <= 0.0 {
+        return OverlayCellResult {
+            cell_id: String::new(),
+            winning_class: String::new(),
+            winning_priority: 0,
+            class_fractions: Vec::new(),
+            source_feature_ids: Vec::new(),
+            quality_flags: vec!["zero_area_cell".to_string()],
+        };
+    }
+
+    let mut class_fractions = Vec::<(String, f64)>::new();
+    let mut source_feature_ids = Vec::<String>::new();
+    let mut winning_class = String::new();
+    let mut winning_priority = 0_u32;
+
+    for mask in masks {
+        let overlap_area = intersection_area(cell_vertices, &mask.polygon);
+        if overlap_area <= 1.0e-12 {
+            continue;
+        }
+        let fraction = (overlap_area / cell_area).min(1.0);
+        add_class_fraction(&mut class_fractions, &mask.mask_class, fraction);
+        source_feature_ids.push(mask.feature_id.clone());
+        if mask.priority >= winning_priority {
+            winning_class = mask.mask_class.clone();
+            winning_priority = mask.priority;
+        }
+    }
+
+    if class_fractions.is_empty() {
+        return OverlayCellResult {
+            cell_id: String::new(),
+            winning_class: "UNKNOWN".to_string(),
+            winning_priority: 0,
+            class_fractions: vec![("UNKNOWN".to_string(), 1.0)],
+            source_feature_ids,
+            quality_flags: vec!["missing_mask".to_string()],
+        };
+    }
+
+    for (_, fraction) in &mut class_fractions {
+        *fraction = (*fraction).min(1.0);
+    }
+
+    OverlayCellResult {
+        cell_id: String::new(),
+        winning_class,
+        winning_priority,
+        class_fractions,
+        source_feature_ids,
+        quality_flags: Vec::new(),
+    }
+}
+
+pub fn overlay_cells(cells: &[OverlayCellInput], masks: &[OverlayMask]) -> Vec<OverlayCellResult> {
+    cells
+        .iter()
+        .map(|cell| {
+            let mut result = overlay_cell(&cell.vertices, masks);
+            result.cell_id = cell.cell_id.clone();
+            result
+        })
+        .collect()
+}
+
+fn add_class_fraction(class_fractions: &mut Vec<(String, f64)>, mask_class: &str, fraction: f64) {
+    if let Some((_, current)) = class_fractions
+        .iter_mut()
+        .find(|(existing_class, _)| existing_class == mask_class)
+    {
+        *current += fraction;
+    } else {
+        class_fractions.push((mask_class.to_string(), fraction));
+    }
 }
 
 fn signed_area(polygon: &[Point]) -> f64 {
@@ -125,6 +241,91 @@ fn signed_area(polygon: &[Point]) -> f64 {
         total += point.x * next.y - next.x * point.y;
     }
     total * 0.5
+}
+
+fn triangulate_simple_polygon(polygon: &[Point]) -> Option<Vec<Vec<Point>>> {
+    let mut vertices = normalized_polygon_vertices(polygon);
+    if vertices.len() < 3 || signed_area(&vertices).abs() <= 1.0e-12 {
+        return None;
+    }
+    if signed_area(&vertices) < 0.0 {
+        vertices.reverse();
+    }
+
+    let mut triangles = Vec::<Vec<Point>>::new();
+    let mut guard = 0_usize;
+    while vertices.len() > 3 {
+        guard += 1;
+        if guard > polygon.len() * polygon.len().max(1) {
+            return None;
+        }
+        let mut clipped_ear = false;
+        for index in 0..vertices.len() {
+            let previous = vertices[(index + vertices.len() - 1) % vertices.len()];
+            let current = vertices[index];
+            let next = vertices[(index + 1) % vertices.len()];
+            if !is_convex_ccw_vertex(previous, current, next) {
+                continue;
+            }
+            let triangle = [previous, current, next];
+            if vertices.iter().enumerate().any(|(candidate_index, point)| {
+                candidate_index != index
+                    && candidate_index != (index + vertices.len() - 1) % vertices.len()
+                    && candidate_index != (index + 1) % vertices.len()
+                    && point_in_triangle_inclusive(*point, triangle)
+            }) {
+                continue;
+            }
+            triangles.push(vec![previous, current, next]);
+            vertices.remove(index);
+            clipped_ear = true;
+            break;
+        }
+        if !clipped_ear {
+            return None;
+        }
+    }
+    triangles.push(vertices);
+    Some(triangles)
+}
+
+fn normalized_polygon_vertices(polygon: &[Point]) -> Vec<Point> {
+    let mut vertices = Vec::<Point>::new();
+    for point in polygon {
+        if point.x.is_finite()
+            && point.y.is_finite()
+            && vertices
+                .last()
+                .map_or(true, |last| !points_almost_equal(*last, *point))
+        {
+            vertices.push(*point);
+        }
+    }
+    if vertices.len() > 1
+        && points_almost_equal(
+            *vertices.first().expect("non-empty vertices"),
+            *vertices.last().expect("non-empty vertices"),
+        )
+    {
+        vertices.pop();
+    }
+    vertices
+}
+
+fn points_almost_equal(left: Point, right: Point) -> bool {
+    (left.x - right.x).abs() <= 1.0e-12 && (left.y - right.y).abs() <= 1.0e-12
+}
+
+fn is_convex_ccw_vertex(previous: Point, current: Point, next: Point) -> bool {
+    cross_product_2d(previous, current, next) > 1.0e-12
+}
+
+fn point_in_triangle_inclusive(point: Point, triangle: [Point; 3]) -> bool {
+    let a = cross_product_2d(triangle[0], triangle[1], point);
+    let b = cross_product_2d(triangle[1], triangle[2], point);
+    let c = cross_product_2d(triangle[2], triangle[0], point);
+    (a >= -1.0e-12 && b >= -1.0e-12 && c >= -1.0e-12)
+        || (a <= 1.0e-12 && b <= 1.0e-12 && c <= 1.0e-12)
 }
 
 fn inside(point: Point, edge_start: Point, edge_end: Point, clip_ccw: bool) -> bool {
@@ -198,6 +399,79 @@ fn py_intersection_area(subject: Vec<(f64, f64)>, clip: Vec<(f64, f64)>) -> f64 
 }
 
 #[cfg(feature = "extension-module")]
+#[pyfunction(name = "overlay_cell")]
+fn py_overlay_cell(
+    cell_vertices: Vec<(f64, f64)>,
+    masks: Vec<(String, String, u32, Vec<(f64, f64)>)>,
+) -> (String, u32, Vec<(String, f64)>, Vec<String>, Vec<String>) {
+    let cell_points = tuples_to_points(cell_vertices);
+    let overlay_masks = masks
+        .into_iter()
+        .map(|(feature_id, mask_class, priority, polygon)| OverlayMask {
+            feature_id,
+            mask_class,
+            priority,
+            polygon: tuples_to_points(polygon),
+        })
+        .collect::<Vec<_>>();
+    let result = overlay_cell(&cell_points, &overlay_masks);
+    (
+        result.winning_class,
+        result.winning_priority,
+        result.class_fractions,
+        result.source_feature_ids,
+        result.quality_flags,
+    )
+}
+
+#[cfg(feature = "extension-module")]
+type PyOverlayCellsResult = Vec<(
+    String,
+    String,
+    u32,
+    Vec<(String, f64)>,
+    Vec<String>,
+    Vec<String>,
+)>;
+
+#[cfg(feature = "extension-module")]
+#[pyfunction(name = "overlay_cells")]
+fn py_overlay_cells(
+    cells: Vec<(String, Vec<(f64, f64)>)>,
+    masks: Vec<(String, String, u32, Vec<(f64, f64)>)>,
+) -> PyOverlayCellsResult {
+    let overlay_cells_input = cells
+        .into_iter()
+        .map(|(cell_id, vertices)| OverlayCellInput {
+            cell_id,
+            vertices: tuples_to_points(vertices),
+        })
+        .collect::<Vec<_>>();
+    let overlay_masks = masks
+        .into_iter()
+        .map(|(feature_id, mask_class, priority, polygon)| OverlayMask {
+            feature_id,
+            mask_class,
+            priority,
+            polygon: tuples_to_points(polygon),
+        })
+        .collect::<Vec<_>>();
+    overlay_cells(&overlay_cells_input, &overlay_masks)
+        .into_iter()
+        .map(|result| {
+            (
+                result.cell_id,
+                result.winning_class,
+                result.winning_priority,
+                result.class_fractions,
+                result.source_feature_ids,
+                result.quality_flags,
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "extension-module")]
 fn tuples_to_points(vertices: Vec<(f64, f64)>) -> Vec<Point> {
     vertices
         .into_iter()
@@ -210,6 +484,8 @@ fn tuples_to_points(vertices: Vec<(f64, f64)>) -> Vec<Point> {
 fn earthmesh_geometry(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_polygon_area, module)?)?;
     module.add_function(wrap_pyfunction!(py_intersection_area, module)?)?;
+    module.add_function(wrap_pyfunction!(py_overlay_cell, module)?)?;
+    module.add_function(wrap_pyfunction!(py_overlay_cells, module)?)?;
     Ok(())
 }
 

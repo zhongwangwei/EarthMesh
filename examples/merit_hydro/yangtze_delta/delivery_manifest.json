@@ -1,0 +1,30 @@
+{
+  "case_name": "merit_yangtze_N112_stride5_compact_surface",
+  "files": {
+    "complete_cell_mask_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/merit_yangtze_N112_stride5_compact_surface_complete_cell_mask.geojson",
+    "eval_json": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/merit_yangtze_N112_stride5_compact_surface_refinement_eval.json",
+    "html_map": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/merit_yangtze_N112_stride5_compact_surface_rivers_and_integrated_coast_leaflet.html",
+    "manifest_json": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/delivery_manifest.json",
+    "ranking_json": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/refinement_sweep_ranking.json"
+  },
+  "kind": "earthmesh_hydro_coast_delivery_package",
+  "metrics": {
+    "background_cell_count": 2574,
+    "coast_overlap_cells": 2008,
+    "retained_triangles": {
+      "1": 246,
+      "2": 367,
+      "3": 660
+    },
+    "river_overlap_cells": 2180
+  },
+  "recommended_case": "merit_yangtze_N112_stride5_compact_surface",
+  "source_files": {
+    "background_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/yangtze_delta_hydro_close_N112_r3d3_cst20_earthmesh_cell_intersections_preview.background_cells.geojson",
+    "coast_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/merit_yangtze_N112_stride5_compact_surface_merit_coast_cell_intersections.geojson",
+    "comparison_reports": [],
+    "failed_reports": [],
+    "log_path": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/earthmesh_hydro_close_N112_r3d3_cst20_smoke.log",
+    "river_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_yangtze_N112_bridge_stride5_compact_surface/package/merit_yangtze_N112_stride5_compact_surface_merit_river_cell_intersections.geojson"
+  }
+}

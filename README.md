@@ -12,65 +12,48 @@ EarthMesh is a mesh generation tool for land surface, ocean, and atmospheric mod
 
 ## Dependencies
 
+- Rust toolchain with Cargo
 - NetCDF library
-- Fortran compiler (Intel Fortran or gfortran)
 
 ## Directory Structure
 
 ```
 EarthMesh/
-├── src/                    # Source code directory
-│   ├── mkgrd.F90          # Main program for mesh generation
-│   ├── MOD_*.F90          # Module files for preprocessing and refinement
-│   ├── blas.F90           # BLAS routines
-│   ├── lapack.F90         # LAPACK routines
-│   ├── consts_coms.F90    # Constants and common variables
-│   └── icosahedron.F90    # Icosahedral mesh generation
-├── examples/               # Example configuration files
-│   ├── *.nml              # Namelist configuration files
-│   └── mask_refine_filelist.txt
-├── Makefile                # Build configuration
-├── Makeoptions*            # Compiler-specific options
-├── make.sh                 # Intel compiler build script
-├── make_gnu.sh             # GNU compiler build script
-├── switch_compiler.sh      # Compiler switching utility
+├── rust/                   # Rust implementation crates
+│   ├── earthmesh_core      # Constants, configuration, runtime state
+│   ├── earthmesh_mesh      # Mesh and refinement kernels
+│   ├── earthmesh_geometry  # Geometry backend and Python extension crate
+│   └── earthmesh_cli       # mkgrd-compatible command-line adapter
+├── examples/               # Curated runnable/reference cases
+│   ├── default/            # Default atmosphere/land/ocean hex global namelists
+│   └── merit_hydro/        # MERIT-Hydro regional hydro/coast cases
+├── Makefile                # Rust/Cargo build entrypoint
+├── make.sh                 # Compatibility wrapper around make
+├── make_gnu.sh             # Compatibility wrapper around make
+├── switch_compiler.sh      # Compatibility no-op; Rust/Cargo is the build path
 ├── .gitignore              # Git ignore rules
 └── README.md               # This file
 ```
 
 ## Compilation
 
-### Using Intel Compiler
+EarthMesh now builds through the Rust implementation. The root `Makefile` compiles `rust/earthmesh_cli` and copies the resulting binary to `./mkgrd.x` for compatibility with existing workflows.
 
 ```bash
 make
 ```
 
-Or use the build script:
+For a debug build:
+
+```bash
+make BUILD_PROFILE=debug
+```
+
+The compatibility scripts delegate to the same Rust build path:
 
 ```bash
 ./make.sh
-```
-
-### Using GNU Fortran
-
-```bash
 ./make_gnu.sh
-```
-
-Or manually:
-
-```bash
-cp Makeoptions.gnu Makeoptions
-make
-```
-
-### Switch Compiler
-
-Use the `switch_compiler.sh` script to switch between Intel and GNU compilers:
-
-```bash
-./switch_compiler.sh
 ```
 
 After compilation, the executable `mkgrd.x` will be created in the root directory.
@@ -90,12 +73,12 @@ make clean
 Run the executable with a namelist file from the examples directory:
 
 ```bash
-./mkgrd.x examples/Atmos_hex_NXP64_refine2_Global_251027.nml
+./mkgrd.x examples/default/atmosphere_hex_global.nml
 ```
 
 ### Configuration
 
-Edit the namelist file in the `examples/` directory (e.g., `Atmos_hex_NXP64_refine2_Global_251027.nml`) to configure:
+Edit a namelist file under `examples/default/` or a regional case under `examples/merit_hydro/` to configure:
 - Mesh resolution
 - Refinement criteria and thresholds
 - Input/output file paths
@@ -103,8 +86,11 @@ Edit the namelist file in the `examples/` directory (e.g., `Atmos_hex_NXP64_refi
 
 ### Example Namelist Files
 
-- `examples/Atmos_hex_NXP64_refine2_Global_251027.nml` - Global atmospheric mesh with refinement
-- `examples/Atmos_hex_NXP64_refine2_Global_Simple_251027.nml` - Simplified global atmospheric mesh
+- `examples/default/atmosphere_hex_global.nml` - Default global atmospheric hex mesh
+- `examples/default/land_hex_global.nml` - Default global land hex mesh
+- `examples/default/ocean_hex_global.nml` - Default global ocean hex mesh
+- `examples/merit_hydro/gba/` - MERIT-Hydro Greater Bay Area hydro/coast case package
+- `examples/merit_hydro/yangtze_delta/` - MERIT-Hydro Yangtze Delta hydro/coast case package
 
 ## Output
 
@@ -116,22 +102,17 @@ Output directories are created based on the configuration in the namelist file. 
 - **threshold/** - Threshold files for adaptive refinement
 - **tmpfile/** - Intermediate output files during refinement
 
-## Module Description
+## Implementation Layout
 
-All source modules are located in the `src/` directory:
+The active implementation is in Rust:
 
-- `mkgrd.F90` - Main program
-- `MOD_grid_preprocess.F90` - Grid preprocessing and initialization
-- `MOD_refine.F90` - Mesh refinement algorithms
-- `MOD_Area_judge.F90` - Area and region determination
-- `MOD_GetContain.F90` - Cell containment calculations
-- `MOD_GetRef.F90` - Reference data processing
-- `MOD_data_preprocess.F90` - Input data preprocessing
-- `MOD_file_preprocess.F90` - File I/O operations
-- `MOD_mask_postproc.F90` - Post-processing of mask data
-- `consts_coms.F90` - Constants and common variables
-- `icosahedron.F90` - Icosahedral mesh generation
-- `blas.F90`, `lapack.F90` - Linear algebra routines
+- `rust/earthmesh_core` - constants, namelist configuration, and runtime state
+- `rust/earthmesh_mesh` - mesh generation, geometry, refinement, and post-processing kernels
+- `rust/earthmesh_geometry` - geometry backend and optional Python extension
+- `rust/earthmesh_cli` - mkgrd-compatible command-line adapter and model-output writers
+
+The legacy Fortran sources are no longer part of the active source tree. Their
+completed migration status is tracked in `docs/fortran_to_rust_migration_manifest.json`.
 
 ## Authors
 
