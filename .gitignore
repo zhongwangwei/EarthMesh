@@ -11,3 +11,6 @@
 
 # Rust build outputs
 target/
+
+# Brainstorming companion working dir
+.superpowers/
