@@ -151,6 +151,8 @@ struct EarthMeshApp {
     last_phase: String,
     dom_bbox: [f64; 4],   // west, east, north, south (degrees)
     dom_circle: [f64; 3], // center lon, center lat, radius (km)
+    results_detached: bool,
+    output_files: Vec<PathBuf>,
 }
 
 impl Default for EarthMeshApp {
@@ -174,8 +176,29 @@ impl Default for EarthMeshApp {
             last_phase: String::new(),
             dom_bbox: [110.0, 120.0, 35.0, 20.0],
             dom_circle: [115.0, 25.0, 500.0],
+            results_detached: false,
+            output_files: Vec::new(),
         }
     }
+}
+
+fn collect_outputs(dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().map_or(false, |x| x == "nc4" || x == "nc") {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, &mut out);
+    out.sort();
+    out
 }
 
 impl EarthMeshApp {
@@ -380,6 +403,7 @@ impl EarthMeshApp {
                     Ok(out) => {
                         self.set_status("status.run_done", out.clone());
                         self.push_log("log.run_done", &out);
+                        self.output_files = collect_outputs(Path::new(&out));
                     }
                     Err(err) => {
                         self.set_status("status.run_failed", err.clone());
@@ -749,6 +773,26 @@ impl EarthMeshApp {
             self.search.clear();
         }
     }
+
+    fn results_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        if self.output_files.is_empty() {
+            ui.label(tr(lang, "results.empty"));
+            return;
+        }
+        ui.label(egui::RichText::new(tr(lang, "results.files")).strong());
+        let files = self.output_files.clone();
+        egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
+            for f in &files {
+                let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if ui.button(name).on_hover_text(f.display().to_string()).clicked() {
+                    let _ = open::that(f);
+                }
+            }
+        });
+        ui.separator();
+        ui.weak(tr(lang, "results.3d_soon"));
+    }
 }
 
 fn install_fonts(ctx: &egui::Context) {
@@ -836,6 +880,50 @@ impl eframe::App for EarthMeshApp {
             });
             ui.add_space(2.0);
         });
+
+        // Results dock with a detach-to-window control (egui multi-viewport: a
+        // real, resizable/maximizable OS window).
+        if self.results_detached {
+            let mut close = false;
+            ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("results_window"),
+                egui::ViewportBuilder::default()
+                    .with_title(tr(lang, "results.window"))
+                    .with_inner_size([760.0, 540.0]),
+                |vctx, _class| {
+                    egui::CentralPanel::default().show(vctx, |ui| {
+                        ui.heading(tr(lang, "results.title"));
+                        ui.separator();
+                        self.results_ui(ui);
+                    });
+                    if vctx.input(|i| i.viewport().close_requested()) {
+                        close = true;
+                    }
+                },
+            );
+            if close {
+                self.results_detached = false;
+            }
+        }
+
+        egui::TopBottomPanel::bottom("results_dock")
+            .resizable(true)
+            .default_height(170.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.heading(tr(lang, "results.title"));
+                    if ui.button(tr(lang, "results.detach")).clicked() {
+                        self.results_detached = true;
+                    }
+                });
+                ui.separator();
+                if self.results_detached {
+                    ui.weak(tr(lang, "results.dock"));
+                } else {
+                    self.results_ui(ui);
+                }
+            });
 
         egui::SidePanel::left("cases").resizable(true).default_width(190.0).show(ctx, |ui| {
             ui.add_space(6.0);
