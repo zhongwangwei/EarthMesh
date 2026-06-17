@@ -61,7 +61,7 @@ fn mkgrd_config(base_dir: &str, expnme: &str) -> EarthmeshConfig {
 
 fn regional_final_refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
-        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=2\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n/\n",
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=2\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n/\n",
         "landmesh",
         "hex",
     )

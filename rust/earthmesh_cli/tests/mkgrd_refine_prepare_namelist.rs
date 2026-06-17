@@ -62,7 +62,7 @@ fn library_builds_data_preprocess_calculated_refine_from_prepare() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_data_preprocess_calculated_refine'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_data_preprocess_calculated_refine'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
         ),
     )
     .expect("write namelist");
@@ -136,7 +136,7 @@ fn library_provides_data_preprocess_source_branch_options_from_prepare() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_data_preprocess_source_branch_options'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_data_preprocess_source_branch_options'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
         ),
     )
     .expect("write namelist");
@@ -215,7 +215,7 @@ fn library_runs_data_preprocess_refine_execution_from_prepare() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_data_preprocess_refine_execution'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_data_preprocess_refine_execution'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
         ),
     )
     .expect("write namelist");
@@ -403,7 +403,7 @@ fn refine_prepare_namelist_applies_masks_and_enriches_final_regional_source_mask
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_prepare'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.true.\n  NL%mask_patch_type='bbox'\n  NL%mask_patch_fprefix='{patch_prefix}'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=2\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{patch_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_prepare'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.true.\n  NL%mask_patch_type='bbox'\n  NL%mask_patch_fprefix='{patch_prefix}'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=2\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{patch_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -534,7 +534,7 @@ fn refine_run_namelist_prepares_enriches_and_executes_with_existing_executor() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_run'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.true.\n  NL%mask_patch_type='bbox'\n  NL%mask_patch_fprefix='{patch_prefix}'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=2\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{patch_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_run'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.true.\n  NL%mask_patch_type='bbox'\n  NL%mask_patch_fprefix='{patch_prefix}'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=2\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{patch_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -612,7 +612,7 @@ fn refine_run_namelist_can_generate_final_domain_contain_after_prepare() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_final_domain_contain'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_final_domain_contain'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -738,7 +738,7 @@ fn refine_run_namelist_with_migrated_executor_uses_standard_source_and_working_s
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_migrated'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_migrated'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -852,7 +852,7 @@ fn refine_run_namelist_with_specified_migrated_executor_derives_source_options_a
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_specified_migrated'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_specified_migrated'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -936,7 +936,7 @@ fn refine_run_namelist_with_calculated_migrated_executor_derives_source_options_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_calculated_migrated'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%threshold_dir='{threshold_dir_text}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_calculated_migrated'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=1\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%threshold_dir='{threshold_dir_text}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1044,7 +1044,7 @@ fn refine_run_namelist_with_derived_migrated_executor_handles_mixed_sources_afte
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_derived_mixed'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_spc_prefix}'\n  RL%threshold_dir='{threshold_dir_text}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_derived_mixed'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=1\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_cal_prefix}'\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_spc_prefix}'\n  RL%threshold_dir='{threshold_dir_text}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=0\n/\n"
         ),
     )
     .expect("write mixed namelist");
@@ -1151,7 +1151,7 @@ fn refine_run_namelist_with_derived_migrated_executor_can_generate_final_domain_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_refine_derived_final_domain_contain'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_spc_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_refine_derived_final_domain_contain'\n  NL%base_dir='{base_dir}'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_spc_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
