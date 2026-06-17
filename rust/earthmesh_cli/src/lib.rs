@@ -13462,8 +13462,16 @@ pub fn infer_mkgrd_effective_final_step_from_gridfiles(
     if !previous_gridfile.exists() || !plan.final_domain_gridfile.exists() {
         return Ok(planned_step);
     }
-    let previous_counts = read_gridfile_point_counts(&previous_gridfile)?;
-    let planned_counts = read_gridfile_point_counts(&plan.final_domain_gridfile)?;
+    // The no-op-collapse check is a best-effort optimisation; if either gridfile
+    // cannot be read for a point-count comparison, fall back to the planned step
+    // rather than failing the whole refine run (mirrors the not-found fallback
+    // above).
+    let (Ok(previous_counts), Ok(planned_counts)) = (
+        read_gridfile_point_counts(&previous_gridfile),
+        read_gridfile_point_counts(&plan.final_domain_gridfile),
+    ) else {
+        return Ok(planned_step);
+    };
     if previous_counts == planned_counts {
         Ok(planned_step - 1)
     } else {

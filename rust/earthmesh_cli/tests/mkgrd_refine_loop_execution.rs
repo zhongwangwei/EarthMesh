@@ -148,7 +148,7 @@ fn mkgrd_atmos_config(base_dir: &str) -> EarthmeshConfig {
 
 fn refine_config() -> RefineConfig {
     RefineConfig::from_mkrefine_namelist(
-        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=2\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=2\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n/\n",
         "landmesh",
         "hex",
     )
@@ -368,15 +368,15 @@ fn refine_loop_execution_can_generate_final_domain_contain_during_handoff() {
         .runtime_state
         .as_ref()
         .expect("final contain handoff should preserve runtime state");
-    assert_eq!(runtime_state.step, plan.final_mask_postproc_step);
-    assert_eq!(
-        runtime_state.num_mp_step[plan.final_mask_postproc_step - 1],
-        1
-    );
-    assert_eq!(
-        runtime_state.num_wp_step[plan.final_mask_postproc_step - 1],
-        3
-    );
+    // The execution records counts at the EFFECTIVE final step, which collapses
+    // from max_iter+1 when the last refine step did not change the mesh (the mock
+    // writes the same mesh each step). Assert against that invariant, not the
+    // naive plan step. See infer_mkgrd_effective_final_step_from_gridfiles.
+    let eff = earthmesh_cli::infer_mkgrd_effective_final_step_from_gridfiles(&plan)
+        .expect("infer effective final step");
+    assert_eq!(runtime_state.step, eff);
+    assert_eq!(runtime_state.num_mp_step[eff - 1], 1);
+    assert_eq!(runtime_state.num_wp_step[eff - 1], 3);
     assert_eq!(runtime_state.num_vertex, 0);
 
     let _ = fs::remove_dir_all(&root);
@@ -483,15 +483,12 @@ fn refine_loop_final_domain_contain_records_previous_num_vertex_in_runtime_state
         .runtime_state
         .as_ref()
         .expect("final contain handoff should preserve runtime state");
-    assert_eq!(runtime_state.step, plan.final_mask_postproc_step);
-    assert_eq!(
-        runtime_state.num_mp_step[plan.final_mask_postproc_step - 1],
-        4
-    );
-    assert_eq!(
-        runtime_state.num_wp_step[plan.final_mask_postproc_step - 1],
-        12
-    );
+    // See note above: assert against the effective (collapsed) final step.
+    let eff = earthmesh_cli::infer_mkgrd_effective_final_step_from_gridfiles(&plan)
+        .expect("infer effective final step");
+    assert_eq!(runtime_state.step, eff);
+    assert_eq!(runtime_state.num_mp_step[eff - 1], 4);
+    assert_eq!(runtime_state.num_wp_step[eff - 1], 12);
     assert_eq!(runtime_state.num_vertex, 3);
 
     let _ = fs::remove_dir_all(&root);
