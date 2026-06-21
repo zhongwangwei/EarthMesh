@@ -7,6 +7,7 @@ CLI_MANIFEST = rust/earthmesh_cli/Cargo.toml
 CARGO_TARGET_DIR ?= rust/earthmesh_cli/target
 BUILD_PROFILE ?= release
 EXECUTABLE = mkgrd.x
+CLI_FEATURES ?= --features static-netcdf
 
 export CARGO_TARGET_DIR
 
@@ -18,25 +19,42 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build clean test fmt
+.PHONY: all build clean test test-gui test-slow test-full fmt check-method-c-neighbors
 
 all: build
 
 build:
-	$(CARGO) build --manifest-path $(CLI_MANIFEST) $(CARGO_PROFILE_FLAG)
+	$(CARGO) build --manifest-path $(CLI_MANIFEST) $(CARGO_PROFILE_FLAG) $(CLI_FEATURES)
 	cp $(CLI_BINARY) $(EXECUTABLE)
 	@echo 'EarthMesh Rust executable has been built successfully.'
 	@echo 'Executable: $(EXECUTABLE)'
 
 fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_core/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_geometry/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_mesh/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_gui/Cargo.toml --check
 
 test:
-	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --lib
-	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --lib
-	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --lib
+	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES)
+
+test-gui:
+	$(CARGO) test --manifest-path rust/earthmesh_gui/Cargo.toml --all-targets
+
+test-slow:
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_mask_restart $(CLI_FEATURES) -- --ignored
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test colm_coupling_csv_from_mesh $(CLI_FEATURES) mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf -- --ignored
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test refine_end_to_end_topology $(CLI_FEATURES) specified_bbox_refine_produces_consistent_closed_mpas -- --ignored
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_gridinit $(CLI_FEATURES) run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture -- --ignored
+
+test-full: check-method-c-neighbors test test-gui test-slow
+
+check-method-c-neighbors:
+	bash rust/earthmesh_mesh/scripts/check-method-c-neighbors.sh
 
 clean:
 	$(CARGO) clean --manifest-path $(CLI_MANIFEST)

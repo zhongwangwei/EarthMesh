@@ -40,12 +40,32 @@ fn mkgrd_namelist_round_trips_through_writer() {
     assert_eq!(original, reparsed, "parse → write → parse must be identity");
 }
 
+#[test]
+fn mkgrd_writer_escapes_single_quotes_in_string_values() {
+    let mut original = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).expect("sample parses");
+    original.experiment_name = "case's quoted".to_string();
+    original.base_dir = "./case's/".to_string();
+    original.landtype_file = "./input/o'brien.nc".to_string();
+
+    let rendered = original.to_mkgrd_namelist();
+    assert!(
+        rendered.contains("case''s quoted"),
+        "rendered namelist should use Fortran doubled quotes: {rendered}"
+    );
+    let reparsed =
+        EarthmeshConfig::from_mkgrd_namelist(&rendered).expect("escaped output re-parses");
+
+    assert_eq!(reparsed.experiment_name, original.experiment_name);
+    assert_eq!(reparsed.base_dir, original.base_dir);
+    assert_eq!(reparsed.landtype_file, original.landtype_file);
+}
+
 fn assert_example_round_trips(relative: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative);
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let contents =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let original = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     let reparsed = EarthmeshConfig::from_mkgrd_namelist(&original.to_mkgrd_namelist())
@@ -93,24 +113,51 @@ fn mkrefine_namelist_round_trips_through_writer() {
     assert_eq!(original, reparsed, "parse → write → parse must be identity");
 }
 
+#[test]
+fn mkrefine_writer_escapes_single_quotes_in_string_values() {
+    let mut original = RefineConfig::from_mkrefine_namelist(SAMPLE_MKREFINE, "landmesh", "hex")
+        .expect("sample parses");
+    original.mask_refine_spc_fprefix = "./input/refine'spc".to_string();
+    original.threshold_dir = "./threshold/o'brien".to_string();
+
+    let rendered = original.to_mkrefine_namelist();
+    assert!(
+        rendered.contains("refine''spc"),
+        "rendered namelist should use Fortran doubled quotes: {rendered}"
+    );
+    let reparsed = RefineConfig::from_mkrefine_namelist(&rendered, "landmesh", "hex")
+        .expect("escaped output re-parses");
+
+    assert_eq!(
+        reparsed.mask_refine_spc_fprefix,
+        original.mask_refine_spc_fprefix
+    );
+    assert_eq!(reparsed.threshold_dir, original.threshold_dir);
+}
+
 fn assert_example_mkrefine_round_trips(relative: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative);
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let contents =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     // mesh_type / mode_grid come from the &mkgrd block and gate &mkrefine validation.
     let base = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .unwrap_or_else(|e| panic!("parse mkgrd {}: {e}", path.display()));
-    let original = RefineConfig::from_mkrefine_namelist(&contents, &base.mesh_type, &base.mode_grid)
-        .unwrap_or_else(|e| panic!("parse mkrefine {}: {e}", path.display()));
+    let original =
+        RefineConfig::from_mkrefine_namelist(&contents, &base.mesh_type, &base.mode_grid)
+            .unwrap_or_else(|e| panic!("parse mkrefine {}: {e}", path.display()));
     let reparsed = RefineConfig::from_mkrefine_namelist(
         &original.to_mkrefine_namelist(),
         &base.mesh_type,
         &base.mode_grid,
     )
     .unwrap_or_else(|e| panic!("re-parse mkrefine {}: {e}", path.display()));
-    assert_eq!(original, reparsed, "mkrefine round-trip mismatch for {}", relative);
+    assert_eq!(
+        original, reparsed,
+        "mkrefine round-trip mismatch for {}",
+        relative
+    );
 }
 
 #[test]

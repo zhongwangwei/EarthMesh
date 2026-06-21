@@ -3,7 +3,7 @@
 //! `false` cancels the run.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn spring_loop_reports_progress() {
@@ -37,5 +37,35 @@ fn cancellation_aborts_gridinit() {
     assert!(
         state.is_err(),
         "a cancelling callback should abort the spring loop and fail gridinit"
+    );
+}
+
+#[test]
+fn olam_nest_spring_reports_at_fortran_nprnt_interval() {
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let recorded = reports.clone();
+    earthmesh_core::progress::set(move |phase, done, _total| {
+        if phase == "olam-nest-spring" {
+            recorded.lock().expect("record progress").push(done);
+        }
+        true
+    });
+
+    let mesh = earthmesh_mesh::OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100)
+        .expect("base OLAM mesh");
+    let region = earthmesh_mesh::OlamRefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(115.0, 25.0),
+        radius_meters: 2_500_000.0,
+        level: 1,
+    };
+    let refined = mesh.spawn_nest(&[region], 1).expect("local circle nest");
+    let result = refined.spring_nest(6, 120, 2, false);
+    earthmesh_core::progress::clear();
+
+    assert!(result.is_ok(), "OLAM nest spring should succeed");
+    assert_eq!(
+        reports.lock().expect("read progress").as_slice(),
+        &[1, 100, 120],
+        "Fortran spring_dynamics_nest reports iter 1, iter mod nprnt == 0 with nprnt=100, and final iter"
     );
 }

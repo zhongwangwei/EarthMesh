@@ -426,6 +426,7 @@ fn library_infers_mask_restart_ocean_num_vertex_from_restart_contain_file() {
 }
 
 #[test]
+#[ignore = "slow binary restart smoke; run with make test-slow"]
 fn binary_can_run_mask_restart_ocean_postproc_branch() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -482,6 +483,7 @@ fn binary_can_run_mask_restart_ocean_postproc_branch() {
 }
 
 #[test]
+#[ignore = "slow binary restart smoke; run with make test-slow"]
 fn binary_mask_restart_ocean_postproc_infers_num_vertex_when_arg_is_omitted() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -536,6 +538,7 @@ fn binary_mask_restart_ocean_postproc_infers_num_vertex_when_arg_is_omitted() {
 }
 
 #[test]
+#[ignore = "slow binary restart smoke; run with make test-slow"]
 fn binary_default_entry_runs_mask_restart_ocean_postproc_branch() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -589,6 +592,7 @@ fn binary_default_entry_runs_mask_restart_ocean_postproc_branch() {
 }
 
 #[test]
+#[ignore = "slow binary restart smoke; run with make test-slow"]
 fn binary_can_run_mask_restart_patch_preprocessing_branch() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -654,6 +658,7 @@ fn binary_can_run_mask_restart_patch_preprocessing_branch() {
 }
 
 #[test]
+#[ignore = "slow top-level restart dispatch matrix; run with make test-slow"]
 fn top_level_dispatch_runs_mask_restart_patch_branch_without_gridinit_error() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -714,6 +719,7 @@ fn top_level_dispatch_runs_mask_restart_patch_branch_without_gridinit_error() {
 }
 
 #[test]
+#[ignore = "slow top-level restart dispatch matrix; run with make test-slow"]
 fn top_level_dispatch_runs_mask_restart_ocean_postproc_branch_without_plan_only() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -759,6 +765,7 @@ fn top_level_dispatch_runs_mask_restart_ocean_postproc_branch_without_plan_only(
 }
 
 #[test]
+#[ignore = "slow top-level restart dispatch matrix; run with make test-slow"]
 fn top_level_dispatch_runs_non_ocean_mask_restart_area_judge_continuation_without_plan_only() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -810,6 +817,7 @@ fn top_level_dispatch_runs_non_ocean_mask_restart_area_judge_continuation_withou
 }
 
 #[test]
+#[ignore = "slow top-level restart dispatch matrix; run with make test-slow"]
 fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_contain() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -903,6 +911,7 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
 }
 
 #[test]
+#[ignore = "slow top-level restart dispatch matrix; run with make test-slow"]
 fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persisted_contain() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1005,6 +1014,7 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
 }
 
 #[test]
+#[ignore = "slow default restart dispatch matrix; run with make test-slow"]
 fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_vertex_is_supplied() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1100,6 +1110,7 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
 }
 
 #[test]
+#[ignore = "slow default restart dispatch matrix; run with make test-slow"]
 fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_vertex_is_supplied() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1187,6 +1198,7 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
 }
 
 #[test]
+#[ignore = "slow default restart dispatch matrix; run with make test-slow"]
 fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_supplied() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1281,6 +1293,7 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
 }
 
 #[test]
+#[ignore = "slow default restart dispatch matrix; run with make test-slow"]
 fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from_persisted_contain()
 {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
@@ -1380,6 +1393,7 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
 }
 
 #[test]
+#[ignore = "slow default restart dispatch matrix; run with make test-slow"]
 fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_contain() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1479,6 +1493,7 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
 }
 
 #[test]
+#[ignore = "slow binary/default restart matrix; run with make test-slow"]
 fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1593,6 +1608,7 @@ fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
 }
 
 #[test]
+#[ignore = "slow binary/default restart matrix; run with make test-slow"]
 fn binary_default_entry_reports_inferred_non_ocean_area_judge_final_postproc_outputs() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1691,6 +1707,7 @@ fn binary_default_entry_reports_inferred_non_ocean_area_judge_final_postproc_out
 }
 
 #[test]
+#[ignore = "slow binary/default restart matrix; run with make test-slow"]
 fn binary_explicit_area_judge_reports_inferred_non_ocean_final_postproc_outputs() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1786,6 +1803,7 @@ fn binary_explicit_area_judge_reports_inferred_non_ocean_final_postproc_outputs(
 }
 
 #[test]
+#[ignore = "slow binary/default restart matrix; run with make test-slow"]
 fn binary_explicit_area_judge_source_override_reports_inferred_non_ocean_final_postproc_outputs() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(
@@ -1889,6 +1907,7 @@ fn binary_explicit_area_judge_source_override_reports_inferred_non_ocean_final_p
 }
 
 #[test]
+#[ignore = "slow binary/default restart matrix; run with make test-slow"]
 fn binary_default_entry_dispatches_mask_restart_patch_branch() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = std::env::temp_dir().join(format!(

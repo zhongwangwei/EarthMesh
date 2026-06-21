@@ -13,11 +13,25 @@ fn two_cell_patch() -> UnstructuredMesh {
     let p = |lon: f64, lat: f64| LonLatPoint { lon, lat };
     UnstructuredMesh {
         // idx: 0,1 placeholder; 2,3,4,5 real vertices (triangle circumcenters)
-        m_points: vec![p(0.0, 0.0), p(0.0, 0.0), p(0.0, 0.0), p(1.0, 0.0), p(0.5, 1.0), p(0.5, -1.0)],
+        m_points: vec![
+            p(0.0, 0.0),
+            p(0.0, 0.0),
+            p(0.0, 0.0),
+            p(1.0, 0.0),
+            p(0.5, 1.0),
+            p(0.5, -1.0),
+        ],
         // idx: 0,1 placeholder; 2,3 real cells (hexagon centres, here triangles)
         w_points: vec![p(0.0, 0.0), p(0.0, 0.0), p(0.4, 0.3), p(0.6, -0.3)],
         // cellsOnVertex: v2,v3 shared by cells 2,3; v4 only cell 2; v5 only cell 3
-        m_to_w: vec![[1, 1, 1], [1, 1, 1], [2, 3, 1], [2, 3, 1], [2, 1, 1], [3, 1, 1]],
+        m_to_w: vec![
+            [1, 1, 1],
+            [1, 1, 1],
+            [2, 3, 1],
+            [2, 3, 1],
+            [2, 1, 1],
+            [3, 1, 1],
+        ],
         // verticesOnCell rings (cyclic): cell2=[2,3,4], cell3 shares edge (2,3)
         w_to_m: vec![vec![1], vec![1], vec![2, 3, 4], vec![3, 2, 5]],
         n_w_to_m: vec![1, 1, 3, 3],
@@ -43,7 +57,10 @@ fn carved_patch_connectivity_is_topologically_consistent() {
     for e in 2..conn.cells_on_edge.len() {
         for &cell in &conn.cells_on_edge[e] {
             if cell >= 2 {
-                assert!(conn.edges_on_cell[cell].contains(&e), "edge {e} not on cell {cell}");
+                assert!(
+                    conn.edges_on_cell[cell].contains(&e),
+                    "edge {e} not on cell {cell}"
+                );
             }
         }
     }
@@ -51,7 +68,10 @@ fn carved_patch_connectivity_is_topologically_consistent() {
     for cell in 2..mesh.w_points.len() {
         for &nb in &conn.cells_on_cell[cell] {
             if nb >= 2 {
-                assert!(conn.cells_on_cell[nb].contains(&cell), "{cell}->{nb} not symmetric");
+                assert!(
+                    conn.cells_on_cell[nb].contains(&cell),
+                    "{cell}->{nb} not symmetric"
+                );
             }
         }
     }

@@ -1,8 +1,9 @@
 use earthmesh_core::EARTH_RADIUS_METERS;
 use earthmesh_mesh::{
-    gridinit_voronoi_state_fortran, icosahedron_relaxed_grid_fortran,
-    pcvt_adjust_voronoi_grid_state, spherical_circumcenter_from_barycenter,
-    voronoi_grid_from_icosahedron_relaxed, CartesianPoint,
+    grid_xyz2lonlat_fortran_indexed_state, gridinit_voronoi_state_fortran,
+    icosahedron_relaxed_grid_fortran, pcvt_adjust_voronoi_grid_state,
+    spherical_circumcenter_from_barycenter, voronoi_grid_from_icosahedron_relaxed,
+    voronoi_grid_from_olam_delaunay_mesh, CartesianPoint, OlamDelaunayMesh,
 };
 
 fn approx_eq(actual: f32, expected: f64, tolerance: f64) {
@@ -156,4 +157,39 @@ fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
         assert!(state.grid.glatw[iw] >= -90.0 && state.grid.glatw[iw] <= 90.0);
         assert!(state.grid.glonw[iw] >= -180.0 && state.grid.glonw[iw] <= 180.0);
     }
+}
+
+#[test]
+fn gridinit_voronoi_state_uses_olam_factor2_expansion_when_selected() {
+    let base =
+        OlamDelaunayMesh::from_icosahedron(24, 0, 1.0, 0.25, 100).expect("OLAM base NXP 24 mesh");
+    let expanded = base.expand_by_factor(2).expect("OLAM factor-2 expansion");
+    let mut expected = voronoi_grid_from_olam_delaunay_mesh(&expanded, EARTH_RADIUS_METERS)
+        .expect("expanded OLAM Voronoi state");
+    pcvt_adjust_voronoi_grid_state(&mut expected).expect("expected pcvt");
+    grid_xyz2lonlat_fortran_indexed_state(&mut expected.grid).expect("expected lonlat fill");
+
+    let actual =
+        gridinit_voronoi_state_fortran(48, 0, 1.0, 0.25, 100).expect("factorized gridinit");
+
+    assert_eq!(actual.grid.nma, expected.grid.nma);
+    assert_eq!(actual.grid.nua, expected.grid.nua);
+    assert_eq!(actual.grid.nwa, expected.grid.nwa);
+
+    let first_inserted_midpoint = base.nmd + 1;
+    approx_eq(
+        actual.grid.xew[first_inserted_midpoint],
+        f64::from(expected.grid.xew[first_inserted_midpoint]),
+        0.5,
+    );
+    approx_eq(
+        actual.grid.yew[first_inserted_midpoint],
+        f64::from(expected.grid.yew[first_inserted_midpoint]),
+        0.5,
+    );
+    approx_eq(
+        actual.grid.zew[first_inserted_midpoint],
+        f64::from(expected.grid.zew[first_inserted_midpoint]),
+        0.5,
+    );
 }

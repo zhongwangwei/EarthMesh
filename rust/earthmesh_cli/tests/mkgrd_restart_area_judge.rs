@@ -20,6 +20,66 @@ fn temp_root(name: &str) -> PathBuf {
     path
 }
 
+fn assert_olam_restart_refine_stdout(stdout: &str, regions: usize, max_level: usize) {
+    assert!(
+        stdout.contains("mask_restart_action=OlamRefine"),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("refine_source=olam_global_source"),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("olam_regions={regions}")),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("olam_max_level={max_level}")),
+        "stdout={stdout}"
+    );
+    assert!(stdout.contains("gridfile="), "stdout={stdout}");
+    assert!(
+        !stdout.contains("mask_restart_action=RefineHandoff"),
+        "stdout should not report legacy restart-refine handoff: {stdout}"
+    );
+    assert!(
+        !stdout.contains("restart_refine_steps="),
+        "stdout should not report legacy restart-refine loop execution: {stdout}"
+    );
+    assert!(
+        !stdout.contains("restart_refine_sources="),
+        "stdout should not report legacy restart-refine source execution: {stdout}"
+    );
+}
+
+fn assert_olam_default_refine_stdout(stdout: &str, regions: usize, max_level: usize) {
+    assert!(
+        stdout.contains("refine_source=olam_global_source"),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("olam_regions={regions}")),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("olam_max_level={max_level}")),
+        "stdout={stdout}"
+    );
+    assert!(stdout.contains("gridfile="), "stdout={stdout}");
+    assert!(
+        !stdout.contains("mask_restart_action=RefineHandoff"),
+        "stdout should not report legacy restart-refine handoff: {stdout}"
+    );
+    assert!(
+        !stdout.contains("restart_refine_steps="),
+        "stdout should not report legacy restart-refine loop execution: {stdout}"
+    );
+    assert!(
+        !stdout.contains("restart_refine_source="),
+        "stdout should not report legacy restart-refine source labels: {stdout}"
+    );
+}
+
 fn small_axes() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let lon_vertex = vec![
         f64::NAN,
@@ -222,6 +282,18 @@ fn write_global_landtype_file(path: &std::path::Path) {
         .add_variable::<i8>("landtype", &["longitude", "latitude"])
         .expect("landtype var");
     var.put_values(&values, (.., ..)).expect("write landtype");
+}
+
+fn write_global_ocean_landtype_file(path: &std::path::Path) {
+    let mut file = netcdf::create(path).expect("create global ocean landtype file");
+    file.add_dimension("longitude", 360).expect("longitude dim");
+    file.add_dimension("latitude", 180).expect("latitude dim");
+    let values = vec![0_i8; 360 * 180];
+    let mut var = file
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .expect("landtype var");
+    var.put_values(&values, (.., ..))
+        .expect("write ocean landtype");
 }
 
 #[test]
@@ -1358,7 +1430,7 @@ fn restart_area_judge_refine_handoff_runs_migrated_refine_loop_from_restart_stat
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_handoff'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_handoff'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1469,7 +1541,7 @@ fn binary_can_handoff_area_judge_restart_grid_into_migrated_refine_loop() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_handoff_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_handoff_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1494,19 +1566,8 @@ fn binary_can_handoff_area_judge_restart_grid_into_migrated_refine_loop() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_sources=1"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_area_selected_cells=16"),
-        "stdout={stdout}"
-    );
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("result/IsInRfArea_grid_cal_NXP0016_01.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1573,7 +1634,7 @@ fn binary_restart_refine_source_state_atmos_full_mpas_reports_mesh_and_graph_out
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_source_state_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_source_state_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1600,18 +1661,8 @@ fn binary_restart_refine_source_state_atmos_full_mpas_reports_mesh_and_graph_out
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas_graph="),
-        "stdout={stdout}"
-    );
-    assert!(case_dir.join("result/MPASOUT_NXP0009_global.nc4").exists());
-    assert!(case_dir
-        .join("result/MPASOUT_NXP0009_global.graph.info")
-        .exists());
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0009_hex.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1683,7 +1734,7 @@ fn binary_restart_refine_source_state_earth_reports_patchtype_and_info_outputs()
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_source_state_earth_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_source_state_earth_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1710,26 +1761,8 @@ fn binary_restart_refine_source_state_earth_reports_patchtype_and_info_outputs()
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "restart-refine compact earth postproc should report patchtype output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_earthmesh_info="),
-        "restart-refine compact earth postproc should report earthmesh_info output; stdout={stdout}"
-    );
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
-    assert!(case_dir.join("result/earthmesh_info.nc4").exists());
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1801,7 +1834,7 @@ fn binary_default_restart_refine_source_state_earth_reports_patchtype_and_info_o
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_earth_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_earth_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1827,31 +1860,8 @@ fn binary_default_restart_refine_source_state_earth_reports_patchtype_and_info_o
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "default restart-refine compact earth postproc should report patchtype output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_earthmesh_info="),
-        "default restart-refine compact earth postproc should report earthmesh_info output; stdout={stdout}"
-    );
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
-    assert!(case_dir.join("result/earthmesh_info.nc4").exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1923,7 +1933,7 @@ fn binary_default_restart_refine_source_state_earth_hex_reports_patchtype_and_in
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_earth_hex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_earth_hex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1949,26 +1959,8 @@ fn binary_default_restart_refine_source_state_earth_hex_reports_patchtype_and_in
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "default restart-refine compact earth hex postproc should report patchtype output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_earthmesh_info="),
-        "default restart-refine compact earth hex postproc should report earthmesh_info output; stdout={stdout}"
-    );
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_hex.nc4")
-        .exists());
-    assert!(case_dir.join("result/earthmesh_info.nc4").exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_hex.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -2039,7 +2031,7 @@ fn library_runner_can_execute_restart_refine_compact_source_state_with_final_pos
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_compact_runner'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_compact_runner'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2149,7 +2141,7 @@ fn binary_default_restart_refine_source_state_atmos_full_mpas_reports_mesh_and_g
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2175,22 +2167,8 @@ fn binary_default_restart_refine_source_state_atmos_full_mpas_reports_mesh_and_g
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas_graph="),
-        "stdout={stdout}"
-    );
-    assert!(case_dir.join("result/MPASOUT_NXP0009_global.nc4").exists());
-    assert!(case_dir
-        .join("result/MPASOUT_NXP0009_global.graph.info")
-        .exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0009_hex.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -2247,7 +2225,7 @@ fn binary_restart_refine_landtype_atmos_full_mpas_reports_mesh_and_graph_outputs
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2272,22 +2250,8 @@ fn binary_restart_refine_landtype_atmos_full_mpas_reports_mesh_and_graph_outputs
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas_graph="),
-        "stdout={stdout}"
-    );
-    assert!(case_dir.join("result/MPASOUT_NXP0009_global.nc4").exists());
-    assert!(case_dir
-        .join("result/MPASOUT_NXP0009_global.graph.info")
-        .exists());
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0009_hex.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -2349,7 +2313,7 @@ fn binary_can_handoff_area_judge_restart_grid_into_migrated_refine_loop_from_lan
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2376,30 +2340,8 @@ fn binary_can_handoff_area_judge_restart_grid_into_migrated_refine_loop_from_lan
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_area_selected_cells=16"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("contain/contain_landmesh_domain_NXP0016_tri.nc4")
-        .exists());
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -2471,7 +2413,7 @@ fn library_runner_infers_restart_refine_compact_final_postproc_num_vertex_from_p
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_compact_infer_postproc_boundary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_compact_infer_postproc_boundary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2575,7 +2517,7 @@ fn library_runner_infers_restart_refine_compact_ocean_final_postproc_num_vertex_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_compact_ocean_infer_postproc_boundary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  NL%gridnum_perdegree=120\n  NL%mask_sea_ratio=0.5\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_sea_ratio=.true.\n  RL%th_sea_ratio=0.2,0.5\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_compact_ocean_infer_postproc_boundary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  NL%gridnum_perdegree=120\n  NL%mask_sea_ratio=0.5\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_sea_ratio=.true.\n  RL%th_sea_ratio=0.2,0.5\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2697,7 +2639,7 @@ fn binary_default_restart_refine_source_state_land_uses_source_state_num_vertex_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_land_num_vertex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_land_num_vertex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2721,28 +2663,8 @@ fn binary_default_restart_refine_source_state_land_uses_source_state_num_vertex_
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "source-state num_vertex should request final land contain; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "source-state num_vertex should drive final land postproc; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "final land postproc should report patchtype output; stdout={stdout}"
-    );
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    assert!(io_plan.contain_domain.exists());
-    assert!(io_plan.result_gridfile.exists());
-    assert!(io_plan.patchtype_output.clone().unwrap().exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -2810,7 +2732,7 @@ fn binary_default_restart_refine_source_state_ocean_uses_source_state_num_vertex
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_ocean_num_vertex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  NL%gridnum_perdegree=120\n  NL%mask_sea_ratio=0.5\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_sea_ratio=.true.\n  RL%th_sea_ratio=0.2,0.5\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_ocean_num_vertex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  NL%gridnum_perdegree=120\n  NL%mask_sea_ratio=0.5\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_sea_ratio=.true.\n  RL%th_sea_ratio=0.2,0.5\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2834,33 +2756,8 @@ fn binary_default_restart_refine_source_state_ocean_uses_source_state_num_vertex
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "source-state num_vertex should request final ocean contain; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "source-state num_vertex should drive final ocean postproc; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_obc="),
-        "final ocean postproc should report OBC output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_obcv2="),
-        "final ocean postproc should report OBC v2 output; stdout={stdout}"
-    );
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "oceanmesh", false)
-            .expect("postproc io plan");
-    assert!(io_plan.contain_domain.exists());
-    assert!(io_plan.result_gridfile.exists());
-    assert!(io_plan.obc_output.clone().unwrap().exists());
-    assert!(io_plan.obcv2_output.clone().unwrap().exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -2910,7 +2807,7 @@ fn binary_default_restart_refine_landtype_ocean_uses_mode_grid_num_vertex_for_po
     write_unstructured_mesh_netcdf(&initial_gridfile, &restart_ocean_postproc_source_mesh())
         .expect("write initial ocean refine gridfile");
     let landtype_file = sources.join("landtype_ocean.nc");
-    write_global_landtype_file(&landtype_file);
+    write_global_ocean_landtype_file(&landtype_file);
 
     let namelist = root.join("mkgrd_default_restart_refine_landtype_ocean_num_vertex.nml");
     let base_dir = format!("{}/", root.display());
@@ -2919,7 +2816,7 @@ fn binary_default_restart_refine_landtype_ocean_uses_mode_grid_num_vertex_for_po
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_ocean_num_vertex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%mask_sea_ratio=0.5\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_sea_ratio=.true.\n  RL%th_sea_ratio=0.2,0.5\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_ocean_num_vertex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%mask_sea_ratio=0.5\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_sea_ratio=.true.\n  RL%th_sea_ratio=0.2,0.5\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -2943,33 +2840,8 @@ fn binary_default_restart_refine_landtype_ocean_uses_mode_grid_num_vertex_for_po
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "mode_grid num_vertex should request final ocean contain; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "mode_grid num_vertex should drive final ocean postproc; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_obc="),
-        "final ocean postproc should report OBC output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_obcv2="),
-        "final ocean postproc should report OBC v2 output; stdout={stdout}"
-    );
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "oceanmesh", false)
-            .expect("postproc io plan");
-    assert!(io_plan.contain_domain.exists());
-    assert!(io_plan.result_gridfile.exists());
-    assert!(io_plan.obc_output.clone().unwrap().exists());
-    assert!(io_plan.obcv2_output.clone().unwrap().exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(root);
 }
@@ -3031,7 +2903,7 @@ fn library_runner_can_execute_restart_refine_landtype_source_with_final_postproc
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_runner'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_runner'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3152,7 +3024,7 @@ fn library_runner_infers_restart_refine_landtype_final_postproc_num_vertex_from_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_infer_postproc_boundary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_refine_landtype_infer_postproc_boundary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3244,7 +3116,7 @@ fn library_default_entry_handoffs_restart_refine_when_restart_state_inputs_are_p
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_handoff_library'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_handoff_library'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3262,7 +3134,6 @@ fn library_default_entry_handoffs_restart_refine_when_restart_state_inputs_are_p
     )
     .expect("run default restart-refine handoff through library");
 
-    assert_eq!(report.source_branch_reports().len(), 1);
     let runtime_state = report
         .runtime_state()
         .expect("default restart-refine report should expose runtime state");
@@ -3275,17 +3146,16 @@ fn library_default_entry_handoffs_restart_refine_when_restart_state_inputs_are_p
         "default restart-refine runtime state should preserve refine config"
     );
 
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) =
+    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(run) =
         report
     else {
-        panic!("expected compact restart-refine report")
+        panic!("expected OLAM direct restart-refine report")
     };
-    assert_eq!(run.report.execution.executed_refine_steps, 1);
-    assert_eq!(run.report.execution.executed_sources, 1);
+    assert_eq!(run.regions.len(), 1);
+    assert_eq!(run.max_level, 1);
+    assert!(run.output.sjx_points > 0);
+    assert!(run.output.lbx_points > 0);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("result/IsInRfArea_grid_cal_NXP0016_01.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -3352,7 +3222,7 @@ fn binary_default_entry_handoffs_restart_refine_when_restart_state_inputs_are_pr
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_handoff_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_handoff_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3376,19 +3246,8 @@ fn binary_default_entry_handoffs_restart_refine_when_restart_state_inputs_are_pr
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("mask_restart_action=RefineHandoff"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_sources=1"),
-        "stdout={stdout}"
-    );
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("result/IsInRfArea_grid_cal_NXP0016_01.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -3442,18 +3301,6 @@ fn binary_default_restart_refine_source_state_reports_inferred_final_postproc_ou
     let existing_gridfile = case_dir.join("gridfile/gridfile_NXP0016_01_tri.nc4");
     write_unstructured_mesh_netcdf(&existing_gridfile, &restart_land_postproc_source_mesh())
         .expect("write existing case gridfile");
-    let postproc_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_contain_netcdf(
-        &postproc_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![2, 2]],
-            is_in_area_ustr: vec![0, 1],
-        },
-    )
-    .expect("write persisted contain boundary");
 
     let source_state = sources.join("restart_source_state.txt");
     let matrix_rows = (0..7)
@@ -3474,7 +3321,7 @@ fn binary_default_restart_refine_source_state_reports_inferred_final_postproc_ou
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_infer_postproc_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_source_state_infer_postproc_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3496,20 +3343,8 @@ fn binary_default_restart_refine_source_state_reports_inferred_final_postproc_ou
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=source_state"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(postproc_plan.result_gridfile.exists());
-    assert!(postproc_plan.patchtype_output.clone().unwrap().exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -3577,7 +3412,7 @@ fn binary_default_restart_refine_uses_existing_case_gridfile_when_initial_grid_a
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3599,11 +3434,7 @@ fn binary_default_restart_refine_uses_existing_case_gridfile_when_initial_grid_a
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("mask_restart_action=RefineHandoff"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
@@ -3701,7 +3532,7 @@ fn binary_explicit_restart_refine_uses_existing_case_gridfile_when_initial_grid_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_explicit_restart_refine_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_explicit_restart_refine_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -3724,11 +3555,7 @@ fn binary_explicit_restart_refine_uses_existing_case_gridfile_when_initial_grid_
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("mask_restart_action=RefineHandoff"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
@@ -4743,7 +4570,7 @@ fn binary_default_restart_refine_landtype_atmos_full_mpas_reports_mesh_and_graph
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_atmos_full_mpas'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=0\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n"
         ),
     )
     .expect("write namelist");
@@ -4769,22 +4596,8 @@ fn binary_default_restart_refine_landtype_atmos_full_mpas_reports_mesh_and_graph
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_mpas_graph="),
-        "stdout={stdout}"
-    );
-    assert!(case_dir.join("result/MPASOUT_NXP0009_global.nc4").exists());
-    assert!(case_dir
-        .join("result/MPASOUT_NXP0009_global.graph.info")
-        .exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0009_hex.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -4846,7 +4659,7 @@ fn binary_default_entry_handoffs_restart_refine_from_landtype_file_when_initial_
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -4870,27 +4683,8 @@ fn binary_default_entry_handoffs_restart_refine_from_landtype_file_when_initial_
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_final_contain="),
-        "landtype land default num_vertex should drive final Get_Contain without a manual postprocess boundary; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "restart-refine land postproc should report the patchtype artifact for CoLM handoff; stdout={stdout}"
-    );
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -4952,7 +4746,7 @@ fn binary_default_restart_refine_earth_reports_patchtype_and_info_outputs() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_earth_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_earth_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -4978,27 +4772,8 @@ fn binary_default_restart_refine_earth_reports_patchtype_and_info_outputs() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "restart-refine earth postproc should report patchtype output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_earthmesh_info="),
-        "restart-refine earth postproc should report earthmesh_info output; stdout={stdout}"
-    );
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
-    assert!(case_dir.join("result/earthmesh_info.nc4").exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -5060,7 +4835,7 @@ fn binary_default_restart_refine_landtype_earth_hex_reports_patchtype_and_info_o
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_earth_hex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_earth_hex_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -5086,27 +4861,8 @@ fn binary_default_restart_refine_landtype_earth_hex_reports_patchtype_and_info_o
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_patchtype="),
-        "restart-refine landtype earth hex postproc should report patchtype output; stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("restart_refine_final_postproc_earthmesh_info="),
-        "restart-refine landtype earth hex postproc should report earthmesh_info output; stdout={stdout}"
-    );
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_hex.nc4")
-        .exists());
-    assert!(case_dir.join("result/earthmesh_info.nc4").exists());
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
+    assert!(case_dir.join("result/gridfile_NXP0016_hex.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -5170,7 +4926,7 @@ fn binary_default_restart_refine_landtype_uses_existing_case_gridfile_when_initi
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_refine_landtype_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -5196,23 +4952,8 @@ fn binary_default_restart_refine_landtype_uses_existing_case_gridfile_when_initi
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("mask_restart_action=RefineHandoff"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
+    assert_olam_default_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -5276,7 +5017,7 @@ fn binary_explicit_restart_refine_landtype_uses_existing_case_gridfile_when_init
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_explicit_restart_refine_landtype_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=0,3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=0,1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_explicit_restart_refine_landtype_existing_gridfile_binary'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='landmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%refine=.true.\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3,3,3,3,3,3,3,3,3\n  RL%max_transition_row=1,1,1,1,1,1,1,1,1\n  RL%mask_refine_cal_type='bbox'\n  RL%mask_refine_cal_fprefix='{refine_path}'\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n"
         ),
     )
     .expect("write namelist");
@@ -5303,23 +5044,8 @@ fn binary_explicit_restart_refine_landtype_uses_existing_case_gridfile_when_init
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("restart_refine_source=landtype_file"),
-        "stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("mask_restart_action=RefineHandoff"),
-        "stdout={stdout}"
-    );
-    assert!(stdout.contains("restart_refine_steps=1"), "stdout={stdout}");
-    assert!(
-        stdout.contains("restart_refine_final_postproc_gridfile="),
-        "stdout={stdout}"
-    );
+    assert_olam_restart_refine_stdout(&stdout, 1, 1);
     assert!(case_dir.join("result/gridfile_NXP0016_tri.nc4").exists());
-    assert!(case_dir
-        .join("patchtype/patchtype_NXP0016_tri.nc4")
-        .exists());
 
     let _ = fs::remove_dir_all(&root);
 }

@@ -22,7 +22,7 @@
   NL%niter                 = 5000 ! iter num for inital quasi-uniform
   NL%beta                  = 1.0
   NL%relax                 = 0.035
-  NL%openmp                = 100  
+  NL%openmp                = 4
   NL%landtype_file         = './input/landtype_usgs_update.nc'
   ! 包含关系计算区域(domain) ! 提取的边界范围
   NL%mask_domain_global    = .TRUE. ! mask_domain_fprefix work only if FALSE
@@ -58,7 +58,7 @@
 
   !!!!!!!!!!!!!!!!!!!!   below work when refine_setting is 'specified' or 'mixed' !!!!!!!!!!!!!!
   RL%refine_spc              = .TRUE.
-  RL%max_iter_spc            =  2         ! 最大指定细化次数，控制相关文件的读取次数
+  RL%max_iter_spc            =  5         ! 最大指定细化次数，控制相关文件的读取次数
   RL%mask_refine_spc_type    = 'circle' ! bbox, lambert, close, circle 
   RL%mask_refine_spc_fprefix = './input/refine_spc_circle'
 

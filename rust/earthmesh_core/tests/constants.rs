@@ -33,6 +33,7 @@ fn default_config_matches_fortran_oname_vars_defaults() {
     let cfg = EarthmeshConfig::default();
 
     assert_eq!(cfg.experiment_name, "/tmp");
+    assert_eq!(cfg.runtype, " ");
     assert_eq!(cfg.nxp, 0);
     assert_eq!(cfg.base_dir, " /tmp");
     assert_eq!(cfg.mesh_type, "/tmp");
@@ -116,6 +117,7 @@ fn earthmesh_config_parses_mkgrd_namelist_assignments_like_read_nl() {
         r#"
 &mkgrd
   NL%EXPNME = 'case_a'
+  NL%runtype = 'MAKEGRID_PLOT'
   NL%NXP = 64
   NL%base_dir = '/tmp/earthmesh/'
   NL%mesh_type = 'atmosmesh'
@@ -145,6 +147,7 @@ fn earthmesh_config_parses_mkgrd_namelist_assignments_like_read_nl() {
     .expect("valid mkgrd namelist");
 
     assert_eq!(parsed.experiment_name, "case_a");
+    assert_eq!(parsed.runtype, "MAKEGRID_PLOT");
     assert_eq!(parsed.nxp, 64);
     assert_eq!(parsed.base_dir, "/tmp/earthmesh/");
     assert_eq!(parsed.file_dir(), "/tmp/earthmesh/case_a/");
@@ -227,6 +230,7 @@ fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
     assert_eq!(cfg.num_rc, 0);
     assert_eq!(cfg.vertex_pretect_layers, 1);
     assert_eq!(cfg.niter_refine, 100);
+    assert!(!cfg.niter_refine_specified);
     assert_eq!(cfg.th_num_landtypes, 12);
     approx_eq(cfg.th_area_mainland, 0.6, 0.0);
     assert_eq!(cfg.th_sea_ratio, [0.5, 0.5]);
@@ -260,6 +264,7 @@ fn refine_config_accepts_fortran_prefix_arrays_for_halo_and_transition_rows() {
 
     assert_eq!(parsed.halo, [0, 4, 4, 3, 0, 0, 0, 0, 0, 0]);
     assert_eq!(parsed.max_transition_row, [0, 5, 4, 3, 0, 0, 0, 0, 0, 0]);
+    assert!(!parsed.niter_refine_specified);
 }
 
 #[test]
@@ -314,6 +319,7 @@ fn refine_config_parses_mkrefine_namelist_and_derives_specified_setting() {
     assert_eq!(parsed.set_dis_type, "nonlinear2");
     assert_eq!(parsed.vertex_pretect_layers, 4);
     assert_eq!(parsed.niter_refine, 80);
+    assert!(parsed.niter_refine_specified);
     assert!(parsed.refine_spc);
     assert!(!parsed.refine_cal);
     assert_eq!(parsed.max_iter_spc, 2);

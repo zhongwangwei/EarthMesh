@@ -22,7 +22,12 @@ fn gba_region_produces_river_close_mask_nmls() {
         return;
     };
     // Pearl River Delta / Greater Bay Area.
-    let bbox = earthmesh_cli::MeritLonLatBbox { west: 111.0, east: 115.0, south: 21.0, north: 24.0 };
+    let bbox = earthmesh_cli::MeritLonLatBbox {
+        west: 111.0,
+        east: 115.0,
+        south: 21.0,
+        north: 24.0,
+    };
     let out = std::env::temp_dir().join("gba_workflow_test");
     let _ = std::fs::remove_dir_all(&out);
 
@@ -36,13 +41,28 @@ fn gba_region_produces_river_close_mask_nmls() {
     )
     .expect("MERIT-Hydro GBA close-mask workflow");
 
-    assert!(rep.window_count >= 1, "expected at least one overlapping MERIT window");
+    assert!(
+        rep.window_count >= 1,
+        "expected at least one overlapping MERIT window"
+    );
     // The delta has both major (R3) and minor (R2) rivers and a long coastline.
-    assert!(rep.geojson.river_feature_count > 0, "expected river features");
-    assert!(rep.geojson.coast_feature_count > 0, "expected coast features");
-    assert!(rep.geojson.mask_counts.get("R3").copied().unwrap_or(0) > 0, "expected R3 (major river) cells");
+    assert!(
+        rep.geojson.river_feature_count > 0,
+        "expected river features"
+    );
+    assert!(
+        rep.geojson.coast_feature_count > 0,
+        "expected coast features"
+    );
+    assert!(
+        rep.geojson.mask_counts.get("R3").copied().unwrap_or(0) > 0,
+        "expected R3 (major river) cells"
+    );
     // Refinement-ready close-mask namelists were emitted for rivers.
-    assert!(rep.river_nml.files.len() > 0, "expected river close-mask .nml files");
+    assert!(
+        rep.river_nml.files.len() > 0,
+        "expected river close-mask .nml files"
+    );
     for f in &rep.river_nml.files {
         assert!(f.exists());
     }

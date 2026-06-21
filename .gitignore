@@ -7,6 +7,7 @@
 *.so
 *.exe
 /cases/ATMOS_hex_N64_refine2_global_LOM67_251027
+/cases/
 *.nc
 
 # Rust build outputs

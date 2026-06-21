@@ -1,6 +1,9 @@
 //! Rust mesh kernels migrated from EarthMesh Fortran.
 
-use std::io;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use earthmesh_core::{deg_to_rad, rad_to_deg, GridMemory, IjTabs, ItabM, ItabW};
 
@@ -162,6 +165,26 @@ pub fn grid_xyz2lonlat_fortran_indexed_state(grid: &mut GridMemory) -> io::Resul
     Ok(())
 }
 
+pub fn grid_cartesian_xy_to_lonlat_placeholders_fortran_indexed_state(
+    grid: &mut GridMemory,
+) -> io::Result<()> {
+    require_grid_coordinate_len("xem", grid.xem.len(), grid.nma + 1)?;
+    require_grid_coordinate_len("yem", grid.yem.len(), grid.nma + 1)?;
+    require_grid_coordinate_len("xew", grid.xew.len(), grid.nwa + 1)?;
+    require_grid_coordinate_len("yew", grid.yew.len(), grid.nwa + 1)?;
+
+    grid.allocate_grid_lonlatmw(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
+    for im in 1..=grid.nma {
+        grid.glonm[im] = grid.xem[im];
+        grid.glatm[im] = grid.yem[im];
+    }
+    for iw in 1..=grid.nwa {
+        grid.glonw[iw] = grid.xew[iw];
+        grid.glatw[iw] = grid.yew[iw];
+    }
+    Ok(())
+}
+
 fn require_grid_coordinate_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
     if actual < required {
         return Err(io::Error::new(
@@ -231,65 +254,88 @@ pub fn voronoi_grid_from_icosahedron_relaxed(
     relaxed: &IcosahedronRelaxedGrid,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    require_grid_coordinate_len("relaxed.m_points", relaxed.m_points.len(), relaxed.nmd + 1)?;
-    require_grid_coordinate_len(
-        "relaxed.connectivity.w_faces",
-        relaxed.connectivity.w_faces.len(),
-        relaxed.nwd + 1,
-    )?;
-    require_grid_coordinate_len(
-        "relaxed.m_neighbors",
-        relaxed.m_neighbors.len(),
-        relaxed.nmd + 1,
-    )?;
+    let mesh = OlamDelaunayMesh::from_relaxed_icosahedron(relaxed);
+    voronoi_grid_from_olam_delaunay_mesh(&mesh, radius)
+}
+
+/// Convert a generic OLAM Delaunay mesh to the Voronoi grid state used by the
+/// existing EarthMesh gridfile writers.
+///
+/// This is the OLAM replacement seam for `mkgrd.F90:voronoi`: callers should
+/// produce or refine an [`OlamDelaunayMesh`], validate it, then call this
+/// adapter at the output boundary.
+pub fn voronoi_grid_from_olam_delaunay_mesh(
+    mesh: &OlamDelaunayMesh,
+    radius: f64,
+) -> io::Result<VoronoiGridState> {
+    voronoi_grid_from_olam_delaunay_mesh_with_projection(mesh, radius, true)
+}
+
+pub fn voronoi_grid_from_olam_delaunay_mesh_cartesian(
+    mesh: &OlamDelaunayMesh,
+    radius: f64,
+) -> io::Result<VoronoiGridState> {
+    voronoi_grid_from_olam_delaunay_mesh_with_projection(mesh, radius, false)
+}
+
+fn voronoi_grid_from_olam_delaunay_mesh_with_projection(
+    mesh: &OlamDelaunayMesh,
+    radius: f64,
+    project_cell_centers_to_radius: bool,
+) -> io::Result<VoronoiGridState> {
+    mesh.validate_topology()?;
 
     let mut grid = GridMemory {
-        nma: relaxed.nwd,
-        nua: relaxed.nud,
-        nva: relaxed.nud,
-        nwa: relaxed.nmd,
-        mma: relaxed.nwd,
-        mua: relaxed.nud,
-        mva: relaxed.nud,
-        mwa: relaxed.nmd,
+        nma: mesh.nwd,
+        nua: mesh.nud,
+        nva: mesh.nud,
+        nwa: mesh.nmd,
+        mma: mesh.nwd,
+        mua: mesh.nud,
+        mva: mesh.nud,
+        mwa: mesh.nmd,
         ..GridMemory::default()
     };
     grid.allocate_xyzem(grid.nma + 1);
     grid.allocate_xyzew(grid.nwa + 1);
 
     for iw in 1..=grid.nwa {
-        let point = relaxed.m_points[iw];
+        let point = mesh.m_points[iw];
         grid.xew[iw] = point.x as f32;
         grid.yew[iw] = point.y as f32;
         grid.zew[iw] = point.z as f32;
     }
 
     for im in 2..=grid.nma {
-        let face = &relaxed.connectivity.w_faces[im];
+        let face = &mesh.w_faces[im];
         if face
             .im
             .iter()
-            .any(|&idx| idx < 2 || idx >= relaxed.m_points.len())
+            .any(|&idx| idx < 2 || idx >= mesh.m_points.len())
         {
             continue;
         }
-        let p1 = relaxed.m_points[face.im[0]];
-        let p2 = relaxed.m_points[face.im[1]];
-        let p3 = relaxed.m_points[face.im[2]];
+        let p1 = mesh.m_points[face.im[0]];
+        let p2 = mesh.m_points[face.im[1]];
+        let p3 = mesh.m_points[face.im[2]];
         let barycenter = CartesianPoint::new(
             (p1.x + p2.x + p3.x) / 3.0,
             (p1.y + p2.y + p3.y) / 3.0,
             (p1.z + p2.z + p3.z) / 3.0,
         );
-        let normalized = normalize_cartesian_to_radius(barycenter, radius)?;
-        grid.xem[im] = normalized.x as f32;
-        grid.yem[im] = normalized.y as f32;
-        grid.zem[im] = normalized.z as f32;
+        let point = if project_cell_centers_to_radius {
+            normalize_cartesian_to_radius(barycenter, radius)?
+        } else {
+            barycenter
+        };
+        grid.xem[im] = point.x as f32;
+        grid.yem[im] = point.y as f32;
+        grid.zem[im] = point.z as f32;
     }
 
     let mut tabs = IjTabs::allocate(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
     for iw in 2..=grid.nwa {
-        let neighbor = &relaxed.m_neighbors[iw];
+        let neighbor = &mesh.m_neighbors[iw];
         tabs.w[iw] = ItabW {
             iwp: iw as i32,
             iwglobe: iw as i32,
@@ -300,7 +346,7 @@ pub fn voronoi_grid_from_icosahedron_relaxed(
         };
     }
     for im in 2..=grid.nma {
-        let face = &relaxed.connectivity.w_faces[im];
+        let face = &mesh.w_faces[im];
         tabs.m[im] = ItabM {
             imp: im as i32,
             imglobe: im as i32,
@@ -317,7 +363,7 @@ pub fn voronoi_grid_from_icosahedron_relaxed(
     Ok(VoronoiGridState {
         grid,
         tabs,
-        impent: relaxed.impent,
+        impent: mesh.impent,
     })
 }
 
@@ -388,7 +434,8 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
 /// In-memory Rust orchestration for the global `mkgrd.F90:gridinit` mesh path.
 ///
 /// This composes the migrated deterministic kernels without writing NetCDF:
-/// `icosahedron_relaxed_grid_fortran` -> `voronoi_grid_from_icosahedron_relaxed`
+/// `olam_gridinit_factorization_fortran` -> `OlamDelaunayMesh` expansion
+/// -> `voronoi_grid_from_olam_delaunay_mesh`
 /// -> `pcvt_adjust_voronoi_grid_state` -> `grid_xyz2lonlat_fortran_indexed_state`.
 /// The returned state intentionally remains one-based so callers can pass it to
 /// `earthmesh_cli::write_gridfile_from_fortran_indexed_state` at the I/O boundary.
@@ -399,15 +446,26 @@ pub fn gridinit_voronoi_state_fortran(
     spring_relax: f64,
     max_tris: usize,
 ) -> io::Result<VoronoiGridState> {
-    let relaxed = icosahedron_relaxed_grid_fortran(nxp0, nspring, beta, spring_relax, max_tris)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "failed to build relaxed icosahedron grid",
-            )
-        })?;
+    let factors = olam_gridinit_factorization_fortran(nxp0).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid OLAM gridinit NXP {nxp0}"),
+        )
+    })?;
+    let mut mesh =
+        OlamDelaunayMesh::from_icosahedron(factors.base_nxp, nspring, beta, spring_relax, max_tris)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "failed to build validated OLAM icosahedron grid",
+                )
+            })?;
+    if factors.expansion_factor > 1 {
+        mesh = mesh.expand_by_factor(factors.expansion_factor)?;
+    }
+
     let mut state =
-        voronoi_grid_from_icosahedron_relaxed(&relaxed, earthmesh_core::EARTH_RADIUS_METERS)?;
+        voronoi_grid_from_olam_delaunay_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
     pcvt_adjust_voronoi_grid_state(&mut state)?;
     grid_xyz2lonlat_fortran_indexed_state(&mut state.grid)?;
     Ok(state)
@@ -461,6 +519,7 @@ pub struct IcosahedronWFace {
     pub mrlw: usize,
     pub mrlw_orig: usize,
     pub ngr: usize,
+    pub mrow: isize,
 }
 
 impl Default for IcosahedronWFace {
@@ -473,6 +532,7 @@ impl Default for IcosahedronWFace {
             mrlw: 0,
             mrlw_orig: 0,
             ngr: 0,
+            mrow: 0,
         }
     }
 }
@@ -492,6 +552,24 @@ impl Default for IcosahedronMPointNeighbors {
             npoly: 0,
             iu: [1; 7],
             iw: [1; 7],
+        }
+    }
+}
+
+/// Minimal Rust equivalent of OLAM `itab_md` refinement/grid metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IcosahedronMPointMetadata {
+    pub mrlm: usize,
+    pub mrlm_orig: usize,
+    pub ngr: usize,
+}
+
+impl Default for IcosahedronMPointMetadata {
+    fn default() -> Self {
+        Self {
+            mrlm: 1,
+            mrlm_orig: 1,
+            ngr: 1,
         }
     }
 }
@@ -532,8 +610,4876 @@ pub struct IcosahedronDiamondConnectivity {
     pub w_faces: Vec<IcosahedronWFace>,
 }
 
+/// Generic OLAM-style Delaunay mesh state.
+///
+/// OLAM carries the triangular mesh as three reciprocal tables:
+///
+/// - M: Delaunay vertices / future Voronoi cell centers.
+/// - U: Delaunay edges.
+/// - W: Delaunay triangle faces / future Voronoi vertices.
+///
+/// This type is the replacement boundary for new grid construction work.  It
+/// currently wraps the migrated icosahedron tables, but its validation rules are
+/// intentionally generic so global expansion and `spawn_nest` can plug into the
+/// same invariant checks instead of patching local connectivity by hand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OlamDelaunayMesh {
+    pub nmd: usize,
+    pub nud: usize,
+    pub nwd: usize,
+    pub impent: [usize; 12],
+    pub m_points: Vec<CartesianPoint>,
+    m_metadata: Vec<IcosahedronMPointMetadata>,
+    pub u_edges: Vec<IcosahedronUEdge>,
+    pub w_faces: Vec<IcosahedronWFace>,
+    pub m_neighbors: Vec<IcosahedronMPointNeighbors>,
+    pub m_prognostic: Vec<usize>,
+    pub u_prognostic: Vec<usize>,
+    pub w_prognostic: Vec<usize>,
+    boundary_rows: Vec<usize>,
+}
+
+/// Summary returned after checking an [`OlamDelaunayMesh`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OlamTopologyValidation {
+    pub checked_m_points: usize,
+    pub checked_u_edges: usize,
+    pub checked_w_faces: usize,
+}
+
+/// Result of OLAM `gridinit:get_factors`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OlamGridinitFactors {
+    pub base_nxp: usize,
+    pub expansion_factor: usize,
+}
+
+/// User-facing specified-region refinement request for the OLAM mesh layer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OlamRefinementRegion {
+    Circle {
+        center: LonLatDegrees,
+        radius_meters: f64,
+        level: usize,
+    },
+    Bbox {
+        west_degrees: f64,
+        east_degrees: f64,
+        south_degrees: f64,
+        north_degrees: f64,
+        level: usize,
+    },
+    Corridor {
+        points: Vec<LonLatDegrees>,
+        radius_meters: Vec<f64>,
+        level: usize,
+    },
+    Polygon {
+        points: Vec<LonLatDegrees>,
+        level: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct OlamMethodCNestUd {
+    im: usize,
+    iu: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct OlamMethodCNestWd {
+    iu: [usize; 3],
+    iw: [isize; 3],
+}
+
+impl OlamMethodCNestWd {
+    fn flag(self) -> isize {
+        self.iw[2]
+    }
+
+    fn is_subdivided(self) -> bool {
+        self.flag() > 0
+    }
+
+    fn is_suppressed(self) -> bool {
+        self.flag() < 0
+    }
+
+    fn child_iw(self, slot: usize) -> io::Result<usize> {
+        let value = self.iw[slot];
+        if value <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OLAM Method-C child W slot {slot} is not allocated"),
+            ));
+        }
+        Ok(value as usize)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OlamMethodCPerimeterPoint {
+    im: usize,
+    iu: usize,
+    npoly: usize,
+    nwdiv: usize,
+    near_pentagon: bool,
+}
+
+const OLAM_METHOD_C_MIN_GRID_SPACING_METERS: f64 = 0.001;
+
+impl OlamRefinementRegion {
+    pub fn level(&self) -> usize {
+        match self {
+            Self::Circle { level, .. }
+            | Self::Bbox { level, .. }
+            | Self::Corridor { level, .. }
+            | Self::Polygon { level, .. } => *level,
+        }
+    }
+
+    pub fn validate(&self) -> io::Result<()> {
+        let level = self.level();
+        if !(1..=5).contains(&level) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("OLAM refinement level {level} must be in 1..=5"),
+            ));
+        }
+        match self {
+            Self::Circle {
+                center,
+                radius_meters,
+                ..
+            } => {
+                validate_lonlat(*center)?;
+                validate_olam_method_c_radius("circle radius", *radius_meters)?;
+            }
+            Self::Bbox {
+                west_degrees,
+                east_degrees,
+                south_degrees,
+                north_degrees,
+                ..
+            } => {
+                if !west_degrees.is_finite()
+                    || !east_degrees.is_finite()
+                    || !south_degrees.is_finite()
+                    || !north_degrees.is_finite()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "bbox coordinates must be finite",
+                    ));
+                }
+                if *south_degrees < -90.0
+                    || *south_degrees > 90.0
+                    || *north_degrees < -90.0
+                    || *north_degrees > 90.0
+                    || south_degrees > north_degrees
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "bbox latitude bounds are invalid",
+                    ));
+                }
+            }
+            Self::Corridor {
+                points,
+                radius_meters,
+                ..
+            } => {
+                if points.len() < 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "corridor refinement requires at least two points",
+                    ));
+                }
+                if radius_meters.len() != points.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "corridor refinement requires one radius per point",
+                    ));
+                }
+                for &point in points {
+                    validate_lonlat(point)?;
+                }
+                for &radius in radius_meters {
+                    validate_olam_method_c_radius("corridor radius", radius)?;
+                }
+            }
+            Self::Polygon { points, .. } => {
+                if points.len() < 3 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "polygon refinement requires at least three points",
+                    ));
+                }
+                for &point in points {
+                    validate_lonlat(point)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_cartesian_xy(&self) -> io::Result<()> {
+        let level = self.level();
+        if !(1..=5).contains(&level) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("OLAM refinement level {level} must be in 1..=5"),
+            ));
+        }
+        match self {
+            Self::Circle {
+                center,
+                radius_meters,
+                ..
+            } => {
+                if !center.lon_degrees.is_finite() || !center.lat_degrees.is_finite() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "circle Cartesian coordinates must be finite",
+                    ));
+                }
+                validate_olam_method_c_radius("circle radius", *radius_meters)?;
+            }
+            Self::Corridor {
+                points,
+                radius_meters,
+                ..
+            } => {
+                if points.len() < 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "corridor refinement requires at least two points",
+                    ));
+                }
+                if radius_meters.len() != points.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "corridor refinement requires one radius per point",
+                    ));
+                }
+                for point in points {
+                    if !point.lon_degrees.is_finite() || !point.lat_degrees.is_finite() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "corridor Cartesian coordinates must be finite",
+                        ));
+                    }
+                }
+                for &radius in radius_meters {
+                    validate_olam_method_c_radius("corridor radius", radius)?;
+                }
+            }
+            Self::Bbox { .. } | Self::Polygon { .. } => self.validate()?,
+        }
+        Ok(())
+    }
+
+    fn anchor_lonlat(&self) -> LonLatDegrees {
+        match self {
+            Self::Circle { center, .. } => *center,
+            Self::Bbox {
+                west_degrees,
+                south_degrees,
+                ..
+            } => LonLatDegrees::new(*west_degrees, *south_degrees),
+            Self::Corridor { points, .. } | Self::Polygon { points, .. } => points[0],
+        }
+    }
+
+    fn contains_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {
+        match self {
+            Self::Circle {
+                center,
+                radius_meters,
+                ..
+            } => olam_ec_ps_distance_meters(point, *center, radius) < *radius_meters,
+            Self::Bbox {
+                west_degrees,
+                east_degrees,
+                south_degrees,
+                north_degrees,
+                ..
+            } => {
+                let corners = [
+                    LonLatDegrees::new(*west_degrees, *south_degrees),
+                    LonLatDegrees::new(*east_degrees, *south_degrees),
+                    LonLatDegrees::new(*east_degrees, *north_degrees),
+                    LonLatDegrees::new(*west_degrees, *north_degrees),
+                ];
+                olam_closed_corridor_contains_cartesian(
+                    point,
+                    &corners,
+                    radius,
+                    2_000_000.0,
+                )
+            }
+            Self::Corridor {
+                points,
+                radius_meters,
+                ..
+            } => {
+                if points.len() < 2 {
+                    return false;
+                }
+                points.windows(2).enumerate().any(|(idx, segment)| {
+                    let (distance, t) =
+                        olam_corridor_segment_distance_meters(point, segment[0], segment[1], radius);
+                    distance < olam_corridor_radius_at_segment(radius_meters, idx, t)
+                })
+            }
+            Self::Polygon { points, .. } => olam_open_corridor_contains_cartesian(
+                point,
+                points,
+                radius,
+                2_000_000.0,
+            ),
+        }
+    }
+
+    fn close_to_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {
+        match self {
+            Self::Circle {
+                center,
+                radius_meters,
+                ..
+            } => olam_ec_ps_distance_meters(point, *center, radius) < radius_meters * 1.5,
+            Self::Bbox {
+                west_degrees,
+                east_degrees,
+                south_degrees,
+                north_degrees,
+                ..
+            } => {
+                let corners = [
+                    LonLatDegrees::new(*west_degrees, *south_degrees),
+                    LonLatDegrees::new(*east_degrees, *south_degrees),
+                    LonLatDegrees::new(*east_degrees, *north_degrees),
+                    LonLatDegrees::new(*west_degrees, *north_degrees),
+                ];
+                olam_closed_corridor_contains_cartesian(
+                    point,
+                    &corners,
+                    radius,
+                    2_000_000.0 * 1.2,
+                )
+            }
+            Self::Corridor {
+                points,
+                radius_meters,
+                ..
+            } => points.windows(2).enumerate().any(|(idx, segment)| {
+                let (distance, t) =
+                    olam_corridor_segment_distance_meters(point, segment[0], segment[1], radius);
+                distance < olam_corridor_radius_at_segment(radius_meters, idx, t) * 1.2
+            }),
+            Self::Polygon { points, .. } => olam_open_corridor_contains_cartesian(
+                point,
+                points,
+                radius,
+                2_000_000.0 * 1.2,
+            ),
+        }
+    }
+
+    fn contains_cartesian_xy(&self, point: CartesianPoint) -> bool {
+        match self {
+            Self::Circle {
+                center,
+                radius_meters,
+                ..
+            } => {
+                let dx = point.x - center.lon_degrees;
+                let dy = point.y - center.lat_degrees;
+                dx.hypot(dy) < *radius_meters
+            }
+            Self::Corridor {
+                points,
+                radius_meters,
+                ..
+            } => points.windows(2).enumerate().any(|(idx, segment)| {
+                let (distance, t) = olam_cartesian_xy_segment_distance(point, segment[0], segment[1]);
+                distance < olam_corridor_radius_at_segment(radius_meters, idx, t)
+            }),
+            Self::Bbox { .. } | Self::Polygon { .. } => false,
+        }
+    }
+
+    fn close_to_cartesian_xy(&self, point: CartesianPoint) -> bool {
+        match self {
+            Self::Circle {
+                center,
+                radius_meters,
+                ..
+            } => {
+                let dx = point.x - center.lon_degrees;
+                let dy = point.y - center.lat_degrees;
+                dx.hypot(dy) < radius_meters * 1.5
+            }
+            Self::Corridor {
+                points,
+                radius_meters,
+                ..
+            } => points.windows(2).enumerate().any(|(idx, segment)| {
+                let (distance, t) = olam_cartesian_xy_segment_distance(point, segment[0], segment[1]);
+                distance < olam_corridor_radius_at_segment(radius_meters, idx, t) * 1.2
+            }),
+            Self::Bbox { .. } | Self::Polygon { .. } => false,
+        }
+    }
+}
+
+fn validate_olam_method_c_radius(name: &str, value: f64) -> io::Result<()> {
+    validate_positive_distance(name, value)?;
+    if value < OLAM_METHOD_C_MIN_GRID_SPACING_METERS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{name} must be at least {OLAM_METHOD_C_MIN_GRID_SPACING_METERS} to match Fortran Method-C dzxmin"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn olam_closed_corridor_contains_cartesian(
+    point: CartesianPoint,
+    points: &[LonLatDegrees],
+    radius: f64,
+    corridor_radius_meters: f64,
+) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    points.windows(2).any(|segment| {
+        olam_corridor_segment_distance_meters(point, segment[0], segment[1], radius).0
+            < corridor_radius_meters
+    }) || points
+        .last()
+        .zip(points.first())
+        .is_some_and(|(&last, &first)| {
+            olam_corridor_segment_distance_meters(point, last, first, radius).0
+                < corridor_radius_meters
+        })
+}
+
+fn olam_open_corridor_contains_cartesian(
+    point: CartesianPoint,
+    points: &[LonLatDegrees],
+    radius: f64,
+    corridor_radius_meters: f64,
+) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    points.windows(2).any(|segment| {
+        olam_corridor_segment_distance_meters(point, segment[0], segment[1], radius).0
+            < corridor_radius_meters
+    })
+}
+
+fn olam_corridor_radius_at_segment(radius_meters: &[f64], idx: usize, t: f64) -> f64 {
+    let start = radius_meters
+        .get(idx)
+        .copied()
+        .or_else(|| radius_meters.last().copied())
+        .unwrap_or(0.0);
+    let end = radius_meters
+        .get(idx + 1)
+        .copied()
+        .or_else(|| radius_meters.last().copied())
+        .unwrap_or(start);
+    (1.0 - t) * start + t * end
+}
+
+fn olam_cartesian_xy_segment_distance(
+    point: CartesianPoint,
+    start: LonLatDegrees,
+    end: LonLatDegrees,
+) -> (f64, f64) {
+    plane_segment_distance(
+        PlanePoint::new(point.x, point.y),
+        PlanePoint::new(start.lon_degrees, start.lat_degrees),
+        PlanePoint::new(end.lon_degrees, end.lat_degrees),
+    )
+}
+
+fn olam_region_contains_method_c(
+    region: &OlamRefinementRegion,
+    point: CartesianPoint,
+    radius: f64,
+    use_cartesian_xy: bool,
+) -> bool {
+    if use_cartesian_xy {
+        region.contains_cartesian_xy(point)
+    } else {
+        region.contains_cartesian(point, radius)
+    }
+}
+
+fn olam_regions_contain_method_c(
+    regions: &[OlamRefinementRegion],
+    point: CartesianPoint,
+    radius: f64,
+    use_cartesian_xy: bool,
+) -> bool {
+    regions
+        .iter()
+        .any(|region| olam_region_contains_method_c(region, point, radius, use_cartesian_xy))
+}
+
+fn olam_region_close_to_method_c(
+    region: &OlamRefinementRegion,
+    point: CartesianPoint,
+    radius: f64,
+    use_cartesian_xy: bool,
+) -> bool {
+    if use_cartesian_xy {
+        region.close_to_cartesian_xy(point)
+    } else {
+        region.close_to_cartesian(point, radius)
+    }
+}
+
+fn olam_regions_close_to_method_c(
+    regions: &[OlamRefinementRegion],
+    point: CartesianPoint,
+    radius: f64,
+    use_cartesian_xy: bool,
+) -> bool {
+    regions
+        .iter()
+        .any(|region| olam_region_close_to_method_c(region, point, radius, use_cartesian_xy))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OlamTriangleSeed {
+    im: [usize; 3],
+    mrlw: usize,
+    mrlw_orig: usize,
+    ngr: usize,
+    mrow: isize,
+    target_iw: usize,
+    target_iu: [usize; 3],
+}
+/// Port of `olam_grid.f90:get_factors`.
+///
+/// OLAM does not always build the initial icosahedron at the requested `NXP`.
+/// It may choose a coarser base grid and later call `expand_delaunay_mesh`.
+/// The selection rule tries 3-first and 2-first reductions down to
+/// `nxpmin = 24`, then selects the largest candidate below `46` when more than
+/// one such candidate exists; otherwise it selects the minimum candidate.
+pub fn olam_gridinit_factorization_fortran(nxp: usize) -> Option<OlamGridinitFactors> {
+    if nxp == 0 {
+        return None;
+    }
+
+    const NXP_MIN: usize = 24;
+    let mut candidates = [OlamGridinitFactors {
+        base_nxp: nxp,
+        expansion_factor: 1,
+    }; 4];
+
+    reduce_gridinit_candidate(&mut candidates[0], 3, NXP_MIN);
+    reduce_gridinit_candidate(&mut candidates[0], 2, NXP_MIN);
+
+    reduce_gridinit_candidate(&mut candidates[1], 2, NXP_MIN);
+    reduce_gridinit_candidate(&mut candidates[1], 3, NXP_MIN);
+
+    let threshold = (NXP_MIN - 1) * 2;
+    let under_threshold = candidates
+        .iter()
+        .filter(|candidate| candidate.base_nxp < threshold)
+        .count();
+
+    let mut selected = candidates[0];
+    if under_threshold > 1 {
+        for candidate in candidates.iter().copied().skip(1) {
+            if candidate.base_nxp < threshold && candidate.base_nxp > selected.base_nxp {
+                selected = candidate;
+            }
+        }
+    } else {
+        for candidate in candidates.iter().copied().skip(1) {
+            if candidate.base_nxp < selected.base_nxp {
+                selected = candidate;
+            }
+        }
+    }
+
+    Some(selected)
+}
+
+fn reduce_gridinit_candidate(candidate: &mut OlamGridinitFactors, factor: usize, nxp_min: usize) {
+    while candidate.base_nxp % factor == 0 && candidate.base_nxp / factor >= nxp_min {
+        candidate.base_nxp /= factor;
+        candidate.expansion_factor *= factor;
+    }
+}
+
+impl OlamDelaunayMesh {
+    /// Surface (non-atmosphere) perimeter-row expansion width used by
+    /// OLAM Method-C `perim_mrow`.
+    pub const METHOD_C_MAX_MROWS_SURFACE: usize = 7;
+
+    /// Atmosphere perimeter-row expansion width used by OLAM Method-C
+    /// `perim_mrow`.
+    pub const METHOD_C_MAX_MROWS_ATMOS: usize = 13;
+
+    /// Build the generic OLAM Delaunay mesh wrapper from an already-relaxed
+    /// global icosahedron.
+    pub fn from_relaxed_icosahedron(relaxed: &IcosahedronRelaxedGrid) -> Self {
+        Self {
+            nmd: relaxed.nmd,
+            nud: relaxed.nud,
+            nwd: relaxed.nwd,
+            impent: relaxed.impent,
+            m_points: relaxed.m_points.clone(),
+            m_metadata: default_olam_m_metadata(relaxed.nmd),
+            u_edges: relaxed.connectivity.u_edges.clone(),
+            w_faces: relaxed.connectivity.w_faces.clone(),
+            m_neighbors: relaxed.m_neighbors.clone(),
+            m_prognostic: olam_identity_prognostic_map(relaxed.nmd),
+            u_prognostic: olam_identity_prognostic_map(relaxed.nud),
+            w_prognostic: olam_identity_prognostic_map(relaxed.nwd),
+            boundary_rows: Vec::new(),
+        }
+    }
+
+    /// Build OLAM's local Cartesian hexagonal base grid used by
+    /// `cart_hex.F90:cart_hex` for `MDOMAIN = 5`.
+    pub fn from_cart_hex(nxp: usize, deltax_meters: f64) -> io::Result<Self> {
+        if !deltax_meters.is_finite() || deltax_meters < OLAM_METHOD_C_MIN_GRID_SPACING_METERS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "OLAM cart_hex DELTAX must be at least {OLAM_METHOD_C_MIN_GRID_SPACING_METERS} meters"
+                ),
+            ));
+        }
+
+        let mut nmd = 1;
+        let mut nud = 1;
+        let mut nwd = 1;
+        let tab_width = nxp + 2;
+        let tab_plane = tab_width * tab_width;
+        let tab_len = 4 * tab_plane;
+        let tab_idx = |i: usize, j: usize, ir: usize| ir * tab_plane + j * tab_width + i;
+        let mut jm1 = vec![1usize; tab_len];
+        let mut ju1 = vec![1usize; tab_len];
+        let mut ju2 = vec![1usize; tab_len];
+        let mut ju3 = vec![1usize; tab_len];
+        let mut jw1 = vec![1usize; tab_len];
+        let mut jw2 = vec![1usize; tab_len];
+
+        for ir in 1..=3 {
+            for j in 1..=nxp {
+                for i in 1..=nxp + 1 {
+                    let idx = tab_idx(i, j, ir);
+                    jm1[idx] = nmd + 1;
+                    ju1[idx] = nud + 1;
+                    ju2[idx] = nud + 2;
+                    ju3[idx] = nud + 3;
+                    jw1[idx] = nwd + 1;
+                    jw2[idx] = nwd + 2;
+                    nmd += 1;
+                    nud += 3;
+                    nwd += 2;
+                }
+                jw1[tab_idx(0, j, ir)] = nwd + 1;
+                nwd += 1;
+            }
+
+            for i in 1..=nxp + 1 {
+                let idx = tab_idx(i, nxp + 1, ir);
+                jm1[idx] = nmd + 1;
+                ju1[idx] = nud + 1;
+                jw2[tab_idx(i, 0, ir)] = nwd + 1;
+                nmd += 1;
+                nud += 1;
+                nwd += 1;
+            }
+        }
+        let jw0 = nwd + 1;
+        nwd += 1;
+
+        let zero = CartesianPoint::new(0.0, 0.0, 0.0);
+        let mut m_points = vec![zero; nmd + 1];
+        let mut u_edges = vec![IcosahedronUEdge::default(); nud + 1];
+        let mut w_faces = vec![IcosahedronWFace::default(); nwd + 1];
+        let mut m_prognostic = olam_identity_prognostic_map(nmd);
+        let mut u_prognostic = olam_identity_prognostic_map(nud);
+        let mut w_prognostic = olam_identity_prognostic_map(nwd);
+        for face in w_faces.iter_mut().take(nwd + 1).skip(2) {
+            face.mrlw = 1;
+            face.mrlw_orig = 1;
+            face.ngr = 1;
+        }
+
+        let unit_dist = (4.0_f64 / 3.0).sqrt().sqrt() * deltax_meters;
+        let xstart = -((nxp + 1) as f64) * 0.5 * unit_dist;
+        let ystart = -((nxp as f64) + 1.0 / 3.0) * 0.5 * 3.0_f64.sqrt() * unit_dist;
+
+        for ir in 1..=3 {
+            let irm = if ir == 1 { 3 } else { ir - 1 };
+            let irp = if ir == 3 { 1 } else { ir + 1 };
+            let (rxx, rxy, ryx, ryy) = match ir {
+                1 => (1.0, 0.0, 0.0, 1.0),
+                2 => (-0.5, -0.5 * 3.0_f64.sqrt(), 0.5 * 3.0_f64.sqrt(), -0.5),
+                _ => (-0.5, 0.5 * 3.0_f64.sqrt(), -0.5 * 3.0_f64.sqrt(), -0.5),
+            };
+
+            for j in 1..=nxp {
+                for i in 1..=nxp + 1 {
+                    let idx = tab_idx(i, j, ir);
+                    let im1 = jm1[idx];
+                    let xm = xstart + ((i - 1) as f64 - 0.5 * (j - 1) as f64) * unit_dist;
+                    let ym = ystart + (j - 1) as f64 * 0.5 * 3.0_f64.sqrt() * unit_dist;
+                    m_points[im1] =
+                        CartesianPoint::new(rxx * xm + rxy * ym, ryx * xm + ryy * ym, 0.0);
+
+                    let iu1 = ju1[idx];
+                    let iu2 = ju2[idx];
+                    let iu3 = ju3[idx];
+                    let iw1 = jw1[idx];
+                    let iw2 = jw2[idx];
+                    let iw3 = jw2[tab_idx(i, j - 1, ir)];
+                    let iw4 = jw1[tab_idx(i - 1, j, ir)];
+                    let im3 = jm1[tab_idx(i, j + 1, ir)];
+                    let iu5 = ju1[tab_idx(i, j + 1, ir)];
+
+                    let (im2, im4, iu4) = if i <= nxp {
+                        (
+                            jm1[tab_idx(i + 1, j, ir)],
+                            jm1[tab_idx(i + 1, j + 1, ir)],
+                            ju3[tab_idx(i + 1, j, ir)],
+                        )
+                    } else {
+                        (
+                            jm1[tab_idx(j, nxp + 1, irp)],
+                            jm1[tab_idx(j + 1, nxp + 1, irp)],
+                            ju1[tab_idx(j, nxp + 1, irp)],
+                        )
+                    };
+
+                    u_edges[iu1] = if ir == 1 {
+                        IcosahedronUEdge {
+                            im: [im1, im2],
+                            iw: set_first_two([1; 6], iw3, iw1),
+                            ..IcosahedronUEdge::default()
+                        }
+                    } else {
+                        IcosahedronUEdge {
+                            im: [im2, im1],
+                            iw: set_first_two([1; 6], iw1, iw3),
+                            ..IcosahedronUEdge::default()
+                        }
+                    };
+                    u_edges[iu2] = if ir == 1 || ir == 3 {
+                        IcosahedronUEdge {
+                            im: [im1, im4],
+                            iw: set_first_two([1; 6], iw1, iw2),
+                            ..IcosahedronUEdge::default()
+                        }
+                    } else {
+                        IcosahedronUEdge {
+                            im: [im4, im1],
+                            iw: set_first_two([1; 6], iw2, iw1),
+                            ..IcosahedronUEdge::default()
+                        }
+                    };
+                    u_edges[iu3] = if ir == 3 {
+                        IcosahedronUEdge {
+                            im: [im1, im3],
+                            iw: set_first_two([1; 6], iw2, iw4),
+                            ..IcosahedronUEdge::default()
+                        }
+                    } else {
+                        IcosahedronUEdge {
+                            im: [im3, im1],
+                            iw: set_first_two([1; 6], iw4, iw2),
+                            ..IcosahedronUEdge::default()
+                        }
+                    };
+
+                    w_faces[iw1].npoly = 3;
+                    w_faces[iw1].iu = [iu1, iu4, iu2];
+                    w_faces[iw1].im = [im1, im2, im4];
+                    w_faces[iw2].npoly = 3;
+                    w_faces[iw2].iu = [iu2, iu5, iu3];
+                    w_faces[iw2].im = [im1, im4, im3];
+
+                    if i == 1 && j == 1 {
+                        w_faces[iw3].iu[0] = iu1;
+                        w_faces[iw4].iu[0] = iu3;
+                        m_prognostic[im1] = jm1[tab_idx(2, 2, irp)];
+                        u_prognostic[iu1] = if ir == 2 {
+                            ju3[tab_idx(2, 1, irm)]
+                        } else {
+                            ju2[tab_idx(1, 1, irp)]
+                        };
+                        if ir == 3 {
+                            u_prognostic[iu2] = ju3[tab_idx(2, 1, irp)];
+                        }
+                        u_prognostic[iu3] = ju1[tab_idx(2, 2, irp)];
+                        w_prognostic[iw3] = jw2[tab_idx(2, 1, irm)];
+                        w_prognostic[iw4] = jw1[tab_idx(2, 2, irp)];
+                    } else if i == 1 {
+                        w_faces[iw4].iu[0] = iu3;
+                        m_prognostic[im1] = jm1[tab_idx(j + 1, 2, irp)];
+                        if ir != 2 {
+                            u_prognostic[iu1] = ju2[tab_idx(j, 1, irp)];
+                        }
+                        if ir == 3 {
+                            u_prognostic[iu2] = ju3[tab_idx(j + 1, 1, irp)];
+                        }
+                        u_prognostic[iu3] = ju1[tab_idx(j + 1, 2, irp)];
+                        w_prognostic[iw4] = jw1[tab_idx(j + 1, 2, irp)];
+                    } else if j == 1 {
+                        w_faces[iw3].iu[0] = iu1;
+                        m_prognostic[im1] = jm1[tab_idx(2, i, irm)];
+                        u_prognostic[iu1] = if i == nxp + 1 && ir == 2 {
+                            ju1[tab_idx(1, nxp + 1, ir)]
+                        } else if i == nxp + 1 {
+                            ju2[tab_idx(nxp, 1, irp)]
+                        } else {
+                            ju3[tab_idx(2, i, irm)]
+                        };
+                        if ir == 3 {
+                            u_prognostic[iu2] = ju1[tab_idx(1, i, irm)];
+                        }
+                        if ir != 1 {
+                            u_prognostic[iu3] = ju2[tab_idx(1, i - 1, irm)];
+                        }
+                        w_prognostic[iw3] = if i == nxp + 1 {
+                            jw2[tab_idx(nxp + 1, 1, irp)]
+                        } else {
+                            jw2[tab_idx(2, i, irm)]
+                        };
+                    }
+                }
+            }
+
+            for i in 1..=nxp + 1 {
+                let idx = tab_idx(i, nxp + 1, ir);
+                let im1 = jm1[idx];
+                let iu1 = ju1[idx];
+                let iw3 = jw2[tab_idx(i, nxp, ir)];
+                let xm = xstart + ((i - 1) as f64 - 0.5 * nxp as f64) * unit_dist;
+                let ym = ystart + nxp as f64 * 0.5 * 3.0_f64.sqrt() * unit_dist;
+                m_points[im1] =
+                    CartesianPoint::new(rxx * xm + rxy * ym, ryx * xm + ryy * ym, 0.0);
+
+                let (im2, iw1) = if i <= nxp {
+                    (jm1[tab_idx(i + 1, nxp + 1, ir)], jw1[tab_idx(nxp + 1, i, irm)])
+                } else {
+                    w_faces[jw0].iu[ir - 1] = iu1;
+                    (jm1[tab_idx(i, nxp + 1, irp)], jw0)
+                };
+                u_edges[iu1] = if ir == 1 {
+                    IcosahedronUEdge {
+                        im: [im1, im2],
+                        iw: set_first_two([1; 6], iw3, iw1),
+                        ..IcosahedronUEdge::default()
+                    }
+                } else {
+                    IcosahedronUEdge {
+                        im: [im2, im1],
+                        iw: set_first_two([1; 6], iw1, iw3),
+                        ..IcosahedronUEdge::default()
+                    }
+                };
+                if i == 1 {
+                    m_prognostic[im1] = jm1[tab_idx(2, nxp + 1, irm)];
+                    if ir != 2 {
+                        u_prognostic[iu1] = ju2[tab_idx(nxp + 1, 1, irp)];
+                    }
+                }
+            }
+        }
+
+        for edge in u_edges.iter_mut().take(nud + 1).skip(2) {
+            edge.mrlu = 1;
+        }
+
+        let jw0_edges = w_faces[jw0].iu;
+        let mut jw0_m = Vec::<usize>::new();
+        for &iu in &jw0_edges {
+            if iu <= 1 {
+                continue;
+            }
+            for &im in &u_edges[iu].im {
+                if im > 1 && !jw0_m.contains(&im) {
+                    jw0_m.push(im);
+                }
+            }
+        }
+        if jw0_m.len() == 3 {
+            w_faces[jw0].npoly = 3;
+            w_faces[jw0].im = [jw0_m[0], jw0_m[1], jw0_m[2]];
+        }
+        fill_cart_hex_w_face_neighbors_from_edges(&u_edges, &mut w_faces, &w_prognostic)?;
+        let mut connectivity = IcosahedronDiamondConnectivity { u_edges, w_faces };
+        derive_icosahedron_u_neighbors_fortran(&mut connectivity).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to derive OLAM cart_hex U-edge neighbors",
+            )
+        })?;
+        let IcosahedronDiamondConnectivity { u_edges, w_faces } = connectivity;
+
+        let m_neighbors =
+            derive_cart_hex_m_neighbors_from_active_faces(nmd, &u_edges, &w_faces, &w_prognostic)?;
+
+        Ok(Self {
+            nmd,
+            nud,
+            nwd,
+            impent: [1; 12],
+            m_points,
+            m_metadata: default_olam_m_metadata(nmd),
+            u_edges,
+            w_faces,
+            m_neighbors,
+            m_prognostic,
+            u_prognostic,
+            w_prognostic,
+            boundary_rows: Vec::new(),
+        })
+    }
+
+    /// Build a validated OLAM Delaunay mesh from the migrated global
+    /// icosahedron path.
+    pub fn from_icosahedron(
+        nxp0: usize,
+        niter: usize,
+        beta: f64,
+        relax: f64,
+        _diagnostic_every: usize,
+    ) -> Option<Self> {
+        let initial = icosahedron_initial_grid_fortran(nxp0)?;
+        let mut connectivity = icosahedron_fill_diamonds_fortran(nxp0)?;
+        let m_neighbors = derive_icosahedron_tri_neighbors_fortran(initial.nmd, &mut connectivity)?;
+        let mesh = Self {
+            nmd: initial.nmd,
+            nud: initial.nud,
+            nwd: initial.nwd,
+            impent: initial.impent,
+            m_points: initial.m_points,
+            m_metadata: default_olam_m_metadata(initial.nmd),
+            u_edges: connectivity.u_edges,
+            w_faces: connectivity.w_faces,
+            m_neighbors,
+            m_prognostic: olam_identity_prognostic_map(initial.nmd),
+            u_prognostic: olam_identity_prognostic_map(initial.nud),
+            w_prognostic: olam_identity_prognostic_map(initial.nwd),
+            boundary_rows: Vec::new(),
+        };
+        mesh.validate_topology().ok()?;
+        if niter == 0 {
+            Some(mesh)
+        } else {
+            mesh.spring_global_with_controls(nxp0, niter, beta, relax)
+                .ok()
+        }
+    }
+
+    /// Rebuild an OLAM Delaunay mesh from the compact EarthMesh gridfile
+    /// tables written at the Voronoi output boundary.
+    ///
+    /// In that schema, `GLONW/GLATW` rows are the OLAM Delaunay M points and
+    /// `itab_m%iw` rows are the OLAM W-face M-point triplets. Row `0`
+    /// corresponds to Fortran/OLAM id `1`; active records start at id `2`.
+    pub fn from_voronoi_gridfile_tables(
+        m_point_lonlat: &[LonLatDegrees],
+        w_face_m_points: &[[usize; 3]],
+        m_face_counts: &[usize],
+    ) -> io::Result<Self> {
+        let nmd = m_point_lonlat.len();
+        let nwd = w_face_m_points.len();
+        require_olam_len("OLAM gridfile M point valences", m_face_counts.len(), nmd)?;
+        if nmd < 2 || nwd < 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM gridfile tables must include placeholder row 1 and at least one active row",
+            ));
+        }
+
+        let radius = earthmesh_core::EARTH_RADIUS_METERS;
+        let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); nmd + 1];
+        for (row, &lonlat) in m_point_lonlat.iter().enumerate() {
+            let id = row + 1;
+            let unit = lonlat_degrees_to_unit_xyz(lonlat);
+            m_points[id] = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
+        }
+
+        let pentagons = m_face_counts
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &count)| (row > 0 && count == 5).then_some(row + 1))
+            .collect::<Vec<_>>();
+        if pentagons.len() != 12 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OLAM gridfile source must expose 12 pentagonal M points, found {}",
+                    pentagons.len()
+                ),
+            ));
+        }
+        let mut impent = [1usize; 12];
+        impent.copy_from_slice(&pentagons);
+
+        let face_seeds = w_face_m_points
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &im)| {
+                let iw = row + 1;
+                (iw > 1).then_some(
+                    OlamTriangleSeed::new(im, (1, 1, 1))
+                        .with_target_iw(iw)
+                        .with_mrow(0),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        match olam_mesh_from_triangle_seeds(nmd, impent, m_points.clone(), &face_seeds) {
+            Ok(mesh) => Ok(mesh),
+            Err(forward_err) => {
+                let reversed = face_seeds
+                    .iter()
+                    .map(|seed| {
+                        OlamTriangleSeed::new(
+                            [seed.im[0], seed.im[2], seed.im[1]],
+                            (seed.mrlw, seed.mrlw_orig, seed.ngr),
+                        )
+                        .with_mrow(seed.mrow)
+                        .with_target_iw(seed.target_iw)
+                    })
+                    .collect::<Vec<_>>();
+                olam_mesh_from_triangle_seeds(nmd, impent, m_points, &reversed).map_err(
+                    |reverse_err| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "failed to rebuild OLAM mesh from gridfile tables; forward orientation: {forward_err}; reversed orientation: {reverse_err}"
+                            ),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    /// Apply OLAM `spring_dynamics_globe` to the active Delaunay M points.
+    ///
+    /// OLAM's global spring is a Delaunay-edge relaxation pass: U-edge lengths
+    /// are pushed toward `beta * 2*pi*R / (5*nxp) / 1.2`, the target is adjusted
+    /// by the two opposite triangle angles, all M points are projected back to
+    /// the sphere, and the twelve original pentagon points (`impent`) are kept
+    /// fixed.
+    pub fn spring_global(&self, nxp: usize, niter: usize) -> io::Result<Self> {
+        self.spring_global_with_controls(nxp, niter, 1.25, 0.035)
+    }
+
+    /// Same as [`Self::spring_global`], but exposes OLAM's two scalar controls
+    /// so callers that still carry namelist values can opt into them explicitly.
+    pub fn spring_global_with_controls(
+        &self,
+        nxp: usize,
+        niter: usize,
+        beta: f64,
+        relax: f64,
+    ) -> io::Result<Self> {
+        self.spring_global_with_dist00_and_projection(nxp, niter, beta, relax, None, true)
+    }
+
+    /// Apply OLAM `spring_dynamics_globe` for Cartesian/regional native
+    /// coordinates (`mdomain >= 2`): target spacing comes from `deltax`, and M
+    /// points are not projected back to Earth radius.
+    pub fn spring_global_cartesian_with_controls(
+        &self,
+        nxp: usize,
+        niter: usize,
+        deltax_meters: f64,
+        relax: f64,
+    ) -> io::Result<Self> {
+        if !deltax_meters.is_finite() || deltax_meters < 0.001 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM Cartesian global spring deltax must be at least 0.001",
+            ));
+        }
+        let cartesian_dist00 = deltax_meters * (2.0 / 3.0_f64.sqrt()).sqrt();
+        self.spring_global_with_dist00_and_projection(
+            nxp,
+            niter,
+            1.0,
+            relax,
+            Some(cartesian_dist00),
+            false,
+        )
+    }
+
+    fn spring_global_with_dist00_and_projection(
+        &self,
+        nxp: usize,
+        niter: usize,
+        beta: f64,
+        relax: f64,
+        dist00_override: Option<f64>,
+        project_to_radius: bool,
+    ) -> io::Result<Self> {
+        if nxp == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM global spring requires positive NXP",
+            ));
+        }
+        if !beta.is_finite() || beta <= 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM global spring beta must be positive and finite",
+            ));
+        }
+        if !relax.is_finite() || relax <= 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM global spring relax must be positive and finite",
+            ));
+        }
+
+        self.validate_topology()?;
+        if niter == 0 {
+            return Ok(self.clone());
+        }
+
+        let radius = active_mesh_radius(self)?;
+        let topology =
+            icosahedron_spring_topology_fortran(self.nmd, &self.u_edges, &self.m_neighbors, relax)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "failed to build OLAM global spring topology",
+                    )
+                })?;
+        let dist00 = dist00_override.unwrap_or(olam_fortran_global_dist00(beta, radius, nxp));
+        let mut m_points = self.m_points.clone();
+
+        for iteration in 1..=niter {
+            if (iteration == 1 || iteration == niter || iteration % 20 == 0)
+                && !earthmesh_core::progress::report("spring", iteration, niter)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "OLAM global spring was cancelled",
+                ));
+            }
+            m_points =
+                olam_global_spring_iteration(
+                    &m_points,
+                    &topology,
+                    &self.impent,
+                    dist00,
+                    if project_to_radius { Some(radius) } else { None },
+                )
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "failed to run OLAM global spring iteration",
+                        )
+                    })?;
+        }
+
+        for point in m_points.iter_mut().skip(2) {
+            point.x = point.x as f32 as f64;
+            point.y = point.y as f32 as f64;
+            point.z = point.z as f32 as f64;
+        }
+
+        let adjusted = Self {
+            nmd: self.nmd,
+            nud: self.nud,
+            nwd: self.nwd,
+            impent: self.impent,
+            m_points,
+            m_metadata: self.m_metadata.clone(),
+            u_edges: self.u_edges.clone(),
+            w_faces: self.w_faces.clone(),
+            m_neighbors: self.m_neighbors.clone(),
+            m_prognostic: self.m_prognostic.clone(),
+            u_prognostic: self.u_prognostic.clone(),
+            w_prognostic: self.w_prognostic.clone(),
+            boundary_rows: self.boundary_rows.clone(),
+        };
+        adjusted.validate_topology()?;
+        Ok(adjusted)
+    }
+
+    /// Apply the core OLAM `spring_dynamics_nest` relaxation to a refined nest.
+    ///
+    /// With `move_interior=false` this mirrors OLAM's atmospheric nest call:
+    /// only M points adjacent to transition-row faces with nonzero `mrow` move. With
+    /// `move_interior=true`, M points adjacent to faces on `ngr` are also moved.
+    pub fn spring_nest(
+        &self,
+        nxp: usize,
+        niter: usize,
+        ngr: usize,
+        move_interior: bool,
+    ) -> io::Result<Self> {
+        self.spring_nest_with_radius_projection(nxp, niter, ngr, move_interior, true, None)
+    }
+
+    fn spring_nest_with_radius_projection(
+        &self,
+        nxp: usize,
+        niter: usize,
+        ngr: usize,
+        move_interior: bool,
+        project_to_radius: bool,
+        dist00_override: Option<f64>,
+    ) -> io::Result<Self> {
+        if nxp == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM nest spring requires positive NXP",
+            ));
+        }
+        if ngr <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM nest spring NGR must be greater than one",
+            ));
+        }
+
+        self.validate_topology()?;
+        if niter == 0 {
+            return Ok(self.clone());
+        }
+
+        let movable_m_points = olam_nest_movable_m_points(self, ngr, move_interior)?;
+        if movable_m_points.iter().skip(2).all(|movable| !*movable) {
+            return Ok(self.clone());
+        }
+
+        let radius = active_mesh_radius(self)?;
+        let topology =
+            icosahedron_spring_topology_fortran(self.nmd, &self.u_edges, &self.m_neighbors, 0.035)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "failed to build OLAM nest spring topology",
+                    )
+                })?;
+        let dist00 = dist00_override.unwrap_or(olam_fortran_global_dist00(1.0, radius, nxp));
+        let mut m_points = self.m_points.clone();
+
+        for iteration in 1..=niter {
+            if (iteration == 1 || iteration == niter || iteration % 100 == 0)
+                && !earthmesh_core::progress::report("olam-nest-spring", iteration, niter)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "OLAM nest spring was cancelled",
+                ));
+            }
+            m_points =
+                olam_nest_spring_iteration(
+                    &m_points,
+                    self,
+                    &topology,
+                    &movable_m_points,
+                    dist00,
+                    project_to_radius,
+                )
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "failed to run OLAM nest spring iteration",
+                    )
+                })?;
+        }
+
+        for point in m_points.iter_mut().skip(2) {
+            point.x = point.x as f32 as f64;
+            point.y = point.y as f32 as f64;
+            point.z = point.z as f32 as f64;
+        }
+
+        let adjusted = Self {
+            nmd: self.nmd,
+            nud: self.nud,
+            nwd: self.nwd,
+            impent: self.impent,
+            m_points,
+            m_metadata: self.m_metadata.clone(),
+            u_edges: self.u_edges.clone(),
+            w_faces: self.w_faces.clone(),
+            m_neighbors: self.m_neighbors.clone(),
+            m_prognostic: self.m_prognostic.clone(),
+            u_prognostic: self.u_prognostic.clone(),
+            w_prognostic: self.w_prognostic.clone(),
+            boundary_rows: self.boundary_rows.clone(),
+        };
+        adjusted.validate_topology()?;
+        Ok(adjusted)
+    }
+
+    /// Final W-face ids that were generated as transition rows by the most
+    /// recent specified-region refinement pass.
+    pub fn boundary_rows(&self) -> &[usize] {
+        &self.boundary_rows
+    }
+
+    /// One-based OLAM `itab_md` refinement/grid metadata.
+    pub fn m_point_metadata(&self) -> &[IcosahedronMPointMetadata] {
+        &self.m_metadata
+    }
+
+    /// Spawn specified OLAM refinement regions with independent per-region
+    /// levels using OLAM Method-C. Each pass follows the legacy perimeter
+    /// grouping and transition-patch table updates instead of a generic local
+    /// triangulation.
+    ///
+    /// This defaults to surface-style Method-C transition width (`max_mrows = 7`)
+    /// and is therefore intended for non-atmosphere meshes unless callers pass
+    /// an explicit width.
+    pub fn spawn_nest(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+    ) -> io::Result<Self> {
+        self.spawn_nest_with_max_mrows(
+            regions,
+            max_level,
+            Self::METHOD_C_MAX_MROWS_SURFACE,
+        )
+    }
+
+    /// Spawn OLAM Method-C refinement with atmosphere-style transition width
+    /// (`max_mrows = 13`).
+    pub fn spawn_nest_as_atmosmesh(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+    ) -> io::Result<Self> {
+        self.spawn_nest_with_max_mrows(
+            regions,
+            max_level,
+            Self::METHOD_C_MAX_MROWS_ATMOS,
+        )
+    }
+
+    /// Spawn OLAM Method-C refinement with surface-style transition width
+    /// (`max_mrows = 7`).
+    pub fn spawn_nest_as_surface(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+    ) -> io::Result<Self> {
+        self.spawn_nest(regions, max_level)
+    }
+
+    /// OLAM refinement using an explicit perimeter transition width.
+    ///
+    /// `max_mrows` controls the `perim_mrow` propagation width and allows callers
+    /// to select atmosphere-like (13) or surface-like (7) boundary behavior.
+    pub fn spawn_nest_with_max_mrows(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+    ) -> io::Result<Self> {
+        self.spawn_nest_internal(regions, max_level, max_mrows, None, false)
+            .map(|(mesh, _)| mesh)
+    }
+
+    /// OLAM Method-C refinement for Cartesian/native XY coordinates used by
+    /// Fortran `ngr_area` when a Method-C spawn is actually active.
+    pub fn spawn_nest_cartesian_xy_with_max_mrows(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+    ) -> io::Result<Self> {
+        self.spawn_nest_internal(regions, max_level, max_mrows, None, true)
+            .map(|(mesh, _)| mesh)
+    }
+
+    /// Spawn specified OLAM refinement regions and run OLAM nest spring after
+    /// each pass that actually refines faces. The returned counter is the
+    /// number of spring passes executed.
+    pub fn spawn_nest_with_spring(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        nxp: usize,
+        niter: usize,
+    ) -> io::Result<(Self, usize)> {
+        self.spawn_nest_with_spring_and_max_mrows(
+            regions,
+            max_level,
+            Self::METHOD_C_MAX_MROWS_SURFACE,
+            nxp,
+            niter,
+        )
+    }
+
+    /// Spawn OLAM Method-C refinement with atmosphere-style transition width
+    /// (`max_mrows = 13`) and run OLAM nest spring after each pass.
+    pub fn spawn_nest_with_spring_as_atmosmesh(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        nxp: usize,
+        niter: usize,
+    ) -> io::Result<(Self, usize)> {
+        self.spawn_nest_with_spring_and_max_mrows(
+            regions,
+            max_level,
+            Self::METHOD_C_MAX_MROWS_ATMOS,
+            nxp,
+            niter,
+        )
+    }
+
+    /// Spawn specified OLAM refinement regions with explicit perimeter row width and
+    /// optional springing.
+    pub fn spawn_nest_with_spring_and_max_mrows(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+        nxp: usize,
+        niter: usize,
+    ) -> io::Result<(Self, usize)> {
+        self.spawn_nest_internal(
+            regions,
+            max_level,
+            max_mrows,
+            Some((nxp, niter, None)),
+            false,
+        )
+    }
+
+    /// OLAM Method-C refinement with springing for Cartesian/native XY
+    /// coordinates used by Fortran `ngr_area` when a Method-C spawn is active.
+    pub fn spawn_nest_cartesian_xy_with_spring_and_max_mrows(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+        nxp: usize,
+        niter: usize,
+    ) -> io::Result<(Self, usize)> {
+        self.spawn_nest_internal(
+            regions,
+            max_level,
+            max_mrows,
+            Some((nxp, niter, None)),
+            true,
+        )
+    }
+
+    /// OLAM Method-C refinement with springing for Cartesian/native XY
+    /// coordinates, using Fortran `spring_dynamics_nest` target spacing:
+    /// `deltax * sqrt(2 / sqrt(3))`.
+    pub fn spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+        nxp: usize,
+        niter: usize,
+        deltax_meters: f64,
+    ) -> io::Result<(Self, usize)> {
+        if !deltax_meters.is_finite() || deltax_meters < 0.001 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM Cartesian nest spring deltax must be at least 0.001",
+            ));
+        }
+        let cartesian_dist00 = deltax_meters * (2.0 / 3.0_f64.sqrt()).sqrt();
+        self.spawn_nest_internal(
+            regions,
+            max_level,
+            max_mrows,
+            Some((nxp, niter, Some(cartesian_dist00))),
+            true,
+        )
+    }
+
+    fn spawn_nest_internal(
+        &self,
+        regions: &[OlamRefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+        spring: Option<(usize, usize, Option<f64>)>,
+        use_cartesian_xy: bool,
+    ) -> io::Result<(Self, usize)> {
+        self.validate_topology()?;
+        if regions.is_empty() || max_level == 0 {
+            return Ok((self.clone(), 0));
+        }
+        if max_mrows == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM spawn_nest max_mrows must be greater than zero",
+            ));
+        }
+        if max_level > 5 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("OLAM refinement max_level {max_level} must be in 1..=5"),
+            ));
+        }
+        for region in regions {
+            if use_cartesian_xy {
+                region.validate_cartesian_xy()?;
+            } else {
+                region.validate()?;
+            }
+        }
+
+        let mut mesh = self.clone();
+        let mut spring_passes = 0usize;
+        let mut next_grid_number = self
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.ngr)
+            .chain(self.m_metadata.iter().skip(2).map(|metadata| metadata.ngr))
+            .max()
+            .unwrap_or(1)
+            .max(1)
+            + 1;
+        for region in regions.iter().filter(|region| region.level() <= max_level) {
+            let pass = region.level();
+            if pass > 1 && matches!(region, OlamRefinementRegion::Polygon { .. }) {
+                let has_nested_parent = mesh
+                    .w_faces
+                    .iter()
+                    .skip(2)
+                    .any(|face| face.ngr > 1);
+                let has_parent_level_region =
+                    regions.iter().any(|region| region.level() == pass - 1);
+                if !has_nested_parent && !has_parent_level_region {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C perimeter length invalid: pass {pass} polygon regions require explicit parent-level halo"
+                        ),
+                    ));
+                }
+            }
+
+            let selected_faces =
+                mesh.selected_regions_faces(std::slice::from_ref(region), pass, use_cartesian_xy)?;
+            if selected_faces.iter().skip(2).all(|selected| !*selected) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OLAM Method-C selected no active W faces for pass {pass}; refusing to replace a local nest with global expansion"
+                    ),
+                ));
+            }
+            let grid_number = next_grid_number;
+            match mesh.spawn_nest_pass_with_max_mrows(
+                &selected_faces,
+                grid_number,
+                max_mrows,
+                !use_cartesian_xy,
+            ) {
+                Ok(refined) => mesh = refined,
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("OLAM spawn_nest pass {pass} failed: {error}"),
+                    ));
+                }
+            }
+            next_grid_number += 1;
+
+            if let Some((nxp, niter, cartesian_dist00)) = spring {
+                if niter > 0 {
+                    mesh = mesh.spring_nest_with_radius_projection(
+                        nxp,
+                        niter,
+                        grid_number,
+                        false,
+                        !use_cartesian_xy,
+                        cartesian_dist00,
+                    )?;
+                    spring_passes += 1;
+                }
+            }
+        }
+
+        Ok((mesh, spring_passes))
+    }
+
+    #[cfg(test)]
+    fn selected_region_faces(
+        &self,
+        region: &OlamRefinementRegion,
+        pass: usize,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Vec<bool>> {
+        self.selected_regions_faces(std::slice::from_ref(region), pass, use_cartesian_xy)
+    }
+
+    fn selected_regions_faces(
+        &self,
+        regions: &[OlamRefinementRegion],
+        pass: usize,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Vec<bool>> {
+        let radius = active_mesh_radius(self)?;
+        require_olam_len("m_points", self.m_points.len(), self.nmd + 1)?;
+        let method_c_m_neighbors = self.method_c_m_neighbors()?;
+        let mut selected = vec![false; self.nwd + 1];
+        if regions.is_empty() {
+            return Ok(selected);
+        }
+        let seed_points =
+            self.selected_region_thirdm_seed_points_with_neighbors(
+                regions,
+                pass,
+                radius,
+                &method_c_m_neighbors,
+                use_cartesian_xy,
+        )?;
+        for im in seed_points {
+            let mrlo = self.m_metadata[im].mrlm;
+            let mut footprint = vec![false; self.nwd + 1];
+            self.mark_fill_rad3_faces_with_neighbors(im, &mut footprint, &method_c_m_neighbors)?;
+            for iw in 2..=self.nwd {
+                if footprint[iw] && self.w_faces[iw].mrlw == mrlo {
+                    selected[iw] = true;
+                }
+            }
+        }
+        if selected.iter().skip(2).all(|selected| !*selected) {
+            return Ok(selected);
+        }
+        Ok(selected)
+    }
+
+    fn method_c_m_neighbors(&self) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
+        require_olam_len(
+            "Method-C M-neighbor table",
+            self.m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        Ok(self.m_neighbors.clone())
+    }
+
+    #[cfg(test)]
+    fn derive_icosahedron_m_neighbors_fortran(&self) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
+        derive_icosahedron_m_neighbors_fortran_checked(self.nmd, &self.u_edges, &self.w_faces)
+    }
+
+    fn selected_region_thirdm_seed_points_with_neighbors(
+        &self,
+        regions: &[OlamRefinementRegion],
+        pass: usize,
+        radius: f64,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<BTreeSet<usize>> {
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        let mut seeds = BTreeSet::new();
+        let active_regions = regions
+            .iter()
+            .filter(|region| region.level() >= pass)
+            .cloned()
+            .collect::<Vec<_>>();
+        if active_regions.is_empty() {
+            return Ok(seeds);
+        }
+        let start = self.olam_refinement_start_point_for_regions_with_neighbors(
+            &active_regions,
+            radius,
+            m_neighbors,
+            use_cartesian_xy,
+        )?;
+        let mrlo = self.m_metadata[start].mrlm;
+
+        let mut jdone = vec![[false; 6]; self.nmd + 1];
+        let mut lista = vec![start];
+        while let Some(im) = lista.pop() {
+            let neighbors = m_neighbors[im];
+            for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                require_olam_id("OLAM refinement boundary U edge", iu, self.nud)?;
+                if self.u_edges[iu].mrlu != mrlo {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C perimeter length invalid: Current nested grid crosses the parent boundary / next coarser grid boundary at M point {im}"
+                        ),
+                    ));
+                }
+            }
+            seeds.insert(im);
+
+            for neighbor in self.olam_thirdm_neighbors_fortran_with_neighbors(im, &mut jdone, m_neighbors)?
+            {
+                let point = self.m_points[neighbor];
+                let traversed_count = jdone[neighbor].iter().filter(|&&done| done).count();
+                if traversed_count < 2
+                    && olam_regions_contain_method_c(
+                        &active_regions,
+                        point,
+                        radius,
+                        use_cartesian_xy,
+                    )
+                {
+                    lista.push(neighbor);
+                }
+            }
+        }
+        Ok(seeds)
+    }
+
+    #[cfg(test)]
+    fn olam_refinement_start_point_with_neighbors(
+        &self,
+        region: &OlamRefinementRegion,
+        radius: f64,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<usize> {
+        self.olam_refinement_start_point_for_regions_with_neighbors(
+            std::slice::from_ref(region),
+            radius,
+            m_neighbors,
+            use_cartesian_xy,
+        )
+    }
+
+    fn olam_refinement_start_point_for_regions_with_neighbors(
+        &self,
+        regions: &[OlamRefinementRegion],
+        radius: f64,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<usize> {
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        let Some(first_region) = regions.first() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM refinement start requires at least one region",
+            ));
+        };
+        let imcent = self.closest_m_point_to_region_anchor(first_region, use_cartesian_xy)?;
+        if use_cartesian_xy {
+            return Ok(imcent);
+        }
+        for &pentagon_id in &self.impent {
+            if pentagon_id <= 1 {
+                continue;
+            }
+            require_olam_id("OLAM refinement pentagon M point", pentagon_id, self.nmd)?;
+            if olam_regions_contain_method_c(
+                regions,
+                self.m_points[pentagon_id],
+                radius,
+                use_cartesian_xy,
+            ) {
+                return Ok(pentagon_id);
+            }
+        }
+        let mut nearby_pentagon = None;
+        for &pentagon_id in &self.impent {
+            if pentagon_id <= 1 {
+                continue;
+            }
+            require_olam_id("OLAM refinement pentagon M point", pentagon_id, self.nmd)?;
+            if olam_regions_close_to_method_c(
+                regions,
+                self.m_points[pentagon_id],
+                radius,
+                use_cartesian_xy,
+            )
+                && self.m_metadata[pentagon_id].mrlm == self.m_metadata[imcent].mrlm
+            {
+                nearby_pentagon = Some(pentagon_id);
+            }
+        }
+        if let Some(pentagon_id) = nearby_pentagon {
+            if let Some(start) =
+                self.olam_march_from_nearby_pentagon_to_regions_with_neighbors(
+                    pentagon_id,
+                    regions,
+                    radius,
+                    m_neighbors,
+                    use_cartesian_xy,
+                )?
+            {
+                return Ok(start);
+            }
+        }
+        Ok(imcent)
+    }
+
+    #[cfg(test)]
+    fn olam_march_from_nearby_pentagon_to_region_with_neighbors(
+        &self,
+        pentagon_id: usize,
+        region: &OlamRefinementRegion,
+        radius: f64,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<usize>> {
+        self.olam_march_from_nearby_pentagon_to_regions_with_neighbors(
+            pentagon_id,
+            std::slice::from_ref(region),
+            radius,
+            m_neighbors,
+            use_cartesian_xy,
+        )
+    }
+
+    fn olam_march_from_nearby_pentagon_to_regions_with_neighbors(
+        &self,
+        pentagon_id: usize,
+        regions: &[OlamRefinementRegion],
+        radius: f64,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<usize>> {
+        require_olam_id(
+            "OLAM refinement nearby pentagon M point",
+            pentagon_id,
+            self.nmd,
+        )?;
+        let Some(nearest_inside) =
+            self.nearest_inside_m_point_to_regions(pentagon_id, regions, radius, use_cartesian_xy)?
+        else {
+            return Ok(None);
+        };
+
+        let mut current = pentagon_id;
+        let mut visited = BTreeSet::new();
+        let mut jdone = vec![[false; 6]; self.nmd + 1];
+        for _ in 0..self.nmd {
+            if !visited.insert(current) {
+                return Ok(None);
+            }
+
+            let mut best_neighbor = 0usize;
+            let mut best_distance = f64::INFINITY;
+            jdone[current] = [false; 6];
+            for neighbor in
+                self.olam_thirdm_neighbors_fortran_with_neighbors(current, &mut jdone, m_neighbors)?
+            {
+                let point = self.m_points[neighbor];
+                if olam_regions_contain_method_c(regions, point, radius, use_cartesian_xy) {
+                    return Ok(Some(neighbor));
+                }
+                let distance = euclidean_distance(point, self.m_points[nearest_inside]);
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_neighbor = neighbor;
+                }
+            }
+            if best_neighbor <= 1 {
+                return Ok(None);
+            }
+            current = best_neighbor;
+        }
+
+        Ok(None)
+    }
+
+    #[cfg(test)]
+    fn nearest_inside_m_point_to(
+        &self,
+        source_im: usize,
+        region: &OlamRefinementRegion,
+        radius: f64,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<usize>> {
+        self.nearest_inside_m_point_to_regions(
+            source_im,
+            std::slice::from_ref(region),
+            radius,
+            use_cartesian_xy,
+        )
+    }
+
+    fn nearest_inside_m_point_to_regions(
+        &self,
+        source_im: usize,
+        regions: &[OlamRefinementRegion],
+        radius: f64,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<usize>> {
+        require_olam_id("OLAM refinement source M point", source_im, self.nmd)?;
+        let mut nearest_inside = None;
+        let mut nearest_distance = f64::INFINITY;
+        for im in 2..=self.nmd {
+            if !olam_regions_contain_method_c(
+                regions,
+                self.m_points[im],
+                radius,
+                use_cartesian_xy,
+            ) {
+                continue;
+            }
+            let distance = euclidean_distance(self.m_points[im], self.m_points[source_im]);
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest_inside = Some(im);
+            }
+        }
+        Ok(nearest_inside)
+    }
+
+    fn closest_m_point_to_region_anchor(
+        &self,
+        region: &OlamRefinementRegion,
+        use_cartesian_xy: bool,
+    ) -> io::Result<usize> {
+        if use_cartesian_xy {
+            let anchor = region.anchor_lonlat();
+            let mut best_im = 0usize;
+            let mut best_distance = f64::INFINITY;
+            for im in 2..=self.nmd {
+                let point = self.m_points[im];
+                let distance = (point.x - anchor.lon_degrees).hypot(point.y - anchor.lat_degrees);
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_im = im;
+                }
+            }
+            return require_olam_id("OLAM refinement anchor M point", best_im, self.nmd)
+                .map(|_| best_im);
+        }
+        let anchor = lonlat_degrees_to_unit_xyz(region.anchor_lonlat());
+        let mut best_im = 0usize;
+        let mut best_score = f64::NEG_INFINITY;
+        for im in 2..=self.nmd {
+            let point = self.m_points[im];
+            let point_radius = magnitude(point);
+            if point_radius == 0.0 {
+                continue;
+            }
+            let score = dot(point, anchor) / point_radius;
+            if score > best_score {
+                best_score = score;
+                best_im = im;
+            }
+        }
+        require_olam_id("OLAM refinement anchor M point", best_im, self.nmd)?;
+        Ok(best_im)
+    }
+
+    fn olam_thirdm_neighbors_fortran_with_neighbors(
+        &self,
+        im: usize,
+        jdone: &mut [[bool; 6]],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<Vec<usize>> {
+        require_olam_id("OLAM thirdm start M point", im, self.nmd)?;
+        require_olam_len("OLAM thirdm jdone", jdone.len(), self.nmd + 1)?;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        let neighbors = m_neighbors[im];
+        let mut third_neighbors = Vec::new();
+        let max_edges = neighbors.npoly.min(6);
+        for j in 0..max_edges {
+            if jdone[im][j] {
+                continue;
+            }
+            let iu = neighbors.iu[j];
+            jdone[im][j] = true;
+            let imm = self.other_m_endpoint(iu, im)?;
+            let iuu = match self.opposite_ring_u_edge_with_neighbors(imm, iu, m_neighbors) {
+                Ok(iuu) => iuu,
+                Err(_) => continue,
+            };
+            let immm = match self.other_m_endpoint(iuu, imm) {
+                Ok(immm) => immm,
+                Err(_) => continue,
+            };
+            let iuuu = match self.opposite_ring_u_edge_with_neighbors(immm, iuu, m_neighbors) {
+                Ok(iuuu) => iuuu,
+                Err(_) => continue,
+            };
+            let immmm = match self.other_m_endpoint(iuuu, immm) {
+                Ok(immmm) => immmm,
+                Err(_) => continue,
+            };
+            require_olam_id("OLAM thirdm far M point", immmm, self.nmd)?;
+            let far_neighbors = m_neighbors[immmm];
+            for jj in 0..6 {
+                let far_iu = far_neighbors.iu[jj];
+                if far_iu < 2 || far_iu > self.nud {
+                    continue;
+                }
+                if far_iu == iuuu {
+                    jdone[immmm][jj] = true;
+                    break;
+                }
+            }
+            third_neighbors.push(immmm);
+        }
+        Ok(third_neighbors)
+    }
+
+    fn opposite_ring_u_edge_with_neighbors(
+        &self,
+        im: usize,
+        incoming_iu: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<usize> {
+        require_olam_id("OLAM thirdm M point", im, self.nmd)?;
+        require_olam_id("OLAM thirdm incoming U edge", incoming_iu, self.nud)?;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        let neighbors = m_neighbors[im];
+        for j in 0..6 {
+            let iu = neighbors.iu[j];
+            if iu < 2 || iu > self.nud {
+                continue;
+            }
+            if iu == incoming_iu {
+                let opposite = neighbors.iu[(j + 3) % 6];
+                if opposite < 2 || opposite > self.nud {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "OLAM thirdm incoming U edge {incoming_iu} has no valid opposite at M point {im}"
+                        ),
+                    ));
+                }
+                require_olam_id("OLAM thirdm opposite U edge", opposite, self.nud)?;
+                return Ok(opposite);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM thirdm incoming U edge {incoming_iu} is not in M point {im}'s ring"),
+        ))
+    }
+
+    fn other_m_endpoint(&self, iu: usize, im: usize) -> io::Result<usize> {
+        require_olam_id("OLAM U edge", iu, self.nud)?;
+        require_olam_id("OLAM M endpoint", im, self.nmd)?;
+        let edge = self.u_edges[iu];
+        if edge.im[0] == im {
+            require_olam_id("OLAM opposite M endpoint", edge.im[1], self.nmd)?;
+            Ok(edge.im[1])
+        } else if edge.im[1] == im {
+            require_olam_id("OLAM opposite M endpoint", edge.im[0], self.nmd)?;
+            Ok(edge.im[0])
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OLAM U edge {iu} is not incident on M point {im}"),
+            ))
+        }
+    }
+
+    fn mark_fill_rad3_faces_with_neighbors(
+        &self,
+        im: usize,
+        selected_faces: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<bool> {
+        require_olam_id("OLAM fill_rad3 M point", im, self.nmd)?;
+        require_olam_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+
+        let mut changed = false;
+        let neighbors = m_neighbors[im];
+
+        for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+            require_olam_id("OLAM fill_rad3 sector W face", iw, self.nwd)?;
+            changed |= !selected_faces[iw];
+            selected_faces[iw] = true;
+
+            let face = self.w_faces[iw];
+            let (imx, iwx, iwy) = if im == face.im[0] {
+                (face.im[1], face.iw[3], face.iw[4])
+            } else if im == face.im[1] {
+                (face.im[2], face.iw[5], face.iw[6])
+            } else if im == face.im[2] {
+                (face.im[0], face.iw[7], face.iw[8])
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OLAM fill_rad3 M point {im} is not on W face {iw}"),
+                ));
+            };
+            require_olam_id("OLAM fill_rad3 sector M point", imx, self.nmd)?;
+            require_olam_id("OLAM fill_rad3 outer W face", iwx, self.nwd)?;
+            require_olam_id("OLAM fill_rad3 outer W face", iwy, self.nwd)?;
+
+            let (im1, im2) =
+                face_following_two_vertices(self.w_faces[iwx], imx, iwx).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "fill_rad3 im={im} iw={iw} imx={imx} iwx={iwx} face={:?}/{:?}: {error}",
+                            face.im, face.iw
+                        ),
+                    )
+                })?;
+            require_olam_id("OLAM fill_rad3 distant M point", im1, self.nmd)?;
+            require_olam_id("OLAM fill_rad3 distant M point", im2, self.nmd)?;
+            let im3 = face_following_vertex(self.w_faces[iwy], im2, iwy).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "fill_rad3 im={im} iw={iw} imx={imx} im2={im2} iwy={iwy} face={:?}/{:?}: {error}",
+                        face.im, face.iw
+                    ),
+                )
+            })?;
+            require_olam_id("OLAM fill_rad3 distant M point", im3, self.nmd)?;
+
+            for far_im in [im1, im2, im3] {
+                let far_neighbors = m_neighbors[far_im];
+                for &far_iw in far_neighbors.iw.iter().take(6) {
+                    if far_iw > self.nwd {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("OLAM fill_rad3 distant W face {far_iw} is out of range"),
+                        ));
+                    }
+                    changed |= !selected_faces[far_iw];
+                    selected_faces[far_iw] = true;
+                }
+            }
+        }
+
+        Ok(changed)
+    }
+
+    #[cfg(test)]
+    fn method_c_w_face_is_active(&self, iw: usize) -> bool {
+        if iw > self.nwd || self.w_prognostic.get(iw).copied().unwrap_or(iw) != iw {
+            return false;
+        }
+        self.w_faces[iw]
+            .im
+            .iter()
+            .all(|&im| im > 1 && self.m_prognostic.get(im).copied().unwrap_or(im) == im)
+    }
+
+    #[cfg(test)]
+    fn close_olam_selected_face_concavities(&self, selected_faces: &mut [bool]) -> io::Result<()> {
+        self.close_olam_method_c_concavities(selected_faces)
+    }
+
+    fn spawn_nest_pass_with_max_mrows(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+    ) -> io::Result<Self> {
+        self.spawn_nest_pass_method_c(selected_faces, child_level, max_mrows, project_to_radius)
+    }
+
+    fn spawn_nest_pass_method_c(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+    ) -> io::Result<Self> {
+        self.validate_topology()?;
+        require_olam_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
+        if child_level <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM Method-C child level must be greater than one",
+            ));
+        }
+
+        let mut selected = selected_faces.to_vec();
+        let method_c_m_neighbors = self.method_c_m_neighbors()?;
+        self.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )?;
+
+        let mut probe_nest_wd = vec![OlamMethodCNestWd::default(); self.nwd + 1];
+        for iw in 2..=self.nwd {
+            if selected[iw] {
+                probe_nest_wd[iw].iw[2] = 1;
+            }
+        }
+
+        let perimeter = self.perim_map2_method_c(&probe_nest_wd, &method_c_m_neighbors)?;
+        if perimeter.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OLAM Method-C perimeter is empty",
+            ));
+        }
+        if perimeter.len() % 3 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OLAM Method-C perimeter length {} cannot be grouped into transition triples after fill_rad3 closure",
+                    perimeter.len()
+                ),
+            ));
+        }
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); self.nwd + 1];
+        for iw in 2..=self.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = self.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            require_olam_id("OLAM Method-C suppressed W face", suppressed_w, self.nwd)?;
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+        match self.emit_method_c_tables(
+            &perimeter,
+            &method_c_m_neighbors,
+            &mut nest_wd,
+            child_level,
+            max_mrows,
+            project_to_radius,
+        ) {
+            Ok(mesh) => Ok(mesh),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(test)]
+    fn close_olam_method_c_concavities(&self, selected_faces: &mut [bool]) -> io::Result<()> {
+        let method_c_m_neighbors = self.method_c_m_neighbors()?;
+        self.close_olam_method_c_concavities_with_neighbors(selected_faces, &method_c_m_neighbors)
+    }
+
+    #[cfg(test)]
+    fn close_olam_method_c_concavities_with_neighbors(
+        &self,
+        selected_faces: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<()> {
+        self.close_olam_method_c_concavities_for_level_with_neighbors(
+            selected_faces,
+            m_neighbors,
+        )
+    }
+
+    fn close_olam_method_c_concavities_for_level_with_neighbors(
+        &self,
+        selected_faces: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<()> {
+        require_olam_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        loop {
+            let mut changed = false;
+            for im in 2..=self.nmd {
+                let neighbors = m_neighbors[im];
+                let mut selected_count = 0usize;
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    require_olam_id("OLAM Method-C concavity W face", iw, self.nwd)?;
+                    selected_count += usize::from(selected_faces[iw]);
+                }
+                if selected_count == 0 || selected_count == neighbors.npoly {
+                    continue;
+                }
+                // Fortran behavior: fill when the selected incidence is at least
+                // (npoly - 1), including pentagons when exactly one face is
+                // missing and when all faces are selected.
+                if selected_count < neighbors.npoly.saturating_sub(1) {
+                    continue;
+                }
+                changed |= self.mark_fill_rad3_faces_with_neighbors(
+                    im,
+                    selected_faces,
+                    m_neighbors,
+                )?;
+            }
+            if !changed {
+                return Ok(());
+            }
+        }
+    }
+
+    fn perim_map2_method_c(
+        &self,
+        nest_wd: &[OlamMethodCNestWd],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<Vec<OlamMethodCPerimeterPoint>> {
+        require_olam_len("OLAM Method-C nest_wd", nest_wd.len(), self.nwd + 1)?;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        for im in 2..=self.nmd {
+            let neighbors = m_neighbors[im];
+            let mut nwdiv = 0usize;
+            for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                require_olam_id("OLAM Method-C perimeter W face", iw, self.nwd)?;
+                if nest_wd[iw].is_subdivided() {
+                    nwdiv += 1;
+                }
+            }
+            if nwdiv == 2 {
+                return self.perim_map2_method_c_from(im, nest_wd, m_neighbors);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OLAM Method-C perimeter has no nwdiv == 2 convex start point",
+        ))
+    }
+
+    fn perim_map2_method_c_from(
+        &self,
+        start: usize,
+        nest_wd: &[OlamMethodCNestWd],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<Vec<OlamMethodCPerimeterPoint>> {
+        let mut perimeter = Vec::new();
+        let mut current = start;
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(current) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OLAM Method-C perimeter loop revisited M point {current} before closing"
+                    ),
+                ));
+            }
+
+            let neighbors = m_neighbors[current];
+            let mut nwdiv = 0usize;
+            let mut near_pentagon = false;
+            for j in 0..neighbors.npoly {
+                let iw = neighbors.iw[j];
+                let iu = neighbors.iu[j];
+                require_olam_id("OLAM Method-C perimeter W face", iw, self.nwd)?;
+                require_olam_id("OLAM Method-C perimeter U edge", iu, self.nud)?;
+                if nest_wd[iw].is_subdivided() {
+                    nwdiv += 1;
+                }
+
+                let edge = self.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                require_olam_id("OLAM Method-C perimeter adjacent W face", iw1, self.nwd)?;
+                require_olam_id("OLAM Method-C perimeter adjacent W face", iw2, self.nwd)?;
+                if nest_wd[iw1].flag() == 0 && nest_wd[iw2].flag() == 0 {
+                    if current == edge.im[0] && m_neighbors[edge.im[1]].npoly == 5 {
+                        near_pentagon = true;
+                    }
+                    if current == edge.im[1] && m_neighbors[edge.im[0]].npoly == 5 {
+                        near_pentagon = true;
+                    }
+                }
+            }
+
+            let (next, edge) = self.perim_ngr_method_c(current, nest_wd, m_neighbors)?;
+            perimeter.push(OlamMethodCPerimeterPoint {
+                im: current,
+                iu: edge,
+                npoly: neighbors.npoly,
+                nwdiv,
+                near_pentagon,
+            });
+
+            if next == start {
+                break;
+            }
+            current = next;
+        }
+
+        Ok(perimeter)
+    }
+
+    fn perim_ngr_method_c(
+        &self,
+        imstart: usize,
+        nest_wd: &[OlamMethodCNestWd],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<(usize, usize)> {
+        require_olam_id("OLAM Method-C perimeter M point", imstart, self.nmd)?;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        let neighbors = m_neighbors[imstart];
+        for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+            require_olam_id("OLAM Method-C perimeter U edge", iu, self.nud)?;
+            let edge = self.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            require_olam_id("OLAM Method-C perimeter W face", iw1, self.nwd)?;
+            require_olam_id("OLAM Method-C perimeter W face", iw2, self.nwd)?;
+
+            if edge.im[0] == imstart && nest_wd[iw1].flag() == 0 && nest_wd[iw2].is_subdivided() {
+                return Ok((edge.im[1], iu));
+            }
+            if edge.im[1] == imstart && nest_wd[iw2].flag() == 0 && nest_wd[iw1].is_subdivided() {
+                return Ok((edge.im[0], iu));
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM Method-C perim_ngr could not advance from M point {imstart}"),
+        ))
+    }
+
+    fn emit_method_c_tables(
+        &self,
+        perimeter: &[OlamMethodCPerimeterPoint],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        nest_wd: &mut [OlamMethodCNestWd],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+    ) -> io::Result<Self> {
+        let radius = active_mesh_radius(self)?;
+        let parent_level = child_level - 1;
+        require_olam_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+
+        let mut iwnew = vec![1usize; self.nwd + 1];
+        let mut iwnext = 2usize;
+        iwnew[1] = 1;
+        for iw in 2..=self.nwd {
+            iwnew[iw] = iwnext;
+            if nest_wd[iw].is_subdivided() {
+                iwnext += 1;
+                nest_wd[iw].iw[0] = iwnext as isize;
+                iwnext += 1;
+                nest_wd[iw].iw[1] = iwnext as isize;
+                iwnext += 1;
+                nest_wd[iw].iw[2] = iwnext as isize;
+            }
+            iwnext += 1;
+        }
+        let nwd0 = iwnext - 1;
+
+        let mut nest_ud = vec![OlamMethodCNestUd::default(); self.nud + 1];
+        let mut iunew = vec![1usize; self.nud + 1];
+        let mut iwdiv = vec![false; self.nwd + 1];
+        let mut iunext = 2usize;
+        iunew[1] = 1;
+        for iu in 2..=self.nud {
+            iunew[iu] = iunext;
+            let edge = self.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                    nest_ud[iu].iu = iunew[iu];
+                } else {
+                    iunext += 1;
+                    nest_ud[iu].iu = iunext;
+                }
+            }
+
+            for &iw in &edge.iw[0..2] {
+                if !iwdiv[iw] {
+                    iwdiv[iw] = true;
+                    if nest_wd[iw].is_subdivided() {
+                        iunext += 1;
+                        nest_wd[iw].iu[0] = iunext;
+                        iunext += 1;
+                        nest_wd[iw].iu[1] = iunext;
+                        iunext += 1;
+                        nest_wd[iw].iu[2] = iunext;
+                    }
+                }
+            }
+            iunext += 1;
+        }
+        let nud0 = iunext - 1;
+
+        let mut imnew = vec![1usize; self.nmd + 1];
+        let mut iudiv = vec![false; self.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=self.nmd {
+            imnew[im] = imnext;
+            let neighbors = m_neighbors[im];
+            for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                if !iudiv[iu] {
+                    iudiv[iu] = true;
+                    let edge = self.u_edges[iu];
+                    let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                    if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                        if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                            nest_ud[iu].im = 1;
+                        } else {
+                            imnext += 1;
+                            nest_ud[iu].im = imnext;
+                        }
+                    }
+                }
+            }
+            imnext += 1;
+        }
+        let nmd0 = imnext - 1;
+
+        let mut impent = [1usize; 12];
+        for (slot, &old_im) in self.impent.iter().enumerate() {
+            if old_im <= 1 {
+                continue;
+            }
+            require_olam_id("OLAM Method-C impent", old_im, self.nmd)?;
+            impent[slot] = imnew[old_im];
+        }
+
+        let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); nmd0 + 1];
+        let mut m_metadata = default_olam_m_metadata(nmd0);
+        let mut u_edges = vec![IcosahedronUEdge::default(); nud0 + 1];
+        let mut w_faces = vec![IcosahedronWFace::default(); nwd0 + 1];
+
+        for im in 2..=self.nmd {
+            let imn = imnew[im];
+            m_points[imn] = self.m_points[im];
+            m_metadata[imn] = self.m_metadata[im];
+        }
+
+        let mut parent_mrlm = 0usize;
+        for iu in 2..=self.nud {
+            let iun = iunew[iu];
+            let old = self.u_edges[iu];
+            u_edges[iun] = IcosahedronUEdge {
+                im: old.im.map(|im| imnew[im]),
+                iw: old.iw.map(|iw| iwnew[iw]),
+                iu: old.iu.map(|iu2| iunew[iu2]),
+                mrlu: old.mrlu,
+            };
+
+            if nest_ud[iu].im > 1 {
+                let im_mid = nest_ud[iu].im;
+                let im1 = u_edges[iun].im[0];
+                let im2 = u_edges[iun].im[1];
+                if parent_mrlm == 0 {
+                    parent_mrlm = m_metadata[im1].mrlm;
+                }
+                let refined_mrlm = parent_mrlm + 1;
+                m_points[im_mid] = weighted_point(m_points[im1], 1.0, m_points[im2], 1.0)?;
+                m_metadata[im1].mrlm = refined_mrlm;
+                m_metadata[im2].mrlm = refined_mrlm;
+                m_metadata[im_mid].mrlm = refined_mrlm;
+                m_metadata[im_mid].mrlm_orig = refined_mrlm;
+                m_metadata[im1].ngr = child_level;
+                m_metadata[im2].ngr = child_level;
+                m_metadata[im_mid].ngr = child_level;
+            }
+        }
+
+        let mut parent_mrlw = 0usize;
+        for iw in 2..=self.nwd {
+            let iwn = iwnew[iw];
+            let old = self.w_faces[iw];
+            w_faces[iwn] = IcosahedronWFace {
+                npoly: old.npoly,
+                im: old.im.map(|im| imnew[im]),
+                iu: old.iu.map(|iu| iunew[iu]),
+                iw: old.iw.map(|iw2| iwnew[iw2]),
+                mrlw: old.mrlw,
+                mrlw_orig: old.mrlw_orig,
+                ngr: old.ngr,
+                mrow: old.mrow,
+            };
+
+            if nest_wd[iw].is_subdivided() {
+                if parent_mrlw == 0 {
+                    parent_mrlw = old.mrlw;
+                }
+                if old.mrlw != parent_mrlw {
+                    let center = normalized_face_center(
+                        m_points[old.im[0]],
+                        m_points[old.im[1]],
+                        m_points[old.im[2]],
+                        radius,
+                    )?;
+                    let ll = xyz_to_lonlat_degrees(center);
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Current nested grid {child_level} crosses the parent boundary / crosses (or is too close to) the next coarser grid boundary at W face {iw} (mrlw={}, lon={:.3}, lat={:.3})",
+                            old.mrlw, ll.lon_degrees, ll.lat_degrees
+                        ),
+                    ));
+                }
+                self.fill_method_c_full_subdivision(
+                    iw,
+                    &iwnew,
+                    &iunew,
+                    &imnew,
+                    child_level,
+                    nest_wd,
+                    &nest_ud,
+                    &mut u_edges,
+                    &mut w_faces,
+                )?;
+            }
+        }
+
+        let transition_parent_mrlw = if parent_mrlw == 0 {
+            parent_level
+        } else {
+            parent_mrlw
+        };
+        self.perim_fill3_method_c(
+            perimeter,
+            transition_parent_mrlw,
+            &iwnew,
+            &iunew,
+            &imnew,
+            nest_wd,
+            &mut nest_ud,
+            &mut u_edges,
+            &mut w_faces,
+            &mut m_points,
+            &mut m_metadata,
+            radius,
+            child_level,
+        )?;
+
+        if project_to_radius {
+            for point in m_points.iter_mut().take(nmd0 + 1).skip(2) {
+                *point = normalize_cartesian_to_radius(*point, radius)?;
+            }
+        }
+
+        let mut connectivity = IcosahedronDiamondConnectivity { u_edges, w_faces };
+        derive_icosahedron_w_neighbors_fortran(&mut connectivity).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to derive OLAM Method-C W-face neighbors",
+            )
+        })?;
+        derive_icosahedron_u_neighbors_fortran(&mut connectivity).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to derive OLAM Method-C U-edge neighbors",
+            )
+        })?;
+        require_olam_len(
+            "OLAM Method-C M prognostic map",
+            self.m_prognostic.len(),
+            self.nmd + 1,
+        )?;
+        require_olam_len(
+            "OLAM Method-C U prognostic map",
+            self.u_prognostic.len(),
+            self.nud + 1,
+        )?;
+        require_olam_len(
+            "OLAM Method-C W prognostic map",
+            self.w_prognostic.len(),
+            self.nwd + 1,
+        )?;
+        let mut m_prognostic = olam_identity_prognostic_map(nmd0);
+        for old_im in 2..=self.nmd {
+            let partner = self.m_prognostic[old_im];
+            if partner > 1 {
+                require_olam_id("OLAM Method-C M prognostic partner", partner, self.nmd)?;
+                m_prognostic[imnew[old_im]] = imnew[partner];
+            }
+        }
+        let mut u_prognostic = olam_identity_prognostic_map(nud0);
+        for old_iu in 2..=self.nud {
+            let partner = self.u_prognostic[old_iu];
+            if partner > 1 {
+                require_olam_id("OLAM Method-C U prognostic partner", partner, self.nud)?;
+                u_prognostic[iunew[old_iu]] = iunew[partner];
+            }
+        }
+        let mut w_prognostic = olam_identity_prognostic_map(nwd0);
+        for old_iw in 2..=self.nwd {
+            let partner = self.w_prognostic[old_iw];
+            if partner > 1 {
+                require_olam_id("OLAM Method-C W prognostic partner", partner, self.nwd)?;
+                w_prognostic[iwnew[old_iw]] = iwnew[partner];
+            }
+        }
+        let has_prognostic_w_faces = w_prognostic
+            .iter()
+            .enumerate()
+            .skip(2)
+            .any(|(iw, &partner)| partner > 1 && partner != iw);
+        let m_neighbors = if has_prognostic_w_faces {
+            derive_cart_hex_m_neighbors_from_active_faces(
+                nmd0,
+                &connectivity.u_edges,
+                &connectivity.w_faces,
+                &w_prognostic,
+            )?
+        } else {
+            derive_icosahedron_m_neighbors_fortran_checked_with_prognostic(
+                nmd0,
+                &connectivity.u_edges,
+                &connectivity.w_faces,
+                None,
+            )?
+        };
+
+        let mut mesh = OlamDelaunayMesh {
+            nmd: nmd0,
+            nud: nud0,
+            nwd: nwd0,
+            impent,
+            m_points,
+            m_metadata,
+            u_edges: connectivity.u_edges,
+            w_faces: connectivity.w_faces,
+            m_neighbors,
+            m_prognostic,
+            u_prognostic,
+            w_prognostic,
+            boundary_rows: Vec::new(),
+        };
+        mesh.apply_olam_perimeter_mrows(child_level, max_mrows)?;
+        Ok(mesh)
+    }
+
+    fn fill_method_c_full_subdivision(
+        &self,
+        iw: usize,
+        iwnew: &[usize],
+        iunew: &[usize],
+        imnew: &[usize],
+        child_level: usize,
+        nest_wd: &[OlamMethodCNestWd],
+        nest_ud: &[OlamMethodCNestUd],
+        u_edges: &mut [IcosahedronUEdge],
+        w_faces: &mut [IcosahedronWFace],
+    ) -> io::Result<()> {
+        let iwn = iwnew[iw];
+        let old_face = self.w_faces[iw];
+        let [iu1o, iu2o, iu3o] = old_face.iu;
+        let [iu1n, iu2n, iu3n] = [iunew[iu1o], iunew[iu2o], iunew[iu3o]];
+        let mrlo = old_face.mrlw;
+
+        let [iu1, iu2, iu3] = nest_wd[iw].iu;
+        let iu4 = nest_ud[iu1o].iu;
+        let iu5 = nest_ud[iu2o].iu;
+        let iu6 = nest_ud[iu3o].iu;
+        let iw1 = nest_wd[iw].child_iw(0)?;
+        let iw2 = nest_wd[iw].child_iw(1)?;
+        let iw3 = nest_wd[iw].child_iw(2)?;
+
+        for child_iw in [iw1, iw2, iw3] {
+            w_faces[child_iw].npoly = 3;
+            w_faces[child_iw].mrlw = mrlo + 1;
+            w_faces[child_iw].mrlw_orig = mrlo + 1;
+            w_faces[child_iw].ngr = child_level;
+        }
+        w_faces[iwn].mrlw = mrlo + 1;
+        w_faces[iwn].ngr = child_level;
+        w_faces[iwn].iu = [iu1, iu2, iu3];
+        w_faces[iw1].iu[0] = iu1;
+        w_faces[iw2].iu[0] = iu2;
+        w_faces[iw3].iu[0] = iu3;
+
+        if nest_ud[iu1o].im > 1 {
+            u_edges[iu1n].im[1] = nest_ud[iu1o].im;
+            u_edges[iu4].im[0] = nest_ud[iu1o].im;
+            u_edges[iu4].im[1] = imnew[self.u_edges[iu1o].im[1]];
+        }
+        if nest_ud[iu2o].im > 1 {
+            u_edges[iu2n].im[1] = nest_ud[iu2o].im;
+            u_edges[iu5].im[0] = nest_ud[iu2o].im;
+            u_edges[iu5].im[1] = imnew[self.u_edges[iu2o].im[1]];
+        }
+        if nest_ud[iu3o].im > 1 {
+            u_edges[iu3n].im[1] = nest_ud[iu3o].im;
+            u_edges[iu6].im[0] = nest_ud[iu3o].im;
+            u_edges[iu6].im[1] = imnew[self.u_edges[iu3o].im[1]];
+        }
+
+        let [iu1o_iw1, iu2o_iw1, iu3o_iw1] = [
+            self.u_edges[iu1o].iw[0],
+            self.u_edges[iu2o].iw[0],
+            self.u_edges[iu3o].iw[0],
+        ];
+
+        if iw == iu1o_iw1 {
+            w_faces[iw3].iu[1] = iu1n;
+            w_faces[iw2].iu[2] = iu4;
+            u_edges[iu1].im = [nest_ud[iu2o].im, nest_ud[iu3o].im];
+            u_edges[iu1].iw = set_first_two(u_edges[iu1].iw, iw1, iwn);
+            u_edges[iu1n].iw[0] = iw3;
+            u_edges[iu4].iw[0] = iw2;
+        } else {
+            w_faces[iw3].iu[1] = iu4;
+            w_faces[iw2].iu[2] = iu1n;
+            u_edges[iu1].im = [nest_ud[iu3o].im, nest_ud[iu2o].im];
+            u_edges[iu1].iw = set_first_two(u_edges[iu1].iw, iwn, iw1);
+            u_edges[iu1n].iw[1] = iw2;
+            u_edges[iu4].iw[1] = iw3;
+        }
+
+        if iw == iu2o_iw1 {
+            w_faces[iw1].iu[1] = iu2n;
+            w_faces[iw3].iu[2] = iu5;
+            u_edges[iu2].im = [nest_ud[iu3o].im, nest_ud[iu1o].im];
+            u_edges[iu2].iw = set_first_two(u_edges[iu2].iw, iw2, iwn);
+            u_edges[iu2n].iw[0] = iw1;
+            u_edges[iu5].iw[0] = iw3;
+        } else {
+            w_faces[iw1].iu[1] = iu5;
+            w_faces[iw3].iu[2] = iu2n;
+            u_edges[iu2].im = [nest_ud[iu1o].im, nest_ud[iu3o].im];
+            u_edges[iu2].iw = set_first_two(u_edges[iu2].iw, iwn, iw2);
+            u_edges[iu2n].iw[1] = iw3;
+            u_edges[iu5].iw[1] = iw1;
+        }
+
+        if iw == iu3o_iw1 {
+            w_faces[iw2].iu[1] = iu3n;
+            w_faces[iw1].iu[2] = iu6;
+            u_edges[iu3].im = [nest_ud[iu1o].im, nest_ud[iu2o].im];
+            u_edges[iu3].iw = set_first_two(u_edges[iu3].iw, iw3, iwn);
+            u_edges[iu3n].iw[0] = iw2;
+            u_edges[iu6].iw[0] = iw1;
+        } else {
+            w_faces[iw2].iu[1] = iu6;
+            w_faces[iw1].iu[2] = iu3n;
+            u_edges[iu3].im = [nest_ud[iu2o].im, nest_ud[iu1o].im];
+            u_edges[iu3].iw = set_first_two(u_edges[iu3].iw, iwn, iw3);
+            u_edges[iu3n].iw[1] = iw1;
+            u_edges[iu6].iw[1] = iw2;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn perim_fill3_method_c(
+        &self,
+        perimeter: &[OlamMethodCPerimeterPoint],
+        parent_level: usize,
+        iwnew: &[usize],
+        iunew: &[usize],
+        imnew: &[usize],
+        nest_wd: &[OlamMethodCNestWd],
+        nest_ud: &mut [OlamMethodCNestUd],
+        u_edges: &mut [IcosahedronUEdge],
+        w_faces: &mut [IcosahedronWFace],
+        m_points: &mut [CartesianPoint],
+        m_metadata: &mut [IcosahedronMPointMetadata],
+        radius: f64,
+        child_level: usize,
+    ) -> io::Result<()> {
+        for triple in perimeter.chunks_exact(3) {
+            let [p1, p2, p3] = [triple[0], triple[1], triple[2]];
+            let [jm1, jm2, jm3] = [p1.im, p2.im, p3.im];
+            let [ju1, ju2, ju3] = [p1.iu, p2.iu, p3.iu];
+
+            let (iu41, iu42, iu46, iw26, iw27) = if jm1 == self.u_edges[ju1].im[0] {
+                (
+                    iunew[ju1],
+                    nest_ud[ju1].iu,
+                    iunew[self.u_edges[ju1].iu[4]],
+                    iwnew[self.u_edges[ju1].iw[2]],
+                    iwnew[self.u_edges[ju1].iw[0]],
+                )
+            } else {
+                (
+                    nest_ud[ju1].iu,
+                    iunew[ju1],
+                    iunew[self.u_edges[ju1].iu[11]],
+                    iwnew[self.u_edges[ju1].iw[5]],
+                    iwnew[self.u_edges[ju1].iw[1]],
+                )
+            };
+
+            let (iu49, iu50, iu34, iu35, iu48, iu51, iw6o, iw9o, iw6, iw9, iw29, iw20, iw28, iw30) =
+                if jm2 == self.u_edges[ju2].im[0] {
+                    (
+                        iunew[self.u_edges[ju2].iu[0]],
+                        iunew[self.u_edges[ju2].iu[1]],
+                        iunew[self.u_edges[ju2].iu[2]],
+                        iunew[self.u_edges[ju2].iu[3]],
+                        iunew[self.u_edges[ju2].iu[4]],
+                        iunew[self.u_edges[ju2].iu[7]],
+                        self.u_edges[ju2].iw[4],
+                        self.u_edges[ju2].iw[5],
+                        iwnew[self.u_edges[ju2].iw[4]],
+                        iwnew[self.u_edges[ju2].iw[5]],
+                        iwnew[self.u_edges[ju2].iw[0]],
+                        iwnew[self.u_edges[ju2].iw[1]],
+                        iwnew[self.u_edges[ju2].iw[2]],
+                        iwnew[self.u_edges[ju2].iw[3]],
+                    )
+                } else {
+                    (
+                        iunew[self.u_edges[ju2].iu[3]],
+                        iunew[self.u_edges[ju2].iu[2]],
+                        iunew[self.u_edges[ju2].iu[1]],
+                        iunew[self.u_edges[ju2].iu[0]],
+                        iunew[self.u_edges[ju2].iu[11]],
+                        iunew[self.u_edges[ju2].iu[8]],
+                        self.u_edges[ju2].iw[3],
+                        self.u_edges[ju2].iw[2],
+                        iwnew[self.u_edges[ju2].iw[3]],
+                        iwnew[self.u_edges[ju2].iw[2]],
+                        iwnew[self.u_edges[ju2].iw[1]],
+                        iwnew[self.u_edges[ju2].iw[0]],
+                        iwnew[self.u_edges[ju2].iw[5]],
+                        iwnew[self.u_edges[ju2].iw[4]],
+                    )
+                };
+
+            let (im21, iu44, iu45, iu53, iw31, iw32) = if jm3 == self.u_edges[ju3].im[0] {
+                (
+                    imnew[self.u_edges[ju3].im[1]],
+                    iunew[ju3],
+                    nest_ud[ju3].iu,
+                    iunew[self.u_edges[ju3].iu[7]],
+                    iwnew[self.u_edges[ju3].iw[0]],
+                    iwnew[self.u_edges[ju3].iw[3]],
+                )
+            } else {
+                (
+                    imnew[self.u_edges[ju3].im[0]],
+                    nest_ud[ju3].iu,
+                    iunew[ju3],
+                    iunew[self.u_edges[ju3].iu[8]],
+                    iwnew[self.u_edges[ju3].iw[1]],
+                    iwnew[self.u_edges[ju3].iw[4]],
+                )
+            };
+
+            let im16 = imnew[jm1];
+            let im17 = nest_ud[ju1].im;
+            let im18 = imnew[jm2];
+            let im19 = imnew[jm3];
+            let im20 = nest_ud[ju3].im;
+            let iu43 = iunew[ju2];
+
+            let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, u_edges, "iw6")?;
+            let iw7 = other_edge_face(u_edges[iu15], iw6)?;
+            let (iw19, im12) = if u_edges[iu25].iw[0] == iw6 {
+                (u_edges[iu25].iw[1], u_edges[iu25].im[1])
+            } else {
+                (u_edges[iu25].iw[0], u_edges[iu25].im[0])
+            };
+
+            let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, u_edges, "iw9")?;
+            let iw8 = other_edge_face(u_edges[iu16], iw9)?;
+            let (iw21, im13) = if u_edges[iu26].iw[0] == iw9 {
+                (u_edges[iu26].iw[1], u_edges[iu26].im[0])
+            } else {
+                (u_edges[iu26].iw[0], u_edges[iu26].im[1])
+            };
+
+            let im22 = fortran_other_endpoint_by_first(u_edges[iu46], im16);
+            let im23 = fortran_other_endpoint_by_first(u_edges[iu48], im18);
+            let im24 = fortran_other_endpoint_by_first(u_edges[iu49], im18);
+            let im25 = fortran_other_endpoint_by_first(u_edges[iu51], im19);
+            let im26 = fortran_other_endpoint_by_first(u_edges[iu53], im21);
+
+            fill_missing_endpoint(&mut u_edges[iu15], im18);
+            fill_missing_endpoint(&mut u_edges[iu16], im18);
+            fill_missing_endpoint(&mut u_edges[iu25], im18);
+            fill_missing_endpoint(&mut u_edges[iu26], im18);
+
+            let im5 = if u_edges[iu34].im[0] == im18 {
+                u_edges[iu34].iw = set_first_two(u_edges[iu34].iw, iw8, iw7);
+                u_edges[iu34].im[1]
+            } else {
+                u_edges[iu34].iw = set_first_two(u_edges[iu34].iw, iw7, iw8);
+                u_edges[iu34].im[0]
+            };
+
+            if u_edges[iu35].im[0] == im19 {
+                u_edges[iu35].iw[1] = iw19;
+                u_edges[iu35].iw[0] = iw21;
+                u_edges[iu35].im[1] = im18;
+            } else {
+                u_edges[iu35].iw[0] = iw19;
+                u_edges[iu35].iw[1] = iw21;
+                u_edges[iu35].im[0] = im18;
+            }
+
+            if u_edges[iu41].im[1] == im17 {
+                u_edges[iu41].iw[0] = iw27;
+            } else {
+                u_edges[iu41].iw[1] = iw27;
+            }
+            if u_edges[iu42].im[0] == im17 {
+                u_edges[iu42].im[1] = im19;
+                u_edges[iu42].iw[0] = iw20;
+            } else {
+                u_edges[iu42].im[0] = im19;
+                u_edges[iu42].iw[1] = iw20;
+            }
+            if u_edges[iu43].im[1] == im19 {
+                u_edges[iu43].im[0] = im24;
+            } else {
+                u_edges[iu43].im[1] = im24;
+            }
+            if u_edges[iu44].im[0] == im19 {
+                u_edges[iu44].iw[0] = iw29;
+            } else {
+                u_edges[iu44].iw[1] = iw29;
+            }
+            if u_edges[iu45].im[0] == im20 {
+                u_edges[iu45].iw[0] = iw31;
+            } else {
+                u_edges[iu45].iw[1] = iw31;
+            }
+            if u_edges[iu48].iw[1] == iw27 {
+                u_edges[iu48].im[1] = im17;
+            } else {
+                u_edges[iu48].im[0] = im17;
+            }
+            if u_edges[iu49].im[1] == im24 {
+                u_edges[iu49].im[0] = im17;
+                u_edges[iu49].iw[1] = iw20;
+            } else {
+                u_edges[iu49].im[1] = im17;
+                u_edges[iu49].iw[0] = iw20;
+            }
+            if u_edges[iu50].im[0] == im24 {
+                u_edges[iu50].im[1] = im20;
+            } else {
+                u_edges[iu50].im[0] = im20;
+            }
+            if u_edges[iu51].iw[1] == iw31 {
+                u_edges[iu51].im[0] = im20;
+            } else {
+                u_edges[iu51].im[1] = im20;
+            }
+
+            replace_w_face_edge_after(w_faces, iw8, iu16, iu34, "iw8/iu16->iu34")?;
+            let iu33 =
+                replace_w_face_edge_with_side_return(w_faces, iw19, iu25, iu35, "iw19/iu25->iu35")?;
+            if u_edges[iu33].iw[1] == iw19 {
+                u_edges[iu33].im[1] = im19;
+            } else {
+                u_edges[iu33].im[0] = im19;
+            }
+
+            replace_w_face_edges_at(w_faces, iw20, iu43, [iu42, iu49], "iw20/iu43")?;
+            replace_w_face_edge_before(w_faces, iw27, iu48, iu41, "iw27/iu48->iu41")?;
+            replace_w_face_edges_at(w_faces, iw29, iu50, [iu44, iu43], "iw29/iu50")?;
+            replace_w_face_edge_after(w_faces, iw31, iu51, iu45, "iw31/iu51->iu45")?;
+
+            for im in [im22, im23, im24, im25, im26] {
+                m_metadata[im].ngr = child_level;
+            }
+            let transition_w_faces = [iw20, iw26, iw27, iw28, iw29, iw30, iw31, iw32];
+            for iw in transition_w_faces.iter().copied() {
+                w_faces[iw].ngr = child_level;
+            }
+            for iw in transition_w_faces {
+                if w_faces[iw].mrlw != parent_level {
+                    let center = normalized_face_center(
+                        m_points[w_faces[iw].im[0]],
+                        m_points[w_faces[iw].im[1]],
+                        m_points[w_faces[iw].im[2]],
+                        radius,
+                    )?;
+                    let ll = xyz_to_lonlat_degrees(center);
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                            "Method-C perimeter length invalid: Current nested grid {child_level} crosses the parent boundary in Method-C transition at W face {iw} (mrlw={}, lon={:.3}, lat={:.3})",
+                            w_faces[iw].mrlw,
+                            ll.lon_degrees,
+                            ll.lat_degrees
+                        ),
+                    ));
+                }
+            }
+
+            m_metadata[im17].mrlm_orig = m_metadata[im18].mrlm_orig;
+            m_metadata[im20].mrlm_orig = m_metadata[im19].mrlm_orig;
+            m_metadata[im18].mrlm_orig = parent_level + 1;
+            m_metadata[im19].mrlm_orig = parent_level + 1;
+
+            m_points[im19] = weighted_point(m_points[im24], 1.0, m_points[im5], 1.0)?;
+            m_points[im18] = weighted_point(m_points[im19], 1.0, m_points[im5], 1.0)?;
+            m_points[im17] = weighted_point(m_points[im17], 0.75, m_points[im19], 0.25)?;
+            m_points[im20] = weighted_point(m_points[im20], 0.75, m_points[im19], 0.25)?;
+            m_points[im12] = weighted_point(m_points[im12], 0.833, m_points[im18], 0.167)?;
+            m_points[im13] = weighted_point(m_points[im13], 0.833, m_points[im18], 0.167)?;
+        }
+
+        Ok(())
+    }
+
+    fn apply_olam_perimeter_mrows(&mut self, ngr: usize, max_mrows: usize) -> io::Result<()> {
+        self.validate_topology()?;
+        if ngr <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM perimeter mrow NGR must be greater than one",
+            ));
+        }
+
+        let mut mrow_temp = vec![0isize; self.nwd + 1];
+        let mut mrow_temp2 = vec![0isize; self.nwd + 1];
+
+        for iw in 2..=self.nwd {
+            let face = self.w_faces[iw];
+            let [iw1, iw2, iw3] = [face.iw[0], face.iw[1], face.iw[2]];
+            require_olam_id("OLAM perimeter W neighbor", iw1, self.nwd)?;
+            require_olam_id("OLAM perimeter W neighbor", iw2, self.nwd)?;
+            require_olam_id("OLAM perimeter W neighbor", iw3, self.nwd)?;
+
+            if face.ngr == ngr {
+                if face.mrlw < self.w_faces[iw1].mrlw
+                    || face.mrlw < self.w_faces[iw2].mrlw
+                    || face.mrlw < self.w_faces[iw3].mrlw
+                {
+                    mrow_temp[iw] = 1;
+                } else if face.mrlw > self.w_faces[iw1].mrlw
+                    || face.mrlw > self.w_faces[iw2].mrlw
+                    || face.mrlw > self.w_faces[iw3].mrlw
+                {
+                    mrow_temp[iw] = -1;
+                }
+            }
+        }
+
+        mrow_temp2.clone_from(&mrow_temp);
+        for irow in 2..=(2 * max_mrows) {
+            let jrow = (irow % 2) as isize;
+            for iw in 2..=self.nwd {
+                if mrow_temp[iw] != 0 {
+                    continue;
+                }
+
+                let [iw1, iw2, iw3] = [
+                    self.w_faces[iw].iw[0],
+                    self.w_faces[iw].iw[1],
+                    self.w_faces[iw].iw[2],
+                ];
+                require_olam_id("OLAM perimeter W neighbor", iw1, self.nwd)?;
+                require_olam_id("OLAM perimeter W neighbor", iw2, self.nwd)?;
+                require_olam_id("OLAM perimeter W neighbor", iw3, self.nwd)?;
+
+                let positive_row = mrow_temp[iw1].max(mrow_temp[iw2]).max(mrow_temp[iw3]);
+                if positive_row > 0 {
+                    mrow_temp2[iw] = positive_row + jrow;
+                }
+
+                let negative_row = mrow_temp[iw1].min(mrow_temp[iw2]).min(mrow_temp[iw3]);
+                if negative_row < 0 {
+                    mrow_temp2[iw] = negative_row - jrow;
+                }
+            }
+            mrow_temp.clone_from(&mrow_temp2);
+        }
+
+        let mut boundary_rows = Vec::new();
+        for iw in 2..=self.nwd {
+            let row = mrow_temp[iw];
+            if row == 0 {
+                continue;
+            }
+
+            let old_row = self.w_faces[iw].mrow;
+            if row < 2 && old_row != 0 && old_row > -3 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Current nested grid {ngr} crosses the parent boundary in Method-C mrow at W face {iw} (new mrow={row}, old mrow={old_row})"
+                    ),
+                ));
+            }
+            if old_row == 0 || old_row < -2 {
+                self.w_faces[iw].mrow = row;
+            }
+            self.w_faces[iw].ngr = ngr;
+            boundary_rows.push(iw);
+        }
+
+        for im in 2..=self.nmd {
+            let mut on_grid = false;
+            for &iw in self.m_neighbors[im].iw.iter().take(self.m_neighbors[im].npoly) {
+                require_olam_id("OLAM perimeter M W neighbor", iw, self.nwd)?;
+                if self.w_faces[iw].ngr == ngr {
+                    on_grid = true;
+                    break;
+                }
+            }
+            if on_grid {
+                self.m_metadata[im].ngr = ngr;
+            }
+        }
+
+        self.boundary_rows = boundary_rows;
+        self.validate_topology()?;
+        Ok(())
+    }
+
+    /// Port of OLAM `expand_global2`: insert one M point on every active
+    /// Delaunay edge and subdivide every triangular W face into four children.
+    ///
+    /// The Fortran routine preserves/copies many atmosphere-loop fields while
+    /// rebuilding the same triangular topology. This Rust path keeps the mesh
+    /// fields currently owned by `earthmesh_mesh`, then performs a full M/U/W
+    /// neighbor rebuild rather than depending on local edge-number patches.
+    pub fn expand_global2(&self) -> io::Result<Self> {
+        self.validate_topology()?;
+
+        let radius = active_mesh_radius(self)?;
+        let mut m_points = self.m_points.clone();
+        let mut midpoint_by_edge = BTreeMap::new();
+
+        for iu in 2..=self.nud {
+            let edge = self.u_edges[iu];
+            let [im1, im2] = edge.im;
+            let midpoint = CartesianPoint::new(
+                0.5 * (self.m_points[im1].x + self.m_points[im2].x),
+                0.5 * (self.m_points[im1].y + self.m_points[im2].y),
+                0.5 * (self.m_points[im1].z + self.m_points[im2].z),
+            );
+            let midpoint = normalize_cartesian_to_radius(midpoint, radius)?;
+            let midpoint_id = m_points.len();
+            m_points.push(midpoint);
+            midpoint_by_edge.insert(olam_edge_key(im1, im2), midpoint_id);
+        }
+
+        let mut child_faces = Vec::with_capacity((self.nwd - 1) * 4);
+        for iw in 2..=self.nwd {
+            let face = self.w_faces[iw];
+            let [a, b, c] = face.im;
+            let ab = lookup_olam_midpoint(&midpoint_by_edge, a, b, iw)?;
+            let bc = lookup_olam_midpoint(&midpoint_by_edge, b, c, iw)?;
+            let ca = lookup_olam_midpoint(&midpoint_by_edge, c, a, iw)?;
+            let metadata = (face.mrlw, face.mrlw_orig, face.ngr);
+
+            child_faces.push(OlamTriangleSeed::new([a, ab, ca], metadata).with_mrow(face.mrow));
+            child_faces.push(OlamTriangleSeed::new([b, bc, ab], metadata).with_mrow(face.mrow));
+            child_faces.push(OlamTriangleSeed::new([c, ca, bc], metadata).with_mrow(face.mrow));
+            child_faces.push(OlamTriangleSeed::new([ab, bc, ca], metadata).with_mrow(face.mrow));
+        }
+
+        olam_mesh_from_triangle_seeds(m_points.len() - 1, self.impent, m_points, &child_faces)
+    }
+
+    /// Apply OLAM global expansion factors in the same 3-first, then 2-second
+    /// order used by OLAM `expand_delaunay_mesh`.
+    pub fn expand_by_factor(&self, factor: usize) -> io::Result<Self> {
+        if factor == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM expansion factor must be positive",
+            ));
+        }
+
+        let mut reduced = factor;
+        while reduced % 3 == 0 {
+            reduced /= 3;
+        }
+        while reduced % 2 == 0 {
+            reduced /= 2;
+        }
+        if reduced != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("OLAM expansion factor {factor} must contain only factors of 2 and 3"),
+            ));
+        }
+
+        let mut expanded = self.clone();
+        let mut remaining = factor;
+        while remaining % 3 == 0 {
+            expanded = expanded.expand_global3()?;
+            remaining /= 3;
+        }
+        while remaining > 1 {
+            expanded = expanded.expand_global2()?;
+            remaining /= 2;
+        }
+        Ok(expanded)
+    }
+
+    /// Port of OLAM `expand_global3`: insert two M points on every active
+    /// Delaunay edge, one M point inside every active W face, and subdivide
+    /// each triangular face into nine children.
+    pub fn expand_global3(&self) -> io::Result<Self> {
+        self.validate_topology()?;
+
+        let radius = active_mesh_radius(self)?;
+        let mut m_points = self.m_points.clone();
+        let mut thirds_by_edge = BTreeMap::new();
+
+        for iu in 2..=self.nud {
+            let edge = self.u_edges[iu];
+            let [im1, im2] = edge.im;
+            let point1 = self.m_points[im1];
+            let point2 = self.m_points[im2];
+            let first_from_im1 = normalized_weighted_point(point1, 2.0, point2, 1.0, radius)?;
+            let second_from_im1 = normalized_weighted_point(point1, 1.0, point2, 2.0, radius)?;
+            let first_id = m_points.len();
+            m_points.push(first_from_im1);
+            let second_id = m_points.len();
+            m_points.push(second_from_im1);
+            let ids_from_low_to_high = if im1 <= im2 {
+                [first_id, second_id]
+            } else {
+                [second_id, first_id]
+            };
+            thirds_by_edge.insert(olam_edge_key(im1, im2), ids_from_low_to_high);
+        }
+
+        let mut child_faces = Vec::with_capacity((self.nwd - 1) * 9);
+        for iw in 2..=self.nwd {
+            let face = self.w_faces[iw];
+            let [a, b, c] = face.im;
+            let [ab1, ab2] = lookup_olam_thirds(&thirds_by_edge, a, b, iw)?;
+            let [bc1, bc2] = lookup_olam_thirds(&thirds_by_edge, b, c, iw)?;
+            let [ac1, ac2] = lookup_olam_thirds(&thirds_by_edge, a, c, iw)?;
+            let center = normalized_face_center(
+                self.m_points[a],
+                self.m_points[b],
+                self.m_points[c],
+                radius,
+            )?;
+            let center_id = m_points.len();
+            m_points.push(center);
+            let metadata = (face.mrlw, face.mrlw_orig, face.ngr);
+
+            child_faces.push(OlamTriangleSeed::new([a, ab1, ac1], metadata).with_mrow(face.mrow));
+            child_faces
+                .push(OlamTriangleSeed::new([ab1, ab2, center_id], metadata).with_mrow(face.mrow));
+            child_faces
+                .push(OlamTriangleSeed::new([ac1, center_id, ac2], metadata).with_mrow(face.mrow));
+            child_faces.push(OlamTriangleSeed::new([ab2, b, bc1], metadata).with_mrow(face.mrow));
+            child_faces
+                .push(OlamTriangleSeed::new([center_id, bc1, bc2], metadata).with_mrow(face.mrow));
+            child_faces.push(OlamTriangleSeed::new([ac2, bc2, c], metadata).with_mrow(face.mrow));
+            child_faces
+                .push(OlamTriangleSeed::new([center_id, ac1, ab1], metadata).with_mrow(face.mrow));
+            child_faces
+                .push(OlamTriangleSeed::new([bc1, center_id, ab2], metadata).with_mrow(face.mrow));
+            child_faces
+                .push(OlamTriangleSeed::new([bc2, ac2, center_id], metadata).with_mrow(face.mrow));
+        }
+
+        olam_mesh_from_triangle_seeds(m_points.len() - 1, self.impent, m_points, &child_faces)
+    }
+
+    /// Check reciprocal `M/U/W` topology invariants for the active OLAM slots.
+    ///
+    /// Slot `0` is Rust's unused vector slot and slot `1` mirrors OLAM's
+    /// sentinel record. Active records are `2..=nmd`, `2..=nud`, and `2..=nwd`.
+    pub fn validate_topology(&self) -> io::Result<OlamTopologyValidation> {
+        require_olam_len("m_points", self.m_points.len(), self.nmd + 1)?;
+        require_olam_len("u_edges", self.u_edges.len(), self.nud + 1)?;
+        require_olam_len("w_faces", self.w_faces.len(), self.nwd + 1)?;
+        require_olam_len("m_neighbors", self.m_neighbors.len(), self.nmd + 1)?;
+        require_olam_len("m_prognostic", self.m_prognostic.len(), self.nmd + 1)?;
+        require_olam_len("u_prognostic", self.u_prognostic.len(), self.nud + 1)?;
+        require_olam_len("w_prognostic", self.w_prognostic.len(), self.nwd + 1)?;
+
+        for iu in 2..=self.nud {
+            let edge = self.u_edges[iu];
+            let [im1, im2] = edge.im;
+            require_olam_id("U edge M endpoint", im1, self.nmd)?;
+            require_olam_id("U edge M endpoint", im2, self.nmd)?;
+            if im1 == im2 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("U edge {iu} has duplicate M endpoints {im1}"),
+                ));
+            }
+
+            let adjacent_faces = [edge.iw[0], edge.iw[1]];
+            if adjacent_faces[0] == adjacent_faces[1] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "U edge {iu} has duplicate adjacent W face {}",
+                        adjacent_faces[0]
+                    ),
+                ));
+            }
+            for &iw in &adjacent_faces {
+                require_olam_id("U edge adjacent W face", iw, self.nwd)?;
+                let w_partner = self.w_prognostic[iw];
+                if w_partner > 1 && w_partner != iw {
+                    require_olam_id("U edge periodic W face partner", w_partner, self.nwd)?;
+                    continue;
+                }
+                let face = self.w_faces[iw];
+                if !face.iu.contains(&iu) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "U edge {iu} points to W face {iw}, but the face does not point back"
+                        ),
+                    ));
+                }
+                if !face.im.contains(&im1) || !face.im.contains(&im2) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("U edge {iu} endpoints [{im1}, {im2}] are not both on W face {iw}"),
+                    ));
+                }
+            }
+        }
+
+        for iw in 2..=self.nwd {
+            let w_partner = self.w_prognostic[iw];
+            if w_partner > 1 && w_partner != iw {
+                require_olam_id("periodic W face partner", w_partner, self.nwd)?;
+                continue;
+            }
+            let face = self.w_faces[iw];
+            if face.npoly != 3 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("W face {iw} must be triangular, got npoly {}", face.npoly),
+                ));
+            }
+            require_unique_active_triplet("W face M vertices", iw, face.im, self.nmd)?;
+            require_unique_active_triplet("W face U edges", iw, face.iu, self.nud)?;
+
+            for &iu in &face.iu {
+                let edge = self.u_edges[iu];
+                if edge.iw[0] != iw && edge.iw[1] != iw {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "W face {iw} points to U edge {iu}, but the edge does not point back"
+                        ),
+                    ));
+                }
+                if !face.im.contains(&edge.im[0]) || !face.im.contains(&edge.im[1]) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("W face {iw} references U edge {iu} outside its M vertices"),
+                    ));
+                }
+            }
+        }
+
+        for im in 2..=self.nmd {
+            let m_partner = self.m_prognostic[im];
+            if m_partner > 1 && m_partner != im {
+                require_olam_id("periodic M point partner", m_partner, self.nmd)?;
+                continue;
+            }
+            let neighbors = self.m_neighbors[im];
+            if !(3..=7).contains(&neighbors.npoly) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("M point {im} has invalid npoly {}", neighbors.npoly),
+                ));
+            }
+            for j in 0..neighbors.npoly {
+                let iu = neighbors.iu[j];
+                let iw = neighbors.iw[j];
+                require_olam_id("M point U edge", iu, self.nud)?;
+                require_olam_id("M point W face", iw, self.nwd)?;
+                if !self.u_edges[iu].im.contains(&im) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "M point {im} points to U edge {iu}, but the edge does not point back"
+                        ),
+                    ));
+                }
+                if !self.w_faces[iw].im.contains(&im) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "M point {im} points to W face {iw}, but the face does not point back"
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ok(OlamTopologyValidation {
+            checked_m_points: self.nmd.saturating_sub(1),
+            checked_u_edges: self.nud.saturating_sub(1),
+            checked_w_faces: self.nwd.saturating_sub(1),
+        })
+    }
+}
+
+fn set_first_two(mut values: [usize; 6], first: usize, second: usize) -> [usize; 6] {
+    values[0] = first;
+    values[1] = second;
+    values
+}
+
+fn other_edge_face(edge: IcosahedronUEdge, iw: usize) -> io::Result<usize> {
+    if edge.iw[0] == iw {
+        Ok(edge.iw[1])
+    } else if edge.iw[1] == iw {
+        Ok(edge.iw[0])
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM Method-C edge does not touch W face {iw}"),
+        ))
+    }
+}
+
+fn fortran_other_endpoint_by_first(edge: IcosahedronUEdge, im: usize) -> usize {
+    if edge.im[0] == im {
+        edge.im[1]
+    } else {
+        edge.im[0]
+    }
+}
+
+fn fill_missing_endpoint(edge: &mut IcosahedronUEdge, im: usize) {
+    if edge.im[0] == 1 {
+        edge.im[0] = im;
+    } else {
+        edge.im[1] = im;
+    }
+}
+
+fn method_c_split_outer_edges(
+    candidates: [usize; 3],
+    u_edges: &[IcosahedronUEdge],
+    label: &str,
+) -> io::Result<[usize; 2]> {
+    let [ku1, ku2, ku3] = candidates;
+    for (solid, first_open, second_open) in [(ku1, ku2, ku3), (ku2, ku3, ku1), (ku3, ku1, ku2)] {
+        let edge = u_edges.get(solid).copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OLAM Method-C {label} candidate U edge {solid} is out of range"),
+            )
+        })?;
+        if edge.im[0] > 1 && edge.im[1] > 1 {
+            return Ok([first_open, second_open]);
+        }
+    }
+    let edge_summary = [ku1, ku2, ku3]
+        .map(|iu| {
+            u_edges
+                .get(iu)
+                .map(|edge| format!("{iu}:{:?}", edge.im))
+                .unwrap_or_else(|| format!("{iu}:<missing>"))
+        })
+        .join(", ");
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "OLAM Method-C {label} transition patch has no solid split edge ({edge_summary})"
+        ),
+    ))
+}
+
+fn replace_w_face_edge_after(
+    w_faces: &mut [IcosahedronWFace],
+    iw: usize,
+    old_iu: usize,
+    new_iu: usize,
+    _label: &str,
+) -> io::Result<()> {
+    let face = w_faces.get_mut(iw).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM Method-C W face {iw} is out of range"),
+        )
+    })?;
+    if face.iu[0] == old_iu {
+        face.iu[2] = new_iu;
+    } else if face.iu[1] == old_iu {
+        face.iu[0] = new_iu;
+    } else {
+        face.iu[1] = new_iu;
+    }
+    Ok(())
+}
+
+fn replace_w_face_edge_before(
+    w_faces: &mut [IcosahedronWFace],
+    iw: usize,
+    old_iu: usize,
+    new_iu: usize,
+    _label: &str,
+) -> io::Result<()> {
+    let face = w_faces.get_mut(iw).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM Method-C W face {iw} is out of range"),
+        )
+    })?;
+    if face.iu[0] == old_iu {
+        face.iu[1] = new_iu;
+    } else if face.iu[1] == old_iu {
+        face.iu[2] = new_iu;
+    } else {
+        face.iu[0] = new_iu;
+    }
+    Ok(())
+}
+
+fn replace_w_face_edge_with_side_return(
+    w_faces: &mut [IcosahedronWFace],
+    iw: usize,
+    old_iu: usize,
+    new_iu: usize,
+    _label: &str,
+) -> io::Result<usize> {
+    let face = w_faces.get_mut(iw).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM Method-C W face {iw} is out of range"),
+        )
+    })?;
+    if face.iu[0] == old_iu {
+        let side = face.iu[1];
+        face.iu[2] = new_iu;
+        Ok(side)
+    } else if face.iu[1] == old_iu {
+        let side = face.iu[2];
+        face.iu[0] = new_iu;
+        Ok(side)
+    } else {
+        let side = face.iu[0];
+        face.iu[1] = new_iu;
+        Ok(side)
+    }
+}
+
+fn replace_w_face_edges_at(
+    w_faces: &mut [IcosahedronWFace],
+    iw: usize,
+    old_iu: usize,
+    replacements: [usize; 2],
+    _label: &str,
+) -> io::Result<()> {
+    let face = w_faces.get_mut(iw).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM Method-C W face {iw} is out of range"),
+        )
+    })?;
+    if face.iu[0] == old_iu {
+        face.iu[1] = replacements[0];
+        face.iu[2] = replacements[1];
+    } else if face.iu[1] == old_iu {
+        face.iu[2] = replacements[0];
+        face.iu[0] = replacements[1];
+    } else {
+        face.iu[0] = replacements[0];
+        face.iu[1] = replacements[1];
+    }
+    Ok(())
+}
+
+impl OlamTriangleSeed {
+    fn new(im: [usize; 3], metadata: (usize, usize, usize)) -> Self {
+        Self {
+            im,
+            mrlw: metadata.0,
+            mrlw_orig: metadata.1,
+            ngr: metadata.2,
+            mrow: 0,
+            target_iw: 0,
+            target_iu: [0; 3],
+        }
+    }
+
+    fn with_mrow(mut self, mrow: isize) -> Self {
+        self.mrow = mrow;
+        self
+    }
+
+    fn with_target_iw(mut self, target_iw: usize) -> Self {
+        self.target_iw = target_iw;
+        self
+    }
+}
+
+fn validate_lonlat(point: LonLatDegrees) -> io::Result<()> {
+    if !point.lon_degrees.is_finite()
+        || !point.lat_degrees.is_finite()
+        || point.lat_degrees < -90.0
+        || point.lat_degrees > 90.0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid lon/lat point {:?}", point),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_positive_distance(name: &str, value: f64) -> io::Result<()> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must be positive and finite"),
+        ));
+    }
+    Ok(())
+}
+
+fn active_mesh_radius(mesh: &OlamDelaunayMesh) -> io::Result<f64> {
+    for point in mesh.m_points.iter().skip(2) {
+        let radius = magnitude(*point);
+        if radius.is_finite() && radius > 0.0 {
+            return Ok(radius);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "OLAM mesh has no active point with a positive radius",
+    ))
+}
+
+fn euclidean_distance(a: CartesianPoint, b: CartesianPoint) -> f64 {
+    magnitude(vector_between(a, b))
+}
+
+fn olam_ec_ps_distance_meters(point: CartesianPoint, pole: LonLatDegrees, radius: f64) -> f64 {
+    let projected = olam_ec_ps_project_fortran_real(point, pole, radius);
+    projected.x.hypot(projected.y)
+}
+
+fn olam_ec_ps_project_fortran_real(
+    point: CartesianPoint,
+    pole: LonLatDegrees,
+    radius: f64,
+) -> PlanePoint {
+    let radius = radius as f32;
+    let point_radius =
+        ((point.x as f32).powi(2) + (point.y as f32).powi(2) + (point.z as f32).powi(2)).sqrt();
+    if point_radius == 0.0 {
+        return PlanePoint::new(f64::INFINITY, f64::INFINITY);
+    }
+    let scale = radius / point_radius;
+    let xeq = point.x as f32 * scale;
+    let yeq = point.y as f32 * scale;
+    let zeq = point.z as f32 * scale;
+    let pole_lat = deg_to_rad(pole.lat_degrees) as f32;
+    let pole_lon = deg_to_rad(pole.lon_degrees) as f32;
+    let sinplat = pole_lat.sin();
+    let cosplat = pole_lat.cos();
+    let sinplon = pole_lon.sin();
+    let cosplon = pole_lon.cos();
+
+    let xep = radius * cosplat * cosplon;
+    let yep = radius * cosplat * sinplon;
+    let zep = radius * sinplat;
+    let dxe = xeq - xep;
+    let dye = yeq - yep;
+    let dze = zeq - zep;
+
+    let xq = -sinplon * dxe + cosplon * dye;
+    let yq = cosplat * dze - sinplat * (cosplon * dxe + sinplon * dye);
+    let zq = sinplat * dze + cosplat * (cosplon * dxe + sinplon * dye);
+    let earth_diameter = 2.0 * radius;
+    let t = earth_diameter / (earth_diameter + zq).max(1.0);
+
+    PlanePoint::new((xq * t) as f64, (yq * t) as f64)
+}
+
+fn olam_ll_ps_project_fortran_real(
+    point: LonLatDegrees,
+    pole: LonLatDegrees,
+    radius: f64,
+) -> PlanePoint {
+    let radius = radius as f32;
+    let qlat = deg_to_rad(point.lat_degrees) as f32;
+    let qlon = deg_to_rad(point.lon_degrees) as f32;
+    let cartesian = CartesianPoint::new(
+        (radius * qlat.cos() * qlon.cos()) as f64,
+        (radius * qlat.cos() * qlon.sin()) as f64,
+        (radius * qlat.sin()) as f64,
+    );
+    olam_ec_ps_project_fortran_real(cartesian, pole, radius as f64)
+}
+
+fn plane_segment_distance_fortran_real(
+    point: PlanePoint,
+    start: PlanePoint,
+    end: PlanePoint,
+) -> (f64, f64) {
+    let x0 = point.x as f32;
+    let y0 = point.y as f32;
+    let x1 = start.x as f32;
+    let y1 = start.y as f32;
+    let x2 = end.x as f32;
+    let y2 = end.y as f32;
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let xp = x0 - x1;
+    let yp = y0 - y1;
+    let t = ((xp * dx + yp * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+    let dist = ((xp - t * dx).powi(2) + (yp - t * dy).powi(2)).sqrt();
+    (dist as f64, t as f64)
+}
+
+fn olam_corridor_segment_distance_meters(
+    point: CartesianPoint,
+    start: LonLatDegrees,
+    end: LonLatDegrees,
+    radius: f64,
+) -> (f64, f64) {
+    let mut segment_lon = 0.5 * (start.lon_degrees + end.lon_degrees);
+    if (start.lon_degrees - end.lon_degrees).abs() > 180.0 {
+        if segment_lon <= 0.0 {
+            segment_lon += 180.0;
+        } else {
+            segment_lon -= 180.0;
+        }
+    }
+    let pole = LonLatDegrees::new(segment_lon, 0.5 * (start.lat_degrees + end.lat_degrees));
+    let a = olam_ll_ps_project_fortran_real(start, pole, radius);
+    let b = olam_ll_ps_project_fortran_real(end, pole, radius);
+    let p = olam_ec_ps_project_fortran_real(point, pole, radius);
+    plane_segment_distance_fortran_real(p, a, b)
+}
+
+fn plane_segment_distance(point: PlanePoint, start: PlanePoint, end: PlanePoint) -> (f64, f64) {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let denom = dx * dx + dy * dy;
+    let t = if denom == 0.0 {
+        0.0
+    } else {
+        (((point.x - start.x) * dx + (point.y - start.y) * dy) / denom).clamp(0.0, 1.0)
+    };
+    let closest_x = start.x + t * dx;
+    let closest_y = start.y + t * dy;
+    ((point.x - closest_x).hypot(point.y - closest_y), t)
+}
+
+fn face_following_two_vertices(
+    face: IcosahedronWFace,
+    im: usize,
+    iw: usize,
+) -> io::Result<(usize, usize)> {
+    if face.im[0] == im {
+        Ok((face.im[1], face.im[2]))
+    } else if face.im[1] == im {
+        Ok((face.im[2], face.im[0]))
+    } else if face.im[2] == im {
+        Ok((face.im[0], face.im[1]))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "W face {iw} vertices {:?} do not contain M point {im}",
+                face.im
+            ),
+        ))
+    }
+}
+
+fn face_following_vertex(face: IcosahedronWFace, im: usize, iw: usize) -> io::Result<usize> {
+    if face.im[0] == im {
+        Ok(face.im[1])
+    } else if face.im[1] == im {
+        Ok(face.im[2])
+    } else if face.im[2] == im {
+        Ok(face.im[0])
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "W face {iw} vertices {:?} do not contain M point {im}",
+                face.im
+            ),
+        ))
+    }
+}
+
+fn olam_edge_key(im1: usize, im2: usize) -> (usize, usize) {
+    if im1 <= im2 {
+        (im1, im2)
+    } else {
+        (im2, im1)
+    }
+}
+
+fn lookup_olam_midpoint(
+    midpoint_by_edge: &BTreeMap<(usize, usize), usize>,
+    im1: usize,
+    im2: usize,
+    owner_iw: usize,
+) -> io::Result<usize> {
+    midpoint_by_edge
+        .get(&olam_edge_key(im1, im2))
+        .copied()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("W face {owner_iw} references edge [{im1}, {im2}] without a midpoint"),
+            )
+        })
+}
+
+fn lookup_olam_thirds(
+    thirds_by_edge: &BTreeMap<(usize, usize), [usize; 2]>,
+    im1: usize,
+    im2: usize,
+    owner_iw: usize,
+) -> io::Result<[usize; 2]> {
+    let points_from_low_to_high = thirds_by_edge
+        .get(&olam_edge_key(im1, im2))
+        .copied()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("W face {owner_iw} references edge [{im1}, {im2}] without thirds"),
+            )
+        })?;
+    if im1 <= im2 {
+        Ok(points_from_low_to_high)
+    } else {
+        Ok([points_from_low_to_high[1], points_from_low_to_high[0]])
+    }
+}
+
+fn normalized_weighted_point(
+    point1: CartesianPoint,
+    weight1: f64,
+    point2: CartesianPoint,
+    weight2: f64,
+    radius: f64,
+) -> io::Result<CartesianPoint> {
+    let total = weight1 + weight2;
+    if total == 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot interpolate OLAM point with zero total weight",
+        ));
+    }
+    normalize_cartesian_to_radius(
+        CartesianPoint::new(
+            (point1.x * weight1 + point2.x * weight2) / total,
+            (point1.y * weight1 + point2.y * weight2) / total,
+            (point1.z * weight1 + point2.z * weight2) / total,
+        ),
+        radius,
+    )
+}
+
+fn weighted_point(
+    point1: CartesianPoint,
+    weight1: f64,
+    point2: CartesianPoint,
+    weight2: f64,
+) -> io::Result<CartesianPoint> {
+    let total = weight1 + weight2;
+    if total == 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot interpolate OLAM point with zero total weight",
+        ));
+    }
+    Ok(CartesianPoint::new(
+        (point1.x * weight1 + point2.x * weight2) / total,
+        (point1.y * weight1 + point2.y * weight2) / total,
+        (point1.z * weight1 + point2.z * weight2) / total,
+    ))
+}
+
+fn normalized_face_center(
+    point1: CartesianPoint,
+    point2: CartesianPoint,
+    point3: CartesianPoint,
+    radius: f64,
+) -> io::Result<CartesianPoint> {
+    normalize_cartesian_to_radius(
+        CartesianPoint::new(
+            (point1.x + point2.x + point3.x) / 3.0,
+            (point1.y + point2.y + point3.y) / 3.0,
+            (point1.z + point2.z + point3.z) / 3.0,
+        ),
+        radius,
+    )
+}
+
+fn olam_mesh_from_triangle_seeds(
+    nmd: usize,
+    impent: [usize; 12],
+    m_points: Vec<CartesianPoint>,
+    face_seeds: &[OlamTriangleSeed],
+) -> io::Result<OlamDelaunayMesh> {
+    olam_mesh_from_triangle_seeds_with_boundary_rows(nmd, impent, m_points, face_seeds, Vec::new())
+}
+
+fn olam_mesh_from_triangle_seeds_with_boundary_rows(
+    nmd: usize,
+    impent: [usize; 12],
+    m_points: Vec<CartesianPoint>,
+    face_seeds: &[OlamTriangleSeed],
+    boundary_rows: Vec<usize>,
+) -> io::Result<OlamDelaunayMesh> {
+    require_olam_len("m_points", m_points.len(), nmd + 1)?;
+
+    let face_iw = assign_olam_triangle_seed_w_ids(face_seeds)?;
+    let nwd = face_iw.iter().copied().max().unwrap_or(1);
+    let mut u_edges = vec![IcosahedronUEdge::default(); 2];
+    let mut w_faces = vec![IcosahedronWFace::default(); nwd + 1];
+    let mut edge_by_key = BTreeMap::<(usize, usize), usize>::new();
+    let reserved_u_ids = face_seeds
+        .iter()
+        .flat_map(|seed| seed.target_iu)
+        .filter(|&iu| iu > 1)
+        .collect::<BTreeSet<_>>();
+    let mut occupied_u_ids = BTreeSet::<usize>::new();
+    let mut next_auto_iu = 2usize;
+
+    for (&iw, seed) in face_iw.iter().zip(face_seeds.iter()) {
+        require_unique_active_triplet("OLAM W seed M vertices", iw, seed.im, nmd)?;
+
+        let mut face = IcosahedronWFace {
+            npoly: 3,
+            im: seed.im,
+            mrlw: seed.mrlw.max(1),
+            mrlw_orig: seed.mrlw_orig.max(1),
+            ngr: seed.ngr.max(1),
+            mrow: seed.mrow,
+            ..IcosahedronWFace::default()
+        };
+
+        let directed_sides = [
+            (seed.im[2], seed.im[1]),
+            (seed.im[0], seed.im[2]),
+            (seed.im[1], seed.im[0]),
+        ];
+        for (slot, (from, to)) in directed_sides.into_iter().enumerate() {
+            let iu = insert_or_attach_olam_edge(
+                &mut u_edges,
+                &mut edge_by_key,
+                &reserved_u_ids,
+                &mut occupied_u_ids,
+                &mut next_auto_iu,
+                iw,
+                from,
+                to,
+                face.iu[slot],
+                seed.target_iu[slot],
+            )?;
+            face.iu[slot] = iu;
+        }
+
+        w_faces[iw] = face;
+    }
+
+    let nud = u_edges.len() - 1;
+    for iu in 2..=nud {
+        let edge = u_edges[iu];
+        if edge.iw[0] <= 1 || edge.iw[1] <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("U edge {iu} is not shared by two W faces"),
+            ));
+        }
+    }
+
+    let mut connectivity = IcosahedronDiamondConnectivity { u_edges, w_faces };
+    fill_olam_w_face_neighbors_from_edges(&mut connectivity.u_edges, &mut connectivity.w_faces)?;
+    derive_icosahedron_u_neighbors_fortran(&mut connectivity).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to derive OLAM U-edge neighbors from rebuilt triangle mesh",
+        )
+    })?;
+    let m_neighbors =
+        derive_olam_m_neighbors_from_incidence(nmd, &connectivity.u_edges, &connectivity.w_faces)?;
+    let m_metadata = derive_olam_m_metadata_from_w_faces(nmd, &connectivity.w_faces)?;
+
+    let mesh = OlamDelaunayMesh {
+        nmd,
+        nud,
+        nwd,
+        impent,
+        m_points,
+        m_metadata,
+        u_edges: connectivity.u_edges,
+        w_faces: connectivity.w_faces,
+        m_neighbors,
+        m_prognostic: olam_identity_prognostic_map(nmd),
+        u_prognostic: olam_identity_prognostic_map(nud),
+        w_prognostic: olam_identity_prognostic_map(nwd),
+        boundary_rows,
+    };
+    mesh.validate_topology()?;
+    Ok(mesh)
+}
+
+fn default_olam_m_metadata(nmd: usize) -> Vec<IcosahedronMPointMetadata> {
+    vec![IcosahedronMPointMetadata::default(); nmd + 1]
+}
+
+fn olam_identity_prognostic_map(max_id: usize) -> Vec<usize> {
+    (0..=max_id).collect()
+}
+
+fn derive_olam_m_metadata_from_w_faces(
+    nmd: usize,
+    w_faces: &[IcosahedronWFace],
+) -> io::Result<Vec<IcosahedronMPointMetadata>> {
+    let mut metadata = default_olam_m_metadata(nmd);
+    let mut seen = vec![false; nmd + 1];
+    for face in w_faces.iter().skip(2) {
+        for &im in &face.im {
+            require_olam_id("OLAM M metadata face vertex", im, nmd)?;
+            seen[im] = true;
+            metadata[im].mrlm = metadata[im].mrlm.max(face.mrlw.max(1));
+            metadata[im].mrlm_orig = metadata[im].mrlm_orig.max(face.mrlw_orig.max(1));
+            metadata[im].ngr = metadata[im].ngr.max(face.ngr.max(1));
+        }
+    }
+    for (im, &has_face) in seen.iter().enumerate().skip(2) {
+        if !has_face {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OLAM M metadata point {im} is not incident on any W face"),
+            ));
+        }
+    }
+    Ok(metadata)
+}
+
+fn fill_olam_w_face_neighbors_from_edges(
+    u_edges: &mut [IcosahedronUEdge],
+    w_faces: &mut [IcosahedronWFace],
+) -> io::Result<()> {
+    let nwd = w_faces.len().saturating_sub(1);
+    for iw in 2..=nwd {
+        for slot in 0..3 {
+            let iu = w_faces[iw].iu[slot];
+            let edge = u_edges[iu];
+            let other_iw = if edge.iw[0] == iw {
+                edge.iw[1]
+            } else if edge.iw[1] == iw {
+                edge.iw[0]
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("W face {iw} edge slot {slot} points at U edge {iu}, but edge does not point back"),
+                ));
+            };
+            require_olam_id("OLAM W neighbor face", other_iw, nwd)?;
+            w_faces[iw].iw[slot] = other_iw;
+        }
+    }
+
+    for iw in 2..=nwd {
+        let [iw1, iw2, iw3] = [w_faces[iw].iw[0], w_faces[iw].iw[1], w_faces[iw].iw[2]];
+        require_olam_id("OLAM W inner neighbor", iw1, nwd)?;
+        require_olam_id("OLAM W inner neighbor", iw2, nwd)?;
+        require_olam_id("OLAM W inner neighbor", iw3, nwd)?;
+
+        let pair1 = tri_neighbors_outer_w_pair(
+            iw,
+            [w_faces[iw1].iw[0], w_faces[iw1].iw[1], w_faces[iw1].iw[2]],
+        );
+        let pair2 = tri_neighbors_outer_w_pair(
+            iw,
+            [w_faces[iw2].iw[0], w_faces[iw2].iw[1], w_faces[iw2].iw[2]],
+        );
+        let pair3 = tri_neighbors_outer_w_pair(
+            iw,
+            [w_faces[iw3].iw[0], w_faces[iw3].iw[1], w_faces[iw3].iw[2]],
+        );
+
+        w_faces[iw].iw[3] = pair1[0];
+        w_faces[iw].iw[4] = pair1[1];
+        w_faces[iw].iw[5] = pair2[0];
+        w_faces[iw].iw[6] = pair2[1];
+        w_faces[iw].iw[7] = pair3[0];
+        w_faces[iw].iw[8] = pair3[1];
+    }
+
+    Ok(())
+}
+
+fn order_olam_outer_w_pair_for_fill_rad3(
+    w_faces: &[IcosahedronWFace],
+    pair: [usize; 2],
+    outer_candidates: [usize; 6],
+    imx: usize,
+) -> io::Result<[usize; 2]> {
+    if let Some(ordered) =
+        order_olam_outer_w_pair_candidate(w_faces, pair, outer_candidates, imx)?
+    {
+        return Ok(ordered);
+    }
+    if let Some(ordered) =
+        order_olam_outer_w_pair_candidate(w_faces, [pair[1], pair[0]], outer_candidates, imx)?
+    {
+        return Ok(ordered);
+    }
+    Ok(pair)
+}
+
+fn order_olam_outer_w_pair_candidate(
+    w_faces: &[IcosahedronWFace],
+    pair: [usize; 2],
+    outer_candidates: [usize; 6],
+    imx: usize,
+) -> io::Result<Option<[usize; 2]>> {
+    let nwd = w_faces.len().saturating_sub(1);
+    require_olam_id("OLAM cart_hex outer W pair", pair[0], nwd)?;
+    require_olam_id("OLAM cart_hex outer W pair", pair[1], nwd)?;
+    if !w_faces[pair[0]].im.contains(&imx) {
+        return Ok(None);
+    }
+    let (im1, im2) = face_following_two_vertices(w_faces[pair[0]], imx, pair[0])?;
+    if w_faces[pair[1]].im.contains(&im2) {
+        let im3 = face_following_vertex(w_faces[pair[1]], im2, pair[1])?;
+        if im3 != im1 {
+            return Ok(Some(pair));
+        }
+    }
+    for iwy in w_faces[pair[0]].iw {
+        if iwy <= 1 {
+            continue;
+        }
+        require_olam_id("OLAM cart_hex iwx W neighbor", iwy, nwd)?;
+        if iwy != pair[0] && w_faces[iwy].im.contains(&im2) {
+            let im3 = face_following_vertex(w_faces[iwy], im2, iwy)?;
+            if im3 != im1 {
+                return Ok(Some([pair[0], iwy]));
+            }
+        }
+    }
+    for iwy in outer_candidates {
+        require_olam_id("OLAM cart_hex outer W candidate", iwy, nwd)?;
+        if iwy != pair[0] && w_faces[iwy].im.contains(&im2) {
+            let im3 = face_following_vertex(w_faces[iwy], im2, iwy)?;
+            if im3 != im1 {
+                return Ok(Some([pair[0], iwy]));
+            }
+        }
+    }
+    Ok(Some(pair))
+}
+
+fn fill_cart_hex_w_face_neighbors_from_edges(
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &mut [IcosahedronWFace],
+    w_prognostic: &[usize],
+) -> io::Result<()> {
+    let nwd = w_faces.len().saturating_sub(1);
+    for iw in 2..=nwd {
+        if w_prognostic[iw] != iw {
+            continue;
+        }
+        for slot in 0..3 {
+            let iu = w_faces[iw].iu[slot];
+            require_olam_id("OLAM cart_hex W face U edge", iu, u_edges.len().saturating_sub(1))?;
+            let edge = u_edges[iu];
+            let other_iw = if edge.iw[0] == iw {
+                edge.iw[1]
+            } else if edge.iw[1] == iw {
+                edge.iw[0]
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("cart_hex W face {iw} edge slot {slot} points at U edge {iu}, but edge does not point back"),
+                ));
+            };
+            require_olam_id("OLAM cart_hex W neighbor face", other_iw, nwd)?;
+            w_faces[iw].iw[slot] = other_iw;
+        }
+    }
+
+    for iw in 2..=nwd {
+        let partner = w_prognostic[iw];
+        if partner > 1 && partner != iw {
+            require_olam_id("OLAM cart_hex periodic W face partner", partner, nwd)?;
+            let boundary_iu = w_faces[iw].iu[0];
+            w_faces[iw] = w_faces[partner];
+            if boundary_iu > 1 {
+                w_faces[iw].iu[0] = boundary_iu;
+            }
+        }
+    }
+
+    for iw in 2..=nwd {
+        if w_prognostic[iw] != iw {
+            continue;
+        }
+        let [iw1, iw2, iw3] = [w_faces[iw].iw[0], w_faces[iw].iw[1], w_faces[iw].iw[2]];
+        require_olam_id("OLAM cart_hex W inner neighbor", iw1, nwd)?;
+        require_olam_id("OLAM cart_hex W inner neighbor", iw2, nwd)?;
+        require_olam_id("OLAM cart_hex W inner neighbor", iw3, nwd)?;
+
+        let raw_pair1 = tri_neighbors_outer_w_pair(
+            iw,
+            [w_faces[iw1].iw[0], w_faces[iw1].iw[1], w_faces[iw1].iw[2]],
+        );
+        let raw_pair2 = tri_neighbors_outer_w_pair(
+            iw,
+            [w_faces[iw2].iw[0], w_faces[iw2].iw[1], w_faces[iw2].iw[2]],
+        );
+        let raw_pair3 = tri_neighbors_outer_w_pair(
+            iw,
+            [w_faces[iw3].iw[0], w_faces[iw3].iw[1], w_faces[iw3].iw[2]],
+        );
+        let outer_candidates = [
+            raw_pair1[0],
+            raw_pair1[1],
+            raw_pair2[0],
+            raw_pair2[1],
+            raw_pair3[0],
+            raw_pair3[1],
+        ];
+        let pair1 = order_olam_outer_w_pair_for_fill_rad3(
+            w_faces,
+            raw_pair1,
+            outer_candidates,
+            w_faces[iw].im[1],
+        )?;
+        let pair2 = order_olam_outer_w_pair_for_fill_rad3(
+            w_faces,
+            raw_pair2,
+            outer_candidates,
+            w_faces[iw].im[2],
+        )?;
+        let pair3 = order_olam_outer_w_pair_for_fill_rad3(
+            w_faces,
+            raw_pair3,
+            outer_candidates,
+            w_faces[iw].im[0],
+        )?;
+
+        w_faces[iw].iw[3] = pair1[0];
+        w_faces[iw].iw[4] = pair1[1];
+        w_faces[iw].iw[5] = pair2[0];
+        w_faces[iw].iw[6] = pair2[1];
+        w_faces[iw].iw[7] = pair3[0];
+        w_faces[iw].iw[8] = pair3[1];
+    }
+
+    Ok(())
+}
+
+fn assign_olam_triangle_seed_w_ids(face_seeds: &[OlamTriangleSeed]) -> io::Result<Vec<usize>> {
+    let mut assigned = vec![0usize; face_seeds.len()];
+    let mut occupied = BTreeSet::<usize>::new();
+
+    for (idx, seed) in face_seeds.iter().enumerate() {
+        if seed.target_iw <= 1 {
+            continue;
+        }
+        if !occupied.insert(seed.target_iw) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("duplicate OLAM target W id {}", seed.target_iw),
+            ));
+        }
+        assigned[idx] = seed.target_iw;
+    }
+
+    let mut next_iw = 2usize;
+    for iw in &mut assigned {
+        if *iw > 1 {
+            continue;
+        }
+        while occupied.contains(&next_iw) {
+            next_iw += 1;
+        }
+        *iw = next_iw;
+        occupied.insert(next_iw);
+    }
+
+    Ok(assigned)
+}
+
+fn derive_olam_m_neighbors_from_incidence(
+    nmd: usize,
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
+    let mut incident_w = vec![Vec::<usize>::new(); nmd + 1];
+
+    for (iw, face) in w_faces.iter().enumerate().skip(2) {
+        let mut unique_im = face.im.to_vec();
+        unique_im.sort_unstable();
+        unique_im.dedup();
+        for &im in &unique_im {
+            require_olam_id("W face M vertex", im, nmd)?;
+        }
+        if unique_im.len() < 2 {
+            continue;
+        }
+        for &im in &unique_im {
+            incident_w[im].push(iw);
+        }
+    }
+
+    let mut m_neighbors = vec![IcosahedronMPointNeighbors::default(); nmd + 1];
+    for im in 2..=nmd {
+        let mut w_list = incident_w[im].clone();
+        w_list.sort_unstable();
+        w_list.dedup();
+
+        if w_list.is_empty() {
+            continue;
+        }
+        if !(3..=7).contains(&w_list.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("M point {im} has unsupported OLAM incident face count {}", w_list.len()),
+            ));
+        }
+
+        let mut edge_hits = BTreeMap::<usize, usize>::new();
+        let mut valid_w_list = Vec::<usize>::new();
+        for &iw in &w_list {
+            let Ok(incident) = olam_face_incident_edges_for_m(im, iw, u_edges, w_faces) else {
+                continue;
+            };
+            valid_w_list.push(iw);
+            for iu in incident {
+                *edge_hits.entry(iu).or_insert(0usize) += 1;
+            }
+        }
+        if valid_w_list.len() < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "M point {im} has too few incident W faces after filtering malformed ring entries: {}",
+                    valid_w_list.len()
+                ),
+            ));
+        }
+        let mut u_list = edge_hits
+            .into_iter()
+            .filter(|(_, hits)| *hits >= 2)
+            .map(|(iu, _)| iu)
+            .collect::<Vec<_>>();
+        u_list.sort_unstable();
+        u_list.dedup();
+
+        if !(3..=7).contains(&u_list.len()) {
+            let edge_vertices = u_list
+                .iter()
+                .map(|&iu| (iu, u_edges[iu].im, u_edges[iu].iw))
+                .collect::<Vec<_>>();
+            let face_vertices = w_list
+                .iter()
+                .map(|&iw| (iw, w_faces[iw].im))
+                .collect::<Vec<_>>();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "M point {im} has unsupported OLAM incidence: {} U edges {:?}, {} W faces {:?}",
+                    u_list.len(),
+                    edge_vertices,
+                    w_list.len(),
+                    face_vertices
+                ),
+            ));
+        }
+
+        let (ordered_u, ordered_w) =
+            order_olam_m_ring_from_incidence(im, &u_list, &valid_w_list, u_edges, w_faces)?;
+        let mut neighbor = IcosahedronMPointNeighbors {
+            npoly: ordered_u.len(),
+            ..IcosahedronMPointNeighbors::default()
+        };
+        for (slot, (&iu, &iw)) in ordered_u.iter().zip(ordered_w.iter()).enumerate() {
+            neighbor.iu[slot] = iu;
+            neighbor.iw[slot] = iw;
+        }
+        m_neighbors[im] = neighbor;
+    }
+
+    Ok(m_neighbors)
+}
+
+fn derive_cart_hex_m_neighbors_from_active_faces(
+    nmd: usize,
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+    w_prognostic: &[usize],
+) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
+    let mut incident_w = vec![Vec::<usize>::new(); nmd + 1];
+    for (iw, face) in w_faces.iter().enumerate().skip(2) {
+        if w_prognostic.get(iw).copied().unwrap_or(iw) != iw {
+            continue;
+        }
+        if face.npoly != 3 || face.im.iter().any(|&im| im <= 1) {
+            continue;
+        }
+        for &im in &face.im {
+            require_olam_id("OLAM cart_hex W face M vertex", im, nmd)?;
+            incident_w[im].push(iw);
+        }
+    }
+
+    let mut m_neighbors = vec![IcosahedronMPointNeighbors::default(); nmd + 1];
+    for im in 2..=nmd {
+        let mut w_list = incident_w[im].clone();
+        w_list.sort_unstable();
+        w_list.dedup();
+        if !(3..=7).contains(&w_list.len()) {
+            continue;
+        }
+
+        let mut edge_hits = BTreeMap::<usize, usize>::new();
+        for &iw in &w_list {
+            for iu in olam_face_incident_edges_for_m(im, iw, u_edges, w_faces)? {
+                *edge_hits.entry(iu).or_insert(0usize) += 1;
+            }
+        }
+        let mut u_list = edge_hits
+            .into_iter()
+            .filter(|(_, hits)| *hits >= 2)
+            .map(|(iu, _)| iu)
+            .collect::<Vec<_>>();
+        u_list.sort_unstable();
+        u_list.dedup();
+        if !(3..=7).contains(&u_list.len()) {
+            continue;
+        }
+
+        let (ordered_u, ordered_w) =
+            order_olam_m_ring_from_incidence(im, &u_list, &w_list, u_edges, w_faces)?;
+        let mut neighbor = IcosahedronMPointNeighbors {
+            npoly: ordered_u.len(),
+            ..IcosahedronMPointNeighbors::default()
+        };
+        for (slot, (&iu, &iw)) in ordered_u.iter().zip(ordered_w.iter()).enumerate() {
+            neighbor.iu[slot] = iu;
+            neighbor.iw[slot] = iw;
+        }
+        m_neighbors[im] = neighbor;
+    }
+
+    Ok(m_neighbors)
+}
+
+fn order_olam_m_ring_from_incidence(
+    im: usize,
+    u_list: &[usize],
+    w_list: &[usize],
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+) -> io::Result<(Vec<usize>, Vec<usize>)> {
+    if u_list.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let expected_u = u_list.iter().copied().collect::<BTreeSet<_>>();
+    let expected_w = w_list.iter().copied().collect::<BTreeSet<_>>();
+    let mut best_actual_u = BTreeSet::<usize>::new();
+    let mut best_actual_w = BTreeSet::<usize>::new();
+    let mut best_ordered_u = Vec::<usize>::new();
+    let mut best_ordered_w = Vec::<usize>::new();
+    let mut best_error = String::new();
+
+    for &start_face in w_list {
+        let incident = match olam_face_incident_edges_for_m(im, start_face, u_edges, w_faces) {
+            Ok(incident) => incident,
+            Err(err) => {
+                best_error = err.to_string();
+                continue;
+            }
+        };
+        for &start_edge in &incident {
+            let mut ordered_u = Vec::with_capacity(u_list.len());
+            let mut ordered_w = Vec::with_capacity(w_list.len());
+            let mut current_face = start_face;
+            let mut incoming_edge = start_edge;
+            let mut candidate_error = None::<String>;
+
+            for _ in 0..w_list.len() {
+                if ordered_w.contains(&current_face) {
+                    break;
+                }
+                if !expected_w.contains(&current_face) {
+                    candidate_error = Some(format!(
+                        "walk reached non-incident W face {current_face} from start W {start_face}, U {start_edge}"
+                    ));
+                    break;
+                }
+                if !expected_u.contains(&incoming_edge) {
+                    candidate_error = Some(format!(
+                        "walk reached non-incident U edge {incoming_edge} from start W {start_face}, U {start_edge}"
+                    ));
+                    break;
+                }
+                ordered_u.push(incoming_edge);
+                ordered_w.push(current_face);
+
+                let face_edges =
+                    olam_face_incident_edges_for_m(im, current_face, u_edges, w_faces)?;
+                let outgoing_edge = if face_edges[0] == incoming_edge {
+                    face_edges[1]
+                } else if face_edges[1] == incoming_edge {
+                    face_edges[0]
+                } else {
+                    candidate_error = Some(format!(
+                        "face {current_face} does not contain incoming U edge {incoming_edge}"
+                    ));
+                    break;
+                };
+                let edge = u_edges[outgoing_edge];
+                let next_face = if edge.iw[0] == current_face {
+                    edge.iw[1]
+                } else if edge.iw[1] == current_face {
+                    edge.iw[0]
+                } else {
+                    candidate_error = Some(format!(
+                        "outgoing U edge {outgoing_edge} does not contain W face {current_face}"
+                    ));
+                    break;
+                };
+                current_face = next_face;
+                incoming_edge = outgoing_edge;
+            }
+
+            let actual_u = ordered_u.iter().copied().collect::<BTreeSet<_>>();
+            let actual_w = ordered_w.iter().copied().collect::<BTreeSet<_>>();
+            if actual_u == expected_u {
+                return Ok((ordered_u, ordered_w));
+            }
+            if actual_u.len() + actual_w.len() > best_actual_u.len() + best_actual_w.len() {
+                best_actual_u = actual_u;
+                best_actual_w = actual_w;
+                best_ordered_u = ordered_u;
+                best_ordered_w = ordered_w;
+                best_error = candidate_error.unwrap_or_else(|| "walk closed early".to_string());
+            }
+        }
+    }
+
+    let edge_rows = u_list
+        .iter()
+        .map(|&iu| (iu, u_edges[iu].im, u_edges[iu].iw))
+        .collect::<Vec<_>>();
+    let face_rows = w_list
+        .iter()
+        .map(|&iw| (iw, w_faces[iw].im, w_faces[iw].iu))
+        .collect::<Vec<_>>();
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "M point {im} incidence ring did not close over the same U/W sets: best U {:?} vs {:?}, best W {:?} vs {:?}; ordered U {:?}, ordered W {:?}; last walk error {}; U rows {:?}; W rows {:?}",
+            best_actual_u,
+            expected_u,
+            best_actual_w,
+            expected_w,
+            best_ordered_u,
+            best_ordered_w,
+            best_error,
+            edge_rows,
+            face_rows
+        ),
+    ))
+}
+
+fn olam_face_incident_edges_for_m(
+    im: usize,
+    iw: usize,
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+) -> io::Result<[usize; 2]> {
+    let face = w_faces[iw];
+    if !face.im.contains(&im) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("W face {iw} does not contain M point {im}"),
+        ));
+    }
+    let mut edges = Vec::with_capacity(2);
+    for &iu in &face.iu {
+        if u_edges[iu].im.contains(&im) {
+            edges.push(iu);
+        }
+    }
+    if edges.len() != 2 {
+        let edge_rows = face
+            .iu
+            .iter()
+            .map(|&iu| (iu, u_edges[iu].im))
+            .collect::<Vec<_>>();
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "W face {iw} has {edges_len} incident U edges for M point {im}, expected 2; face.im={:?}, face.iu={:?}, edge.im={:?}",
+                face.im,
+                face.iu,
+                edge_rows,
+                edges_len = edges.len(),
+            ),
+        ));
+    }
+    Ok([edges[0], edges[1]])
+}
+
+fn insert_or_attach_olam_edge(
+    u_edges: &mut Vec<IcosahedronUEdge>,
+    edge_by_key: &mut BTreeMap<(usize, usize), usize>,
+    reserved_u_ids: &BTreeSet<usize>,
+    occupied_u_ids: &mut BTreeSet<usize>,
+    next_auto_iu: &mut usize,
+    iw: usize,
+    from: usize,
+    to: usize,
+    existing_face_edge: usize,
+    target_iu: usize,
+) -> io::Result<usize> {
+    debug_assert_eq!(existing_face_edge, 1);
+    let key = olam_edge_key(from, to);
+    if let Some(&iu) = edge_by_key.get(&key) {
+        if target_iu > 1 && target_iu != iu {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "W face {iw} target U edge {target_iu} conflicts with existing shared U edge {iu}"
+                ),
+            ));
+        }
+        let edge = u_edges.get_mut(iu).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing U edge {iu} while attaching W face {iw}"),
+            )
+        })?;
+        if edge.iw[1] > 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("U edge {iu} has more than two adjacent W faces"),
+            ));
+        }
+        if edge.im != [to, from] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "W face {iw} shares U edge {iu} with inconsistent orientation [{from}, {to}]"
+                ),
+            ));
+        }
+        edge.iw[1] = iw;
+        return Ok(iu);
+    }
+
+    let iu = if target_iu > 1 {
+        if !occupied_u_ids.insert(target_iu) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("duplicate target U edge id {target_iu} while inserting W face {iw}"),
+            ));
+        }
+        target_iu
+    } else {
+        while reserved_u_ids.contains(next_auto_iu) || occupied_u_ids.contains(next_auto_iu) {
+            *next_auto_iu += 1;
+        }
+        let iu = *next_auto_iu;
+        occupied_u_ids.insert(iu);
+        *next_auto_iu += 1;
+        iu
+    };
+
+    if u_edges.len() <= iu {
+        u_edges.resize(iu + 1, IcosahedronUEdge::default());
+    }
+    let mut edge = IcosahedronUEdge::default();
+    edge.im = [from, to];
+    edge.iw[0] = iw;
+    edge.mrlu = 1;
+    u_edges[iu] = edge;
+    edge_by_key.insert(key, iu);
+    Ok(iu)
+}
+
+fn require_olam_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
+    if actual < required {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} length {actual} is shorter than required {required}"),
+        ));
+    }
+    Ok(())
+}
+
+fn require_olam_id(label: &str, id: usize, max: usize) -> io::Result<()> {
+    if id <= 1 || id > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} id {id} is outside active OLAM range 2..={max}"),
+        ));
+    }
+    Ok(())
+}
+
+fn require_unique_active_triplet(
+    label: &str,
+    owner: usize,
+    values: [usize; 3],
+    max: usize,
+) -> io::Result<()> {
+    for &value in &values {
+        require_olam_id(label, value, max)?;
+    }
+    if values[0] == values[1] || values[0] == values[2] || values[1] == values[2] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} for owner {owner} contains duplicates: {values:?}"),
+        ));
+    }
+    Ok(())
+}
+
 /// `mem_ijtabs:mloops` used by `mdloopf`, `udloopf`, and `wdloopf`.
 pub const ICOSAHEDRON_MLOOPS: usize = 7;
+const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
+const OLAM_FORTRAN_PI2: f32 = 3.1415927_f32 * 2.0;
+
+fn olam_fortran_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
+    ((beta as f32) * OLAM_FORTRAN_PI2 * (radius as f32) / (5.0 * nxp as f32)) as f64
+}
 
 /// Port of the `nmd/nud/nwd` sizing formulas in
 /// `icosahedron.F90:icosahedron`.
@@ -552,54 +5498,54 @@ pub fn icosahedron_counts_fortran(nxp0: usize) -> Option<IcosahedronCounts> {
 /// Port of the big-diamond corner coordinate initialization in
 /// `icosahedron.F90:icosahedron`.
 pub fn icosahedron_diamond_corners_fortran() -> [IcosahedronDiamondCorners; 10] {
-    let radius = earthmesh_core::EARTH_RADIUS_METERS;
-    let erador5 = radius / 5.0_f64.sqrt();
-    let full_turn = earthmesh_core::PI2;
+    let radius = OLAM_FORTRAN_EARTH_RADIUS_METERS as f32;
+    let erador5 = radius / 5.0_f32.sqrt();
+    let full_turn = OLAM_FORTRAN_PI2;
 
     std::array::from_fn(|slot| {
         let id = slot + 1;
         if id <= 5 {
-            let angle_n = 0.2 * (id - 1) as f64 * full_turn;
-            let angle_w = angle_n - 0.1 * full_turn;
-            let angle_e = angle_n + 0.1 * full_turn;
+            let angle_n = 0.2_f32 * (id - 1) as f32 * full_turn;
+            let angle_w = angle_n - 0.1_f32 * full_turn;
+            let angle_e = angle_n + 0.1_f32 * full_turn;
             IcosahedronDiamondCorners {
-                south: CartesianPoint::new(0.0, 0.0, -radius),
+                south: CartesianPoint::new(0.0, 0.0, -radius as f64),
                 north: CartesianPoint::new(
-                    erador5 * 2.0 * angle_n.cos(),
-                    erador5 * 2.0 * angle_n.sin(),
-                    erador5,
+                    (erador5 * 2.0 * angle_n.cos()) as f64,
+                    (erador5 * 2.0 * angle_n.sin()) as f64,
+                    erador5 as f64,
                 ),
                 west: CartesianPoint::new(
-                    erador5 * 2.0 * angle_w.cos(),
-                    erador5 * 2.0 * angle_w.sin(),
-                    -erador5,
+                    (erador5 * 2.0 * angle_w.cos()) as f64,
+                    (erador5 * 2.0 * angle_w.sin()) as f64,
+                    -erador5 as f64,
                 ),
                 east: CartesianPoint::new(
-                    erador5 * 2.0 * angle_e.cos(),
-                    erador5 * 2.0 * angle_e.sin(),
-                    -erador5,
+                    (erador5 * 2.0 * angle_e.cos()) as f64,
+                    (erador5 * 2.0 * angle_e.sin()) as f64,
+                    -erador5 as f64,
                 ),
             }
         } else {
-            let angle_s = 0.2 * (id - 6) as f64 * full_turn + 0.1 * full_turn;
-            let angle_w = angle_s - 0.1 * full_turn;
-            let angle_e = angle_s + 0.1 * full_turn;
+            let angle_s = 0.2_f32 * (id - 6) as f32 * full_turn + 0.1_f32 * full_turn;
+            let angle_w = angle_s - 0.1_f32 * full_turn;
+            let angle_e = angle_s + 0.1_f32 * full_turn;
             IcosahedronDiamondCorners {
                 south: CartesianPoint::new(
-                    erador5 * 2.0 * angle_s.cos(),
-                    erador5 * 2.0 * angle_s.sin(),
-                    -erador5,
+                    (erador5 * 2.0 * angle_s.cos()) as f64,
+                    (erador5 * 2.0 * angle_s.sin()) as f64,
+                    -erador5 as f64,
                 ),
-                north: CartesianPoint::new(0.0, 0.0, radius),
+                north: CartesianPoint::new(0.0, 0.0, radius as f64),
                 west: CartesianPoint::new(
-                    erador5 * 2.0 * angle_w.cos(),
-                    erador5 * 2.0 * angle_w.sin(),
-                    erador5,
+                    (erador5 * 2.0 * angle_w.cos()) as f64,
+                    (erador5 * 2.0 * angle_w.sin()) as f64,
+                    erador5 as f64,
                 ),
                 east: CartesianPoint::new(
-                    erador5 * 2.0 * angle_e.cos(),
-                    erador5 * 2.0 * angle_e.sin(),
-                    erador5,
+                    (erador5 * 2.0 * angle_e.cos()) as f64,
+                    (erador5 * 2.0 * angle_e.sin()) as f64,
+                    erador5 as f64,
                 ),
             }
         }
@@ -617,8 +5563,8 @@ pub fn icosahedron_initial_grid_fortran(nxp0: usize) -> Option<IcosahedronInitia
     let diamond_corners = icosahedron_diamond_corners_fortran();
     let mut impent = [0usize; 12];
     let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); counts.nmd + 1];
-    let pwrd = 0.9_f64;
-    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let pwrd = 0.9_f32;
+    let radius = OLAM_FORTRAN_EARTH_RADIUS_METERS as f32;
 
     impent[0] = 2;
     impent[11] = counts.nmd;
@@ -635,16 +5581,18 @@ pub fn icosahedron_initial_grid_fortran(nxp0: usize) -> Option<IcosahedronInitia
 
                 let (mut wts, mut wtn, wtw0, wte0) = if i + j <= nxp0 {
                     (
-                        ((nxp0 + 1 - i - j) as f64 / nxp0 as f64).clamp(0.0, 1.0),
+                        ((nxp0 + 1 - i - j) as f32 / nxp0 as f32).clamp(0.0, 1.0),
                         0.0,
-                        (j as f64 / (i + j - 1) as f64).clamp(0.0, 1.0),
-                        1.0 - (j as f64 / (i + j - 1) as f64).clamp(0.0, 1.0),
+                        (j as f32 / (i + j - 1) as f32).clamp(0.0, 1.0),
+                        1.0 - (j as f32 / (i + j - 1) as f32).clamp(0.0, 1.0),
                     )
                 } else {
-                    let wte0 = ((nxp0 - j) as f64 / (2 * nxp0 + 1 - i - j) as f64).clamp(0.0, 1.0);
+                    let wte0 = ((nxp0 - j) as f32
+                        / (2 * nxp0 + 1 - i - j) as f32)
+                        .clamp(0.0, 1.0);
                     (
                         0.0,
-                        ((i + j - nxp0 - 1) as f64 / nxp0 as f64).clamp(0.0, 1.0),
+                        ((i + j - nxp0 - 1) as f32 / nxp0 as f32).clamp(0.0, 1.0),
                         1.0 - wte0,
                         wte0,
                     )
@@ -662,35 +5610,38 @@ pub fn icosahedron_initial_grid_fortran(nxp0: usize) -> Option<IcosahedronInitia
                 wte = wte.powf(pwrd) / sumwt;
 
                 let point = CartesianPoint::new(
-                    wts * corners.south.x
-                        + wtn * corners.north.x
-                        + wtw * corners.west.x
-                        + wte * corners.east.x,
-                    wts * corners.south.y
-                        + wtn * corners.north.y
-                        + wtw * corners.west.y
-                        + wte * corners.east.y,
-                    wts * corners.south.z
-                        + wtn * corners.north.z
-                        + wtw * corners.west.z
-                        + wte * corners.east.z,
+                    (wts * corners.south.x as f32
+                        + wtn * corners.north.x as f32
+                        + wtw * corners.west.x as f32
+                        + wte * corners.east.x as f32) as f64,
+                    (wts * corners.south.y as f32
+                        + wtn * corners.north.y as f32
+                        + wtw * corners.west.y as f32
+                        + wte * corners.east.y as f32) as f64,
+                    (wts * corners.south.z as f32
+                        + wtn * corners.north.z as f32
+                        + wtw * corners.west.z as f32
+                        + wte * corners.east.z as f32) as f64,
                 );
-                let norm = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+                let norm = ((point.x as f32).powi(2)
+                    + (point.y as f32).powi(2)
+                    + (point.z as f32).powi(2))
+                .sqrt();
                 if norm == 0.0 {
                     return None;
                 }
                 let expansion = radius / norm;
                 m_points[im_left] = CartesianPoint::new(
-                    point.x * expansion,
-                    point.y * expansion,
-                    point.z * expansion,
+                    (point.x as f32 * expansion) as f64,
+                    (point.y as f32 * expansion) as f64,
+                    (point.z as f32 * expansion) as f64,
                 );
             }
         }
     }
 
-    m_points[2] = CartesianPoint::new(0.0, 0.0, -radius);
-    m_points[counts.nmd] = CartesianPoint::new(0.0, 0.0, radius);
+    m_points[2] = CartesianPoint::new(0.0, 0.0, -radius as f64);
+    m_points[counts.nmd] = CartesianPoint::new(0.0, 0.0, radius as f64);
 
     Some(IcosahedronInitialGrid {
         nmd: counts.nmd,
@@ -1116,14 +6067,51 @@ pub fn derive_icosahedron_m_neighbors_fortran(
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],
 ) -> Option<Vec<IcosahedronMPointNeighbors>> {
+    derive_icosahedron_m_neighbors_fortran_checked(nmd, u_edges, w_faces).ok()
+}
+
+fn derive_icosahedron_m_neighbors_fortran_checked(
+    nmd: usize,
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
+    derive_icosahedron_m_neighbors_fortran_checked_with_prognostic(nmd, u_edges, w_faces, None)
+}
+
+fn derive_icosahedron_m_neighbors_fortran_checked_with_prognostic(
+    nmd: usize,
+    u_edges: &[IcosahedronUEdge],
+    w_faces: &[IcosahedronWFace],
+    m_prognostic: Option<&[usize]>,
+) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
     let mut m_points = vec![IcosahedronMPointNeighbors::default(); nmd + 1];
 
     for iu in 2..u_edges.len() {
         for j in 0..2 {
-            let im = u_edges.get(iu)?.im[j];
-            let iw = u_edges.get(iu)?.iw[j];
+            let im = u_edges.get(iu).map(|edge| edge.im[j]).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("U edge {iu} is out of range while deriving M neighbors"),
+                )
+            })?;
+            let iw = u_edges.get(iu).map(|edge| edge.iw[j]).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("U edge {iu} is out of range while deriving M neighbors"),
+                )
+            })?;
             if im >= m_points.len() || iw >= w_faces.len() {
-                return None;
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("U edge {iu} endpoint/face out of range: im={im}, iw={iw}"),
+                ));
+            }
+            if m_prognostic
+                .and_then(|map| map.get(im))
+                .copied()
+                .is_some_and(|partner| partner > 1 && partner != im)
+            {
+                continue;
             }
 
             if m_points[im].npoly != 0 && w_faces[iw].npoly >= 3 {
@@ -1134,15 +6122,28 @@ pub fn derive_icosahedron_m_neighbors_fortran(
             let start_iu = iu;
             let mut iunow = iu;
             let mut npoly = 0usize;
+            let mut walk_trace = Vec::<(usize, [usize; 2], [usize; 6], [usize; 12])>::new();
 
             while iunow > 1 {
                 npoly += 1;
+                let edge_now = *u_edges.get(iunow).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("U edge {iunow} is out of range in M point {im} ring"),
+                    )
+                })?;
+                walk_trace.push((iunow, edge_now.im, edge_now.iw, edge_now.iu));
                 if npoly > 7 {
-                    return None;
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C perimeter length invalid: Current nested grid crosses (or is too close to) the next coarser grid boundary; M point {im} exceeds 7-edge OLAM ring while walking from U edge {iu}; trace {:?}",
+                            walk_trace
+                        ),
+                    ));
                 }
 
                 let ring_slot = npoly - 1;
-                let edge_now = *u_edges.get(iunow)?;
                 m_point.iu[ring_slot] = iunow;
 
                 if edge_now.im[0] == im {
@@ -1152,11 +6153,13 @@ pub fn derive_icosahedron_m_neighbors_fortran(
                     } else {
                         iunow = start_iu;
                     }
-                } else if edge_now.iw[0] > 1 {
-                    m_point.iw[ring_slot] = edge_now.iw[0];
-                    iunow = edge_now.iu[1];
                 } else {
-                    iunow = start_iu;
+                    if edge_now.iw[0] > 1 {
+                        m_point.iw[ring_slot] = edge_now.iw[0];
+                        iunow = edge_now.iu[1];
+                    } else {
+                        iunow = start_iu;
+                    }
                 }
 
                 m_point.npoly = npoly;
@@ -1169,7 +6172,7 @@ pub fn derive_icosahedron_m_neighbors_fortran(
         }
     }
 
-    Some(m_points)
+    Ok(m_points)
 }
 
 /// Integrated Rust wrapper for `icosahedron.F90:tri_neighbors`.
@@ -1332,6 +6335,311 @@ pub fn icosahedron_spring_iteration_fortran(
     })
 }
 
+fn olam_global_spring_iteration(
+    m_points: &[CartesianPoint],
+    topology: &IcosahedronSpringTopology,
+    impent: &[usize; 12],
+    dist00: f64,
+    radius: Option<f64>,
+) -> Option<Vec<CartesianPoint>> {
+    if topology.m_npoly.len() != m_points.len()
+        || topology.m_u_edges.len() != m_points.len()
+        || topology.directions.len() != m_points.len()
+        || topology.edge_neighbor_u.len() != topology.edge_m_points.len()
+    {
+        return None;
+    }
+
+    let mut edge_vectors = vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
+    let mut edge_distances = vec![0.0_f64; topology.edge_m_points.len()];
+    for edge_id in 2..topology.edge_m_points.len() {
+        let [im1, im2] = topology.edge_m_points[edge_id];
+        let point1 = *m_points.get(im1)?;
+        let point2 = *m_points.get(im2)?;
+        let dx = (point2.x - point1.x) as f32;
+        let dy = (point2.y - point1.y) as f32;
+        let dz = (point2.z - point1.z) as f32;
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        if distance == 0.0 || !distance.is_finite() {
+            return None;
+        }
+        edge_vectors[edge_id] = CartesianPoint::new(dx as f64, dy as f64, dz as f64);
+        edge_distances[edge_id] = distance as f64;
+    }
+
+    let mut edge_displacements =
+        vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
+    let dist00_f32 = dist00 as f32;
+    for edge_id in 2..topology.edge_m_points.len() {
+        let [iu1, iu2, iu3, iu4] = topology.edge_neighbor_u[edge_id];
+        let dist = edge_distances[edge_id] as f32;
+        let dist1 = *edge_distances.get(iu1)? as f32;
+        let dist2 = *edge_distances.get(iu2)? as f32;
+        let dist3 = *edge_distances.get(iu3)? as f32;
+        let dist4 = *edge_distances.get(iu4)? as f32;
+        if dist1 == 0.0 || dist2 == 0.0 || dist3 == 0.0 || dist4 == 0.0 {
+            return None;
+        }
+
+        let twocosphi3 = (dist1.powi(2) + dist2.powi(2) - dist.powi(2)) / (dist1 * dist2);
+        let twocosphi4 = (dist3.powi(2) + dist4.powi(2) - dist.powi(2)) / (dist3 * dist4);
+        let ratio = (twocosphi3 + twocosphi4).clamp(0.15, 1.2);
+        if !ratio.is_finite() {
+            return None;
+        }
+        let target_distance = dist00_f32 / 1.2 * ratio;
+        let frac_change = (target_distance - dist) / dist;
+        let edge_vector = edge_vectors[edge_id];
+        edge_displacements[edge_id] = CartesianPoint::new(
+            (edge_vector.x as f32 * frac_change) as f64,
+            (edge_vector.y as f32 * frac_change) as f64,
+            (edge_vector.z as f32 * frac_change) as f64,
+        );
+    }
+
+    let mut updated_m_points = m_points.to_vec();
+    for im in 2..m_points.len() {
+        if impent.contains(&im) {
+            continue;
+        }
+
+        let npoly = topology.m_npoly[im];
+        if npoly > 7 {
+            return None;
+        }
+        let mut point = updated_m_points[im];
+        for j in 0..npoly {
+            let edge_id = topology.m_u_edges[im][j];
+            let displacement = *edge_displacements.get(edge_id)?;
+            let direction = topology.directions[im][j] as f32;
+            point.x += (direction * displacement.x as f32) as f64;
+            point.y += (direction * displacement.y as f32) as f64;
+            point.z += (direction * displacement.z as f32) as f64;
+        }
+
+        if let Some(radius) = radius {
+            let norm = magnitude(point);
+            if norm == 0.0 || !norm.is_finite() {
+                return None;
+            }
+            let expansion = radius / norm;
+            updated_m_points[im] = CartesianPoint::new(
+                point.x * expansion,
+                point.y * expansion,
+                point.z * expansion,
+            );
+        } else {
+            updated_m_points[im] = point;
+        }
+    }
+
+    Some(updated_m_points)
+}
+
+fn olam_nest_movable_m_points(
+    mesh: &OlamDelaunayMesh,
+    ngr: usize,
+    move_interior: bool,
+) -> io::Result<Vec<bool>> {
+    let mut movable = vec![false; mesh.nmd + 1];
+
+    for im in 2..=mesh.nmd {
+        if mesh.m_metadata[im].ngr != ngr {
+            continue;
+        }
+
+        if move_interior {
+            movable[im] = true;
+            continue;
+        }
+
+        let neighbors = mesh.m_neighbors[im];
+        for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+            require_olam_id("OLAM nest spring movable W face", iw, mesh.nwd)?;
+            if mesh.w_faces[iw].mrow != 0 {
+                movable[im] = true;
+                break;
+            }
+        }
+    }
+
+    Ok(movable)
+}
+
+fn olam_nest_mrow_distance_multiplier(mrow1: isize, mrow2: isize) -> f64 {
+    let mrmax = mrow1.max(mrow2);
+    let mrmin = mrow1.min(mrow2);
+    match (mrmax, mrmin) {
+        (-2, -2) => 7.0 / 6.0,
+        (-1, -2) => 8.0 / 6.0,
+        (-1, -1) => 9.0 / 6.0,
+        (1, -1) => 10.0 / 6.0,
+        (1, 1) => 11.0 / 12.0,
+        _ => 1.0,
+    }
+}
+
+fn olam_nest_spring_iteration(
+    m_points: &[CartesianPoint],
+    mesh: &OlamDelaunayMesh,
+    topology: &IcosahedronSpringTopology,
+    movable_m_points: &[bool],
+    dist00: f64,
+    project_to_radius: bool,
+) -> Option<Vec<CartesianPoint>> {
+    if topology.m_npoly.len() != m_points.len()
+        || topology.m_u_edges.len() != m_points.len()
+        || topology.directions.len() != m_points.len()
+        || topology.edge_neighbor_u.len() != topology.edge_m_points.len()
+        || movable_m_points.len() != m_points.len()
+    {
+        return None;
+    }
+
+    let mut moveu = vec![false; topology.edge_m_points.len()];
+    let mut compu = vec![false; topology.edge_m_points.len()];
+    for edge_id in 2..topology.edge_m_points.len() {
+        let [im1, im2] = topology.edge_m_points[edge_id];
+        moveu[edge_id] = movable_m_points[im1] || movable_m_points[im2];
+        let [iu1, _, iu3, _] = topology.edge_neighbor_u[edge_id];
+        let [iu1_im1, iu1_im2] = *topology.edge_m_points.get(iu1)?;
+        let im3 = if iu1_im1 == im1 { iu1_im2 } else { iu1_im1 };
+        let [iu3_im1, iu3_im2] = *topology.edge_m_points.get(iu3)?;
+        let im4 = if iu3_im1 == im1 { iu3_im2 } else { iu3_im1 };
+        compu[edge_id] =
+            moveu[edge_id] || movable_m_points[im3] || movable_m_points[im4];
+    }
+
+    let mut edge_vectors = vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
+    let mut edge_distances = vec![0.0_f64; topology.edge_m_points.len()];
+    for edge_id in 2..topology.edge_m_points.len() {
+        if !compu[edge_id] {
+            continue;
+        }
+        let [im1, im2] = topology.edge_m_points[edge_id];
+        let point1 = *m_points.get(im1)?;
+        let point2 = *m_points.get(im2)?;
+        let dx = (point2.x - point1.x) as f32;
+        let dy = (point2.y - point1.y) as f32;
+        let dz = (point2.z - point1.z) as f32;
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        if distance == 0.0 || !distance.is_finite() {
+            return None;
+        }
+        edge_vectors[edge_id] = CartesianPoint::new(dx as f64, dy as f64, dz as f64);
+        edge_distances[edge_id] = distance as f64;
+    }
+
+    let max_mrlu = (2..topology.edge_m_points.len())
+        .filter_map(|edge_id| {
+            if moveu[edge_id] {
+                Some(mesh.u_edges.get(edge_id)?.mrlu.max(1))
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(1);
+    let dist00_f32 = dist00 as f32;
+    let dmin = dist00_f32 / 2.0_f32.powi(max_mrlu.saturating_sub(1) as i32);
+    let min_area_squared = 0.1875_f32 * dmin.powi(4);
+    let mut edge_displacements =
+        vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
+
+    for edge_id in 2..topology.edge_m_points.len() {
+        if !moveu[edge_id] {
+            continue;
+        }
+        let edge = *mesh.u_edges.get(edge_id)?;
+        let [iu1, iu2, iu3, iu4] = topology.edge_neighbor_u[edge_id];
+        let dist = *edge_distances.get(edge_id)? as f32;
+        let dist1 = *edge_distances.get(iu1)? as f32;
+        let dist2 = *edge_distances.get(iu2)? as f32;
+        let dist3 = *edge_distances.get(iu3)? as f32;
+        let dist4 = *edge_distances.get(iu4)? as f32;
+        if dist1 == 0.0 || dist2 == 0.0 || dist3 == 0.0 || dist4 == 0.0 {
+            return None;
+        }
+
+        let twocosphi3 = (dist1.powi(2) + dist2.powi(2) - dist.powi(2)) / (dist1 * dist2);
+        let twocosphi4 = (dist3.powi(2) + dist4.powi(2) - dist.powi(2)) / (dist3 * dist4);
+        let angle_ratio = (twocosphi3 + twocosphi4).clamp(0.15, 1.2);
+        if !angle_ratio.is_finite() {
+            return None;
+        }
+
+        let edge_level = edge.mrlu.max(1);
+        let mut target_distance =
+            (dist00_f32 / 1.2) / 2.0_f32.powi(edge_level.saturating_sub(1) as i32)
+                * angle_ratio;
+        let face1 = *mesh.w_faces.get(edge.iw[0])?;
+        let face2 = *mesh.w_faces.get(edge.iw[1])?;
+        target_distance *= olam_nest_mrow_distance_multiplier(face1.mrow, face2.mrow) as f32;
+
+        let s1 = 0.5 * (dist + dist1 + dist2);
+        let s2 = 0.5 * (dist + dist3 + dist4);
+        let area1_squared = s1 * (s1 - dist) * (s1 - dist1) * (s1 - dist2);
+        let area2_squared = s2 * (s2 - dist) * (s2 - dist3) * (s2 - dist4);
+        let min_local_area_squared = area1_squared.min(area2_squared);
+        if min_local_area_squared <= 0.0 || !min_local_area_squared.is_finite() {
+            return None;
+        }
+        let area_ratio = (min_area_squared / min_local_area_squared).max(1.0);
+        target_distance *= area_ratio;
+
+        let frac_change = (target_distance - dist) / dist;
+        let edge_vector = edge_vectors[edge_id];
+        edge_displacements[edge_id] = CartesianPoint::new(
+            (edge_vector.x as f32 * frac_change) as f64,
+            (edge_vector.y as f32 * frac_change) as f64,
+            (edge_vector.z as f32 * frac_change) as f64,
+        );
+    }
+
+    let radius = if project_to_radius {
+        Some(active_mesh_radius(mesh).ok()?)
+    } else {
+        None
+    };
+    let mut updated_m_points = m_points.to_vec();
+    for im in 2..m_points.len() {
+        if !movable_m_points[im] {
+            continue;
+        }
+
+        let npoly = topology.m_npoly[im];
+        if npoly > 7 {
+            return None;
+        }
+        let mut point = updated_m_points[im];
+        for j in 0..npoly {
+            let edge_id = topology.m_u_edges[im][j];
+            let displacement = *edge_displacements.get(edge_id)?;
+            let direction = topology.directions[im][j] as f32;
+            point.x += (direction * displacement.x as f32) as f64;
+            point.y += (direction * displacement.y as f32) as f64;
+            point.z += (direction * displacement.z as f32) as f64;
+        }
+
+        if let Some(radius) = radius {
+            let norm = magnitude(point);
+            if norm == 0.0 || !norm.is_finite() {
+                return None;
+            }
+            let expansion = radius / norm;
+            updated_m_points[im] = CartesianPoint::new(
+                point.x * expansion,
+                point.y * expansion,
+                point.z * expansion,
+            );
+        } else {
+            updated_m_points[im] = point;
+        }
+    }
+
+    Some(updated_m_points)
+}
+
 /// Multi-iteration wrapper for `icosahedron.F90:spring_dynamics1`.
 ///
 /// It repeatedly applies `icosahedron_spring_iteration_fortran` and records the
@@ -1480,6 +6788,5589 @@ mod tests {
         assert_eq!(lonlat[0].lon_degrees, 0.0);
         assert_eq!(lonlat[1].lon_degrees, 90.0);
     }
+
+    #[test]
+    fn olam_circle_region_uses_fortran_polar_stereographic_distance() {
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(0.0, 0.0),
+            radius_meters: 5_000_000.0,
+            level: 1,
+        };
+        let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(rad_to_deg(0.75), 0.0));
+
+        assert!(
+            !region.contains_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS),
+            "Fortran ngr_area uses ec_ps distance, which rejects this point even though great-circle distance accepts it"
+        );
+    }
+
+    #[test]
+    fn olam_region_boundaries_use_fortran_strict_less_than_radius() {
+        let radius = earthmesh_core::EARTH_RADIUS_METERS;
+        let center = LonLatDegrees::new(0.0, 0.0);
+        let circle_boundary = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
+        let circle_distance = olam_ec_ps_distance_meters(circle_boundary, center, radius);
+        let circle = OlamRefinementRegion::Circle {
+            center,
+            radius_meters: circle_distance,
+            level: 1,
+        };
+        let circle_close = OlamRefinementRegion::Circle {
+            center,
+            radius_meters: circle_distance / 1.5,
+            level: 1,
+        };
+
+        assert!(!circle.contains_cartesian(circle_boundary, radius));
+        assert!(!circle_close.close_to_cartesian(circle_boundary, radius));
+
+        let corridor_points = vec![LonLatDegrees::new(-1.0, 0.0), LonLatDegrees::new(1.0, 0.0)];
+        let corridor_boundary = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
+        let corridor_distance = olam_corridor_segment_distance_meters(
+            corridor_boundary,
+            corridor_points[0],
+            corridor_points[1],
+            radius,
+        )
+        .0;
+        let corridor = OlamRefinementRegion::Corridor {
+            points: corridor_points.clone(),
+            radius_meters: vec![corridor_distance],
+            level: 1,
+        };
+        let zero_radius_corridor = OlamRefinementRegion::Corridor {
+            points: corridor_points.clone(),
+            radius_meters: vec![0.0],
+            level: 1,
+        };
+        let on_corridor_line = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+
+        assert!(!corridor.contains_cartesian(corridor_boundary, radius));
+        assert!(!zero_radius_corridor.contains_cartesian(on_corridor_line, radius));
+        assert!(!zero_radius_corridor.close_to_cartesian(on_corridor_line, radius));
+    }
+
+    #[test]
+    fn olam_refinement_region_rejects_radius_below_fortran_dzxmin() {
+        let circle = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(0.0, 0.0),
+            radius_meters: 0.0005,
+            level: 1,
+        };
+        assert!(
+            circle.validate().is_err(),
+            "Fortran Method-C rejects grdrad below dzxmin=0.001"
+        );
+
+        let corridor = OlamRefinementRegion::Corridor {
+            points: vec![LonLatDegrees::new(0.0, 0.0), LonLatDegrees::new(1.0, 0.0)],
+            radius_meters: vec![0.001, 0.0005],
+            level: 1,
+        };
+        assert!(
+            corridor.validate().is_err(),
+            "Fortran Method-C rejects any corridor grdrad below dzxmin=0.001"
+        );
+    }
+
+    #[test]
+    fn olam_corridor_region_uses_fortran_segment_polar_stereographic_distance() {
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![LonLatDegrees::new(-80.0, 40.0), LonLatDegrees::new(80.0, 40.0)],
+            radius_meters: vec![1_000_000.0, 1_000_000.0],
+            level: 1,
+        };
+        let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 45.0));
+
+        assert!(
+            !region.contains_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS),
+            "Fortran ngr_area projects each segment to local PS space before linesegdist2"
+        );
+    }
+
+    #[test]
+    fn olam_corridor_region_interpolates_segment_radius_like_fortran() {
+        let radius = earthmesh_core::EARTH_RADIUS_METERS;
+        let points = vec![LonLatDegrees::new(-1.0, 0.0), LonLatDegrees::new(1.0, 0.0)];
+        let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
+        let (distance, t) = olam_corridor_segment_distance_meters(point, points[0], points[1], radius);
+        let region = OlamRefinementRegion::Corridor {
+            points,
+            radius_meters: vec![distance * 0.5, distance * 3.0],
+            level: 1,
+        };
+
+        assert!(distance > distance * 0.5);
+        assert!(distance < olam_corridor_radius_at_segment(&[distance * 0.5, distance * 3.0], 0, t));
+        assert!(
+            region.contains_cartesian(point, radius),
+            "Fortran ngr_area interpolates grdrad between segment endpoints using t"
+        );
+    }
+
+    #[test]
+    fn olam_corridor_region_requires_radius_per_fortran_endpoint() {
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![LonLatDegrees::new(-1.0, 0.0), LonLatDegrees::new(1.0, 0.0)],
+            radius_meters: vec![1_000_000.0],
+            level: 1,
+        };
+
+        assert!(
+            region.validate().is_err(),
+            "Fortran ngr_area interpolates grdrad(ipt) and grdrad(jpt), so each corridor endpoint must provide a radius"
+        );
+    }
+
+    #[test]
+    fn olam_native_cartesian_circle_uses_fortran_mdomain_ge_two_distance() {
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(10.0, 20.0),
+            radius_meters: 5.0,
+            level: 1,
+        };
+
+        assert!(region.contains_cartesian_xy(CartesianPoint::new(12.0, 23.0, 999.0)));
+        assert!(!region.contains_cartesian_xy(CartesianPoint::new(13.0, 24.0, 999.0)));
+        assert!(region.close_to_cartesian_xy(CartesianPoint::new(10.0, 27.0, 999.0)));
+    }
+
+    #[test]
+    fn olam_native_cartesian_region_validation_allows_fortran_mdomain_ge_two_coordinates() {
+        let circle = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(250.0, 200.0),
+            radius_meters: 5.0,
+            level: 1,
+        };
+        let corridor = OlamRefinementRegion::Corridor {
+            points: vec![LonLatDegrees::new(250.0, 200.0), LonLatDegrees::new(260.0, 210.0)],
+            radius_meters: vec![2.0, 6.0],
+            level: 1,
+        };
+
+        assert!(circle.validate().is_err());
+        assert!(corridor.validate().is_err());
+        circle
+            .validate_cartesian_xy()
+            .expect("Fortran mdomain >= 2 accepts Cartesian native circle coordinates");
+        corridor
+            .validate_cartesian_xy()
+            .expect("Fortran mdomain >= 2 accepts Cartesian native corridor coordinates");
+    }
+
+    #[test]
+    fn olam_native_cartesian_start_uses_imcent_not_global_pentagon_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
+        let pentagon = mesh.impent[0];
+        let non_pentagon = (2..=mesh.nmd)
+            .find(|im| !mesh.impent.contains(im))
+            .expect("non-pentagon M point");
+        let pentagon_xy = mesh.m_points[pentagon];
+        let anchor_xy = mesh.m_points[non_pentagon];
+        let radius_meters =
+            (anchor_xy.x - pentagon_xy.x).hypot(anchor_xy.y - pentagon_xy.y) * 1.01;
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(anchor_xy.x, anchor_xy.y),
+            radius_meters,
+            level: 1,
+        };
+
+        assert!(region.contains_cartesian_xy(pentagon_xy));
+        let start = mesh
+            .olam_refinement_start_point_with_neighbors(
+                &region,
+                active_mesh_radius(&mesh).expect("mesh radius"),
+                &method_c_m_neighbors,
+                true,
+            )
+            .expect("cartesian Method-C start");
+
+        assert_eq!(
+            start, non_pentagon,
+            "Fortran mdomain >= 2 skips impent logic and starts from imcent"
+        );
+    }
+
+    #[test]
+    fn olam_selected_faces_do_not_pre_expand_for_future_levels_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region_level_one = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(105.0, 35.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let region_level_two = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(105.0, 35.0),
+            radius_meters: 2_500_000.0,
+            level: 2,
+        };
+
+        let selected_level_one = mesh
+            .selected_region_faces(&region_level_one, 1, false)
+            .expect("level-one selected faces");
+        let selected_level_two = mesh
+            .selected_region_faces(&region_level_two, 1, false)
+            .expect("level-two pass-one selected faces");
+
+        assert_eq!(
+            selected_level_one, selected_level_two,
+            "Fortran spawn_nest selects each NN independently and does not pre-expand pass 1 for future nested grids"
+        );
+    }
+
+    #[test]
+    fn olam_native_cartesian_corridor_uses_fortran_linesegdist2_radius_interpolation() {
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![LonLatDegrees::new(0.0, 0.0), LonLatDegrees::new(10.0, 0.0)],
+            radius_meters: vec![2.0, 6.0],
+            level: 1,
+        };
+
+        assert!(region.contains_cartesian_xy(CartesianPoint::new(5.0, 3.0, 999.0)));
+        assert!(!region.contains_cartesian_xy(CartesianPoint::new(5.0, 4.0, 999.0)));
+        assert!(region.close_to_cartesian_xy(CartesianPoint::new(5.0, 4.7, 999.0)));
+    }
+
+    #[test]
+    fn olam_polygon_near_edge_uses_fortran_segment_polar_stereographic_distance() {
+        let region = OlamRefinementRegion::Polygon {
+            points: vec![
+                LonLatDegrees::new(-80.0, 40.0),
+                LonLatDegrees::new(80.0, 40.0),
+                LonLatDegrees::new(80.0, -40.0),
+                LonLatDegrees::new(-80.0, -40.0),
+            ],
+            level: 1,
+        };
+        let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 45.0));
+
+        assert!(
+            !region.close_to_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS),
+            "polygon near-edge halo should use the same Fortran PS segment distance as ngr_area"
+        );
+    }
+
+    #[test]
+    fn olam_bbox_near_edge_uses_fortran_segment_polar_stereographic_distance() {
+        let region = OlamRefinementRegion::Bbox {
+            west_degrees: -80.0,
+            east_degrees: 80.0,
+            south_degrees: -40.0,
+            north_degrees: 40.0,
+            level: 1,
+        };
+        let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 45.0));
+
+        assert!(
+            !region.close_to_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS),
+            "bbox near-edge halo should use the same Fortran PS segment distance as ngr_area"
+        );
+    }
+
+    #[test]
+    fn olam_bbox_and_polygon_regions_use_closed_corridor_not_lonlat_interior() {
+        let radius = earthmesh_core::EARTH_RADIUS_METERS;
+        let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
+        let polygon = OlamRefinementRegion::Polygon {
+            points: vec![
+                LonLatDegrees::new(-40.0, -40.0),
+                LonLatDegrees::new(40.0, -40.0),
+                LonLatDegrees::new(40.0, 40.0),
+                LonLatDegrees::new(-40.0, 40.0),
+            ],
+            level: 1,
+        };
+        let bbox = OlamRefinementRegion::Bbox {
+            west_degrees: -40.0,
+            east_degrees: 40.0,
+            south_degrees: -40.0,
+            north_degrees: 40.0,
+            level: 1,
+        };
+
+        assert!(
+            !polygon.contains_cartesian(point, radius),
+            "Fortran ngr_area has no point-in-polygon interior fill; closed masks are treated as corridor segments"
+        );
+        assert!(
+            !bbox.contains_cartesian(point, radius),
+            "Fortran ngr_area has no lon/lat bbox interior fill; bbox input is reduced to closed corridor segments"
+        );
+    }
+
+    #[test]
+    fn olam_polygon_region_does_not_close_last_point_to_first_unless_explicit() {
+        let radius = earthmesh_core::EARTH_RADIUS_METERS;
+        let polygon = OlamRefinementRegion::Polygon {
+            points: vec![
+                LonLatDegrees::new(0.0, 0.0),
+                LonLatDegrees::new(60.0, 0.0),
+                LonLatDegrees::new(60.0, 60.0),
+            ],
+            level: 1,
+        };
+        let point_on_implicit_closing_segment =
+            lonlat_degrees_to_unit_xyz(LonLatDegrees::new(30.0, 30.0));
+
+        assert!(
+            !polygon.contains_cartesian(point_on_implicit_closing_segment, radius),
+            "Fortran ngr_area only checks connected input segments 1..ngrdll-1; it does not add an implicit last-to-first closing segment"
+        );
+    }
+
+    #[test]
+    fn olam_multipoint_region_anchor_uses_first_specified_point_like_fortran() {
+        let first = LonLatDegrees::new(-40.0, -30.0);
+        let corridor = OlamRefinementRegion::Corridor {
+            points: vec![first, LonLatDegrees::new(20.0, 30.0)],
+            radius_meters: vec![500_000.0, 500_000.0],
+            level: 1,
+        };
+        let polygon = OlamRefinementRegion::Polygon {
+            points: vec![
+                first,
+                LonLatDegrees::new(40.0, -30.0),
+                LonLatDegrees::new(40.0, 30.0),
+                LonLatDegrees::new(-40.0, 30.0),
+            ],
+            level: 1,
+        };
+
+        assert_eq!(
+            corridor.anchor_lonlat(),
+            first,
+            "Fortran chooses imcent from grdlat/grdlon index 1 for multi-point NGR regions"
+        );
+        assert_eq!(
+            polygon.anchor_lonlat(),
+            first,
+            "Fortran chooses imcent from grdlat/grdlon index 1 for multi-point NGR regions"
+        );
+    }
+
+    #[test]
+    fn olam_bbox_region_anchor_uses_first_closed_corridor_corner_like_fortran() {
+        let bbox = OlamRefinementRegion::Bbox {
+            west_degrees: -40.0,
+            east_degrees: 40.0,
+            south_degrees: -30.0,
+            north_degrees: 30.0,
+            level: 1,
+        };
+
+        assert_eq!(
+            bbox.anchor_lonlat(),
+            LonLatDegrees::new(-40.0, -30.0),
+            "bbox regions are reduced to closed Fortran corridor segments, so anchor must be the first generated corner"
+        );
+    }
+
+    #[test]
+    fn olam_nest_mrow_distance_multiplier_matches_fortran_transition_rows() {
+        let cases = [
+            ((-2, -2), 7.0 / 6.0),
+            ((-1, -2), 8.0 / 6.0),
+            ((-1, -1), 9.0 / 6.0),
+            ((1, -1), 10.0 / 6.0),
+            ((1, 1), 11.0 / 12.0),
+            ((0, 0), 1.0),
+            ((2, -3), 1.0),
+        ];
+
+        for ((mrow1, mrow2), expected) in cases {
+            let actual = olam_nest_mrow_distance_multiplier(mrow1, mrow2);
+            assert!(
+                (actual - expected).abs() <= f64::EPSILON,
+                "mrow pair ({mrow1}, {mrow2}) expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_perim_mrow_preserves_existing_adjacent_rows_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut refined = mesh
+            .spawn_nest_with_max_mrows(
+                &[region],
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            )
+            .expect("Method-C nest");
+        let preserved_iw = (2..=refined.nwd)
+            .find(|&iw| refined.w_faces[iw].mrow >= 2)
+            .expect("transition row that Fortran may preserve");
+
+        for iw in 2..=refined.nwd {
+            refined.w_faces[iw].mrow = 0;
+        }
+        refined.w_faces[preserved_iw].mrow = 1;
+        refined
+            .apply_olam_perimeter_mrows(2, OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+            .expect("Fortran perim_mrow preserves old -2/-1/1 rows when not crossing");
+
+        assert_eq!(
+            refined.w_faces[preserved_iw].mrow, 1,
+            "Fortran perim_mrow preserves existing -2, -1, and 1 rows unless they cross the new border"
+        );
+    }
+
+    #[test]
+    fn olam_perim_mrow_rejects_crossing_existing_border_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut refined = mesh
+            .spawn_nest_with_max_mrows(
+                &[region],
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            )
+            .expect("Method-C nest");
+        let crossing_iw = (2..=refined.nwd)
+            .find(|&iw| refined.w_faces[iw].mrow == 1)
+            .expect("current border row that should reject an existing adjacent row");
+
+        for iw in 2..=refined.nwd {
+            refined.w_faces[iw].mrow = 0;
+        }
+        refined.w_faces[crossing_iw].mrow = 1;
+
+        let err = refined
+            .apply_olam_perimeter_mrows(2, OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+            .expect_err("Fortran perim_mrow rejects crossing or too-close nested boundaries");
+        assert!(
+            err.to_string().contains("crosses the parent boundary"),
+            "unexpected perim_mrow error: {err}"
+        );
+    }
+
+    #[test]
+    fn olam_perim_mrow_overwrites_old_outer_rows_below_minus_two_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut refined = mesh
+            .spawn_nest_with_max_mrows(
+                &[region],
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            )
+            .expect("Method-C nest");
+        let overwritten_iw = (2..=refined.nwd)
+            .find(|&iw| refined.w_faces[iw].mrow >= 2)
+            .expect("outer transition row that Fortran may overwrite");
+        let expected_row = refined.w_faces[overwritten_iw].mrow;
+
+        for iw in 2..=refined.nwd {
+            refined.w_faces[iw].mrow = 0;
+        }
+        refined.w_faces[overwritten_iw].mrow = -3;
+        refined
+            .apply_olam_perimeter_mrows(2, OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+            .expect("Fortran perim_mrow overwrites old rows below -2");
+
+        assert_eq!(
+            refined.w_faces[overwritten_iw].mrow, expected_row,
+            "Fortran perim_mrow overwrites existing mrow values below -2 with the new transition row"
+        );
+    }
+
+    #[test]
+    fn olam_perim_mrow_uses_fortran_half_step_row_growth() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let refined = mesh
+            .spawn_nest_with_max_mrows(&[region], 1, 3)
+            .expect("Method-C nest with explicit mrow width");
+        let max_abs_mrow = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.mrow.unsigned_abs())
+            .max()
+            .expect("mrow values");
+
+        assert_eq!(
+            max_abs_mrow, 3,
+            "Fortran perim_mrow propagates through 2*max_mrows passes but only increments row magnitude on alternating passes"
+        );
+    }
+
+    #[test]
+    fn olam_nest_movable_points_match_fortran_transition_rule() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let refined = mesh.spawn_nest(&[region], 1).expect("local circle nest");
+        let actual =
+            olam_nest_movable_m_points(&refined, 2, false).expect("movable M point mask");
+        let mut expected = vec![false; refined.nmd + 1];
+
+        for im in 2..=refined.nmd {
+            if refined.m_metadata[im].ngr != 2 {
+                continue;
+            }
+            let neighbors = refined.m_neighbors[im];
+            expected[im] = neighbors
+                .iw
+                .iter()
+                .take(neighbors.npoly)
+                .any(|&iw| refined.w_faces[iw].mrow != 0);
+        }
+
+        let mismatched = (2..=refined.nmd)
+            .filter(|&im| actual[im] != expected[im])
+            .collect::<Vec<_>>();
+        assert!(
+            mismatched.is_empty(),
+            "Fortran spring_dynamics_nest only moves M points on ngr that touch mrow != 0; mismatched M ids: {mismatched:?}"
+        );
+    }
+
+    #[test]
+    fn olam_nest_movable_points_use_mrow_not_boundary_row_cache() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut refined = mesh.spawn_nest(&[region], 1).expect("local circle nest");
+        refined.boundary_rows.clear();
+
+        let actual =
+            olam_nest_movable_m_points(&refined, 2, false).expect("movable M point mask");
+        let mut expected = vec![false; refined.nmd + 1];
+
+        for im in 2..=refined.nmd {
+            if refined.m_metadata[im].ngr != 2 {
+                continue;
+            }
+            let neighbors = refined.m_neighbors[im];
+            expected[im] = neighbors
+                .iw
+                .iter()
+                .take(neighbors.npoly)
+                .any(|&iw| refined.w_faces[iw].mrow != 0);
+        }
+
+        let missed = (2..=refined.nmd)
+            .filter(|&im| expected[im] && !actual[im])
+            .collect::<Vec<_>>();
+        assert!(
+            missed.is_empty(),
+            "Fortran spring_dynamics_nest reads itab_wd%mrow directly, not a cached boundary-row list; missed M ids: {missed:?}"
+        );
+    }
+
+    #[test]
+    fn olam_nest_move_interior_keeps_parent_grid_m_points_stationary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let refined = mesh.spawn_nest(&[region], 1).expect("local circle nest");
+        let actual =
+            olam_nest_movable_m_points(&refined, 2, true).expect("movable M point mask");
+        let mismatched = (2..=refined.nmd)
+            .filter(|&im| actual[im] != (refined.m_metadata[im].ngr == 2))
+            .collect::<Vec<_>>();
+
+        assert!(
+            mismatched.is_empty(),
+            "Fortran moveint=1 moves all and only M points whose itab_md%ngr equals the current nest ngr; mismatched M ids: {mismatched:?}"
+        );
+    }
+
+    #[test]
+    fn olam_nest_transition_movement_filters_parent_grid_m_points() {
+        let mut mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let boundary_iw = 2;
+        mesh.boundary_rows = vec![boundary_iw];
+        mesh.w_faces[boundary_iw].mrow = 1;
+        mesh.w_faces[boundary_iw].ngr = 2;
+
+        let actual =
+            olam_nest_movable_m_points(&mesh, 2, false).expect("movable M point mask");
+        let moved_parent_points = mesh.w_faces[boundary_iw]
+            .im
+            .iter()
+            .copied()
+            .filter(|&im| mesh.m_metadata[im].ngr != 2 && actual[im])
+            .collect::<Vec<_>>();
+
+        assert!(
+            moved_parent_points.is_empty(),
+            "Fortran spring_dynamics_nest skips transition-row M points whose itab_md%ngr is not the current ngr; moved parent-grid M ids: {moved_parent_points:?}"
+        );
+    }
+
+    #[test]
+    fn olam_nest_spring_ignores_mrlu_outside_moving_stencil() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut refined = mesh.spawn_nest(&[region], 1).expect("local circle nest");
+        let movable =
+            olam_nest_movable_m_points(&refined, 2, false).expect("movable M point mask");
+        let transition_face_id = *refined
+            .boundary_rows()
+            .first()
+            .expect("transition row face should be recorded");
+        let transition_point_id = refined.w_faces[transition_face_id]
+            .im
+            .iter()
+            .copied()
+            .find(|&im| movable[im])
+            .expect("transition face has a movable M point");
+        let transition_neighbors = refined.m_neighbors[transition_point_id];
+        let neighbor_edge_id = transition_neighbors.iu[0];
+        let neighbor_point_id = if refined.u_edges[neighbor_edge_id].im[0] == transition_point_id {
+            refined.u_edges[neighbor_edge_id].im[1]
+        } else {
+            refined.u_edges[neighbor_edge_id].im[0]
+        };
+        let squeezed = CartesianPoint::new(
+            refined.m_points[neighbor_point_id].x * 0.999
+                + refined.m_points[transition_point_id].x * 0.001,
+            refined.m_points[neighbor_point_id].y * 0.999
+                + refined.m_points[transition_point_id].y * 0.001,
+            refined.m_points[neighbor_point_id].z * 0.999
+                + refined.m_points[transition_point_id].z * 0.001,
+        );
+        let scale = earthmesh_core::EARTH_RADIUS_METERS / magnitude(squeezed);
+        refined.m_points[transition_point_id] = CartesianPoint::new(
+            squeezed.x * scale,
+            squeezed.y * scale,
+            squeezed.z * scale,
+        );
+        let mut with_remote_level = refined.clone();
+        let remote_edge_id = (2..=with_remote_level.nud)
+            .find(|&iu| {
+                let [im1, im2] = with_remote_level.u_edges[iu].im;
+                !movable[im1] && !movable[im2]
+            })
+            .expect("remote non-moving U edge");
+        with_remote_level.u_edges[remote_edge_id].mrlu = 16;
+
+        let baseline = refined
+            .spring_nest(6, 1, 2, false)
+            .expect("baseline nest spring");
+        let remote_changed = with_remote_level
+            .spring_nest(6, 1, 2, false)
+            .expect("remote-level nest spring");
+
+        for im in 2..=baseline.nmd {
+            let diff = magnitude(vector_between(
+                baseline.m_points[im],
+                remote_changed.m_points[im],
+            ));
+            assert!(
+                diff <= 1.0e-7,
+                "Fortran spring_dynamics_nest computes mrlmax only from nmoveu edges; remote edge {remote_edge_id} changed M point {im} by {diff}"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_nest_spring_ignores_degenerate_edge_outside_compu_stencil() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut refined = mesh.spawn_nest(&[region], 1).expect("local circle nest");
+        let movable =
+            olam_nest_movable_m_points(&refined, 2, false).expect("movable M point mask");
+        let topology = icosahedron_spring_topology_fortran(
+            refined.nmd,
+            &refined.u_edges,
+            &refined.m_neighbors,
+            0.035,
+        )
+        .expect("spring topology");
+        let mut compu = vec![false; refined.nud + 1];
+        for edge_id in 2..=refined.nud {
+            let [im1, im2] = refined.u_edges[edge_id].im;
+            let [iu1, _, iu3, _] = topology.edge_neighbor_u[edge_id];
+            let [iu1_im1, iu1_im2] = refined.u_edges[iu1].im;
+            let im3 = if iu1_im1 == im1 { iu1_im2 } else { iu1_im1 };
+            let [iu3_im1, iu3_im2] = refined.u_edges[iu3].im;
+            let im4 = if iu3_im1 == im1 { iu3_im2 } else { iu3_im1 };
+            compu[edge_id] = movable[im1] || movable[im2] || movable[im3] || movable[im4];
+        }
+        let remote_edge_id = (2..=refined.nud)
+            .find(|&edge_id| !compu[edge_id])
+            .expect("non-computational remote U edge");
+        let [remote_im1, remote_im2] = refined.u_edges[remote_edge_id].im;
+        refined.m_points[remote_im2] = refined.m_points[remote_im1];
+
+        refined
+            .spring_nest(6, 1, 2, false)
+            .expect("Fortran spring_dynamics_nest should ignore non-compu remote edges");
+    }
+
+    #[test]
+    fn olam_selected_faces_close_sharp_concavity_around_m_point() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let point_id = (2..=mesh.nmd)
+            .find(|id| !mesh.impent.contains(id) && mesh.m_neighbors[*id].npoly == 6)
+            .expect("six-sided non-pentagon M point");
+        let neighbors = mesh.m_neighbors[point_id];
+        let missing_face = neighbors.iw[neighbors.npoly - 1];
+        let mut selected = vec![false; mesh.nwd + 1];
+        for &iw in neighbors.iw.iter().take(neighbors.npoly - 1) {
+            selected[iw] = true;
+        }
+
+        mesh.close_olam_selected_face_concavities(&mut selected)
+            .expect("close sharp concavity");
+
+        assert!(
+            selected[missing_face],
+            "OLAM sharp-concavity fill should add the only missing W face around M point {point_id}"
+        );
+    }
+
+    #[test]
+    fn olam_concavity_fill_keeps_fortran_npoly_minus_one_threshold_at_pentagons() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let point_id = mesh.impent[0];
+        let neighbors = mesh.m_neighbors[point_id];
+        assert_eq!(neighbors.npoly, 5, "test point should be an OLAM pentagon");
+
+        let mut too_sparse = vec![false; mesh.nwd + 1];
+        for &iw in neighbors.iw.iter().take(neighbors.npoly - 2) {
+            too_sparse[iw] = true;
+        }
+        mesh.close_olam_selected_face_concavities(&mut too_sparse)
+            .expect("close sparse pentagon case");
+        assert_eq!(
+            neighbors
+                .iw
+                .iter()
+                .take(neighbors.npoly)
+                .filter(|&&iw| too_sparse[iw])
+                .count(),
+            neighbors.npoly - 2,
+            "Fortran skips concavity fill while nw < npoly - 1"
+        );
+
+        let mut one_missing = vec![false; mesh.nwd + 1];
+        for &iw in neighbors.iw.iter().take(neighbors.npoly - 1) {
+            one_missing[iw] = true;
+        }
+        mesh.close_olam_selected_face_concavities(&mut one_missing)
+            .expect("close one-missing pentagon case");
+        assert!(
+            neighbors
+                .iw
+                .iter()
+                .take(neighbors.npoly)
+                .all(|&iw| one_missing[iw]),
+            "Fortran fills pentagon concavities only once nw reaches npoly - 1"
+        );
+    }
+
+    #[test]
+    fn olam_fill_rad3_marks_all_current_pentagon_faces_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
+        let pentagon = mesh.impent[0];
+        let neighbors = method_c_m_neighbors[pentagon];
+        assert_eq!(neighbors.npoly, 5, "test requires an OLAM pentagon");
+
+        let mut selected = vec![false; mesh.nwd + 1];
+        mesh.mark_fill_rad3_faces_with_neighbors(
+            pentagon,
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Fortran fill_rad3 around a pentagon");
+
+        let missed = neighbors
+            .iw
+            .iter()
+            .take(neighbors.npoly)
+            .copied()
+            .filter(|&iw| !selected[iw])
+            .collect::<Vec<_>>();
+        assert!(
+            missed.is_empty(),
+            "Fortran fill_rad3 loops over current M point npoly, not a hard-coded hexagon width; missed W faces: {missed:?}"
+        );
+    }
+
+    #[test]
+    fn olam_fill_rad3_marks_six_neighbors_of_three_distant_m_points_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        let im = (2..=mesh.nmd)
+            .find(|&candidate| method_c_m_neighbors[candidate].npoly == 6)
+            .expect("ordinary hexagonal M point");
+        let immediate = method_c_m_neighbors[im]
+            .iw
+            .iter()
+            .take(method_c_m_neighbors[im].npoly)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut expected_far_w = std::collections::BTreeSet::new();
+
+        for &iw in &immediate {
+            let face = mesh.w_faces[iw];
+            let (imx, iwx, iwy) = if im == face.im[0] {
+                (face.im[1], face.iw[3], face.iw[4])
+            } else if im == face.im[1] {
+                (face.im[2], face.iw[5], face.iw[6])
+            } else {
+                (face.im[0], face.iw[7], face.iw[8])
+            };
+            let (im1, im2) =
+                face_following_two_vertices(mesh.w_faces[iwx], imx, iwx).expect("Fortran im1/im2");
+            let im3 = face_following_vertex(mesh.w_faces[iwy], im2, iwy).expect("Fortran im3");
+            for far_im in [im1, im2, im3] {
+                for &far_iw in method_c_m_neighbors[far_im].iw.iter().take(6) {
+                    expected_far_w.insert(far_iw);
+                }
+            }
+        }
+
+        let mut selected = vec![false; mesh.nwd + 1];
+        mesh.mark_fill_rad3_faces_with_neighbors(im, &mut selected, &method_c_m_neighbors)
+            .expect("Fortran fill_rad3 around a hexagon");
+        let missed = expected_far_w
+            .iter()
+            .copied()
+            .filter(|&iw| !selected[iw])
+            .collect::<Vec<_>>();
+
+        assert!(
+            missed.is_empty(),
+            "Fortran fill_rad3 marks all six W neighbors of each im1/im2/im3 distant M point; missed W faces: {missed:?}"
+        );
+        assert!(
+            expected_far_w.iter().any(|iw| !immediate.contains(iw)),
+            "test must cover fill_rad3's distant M-point expansion beyond the immediate ring"
+        );
+    }
+
+    #[test]
+    fn olam_cart_hex_initializes_m_metadata_like_fortran() {
+        let mesh = OlamDelaunayMesh::from_cart_hex(2, 1000.0).expect("cart_hex OLAM mesh");
+
+        for im in 2..=mesh.nmd {
+            assert_eq!(mesh.m_metadata[im].mrlm, 1);
+            assert_eq!(mesh.m_metadata[im].mrlm_orig, 1);
+            assert_eq!(mesh.m_metadata[im].ngr, 1);
+        }
+    }
+
+    #[test]
+    fn olam_method_c_skips_cart_hex_periodic_copy_faces_like_fortran() {
+        let mesh = OlamDelaunayMesh::from_cart_hex(5, 1000.0).expect("cart_hex OLAM mesh");
+        let ghost_iw = (2..=mesh.nwd)
+            .find(|&iw| mesh.w_prognostic[iw] > 1 && mesh.w_prognostic[iw] != iw)
+            .expect("Fortran cart_hex periodic W copy");
+        let partner_iw = mesh.w_prognostic[ghost_iw];
+
+        assert!(
+            !mesh.method_c_w_face_is_active(ghost_iw),
+            "Fortran Method-C must ignore cart_hex periodic W copies as active fill_rad3 faces"
+        );
+        assert!(
+            mesh.method_c_w_face_is_active(partner_iw),
+            "Fortran Method-C should keep the prognostic owner W face active"
+        );
+
+        let face_with_copy_m = (2..=mesh.nwd)
+            .find(|&iw| {
+                mesh.w_faces[iw]
+                    .im
+                    .iter()
+                    .any(|&im| mesh.m_prognostic[im] > 1 && mesh.m_prognostic[im] != im)
+            })
+            .expect("Fortran cart_hex W face containing a periodic M copy");
+        assert!(
+            !mesh.method_c_w_face_is_active(face_with_copy_m),
+            "Fortran Method-C must ignore W faces that contain cart_hex periodic M copies"
+        );
+    }
+
+    #[test]
+    fn olam_fill_rad3_skips_cart_hex_periodic_copy_faces_like_fortran() {
+        let mesh = OlamDelaunayMesh::from_cart_hex(5, 1000.0).expect("cart_hex OLAM mesh");
+        let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
+        let exposed_periodic_copies = (2..=mesh.nmd)
+            .flat_map(|im| {
+                method_c_m_neighbors[im]
+                    .iw
+                    .iter()
+                    .take(method_c_m_neighbors[im].npoly)
+                    .copied()
+            })
+            .filter(|&iw| mesh.w_prognostic[iw] > 1 && mesh.w_prognostic[iw] != iw)
+            .collect::<Vec<_>>();
+        assert!(
+            exposed_periodic_copies.is_empty(),
+            "Fortran Method-C M-neighbor rings must not expose cart_hex periodic-copy W faces to fill_rad3: {exposed_periodic_copies:?}"
+        );
+    }
+
+    #[test]
+    fn olam_selected_regions_skip_cart_hex_periodic_copy_faces_like_fortran() {
+        let mesh = OlamDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(10_200_000.0, -310_000.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+
+        let selected = mesh
+            .selected_regions_faces(&[region], 1, true)
+            .expect("Fortran Method-C cart_hex region selection");
+        let selected_periodic_copies = (2..=mesh.nwd)
+            .filter(|&iw| selected[iw] && !mesh.method_c_w_face_is_active(iw))
+            .collect::<Vec<_>>();
+
+        assert!(
+            selected_periodic_copies.is_empty(),
+            "Fortran Method-C region selection must not include cart_hex periodic-copy W faces: {selected_periodic_copies:?}"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_suppresses_center_perimeter_segment_faces_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        assert_eq!(
+            perimeter.len() % 3,
+            0,
+            "Fortran Method-C suppression consumes perimeter points in triples"
+        );
+        let expected_start = (2..=mesh.nmd)
+            .find(|&im| {
+                let neighbors = method_c_m_neighbors[im];
+                neighbors
+                    .iw
+                    .iter()
+                    .take(neighbors.npoly)
+                    .filter(|&&iw| nest_wd[iw].is_subdivided())
+                    .count()
+                    == 2
+            })
+            .expect("Fortran perim_map2 start point");
+        assert_eq!(
+            perimeter[0].im, expected_start,
+            "Fortran perim_map2 starts from the first original M point with nwdiv == 2"
+        );
+        for index in 0..perimeter.len() {
+            let point = perimeter[index];
+            let next = perimeter[(index + 1) % perimeter.len()].im;
+            let edge = mesh.u_edges[point.iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if edge.im[0] == point.im {
+                assert!(
+                    nest_wd[iw1].flag() == 0 && nest_wd[iw2].is_subdivided(),
+                    "Fortran perim_ngr advances from im(1) only when iw(1) is outside and iw(2) is inside"
+                );
+                assert_eq!(
+                    next, edge.im[1],
+                    "Fortran perim_ngr next M point from im(1) is im(2)"
+                );
+            } else {
+                assert_eq!(
+                    edge.im[1], point.im,
+                    "Fortran perim_ngr perimeter U edge must contain the current M point"
+                );
+                assert!(
+                    nest_wd[iw2].flag() == 0 && nest_wd[iw1].is_subdivided(),
+                    "Fortran perim_ngr advances from im(2) only when iw(2) is outside and iw(1) is inside"
+                );
+                assert_eq!(
+                    next, edge.im[0],
+                    "Fortran perim_ngr next M point from im(2) is im(1)"
+                );
+            }
+        }
+        for point in &perimeter {
+            let neighbors = method_c_m_neighbors[point.im];
+            let mut expected_nwdiv = 0usize;
+            let mut expected_near_pentagon = false;
+            for j in 0..neighbors.npoly {
+                let iw = neighbors.iw[j];
+                if nest_wd[iw].is_subdivided() {
+                    expected_nwdiv += 1;
+                }
+
+                let iu = neighbors.iu[j];
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if nest_wd[iw1].flag() == 0 && nest_wd[iw2].flag() == 0 {
+                    if point.im == edge.im[0] && method_c_m_neighbors[edge.im[1]].npoly == 5 {
+                        expected_near_pentagon = true;
+                    }
+                    if point.im == edge.im[1] && method_c_m_neighbors[edge.im[0]].npoly == 5 {
+                        expected_near_pentagon = true;
+                    }
+                }
+            }
+
+            assert_eq!(
+                point.npoly, neighbors.npoly,
+                "Fortran perim_map2 stores npolyper for each perimeter M point"
+            );
+            assert_eq!(
+                point.nwdiv, expected_nwdiv,
+                "Fortran perim_map2 stores nwdivper for each perimeter M point"
+            );
+            assert_eq!(
+                point.near_pentagon, expected_near_pentagon,
+                "Fortran perim_map2 stores nearpent from outside unsplit U edges"
+            );
+        }
+
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            assert!(
+                selected[suppressed_w],
+                "suppressed W face {suppressed_w} should be an originally selected center-segment face"
+            );
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        for face in nest_wd.iter().skip(2).filter(|face| face.is_suppressed()) {
+            assert!(
+                !face.is_subdivided(),
+                "Fortran suppression flag -1 must prevent full subdivision allocation"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_does_not_auto_expand_non_triplet_perimeter_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+
+        let mut selected_case = None;
+        'faces: for iw in 2..=mesh.nwd {
+            for &adjacent in mesh.w_faces[iw].iw.iter().take(3) {
+                if adjacent <= 1 || adjacent > mesh.nwd || mesh.w_faces[adjacent].mrlw != mesh.w_faces[iw].mrlw {
+                    continue;
+                }
+                let mut selected = vec![false; mesh.nwd + 1];
+                selected[iw] = true;
+                selected[adjacent] = true;
+                mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+                    &mut selected,
+                    &method_c_m_neighbors,
+                )
+                .expect("Fortran concavity closure");
+
+                let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+                for test_iw in 2..=mesh.nwd {
+                    if selected[test_iw] {
+                        nest_wd[test_iw].iw[2] = 1;
+                    }
+                }
+                let Ok(perimeter) = mesh.perim_map2_method_c(&nest_wd, &method_c_m_neighbors) else {
+                    continue;
+                };
+                if !perimeter.is_empty() && perimeter.len() % 3 != 0 {
+                    selected_case = Some((selected, perimeter.len()));
+                    break 'faces;
+                }
+            }
+        }
+
+        let (selected, perimeter_len) =
+            selected_case.expect("test requires a non-triplet Fortran perimeter case");
+        let err = mesh
+            .spawn_nest_pass_with_max_mrows(
+                &selected,
+                2,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                true,
+            )
+            .expect_err("Fortran Method-C does not auto-expand perimeter just to reach triples");
+        assert!(
+            err.to_string().contains("cannot be grouped"),
+            "unexpected Method-C perimeter error for length {perimeter_len}: {err}"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_perim_ngr_matches_perimeter_next_point() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+
+        let mut selected_case = None;
+        for im in 2..=mesh.nmd {
+            let point = mesh.m_points[im];
+            let region = OlamRefinementRegion::Circle {
+                center: xyz_to_lonlat_degrees(point),
+                radius_meters: 2_000_000.0,
+                level: 1,
+            };
+            let selected = mesh
+                .selected_region_faces(&region, 1, false)
+                .expect("selected Method-C faces");
+            let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+            for iw in 2..=mesh.nwd {
+                if selected[iw] {
+                    nest_wd[iw].iw[2] = 1;
+                }
+            }
+            let perimeter = match mesh.perim_map2_method_c(&nest_wd, &method_c_m_neighbors) {
+                Ok(perimeter) => perimeter,
+                Err(_) => continue,
+            };
+            if perimeter.is_empty() {
+                continue;
+            }
+            selected_case = Some((perimeter, nest_wd));
+            break;
+        }
+        let (perimeter, nest_wd) = selected_case
+            .expect("perimeter case in selected Method-C region");
+
+        for point in perimeter {
+            let edge = mesh.u_edges[point.iu];
+            let next_expected = if point.im == edge.im[0] {
+                edge.im[1]
+            } else {
+                edge.im[0]
+            };
+            let (next, next_edge) = mesh
+                .perim_ngr_method_c(point.im, &nest_wd, &method_c_m_neighbors)
+                .expect("fortran perim_ngr");
+            assert_eq!(
+                next_edge, point.iu,
+                "perim_map2 and perim_ngr must agree on boundary edge"
+            );
+            assert_eq!(
+                next, next_expected,
+                "perim_ngr should return the immediate perimeter neighbor without prognostic folding"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let child_grid_number = 4;
+        let mut refined_case = None;
+
+        for radius_meters in [
+            2_500_000.0,
+            3_000_000.0,
+            3_500_000.0,
+            4_000_000.0,
+            4_500_000.0,
+            5_000_000.0,
+            5_500_000.0,
+            6_000_000.0,
+        ] {
+            let region = OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters,
+                level: 1,
+            };
+            let selected = mesh
+                .selected_region_faces(&region, 1, false)
+                .expect("selected Method-C faces");
+            let Ok(refined) = mesh.spawn_nest_pass_with_max_mrows(
+                &selected,
+                child_grid_number,
+                7,
+            true,
+            ) else {
+                continue;
+            };
+            if refined
+                .w_faces
+                .iter()
+                .skip(2)
+                .any(|face| face.mrlw == 2 && face.mrow == 0)
+            {
+                refined_case = Some(refined);
+                break;
+            }
+        }
+
+        let refined = refined_case.expect("test case with an interior full-subdivision W face");
+        let mismatched = refined
+            .w_faces
+            .iter()
+            .enumerate()
+            .skip(2)
+            .filter_map(|(iw, face)| {
+                if face.mrlw == 2 && face.ngr != child_grid_number {
+                    Some((iw, face.ngr))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            mismatched.is_empty(),
+            "Fortran assigns full-subdivision W-face ngr from the current grid number, not mrlo + 1; mismatches: {mismatched:?}"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_pass_uses_fortran_table_numbering_counts() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let selected_w_count = (2..=mesh.nwd)
+            .filter(|&iw| nest_wd[iw].is_subdivided())
+            .count();
+        let split_u_count = (2..=mesh.nud)
+            .filter(|&iu| {
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !nest_wd[iw1].is_suppressed()
+                    && !nest_wd[iw2].is_suppressed()
+            })
+            .count();
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+
+        assert_eq!(
+            refined.nmd,
+            mesh.nmd + split_u_count,
+            "Fortran Method-C allocates one midpoint M only for non-suppressed split U edges"
+        );
+        assert_eq!(
+            refined.nud,
+            mesh.nud + split_u_count + 3 * selected_w_count,
+            "Fortran Method-C allocates one split U plus three child-W internal U edges"
+        );
+        assert_eq!(
+            refined.nwd,
+            mesh.nwd + 3 * selected_w_count,
+            "Fortran Method-C keeps the remapped parent W and adds three child W faces per subdivided W"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp6_single_circle_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&[region], 1)
+            .expect("Method-C nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (435, 1297, 865),
+            "reduced Fortran probe summary: nmd=435 nud=1297 nwd=865"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(2, 864)]),
+            "reduced Fortran probe summary: all 864 active W faces have ngr=2"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(12), 864),
+            "reduced Fortran probe summary: mrow min=-6 max=12 count=864"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp7_single_circle_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&[region], 1)
+            .expect("NXP7 Method-C nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (565, 1687, 1125),
+            "reduced Fortran NXP7 probe summary: nmd=565 nud=1687 nwd=1125"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(1, 57), (2, 1067)]),
+            "reduced Fortran NXP7 probe summary: W-face ngr counts are ngr1=57 and ngr2=1067"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(13), 1067),
+            "reduced Fortran NXP7 probe summary: mrow min=-6 max=13 count=1067"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp6_corridor_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![
+                LonLatDegrees::new(115.0, 25.0),
+                LonLatDegrees::new(130.0, 25.0),
+            ],
+            radius_meters: vec![2_500_000.0, 2_500_000.0],
+            level: 1,
+        };
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&[region], 1)
+            .expect("Method-C corridor nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (474, 1414, 943),
+            "reduced Fortran corridor probe summary: nmd=474 nud=1414 nwd=943"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(2, 942)]),
+            "reduced Fortran corridor probe summary: all 942 active W faces have ngr=2"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(12), 942),
+            "reduced Fortran corridor probe summary: mrow min=-6 max=12 count=942"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp7_corridor_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![
+                LonLatDegrees::new(115.0, 25.0),
+                LonLatDegrees::new(130.0, 25.0),
+            ],
+            radius_meters: vec![2_500_000.0, 2_500_000.0],
+            level: 1,
+        };
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&[region], 1)
+            .expect("NXP7 Method-C corridor nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (643, 1921, 1281),
+            "reduced Fortran NXP7 corridor probe summary: nmd=643 nud=1921 nwd=1281"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(1, 25), (2, 1255)]),
+            "reduced Fortran NXP7 corridor probe summary: W-face ngr counts are ngr1=25 and ngr2=1255"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-8), Some(13), 1255),
+            "reduced Fortran NXP7 corridor probe summary: mrow min=-8 max=13 count=1255"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp6_variable_radius_corridor_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![
+                LonLatDegrees::new(115.0, 25.0),
+                LonLatDegrees::new(130.0, 25.0),
+            ],
+            radius_meters: vec![2_500_000.0, 1_250_000.0],
+            level: 1,
+        };
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&[region], 1)
+            .expect("Method-C variable-radius corridor nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (435, 1297, 865),
+            "reduced Fortran variable-radius corridor probe summary: nmd=435 nud=1297 nwd=865"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(2, 864)]),
+            "reduced Fortran variable-radius corridor probe summary: all 864 active W faces have ngr=2"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(12), 864),
+            "reduced Fortran variable-radius corridor probe summary: mrow min=-6 max=12 count=864"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp6_three_point_corridor_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Corridor {
+            points: vec![
+                LonLatDegrees::new(115.0, 25.0),
+                LonLatDegrees::new(130.0, 25.0),
+                LonLatDegrees::new(150.0, 0.0),
+            ],
+            radius_meters: vec![2_500_000.0, 2_500_000.0, 2_500_000.0],
+            level: 1,
+        };
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&[region], 1)
+            .expect("Method-C three-point corridor nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (552, 1648, 1099),
+            "reduced Fortran three-point corridor probe summary: nmd=552 nud=1648 nwd=1099"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(2, 1098)]),
+            "reduced Fortran three-point corridor probe summary: all 1098 active W faces have ngr=2"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-9), Some(12), 1098),
+            "reduced Fortran three-point corridor probe summary: mrow min=-9 max=12 count=1098"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp6_two_level_corridor_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(115.0, 25.0),
+                    LonLatDegrees::new(130.0, 25.0),
+                ],
+                radius_meters: vec![6_000_000.0, 6_000_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(120.0, 25.0),
+                    LonLatDegrees::new(125.0, 25.0),
+                ],
+                radius_meters: vec![1_000_000.0, 1_000_000.0],
+                level: 2,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect("two-level Method-C corridor nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (783, 2341, 1561),
+            "reduced Fortran two-level corridor probe summary: nmd=783 nud=2341 nwd=1561"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(2, 294), (3, 1266)]),
+            "reduced Fortran two-level corridor probe summary: W-face ngr counts are ngr2=294 and ngr3=1266"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(11), 1560),
+            "reduced Fortran two-level corridor probe summary: mrow min=-6 max=11 count=1560"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp7_two_level_corridor_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(115.0, 25.0),
+                    LonLatDegrees::new(130.0, 25.0),
+                ],
+                radius_meters: vec![2_500_000.0, 2_500_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(120.0, 25.0),
+                    LonLatDegrees::new(125.0, 25.0),
+                ],
+                radius_meters: vec![500_000.0, 500_000.0],
+                level: 2,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect("NXP7 two-level Method-C corridor nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (715, 2137, 1425),
+            "reduced Fortran NXP7 two-level corridor probe summary: nmd=715 nud=2137 nwd=1425"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(1, 25), (2, 287), (3, 1112)]),
+            "reduced Fortran NXP7 two-level corridor probe summary: W-face ngr counts are ngr1=25, ngr2=287, ngr3=1112"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(13), 1399),
+            "reduced Fortran NXP7 two-level corridor probe summary: mrow min=-6 max=13 count=1399"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_rejects_reduced_fortran_nxp6_two_level_corridor_too_close_boundary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(115.0, 25.0),
+                    LonLatDegrees::new(130.0, 25.0),
+                ],
+                radius_meters: vec![6_000_000.0, 6_000_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(115.0, 25.0),
+                    LonLatDegrees::new(130.0, 25.0),
+                ],
+                radius_meters: vec![1_000_000.0, 1_000_000.0],
+                level: 2,
+            },
+        ];
+
+        let error = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect_err("reduced Fortran probe rejects this same-length two-level corridor as too close to the parent boundary");
+        assert!(
+            error.to_string().contains("perimeter length")
+                || error.to_string().contains("crosses")
+                || error.to_string().contains("too close")
+                || error.to_string().contains("parent boundary")
+                || error.to_string().contains("next coarser grid boundary"),
+            "Rust should reject the same invalid two-level corridor as the reduced Fortran probe; got {error}"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp6_two_circle_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 4_000_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 1_000_000.0,
+                level: 2,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect("two-level Method-C nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (624, 1864, 1243),
+            "reduced Fortran probe summary: nmd=624 nud=1864 nwd=1243"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(2, 154), (3, 1088)]),
+            "reduced Fortran probe summary: W-face ngr counts are ngr2=154 and ngr3=1088"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(11), 1242),
+            "reduced Fortran probe summary: mrow min=-6 max=11 count=1242"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_matches_reduced_fortran_nxp7_two_circle_summary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 3_000_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 1_000_000.0,
+                level: 2,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect("NXP7 two-level Method-C circle nest matching reduced Fortran probe");
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        let mut mrow_values = Vec::new();
+        for iw in 2..=refined.nwd {
+            let face = refined.w_faces[iw];
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+            if face.mrow != 0 {
+                mrow_values.push(face.mrow);
+            }
+        }
+        mrow_values.sort_unstable();
+
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (754, 2254, 1503),
+            "reduced Fortran NXP7 two-circle probe summary: nmd=754 nud=2254 nwd=1503"
+        );
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(1, 3), (2, 335), (3, 1164)]),
+            "reduced Fortran NXP7 two-circle probe summary: W-face ngr counts are ngr1=3, ngr2=335, ngr3=1164"
+        );
+        assert_eq!(
+            (
+                mrow_values.first().copied(),
+                mrow_values.last().copied(),
+                mrow_values.len()
+            ),
+            (Some(-6), Some(13), 1499),
+            "reduced Fortran NXP7 two-circle probe summary: mrow min=-6 max=13 count=1499"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_rejects_reduced_fortran_nxp6_two_circle_too_close_boundary() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 2_500_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 1_000_000.0,
+                level: 2,
+            },
+        ];
+
+        let error = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect_err("reduced Fortran probe rejects this two-level circle as too close to the parent boundary");
+        assert!(
+            error.to_string().contains("perimeter length")
+                || error.to_string().contains("crosses")
+                || error.to_string().contains("too close")
+                || error.to_string().contains("parent boundary")
+                || error.to_string().contains("next coarser grid boundary"),
+            "Rust should reject the same invalid two-level circle as the reduced Fortran probe; got {error}"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_child_w_ids_follow_fortran_parent_then_three_children_order() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut iwnew = vec![1usize; mesh.nwd + 1];
+        let mut expected_child_w = vec![[1usize; 3]; mesh.nwd + 1];
+        let mut iwnext = 2usize;
+        iwnew[1] = 1;
+        for iw in 2..=mesh.nwd {
+            iwnew[iw] = iwnext;
+            if nest_wd[iw].is_subdivided() {
+                iwnext += 1;
+                expected_child_w[iw][0] = iwnext;
+                iwnext += 1;
+                expected_child_w[iw][1] = iwnext;
+                iwnext += 1;
+                expected_child_w[iw][2] = iwnext;
+            }
+            iwnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iw in 2..=mesh.nwd {
+            if !nest_wd[iw].is_subdivided() {
+                continue;
+            }
+            let parent_id = iwnew[iw];
+            assert_eq!(
+                expected_child_w[iw],
+                [parent_id + 1, parent_id + 2, parent_id + 3],
+                "Fortran iwnew places three child W ids immediately after parent W {iw}"
+            );
+            assert_eq!(refined.w_faces[parent_id].mrlw, mesh.w_faces[iw].mrlw + 1);
+            assert_eq!(
+                refined.w_faces[parent_id].mrlw_orig,
+                mesh.w_faces[iw].mrlw_orig,
+                "Fortran promotes remapped full-subdivision parent W mrlw but preserves mrlw_orig"
+            );
+            assert_eq!(refined.w_faces[parent_id].ngr, 2);
+            for child_id in expected_child_w[iw] {
+                assert_eq!(refined.w_faces[child_id].mrlw, mesh.w_faces[iw].mrlw + 1);
+                assert_eq!(refined.w_faces[child_id].mrlw_orig, mesh.w_faces[iw].mrlw + 1);
+                assert_eq!(refined.w_faces[child_id].ngr, 2);
+                assert!(
+                    refined.w_faces[child_id].im.iter().all(|&im| im > 1),
+                    "Fortran tri_neighbors should rebuild child W {child_id} M vertices from Method-C U endpoints"
+                );
+                for &iu in &refined.w_faces[child_id].iu {
+                    assert!(
+                        refined.u_edges[iu]
+                            .im
+                            .iter()
+                            .all(|endpoint| refined.w_faces[child_id].im.contains(endpoint)),
+                        "child W {child_id} U edge {iu} should use only that W face's M vertices"
+                    );
+                }
+                checked += 1;
+            }
+        }
+
+        assert!(checked > 0, "test should exercise subdivided Method-C W faces");
+    }
+
+    #[test]
+    fn olam_method_c_internal_u_ids_follow_fortran_first_seen_w_order() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut iwnew = vec![1usize; mesh.nwd + 1];
+        let mut expected_child_w = vec![[1usize; 3]; mesh.nwd + 1];
+        let mut iwnext = 2usize;
+        iwnew[1] = 1;
+        for iw in 2..=mesh.nwd {
+            iwnew[iw] = iwnext;
+            if nest_wd[iw].is_subdivided() {
+                iwnext += 1;
+                expected_child_w[iw][0] = iwnext;
+                iwnext += 1;
+                expected_child_w[iw][1] = iwnext;
+                iwnext += 1;
+                expected_child_w[iw][2] = iwnext;
+            }
+            iwnext += 1;
+        }
+
+        let mut expected_internal_u = vec![[1usize; 3]; mesh.nwd + 1];
+        let mut iunew = vec![1usize; mesh.nud + 1];
+        let mut expected_second_u = vec![1usize; mesh.nud + 1];
+        let mut iwdiv = vec![false; mesh.nwd + 1];
+        let mut iunext = 2usize;
+        iunew[1] = 1;
+        for iu in 2..=mesh.nud {
+            iunew[iu] = iunext;
+            let edge = mesh.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                if !nest_wd[iw1].is_suppressed() && !nest_wd[iw2].is_suppressed() {
+                    iunext += 1;
+                    expected_second_u[iu] = iunext;
+                } else {
+                    expected_second_u[iu] = iunew[iu];
+                }
+            }
+            for &iw in &edge.iw[0..2] {
+                if !iwdiv[iw] {
+                    iwdiv[iw] = true;
+                    if nest_wd[iw].is_subdivided() {
+                        iunext += 1;
+                        expected_internal_u[iw][0] = iunext;
+                        iunext += 1;
+                        expected_internal_u[iw][1] = iunext;
+                        iunext += 1;
+                        expected_internal_u[iw][2] = iunext;
+                    }
+                }
+            }
+            iunext += 1;
+        }
+
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        for im in 2..=mesh.nmd {
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
+                    expected_midpoint_m[iu] = imnext;
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iw in 2..=mesh.nwd {
+            if !nest_wd[iw].is_subdivided() {
+                continue;
+            }
+            if !mesh.w_faces[iw]
+                .iw
+                .iter()
+                .take(3)
+                .all(|&neighbor| neighbor > 1 && nest_wd[neighbor].is_subdivided())
+            {
+                continue;
+            }
+            let parent_id = iwnew[iw];
+            assert_eq!(
+                refined.w_faces[parent_id].iu,
+                expected_internal_u[iw],
+                "Fortran writes nest_wd(iw)%iu(1:3) to the remapped parent W face {iw}"
+            );
+            for (slot, child_id) in expected_child_w[iw].into_iter().enumerate() {
+                assert_eq!(
+                    refined.w_faces[child_id].iu[0],
+                    expected_internal_u[iw][slot],
+                    "Fortran writes internal U edge {} as child W {child_id}'s first U",
+                    expected_internal_u[iw][slot]
+                );
+                checked += 1;
+            }
+            let midpoint_ids = mesh.w_faces[iw].iu.map(|iu| expected_midpoint_m[iu]);
+            let mut actual_pairs = expected_internal_u[iw]
+                .into_iter()
+                .map(|iu| {
+                    let mut endpoints = refined.u_edges[iu].im;
+                    endpoints.sort_unstable();
+                    endpoints
+                })
+                .collect::<Vec<_>>();
+            actual_pairs.sort_unstable();
+            let mut expected_pairs = [
+                [midpoint_ids[0], midpoint_ids[1]],
+                [midpoint_ids[0], midpoint_ids[2]],
+                [midpoint_ids[1], midpoint_ids[2]],
+            ];
+            for pair in &mut expected_pairs {
+                pair.sort_unstable();
+            }
+            expected_pairs.sort_unstable();
+            assert_eq!(
+                actual_pairs,
+                expected_pairs,
+                "Fortran full-subdivision internal U edges connect the three split-edge midpoint M ids for W face {iw}"
+            );
+            let mut actual_parent_vertices = refined.w_faces[parent_id].im;
+            actual_parent_vertices.sort_unstable();
+            let mut expected_parent_vertices = midpoint_ids;
+            expected_parent_vertices.sort_unstable();
+            assert_eq!(
+                actual_parent_vertices,
+                expected_parent_vertices,
+                "Fortran full-subdivision remapped parent W face {parent_id} should be the central midpoint triangle for old W face {iw}"
+            );
+            for &iu in &refined.w_faces[parent_id].iu {
+                assert!(
+                    refined.u_edges[iu]
+                        .im
+                        .iter()
+                        .all(|endpoint| refined.w_faces[parent_id].im.contains(endpoint)),
+                    "central remapped W face {parent_id} U edge {iu} should use only midpoint vertices"
+                );
+            }
+            let w_family = [
+                parent_id,
+                expected_child_w[iw][0],
+                expected_child_w[iw][1],
+                expected_child_w[iw][2],
+            ];
+            for &iu in &mesh.w_faces[iw].iu {
+                assert!(
+                    refined.u_edges[iunew[iu]]
+                        .iw
+                        .iter()
+                        .take(2)
+                        .any(|face| w_family.contains(face)),
+                    "Fortran remapped first half of split-U {iu} should touch W face family for subdivided W {iw}"
+                );
+                assert!(
+                    refined.u_edges[expected_second_u[iu]]
+                        .iw
+                        .iter()
+                        .take(2)
+                        .any(|face| w_family.contains(face)),
+                    "Fortran second half of split-U {iu} should touch W face family for subdivided W {iw}"
+                );
+            }
+            let expected_split_child_faces = [
+                if iw == mesh.u_edges[mesh.w_faces[iw].iu[0]].iw[0] {
+                    (expected_child_w[iw][2], expected_child_w[iw][1])
+                } else {
+                    (expected_child_w[iw][1], expected_child_w[iw][2])
+                },
+                if iw == mesh.u_edges[mesh.w_faces[iw].iu[1]].iw[0] {
+                    (expected_child_w[iw][0], expected_child_w[iw][2])
+                } else {
+                    (expected_child_w[iw][2], expected_child_w[iw][0])
+                },
+                if iw == mesh.u_edges[mesh.w_faces[iw].iu[2]].iw[0] {
+                    (expected_child_w[iw][1], expected_child_w[iw][0])
+                } else {
+                    (expected_child_w[iw][0], expected_child_w[iw][1])
+                },
+            ];
+            for (slot, &iu) in mesh.w_faces[iw].iu.iter().enumerate() {
+                let (first_half_child, second_half_child) = expected_split_child_faces[slot];
+                assert!(
+                    refined.u_edges[iunew[iu]]
+                        .iw
+                        .iter()
+                        .take(2)
+                        .any(|&face| face == first_half_child),
+                    "Fortran full-subdivision split-U {iu} first half should touch child W {first_half_child} for old W {iw} edge slot {slot}"
+                );
+                assert!(
+                    refined.u_edges[expected_second_u[iu]]
+                        .iw
+                        .iter()
+                        .take(2)
+                        .any(|&face| face == second_half_child),
+                    "Fortran full-subdivision split-U {iu} second half should touch child W {second_half_child} for old W {iw} edge slot {slot}"
+                );
+            }
+            let [iu1o, iu2o, iu3o] = mesh.w_faces[iw].iu;
+            let expected_child_iu = [
+                [
+                    expected_internal_u[iw][0],
+                    if iw == mesh.u_edges[iu2o].iw[0] {
+                        iunew[iu2o]
+                    } else {
+                        expected_second_u[iu2o]
+                    },
+                    if iw == mesh.u_edges[iu3o].iw[0] {
+                        expected_second_u[iu3o]
+                    } else {
+                        iunew[iu3o]
+                    },
+                ],
+                [
+                    expected_internal_u[iw][1],
+                    if iw == mesh.u_edges[iu3o].iw[0] {
+                        iunew[iu3o]
+                    } else {
+                        expected_second_u[iu3o]
+                    },
+                    if iw == mesh.u_edges[iu1o].iw[0] {
+                        expected_second_u[iu1o]
+                    } else {
+                        iunew[iu1o]
+                    },
+                ],
+                [
+                    expected_internal_u[iw][2],
+                    if iw == mesh.u_edges[iu1o].iw[0] {
+                        iunew[iu1o]
+                    } else {
+                        expected_second_u[iu1o]
+                    },
+                    if iw == mesh.u_edges[iu2o].iw[0] {
+                        expected_second_u[iu2o]
+                    } else {
+                        iunew[iu2o]
+                    },
+                ],
+            ];
+            for (slot, child_id) in expected_child_w[iw].into_iter().enumerate() {
+                assert_eq!(
+                    refined.w_faces[child_id].iu,
+                    expected_child_iu[slot],
+                    "Fortran ltab_wd child W {child_id} should preserve exact Method-C U-edge slot order for old W {iw}"
+                );
+            }
+        }
+
+        assert!(checked > 0, "test should exercise interior full-subdivision W faces");
+    }
+
+    #[test]
+    fn olam_method_c_split_u_second_half_ids_follow_fortran_iunew_order() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut iunew = vec![1usize; mesh.nud + 1];
+        let mut expected_second_u = vec![1usize; mesh.nud + 1];
+        let mut iwdiv = vec![false; mesh.nwd + 1];
+        let mut iunext = 2usize;
+        iunew[1] = 1;
+        for iu in 2..=mesh.nud {
+            iunew[iu] = iunext;
+            let edge = mesh.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                    expected_second_u[iu] = iunew[iu];
+                } else {
+                    iunext += 1;
+                    expected_second_u[iu] = iunext;
+                }
+            }
+
+            for &iw in &edge.iw[0..2] {
+                if !iwdiv[iw] {
+                    iwdiv[iw] = true;
+                    if nest_wd[iw].is_subdivided() {
+                        iunext += 3;
+                    }
+                }
+            }
+            iunext += 1;
+        }
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                    if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                        expected_midpoint_m[iu] = 1;
+                    } else {
+                        imnext += 1;
+                        expected_midpoint_m[iu] = imnext;
+                    }
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iu in 2..=mesh.nud {
+            if expected_second_u[iu] == 1 || expected_second_u[iu] == iunew[iu] {
+                continue;
+            }
+            let old = mesh.u_edges[iu];
+            let [iw1, iw2] = [old.iw[0], old.iw[1]];
+            if !(nest_wd[iw1].is_subdivided() && nest_wd[iw2].is_subdivided()) {
+                continue;
+            }
+            let midpoint = expected_midpoint_m[iu];
+            let remapped_im1 = imnew[old.im[0]];
+            let remapped_im2 = imnew[old.im[1]];
+            let first_half = refined.u_edges[iunew[iu]].im;
+            let second_half = refined.u_edges[expected_second_u[iu]].im;
+            assert!(
+                first_half.contains(&midpoint) || second_half.contains(&midpoint),
+                "Fortran split-U {iu} should connect a half-edge to midpoint M id {midpoint}"
+            );
+            assert!(
+                first_half.contains(&remapped_im1)
+                    || first_half.contains(&remapped_im2)
+                    || second_half.contains(&remapped_im1)
+                    || second_half.contains(&remapped_im2),
+                "Fortran split-U {iu} half-edges should retain a remapped old endpoint"
+            );
+            let midpoint_count = first_half
+                .into_iter()
+                .chain(second_half)
+                .filter(|&endpoint| endpoint == midpoint)
+                .count();
+            assert_eq!(
+                midpoint_count, 2,
+                "Fortran split-U {iu} half-edges should share midpoint M id {midpoint}"
+            );
+            checked += 1;
+        }
+
+        assert!(checked > 0, "test should exercise non-suppressed split-U second halves");
+    }
+
+    #[test]
+    fn olam_method_c_split_u_m_metadata_marks_child_ownership() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
+                    expected_midpoint_m[iu] = imnext;
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iu in 2..=mesh.nud {
+            let midpoint = expected_midpoint_m[iu];
+            if midpoint <= 1 {
+                continue;
+            }
+            let old = mesh.u_edges[iu];
+            let [iw1, iw2] = [old.iw[0], old.iw[1]];
+            if !(nest_wd[iw1].is_subdivided() && nest_wd[iw2].is_subdivided()) {
+                continue;
+            }
+            for &old_im in &old.im {
+                let remapped = imnew[old_im];
+                assert_eq!(
+                    refined.m_metadata[remapped].mrlm, 2,
+                    "Fortran Method-C split-U {iu} raises old endpoint M {old_im} to child mrlm"
+                );
+                assert_eq!(
+                    refined.m_metadata[remapped].ngr, 2,
+                    "Fortran Method-C split-U {iu} marks old endpoint M {old_im} with child grid ownership"
+                );
+            }
+            assert_eq!(
+                refined.m_metadata[midpoint].mrlm, 2,
+                "Fortran Method-C split-U {iu} gives new midpoint M {midpoint} child mrlm"
+            );
+            assert_eq!(
+                refined.m_metadata[midpoint].mrlm_orig, 2,
+                "Fortran Method-C split-U {iu} gives new midpoint M {midpoint} child original ownership"
+            );
+            assert_eq!(
+                refined.m_metadata[midpoint].ngr, 2,
+                "Fortran Method-C split-U {iu} marks new midpoint M {midpoint} with child grid ownership"
+            );
+            checked += 1;
+        }
+
+        assert!(checked > 0, "test should exercise non-suppressed split-U M metadata");
+    }
+
+    #[test]
+    fn olam_method_c_split_u_midpoint_coordinates_match_fortran_edge_average_projection() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        for im in 2..=mesh.nmd {
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
+                    expected_midpoint_m[iu] = imnext;
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iu in 2..=mesh.nud {
+            let midpoint = expected_midpoint_m[iu];
+            if midpoint <= 1 {
+                continue;
+            }
+            let old = mesh.u_edges[iu];
+            let [iw1, iw2] = [old.iw[0], old.iw[1]];
+            if !(nest_wd[iw1].is_subdivided() && nest_wd[iw2].is_subdivided()) {
+                continue;
+            }
+            if ![iw1, iw2].into_iter().all(|iw| {
+                mesh.w_faces[iw]
+                    .iw
+                    .iter()
+                    .take(3)
+                    .all(|&neighbor| neighbor > 1 && nest_wd[neighbor].is_subdivided())
+            }) {
+                continue;
+            }
+            let linear_midpoint =
+                weighted_point(mesh.m_points[old.im[0]], 1.0, mesh.m_points[old.im[1]], 1.0)
+                    .expect("Fortran midpoint average");
+            let expected = normalize_cartesian_to_radius(linear_midpoint, radius)
+                .expect("Fortran final radius projection");
+            let actual = refined.m_points[midpoint];
+            let delta = magnitude(CartesianPoint::new(
+                actual.x - expected.x,
+                actual.y - expected.y,
+                actual.z - expected.z,
+            ));
+            assert!(
+                delta < 1.0e-6,
+                "Fortran Method-C split-U {iu} midpoint M {midpoint} should be edge-average projected to radius; delta={delta}"
+            );
+            checked += 1;
+        }
+
+        assert!(
+            checked > 0,
+            "test should exercise interior non-suppressed split-U midpoint coordinates"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_cartesian_split_u_midpoint_coordinates_match_native_edge_average() {
+        let mesh = OlamDelaunayMesh::from_cart_hex(18, 1_000_000.0)
+            .expect("cart_hex OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(10_200_000.0, -310_000.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, true)
+            .expect("selected Cartesian Method-C faces");
+        let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        for im in 2..=mesh.nmd {
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
+                    expected_midpoint_m[iu] = imnext;
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(
+                &selected,
+                2,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                false,
+            )
+            .expect("Cartesian Method-C pass");
+        let mut checked = 0usize;
+        for iu in 2..=mesh.nud {
+            let midpoint = expected_midpoint_m[iu];
+            if midpoint <= 1 {
+                continue;
+            }
+            let old = mesh.u_edges[iu];
+            let [iw1, iw2] = [old.iw[0], old.iw[1]];
+            if !(nest_wd[iw1].is_subdivided() && nest_wd[iw2].is_subdivided()) {
+                continue;
+            }
+            if ![iw1, iw2].into_iter().all(|iw| {
+                mesh.w_faces[iw]
+                    .iw
+                    .iter()
+                    .take(3)
+                    .all(|&neighbor| neighbor > 1 && nest_wd[neighbor].is_subdivided())
+            }) {
+                continue;
+            }
+            let expected =
+                weighted_point(mesh.m_points[old.im[0]], 1.0, mesh.m_points[old.im[1]], 1.0)
+                    .expect("Fortran Cartesian midpoint average");
+            let actual = refined.m_points[midpoint];
+            let delta = magnitude(CartesianPoint::new(
+                actual.x - expected.x,
+                actual.y - expected.y,
+                actual.z - expected.z,
+            ));
+            assert!(
+                delta < 1.0e-9,
+                "Fortran Cartesian Method-C split-U {iu} midpoint M {midpoint} should be native edge-average without radius projection; delta={delta}"
+            );
+            checked += 1;
+        }
+
+        assert!(
+            checked > 0,
+            "test should exercise full-interior Cartesian split-U midpoint coordinates"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_full_subdivision_child_w_vertices_match_fortran_geometry() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
+                    expected_midpoint_m[iu] = imnext;
+                }
+            }
+            imnext += 1;
+        }
+
+        let mut expected_parent_w = vec![1usize; mesh.nwd + 1];
+        let mut expected_child_w = vec![[1usize; 3]; mesh.nwd + 1];
+        let mut iwnext = 2usize;
+        for iw in 2..=mesh.nwd {
+            expected_parent_w[iw] = iwnext;
+            if nest_wd[iw].is_subdivided() {
+                iwnext += 1;
+                expected_child_w[iw][0] = iwnext;
+                iwnext += 1;
+                expected_child_w[iw][1] = iwnext;
+                iwnext += 1;
+                expected_child_w[iw][2] = iwnext;
+            }
+            iwnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iw in 2..=mesh.nwd {
+            if !nest_wd[iw].is_subdivided() {
+                continue;
+            }
+            if !mesh.w_faces[iw]
+                .iw
+                .iter()
+                .take(3)
+                .all(|&neighbor| neighbor > 1 && nest_wd[neighbor].is_subdivided())
+            {
+                continue;
+            }
+
+            let original_vertices = mesh.w_faces[iw].im.map(|im| imnew[im]);
+            let midpoint_vertices = mesh.w_faces[iw]
+                .iu
+                .map(|iu| expected_midpoint_m[iu]);
+            let parent_w = expected_parent_w[iw];
+            let mut actual_parent_vertices = refined.w_faces[parent_w].im;
+            actual_parent_vertices.sort_unstable();
+            let mut expected_parent_vertices = midpoint_vertices;
+            expected_parent_vertices.sort_unstable();
+            assert_eq!(
+                actual_parent_vertices,
+                expected_parent_vertices,
+                "Fortran remapped parent W {parent_w} for old W {iw} should be the central split-midpoint triangle"
+            );
+            for &vertex in &refined.w_faces[parent_w].im {
+                let old_iu = mesh.w_faces[iw]
+                    .iu
+                    .into_iter()
+                    .find(|&iu| expected_midpoint_m[iu] == vertex)
+                    .expect("central parent midpoint vertex should map to old U edge");
+                let edge = mesh.u_edges[old_iu];
+                let linear_midpoint = weighted_point(
+                    mesh.m_points[edge.im[0]],
+                    1.0,
+                    mesh.m_points[edge.im[1]],
+                    1.0,
+                )
+                .expect("Fortran midpoint average");
+                let expected = normalize_cartesian_to_radius(linear_midpoint, radius)
+                    .expect("Fortran final radius projection");
+                let actual = refined.m_points[vertex];
+                let delta = magnitude(CartesianPoint::new(
+                    actual.x - expected.x,
+                    actual.y - expected.y,
+                    actual.z - expected.z,
+                ));
+                assert!(
+                    delta < 1.0e-6,
+                    "Fortran remapped parent W {parent_w} midpoint vertex {vertex} should be edge-average projected to radius; delta={delta}"
+                );
+            }
+            for child_w in expected_child_w[iw] {
+                let child_vertices = refined.w_faces[child_w].im;
+                let original_count = child_vertices
+                    .iter()
+                    .filter(|vertex| original_vertices.contains(vertex))
+                    .count();
+                let midpoint_count = child_vertices
+                    .iter()
+                    .filter(|vertex| midpoint_vertices.contains(vertex))
+                    .count();
+                assert_eq!(
+                    original_count, 1,
+                    "Fortran child W {child_w} for old W {iw} should keep exactly one old M vertex"
+                );
+                assert_eq!(
+                    midpoint_count, 2,
+                    "Fortran child W {child_w} for old W {iw} should use exactly two split-U midpoint M vertices"
+                );
+                for &vertex in &child_vertices {
+                    if original_vertices.contains(&vertex) {
+                        continue;
+                    }
+                    let old_iu = mesh.w_faces[iw]
+                        .iu
+                        .into_iter()
+                        .find(|&iu| expected_midpoint_m[iu] == vertex)
+                        .expect("child midpoint vertex should map to old U edge");
+                    let edge = mesh.u_edges[old_iu];
+                    let linear_midpoint = weighted_point(
+                        mesh.m_points[edge.im[0]],
+                        1.0,
+                        mesh.m_points[edge.im[1]],
+                        1.0,
+                    )
+                    .expect("Fortran midpoint average");
+                    let expected = normalize_cartesian_to_radius(linear_midpoint, radius)
+                        .expect("Fortran final radius projection");
+                    let actual = refined.m_points[vertex];
+                    let delta = magnitude(CartesianPoint::new(
+                        actual.x - expected.x,
+                        actual.y - expected.y,
+                        actual.z - expected.z,
+                    ));
+                    assert!(
+                        delta < 1.0e-6,
+                        "Fortran child W {child_w} midpoint vertex {vertex} should be edge-average projected to radius; delta={delta}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "test should exercise full-interior Method-C child W face geometry"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_suppressed_split_u_reuses_original_u_and_skips_midpoint_like_fortran() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut iunew = vec![1usize; mesh.nud + 1];
+        let mut expected_second_u = vec![1usize; mesh.nud + 1];
+        let mut iwdiv = vec![false; mesh.nwd + 1];
+        let mut iunext = 2usize;
+        iunew[1] = 1;
+        for iu in 2..=mesh.nud {
+            iunew[iu] = iunext;
+            let edge = mesh.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                    expected_second_u[iu] = iunew[iu];
+                } else {
+                    iunext += 1;
+                    expected_second_u[iu] = iunext;
+                }
+            }
+
+            for &iw in &edge.iw[0..2] {
+                if !iwdiv[iw] {
+                    iwdiv[iw] = true;
+                    if nest_wd[iw].is_subdivided() {
+                        iunext += 3;
+                    }
+                }
+            }
+            iunext += 1;
+        }
+
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        for im in 2..=mesh.nmd {
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                    if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                        expected_midpoint_m[iu] = 1;
+                    } else {
+                        imnext += 1;
+                        expected_midpoint_m[iu] = imnext;
+                    }
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let mut checked = 0usize;
+        for iu in 2..=mesh.nud {
+            let old = mesh.u_edges[iu];
+            let [iw1, iw2] = [old.iw[0], old.iw[1]];
+            if !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed()) {
+                continue;
+            }
+            if !(nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided()) {
+                continue;
+            }
+            assert_eq!(
+                expected_second_u[iu], iunew[iu],
+                "Fortran suppressed split-U {iu} reuses iunew(iu) instead of allocating a second half"
+            );
+            assert_eq!(
+                expected_midpoint_m[iu], 1,
+                "Fortran suppressed split-U {iu} sets nest_ud(iu)%im = 1"
+            );
+            assert!(
+                !refined.u_edges[iunew[iu]].im.contains(&1),
+                "suppressed split-U {iu} should not reference a new midpoint M id"
+            );
+            checked += 1;
+        }
+
+        assert!(checked > 0, "test should exercise suppressed Method-C split-U edges");
+    }
+
+    #[test]
+    fn olam_method_c_remaps_impent_through_fortran_imnew_table() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                    if !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed()) {
+                        imnext += 1;
+                    }
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let expected_impent = mesh.impent.map(|im| imnew[im]);
+
+        assert_eq!(
+            refined.impent, expected_impent,
+            "Fortran spawn_nest remaps impent through imnew after Method-C table allocation"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_remaps_prognostic_partners_through_fortran_tables() {
+        let mut mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut iwnew = vec![1usize; mesh.nwd + 1];
+        let mut iwnext = 2usize;
+        iwnew[1] = 1;
+        for iw in 2..=mesh.nwd {
+            iwnew[iw] = iwnext;
+            if nest_wd[iw].is_subdivided() {
+                iwnext += 3;
+            }
+            iwnext += 1;
+        }
+
+        let mut iunew = vec![1usize; mesh.nud + 1];
+        let mut iwdiv = vec![false; mesh.nwd + 1];
+        let mut iunext = 2usize;
+        iunew[1] = 1;
+        for iu in 2..=mesh.nud {
+            iunew[iu] = iunext;
+            let edge = mesh.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+            {
+                iunext += 1;
+            }
+            for &iw in &edge.iw[0..2] {
+                if !iwdiv[iw] {
+                    iwdiv[iw] = true;
+                    if nest_wd[iw].is_subdivided() {
+                        iunext += 3;
+                    }
+                }
+            }
+            iunext += 1;
+        }
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
+                }
+            }
+            imnext += 1;
+        }
+
+        let m_pair = (mesh.impent[0], mesh.impent[1]);
+        let u_pair = (2usize, 3usize);
+        let w_pair = (2usize, 3usize);
+        mesh.m_prognostic[m_pair.0] = m_pair.1;
+        mesh.u_prognostic[u_pair.0] = u_pair.1;
+        mesh.w_prognostic[w_pair.0] = w_pair.1;
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+
+        assert_eq!(
+            refined.m_prognostic[imnew[m_pair.0]], imnew[m_pair.1],
+            "Fortran Method-C remaps M prognostic partner through imnew"
+        );
+        assert_eq!(
+            refined.u_prognostic[iunew[u_pair.0]], iunew[u_pair.1],
+            "Fortran Method-C remaps U prognostic partner through iunew"
+        );
+        assert_eq!(
+            refined.w_prognostic[iwnew[w_pair.0]], iwnew[w_pair.1],
+            "Fortran Method-C remaps W prognostic partner through iwnew"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_emits_closed_topology_without_placeholder_neighbor_ids() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+
+        refined
+            .validate_topology()
+            .expect("Method-C output topology should be closed");
+        for iu in 2..=refined.nud {
+            assert!(
+                refined.u_edges[iu].im.iter().all(|&im| im > 1),
+                "U edge {iu} should not contain placeholder M endpoint"
+            );
+            assert!(
+                refined.u_edges[iu].iw.iter().take(2).all(|&iw| iw > 1),
+                "U edge {iu} should not contain placeholder adjacent W face"
+            );
+        }
+        for iw in 2..=refined.nwd {
+            assert!(
+                refined.w_faces[iw].im.iter().all(|&im| im > 1),
+                "W face {iw} should not contain placeholder M vertex"
+            );
+            assert!(
+                refined.w_faces[iw].iu.iter().all(|&iu| iu > 1),
+                "W face {iw} should not contain placeholder U edge"
+            );
+        }
+        for im in 2..=refined.nmd {
+            let neighbors = refined.m_neighbors[im];
+            for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                assert!(iu > 1, "M point {im} should not contain placeholder U neighbor");
+            }
+            for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                assert!(iw > 1, "M point {im} should not contain placeholder W neighbor");
+            }
+        }
+    }
+
+    #[test]
+    fn olam_method_c_multiple_regions_emit_projected_closed_outputs() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        let cases = [
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 2_500_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 3_500_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(15.0, 45.0),
+                radius_meters: 2_500_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(-75.0, 10.0),
+                radius_meters: 2_500_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Bbox {
+                west_degrees: 110.0,
+                east_degrees: 120.0,
+                south_degrees: 20.0,
+                north_degrees: 30.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(110.0, 24.0),
+                    LonLatDegrees::new(120.0, 26.0),
+                ],
+                radius_meters: vec![1_500_000.0, 1_500_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Polygon {
+                points: vec![
+                    LonLatDegrees::new(110.0, 20.0),
+                    LonLatDegrees::new(120.0, 20.0),
+                    LonLatDegrees::new(120.0, 30.0),
+                    LonLatDegrees::new(110.0, 30.0),
+                ],
+                level: 1,
+            },
+        ];
+
+        for region in cases {
+            let selected = mesh
+                .selected_region_faces(&region, 1, false)
+                .expect("selected Method-C faces");
+            let selected_parent_mrl = (2..=mesh.nwd)
+                .find(|&iw| selected.get(iw).copied().unwrap_or(false))
+                .map(|iw| mesh.w_faces[iw].mrlw);
+            let mut expected_selected = selected.clone();
+            mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+                &mut expected_selected,
+                &method_c_m_neighbors,
+            )
+            .expect("Method-C closure");
+            if let Some(parent_mrl) = selected_parent_mrl {
+                for iw in 2..=mesh.nwd {
+                    if mesh.w_faces[iw].mrlw != parent_mrl {
+                        expected_selected[iw] = false;
+                    }
+                }
+            }
+            let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+            for iw in 2..=mesh.nwd {
+                if expected_selected[iw] {
+                    nest_wd[iw].iw[2] = 1;
+                }
+            }
+            let perimeter = mesh
+                .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+                .expect("Method-C perimeter");
+            for triple in perimeter.chunks_exact(3) {
+                let center = triple[1];
+                let edge = mesh.u_edges[center.iu];
+                let suppressed_w = if center.im == edge.im[0] {
+                    edge.iw[1]
+                } else {
+                    edge.iw[0]
+                };
+                nest_wd[suppressed_w].iw[2] = -1;
+            }
+            let selected_w_count = (2..=mesh.nwd)
+                .filter(|&iw| nest_wd[iw].is_subdivided())
+                .count();
+            let split_u_count = (2..=mesh.nud)
+                .filter(|&iu| {
+                    let edge = mesh.u_edges[iu];
+                    let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                    (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                        && !nest_wd[iw1].is_suppressed()
+                        && !nest_wd[iw2].is_suppressed()
+                })
+                .count();
+            let refined = mesh
+                .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+                .expect("Method-C pass");
+
+            assert_eq!(
+                refined.nmd,
+                mesh.nmd + split_u_count,
+                "Fortran Method-C allocates one midpoint M only for non-suppressed split U edges"
+            );
+            assert_eq!(
+                refined.nud,
+                mesh.nud + split_u_count + 3 * selected_w_count,
+                "Fortran Method-C allocates one split U plus three child-W internal U edges"
+            );
+            assert_eq!(
+                refined.nwd,
+                mesh.nwd + 3 * selected_w_count,
+                "Fortran Method-C keeps the remapped parent W and adds three child W faces per subdivided W"
+            );
+            refined
+                .validate_topology()
+                .expect("Method-C output topology should be closed");
+            for im in 2..=refined.nmd {
+                let delta = (magnitude(refined.m_points[im]) - radius).abs();
+                assert!(
+                    delta < 1.0e-6,
+                    "Fortran spawn_nest final projection should place M point {im} on the active radius; delta={delta}"
+                );
+                let neighbors = refined.m_neighbors[im];
+                for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                    assert!(iu > 1, "M point {im} should not contain placeholder U neighbor");
+                }
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    assert!(iw > 1, "M point {im} should not contain placeholder W neighbor");
+                }
+            }
+            for iu in 2..=refined.nud {
+                assert!(
+                    refined.u_edges[iu].im.iter().all(|&im| im > 1),
+                    "U edge {iu} should not contain placeholder M endpoint"
+                );
+                assert!(
+                    refined.u_edges[iu].iw.iter().take(2).all(|&iw| iw > 1),
+                    "U edge {iu} should not contain placeholder adjacent W face"
+                );
+            }
+            for iw in 2..=refined.nwd {
+                assert!(
+                    refined.w_faces[iw].im.iter().all(|&im| im > 1),
+                    "W face {iw} should not contain placeholder M vertex"
+                );
+                assert!(
+                    refined.w_faces[iw].iu.iter().all(|&iu| iu > 1),
+                    "W face {iw} should not contain placeholder U edge"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn olam_method_c_public_spawn_entrypoints_use_same_table_path() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let expected = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("direct Method-C pass");
+        let expected_counts = (expected.nmd, expected.nud, expected.nwd);
+
+        let surface = mesh
+            .spawn_nest(std::slice::from_ref(&region), 1)
+            .expect("public surface Method-C spawn");
+        assert_eq!(
+            (surface.nmd, surface.nud, surface.nwd),
+            expected_counts,
+            "spawn_nest should use the same Method-C table path as the direct pass"
+        );
+        surface.validate_topology().expect("surface Method-C topology");
+
+        let surface_alias = mesh
+            .spawn_nest_as_surface(std::slice::from_ref(&region), 1)
+            .expect("public surface alias Method-C spawn");
+        assert_eq!(
+            (surface_alias.nmd, surface_alias.nud, surface_alias.nwd),
+            expected_counts,
+            "spawn_nest_as_surface should use the same Method-C table path as spawn_nest"
+        );
+        surface_alias
+            .validate_topology()
+            .expect("surface alias Method-C topology");
+
+        let explicit = mesh
+            .spawn_nest_with_max_mrows(std::slice::from_ref(&region), 1, 7)
+            .expect("explicit-width Method-C spawn");
+        assert_eq!(
+            (explicit.nmd, explicit.nud, explicit.nwd),
+            expected_counts,
+            "spawn_nest_with_max_mrows should use the same Method-C table path"
+        );
+        explicit
+            .validate_topology()
+            .expect("explicit-width Method-C topology");
+
+        let atmosphere = mesh
+            .spawn_nest_as_atmosmesh(std::slice::from_ref(&region), 1)
+            .expect("public atmosphere Method-C spawn");
+        assert_eq!(
+            (atmosphere.nmd, atmosphere.nud, atmosphere.nwd),
+            expected_counts,
+            "spawn_nest_as_atmosmesh should change mrow width without leaving the Method-C table path"
+        );
+        atmosphere
+            .validate_topology()
+            .expect("atmosphere Method-C topology");
+
+        let (spring, spring_passes) = mesh
+            .spawn_nest_with_spring(std::slice::from_ref(&region), 1, 16, 0)
+            .expect("public spring Method-C spawn");
+        assert_eq!(spring_passes, 0);
+        assert_eq!(
+            (spring.nmd, spring.nud, spring.nwd),
+            expected_counts,
+            "spawn_nest_with_spring should use the same Method-C table path before optional springing"
+        );
+        spring.validate_topology().expect("spring Method-C topology");
+
+        let cart_mesh =
+            OlamDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex OLAM mesh");
+        let cart_region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(10_200_000.0, -310_000.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+        let cart_selected = cart_mesh
+            .selected_region_faces(&cart_region, 1, true)
+            .expect("selected Cartesian Method-C faces");
+        let cart_expected = cart_mesh
+            .spawn_nest_pass_with_max_mrows(
+                &cart_selected,
+                2,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                false,
+            )
+            .expect("direct Cartesian Method-C pass");
+        let cart_expected_counts = (cart_expected.nmd, cart_expected.nud, cart_expected.nwd);
+        let cart_public = cart_mesh
+            .spawn_nest_cartesian_xy_with_max_mrows(
+                std::slice::from_ref(&cart_region),
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+            )
+            .expect("public Cartesian Method-C spawn");
+        assert_eq!(
+            (cart_public.nmd, cart_public.nud, cart_public.nwd),
+            cart_expected_counts,
+            "spawn_nest_cartesian_xy_with_max_mrows should use the same Method-C table path as the direct Cartesian pass"
+        );
+        cart_public
+            .validate_topology()
+            .expect("Cartesian Method-C topology");
+
+        let (cart_spring, cart_spring_passes) = cart_mesh
+            .spawn_nest_cartesian_xy_with_spring_and_max_mrows(
+                std::slice::from_ref(&cart_region),
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                18,
+                0,
+            )
+            .expect("public Cartesian spring Method-C spawn");
+        assert_eq!(cart_spring_passes, 0);
+        assert_eq!(
+            (cart_spring.nmd, cart_spring.nud, cart_spring.nwd),
+            cart_expected_counts,
+            "spawn_nest_cartesian_xy_with_spring_and_max_mrows should use the same Method-C table path before optional springing"
+        );
+        cart_spring
+            .validate_topology()
+            .expect("Cartesian spring Method-C topology");
+    }
+
+    #[test]
+    fn olam_method_c_spring_niter_keeps_table_path_and_closed_topology() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let expected = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("direct Method-C pass");
+
+        let (spring, spring_passes) = mesh
+            .spawn_nest_with_spring(std::slice::from_ref(&region), 1, 16, 1)
+            .expect("public spring Method-C spawn with iterations");
+
+        assert_eq!(
+            spring_passes, 1,
+            "niter > 0 should run one OLAM nest spring pass after the active Method-C refinement pass"
+        );
+        assert_eq!(
+            (spring.nmd, spring.nud, spring.nwd),
+            (expected.nmd, expected.nud, expected.nwd),
+            "spring_nest should relax the Method-C table output without changing its Fortran allocation counts"
+        );
+        spring
+            .validate_topology()
+            .expect("spring-relaxed Method-C topology");
+        for im in 2..=spring.nmd {
+            let delta = (magnitude(spring.m_points[im]) - radius).abs();
+            assert!(
+                delta < 0.5,
+                "spring-relaxed Method-C M point {im} should stay projected on the Fortran real-valued active radius; delta={delta}"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_cartesian_spring_niter_keeps_table_path_and_closed_topology() {
+        let mesh = OlamDelaunayMesh::from_cart_hex(18, 1_000_000.0)
+            .expect("cart_hex OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(10_200_000.0, -310_000.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, true)
+            .expect("selected Cartesian Method-C faces");
+        let expected = mesh
+            .spawn_nest_pass_with_max_mrows(
+                &selected,
+                2,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                false,
+            )
+            .expect("direct Cartesian Method-C pass");
+
+        let (spring, spring_passes) = mesh
+            .spawn_nest_cartesian_xy_with_spring_and_max_mrows(
+                std::slice::from_ref(&region),
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                18,
+                1,
+            )
+            .expect("public Cartesian spring Method-C spawn with iterations");
+
+        assert_eq!(
+            spring_passes, 1,
+            "Cartesian niter > 0 should run one OLAM nest spring pass after the active Method-C refinement pass"
+        );
+        assert_eq!(
+            (spring.nmd, spring.nud, spring.nwd),
+            (expected.nmd, expected.nud, expected.nwd),
+            "Cartesian spring_nest should relax the Method-C table output without changing Fortran allocation counts"
+        );
+        spring
+            .validate_topology()
+            .expect("Cartesian spring-relaxed Method-C topology");
+        for im in 2..=spring.nmd {
+            let point = spring.m_points[im];
+            assert!(
+                point.x.is_finite() && point.y.is_finite() && point.z.is_finite(),
+                "Cartesian spring-relaxed Method-C M point {im} should remain finite"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_cartesian_deltax_spring_niter_keeps_table_path_and_closed_topology() {
+        let deltax = 1_000_000.0;
+        let mesh = OlamDelaunayMesh::from_cart_hex(18, deltax)
+            .expect("cart_hex OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(10_200_000.0, -310_000.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, true)
+            .expect("selected Cartesian Method-C faces");
+        let expected = mesh
+            .spawn_nest_pass_with_max_mrows(
+                &selected,
+                2,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                false,
+            )
+            .expect("direct Cartesian Method-C pass");
+
+        let (spring, spring_passes) = mesh
+            .spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                std::slice::from_ref(&region),
+                1,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                18,
+                1,
+                deltax,
+            )
+            .expect("public Cartesian deltax spring Method-C spawn with iterations");
+
+        assert_eq!(
+            spring_passes, 1,
+            "Cartesian deltax niter > 0 should run one OLAM nest spring pass after the active Method-C refinement pass"
+        );
+        assert_eq!(
+            (spring.nmd, spring.nud, spring.nwd),
+            (expected.nmd, expected.nud, expected.nwd),
+            "Cartesian deltax spring_nest should relax the Method-C table output without changing Fortran allocation counts"
+        );
+        spring
+            .validate_topology()
+            .expect("Cartesian deltax spring-relaxed Method-C topology");
+        for im in 2..=spring.nmd {
+            let point = spring.m_points[im];
+            assert!(
+                point.x.is_finite() && point.y.is_finite() && point.z.is_finite(),
+                "Cartesian deltax spring-relaxed Method-C M point {im} should remain finite"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_olamin_style_multilevel_corridor_table_outputs_closed_mesh() {
+        let mesh = OlamDelaunayMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
+            .expect("base OLAM mesh")
+            .expand_by_factor(2)
+            .expect("Fortran expand_global2 base OLAM mesh");
+        let path = vec![
+            LonLatDegrees::new(-94.0, 25.0),
+            LonLatDegrees::new(-95.0, 26.0),
+        ];
+        let regions = [
+            OlamRefinementRegion::Corridor {
+                points: path.clone(),
+                radius_meters: vec![3_000_000.0, 3_000_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: path.clone(),
+                radius_meters: vec![1_800_000.0, 1_800_000.0],
+                level: 2,
+            },
+            OlamRefinementRegion::Corridor {
+                points: path,
+                radius_meters: vec![1_200_000.0, 1_200_000.0],
+                level: 3,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 3)
+            .expect("OLAMIN-style atmosphere Method-C corridor table nest");
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (84_099, 252_289, 168_193),
+            "OLAMIN-style atmosphere Method-C corridor table output should match the Fortran Method-C HDF5 M/U/W table sizes"
+        );
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        for face in refined.w_faces.iter().skip(2) {
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+        }
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(1, 76_426), (2, 11_468), (3, 15_114), (4, 65_184)]),
+            "OLAMIN-style atmosphere Method-C corridor table output should match the Fortran Method-C per-grid W-face counts"
+        );
+        let mut mrows = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .filter_map(|face| (face.mrow != 0).then_some(face.mrow))
+            .collect::<Vec<_>>();
+        mrows.sort_unstable();
+        assert_eq!(
+            (mrows.first().copied(), mrows.last().copied(), mrows.len()),
+            (Some(-13), Some(13), 50_069),
+            "OLAMIN-style atmosphere Method-C corridor table output should match the Fortran Method-C atmosphere mrow envelope"
+        );
+        refined
+            .validate_topology()
+            .expect("OLAMIN-style Method-C table topology");
+    }
+
+    #[test]
+    #[ignore = "runs three 5000-iteration atmosphere spring passes; use the table-only OLAMIN corridor test for default Method-C count/topology coverage"]
+    fn olam_method_c_olamin_style_multilevel_corridor_outputs_closed_mesh() {
+        let mesh = OlamDelaunayMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
+            .expect("base OLAM mesh")
+            .expand_by_factor(2)
+            .expect("Fortran expand_global2 base OLAM mesh");
+        let path = vec![
+            LonLatDegrees::new(-94.0, 25.0),
+            LonLatDegrees::new(-95.0, 26.0),
+        ];
+        let regions = [
+            OlamRefinementRegion::Corridor {
+                points: path.clone(),
+                radius_meters: vec![3_000_000.0, 3_000_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: path.clone(),
+                radius_meters: vec![1_800_000.0, 1_800_000.0],
+                level: 2,
+            },
+            OlamRefinementRegion::Corridor {
+                points: path,
+                radius_meters: vec![1_200_000.0, 1_200_000.0],
+                level: 3,
+            },
+        ];
+
+        let (refined, spring_passes) = mesh
+            .spawn_nest_with_spring_as_atmosmesh(&regions, 3, 66, 5000)
+            .expect("OLAMIN-style atmosphere Method-C corridor nest");
+        assert_eq!(
+            spring_passes, 3,
+            "Fortran MAKEGRID runs one atmosphere spring pass after each active Method-C nest"
+        );
+        assert_eq!(
+            (refined.nmd, refined.nud, refined.nwd),
+            (84_099, 252_289, 168_193),
+            "OLAMIN-style atmosphere Method-C corridor output should match the Fortran Method-C HDF5 M/U/W table sizes"
+        );
+        let mut ngr_counts = BTreeMap::<usize, usize>::new();
+        for face in refined.w_faces.iter().skip(2) {
+            *ngr_counts.entry(face.ngr).or_insert(0) += 1;
+        }
+        assert_eq!(
+            ngr_counts,
+            BTreeMap::from([(1, 76_426), (2, 11_468), (3, 15_114), (4, 65_184)]),
+            "OLAMIN-style atmosphere Method-C corridor output should match the Fortran Method-C per-grid W-face counts"
+        );
+        let mut mrows = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .filter_map(|face| (face.mrow != 0).then_some(face.mrow))
+            .collect::<Vec<_>>();
+        mrows.sort_unstable();
+        assert_eq!(
+            (mrows.first().copied(), mrows.last().copied(), mrows.len()),
+            (Some(-13), Some(13), 50_069),
+            "OLAMIN-style atmosphere Method-C corridor output should match the Fortran Method-C atmosphere mrow envelope"
+        );
+
+        refined
+            .validate_topology()
+            .expect("OLAMIN-style Method-C topology");
+        let grid_numbers = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .filter_map(|face| (face.ngr > 1).then_some(face.ngr))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            grid_numbers,
+            BTreeSet::from([2, 3, 4]),
+            "Fortran Method-C spawns one grid number per OLAMIN corridor refinement level"
+        );
+        for iu in 2..=refined.nud {
+            assert!(
+                refined.u_edges[iu].im.iter().all(|&im| im > 1),
+                "U edge {iu} should not contain placeholder M endpoint"
+            );
+            assert!(
+                refined.u_edges[iu].iw.iter().take(2).all(|&iw| iw > 1),
+                "U edge {iu} should not contain placeholder adjacent W face"
+            );
+        }
+        for iw in 2..=refined.nwd {
+            assert!(
+                refined.w_faces[iw].im.iter().all(|&im| im > 1),
+                "W face {iw} should not contain placeholder M vertex"
+            );
+            assert!(
+                refined.w_faces[iw].iu.iter().all(|&iu| iu > 1),
+                "W face {iw} should not contain placeholder U edge"
+            );
+        }
+        for im in 2..=mesh.nmd {
+            assert!(
+                refined.m_neighbors[im].npoly <= 7,
+                "old M point {im} exceeds OLAM-supported valence after OLAMIN-style Method-C nesting"
+            );
+        }
+
+        let adapted = voronoi_grid_from_olam_delaunay_mesh(
+            &refined,
+            active_mesh_radius(&refined).expect("active mesh radius"),
+        )
+        .expect("OLAMIN-style Method-C Voronoi handoff");
+        assert_eq!(adapted.grid.nma, refined.nwd);
+        assert_eq!(adapted.grid.nua, refined.nud);
+        assert_eq!(adapted.grid.nwa, refined.nmd);
+        for iw in 2..=refined.nwd {
+            assert_eq!(
+                adapted.tabs.m[iw].npoly as usize,
+                refined.w_faces[iw].npoly,
+                "Voronoi handoff should preserve Method-C W-face npoly for face {iw}"
+            );
+            assert_eq!(
+                adapted.tabs.m[iw].ngr as usize,
+                refined.w_faces[iw].ngr,
+                "Voronoi handoff should preserve Method-C W-face grid number for face {iw}"
+            );
+        }
+        for im in 2..=refined.nmd {
+            assert_eq!(
+                adapted.tabs.w[im].npoly as usize,
+                refined.m_neighbors[im].npoly,
+                "Voronoi handoff should preserve Method-C M-neighbor npoly for point {im}"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_midpoint_m_ids_follow_fortran_first_seen_edge_order() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C closure");
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut expected_midpoint_m = vec![1usize; mesh.nud + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            for &iu in method_c_m_neighbors[im]
+                .iu
+                .iter()
+                .take(method_c_m_neighbors[im].npoly)
+            {
+                if iudiv[iu] {
+                    continue;
+                }
+                iudiv[iu] = true;
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                    if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                        expected_midpoint_m[iu] = 1;
+                    } else {
+                        imnext += 1;
+                        expected_midpoint_m[iu] = imnext;
+                    }
+                }
+            }
+            imnext += 1;
+        }
+
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, false)
+            .expect("Method-C pass without final projection");
+        let checked = (2..=mesh.nud)
+            .filter(|&iu| expected_midpoint_m[iu] > 1)
+            .filter(|&iu| {
+                let edge = mesh.u_edges[iu];
+                let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                nest_wd[iw1].is_subdivided() && nest_wd[iw2].is_subdivided()
+            })
+            .map(|iu| {
+                let old_edge = mesh.u_edges[iu];
+                let midpoint = expected_midpoint_m[iu];
+                let remapped_im1 = imnew[old_edge.im[0]];
+                let remapped_im2 = imnew[old_edge.im[1]];
+                let has_half_edge = |endpoint: usize| {
+                    refined.u_edges.iter().skip(2).any(|edge| {
+                        edge.im.contains(&midpoint) && edge.im.contains(&endpoint)
+                    })
+                };
+                assert!(
+                    has_half_edge(remapped_im1) && has_half_edge(remapped_im2),
+                    "Fortran assigns split-U {iu} midpoint to first-seen M id {midpoint} and connects both remapped endpoints"
+                );
+                1usize
+            })
+            .sum::<usize>();
+
+        assert!(checked > 0, "test should exercise Method-C split-U midpoint ids");
+    }
+
+    #[test]
+    fn olam_method_c_refinement_level_is_not_grid_number() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let child_grid_number = 4;
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, child_grid_number, 7, true)
+            .expect("Method-C pass with non-level grid number");
+
+        let max_mrlm = refined
+            .m_metadata
+            .iter()
+            .skip(2)
+            .map(|metadata| metadata.mrlm)
+            .max()
+            .expect("M metadata");
+        let max_mrlm_orig = refined
+            .m_metadata
+            .iter()
+            .skip(2)
+            .map(|metadata| metadata.mrlm_orig)
+            .max()
+            .expect("M original metadata");
+        let max_mrlw = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.mrlw)
+            .max()
+            .expect("W metadata");
+        let max_mrlw_orig = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.mrlw_orig)
+            .max()
+            .expect("W original metadata");
+
+        assert!(
+            max_mrlm <= 2 && max_mrlm_orig <= 2,
+            "Fortran writes M refinement levels as parent mrlo + 1 independently of grid number; got max mrlm={max_mrlm}, max mrlm_orig={max_mrlm_orig}"
+        );
+        assert!(
+            max_mrlw <= 2 && max_mrlw_orig <= 2,
+            "Fortran writes W refinement levels as parent mrlo + 1 independently of grid number; got max mrlw={max_mrlw}, max mrlw_orig={max_mrlw_orig}"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_keeps_fortran_linear_coordinates_before_projection() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, false)
+            .expect("Method-C pass without final projection");
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        let off_radius_points = (2..=refined.nmd)
+            .filter(|&im| refined.m_metadata[im].mrlm_orig == 2)
+            .filter(|&im| (magnitude(refined.m_points[im]) - radius).abs() > 1.0e-6)
+            .collect::<Vec<_>>();
+
+        assert!(
+            !off_radius_points.is_empty(),
+            "Fortran perim_fill3 writes ordinary linear M coordinates before the later spawn_nest radius projection"
+        );
+    }
+
+    #[test]
+    fn olam_method_c_projection_matches_fortran_radius_expansion() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let linear = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, false)
+            .expect("Method-C pass without final projection");
+        let projected = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass with final projection");
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        assert_eq!(linear.nmd, projected.nmd);
+
+        for im in 2..=linear.nmd {
+            let expected = normalize_cartesian_to_radius(linear.m_points[im], radius)
+                .expect("Fortran radius expansion");
+            let actual = projected.m_points[im];
+            let delta = magnitude(CartesianPoint::new(
+                actual.x - expected.x,
+                actual.y - expected.y,
+                actual.z - expected.z,
+            ));
+            assert!(
+                delta < 1.0e-6,
+                "Fortran spawn_nest projects M point {im} by radial expansion; delta={delta}"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_perim_fill3_writes_fortran_weighted_transition_coordinates() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let mut selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let selected_parent_mrl = (2..=mesh.nwd)
+            .find(|&iw| selected.get(iw).copied().unwrap_or(false))
+            .map(|iw| mesh.w_faces[iw].mrlw);
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M-neighbor table should derive");
+        mesh.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )
+        .expect("Method-C concavity closure");
+        if let Some(parent_mrl) = selected_parent_mrl {
+            for iw in 2..=mesh.nwd {
+                if mesh.w_faces[iw].mrlw != parent_mrl {
+                    selected[iw] = false;
+                }
+            }
+        }
+
+        let mut nest_wd = vec![OlamMethodCNestWd::default(); mesh.nwd + 1];
+        for iw in 2..=mesh.nwd {
+            if selected[iw] {
+                nest_wd[iw].iw[2] = 1;
+            }
+        }
+        let perimeter = mesh
+            .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
+            .expect("Method-C perimeter");
+        for triple in perimeter.chunks_exact(3) {
+            let center = triple[1];
+            let edge = mesh.u_edges[center.iu];
+            let suppressed_w = if center.im == edge.im[0] {
+                edge.iw[1]
+            } else {
+                edge.iw[0]
+            };
+            nest_wd[suppressed_w].iw[2] = -1;
+        }
+
+        let mut iwnew = vec![1usize; mesh.nwd + 1];
+        let mut iwnext = 2usize;
+        iwnew[1] = 1;
+        for iw in 2..=mesh.nwd {
+            iwnew[iw] = iwnext;
+            if nest_wd[iw].is_subdivided() {
+                iwnext += 1;
+                nest_wd[iw].iw[0] = iwnext as isize;
+                iwnext += 1;
+                nest_wd[iw].iw[1] = iwnext as isize;
+                iwnext += 1;
+                nest_wd[iw].iw[2] = iwnext as isize;
+            }
+            iwnext += 1;
+        }
+        let nwd0 = iwnext - 1;
+
+        let mut nest_ud = vec![OlamMethodCNestUd::default(); mesh.nud + 1];
+        let mut iunew = vec![1usize; mesh.nud + 1];
+        let mut iwdiv = vec![false; mesh.nwd + 1];
+        let mut iunext = 2usize;
+        iunew[1] = 1;
+        for iu in 2..=mesh.nud {
+            iunew[iu] = iunext;
+            let edge = mesh.u_edges[iu];
+            let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+            if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                    nest_ud[iu].iu = iunew[iu];
+                } else {
+                    iunext += 1;
+                    nest_ud[iu].iu = iunext;
+                }
+            }
+
+            for &iw in &edge.iw[0..2] {
+                if !iwdiv[iw] {
+                    iwdiv[iw] = true;
+                    if nest_wd[iw].is_subdivided() {
+                        iunext += 1;
+                        nest_wd[iw].iu[0] = iunext;
+                        iunext += 1;
+                        nest_wd[iw].iu[1] = iunext;
+                        iunext += 1;
+                        nest_wd[iw].iu[2] = iunext;
+                    }
+                }
+            }
+            iunext += 1;
+        }
+        let nud0 = iunext - 1;
+
+        let mut imnew = vec![1usize; mesh.nmd + 1];
+        let mut iudiv = vec![false; mesh.nud + 1];
+        let mut imnext = 2usize;
+        imnew[1] = 1;
+        for im in 2..=mesh.nmd {
+            imnew[im] = imnext;
+            let neighbors = method_c_m_neighbors[im];
+            for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                if !iudiv[iu] {
+                    iudiv[iu] = true;
+                    let edge = mesh.u_edges[iu];
+                    let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
+                    if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
+                        if nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed() {
+                            nest_ud[iu].im = 1;
+                        } else {
+                            imnext += 1;
+                            nest_ud[iu].im = imnext;
+                        }
+                    }
+                }
+            }
+            imnext += 1;
+        }
+        let nmd0 = imnext - 1;
+
+        let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); nmd0 + 1];
+        let mut m_metadata = default_olam_m_metadata(nmd0);
+        let mut u_edges = vec![IcosahedronUEdge::default(); nud0 + 1];
+        let mut w_faces = vec![IcosahedronWFace::default(); nwd0 + 1];
+
+        for im in 2..=mesh.nmd {
+            let imn = imnew[im];
+            m_points[imn] = mesh.m_points[im];
+            m_metadata[imn] = mesh.m_metadata[im];
+        }
+        for iu in 2..=mesh.nud {
+            let iun = iunew[iu];
+            let old = mesh.u_edges[iu];
+            u_edges[iun] = IcosahedronUEdge {
+                im: old.im.map(|im| imnew[im]),
+                iw: old.iw.map(|iw| iwnew[iw]),
+                iu: old.iu.map(|iu2| iunew[iu2]),
+                mrlu: old.mrlu,
+            };
+            if nest_ud[iu].im > 1 {
+                let im_mid = nest_ud[iu].im;
+                let im1 = u_edges[iun].im[0];
+                let im2 = u_edges[iun].im[1];
+                m_points[im_mid] =
+                    weighted_point(m_points[im1], 1.0, m_points[im2], 1.0).unwrap();
+            }
+        }
+        for iw in 2..=mesh.nwd {
+            let iwn = iwnew[iw];
+            let old = mesh.w_faces[iw];
+            w_faces[iwn] = IcosahedronWFace {
+                npoly: old.npoly,
+                im: old.im.map(|im| imnew[im]),
+                iu: old.iu.map(|iu| iunew[iu]),
+                iw: old.iw.map(|iw2| iwnew[iw2]),
+                mrlw: old.mrlw,
+                mrlw_orig: old.mrlw_orig,
+                ngr: old.ngr,
+                mrow: old.mrow,
+            };
+            if nest_wd[iw].is_subdivided() {
+                mesh.fill_method_c_full_subdivision(
+                    iw,
+                    &iwnew,
+                    &iunew,
+                    &imnew,
+                    2,
+                    &nest_wd,
+                    &nest_ud,
+                    &mut u_edges,
+                    &mut w_faces,
+                )
+                .expect("full Method-C face subdivision");
+            }
+        }
+
+        let [p1, p2, p3] = [perimeter[0], perimeter[1], perimeter[2]];
+        let [jm1, jm2, jm3] = [p1.im, p2.im, p3.im];
+        let [ju1, ju2, ju3] = [p1.iu, p2.iu, p3.iu];
+        let im16 = imnew[jm1];
+        let im17 = nest_ud[ju1].im;
+        let im18 = imnew[jm2];
+        let im19 = imnew[jm3];
+        let im20 = nest_ud[ju3].im;
+        let iu43 = iunew[ju2];
+        assert!(im17 > 1 && im20 > 1, "perim_fill3 test triple should have split endpoint M ids");
+
+        let (iu41, iu42, iu46, iw26, iw27) = if jm1 == mesh.u_edges[ju1].im[0] {
+            (
+                iunew[ju1],
+                nest_ud[ju1].iu,
+                iunew[mesh.u_edges[ju1].iu[4]],
+                iwnew[mesh.u_edges[ju1].iw[2]],
+                iwnew[mesh.u_edges[ju1].iw[0]],
+            )
+        } else {
+            (
+                nest_ud[ju1].iu,
+                iunew[ju1],
+                iunew[mesh.u_edges[ju1].iu[11]],
+                iwnew[mesh.u_edges[ju1].iw[5]],
+                iwnew[mesh.u_edges[ju1].iw[1]],
+            )
+        };
+        let (iu49, iu50, iu34, iu35, iu48, iu51, iw6o, iw9o, iw6, iw9, iw29, iw20, iw28, iw30) =
+            if jm2 == mesh.u_edges[ju2].im[0] {
+            (
+                iunew[mesh.u_edges[ju2].iu[0]],
+                iunew[mesh.u_edges[ju2].iu[1]],
+                iunew[mesh.u_edges[ju2].iu[2]],
+                iunew[mesh.u_edges[ju2].iu[3]],
+                iunew[mesh.u_edges[ju2].iu[4]],
+                iunew[mesh.u_edges[ju2].iu[7]],
+                mesh.u_edges[ju2].iw[4],
+                mesh.u_edges[ju2].iw[5],
+                iwnew[mesh.u_edges[ju2].iw[4]],
+                iwnew[mesh.u_edges[ju2].iw[5]],
+                iwnew[mesh.u_edges[ju2].iw[0]],
+                iwnew[mesh.u_edges[ju2].iw[1]],
+                iwnew[mesh.u_edges[ju2].iw[2]],
+                iwnew[mesh.u_edges[ju2].iw[3]],
+            )
+        } else {
+            (
+                iunew[mesh.u_edges[ju2].iu[3]],
+                iunew[mesh.u_edges[ju2].iu[2]],
+                iunew[mesh.u_edges[ju2].iu[1]],
+                iunew[mesh.u_edges[ju2].iu[0]],
+                iunew[mesh.u_edges[ju2].iu[11]],
+                iunew[mesh.u_edges[ju2].iu[8]],
+                mesh.u_edges[ju2].iw[3],
+                mesh.u_edges[ju2].iw[2],
+                iwnew[mesh.u_edges[ju2].iw[3]],
+                iwnew[mesh.u_edges[ju2].iw[2]],
+                iwnew[mesh.u_edges[ju2].iw[1]],
+                iwnew[mesh.u_edges[ju2].iw[0]],
+                iwnew[mesh.u_edges[ju2].iw[5]],
+                iwnew[mesh.u_edges[ju2].iw[4]],
+            )
+        };
+        let (im21, iu44, iu45, iu53, iw31, iw32) = if jm3 == mesh.u_edges[ju3].im[0] {
+            (
+                imnew[mesh.u_edges[ju3].im[1]],
+                iunew[ju3],
+                nest_ud[ju3].iu,
+                iunew[mesh.u_edges[ju3].iu[7]],
+                iwnew[mesh.u_edges[ju3].iw[0]],
+                iwnew[mesh.u_edges[ju3].iw[3]],
+            )
+        } else {
+            (
+                imnew[mesh.u_edges[ju3].im[0]],
+                nest_ud[ju3].iu,
+                iunew[ju3],
+                iunew[mesh.u_edges[ju3].iu[8]],
+                iwnew[mesh.u_edges[ju3].iw[1]],
+                iwnew[mesh.u_edges[ju3].iw[4]],
+            )
+        };
+        let im22 = fortran_other_endpoint_by_first(u_edges[iu46], im16);
+        let im23 = fortran_other_endpoint_by_first(u_edges[iu48], im18);
+        let im24 = fortran_other_endpoint_by_first(u_edges[iu49], im18);
+        let im25 = fortran_other_endpoint_by_first(u_edges[iu51], im19);
+        let im26 = fortran_other_endpoint_by_first(u_edges[iu53], im21);
+        let im5 = if u_edges[iu34].im[0] == im18 {
+            u_edges[iu34].im[1]
+        } else {
+            u_edges[iu34].im[0]
+        };
+
+        let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, &u_edges, "iw6")
+            .expect("split outer edges for iw6");
+        let iw19 = if u_edges[iu25].iw[0] == iw6 {
+            u_edges[iu25].iw[1]
+        } else {
+            u_edges[iu25].iw[0]
+        };
+        let iw7 = if u_edges[iu15].iw[0] == iw6 {
+            u_edges[iu15].iw[1]
+        } else {
+            u_edges[iu15].iw[0]
+        };
+        let iu33 = if w_faces[iw19].iu[0] == iu25 {
+            w_faces[iw19].iu[1]
+        } else if w_faces[iw19].iu[1] == iu25 {
+            w_faces[iw19].iu[2]
+        } else {
+            w_faces[iw19].iu[0]
+        };
+        let im12 = if u_edges[iu25].iw[0] == iw6 {
+            u_edges[iu25].im[1]
+        } else {
+            u_edges[iu25].im[0]
+        };
+        let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, &u_edges, "iw9")
+            .expect("split outer edges for iw9");
+        let iw8 = if u_edges[iu16].iw[0] == iw9 {
+            u_edges[iu16].iw[1]
+        } else {
+            u_edges[iu16].iw[0]
+        };
+        let iw21 = if u_edges[iu26].iw[0] == iw9 {
+            u_edges[iu26].iw[1]
+        } else {
+            u_edges[iu26].iw[0]
+        };
+        let im13 = if u_edges[iu26].iw[0] == iw9 {
+            u_edges[iu26].im[0]
+        } else {
+            u_edges[iu26].im[1]
+        };
+
+        let pre_points = m_points.clone();
+        let expected_im19 =
+            weighted_point(pre_points[im24], 1.0, pre_points[im5], 1.0).unwrap();
+        let expected_im18 =
+            weighted_point(expected_im19, 1.0, pre_points[im5], 1.0).unwrap();
+        let expected_im17 =
+            weighted_point(pre_points[im17], 0.75, expected_im19, 0.25).unwrap();
+        let expected_im20 =
+            weighted_point(pre_points[im20], 0.75, expected_im19, 0.25).unwrap();
+        let expected_im12 =
+            weighted_point(pre_points[im12], 0.833, expected_im18, 0.167).unwrap();
+        let expected_im13 =
+            weighted_point(pre_points[im13], 0.833, expected_im18, 0.167).unwrap();
+        let parent_level = selected_parent_mrl.unwrap_or(1);
+        let expected_im17_mrlm_orig = m_metadata[im18].mrlm_orig;
+        let expected_im20_mrlm_orig = m_metadata[im19].mrlm_orig;
+        let expected_neighbor_ownership = [im22, im23, im24, im25, im26]
+            .map(|im| (im, m_metadata[im].mrlm, m_metadata[im].mrlm_orig));
+        let mut expected_iw8_iu = w_faces[iw8].iu;
+        if expected_iw8_iu[0] == iu16 {
+            expected_iw8_iu[2] = iu34;
+        } else if expected_iw8_iu[1] == iu16 {
+            expected_iw8_iu[0] = iu34;
+        } else {
+            expected_iw8_iu[1] = iu34;
+        }
+        let mut expected_iw19_iu = w_faces[iw19].iu;
+        if expected_iw19_iu[0] == iu25 {
+            expected_iw19_iu[2] = iu35;
+        } else if expected_iw19_iu[1] == iu25 {
+            expected_iw19_iu[0] = iu35;
+        } else {
+            expected_iw19_iu[1] = iu35;
+        }
+        let mut expected_iw20_iu = w_faces[iw20].iu;
+        if expected_iw20_iu[0] == iu43 {
+            expected_iw20_iu[1] = iu42;
+            expected_iw20_iu[2] = iu49;
+        } else if expected_iw20_iu[1] == iu43 {
+            expected_iw20_iu[2] = iu42;
+            expected_iw20_iu[0] = iu49;
+        } else {
+            expected_iw20_iu[0] = iu42;
+            expected_iw20_iu[1] = iu49;
+        }
+        let mut expected_iw27_iu = w_faces[iw27].iu;
+        if expected_iw27_iu[0] == iu48 {
+            expected_iw27_iu[1] = iu41;
+        } else if expected_iw27_iu[1] == iu48 {
+            expected_iw27_iu[2] = iu41;
+        } else {
+            expected_iw27_iu[0] = iu41;
+        }
+        let mut expected_iw29_iu = w_faces[iw29].iu;
+        if expected_iw29_iu[0] == iu50 {
+            expected_iw29_iu[1] = iu44;
+            expected_iw29_iu[2] = iu43;
+        } else if expected_iw29_iu[1] == iu50 {
+            expected_iw29_iu[2] = iu44;
+            expected_iw29_iu[0] = iu43;
+        } else {
+            expected_iw29_iu[0] = iu44;
+            expected_iw29_iu[1] = iu43;
+        }
+        let mut expected_iw31_iu = w_faces[iw31].iu;
+        if expected_iw31_iu[0] == iu51 {
+            expected_iw31_iu[2] = iu45;
+        } else if expected_iw31_iu[1] == iu51 {
+            expected_iw31_iu[0] = iu45;
+        } else {
+            expected_iw31_iu[1] = iu45;
+        }
+        let mut expected_iu34 = u_edges[iu34];
+        if expected_iu34.im[0] == im18 {
+            expected_iu34.iw = set_first_two(expected_iu34.iw, iw8, iw7);
+        } else {
+            expected_iu34.iw = set_first_two(expected_iu34.iw, iw7, iw8);
+        }
+        let mut expected_iu35 = u_edges[iu35];
+        if expected_iu35.im[0] == im19 {
+            expected_iu35.iw[1] = iw19;
+            expected_iu35.iw[0] = iw21;
+            expected_iu35.im[1] = im18;
+        } else {
+            expected_iu35.iw[0] = iw19;
+            expected_iu35.iw[1] = iw21;
+            expected_iu35.im[0] = im18;
+        }
+        let mut expected_iu41 = u_edges[iu41];
+        if expected_iu41.im[1] == im17 {
+            expected_iu41.iw[0] = iw27;
+        } else {
+            expected_iu41.iw[1] = iw27;
+        }
+        let mut expected_iu42 = u_edges[iu42];
+        if expected_iu42.im[0] == im17 {
+            expected_iu42.im[1] = im19;
+            expected_iu42.iw[0] = iw20;
+        } else {
+            expected_iu42.im[0] = im19;
+            expected_iu42.iw[1] = iw20;
+        }
+        let mut expected_iu43 = u_edges[iu43];
+        if expected_iu43.im[1] == im19 {
+            expected_iu43.im[0] = im24;
+        } else {
+            expected_iu43.im[1] = im24;
+        }
+        let mut expected_iu44 = u_edges[iu44];
+        if expected_iu44.im[0] == im19 {
+            expected_iu44.iw[0] = iw29;
+        } else {
+            expected_iu44.iw[1] = iw29;
+        }
+        let mut expected_iu45 = u_edges[iu45];
+        if expected_iu45.im[0] == im20 {
+            expected_iu45.iw[0] = iw31;
+        } else {
+            expected_iu45.iw[1] = iw31;
+        }
+        let mut expected_iu48 = u_edges[iu48];
+        if expected_iu48.iw[1] == iw27 {
+            expected_iu48.im[1] = im17;
+        } else {
+            expected_iu48.im[0] = im17;
+        }
+        let mut expected_iu49 = u_edges[iu49];
+        if expected_iu49.im[1] == im24 {
+            expected_iu49.im[0] = im17;
+            expected_iu49.iw[1] = iw20;
+        } else {
+            expected_iu49.im[1] = im17;
+            expected_iu49.iw[0] = iw20;
+        }
+        let mut expected_iu50 = u_edges[iu50];
+        if expected_iu50.im[0] == im24 {
+            expected_iu50.im[1] = im20;
+        } else {
+            expected_iu50.im[0] = im20;
+        }
+        let mut expected_iu51 = u_edges[iu51];
+        if expected_iu51.iw[1] == iw31 {
+            expected_iu51.im[0] = im20;
+        } else {
+            expected_iu51.im[1] = im20;
+        }
+        let mut expected_iu33 = u_edges[iu33];
+        if expected_iu33.iw[1] == iw19 {
+            expected_iu33.im[1] = im19;
+        } else {
+            expected_iu33.im[0] = im19;
+        }
+
+        let radius = active_mesh_radius(&mesh).expect("active mesh radius");
+        mesh.perim_fill3_method_c(
+            &perimeter[0..3],
+            parent_level,
+            &iwnew,
+            &iunew,
+            &imnew,
+            &nest_wd,
+            &mut nest_ud,
+            &mut u_edges,
+            &mut w_faces,
+            &mut m_points,
+            &mut m_metadata,
+            radius,
+            2,
+        )
+        .expect("perim_fill3 first transition triple");
+
+        let assert_point = |label: &str, actual: CartesianPoint, expected: CartesianPoint| {
+            let delta = magnitude(CartesianPoint::new(
+                actual.x - expected.x,
+                actual.y - expected.y,
+                actual.z - expected.z,
+            ));
+            assert!(
+                delta < 1.0e-9,
+                "{label} should match Fortran perim_fill3 weighted coordinate formula; delta={delta}"
+            );
+        };
+        assert_point("im19", m_points[im19], expected_im19);
+        assert_point("im18", m_points[im18], expected_im18);
+        assert_point("im17", m_points[im17], expected_im17);
+        assert_point("im20", m_points[im20], expected_im20);
+        assert_point("im12", m_points[im12], expected_im12);
+        assert_point("im13", m_points[im13], expected_im13);
+        assert_eq!(m_metadata[im17].mrlm_orig, expected_im17_mrlm_orig);
+        assert_eq!(m_metadata[im20].mrlm_orig, expected_im20_mrlm_orig);
+        assert_eq!(m_metadata[im18].mrlm_orig, parent_level + 1);
+        assert_eq!(m_metadata[im19].mrlm_orig, parent_level + 1);
+        for (im, expected_mrlm, expected_mrlm_orig) in expected_neighbor_ownership {
+            assert_eq!(m_metadata[im].ngr, 2);
+            assert_eq!(
+                m_metadata[im].mrlm, expected_mrlm,
+                "Fortran perim_fill3 sets ngr for transition neighbor M {im} without changing mrlm ownership"
+            );
+            assert_eq!(
+                m_metadata[im].mrlm_orig, expected_mrlm_orig,
+                "Fortran perim_fill3 sets ngr for transition neighbor M {im} without changing mrlm_orig ownership"
+            );
+        }
+        for iw in [iw20, iw26, iw27, iw28, iw29, iw30, iw31, iw32] {
+            assert_eq!(w_faces[iw].ngr, 2);
+        }
+        let has_edge = |iw: usize, iu: usize| w_faces[iw].iu.iter().take(3).any(|&edge| edge == iu);
+        assert!(has_edge(iw8, iu34));
+        assert!(has_edge(iw19, iu35));
+        assert!(has_edge(iw20, iu42) && has_edge(iw20, iu49));
+        assert!(has_edge(iw27, iu41));
+        assert!(has_edge(iw29, iu44) && has_edge(iw29, iunew[ju2]));
+        assert!(has_edge(iw31, iu45));
+        assert_eq!(w_faces[iw8].iu, expected_iw8_iu);
+        assert_eq!(w_faces[iw19].iu, expected_iw19_iu);
+        assert_eq!(w_faces[iw20].iu, expected_iw20_iu);
+        assert_eq!(w_faces[iw27].iu, expected_iw27_iu);
+        assert_eq!(w_faces[iw29].iu, expected_iw29_iu);
+        assert_eq!(w_faces[iw31].iu, expected_iw31_iu);
+        for (iu, expected) in [
+            (iu33, expected_iu33),
+            (iu34, expected_iu34),
+            (iu35, expected_iu35),
+            (iu41, expected_iu41),
+            (iu42, expected_iu42),
+            (iu43, expected_iu43),
+            (iu44, expected_iu44),
+            (iu45, expected_iu45),
+            (iu48, expected_iu48),
+            (iu49, expected_iu49),
+            (iu50, expected_iu50),
+            (iu51, expected_iu51),
+        ] {
+            assert_eq!(
+                u_edges[iu].im, expected.im,
+                "Fortran perim_fill3 should preserve exact endpoint slot order for U edge {iu}"
+            );
+            assert_eq!(
+                [u_edges[iu].iw[0], u_edges[iu].iw[1]],
+                [expected.iw[0], expected.iw[1]],
+                "Fortran perim_fill3 should preserve exact adjacent-W slot order for U edge {iu}"
+            );
+        }
+        let has_m_endpoint = |iu: usize, im: usize| u_edges[iu].im.iter().any(|&endpoint| endpoint == im);
+        assert!(has_m_endpoint(iu15, im18));
+        assert!(has_m_endpoint(iu16, im18));
+        assert!(has_m_endpoint(iu25, im18));
+        assert!(has_m_endpoint(iu26, im18));
+        assert!(has_m_endpoint(iu33, im19));
+        assert!(has_m_endpoint(iu35, im18) && has_m_endpoint(iu35, im19));
+        assert!(has_m_endpoint(iu42, im17) && has_m_endpoint(iu42, im19));
+        assert!(has_m_endpoint(iunew[ju2], im19) && has_m_endpoint(iunew[ju2], im24));
+        assert!(has_m_endpoint(iu48, im17));
+        assert!(has_m_endpoint(iu49, im17) && has_m_endpoint(iu49, im24));
+        assert!(has_m_endpoint(iu50, im24) && has_m_endpoint(iu50, im20));
+        assert!(has_m_endpoint(iu51, im20));
+        let has_w_face = |iu: usize, iw: usize| u_edges[iu].iw.iter().take(2).any(|&face| face == iw);
+        assert!(has_w_face(iu41, iw27));
+        assert!(has_w_face(iu42, iw20));
+        assert!(has_w_face(iu44, iw29));
+        assert!(has_w_face(iu45, iw31));
+        assert!(has_w_face(iu49, iw20));
+    }
+
+    #[test]
+    fn olam_method_c_projects_points_to_radius_before_neighbor_rebuild() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("selected Method-C faces");
+        let refined = mesh
+            .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true)
+            .expect("Method-C pass");
+        let radius = active_mesh_radius(&refined).expect("active mesh radius");
+        let off_radius_points = (2..=refined.nmd)
+            .filter(|&im| refined.m_metadata[im].mrlm_orig == 2)
+            .filter(|&im| (magnitude(refined.m_points[im]) - radius).abs() > 1.0e-6)
+            .collect::<Vec<_>>();
+
+        assert!(
+            off_radius_points.is_empty(),
+            "Fortran spawn_nest projects all Method-C M coordinates back to Earth radius before tri_neighbors/perim_mrow/spring; off-radius M ids: {off_radius_points:?}"
+        );
+    }
+
+    #[test]
+    fn olam_selected_faces_use_current_parent_mrl_inside_existing_nest() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let first_region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(-120.0, 0.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+        let first = mesh
+            .spawn_nest(&[first_region], 1)
+            .expect("first Method-C nest");
+        let nested_point = (2..=first.nmd)
+            .find(|&im| {
+                let neighbors = first.m_neighbors[im];
+                first.m_metadata[im].mrlm == 2
+                    && neighbors.npoly == 6
+                    && neighbors
+                        .iu
+                        .iter()
+                        .take(neighbors.npoly)
+                        .all(|&iu| first.u_edges[iu].mrlu == 2)
+            })
+            .expect("first nest should create an interior level-2 M point");
+        let region = OlamRefinementRegion::Circle {
+            center: xyz_to_lonlat_degrees(first.m_points[nested_point]),
+            radius_meters: 1.0,
+            level: 1,
+        };
+
+        let selected = first
+            .selected_region_faces(&region, 1, false)
+            .expect("selected inner Method-C faces");
+        let selected_levels = selected
+            .iter()
+            .enumerate()
+            .skip(2)
+            .filter_map(|(iw, selected)| selected.then_some(first.w_faces[iw].mrlw))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            selected_levels,
+            BTreeSet::from([2]),
+            "Fortran derives mrlo from the current starting M point, not from the pass counter"
+        );
+    }
+
+    #[test]
+    fn olam_selected_faces_parent_halo_keeps_current_parent_mrl() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let first_region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(-120.0, 0.0),
+            radius_meters: 500_000.0,
+            level: 1,
+        };
+        let first = mesh
+            .spawn_nest(&[first_region], 1)
+            .expect("first Method-C nest");
+        let nested_point = (2..=first.nmd)
+            .find(|&im| {
+                let neighbors = first.m_neighbors[im];
+                first.m_metadata[im].mrlm == 2
+                    && neighbors.npoly == 6
+                    && neighbors
+                        .iu
+                        .iter()
+                        .take(neighbors.npoly)
+                        .all(|&iu| first.u_edges[iu].mrlu == 2)
+            })
+            .expect("first nest should create an interior level-2 M point");
+        let region = OlamRefinementRegion::Circle {
+            center: xyz_to_lonlat_degrees(first.m_points[nested_point]),
+            radius_meters: 1.0,
+            level: 2,
+        };
+
+        let selected = first
+            .selected_region_faces(&region, 1, false)
+            .expect("selected inner Method-C faces with parent halo");
+        let selected_levels = selected
+            .iter()
+            .enumerate()
+            .skip(2)
+            .filter_map(|(iw, selected)| selected.then_some(first.w_faces[iw].mrlw))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            selected_levels,
+            BTreeSet::from([2]),
+            "Fortran Method-C expands one current parent MRL at a time; selected levels were {selected_levels:?}"
+        );
+    }
+
+    #[test]
+    fn method_c_refines_locally_and_caps_old_m_valence() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let region = OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 2_500_000.0,
+            level: 1,
+        };
+
+        let refined = mesh.spawn_nest(&[region], 1).expect("Method-C nest");
+        let global_doubled = mesh.expand_global2().expect("global factor-2 expansion");
+
+        assert!(refined.nmd > mesh.nmd);
+        assert!(refined.nud > mesh.nud);
+        assert!(refined.nwd > mesh.nwd);
+        assert!(
+            refined.nwd < global_doubled.nwd,
+            "specified-region Method-C spawn should remain local, not refine the whole globe"
+        );
+        refined
+            .validate_topology()
+            .expect("valid Method-C refinement topology");
+        for im in 2..=mesh.nmd {
+            assert!(
+                refined.m_neighbors[im].npoly <= 7,
+                "old M point {im} exceeds OLAM-supported valence after Method-C closure"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_nest_rejects_all_active_selection_instead_of_global_fallback() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let mut selected = vec![false; mesh.nwd + 1];
+        for item in selected.iter_mut().take(mesh.nwd + 1).skip(2) {
+            *item = true;
+        }
+
+        let err = mesh
+            .spawn_nest_pass_with_max_mrows(
+                &selected,
+                2,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                true,
+            )
+            .expect_err("Method-C should not replace all-active selection with global expansion");
+
+        assert!(
+            err.to_string().contains("no nwdiv == 2 convex start point"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn olam_region_start_prefers_contained_global_pentagon() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("mesh radius");
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .expect("Method-C test neighbors");
+        let pentagon_id = mesh.impent[0];
+        let pentagon_lonlat = xyz_to_lonlat_degrees(mesh.m_points[pentagon_id]);
+
+        let mut chosen_region = None;
+        for lon_offset in (-40..=40).step_by(4) {
+            for lat_offset in (-20..=20).step_by(4) {
+                if lon_offset == 0 && lat_offset == 0 {
+                    continue;
+                }
+                let region = OlamRefinementRegion::Circle {
+                    center: LonLatDegrees::new(
+                        pentagon_lonlat.lon_degrees + lon_offset as f64,
+                        pentagon_lonlat.lat_degrees + lat_offset as f64,
+                    ),
+                    radius_meters: 3_000_000.0,
+                    level: 1,
+                };
+                if region.contains_cartesian(mesh.m_points[pentagon_id], radius)
+                    && mesh
+                        .closest_m_point_to_region_anchor(&region, false)
+                        .expect("closest anchor")
+                        != pentagon_id
+                {
+                    chosen_region = Some(region);
+                    break;
+                }
+            }
+            if chosen_region.is_some() {
+                break;
+            }
+        }
+        let region = chosen_region.expect("test region containing pentagon but centered elsewhere");
+
+        let start = mesh
+            .olam_refinement_start_point_with_neighbors(
+                &region,
+                radius,
+                &method_c_m_neighbors,
+                false,
+            )
+            .expect("OLAM start point");
+
+        assert_eq!(
+            start, pentagon_id,
+            "OLAM spawn_nest should use a contained global impent as IMBEG before falling back to the nearest center point"
+        );
+    }
+
+    #[test]
+    fn olam_region_start_marches_from_nearby_global_pentagon() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("mesh radius");
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .expect("Method-C test neighbors");
+
+        let mut selected_case = None;
+        'search: for &pentagon_id in &mesh.impent {
+            let pentagon_lonlat = xyz_to_lonlat_degrees(mesh.m_points[pentagon_id]);
+            for lon_offset in (-36..=36).step_by(3) {
+                for lat_offset in (-24..=24).step_by(3) {
+                    if lon_offset == 0 && lat_offset == 0 {
+                        continue;
+                    }
+                    for radius_meters in [500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
+                        let region = OlamRefinementRegion::Circle {
+                            center: LonLatDegrees::new(
+                                pentagon_lonlat.lon_degrees + lon_offset as f64,
+                                pentagon_lonlat.lat_degrees + lat_offset as f64,
+                            ),
+                            radius_meters,
+                            level: 1,
+                        };
+                        if region.contains_cartesian(mesh.m_points[pentagon_id], radius)
+                            || !region.close_to_cartesian(mesh.m_points[pentagon_id], radius)
+                        {
+                            continue;
+                        }
+                        let Some(expected_start) =
+                            olam_impen_march_start_for_test(&mesh, pentagon_id, &region, radius)
+                        else {
+                            continue;
+                        };
+                        let closest = mesh
+                            .closest_m_point_to_region_anchor(&region, false)
+                            .expect("closest anchor");
+                        if expected_start != closest {
+                            selected_case = Some((region, expected_start));
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let (region, expected_start) =
+            selected_case.expect("near-pentagon circle requiring OLAM impen march");
+
+        let start = mesh
+            .olam_refinement_start_point_with_neighbors(
+                &region,
+                radius,
+                &method_c_m_neighbors,
+                false,
+            )
+            .expect("OLAM start point");
+
+        assert_eq!(
+            start, expected_start,
+            "OLAM spawn_nest should march from a nearby impent toward the nearest inside M point before falling back to the geometric center"
+        );
+    }
+
+    #[test]
+    fn olam_region_start_skips_nearby_global_pentagon_with_different_mrlm() {
+        let mut mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("mesh radius");
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .expect("Method-C test neighbors");
+
+        let mut selected_case = None;
+        'search: for &pentagon_id in &mesh.impent {
+            let pentagon_lonlat = xyz_to_lonlat_degrees(mesh.m_points[pentagon_id]);
+            for lon_offset in (-36..=36).step_by(3) {
+                for lat_offset in (-24..=24).step_by(3) {
+                    if lon_offset == 0 && lat_offset == 0 {
+                        continue;
+                    }
+                    for radius_meters in [500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
+                        let region = OlamRefinementRegion::Circle {
+                            center: LonLatDegrees::new(
+                                pentagon_lonlat.lon_degrees + lon_offset as f64,
+                                pentagon_lonlat.lat_degrees + lat_offset as f64,
+                            ),
+                            radius_meters,
+                            level: 1,
+                        };
+                        if region.contains_cartesian(mesh.m_points[pentagon_id], radius)
+                            || !region.close_to_cartesian(mesh.m_points[pentagon_id], radius)
+                        {
+                            continue;
+                        }
+                        let closest = mesh
+                            .closest_m_point_to_region_anchor(&region, false)
+                            .expect("closest anchor");
+                        if closest == pentagon_id {
+                            continue;
+                        }
+                        if olam_impen_march_start_for_test(&mesh, pentagon_id, &region, radius)
+                            .is_some()
+                        {
+                            selected_case = Some((region, pentagon_id, closest));
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let (region, pentagon_id, closest) =
+            selected_case.expect("near-pentagon case that would march with matching mrlm");
+        mesh.m_metadata[pentagon_id].mrlm = mesh.m_metadata[closest].mrlm + 1;
+
+        let start = mesh
+            .olam_refinement_start_point_with_neighbors(
+                &region,
+                radius,
+                &method_c_m_neighbors,
+                false,
+            )
+            .expect("OLAM start point");
+
+        assert_eq!(
+            start, closest,
+            "Fortran only uses the nearby impent march when impent mrlm matches imcent mrlm"
+        );
+    }
+
+    #[test]
+    fn olam_near_pentagon_march_uses_marched_start_mrlm_for_parent_ownership() {
+        let mut mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("mesh radius");
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .expect("Method-C test neighbors");
+
+        let mut selected_case = None;
+        'search: for &pentagon_id in &mesh.impent {
+            let pentagon_lonlat = xyz_to_lonlat_degrees(mesh.m_points[pentagon_id]);
+            for lon_offset in (-36..=36).step_by(3) {
+                for lat_offset in (-24..=24).step_by(3) {
+                    if lon_offset == 0 && lat_offset == 0 {
+                        continue;
+                    }
+                    for radius_meters in [500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
+                        let region = OlamRefinementRegion::Circle {
+                            center: LonLatDegrees::new(
+                                pentagon_lonlat.lon_degrees + lon_offset as f64,
+                                pentagon_lonlat.lat_degrees + lat_offset as f64,
+                            ),
+                            radius_meters,
+                            level: 1,
+                        };
+                        if region.contains_cartesian(mesh.m_points[pentagon_id], radius)
+                            || !region.close_to_cartesian(mesh.m_points[pentagon_id], radius)
+                        {
+                            continue;
+                        }
+                        let Some(expected_start) =
+                            olam_impen_march_start_for_test(&mesh, pentagon_id, &region, radius)
+                        else {
+                            continue;
+                        };
+                        let closest = mesh
+                            .closest_m_point_to_region_anchor(&region, false)
+                            .expect("closest anchor");
+                        if expected_start != closest && expected_start != pentagon_id {
+                            selected_case = Some((region, pentagon_id, closest, expected_start));
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let (region, pentagon_id, closest, expected_start) =
+            selected_case.expect("near-pentagon march case with distinct impen/imcent/imbeg");
+        mesh.m_metadata[pentagon_id].mrlm = 3;
+        mesh.m_metadata[pentagon_id].mrlm_orig = 3;
+        mesh.m_metadata[closest].mrlm = 3;
+        mesh.m_metadata[closest].mrlm_orig = 3;
+        assert_eq!(
+            mesh.m_metadata[expected_start].mrlm, 1,
+            "test requires marched IMBEG to remain on the parent level"
+        );
+
+        let start = mesh
+            .olam_refinement_start_point_with_neighbors(
+                &region,
+                radius,
+                &method_c_m_neighbors,
+                false,
+            )
+            .expect("OLAM start point");
+        let selected = mesh
+            .selected_region_faces(&region, 1, false)
+            .expect("Method-C selection should use marched IMBEG mrlm as mrlo");
+
+        assert_eq!(start, expected_start);
+        assert!(
+            selected.iter().skip(2).any(|selected| *selected),
+            "Fortran sets mrlo from marched IMBEG, not from nearby impen or imcent"
+        );
+    }
+
+    #[test]
+    fn olam_near_pentagon_march_preserves_fortran_jdone_between_steps() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let radius = active_mesh_radius(&mesh).expect("mesh radius");
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .expect("Method-C test neighbors");
+        let mut checked = 0usize;
+
+        for &pentagon_id in &mesh.impent {
+            let pentagon_lonlat = xyz_to_lonlat_degrees(mesh.m_points[pentagon_id]);
+            for lon_offset in (-60..=60).step_by(3) {
+                for lat_offset in (-36..=36).step_by(3) {
+                    if lon_offset == 0 && lat_offset == 0 {
+                        continue;
+                    }
+                    for radius_meters in [250_000.0, 500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
+                        let region = OlamRefinementRegion::Circle {
+                            center: LonLatDegrees::new(
+                                pentagon_lonlat.lon_degrees + lon_offset as f64,
+                                pentagon_lonlat.lat_degrees + lat_offset as f64,
+                            ),
+                            radius_meters,
+                            level: 1,
+                        };
+                        if region.contains_cartesian(mesh.m_points[pentagon_id], radius)
+                            || !region.close_to_cartesian(mesh.m_points[pentagon_id], radius)
+                        {
+                            continue;
+                        }
+                        let expected =
+                            olam_impen_march_start_fortran_jdone_for_test(
+                                &mesh,
+                                pentagon_id,
+                                &region,
+                                radius,
+                            );
+                        let actual = mesh
+                            .olam_march_from_nearby_pentagon_to_region_with_neighbors(
+                                pentagon_id,
+                                &region,
+                                radius,
+                                &method_c_m_neighbors,
+                                false,
+                            )
+                            .expect("OLAM near-pentagon march");
+                        assert_eq!(
+                            actual, expected,
+                            "Fortran spawn_nest keeps jdone marks between near-pentagon march steps while clearing only the current row"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "test should exercise at least one near-pentagon march case"
+        );
+    }
+
+    #[test]
+    fn olam_thirdm_walks_straight_opposite_edges_and_marks_reciprocal_done_like_fortran() {
+        let mesh = OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100)
+            .expect("base mesh should build");
+        let method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M-neighbor table should derive");
+        let start = (2..=mesh.nmd)
+            .find(|&im| method_c_m_neighbors[im].npoly == 6)
+            .expect("base mesh should contain a 6-edge M point");
+
+        let iu = method_c_m_neighbors[start].iu[0];
+        let imm = mesh
+            .other_m_endpoint(iu, start)
+            .expect("first U edge should have opposite M endpoint");
+        let iuu = mesh
+            .opposite_ring_u_edge_with_neighbors(imm, iu, &method_c_m_neighbors)
+            .expect("Fortran thirdm should choose opposite edge at first M");
+        let immm = mesh
+            .other_m_endpoint(iuu, imm)
+            .expect("second U edge should have opposite M endpoint");
+        let iuuu = mesh
+            .opposite_ring_u_edge_with_neighbors(immm, iuu, &method_c_m_neighbors)
+            .expect("Fortran thirdm should choose opposite edge at second M");
+        let expected_immmm = mesh
+            .other_m_endpoint(iuuu, immm)
+            .expect("third U edge should have opposite M endpoint");
+
+        let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+        let thirdm_neighbors = mesh
+            .olam_thirdm_neighbors_fortran_with_neighbors(
+                start,
+                &mut jdone,
+                &method_c_m_neighbors,
+            )
+            .expect("thirdm should traverse ordinary 6-edge topology");
+
+        assert_eq!(thirdm_neighbors.first().copied(), Some(expected_immmm));
+        assert!(jdone[start][0]);
+        let reciprocal_edge = method_c_m_neighbors[expected_immmm]
+            .iu
+            .iter()
+            .take(method_c_m_neighbors[expected_immmm].npoly.min(6))
+            .position(|&far_iu| far_iu == iuuu)
+            .expect("far M point should contain the incoming third U edge");
+        assert!(jdone[expected_immmm][reciprocal_edge]);
+    }
+
+    #[test]
+    fn olam_thirdm_rejects_broken_topology_instead_of_skipping_path() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let mut method_c_m_neighbors = mesh
+            .derive_icosahedron_m_neighbors_fortran()
+            .expect("Method-C M neighbors");
+        let start = (2..=mesh.nmd)
+            .find(|&im| method_c_m_neighbors[im].npoly >= 2)
+            .expect("M point with multiple U edges");
+        let non_incident_iu = (2..=mesh.nud)
+            .find(|&iu| !mesh.u_edges[iu].im.contains(&start))
+            .expect("U edge not incident on selected M point");
+        method_c_m_neighbors[start].iu[0] = non_incident_iu;
+        let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+
+        let err = mesh
+            .olam_thirdm_neighbors_fortran_with_neighbors(
+                start,
+                &mut jdone,
+                &method_c_m_neighbors,
+            )
+            .expect_err("Fortran thirdm should not silently skip an invalid straight path");
+        assert!(
+            err.to_string().contains("not incident")
+                || err.to_string().contains("not in M point"),
+            "unexpected thirdm topology error: {err}"
+        );
+    }
+
+    #[test]
+    fn olam_thirdm_skips_intermediate_zero_npoly_path() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let mut method_c_m_neighbors =
+            mesh.derive_icosahedron_m_neighbors_fortran().expect("Method-C M neighbors");
+        let start = (2..=mesh.nmd)
+            .find(|&im| {
+                let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+                if method_c_m_neighbors[im].npoly < 2 {
+                    return false;
+                }
+                mesh.olam_thirdm_neighbors_fortran_with_neighbors(im, &mut jdone, &method_c_m_neighbors)
+                    .map(|neighbors| !neighbors.is_empty())
+                    .unwrap_or(false)
+            })
+            .expect("M point with at least one computed third-m path");
+        let iu = method_c_m_neighbors[start].iu[0];
+        let imm = mesh.other_m_endpoint(iu, start).expect("neighbor on valid edge");
+        method_c_m_neighbors[imm].npoly = 0;
+        let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+        let neighbors = mesh
+            .olam_thirdm_neighbors_fortran_with_neighbors(start, &mut jdone, &method_c_m_neighbors)
+            .expect("thirdm should ignore malformed intermediate npoly entries");
+        assert!(
+            !neighbors.is_empty(),
+            "zero-npoly intermediate should still allow at least one straight third-m path"
+        );
+    }
+
+    fn olam_impen_march_start_fortran_jdone_for_test(
+        mesh: &OlamDelaunayMesh,
+        pentagon_id: usize,
+        region: &OlamRefinementRegion,
+        radius: f64,
+    ) -> Option<usize> {
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .ok()?;
+        let nearest_inside = mesh
+            .nearest_inside_m_point_to(pentagon_id, region, radius, false)
+            .ok()??;
+        let mut current = pentagon_id;
+        let mut visited = BTreeSet::new();
+        let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+        for _ in 0..mesh.nmd {
+            if !visited.insert(current) {
+                return None;
+            }
+            jdone[current] = [false; 6];
+            let neighbors = mesh
+                .olam_thirdm_neighbors_fortran_with_neighbors(
+                    current,
+                    &mut jdone,
+                    &method_c_m_neighbors,
+                )
+                .ok()?;
+            let mut best_neighbor = None;
+            let mut best_distance = f64::INFINITY;
+            for neighbor in neighbors {
+                if region.contains_cartesian(mesh.m_points[neighbor], radius) {
+                    return Some(neighbor);
+                }
+                let distance =
+                    cartesian_distance(mesh.m_points[neighbor], mesh.m_points[nearest_inside]);
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_neighbor = Some(neighbor);
+                }
+            }
+            current = best_neighbor?;
+        }
+        None
+    }
+
+    fn olam_impen_march_start_for_test(
+        mesh: &OlamDelaunayMesh,
+        pentagon_id: usize,
+        region: &OlamRefinementRegion,
+        radius: f64,
+    ) -> Option<usize> {
+        let method_c_m_neighbors =
+            derive_icosahedron_m_neighbors_fortran_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
+                .ok()?;
+        let mut nearest_inside = None;
+        let mut nearest_distance = f64::INFINITY;
+        for im in 2..=mesh.nmd {
+            if !region.contains_cartesian(mesh.m_points[im], radius) {
+                continue;
+            }
+            let distance = cartesian_distance(mesh.m_points[im], mesh.m_points[pentagon_id]);
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest_inside = Some(im);
+            }
+        }
+        let nearest_inside = nearest_inside?;
+        let mut current = pentagon_id;
+        let mut visited = BTreeSet::new();
+        let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+        for _ in 0..mesh.nmd {
+            if !visited.insert(current) {
+                return None;
+            }
+            jdone[current] = [false; 6];
+            let neighbors = mesh
+                .olam_thirdm_neighbors_fortran_with_neighbors(current, &mut jdone, &method_c_m_neighbors)
+                .ok()?;
+            let mut best_neighbor = None;
+            let mut best_distance = f64::INFINITY;
+            for neighbor in neighbors {
+                if region.contains_cartesian(mesh.m_points[neighbor], radius) {
+                    return Some(neighbor);
+                }
+                let distance =
+                    cartesian_distance(mesh.m_points[neighbor], mesh.m_points[nearest_inside]);
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_neighbor = Some(neighbor);
+                }
+            }
+            current = best_neighbor?;
+        }
+        None
+    }
+
+    fn cartesian_distance(a: CartesianPoint, b: CartesianPoint) -> f64 {
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let dz = a.z - b.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
 }
 
 /// Precomputed sine/cosine basis for an icosahedron polar stereographic pole.
@@ -1741,6 +12632,79 @@ pub fn spherical_circumcenter_from_barycenter(
     Some(circumcenter)
 }
 
+fn angular_distance_radians(a: CartesianPoint, b: CartesianPoint) -> Option<f64> {
+    let mag = magnitude(a) * magnitude(b);
+    if mag == 0.0 {
+        return None;
+    }
+    Some((dot(a, b) / mag).clamp(-1.0, 1.0).acos())
+}
+
+fn circumcenter_is_local_enough(
+    barycenter: CartesianPoint,
+    circumcenter: CartesianPoint,
+    vertices: [CartesianPoint; 3],
+) -> bool {
+    let Some(center_distance) = angular_distance_radians(barycenter, circumcenter) else {
+        return false;
+    };
+    let max_vertex_distance = vertices
+        .iter()
+        .filter_map(|vertex| angular_distance_radians(barycenter, *vertex))
+        .fold(0.0_f64, f64::max);
+
+    if max_vertex_distance == 0.0 {
+        return false;
+    }
+
+    (center_distance <= deg_to_rad(5.0) || center_distance <= 2.5 * max_vertex_distance)
+        && circumcenter_fits_local_lonlat_envelope(barycenter, circumcenter, vertices)
+}
+
+fn unwrap_lon_around(lon_degrees: f64, reference_degrees: f64) -> f64 {
+    if lon_degrees - reference_degrees > 180.0 {
+        lon_degrees - 360.0
+    } else if lon_degrees - reference_degrees < -180.0 {
+        lon_degrees + 360.0
+    } else {
+        lon_degrees
+    }
+}
+
+fn circumcenter_fits_local_lonlat_envelope(
+    barycenter: CartesianPoint,
+    circumcenter: CartesianPoint,
+    vertices: [CartesianPoint; 3],
+) -> bool {
+    let barycenter_lonlat = xyz_to_lonlat_degrees(barycenter);
+    let circumcenter_lonlat = xyz_to_lonlat_degrees(circumcenter);
+    let circumcenter_lon = unwrap_lon_around(
+        circumcenter_lonlat.lon_degrees,
+        barycenter_lonlat.lon_degrees,
+    );
+    let mut min_lon = f64::MAX;
+    let mut max_lon = f64::MIN;
+    let mut min_lat = f64::MAX;
+    let mut max_lat = f64::MIN;
+
+    for vertex in vertices {
+        let vertex_lonlat = xyz_to_lonlat_degrees(vertex);
+        let vertex_lon =
+            unwrap_lon_around(vertex_lonlat.lon_degrees, barycenter_lonlat.lon_degrees);
+        min_lon = min_lon.min(vertex_lon);
+        max_lon = max_lon.max(vertex_lon);
+        min_lat = min_lat.min(vertex_lonlat.lat_degrees);
+        max_lat = max_lat.max(vertex_lonlat.lat_degrees);
+    }
+
+    let lon_margin = ((max_lon - min_lon) * 1.5).max(1.0);
+    let lat_margin = ((max_lat - min_lat) * 1.5).max(1.0);
+    circumcenter_lon >= min_lon - lon_margin
+        && circumcenter_lon <= max_lon + lon_margin
+        && circumcenter_lonlat.lat_degrees >= min_lat - lat_margin
+        && circumcenter_lonlat.lat_degrees <= max_lat + lat_margin
+}
+
 /// Batch port of `MOD_grid_preprocess:circumcenter_spherical_calculation`.
 ///
 /// Returns a copy of the incoming M-point Cartesian centers with triangle ids
@@ -1763,7 +12727,8 @@ pub fn circumcenter_spherical_mesh_fortran_indexed(
             *vertex_points.get(vertex_ids[1])?,
             *vertex_points.get(vertex_ids[2])?,
         ];
-        centers[triangle_id] =
+        let barycenter = centers[triangle_id];
+        let circumcenter =
             match spherical_circumcenter_from_barycenter(centers[triangle_id], vertices) {
                 Some(center) => center,
                 None => {
@@ -1771,6 +12736,14 @@ pub fn circumcenter_spherical_mesh_fortran_indexed(
                     return None;
                 }
             };
+        centers[triangle_id] = if circumcenter_is_local_enough(barycenter, circumcenter, vertices) {
+            circumcenter
+        } else {
+            spring_global_debug(&format!(
+                "circumcenter for triangle {triangle_id} is outside local triangle; using barycenter"
+            ));
+            barycenter
+        };
     }
 
     Some(centers)
@@ -2495,7 +13468,15 @@ pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
     n_edges_on_cell: &[usize],
     edges_on_vertex: &[[usize; 3]],
 ) -> Option<Vec<Vec<usize>>> {
+    let debug = std::env::var_os("EARTHMESH_MPAS_DEBUG").is_some();
     if n_edges_on_cell.len() < vertices_on_cell.len() {
+        if debug {
+            eprintln!(
+                "EARTHMESH_MPAS_DEBUG: n_edges_on_cell len {} < vertices_on_cell len {}",
+                n_edges_on_cell.len(),
+                vertices_on_cell.len()
+            );
+        }
         return None;
     }
     let mut ordered = vertices_on_cell.to_vec();
@@ -2505,6 +13486,12 @@ pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
             continue;
         }
         if vertices_on_cell[cell_id].len() < ne {
+            if debug {
+                eprintln!(
+                    "EARTHMESH_MPAS_DEBUG: cell {cell_id} vertices len {} < n_edges {ne}",
+                    vertices_on_cell[cell_id].len()
+                );
+            }
             return None;
         }
         let active = vertices_on_cell[cell_id][0..ne]
@@ -2513,6 +13500,12 @@ pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
             .filter(|vertex| *vertex > 0)
             .collect::<Vec<_>>();
         if active.len() != ne {
+            if debug {
+                eprintln!(
+                    "EARTHMESH_MPAS_DEBUG: cell {cell_id} has inactive vertices active={active:?} ne={ne} row={:?}",
+                    vertices_on_cell[cell_id]
+                );
+            }
             return None;
         }
 
@@ -2526,6 +13519,13 @@ pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
             })
             .collect::<Vec<_>>();
         if start_neighbors.len() != 2 {
+            if debug {
+                eprintln!(
+                    "EARTHMESH_MPAS_DEBUG: cell {cell_id} start {start} neighbor count {} active={active:?} row={:?}",
+                    start_neighbors.len(),
+                    vertices_on_cell[cell_id]
+                );
+            }
             return None;
         }
         start_neighbors.sort_unstable();
@@ -2545,11 +13545,24 @@ pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
                 })
                 .collect::<Vec<_>>();
             if next_candidates.len() != 1 {
+                if debug {
+                    eprintln!(
+                        "EARTHMESH_MPAS_DEBUG: cell {cell_id} current {current} next candidate count {} active={active:?} cycle={cycle:?} row={:?}",
+                        next_candidates.len(),
+                        vertices_on_cell[cell_id]
+                    );
+                }
                 return None;
             }
             cycle.push(next_candidates.remove(0));
         }
         if !vertices_share_edge(*cycle.last()?, start, edges_on_vertex)? {
+            if debug {
+                eprintln!(
+                    "EARTHMESH_MPAS_DEBUG: cell {cell_id} cycle does not close start={start} cycle={cycle:?} row={:?}",
+                    vertices_on_cell[cell_id]
+                );
+            }
             return None;
         }
         ordered[cell_id][0..ne].copy_from_slice(&cycle);
@@ -4167,12 +15180,63 @@ pub fn springjustment_global_core_fortran_indexed(
             return None;
         }
     };
+    let triangle_points_for_order = input
+        .triangle_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let cell_points_for_order = input
+        .cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let geometric_order = order_vertices_on_cell_fortran_indexed(
+        &cell_points_for_order,
+        &triangle_points_for_order,
+        input.triangles_on_cell,
+        input.n_edges_on_cell,
+    )
+    .and_then(|ordered| {
+        standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)
+    });
+    let topological_order = || {
+        order_vertices_on_cell_by_shared_edges_fortran_indexed(
+            input.triangles_on_cell,
+            input.n_edges_on_cell,
+            &edge_output.edges_on_vertex,
+        )
+        .and_then(|ordered| {
+            standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)
+        })
+    };
     let cell_connectivity = match connect_on_cell_fortran_indexed(
         input.n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
         input.triangles_on_cell,
-    ) {
+    )
+    .or_else(|| {
+        geometric_order.as_ref().and_then(|ordered| {
+            connect_on_cell_fortran_indexed(
+                input.n_edges_on_cell,
+                &edge_output.cells_on_edge,
+                &edge_output.edges_on_vertex,
+                ordered,
+            )
+        })
+    })
+    .or_else(|| {
+        topological_order().and_then(|ordered| {
+            connect_on_cell_fortran_indexed(
+                input.n_edges_on_cell,
+                &edge_output.cells_on_edge,
+                &edge_output.edges_on_vertex,
+                &ordered,
+            )
+        })
+    }) {
         Some(value) => value,
         None => {
             spring_global_debug("connect_on_cell failed");
@@ -4207,6 +15271,9 @@ pub fn springjustment_global_core_fortran_indexed(
                 return None;
             }
         };
+    let dists_on_edge = distance_output.dists_on_edge;
+    let cellwidth = distance_output.cellwidth;
+
     let cell_points = input
         .cell_lonlat
         .iter()
@@ -4220,13 +15287,13 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let spring = match spring_dynamics_global_fortran_indexed(
+    let spring_output = match spring_dynamics_global_fortran_indexed(
         &cell_points,
         input.n_edges_on_cell,
         &cell_connectivity.edges_on_cell,
         &edge_output.cells_on_edge,
         &edges_on_edge_tri,
-        &distance_output.dists_on_edge,
+        &dists_on_edge,
         input.niter_refine,
         input.relax,
         input.radius,
@@ -4238,13 +15305,12 @@ pub fn springjustment_global_core_fortran_indexed(
             return None;
         }
     };
-    let updated_cell_lonlat = spring
+    let updated_cell_lonlat = spring_output
         .updated_cell_points
         .iter()
         .copied()
         .map(xyz_to_lonlat_degrees)
         .collect::<Vec<_>>();
-
     let centroid_lonlat = match centroid_spherical_mesh_fortran_indexed(
         &updated_cell_lonlat,
         input.cells_on_triangle,
@@ -4269,7 +15335,7 @@ pub fn springjustment_global_core_fortran_indexed(
         .collect::<Vec<_>>();
     let circumcenters = match circumcenter_spherical_mesh_fortran_indexed(
         &centroid_cartesian,
-        &spring.updated_cell_points,
+        &spring_output.updated_cell_points,
         input.cells_on_triangle,
     ) {
         Some(value) => value,
@@ -4333,26 +15399,15 @@ pub fn springjustment_global_core_fortran_indexed(
         edges_on_cell: cell_connectivity.edges_on_cell,
         cells_on_cell: cell_connectivity.cells_on_cell,
         edges_on_edge_tri,
-        dists_on_edge: distance_output.dists_on_edge,
-        cellwidth: distance_output.cellwidth,
+        dists_on_edge,
+        cellwidth,
         edge_lonlat: edge_output.edge_points,
-        spring,
+        spring: spring_output,
     })
-}
-
-fn spring_global_debug(message: &str) {
-    if std::env::var_os("EARTHMESH_SPRING_DEBUG").is_some() {
-        eprintln!("EARTHMESH_SPRING_DEBUG: {message}");
-    }
 }
 
 /// Pure Rust adapter for the in-memory calculation sequence inside
 /// `MOD_grid_preprocess:Springjustment_regional_step`.
-///
-/// This excludes `set_dbxMove_regional_step` and file side effects by accepting
-/// the regional move mask explicitly. It wires the migrated topology,
-/// `spring_dynamics_regionalv2`, cell lon/lat refresh, and triangle
-/// centroid/circumcenter refresh sequence used by the Fortran routine.
 pub fn springjustment_regional_core_fortran_indexed(
     input: SpringjustmentRegionalCoreInput<'_>,
 ) -> Option<SpringjustmentRegionalCoreOutput> {
@@ -4377,12 +15432,63 @@ pub fn springjustment_regional_core_fortran_indexed(
         &edge_connectivity.cells_on_edge,
         &edge_connectivity.vertices_on_edge,
     )?;
+    let triangle_points_for_order = input
+        .triangle_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let cell_points_for_order = input
+        .cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let geometric_order = order_vertices_on_cell_fortran_indexed(
+        &cell_points_for_order,
+        &triangle_points_for_order,
+        input.triangles_on_cell,
+        input.n_edges_on_cell,
+    )
+    .and_then(|ordered| {
+        standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)
+    });
+    let topological_order = || {
+        order_vertices_on_cell_by_shared_edges_fortran_indexed(
+            input.triangles_on_cell,
+            input.n_edges_on_cell,
+            &edge_connectivity.edges_on_vertex,
+        )
+        .and_then(|ordered| {
+            standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)
+        })
+    };
     let cell_connectivity = connect_on_cell_fortran_indexed(
         input.n_edges_on_cell,
         &edge_connectivity.cells_on_edge,
         &edge_connectivity.edges_on_vertex,
         input.triangles_on_cell,
-    )?;
+    )
+    .or_else(|| {
+        geometric_order.as_ref().and_then(|ordered| {
+            connect_on_cell_fortran_indexed(
+                input.n_edges_on_cell,
+                &edge_connectivity.cells_on_edge,
+                &edge_connectivity.edges_on_vertex,
+                ordered,
+            )
+        })
+    })
+    .or_else(|| {
+        topological_order().and_then(|ordered| {
+            connect_on_cell_fortran_indexed(
+                input.n_edges_on_cell,
+                &edge_connectivity.cells_on_edge,
+                &edge_connectivity.edges_on_vertex,
+                &ordered,
+            )
+        })
+    })?;
 
     let cell_points = input
         .cell_lonlat
@@ -4438,16 +15544,22 @@ pub fn springjustment_regional_core_fortran_indexed(
         .collect::<Vec<_>>();
 
     Some(SpringjustmentRegionalCoreOutput {
-        updated_triangle_lonlat,
-        updated_cell_lonlat,
         triangle_neighbors,
         cells_on_edge: edge_connectivity.cells_on_edge,
         vertices_on_edge,
         edges_on_vertex: edge_connectivity.edges_on_vertex,
         edges_on_cell: cell_connectivity.edges_on_cell,
         cells_on_cell: cell_connectivity.cells_on_cell,
+        updated_cell_lonlat,
+        updated_triangle_lonlat,
         regional,
     })
+}
+
+fn spring_global_debug(message: &str) {
+    if std::env::var_os("EARTHMESH_SPRING_DEBUG").is_some() {
+        eprintln!("EARTHMESH_SPRING_DEBUG: {message}");
+    }
 }
 
 /// Pure Rust adapter for the in-memory mask + calculation sequence inside
@@ -4739,14 +15851,17 @@ pub fn spherical_kite_area_unit(
 ///
 /// Fortran pins `verticesOnCell(1, i)` and sums triangles
 /// `(v1, vj+1, vj+2)` for `j = 1..num_edges-2`.
-pub fn spherical_cell_area_from_vertices_unit(vertices: &[CartesianPoint]) -> Option<f64> {
-    if vertices.len() < 3 {
+pub fn spherical_cell_area_from_vertices_unit(
+    vertices: &[CartesianPoint],
+    num_edges: usize,
+) -> Option<f64> {
+    if num_edges < 3 || num_edges > vertices.len() {
         return None;
     }
 
     let anchor = vertices[0];
     let mut area = 0.0;
-    for j in 0..(vertices.len() - 2) {
+    for j in 0..(num_edges - 2) {
         area += spherical_triangle_area_unit([anchor, vertices[j + 1], vertices[j + 2]]);
     }
     Some(area)
@@ -5147,10 +16262,9 @@ pub fn get_area_unit_fortran_indexed(input: GetAreaUnitInput<'_>) -> Option<GetA
         }
         let vertices = vertex_ids
             .iter()
-            .take(num_edges)
             .map(|vertex_id| input.vertices.get(*vertex_id).copied())
             .collect::<Option<Vec<_>>>()?;
-        area_cell[cell_id] = spherical_cell_area_from_vertices_unit(&vertices)?;
+        area_cell[cell_id] = spherical_cell_area_from_vertices_unit(&vertices, num_edges)?;
     }
 
     Some(GetAreaUnitOutput {
@@ -7707,7 +18821,7 @@ fn validate_triangle_neighbor_rows(
             ));
         }
         for &neighbor in neighbors {
-            if neighbor == 0 || neighbor > sjx_points {
+            if neighbor > sjx_points {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("triangle neighbor row {triangle} has invalid neighbor {neighbor}"),
@@ -8633,7 +19747,7 @@ pub fn refine_isreverse_judge_fortran_indexed(
             ));
         }
         for &neighbor in neighbors {
-            if neighbor == 0 || neighbor > sjx_points {
+            if neighbor > sjx_points {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("triangle neighbor row {triangle} has invalid neighbor {neighbor}"),
@@ -8655,6 +19769,7 @@ pub fn refine_isreverse_judge_fortran_indexed(
         }
         let segment_select = segments[segment_id][..set_dis_in].to_vec();
         segments[segment_id][..set_dis_in].fill(1);
+        let mut next_segment_pos = 0usize;
         for j in 0..(set_dis_in - 1) {
             if segment_select[j + 1] == 1 {
                 break;
@@ -8667,26 +19782,24 @@ pub fn refine_isreverse_judge_fortran_indexed(
                     format!("segment {segment_id} references invalid triangle pair {m0}, {w0}"),
                 ));
             }
-            let shared_neighbor = triangle_neighbors[m0]
+            let Some(shared_neighbor) = triangle_neighbors[m0]
                 .iter()
                 .copied()
-                .find(|candidate| triangle_neighbors[w0].contains(candidate))
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "segment {segment_id} triangle pair {m0}, {w0} has no shared neighbor"
-                        ),
-                    )
-                })?;
+                .find(|candidate| *candidate > 1 && triangle_neighbors[w0].contains(candidate))
+            else {
+                break;
+            };
+            let next_triangle = triangle_neighbors[shared_neighbor]
+                .iter()
+                .copied()
+                .filter(|&candidate| candidate > 1 && mrl_new[candidate] != 4)
+                .last();
+            let Some(next_triangle) = next_triangle else {
+                continue;
+            };
             ref_sjx[shared_neighbor] = 1;
-
-            for &candidate in &triangle_neighbors[shared_neighbor] {
-                if mrl_new[candidate] == 4 {
-                    continue;
-                }
-                segments[segment_id][j] = candidate;
-            }
+            segments[segment_id][next_segment_pos] = next_triangle;
+            next_segment_pos += 1;
         }
     }
 
@@ -8724,7 +19837,9 @@ pub fn refine_onedivide_two_fortran_indexed(
         ));
     }
     let previous_sjx_points = num_mp[iter - 1];
-    let sjx_points = mrl_new.len().saturating_sub(1);
+    let sjx_points = *num_mp
+        .get(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
     if sjx_points >= triangle_neighbors.len()
         || sjx_points >= cells_on_triangle.len()
         || sjx_points >= ref_sjx.len()
@@ -8782,10 +19897,16 @@ pub fn refine_onedivide_two_fortran_indexed(
             .filter(|&neighbor| mrl_new[neighbor] == required_state)
             .last()
             .ok_or_else(|| {
+                let neighbor_states: Vec<(usize, i32)> = triangle_neighbors[triangle]
+                    .iter()
+                    .copied()
+                    .map(|neighbor| (neighbor, mrl_new.get(neighbor).copied().unwrap_or_default()))
+                    .collect();
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "triangle {triangle} has no {} neighbor for one-into-two split",
+                        "triangle {triangle} has no {} neighbor for one-into-two split \
+                         (iter={iter}, num_mp[1]={sjx_points}, previous_num_mp={previous_sjx_points}, neighbors={neighbor_states:?})",
                         if is_reverse { "unrefined" } else { "refined" }
                     ),
                 )
@@ -9074,36 +20195,31 @@ pub fn refine_sharp_concav_lop_judge_fortran_indexed(
             ));
         }
 
+        let mut valid_pairs = 0_usize;
         for j in 1..=(tran_degree - 1) {
             let m1 = bdy_refine_segment_old[segment_id][j];
             let w0 = bdy_refine_segment[segment_id][j];
             let m2 = bdy_refine_segment_old[segment_id][j + 1];
+            if m1 <= 1 || w0 <= 1 || m2 <= 1 {
+                break;
+            }
             if w0 == 0 || w0 >= triangle_neighbors.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("segment {segment_id} w0={w0} must address triangle_neighbors"),
                 ));
             }
-            let w1 = triangle_neighbors[w0]
-                .iter()
-                .copied()
-                .find(|&neighbor| {
-                    neighbor > 0 && neighbor < mrl_new.len() && mrl_new[neighbor] != 1
-                })
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("segment {segment_id} w0={w0} has no reverse split neighbor"),
-                    )
-                })?;
+            let Some(w1) = triangle_neighbors[w0].iter().copied().find(|&neighbor| {
+                neighbor > 0 && neighbor < mrl_new.len() && mrl_new[neighbor] != 1
+            }) else {
+                break;
+            };
 
-            let (m11, w11) = refine_m1w1_to_m11w11_fortran_indexed(m1, w1, sjx_child, ngrmw_new)?
-                .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("missing child adjacency for m1={m1}, w1={w1}"),
-                )
-            })?;
+            let Some((m11, w11)) =
+                refine_m1w1_to_m11w11_fortran_indexed(m1, w1, sjx_child, ngrmw_new)?
+            else {
+                continue;
+            };
 
             if w1 >= sjx_child.len() || m2 >= sjx_child.len() {
                 return Err(io::Error::new(
@@ -9126,24 +20242,28 @@ pub fn refine_sharp_concav_lop_judge_fortran_indexed(
                 .copied()
                 .filter(|&candidate| candidate > 0 && candidate < ngrmw_new.len())
                 .find(|&candidate| is_ngrmm(ngrmw_new[w22], ngrmw_new[candidate]).is_some())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("missing opposite child adjacency for w22={w22}, m2={m2}"),
-                    )
-                })?;
+                .unwrap_or(0);
+            if m22 == 0 {
+                continue;
+            }
 
-            let out = 4 * j - 3;
+            valid_pairs += 1;
+            let out = 4 * valid_pairs - 3;
             ref_sjx_segment_temp[segment_id][out] = m11;
             ref_sjx_segment_temp[segment_id][out + 1] = w11;
             ref_sjx_segment_temp[segment_id][out + 2] = w22;
             ref_sjx_segment_temp[segment_id][out + 3] = m22;
         }
 
-        let num_end = 4 * (tran_degree - 1);
-        n_ref_sjx_segment_temp[segment_id] = (tran_degree / 2) * 4;
+        let effective_tran_degree = valid_pairs + 1;
+        if effective_tran_degree == 1 {
+            n_ref_sjx_segment_temp[segment_id] = 0;
+            continue;
+        }
+        let num_end = 4 * valid_pairs;
+        n_ref_sjx_segment_temp[segment_id] = (effective_tran_degree / 2) * 4;
         *num_ref += n_ref_sjx_segment_temp[segment_id];
-        if tran_degree == 2 {
+        if effective_tran_degree == 2 {
             continue;
         }
         for k in (1..=n_ref_sjx_segment_temp[segment_id]).step_by(4) {
@@ -10057,7 +21177,10 @@ pub fn refine_boundary_connection_make_fortran_indexed(
         }
         let mut neighbor_state_sum = 0_i32;
         for &neighbor in triangle_neighbors[triangle].iter().take(3) {
-            if neighbor == 0 || neighbor >= mrl_bk.len() {
+            if neighbor == 0 {
+                continue;
+            }
+            if neighbor >= mrl_bk.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("triangle {triangle} references invalid neighbor {neighbor}"),

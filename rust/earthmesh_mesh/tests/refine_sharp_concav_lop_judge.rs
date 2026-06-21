@@ -98,7 +98,39 @@ fn sharp_concav_lop_judge_mirrors_other_end_for_longer_transition_degree() {
 }
 
 #[test]
-fn sharp_concav_lop_judge_rejects_missing_child_adjacency() {
+fn sharp_concav_lop_judge_terminates_placeholder_segment() {
+    let mrl_new = vec![1; 8];
+    let triangle_neighbors = vec![vec![1, 1, 1]; 8];
+    let sjx_child = vec![[0, 0]; 8];
+    let bdy_refine_segment = vec![vec![], vec![0, 1, 1]];
+    let bdy_refine_segment_old = vec![vec![], vec![0, 2, 3, 4]];
+    let n_bdy_refine_segment = vec![0, 3];
+    let mut ref_temp = vec![vec![0; 12]; 2];
+    let mut n_ref_temp = vec![0, 2];
+    let mut num_ref = 0;
+
+    refine_sharp_concav_lop_judge_fortran_indexed(
+        &mut num_ref,
+        1,
+        &mrl_new,
+        &triangle_neighbors,
+        &child_vertices(),
+        &sjx_child,
+        &bdy_refine_segment,
+        &bdy_refine_segment_old,
+        &n_bdy_refine_segment,
+        &mut ref_temp,
+        &mut n_ref_temp,
+    )
+    .expect("placeholder segment should terminate LOP generation");
+
+    assert_eq!(n_ref_temp[1], 0);
+    assert_eq!(num_ref, 0);
+    assert!(ref_temp[1].iter().all(|&value| value == 0));
+}
+
+#[test]
+fn sharp_concav_lop_judge_skips_missing_child_adjacency() {
     let mut mrl_new = vec![1; 8];
     mrl_new[6] = 4;
     let mut triangle_neighbors = vec![vec![1, 1, 1]; 8];
@@ -117,7 +149,7 @@ fn sharp_concav_lop_judge_rejects_missing_child_adjacency() {
         .map(|idx| [idx * 3 + 1000, idx * 3 + 1001, idx * 3 + 1002])
         .collect::<Vec<_>>();
 
-    let err = refine_sharp_concav_lop_judge_fortran_indexed(
+    refine_sharp_concav_lop_judge_fortran_indexed(
         &mut num_ref,
         1,
         &mrl_new,
@@ -130,7 +162,9 @@ fn sharp_concav_lop_judge_rejects_missing_child_adjacency() {
         &mut ref_temp,
         &mut n_ref_temp,
     )
-    .expect_err("missing child adjacency should be surfaced");
+    .expect("missing child adjacency candidate should be skipped");
 
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(num_ref, 0);
+    assert_eq!(n_ref_temp[1], 0);
+    assert!(ref_temp[1].iter().all(|&value| value == 0));
 }

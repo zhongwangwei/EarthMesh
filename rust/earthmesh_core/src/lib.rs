@@ -734,6 +734,7 @@ impl EarthmeshRuntimeState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EarthmeshConfig {
     pub experiment_name: String,
+    pub runtype: String,
     pub nxp: i32,
     pub base_dir: String,
     pub mesh_type: String,
@@ -763,6 +764,7 @@ impl Default for EarthmeshConfig {
     fn default() -> Self {
         Self {
             experiment_name: "/tmp".to_string(),
+            runtype: " ".to_string(),
             nxp: 0,
             base_dir: " /tmp".to_string(),
             mesh_type: "/tmp".to_string(),
@@ -868,6 +870,7 @@ impl EarthmeshConfig {
 
             match field.to_ascii_lowercase().as_str() {
                 "expnme" => config.experiment_name = parse_fortran_string(value),
+                "runtype" => config.runtype = parse_fortran_string(value),
                 "nxp" => config.nxp = parse_i32(field, value)?,
                 "base_dir" => config.base_dir = parse_fortran_string(value),
                 "mesh_type" => config.mesh_type = parse_fortran_string(value),
@@ -914,17 +917,21 @@ impl EarthmeshConfig {
                 ".FALSE."
             }
         }
+        fn q(value: &str) -> String {
+            fortran_quote(value)
+        }
 
         let mut out = String::new();
         out.push_str("&mkgrd\n");
-        out.push_str(&format!("  NL%EXPNME = '{}'\n", self.experiment_name));
-        out.push_str(&format!("  NL%base_dir = '{}'\n", self.base_dir));
-        out.push_str(&format!("  NL%mesh_type = '{}'\n", self.mesh_type));
-        out.push_str(&format!("  NL%mode_grid = '{}'\n", self.mode_grid));
-        out.push_str(&format!("  NL%mode_file = '{}'\n", self.mode_file));
+        out.push_str(&format!("  NL%EXPNME = {}\n", q(&self.experiment_name)));
+        out.push_str(&format!("  NL%runtype = {}\n", q(&self.runtype)));
+        out.push_str(&format!("  NL%base_dir = {}\n", q(&self.base_dir)));
+        out.push_str(&format!("  NL%mesh_type = {}\n", q(&self.mesh_type)));
+        out.push_str(&format!("  NL%mode_grid = {}\n", q(&self.mode_grid)));
+        out.push_str(&format!("  NL%mode_file = {}\n", q(&self.mode_file)));
         out.push_str(&format!(
-            "  NL%mode_file_description = '{}'\n",
-            self.mode_file_description
+            "  NL%mode_file_description = {}\n",
+            q(&self.mode_file_description)
         ));
         out.push_str(&format!("  NL%NXP = {}\n", self.nxp));
         out.push_str(&format!("  NL%refine = {}\n", flag(self.refine)));
@@ -936,32 +943,47 @@ impl EarthmeshConfig {
         out.push_str(&format!("  NL%beta = {}\n", self.beta));
         out.push_str(&format!("  NL%relax = {}\n", self.relax));
         out.push_str(&format!("  NL%openmp = {}\n", self.openmp));
-        out.push_str(&format!("  NL%landtype_file = '{}'\n", self.landtype_file));
+        out.push_str(&format!(
+            "  NL%landtype_file = {}\n",
+            q(&self.landtype_file)
+        ));
         out.push_str(&format!(
             "  NL%mask_domain_global = {}\n",
             flag(self.mask_domain_global)
         ));
         out.push_str(&format!(
-            "  NL%mask_domain_type = '{}'\n",
-            self.mask_domain_type
+            "  NL%mask_domain_type = {}\n",
+            q(&self.mask_domain_type)
         ));
         out.push_str(&format!(
-            "  NL%mask_domain_fprefix = '{}'\n",
-            self.mask_domain_fprefix
+            "  NL%mask_domain_fprefix = {}\n",
+            q(&self.mask_domain_fprefix)
         ));
-        out.push_str(&format!("  NL%mask_restart = {}\n", flag(self.mask_restart)));
+        out.push_str(&format!(
+            "  NL%mask_restart = {}\n",
+            flag(self.mask_restart)
+        ));
         out.push_str(&format!("  NL%mask_sea_ratio = {}\n", self.mask_sea_ratio));
-        out.push_str(&format!("  NL%mask_patch_on = {}\n", flag(self.mask_patch_on)));
-        out.push_str(&format!("  NL%mask_patch_type = '{}'\n", self.mask_patch_type));
         out.push_str(&format!(
-            "  NL%mask_patch_fprefix = '{}'\n",
-            self.mask_patch_fprefix
+            "  NL%mask_patch_on = {}\n",
+            flag(self.mask_patch_on)
+        ));
+        out.push_str(&format!(
+            "  NL%mask_patch_type = {}\n",
+            q(&self.mask_patch_type)
+        ));
+        out.push_str(&format!(
+            "  NL%mask_patch_fprefix = {}\n",
+            q(&self.mask_patch_fprefix)
         ));
         out.push_str(&format!(
             "  NL%isolated_ocean = {}\n",
             flag(self.isolated_ocean)
         ));
-        out.push_str(&format!("  NL%output_format = '{}'\n", self.output_format));
+        out.push_str(&format!(
+            "  NL%output_format = {}\n",
+            q(&self.output_format)
+        ));
         out.push_str("/\n");
         out
     }
@@ -1053,6 +1075,8 @@ impl EarthmeshConfig {
             ("landmesh", "CoLM")
             | ("earthmesh", "CoLM")
             | ("oceanmesh", "FVCOM")
+            | ("atmos", "MPAS")
+            | ("atmos", "MPAS-Simple")
             | ("atmosmesh", "MPAS")
             | ("atmosmesh", "MPAS-Simple")
             | ("LOCmesh", "CoLM") => Ok(()),
@@ -1068,8 +1092,8 @@ impl EarthmeshConfig {
                 "oceanmesh output_format must be FVCOM like mkgrd.F90:read_nl, got {}",
                 self.output_format
             )),
-            ("atmosmesh", _) => Err(format!(
-                "atmosmesh output_format must be MPAS or MPAS-Simple like mkgrd.F90:read_nl, got {}",
+            ("atmos" | "atmosmesh", _) => Err(format!(
+                "atmos/atmosmesh output_format must be MPAS or MPAS-Simple like mkgrd.F90:read_nl, got {}",
                 self.output_format
             )),
             ("LOCmesh", _) => Err(format!(
@@ -1085,9 +1109,16 @@ impl EarthmeshConfig {
 
 fn strip_fortran_comment(line: &str) -> &str {
     let mut quote: Option<char> = None;
-    for (index, ch) in line.char_indices() {
+    let mut chars = line.char_indices().peekable();
+    while let Some((index, ch)) = chars.next() {
         match ch {
-            '\'' | '"' if quote == Some(ch) => quote = None,
+            '\'' | '"' if quote == Some(ch) => {
+                if chars.peek().is_some_and(|(_, next)| *next == ch) {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
             '\'' | '"' if quote.is_none() => quote = Some(ch),
             '!' if quote.is_none() => return &line[..index],
             _ => {}
@@ -1096,13 +1127,28 @@ fn strip_fortran_comment(line: &str) -> &str {
     line
 }
 
+fn fortran_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn parse_fortran_string(value: &str) -> String {
-    value
-        .trim()
-        .trim_end_matches(',')
-        .trim()
-        .trim_matches(|ch| ch == '\'' || ch == '"')
-        .to_string()
+    let trimmed = value.trim().trim_end_matches(',').trim();
+    let Some(quote) = trimmed
+        .chars()
+        .next()
+        .filter(|ch| *ch == '\'' || *ch == '"')
+    else {
+        return trimmed.to_string();
+    };
+    let inner = trimmed
+        .strip_prefix(quote)
+        .and_then(|value| value.strip_suffix(quote))
+        .unwrap_or(trimmed);
+    match quote {
+        '\'' => inner.replace("''", "'"),
+        '"' => inner.replace("\"\"", "\""),
+        _ => inner.to_string(),
+    }
 }
 
 fn parse_i32(field: &str, value: &str) -> Result<i32, String> {
@@ -1206,6 +1252,7 @@ pub struct RefineConfig {
     pub num_rc: i32,
     pub vertex_pretect_layers: i32,
     pub niter_refine: i32,
+    pub niter_refine_specified: bool,
     pub th_num_landtypes: i32,
     pub th_area_mainland: f64,
     pub th_sea_ratio: [f64; 2],
@@ -1249,6 +1296,7 @@ impl Default for RefineConfig {
             num_rc: 0,
             vertex_pretect_layers: 1,
             niter_refine: 100,
+            niter_refine_specified: false,
             th_num_landtypes: 12,
             th_area_mainland: 0.6,
             th_sea_ratio: [0.5; 2],
@@ -1324,7 +1372,10 @@ impl RefineConfig {
                 "num_rc" => config.num_rc = parse_i32(field, value)?,
                 "set_dis_type" => config.set_dis_type = parse_fortran_string(value),
                 "vertex_pretect_layers" => config.vertex_pretect_layers = parse_i32(field, value)?,
-                "niter_refine" => config.niter_refine = parse_i32(field, value)?,
+                "niter_refine" => {
+                    config.niter_refine = parse_i32(field, value)?;
+                    config.niter_refine_specified = true;
+                }
                 "refine_spc" => config.refine_spc = parse_fortran_bool(field, value)?,
                 "refine_cal" => config.refine_cal = parse_fortran_bool(field, value)?,
                 "max_iter_spc" => config.max_iter_spc = parse_i32(field, value)?,
@@ -1492,6 +1543,9 @@ impl RefineConfig {
         fn pair(values: [f64; 2]) -> String {
             format!("{}, {}", values[0], values[1])
         }
+        fn q(value: &str) -> String {
+            fortran_quote(value)
+        }
 
         let mut out = String::new();
         out.push_str("&mkrefine\n");
@@ -1501,7 +1555,10 @@ impl RefineConfig {
             "  RL%weak_concav_eliminate = {}\n",
             flag(self.weak_concav_eliminate)
         ));
-        out.push_str(&format!("  RL%Istransition = {}\n", flag(self.is_transition)));
+        out.push_str(&format!(
+            "  RL%Istransition = {}\n",
+            flag(self.is_transition)
+        ));
         out.push_str(&format!("  RL%iterD = {}\n", flag(self.iter_d)));
         out.push_str(&format!("  RL%HALO = {}\n", ints_1_based(&self.halo)));
         out.push_str(&format!(
@@ -1519,12 +1576,14 @@ impl RefineConfig {
             self.spring_regional_type
         ));
         out.push_str(&format!("  RL%num_rc = {}\n", self.num_rc));
-        out.push_str(&format!("  RL%set_dis_type = '{}'\n", self.set_dis_type));
+        out.push_str(&format!("  RL%set_dis_type = {}\n", q(&self.set_dis_type)));
         out.push_str(&format!(
             "  RL%vertex_pretect_layers = {}\n",
             self.vertex_pretect_layers
         ));
-        out.push_str(&format!("  RL%niter_refine = {}\n", self.niter_refine));
+        if self.niter_refine_specified {
+            out.push_str(&format!("  RL%niter_refine = {}\n", self.niter_refine));
+        }
 
         // specified / calculated control
         out.push_str(&format!("  RL%refine_spc = {}\n", flag(self.refine_spc)));
@@ -1532,34 +1591,43 @@ impl RefineConfig {
         out.push_str(&format!("  RL%max_iter_spc = {}\n", self.max_iter_spc));
         out.push_str(&format!("  RL%max_iter_cal = {}\n", self.max_iter_cal));
         out.push_str(&format!(
-            "  RL%mask_refine_spc_type = '{}'\n",
-            self.mask_refine_spc_type
+            "  RL%mask_refine_spc_type = {}\n",
+            q(&self.mask_refine_spc_type)
         ));
         out.push_str(&format!(
-            "  RL%mask_refine_spc_fprefix = '{}'\n",
-            self.mask_refine_spc_fprefix
+            "  RL%mask_refine_spc_fprefix = {}\n",
+            q(&self.mask_refine_spc_fprefix)
         ));
         out.push_str(&format!(
-            "  RL%mask_refine_cal_type = '{}'\n",
-            self.mask_refine_cal_type
+            "  RL%mask_refine_cal_type = {}\n",
+            q(&self.mask_refine_cal_type)
         ));
         out.push_str(&format!(
-            "  RL%mask_refine_cal_fprefix = '{}'\n",
-            self.mask_refine_cal_fprefix
+            "  RL%mask_refine_cal_fprefix = {}\n",
+            q(&self.mask_refine_cal_fprefix)
         ));
-        out.push_str(&format!("  RL%threshold_dir = '{}'\n", self.threshold_dir));
+        out.push_str(&format!(
+            "  RL%threshold_dir = {}\n",
+            q(&self.threshold_dir)
+        ));
 
         // land one-layer
         out.push_str(&format!(
             "  RL%refine_num_landtypes = {}\n",
             flag(self.refine_num_landtypes)
         ));
-        out.push_str(&format!("  RL%th_num_landtypes = {}\n", self.th_num_landtypes));
+        out.push_str(&format!(
+            "  RL%th_num_landtypes = {}\n",
+            self.th_num_landtypes
+        ));
         out.push_str(&format!(
             "  RL%refine_area_mainland = {}\n",
             flag(self.refine_area_mainland)
         ));
-        out.push_str(&format!("  RL%th_area_mainland = {}\n", self.th_area_mainland));
+        out.push_str(&format!(
+            "  RL%th_area_mainland = {}\n",
+            self.th_area_mainland
+        ));
         out.push_str(&format!(
             "  RL%refine_lai_m = {}\n",
             flag(self.refine_onelayer_lnd[0])
@@ -1610,7 +1678,10 @@ impl RefineConfig {
             "  RL%refine_sea_ratio = {}\n",
             flag(self.refine_sea_ratio)
         ));
-        out.push_str(&format!("  RL%th_sea_ratio = {}\n", pair(self.th_sea_ratio)));
+        out.push_str(&format!(
+            "  RL%th_sea_ratio = {}\n",
+            pair(self.th_sea_ratio)
+        ));
         let ocn = [
             ("sst_m", 0usize),
             ("sst_s", 1),
@@ -1626,10 +1697,7 @@ impl RefineConfig {
                 "  RL%refine_{name} = {}\n",
                 flag(self.refine_onelayer_ocn[idx])
             ));
-            out.push_str(&format!(
-                "  RL%th_{name} = {}\n",
-                self.th_onelayer_ocn[idx]
-            ));
+            out.push_str(&format!("  RL%th_{name} = {}\n", self.th_onelayer_ocn[idx]));
         }
 
         // atmosphere criteria
@@ -1637,12 +1705,18 @@ impl RefineConfig {
             "  RL%refine_typhoon_m = {}\n",
             flag(self.refine_onelayer_atmos[0])
         ));
-        out.push_str(&format!("  RL%th_typhoon_m = {}\n", self.th_onelayer_atmos[0]));
+        out.push_str(&format!(
+            "  RL%th_typhoon_m = {}\n",
+            self.th_onelayer_atmos[0]
+        ));
         out.push_str(&format!(
             "  RL%refine_typhoon_s = {}\n",
             flag(self.refine_onelayer_atmos[1])
         ));
-        out.push_str(&format!("  RL%th_typhoon_s = {}\n", self.th_onelayer_atmos[1]));
+        out.push_str(&format!(
+            "  RL%th_typhoon_s = {}\n",
+            self.th_onelayer_atmos[1]
+        ));
 
         out.push_str("/\n");
         out

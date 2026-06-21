@@ -234,6 +234,40 @@ fn refine_loop_io_plan_uses_early_exit_step_for_final_domain_postproc() {
 }
 
 #[test]
+fn refine_loop_io_plan_orders_locmesh_calculated_threshold_outputs_like_fortran_getref() {
+    let mkgrd = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n  NL%EXPNME='case_loc_refine'\n  NL%base_dir='/tmp/earthmesh/'\n  NL%NXP=16\n  NL%mesh_type='LOCmesh'\n  NL%mode_grid='hex'\n  NL%output_format='CoLM'\n  NL%refine=.true.\n/\n",
+    )
+    .expect("parse LOCmesh mkgrd config");
+    let refine = RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%halo=3\n  RL%max_transition_row=1\n  RL%mask_refine_cal_type='bbox'\n  RL%refine_num_landtypes=.true.\n  RL%set_dis_type='linear'\n/\n",
+        "LOCmesh",
+        "hex",
+    )
+    .expect("parse LOCmesh calculated refine config");
+
+    let plan = plan_mkgrd_refine_loop_io(&mkgrd, &refine).expect("plan LOCmesh refine loop io");
+    let source = &plan.steps[0].sources[0];
+
+    assert_eq!(source.source, MkgrdRefineSource::CalculatedIterZero);
+    assert_eq!(
+        source.threshold_outputs,
+        vec![
+            PathBuf::from(
+                "/tmp/earthmesh/case_loc_refine/threshold/threshold_calculate_land_NXP0016_01.nc4"
+            ),
+            PathBuf::from(
+                "/tmp/earthmesh/case_loc_refine/threshold/threshold_calculate_ocean_NXP0016_01.nc4"
+            ),
+            PathBuf::from(
+                "/tmp/earthmesh/case_loc_refine/threshold/threshold_calculate_atmos_NXP0016_01.nc4"
+            ),
+        ],
+        "Fortran LOCmesh calculated GetRef handoff uses land, ocean, atmosphere threshold outputs in that order"
+    );
+}
+
+#[test]
 fn refine_loop_plan_rejects_invalid_halo_transition_controls_like_fortran() {
     let mut too_small_halo = mixed_refine_config();
     too_small_halo.halo[1] = 1;
@@ -300,7 +334,7 @@ fn final_quality_check_io_plan_matches_global_spring_paths() {
 }
 
 #[test]
-fn effective_final_step_uses_last_changed_gridfile_when_max_plus_one_did_not_refine() {
+fn effective_final_step_uses_planned_gridfile_when_it_exists_even_if_counts_match() {
     let root = temp_root("earthmesh_cli_effective_final_step");
     let mut mkgrd = mkgrd_config();
     mkgrd.base_dir = format!("{}/", root.display());
@@ -328,7 +362,32 @@ fn effective_final_step_uses_last_changed_gridfile_when_max_plus_one_did_not_ref
     let effective =
         infer_mkgrd_effective_final_step_from_gridfiles(&plan).expect("infer effective step");
 
-    assert_eq!(effective, 3);
+    assert_eq!(effective, 4);
+}
+
+#[test]
+fn effective_final_step_uses_previous_gridfile_when_planned_noop_output_is_absent() {
+    let root = temp_root("earthmesh_cli_effective_final_step_missing_planned");
+    let mut mkgrd = mkgrd_config();
+    mkgrd.base_dir = format!("{}/", root.display());
+    let mut refine = mixed_refine_config();
+    refine.refine_setting = "specified".to_string();
+    refine.refine_spc = true;
+    refine.refine_cal = false;
+    refine.max_iter_spc = 1;
+    refine.max_iter_cal = 0;
+    let plan = plan_mkgrd_refine_loop_io(&mkgrd, &refine).expect("plan refine loop io");
+
+    write_unstructured_mesh_netcdf(
+        root.join("case_refine/gridfile/gridfile_NXP0016_01_hex.nc4"),
+        &small_mesh(2),
+    )
+    .expect("write step 1 gridfile");
+
+    let effective =
+        infer_mkgrd_effective_final_step_from_gridfiles(&plan).expect("infer effective step");
+
+    assert_eq!(effective, 1);
 }
 
 #[test]

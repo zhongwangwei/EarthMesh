@@ -18,5 +18,6 @@ identifier = "edu.sysu.earthmesh.gui"
 icons = ["icons/icon.icns", "icons/icon.png"]
 category = "Education"
 authors = ["Zhongwang Wei @ SYSU"]
-# Offline Protomaps basemap (vector PMTiles, OSM/ODbL) bundled into Resources.
-resources = ["assets/world.pmtiles"]
+# Bundle tracked starter cases. Optional PMTiles basemaps are discovered at runtime
+# from EARTHMESH_BASEMAP, app Resources, or the developer assets directory.
+resources = ["../../examples"]

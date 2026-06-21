@@ -25,6 +25,23 @@ fn write_landtype_file(path: &std::path::Path, nlons: usize, nlats: usize) {
     var.put_values(&values, (.., ..)).expect("write landtype");
 }
 
+fn write_landtype_file_with_points(path: &std::path::Path, land_points: &[(usize, usize)]) {
+    let (nlons, nlats) = (360, 180);
+    let mut file = netcdf::create(path).expect("create landtype file");
+    file.add_dimension("longitude", nlons)
+        .expect("longitude dim");
+    file.add_dimension("latitude", nlats).expect("latitude dim");
+    let mut values = vec![0_i8; nlons * nlats];
+    let idx = |lon: usize, lat: usize| lon * nlats + lat;
+    for &(lon, lat) in land_points {
+        values[idx(lon, lat)] = 1;
+    }
+    let mut var = file
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .expect("landtype var");
+    var.put_values(&values, (.., ..)).expect("write landtype");
+}
+
 fn write_landtype_lat_lon_file(path: &std::path::Path, nlons: usize, nlats: usize) {
     let mut file = netcdf::create(path).expect("create lat-lon landtype file");
     file.add_dimension("latitude", nlats).expect("latitude dim");
@@ -41,6 +58,403 @@ fn write_landtype_lat_lon_file(path: &std::path::Path, nlons: usize, nlats: usiz
         .expect("lat-lon landtype var");
     var.put_values(&values, (.., ..))
         .expect("write lat-lon landtype");
+}
+
+fn write_three_cell_tri_gridfile(path: &std::path::Path) {
+    let mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: -178.5,
+                lat: 89.5,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: -177.5,
+                lat: 89.5,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: -176.5,
+                lat: 89.5,
+            },
+        ],
+        w_points: vec![
+            earthmesh_cli::LonLatPoint {
+                lon: 0.0,
+                lat: -88.5,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 10.0,
+                lat: -88.5,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 20.0,
+                lat: -88.5,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 30.0,
+                lat: -88.5,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [1, 2, 3], [1, 2, 3], [1, 2, 3]],
+        w_to_m: vec![vec![1], vec![1, 2, 3], vec![1, 2, 3], vec![1, 2, 3]],
+        n_w_to_m: vec![1, 3, 3, 3],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(path, &mesh).expect("write gridfile");
+}
+
+fn write_two_cell_hex_gridfile(path: &std::path::Path) {
+    let mut m_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }];
+    m_points.extend([
+        earthmesh_cli::LonLatPoint {
+            lon: -179.0,
+            lat: 89.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -178.5,
+            lat: 89.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -178.0,
+            lat: 89.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -178.0,
+            lat: 90.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -178.5,
+            lat: 90.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -179.0,
+            lat: 90.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -178.0,
+            lat: 89.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -177.5,
+            lat: 89.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -177.0,
+            lat: 89.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -177.0,
+            lat: 90.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -177.5,
+            lat: 90.0,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -178.0,
+            lat: 90.0,
+        },
+    ]);
+    let mesh = earthmesh_cli::UnstructuredMesh {
+        m_points,
+        w_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: -178.5,
+                lat: 89.5,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: -177.5,
+                lat: 89.5,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1]; 13],
+        w_to_m: vec![
+            vec![1, 1, 1, 1, 1, 1],
+            vec![2, 3, 4, 5, 6, 7],
+            vec![8, 9, 10, 11, 12, 13],
+        ],
+        n_w_to_m: vec![0, 6, 6],
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(path, &mesh).expect("write hex gridfile");
+}
+
+#[test]
+fn landtype_masked_gridfile_keeps_land_or_ocean_cells_and_reindexes() {
+    let root = temp_root("landtype_masked_gridfile");
+    let landtype_file = root.join("landtype.nc");
+    let input = root.join("gridfile.nc4");
+    let land_output = root.join("land_gridfile.nc4");
+    let ocean_output = root.join("ocean_gridfile.nc4");
+    write_landtype_file_with_points(&landtype_file, &[(1, 0), (3, 0)]);
+    write_three_cell_tri_gridfile(&input);
+
+    let land_count = earthmesh_cli::write_landtype_masked_gridfile(
+        &input,
+        &land_output,
+        &landtype_file,
+        1,
+        "tri",
+        "landmesh",
+    )
+    .expect("write land-only gridfile");
+    let ocean_count = earthmesh_cli::write_landtype_masked_gridfile(
+        &input,
+        &ocean_output,
+        &landtype_file,
+        1,
+        "tri",
+        "oceanmesh",
+    )
+    .expect("write ocean-only gridfile");
+
+    assert_eq!(land_count, 2);
+    assert_eq!(ocean_count, 1);
+    let land_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&land_output)
+        .expect("read land masked gridfile");
+    let ocean_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&ocean_output)
+        .expect("read ocean masked gridfile");
+    let land_topology = earthmesh_cli::check_unstructured_mesh_topology(&land_mesh);
+    let ocean_topology = earthmesh_cli::check_unstructured_mesh_topology(&ocean_mesh);
+    assert!(land_mesh.m_points.len() >= land_count);
+    assert!(ocean_mesh.m_points.len() >= ocean_count);
+    assert!(
+        land_topology.is_consistent(),
+        "land topology violations: {:?}",
+        land_topology.violations
+    );
+    assert!(
+        ocean_topology.is_consistent(),
+        "ocean topology violations: {:?}",
+        ocean_topology.violations
+    );
+    assert!(land_mesh
+        .m_to_w
+        .iter()
+        .flatten()
+        .all(|&vertex| vertex >= 0 && vertex as usize <= land_mesh.w_points.len()));
+    assert!(ocean_mesh
+        .m_to_w
+        .iter()
+        .flatten()
+        .all(|&vertex| vertex >= 0 && vertex as usize <= ocean_mesh.w_points.len()));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn landtype_masked_hex_gridfile_preserves_cell_corner_geometry_after_reindex() {
+    let root = temp_root("landtype_masked_hex_geometry");
+    let landtype_file = root.join("landtype.nc");
+    let input = root.join("gridfile.nc4");
+    let output = root.join("land_gridfile.nc4");
+    write_landtype_file_with_points(&landtype_file, &[(1, 0), (2, 0)]);
+    write_two_cell_hex_gridfile(&input);
+
+    let land_count = earthmesh_cli::write_landtype_masked_gridfile(
+        &input,
+        &output,
+        &landtype_file,
+        1,
+        "hex",
+        "landmesh",
+    )
+    .expect("write hex land-only gridfile");
+
+    let land_mesh =
+        earthmesh_cli::read_unstructured_mesh_netcdf(&output).expect("read hex land gridfile");
+    let first_cell = land_mesh
+        .w_points
+        .iter()
+        .position(|point| (point.lon + 178.5).abs() < 1.0e-12 && (point.lat - 89.5).abs() < 1.0e-12)
+        .expect("first land hex center preserved");
+    let corner_count = land_mesh.n_w_to_m[first_cell] as usize;
+    let corner_ids = &land_mesh.w_to_m[first_cell][..corner_count];
+
+    assert_eq!(land_count, 2);
+    assert_eq!(corner_count, 6);
+    for &corner_id in corner_ids {
+        let corner = &land_mesh.m_points[corner_id as usize];
+        assert!(
+            (corner.lon + 178.5).abs() <= 0.6 && (corner.lat - 89.5).abs() <= 0.6,
+            "corner id {corner_id} points to remote coordinate {:?}",
+            corner
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn regional_carve_after_ocean_hex_mask_does_not_reapply_placeholder_shift() {
+    let root = temp_root("regional_after_ocean_hex_mask");
+    let landtype_file = root.join("landtype.nc");
+    let input = root.join("gridfile.nc4");
+    let ocean_output = root.join("ocean_gridfile.nc4");
+    let regional_output = root.join("regional_ocean_gridfile.nc4");
+    write_landtype_file_with_points(&landtype_file, &[(1, 0)]);
+    write_two_cell_hex_gridfile(&input);
+
+    earthmesh_cli::write_landtype_masked_gridfile(
+        &input,
+        &ocean_output,
+        &landtype_file,
+        1,
+        "hex",
+        "oceanmesh",
+    )
+    .expect("write hex ocean-only gridfile");
+    let region = earthmesh_cli::GridRegion::Bbox {
+        west: -178.0,
+        east: -177.0,
+        north: 90.0,
+        south: 89.0,
+    };
+    let kept =
+        earthmesh_cli::write_regional_gridfile(&ocean_output, &regional_output, &region, "hex")
+            .expect("write regional ocean gridfile");
+
+    let regional_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&regional_output)
+        .expect("read regional ocean gridfile");
+    let ocean_cell = regional_mesh
+        .w_points
+        .iter()
+        .position(|point| (point.lon + 177.5).abs() < 1.0e-12 && (point.lat - 89.5).abs() < 1.0e-12)
+        .expect("regional ocean hex center preserved");
+    let corner_count = regional_mesh.n_w_to_m[ocean_cell] as usize;
+    let corner_ids = &regional_mesh.w_to_m[ocean_cell][..corner_count];
+
+    assert_eq!(kept, 1);
+    assert_eq!(corner_count, 6);
+    for &corner_id in corner_ids {
+        let corner = &regional_mesh.m_points[corner_id as usize];
+        assert!(
+            (corner.lon + 177.5).abs() <= 0.6 && (corner.lat - 89.5).abs() <= 0.6,
+            "corner id {corner_id} points to remote coordinate {:?}",
+            corner
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn regional_carve_after_land_hex_mask_does_not_reapply_placeholder_shift() {
+    let root = temp_root("regional_after_land_hex_mask");
+    let landtype_file = root.join("landtype.nc");
+    let input = root.join("gridfile.nc4");
+    let land_output = root.join("land_gridfile.nc4");
+    let regional_output = root.join("regional_land_gridfile.nc4");
+    write_landtype_file_with_points(&landtype_file, &[(1, 0)]);
+    write_two_cell_hex_gridfile(&input);
+
+    earthmesh_cli::write_landtype_masked_gridfile(
+        &input,
+        &land_output,
+        &landtype_file,
+        1,
+        "hex",
+        "landmesh",
+    )
+    .expect("write hex land-only gridfile");
+    let region = earthmesh_cli::GridRegion::Bbox {
+        west: -179.0,
+        east: -178.0,
+        north: 90.0,
+        south: 89.0,
+    };
+    let kept =
+        earthmesh_cli::write_regional_gridfile(&land_output, &regional_output, &region, "hex")
+            .expect("write regional land gridfile");
+
+    let regional_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&regional_output)
+        .expect("read regional land gridfile");
+    let land_cell = regional_mesh
+        .w_points
+        .iter()
+        .position(|point| (point.lon + 178.5).abs() < 1.0e-12 && (point.lat - 89.5).abs() < 1.0e-12)
+        .expect("regional land hex center preserved");
+    let corner_count = regional_mesh.n_w_to_m[land_cell] as usize;
+    let corner_ids = &regional_mesh.w_to_m[land_cell][..corner_count];
+
+    assert_eq!(kept, 1);
+    assert_eq!(corner_count, 6);
+    for &corner_id in corner_ids {
+        let corner = &regional_mesh.m_points[corner_id as usize];
+        assert!(
+            (corner.lon + 178.5).abs() <= 0.6 && (corner.lat - 89.5).abs() <= 0.6,
+            "corner id {corner_id} points to remote coordinate {:?}",
+            corner
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn landtype_point_sampler_reads_requested_points_in_both_dimension_orders() {
+    let root = temp_root("landtype_point_sampler");
+    let lon_lat_file = root.join("landtype_lon_lat.nc");
+    let lat_lon_file = root.join("landtype_lat_lon.nc");
+    write_landtype_file(&lon_lat_file, 360, 180);
+    write_landtype_lat_lon_file(&lat_lon_file, 360, 180);
+    let points = [
+        earthmesh_cli::LonLatPoint {
+            lon: -178.5,
+            lat: 89.5,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -177.5,
+            lat: 88.5,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: 179.5,
+            lat: -89.5,
+        },
+    ];
+
+    let lon_lat_values =
+        earthmesh_cli::sample_landtype_values_for_points_fortran_indexed(&lon_lat_file, 1, &points)
+            .expect("sample longitude-latitude landtype");
+    let lat_lon_values =
+        earthmesh_cli::sample_landtype_values_for_points_fortran_indexed(&lat_lon_file, 1, &points)
+            .expect("sample latitude-longitude landtype");
+
+    assert_eq!(lon_lat_values, vec![2, 7, 4]);
+    assert_eq!(lat_lon_values, lon_lat_values);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn landtype_surface_class_sampler_returns_preview_codes_without_coupling_file() {
+    let root = temp_root("landtype_surface_class_sampler");
+    let landtype_file = root.join("landtype.nc");
+    write_landtype_file_with_points(&landtype_file, &[(1, 0), (3, 0)]);
+    let points = [
+        earthmesh_cli::LonLatPoint {
+            lon: -178.5,
+            lat: 89.5,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -177.5,
+            lat: 89.5,
+        },
+        earthmesh_cli::LonLatPoint {
+            lon: -176.5,
+            lat: 89.5,
+        },
+    ];
+
+    let codes = earthmesh_cli::sample_landtype_surface_class_codes_for_points_fortran_indexed(
+        &landtype_file,
+        1,
+        &points,
+    )
+    .expect("sample preview surface class codes");
+
+    assert_eq!(codes, vec![1, 2, 1]);
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

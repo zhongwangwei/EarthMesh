@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use earthmesh_core::{
     EarthmeshConfig, EarthmeshRuntimeState, GridMemory, IjTabs, MaskCounterState, MaskOperation,
@@ -20,8 +20,11 @@ use earthmesh_mesh::{
     circumcenter_spherical_mesh_fortran_indexed, classify_boundary_orders_fortran_indexed,
     connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
     get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, order_vertices_on_cell_by_shared_edges_fortran_indexed,
-    order_vertices_on_cell_fortran_indexed, refine_array_length_calculation_fortran_indexed,
+    grid_cartesian_xy_to_lonlat_placeholders_fortran_indexed_state,
+    grid_xyz2lonlat_fortran_indexed_state, lonlat_points_to_unit_xyz,
+    olam_gridinit_factorization_fortran,
+    order_vertices_on_cell_by_shared_edges_fortran_indexed, order_vertices_on_cell_fortran_indexed,
+    pcvt_adjust_voronoi_grid_state, refine_array_length_calculation_fortran_indexed,
     refine_boundary_segments_make_fortran_indexed,
     refine_delaunay_lop_fortran_indexed as refine_delaunay_lop_mesh_fortran_indexed,
     refine_isreverse_judge_fortran_indexed as refine_isreverse_judge_mesh_fortran_indexed,
@@ -38,11 +41,14 @@ use earthmesh_mesh::{
     set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
     springjustment_regional_core_fortran_indexed,
     standardize_vertices_on_cell_rotation_fortran_indexed,
-    triangle_neighbors_from_cell_membership_fortran_indexed, widen_narrow_waterway_fortran_indexed,
-    xyz_to_lonlat_degrees, AreaJudgeAxis, AreaJudgeSourceBounds, BoundaryClosedCurves,
-    BoundaryConnection, BoundaryOrders, CartesianPoint, DistanceLayerSpacing,
-    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, GlobalDistanceStep,
-    IsolatedOceanRenewal, LonLatDegrees, MaskPostprocRenewedData, RefineArrayLengthCalculation,
+    triangle_neighbors_from_cell_membership_fortran_indexed,
+    voronoi_grid_from_olam_delaunay_mesh, voronoi_grid_from_olam_delaunay_mesh_cartesian,
+    widen_narrow_waterway_fortran_indexed, xyz_to_lonlat_degrees, AreaJudgeAxis,
+    AreaJudgeSourceBounds, BoundaryClosedCurves, BoundaryConnection, BoundaryOrders,
+    CartesianPoint, DistanceLayerSpacing, GetAreaProductionOutput, GetAreaUnitInput,
+    GetEdgeProductionOutput, GlobalDistanceStep, IsolatedOceanRenewal, LonLatDegrees,
+    MaskPostprocRenewedData, OlamDelaunayMesh, OlamRefinementRegion,
+    RefineArrayLengthCalculation,
     RefineArrayLengthHalo, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
     SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
 };
@@ -90,6 +96,48 @@ pub struct MkgrdRefineLoopNamelistRunReport {
     pub execution: MkgrdRefineLoopExecutionReport,
 }
 
+/// Evidence from the direct OLAM specified-refinement path.
+///
+/// This bypasses the legacy refine-loop executor: the global Delaunay mesh is
+/// rebuilt in the OLAM layer, specified regions are applied with `spawn_nest`,
+/// and the existing EarthMesh NetCDF gridfile schema is used only at the final
+/// output boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MkgrdOlamCoupledOutputReport {
+    pub land_output: UnstructuredMeshWriteReport,
+    pub ocean_output: UnstructuredMeshWriteReport,
+    pub coupling_csv: PathBuf,
+    pub coupling_netcdf: ColmCouplingNetcdfWriteReport,
+    pub manifest: PathBuf,
+    pub counts: ColmSurfaceCounts,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MkgrdOlamSpecifiedRefineRunReport {
+    pub gridinit: MkgrdGridinitRunReport,
+    pub refine: RefineConfig,
+    pub regions: Vec<OlamRefinementRegion>,
+    pub max_level: usize,
+    pub transition_faces: usize,
+    pub spring_nest_passes: usize,
+    pub spring_nest_iterations: usize,
+    pub raw_output: Option<UnstructuredMeshWriteReport>,
+    pub landtype_masked_cells: Option<usize>,
+    pub coupled_outputs: Option<MkgrdOlamCoupledOutputReport>,
+    pub output: UnstructuredMeshWriteReport,
+    pub runtime_state: EarthmeshRuntimeState,
+}
+
+impl MkgrdOlamSpecifiedRefineRunReport {
+    pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
+        &[]
+    }
+
+    pub fn runtime_state(&self) -> &EarthmeshRuntimeState {
+        &self.runtime_state
+    }
+}
+
 impl MkgrdRefineLoopNamelistRunReport {
     pub fn source_branch_reports(&self) -> &[MkgrdRefineSourceBranchReport] {
         &self.execution.source_branch_reports
@@ -116,6 +164,9 @@ impl MkgrdRefineLoopNamelistRunReport {
 pub enum MkgrdTopLevelDispatchRunReport {
     /// Normal non-restart grid initialization branch.
     Gridinit(MkgrdGridinitRunReport),
+    /// Non-restart refinement generated directly by the OLAM
+    /// Delaunay/Voronoi pipeline.
+    OlamRefineGlobalSource(MkgrdOlamSpecifiedRefineRunReport),
     /// `mask_restart=.true.` with `mask_patch_on=.true.` runs the migrated patch `Mask_make`
     /// pre-processing and then hands control back to later restart continuation surfaces.
     MaskRestartPatch(MkgrdMaskRestartPatchRunReport),
@@ -138,12 +189,9 @@ pub enum MkgrdTopLevelDefaultRestartRefineRunReport {
     /// No default restart-refine handoff was selected; normal top-level
     /// dispatch handled the namelist.
     Dispatch(MkgrdTopLevelDispatchRunReport),
-    /// Default non-restart refine handoff driven by `NL%landtype_file`.
-    RefineLandtypeSource(MkgrdRefineLandtypeSourceNamelistRunReport),
-    /// Default restart-refine handoff driven by a compact source-state file.
-    RestartRefineCompact(MkgrdRestartRefineCompactSourceStateNamelistRunReport),
-    /// Default restart-refine handoff driven by `NL%landtype_file`.
-    RestartRefineLandtype(MkgrdRestartRefineLandtypeSourceNamelistRunReport),
+    /// Default non-restart atmosphere refine generated directly by the OLAM
+    /// Delaunay/Voronoi pipeline.
+    OlamRefineGlobalSource(MkgrdOlamSpecifiedRefineRunReport),
 }
 
 impl MkgrdTopLevelDispatchRunReport {
@@ -157,6 +205,7 @@ impl MkgrdTopLevelDispatchRunReport {
                 report.final_domain_contain_runtime_counts()
             }
             MkgrdTopLevelDispatchRunReport::Gridinit(_)
+            | MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource(_)
             | MkgrdTopLevelDispatchRunReport::MaskRestartPatch(_)
             | MkgrdTopLevelDispatchRunReport::MaskRestartOcean(_)
             | MkgrdTopLevelDispatchRunReport::MaskRestartPlan(_) => None,
@@ -166,6 +215,9 @@ impl MkgrdTopLevelDispatchRunReport {
     pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
         match self {
             MkgrdTopLevelDispatchRunReport::Gridinit(report) => report.runtime_state.as_ref(),
+            MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource(report) => {
+                Some(&report.runtime_state)
+            }
             MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => Some(&report.runtime_state),
             MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => Some(&report.runtime_state),
             MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
@@ -182,13 +234,7 @@ impl MkgrdTopLevelDefaultRestartRefineRunReport {
             MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
                 report.source_branch_reports()
             }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(run) => {
-                run.source_branch_reports()
-            }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) => {
-                run.source_branch_reports()
-            }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(run) => {
+            MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(run) => {
                 run.source_branch_reports()
             }
         }
@@ -197,13 +243,7 @@ impl MkgrdTopLevelDefaultRestartRefineRunReport {
     pub fn runtime_state(&self) -> Option<&EarthmeshRuntimeState> {
         match self {
             MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => report.runtime_state(),
-            MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(run) => {
-                run.runtime_state()
-            }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) => {
-                Some(run.runtime_state())
-            }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(run) => {
+            MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(run) => {
                 Some(run.runtime_state())
             }
         }
@@ -214,30 +254,7 @@ impl MkgrdTopLevelDefaultRestartRefineRunReport {
             MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
                 report.final_domain_contain_runtime_counts()
             }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(run) => {
-                run.refine.as_ref().and_then(|refine| {
-                    refine
-                        .execution
-                        .final_handoff
-                        .generated_contain
-                        .as_ref()
-                        .map(|contain| &contain.runtime_counts)
-                })
-            }
-            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(run) => run
-                .report
-                .execution
-                .final_handoff
-                .generated_contain
-                .as_ref()
-                .map(|contain| &contain.runtime_counts),
-            MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(run) => run
-                .report
-                .execution
-                .final_handoff
-                .generated_contain
-                .as_ref()
-                .map(|contain| &contain.runtime_counts),
+            MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(_) => None,
         }
     }
 }
@@ -1184,7 +1201,10 @@ pub fn write_merit_hydro_region_close_masks(
     if tiles.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("no MERIT-Hydro tiles under {} overlap the region", merit_root.as_ref().display()),
+            format!(
+                "no MERIT-Hydro tiles under {} overlap the region",
+                merit_root.as_ref().display()
+            ),
         ));
     }
     let mut windows = Vec::new();
@@ -5919,6 +5939,19 @@ pub struct UnstructuredMesh {
     pub n_w_to_m: Vec<i32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnstructuredMeshTopologyReport {
+    pub m_rows: usize,
+    pub w_rows: usize,
+    pub violations: Vec<String>,
+}
+
+impl UnstructuredMeshTopologyReport {
+    pub fn is_consistent(&self) -> bool {
+        self.violations.is_empty()
+    }
+}
+
 /// Typed payload returned by `MOD_file_preprocess.F90:IAP_Mesh_Read`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IapMeshReadPayload {
@@ -6069,7 +6102,7 @@ pub fn data_preprocess_source_state_final_contain_options<'a>(
         "earthmesh" => GetContainMeshKind::Loc,
         "landmesh" => GetContainMeshKind::Land,
         "oceanmesh" => GetContainMeshKind::Ocean,
-        "atmosmesh" => GetContainMeshKind::Atmos,
+        "atmos" | "atmosmesh" => GetContainMeshKind::Atmos,
         "LOCmesh" => GetContainMeshKind::Loc,
         _ => return Ok(None),
     };
@@ -6119,7 +6152,7 @@ pub fn restart_refine_final_contain_options<'a>(
         "earthmesh" => GetContainMeshKind::Loc,
         "landmesh" => GetContainMeshKind::Land,
         "oceanmesh" => GetContainMeshKind::Ocean,
-        "atmosmesh" => GetContainMeshKind::Atmos,
+        "atmos" | "atmosmesh" => GetContainMeshKind::Atmos,
         "LOCmesh" => GetContainMeshKind::Loc,
         other => {
             return Err(io::Error::new(
@@ -6238,7 +6271,7 @@ pub fn data_preprocess_source_state_final_postproc_request(
                 num_vertex: state.num_vertex,
             },
         )),
-        "atmosmesh" => Ok(Some(
+        "atmos" | "atmosmesh" => Ok(Some(
             MkgrdDataPreprocessSourceStateFinalPostprocRequest::Atmos,
         )),
         _ => Ok(None),
@@ -6762,13 +6795,18 @@ pub fn enrich_mkgrd_final_quality_with_global_distance_steps_io(
             "final global spring distance steps require runtime refine config",
         )
     })?;
-    let gridnum_perdegree =
+    let gridnum_perdegree = source_gridnum_perdegree_from_dims(
+        runtime_state.source_grid.nlons_source,
+        runtime_state.source_grid.nlats_source,
+    )
+    .or_else(|_| {
         usize::try_from(runtime_state.config.gridnum_perdegree).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "final global spring requires positive gridnum_perdegree",
             )
-        })?;
+        })
+    })?;
     let axes = build_global_source_axes_fortran_indexed(
         gridnum_perdegree,
         runtime_state.source_grid.nlons_source,
@@ -6864,6 +6902,37 @@ pub fn enrich_mkgrd_final_quality_with_global_distance_steps_io(
             "Final_Grid_Quality_Check global spring requires global_spring controls",
         ))
     }
+}
+
+fn source_gridnum_perdegree_from_dims(
+    nlons_source: usize,
+    nlats_source: usize,
+) -> io::Result<usize> {
+    if nlons_source == 0 || nlats_source == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "final global spring requires nonzero source-grid dimensions",
+        ));
+    }
+    if nlons_source % 360 != 0 || nlats_source % 180 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "final global spring source-grid dimensions must be global, got {nlons_source}x{nlats_source}"
+            ),
+        ));
+    }
+    let lon_gridnum = nlons_source / 360;
+    let lat_gridnum = nlats_source / 180;
+    if lon_gridnum == 0 || lon_gridnum != lat_gridnum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "final global spring source-grid longitude/latitude resolutions differ: {lon_gridnum} vs {lat_gridnum}"
+            ),
+        ));
+    }
+    Ok(lon_gridnum)
 }
 
 fn count_area_judge_area_sources(
@@ -7180,30 +7249,6 @@ pub trait MkgrdRefineLoopExecutor {
 
     fn last_refine_step_post_counts(&self) -> Option<(usize, usize)> {
         None
-    }
-}
-
-/// Lightweight file-copying refine executor used for smoke/passthrough
-/// namelist runs while the heavy geometry refine kernels are being migrated.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MkgrdPassthroughRefineExecutor;
-
-impl MkgrdRefineLoopExecutor for MkgrdPassthroughRefineExecutor {
-    fn run_source_branch(
-        &mut self,
-        _step: &MkgrdRefineLoopStepIoPlan,
-        _source: &MkgrdRefineSourceIoPlan,
-    ) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn run_refine_loop_step(&mut self, step: &MkgrdRefineLoopStepIoPlan) -> io::Result<()> {
-        let mesh = read_unstructured_mesh_netcdf(&step.refine_loop_input_gridfile)?;
-        write_unstructured_mesh_netcdf(&step.refine_loop_output_gridfile, &mesh).map(|_| ())
-    }
-
-    fn run_final_quality_check(&mut self, _plan: &MkgrdFinalQualityCheckIoPlan) -> io::Result<()> {
-        Ok(())
     }
 }
 
@@ -7665,7 +7710,7 @@ fn mkgrd_calculated_getref_output_refs<'a>(
     match mesh_type {
         "landmesh" => Ok((Some(required_output_at(outputs, 0, "land")?), None, None)),
         "oceanmesh" => Ok((None, Some(required_output_at(outputs, 0, "ocean")?), None)),
-        "atmosmesh" => Ok((None, None, Some(required_output_at(outputs, 0, "atmos")?))),
+        "atmos" | "atmosmesh" => Ok((None, None, Some(required_output_at(outputs, 0, "atmos")?))),
         "LOCmesh" | "earthmesh" => Ok((
             Some(required_output_at(outputs, 0, "land")?),
             Some(required_output_at(outputs, 1, "ocean")?),
@@ -8303,12 +8348,12 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
         "earthmesh" => GetContainMeshKind::Loc,
         "landmesh" => GetContainMeshKind::Land,
         "oceanmesh" => GetContainMeshKind::Ocean,
-        "atmosmesh" => GetContainMeshKind::Atmos,
+        "atmos" | "atmosmesh" => GetContainMeshKind::Atmos,
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "mask_restart Area_judge final postproc supports earthmesh/landmesh/oceanmesh/atmosmesh; got {other}"
+                    "mask_restart Area_judge final postproc supports earthmesh/landmesh/oceanmesh/atmos or atmosmesh; got {other}"
                 ),
             ));
         }
@@ -8336,7 +8381,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
     let atmos_contain_domain = restart.plan.remask.file_dir.join("contain").join(format!(
         "contain_{mesh_type}_domain_NXP{nxpc}_{mode_grid}.nc4"
     ));
-    let postproc_plan = if mesh_type == "atmosmesh" {
+    let postproc_plan = if matches!(mesh_type, "atmos" | "atmosmesh") {
         None
     } else {
         Some(plan_mask_postproc_domain_io(
@@ -8475,7 +8520,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
                 },
             )?)
         }
-        "atmosmesh" => match config.output_format.trim() {
+        "atmos" | "atmosmesh" => match config.output_format.trim() {
             "MPAS" => {
                 MkgrdFinalDomainPostprocReport::AtmosFull(write_mask_postproc_atmos_mpas_netcdf(
                     &restart.plan.remask.file_dir,
@@ -8825,130 +8870,10 @@ pub fn prepare_mkgrd_refine_loop_namelist_with_source_grid(
     })
 }
 
-/// Run the migrated namelist-level refine path with an injected executor for
-/// the remaining heavy refine kernels.
-pub fn run_mkgrd_refine_loop_namelist_with_executor(
-    namelist_source: impl AsRef<Path>,
-    workdir: impl AsRef<Path>,
-    lon_vertex: &[f64],
-    lat_vertex: &[f64],
-    lon_i: &[f64],
-    lat_i: &[f64],
-    gridnum_perdegree: usize,
-    nlons_source: usize,
-    nlats_source: usize,
-    first_triangle_id: usize,
-    executor: &mut impl MkgrdRefineLoopExecutor,
-    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
-) -> io::Result<MkgrdRefineLoopNamelistRunReport> {
-    run_mkgrd_refine_loop_namelist_with_executor_and_source_grid(
-        namelist_source,
-        workdir,
-        MkgrdRefinePrepareSourceGridOptions {
-            lon_vertex,
-            lat_vertex,
-            lon_i,
-            lat_i,
-            gridnum_perdegree,
-            nlons_source,
-            nlats_source,
-            first_triangle_id,
-        },
-        executor,
-        postproc_options,
-    )
-}
-
-/// Run the migrated namelist-level refine path with typed source-grid options
-/// and an injected executor for the remaining heavy refine kernels.
-pub fn run_mkgrd_refine_loop_namelist_with_executor_and_source_grid(
-    namelist_source: impl AsRef<Path>,
-    workdir: impl AsRef<Path>,
-    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
-    executor: &mut impl MkgrdRefineLoopExecutor,
-    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
-) -> io::Result<MkgrdRefineLoopNamelistRunReport> {
-    let prepare =
-        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
-    let execution = run_mkgrd_refine_loop_execution(&prepare.plan, executor, postproc_options)?;
-    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
-}
-
-/// Run the migrated namelist-level refine path while allowing callers to
-/// provide the final `Get_Contain(0)` domain inputs after `read_nl` has prepared
-/// the workspace but before execution reaches the final handoff.
-pub fn run_mkgrd_refine_loop_namelist_with_executor_and_source_grid_and_final_domain_contain<F>(
-    namelist_source: impl AsRef<Path>,
-    workdir: impl AsRef<Path>,
-    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
-    executor: &mut impl MkgrdRefineLoopExecutor,
-    contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
-    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
-    after_prepare: F,
-) -> io::Result<MkgrdRefineLoopNamelistRunReport>
-where
-    F: FnOnce(&MkgrdRefineLoopPrepareReport) -> io::Result<()>,
-{
-    let prepare =
-        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
-    after_prepare(&prepare)?;
-    let execution = run_mkgrd_refine_loop_execution_with_final_domain_contain(
-        &prepare.plan,
-        executor,
-        contain_options,
-        postproc_options,
-    )?;
-    Ok(MkgrdRefineLoopNamelistRunReport { prepare, execution })
-}
-
-/// Run the migrated top-level `mkgrd.x` namelist path through initial grid
-/// generation and, when `NL%refine=.true.`, the migrated refine-loop
-/// orchestration.
+/// Compatibility entry for the former global-source refine smoke path.
 ///
-/// The legacy `read_nl`/workspace prepare step removes and recreates the case
-/// directory before refine execution.  To preserve the real top-level ordering
-/// without relying on stale files, this runner snapshots the initial gridfile
-/// into Rust memory after gridinit, runs refine prepare, then restores that mesh
-/// to the first refine-loop input path before executing the supplied refine
-/// executor.
-pub fn run_mkgrd_top_level_namelist_with_refine_executor_and_source_grid(
-    namelist_source: impl AsRef<Path>,
-    workdir: impl AsRef<Path>,
-    max_tris: usize,
-    source_grid: MkgrdRefinePrepareSourceGridOptions<'_>,
-    executor: &mut impl MkgrdRefineLoopExecutor,
-    postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
-) -> io::Result<MkgrdTopLevelNamelistRunReport> {
-    let namelist_source = namelist_source.as_ref();
-    let workdir = workdir.as_ref();
-    let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
-    if !gridinit.config.refine {
-        return Ok(MkgrdTopLevelNamelistRunReport {
-            gridinit,
-            refine: None,
-        });
-    }
-
-    let initial_mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
-    let prepare =
-        prepare_mkgrd_refine_loop_namelist_with_source_grid(namelist_source, workdir, source_grid)?;
-    let first_step = prepare.plan.steps.first().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "refine plan must include at least one refine-loop step",
-        )
-    })?;
-    write_unstructured_mesh_netcdf(&first_step.refine_loop_input_gridfile, &initial_mesh)?;
-    let execution = run_mkgrd_refine_loop_execution(&prepare.plan, executor, postproc_options)?;
-
-    Ok(MkgrdTopLevelNamelistRunReport {
-        gridinit,
-        refine: Some(MkgrdRefineLoopNamelistRunReport { prepare, execution }),
-    })
-}
-
-/// Execute the top-level refine path from compact global source-grid
-/// dimensions using a passthrough geometry executor.
+/// The source-grid dimension arguments are retained for older callers, but
+/// refinement now always dispatches through the direct OLAM path.
 pub fn run_mkgrd_refine_passthrough_global_source_namelist(
     namelist_source: impl AsRef<Path>,
     workdir: impl AsRef<Path>,
@@ -8957,19 +8882,2291 @@ pub fn run_mkgrd_refine_passthrough_global_source_namelist(
     nlons_source: usize,
     nlats_source: usize,
     first_triangle_id: usize,
-) -> io::Result<MkgrdTopLevelNamelistRunReport> {
-    let axes =
-        build_global_source_axes_fortran_indexed(gridnum_perdegree, nlons_source, nlats_source)?;
-    let source_grid = axes.refine_prepare_source_grid(first_triangle_id);
-    let mut executor = MkgrdPassthroughRefineExecutor;
-    run_mkgrd_top_level_namelist_with_refine_executor_and_source_grid(
+) -> io::Result<MkgrdOlamSpecifiedRefineRunReport> {
+    let _ = (nlons_source, nlats_source, first_triangle_id);
+    run_mkgrd_olam_specified_refine_global_source_namelist(
         namelist_source,
         workdir,
         max_tris,
-        source_grid,
-        &mut executor,
-        None,
+        Some(gridnum_perdegree),
     )
+}
+
+/// Execute a real specified-refinement top-level path using synthetic global
+/// source geometry when no land-type source file is available.
+pub fn run_mkgrd_atmos_specified_refine_global_source_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    gridnum_perdegree: usize,
+    nlons_source: usize,
+    nlats_source: usize,
+    first_triangle_id: usize,
+) -> io::Result<MkgrdOlamSpecifiedRefineRunReport> {
+    let _ = (nlons_source, nlats_source, first_triangle_id);
+    run_mkgrd_olam_specified_refine_global_source_namelist(
+        namelist_source,
+        workdir,
+        max_tris,
+        Some(gridnum_perdegree),
+    )
+}
+
+/// Execute global specified refinement directly through the OLAM
+/// Delaunay/Voronoi mesh layer.
+pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    source_gridnum_perdegree: Option<usize>,
+) -> io::Result<MkgrdOlamSpecifiedRefineRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
+    let native_mdomain = read_olam_native_mdomain(&contents)?;
+    let native_deltax = read_olam_native_deltax(&contents)?;
+    let native_global_like_domain =
+        native_mdomain.map_or(config.mask_domain_global, |mdomain| mdomain < 2);
+    let native_surface_global_domain =
+        native_mdomain.map_or(config.mask_domain_global, |mdomain| mdomain == 0);
+    let native_sfcgrid_res_factor = read_olam_native_sfcgrid_res_factor(&contents)?;
+    let native_surface_global_expansion = !is_atmosmesh && native_sfcgrid_res_factor > 1;
+    let native_olam_regions_requested =
+        olam_native_refinement_requested(&contents, config.mesh_type.trim())?;
+    if !config.refine && !native_surface_global_expansion && !native_olam_regions_requested {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OLAM specified refine requires NL%refine=.true.",
+        ));
+    }
+    if !matches!(
+        config.mesh_type.trim(),
+        "atmos" | "atmosmesh" | "landmesh" | "oceanmesh" | "LOCmesh" | "earthmesh"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OLAM global-source specified refine currently supports atmos, atmosmesh, landmesh, oceanmesh, LOCmesh, and earthmesh",
+        ));
+    }
+    if config.nxp <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be positive for OLAM specified refine",
+        ));
+    }
+    let uses_existing_mode_file = PathBuf::from(config.mode_file.trim()).exists();
+    let native_global_grid_requested = native_mdomain.is_some()
+        || native_olam_regions_requested
+        || native_surface_global_expansion;
+    if native_global_grid_requested
+        && native_global_like_domain
+        && !uses_existing_mode_file
+        && config.nxp % 3 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NXP must be divisible by 3 for an OLAM global run",
+        ));
+    }
+    if config.niter < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "niter must be non-negative for OLAM specified refine",
+        ));
+    }
+    let native_atmosphere_regions =
+        read_olam_native_refinement_regions_for_grid(&contents, true, native_global_like_domain)?;
+    let native_surface_regions = if is_atmosmesh {
+        Vec::new()
+    } else {
+        read_olam_native_refinement_regions_for_grid(&contents, false, native_global_like_domain)?
+    };
+    if !is_atmosmesh
+        && !native_surface_global_domain
+        && (native_surface_global_expansion
+            || !native_atmosphere_regions.is_empty()
+            || !native_surface_regions.is_empty())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native OLAM surface Method-C grids require a global domain",
+        ));
+    }
+    let native_regions =
+        read_olam_native_refinement_regions(&contents, is_atmosmesh, native_global_like_domain)?;
+    if !native_regions.is_empty() {
+        validate_olam_native_method_c_spawn_mdomain(native_mdomain)?;
+    }
+    let refine = match RefineConfig::from_mkrefine_namelist(
+        &contents,
+        config.mesh_type.trim(),
+        config.mode_grid.trim(),
+    ) {
+        Ok(refine) => refine,
+        Err(_err) if !native_regions.is_empty() || native_surface_global_expansion => {
+            read_olam_native_refine_controls(&contents)?
+        }
+        Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err)),
+    };
+    if !refine.refine_spc && !refine.refine_cal {
+        if native_regions.is_empty() && !native_surface_global_expansion {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM direct path requires refine_spc, refine_cal, or native OLAM ngrids/nsfcgrids to be active.",
+            ));
+        }
+    }
+    let max_spc_level = if refine.refine_spc {
+        final_quality_non_negative_usize(
+            refine.max_iter_spc,
+            "OLAM specified refine max_iter_spc must be non-negative",
+        )?
+    } else {
+        0
+    };
+    let max_cal_level = if refine.refine_cal {
+        final_quality_non_negative_usize(
+            refine.max_iter_cal,
+            "OLAM calculated refine max_iter_cal must be non-negative",
+        )?
+    } else {
+        0
+    };
+    let max_native_level = olam_native_refinement_depth(&contents, is_atmosmesh)?;
+    let max_surface_expansion_level = usize::from(native_surface_global_expansion);
+    let max_level = max_spc_level
+        .max(max_cal_level)
+        .max(max_native_level)
+        .max(max_surface_expansion_level);
+    if refine.refine_spc && !(1..=5).contains(&max_spc_level) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OLAM direct refine max_iter_spc/max_iter_cal must select a level in 1..=5",
+        ));
+    }
+    if refine.refine_cal && !(1..=5).contains(&max_cal_level) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OLAM direct refine max_iter_spc/max_iter_cal must select a level in 1..=5",
+        ));
+    }
+
+    let native_only_spawn =
+        !native_regions.is_empty() && !refine.refine_spc && !refine.refine_cal;
+    let native_cartesian_xy =
+        olam_native_method_c_uses_cartesian_xy(native_mdomain, config.mask_domain_global, native_only_spawn);
+    let olam_nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+
+    let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    let mut regions = native_regions;
+    if refine.refine_spc {
+        regions.extend(read_olam_specified_refinement_regions(
+            &refine,
+            max_spc_level,
+            olam_nxp,
+        )?);
+    }
+    if refine.refine_cal {
+        regions.extend(read_olam_calculated_refinement_regions(
+            &refine,
+            max_cal_level,
+        )?);
+    }
+    if regions.is_empty() {
+        if !native_surface_global_expansion {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "OLAM direct refine found no region sources",
+            ));
+        }
+    }
+
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let mesh = if let Some(mesh) =
+        olam_native_initial_delaunay_mesh(nxp, native_mdomain, native_deltax)?
+    {
+        mesh
+    } else {
+        let source_gridfile = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
+        olam_delaunay_mesh_from_unstructured_gridfile(
+            &source_gridfile,
+            nxp,
+            usize::try_from(config.niter).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "NL%niter must fit usize")
+            })?,
+            f64::from(config.beta),
+            f64::from(config.relax),
+            max_tris,
+        )?
+    };
+    let spring_nest_iterations = if native_only_spawn {
+        if !is_atmosmesh {
+            let atmosphere_iterations = if native_atmosphere_regions.is_empty() {
+                0
+            } else {
+                olam_native_method_c_spring_iterations(&refine, true, &config.runtype)?
+            };
+            let surface_iterations = if native_surface_regions.is_empty() {
+                0
+            } else {
+                olam_native_method_c_spring_iterations(&refine, false, &config.runtype)?
+            };
+            atmosphere_iterations.max(surface_iterations)
+        } else {
+            olam_native_method_c_spring_iterations(&refine, is_atmosmesh, &config.runtype)?
+        }
+    } else if native_surface_global_expansion
+        && native_surface_regions.is_empty()
+        && !refine.refine_spc
+        && !refine.refine_cal
+    {
+        0
+    } else {
+        olam_method_c_spring_iterations(&refine, is_atmosmesh)?
+    };
+    let (mesh, spring_nest_passes) = if !is_atmosmesh
+        && (native_only_spawn || native_surface_global_expansion)
+        && !refine.refine_spc
+        && !refine.refine_cal
+    {
+        let atmosphere_max_level = native_atmosphere_regions
+            .iter()
+            .map(olam_refinement_region_level)
+            .max()
+            .unwrap_or(0);
+        let surface_max_level = native_surface_regions
+            .iter()
+            .map(olam_refinement_region_level)
+            .max()
+            .unwrap_or(0);
+        let atmosphere_spring_iterations =
+            olam_native_method_c_spring_iterations(&refine, true, &config.runtype)?;
+        let surface_spring_iterations =
+            olam_native_method_c_spring_iterations(&refine, false, &config.runtype)?;
+        let (mesh, atmosphere_spring_passes) = if atmosphere_max_level > 0 {
+            if atmosphere_spring_iterations > 0 {
+                if native_cartesian_xy {
+                    mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                        &native_atmosphere_regions,
+                        atmosphere_max_level,
+                        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                        nxp,
+                        atmosphere_spring_iterations,
+                        native_deltax,
+                    )?
+                } else {
+                    mesh.spawn_nest_with_spring_as_atmosmesh(
+                        &native_atmosphere_regions,
+                        atmosphere_max_level,
+                        nxp,
+                        atmosphere_spring_iterations,
+                    )?
+                }
+            } else {
+                (
+                    if native_cartesian_xy {
+                        mesh.spawn_nest_cartesian_xy_with_max_mrows(
+                            &native_atmosphere_regions,
+                            atmosphere_max_level,
+                            OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                        )?
+                    } else {
+                        mesh.spawn_nest_as_atmosmesh(&native_atmosphere_regions, atmosphere_max_level)?
+                    },
+                    0,
+                )
+            }
+        } else {
+            (mesh, 0)
+        };
+        let mesh = if native_surface_global_expansion {
+            mesh.expand_by_factor(native_sfcgrid_res_factor)?
+        } else {
+            mesh
+        };
+        let surface_nxp = nxp.checked_mul(native_sfcgrid_res_factor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM native nxp_sfc overflows usize",
+            )
+        })?;
+        let (mesh, surface_spring_passes) = if native_surface_regions.is_empty() {
+            (mesh, 0)
+        } else if surface_spring_iterations > 0 {
+            if native_cartesian_xy {
+                mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                    &native_surface_regions,
+                    surface_max_level,
+                    OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                    surface_nxp,
+                    surface_spring_iterations,
+                    native_deltax,
+                )?
+            } else {
+                mesh.spawn_nest_with_spring(
+                    &native_surface_regions,
+                    surface_max_level,
+                    surface_nxp,
+                    surface_spring_iterations,
+                )?
+            }
+        } else {
+            (
+                if native_cartesian_xy {
+                    mesh.spawn_nest_cartesian_xy_with_max_mrows(
+                        &native_surface_regions,
+                        surface_max_level,
+                        OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                    )?
+                } else {
+                    mesh.spawn_nest_as_surface(&native_surface_regions, surface_max_level)?
+                },
+                0,
+            )
+        };
+        (mesh, atmosphere_spring_passes + surface_spring_passes)
+    } else if spring_nest_iterations > 0 {
+        if native_cartesian_xy {
+            mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                &regions,
+                max_level,
+                if is_atmosmesh {
+                    OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
+                } else {
+                    OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+                },
+                nxp,
+                spring_nest_iterations,
+                native_deltax,
+            )?
+        } else if is_atmosmesh {
+            mesh.spawn_nest_with_spring_and_max_mrows(
+                &regions,
+                max_level,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                nxp,
+                spring_nest_iterations,
+            )?
+        } else {
+            mesh.spawn_nest_with_spring_and_max_mrows(
+                &regions,
+                max_level,
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                nxp,
+                spring_nest_iterations,
+            )?
+        }
+    } else if native_cartesian_xy {
+        (
+            mesh.spawn_nest_cartesian_xy_with_max_mrows(
+                &regions,
+                max_level,
+                if is_atmosmesh {
+                    OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
+                } else {
+                    OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+                },
+            )?,
+            0,
+        )
+    } else if is_atmosmesh {
+        (mesh.spawn_nest_as_atmosmesh(&regions, max_level)?, 0)
+    } else {
+        (mesh.spawn_nest(&regions, max_level)?, 0)
+    };
+    let transition_faces = mesh.boundary_rows().len();
+
+    let state = if native_cartesian_xy {
+        let mut state = voronoi_grid_from_olam_delaunay_mesh_cartesian(
+            &mesh,
+            earthmesh_core::EARTH_RADIUS_METERS,
+        )?;
+        grid_cartesian_xy_to_lonlat_placeholders_fortran_indexed_state(&mut state.grid)?;
+        state
+    } else {
+        let mut state =
+            voronoi_grid_from_olam_delaunay_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
+        pcvt_adjust_voronoi_grid_state(&mut state)?;
+        grid_xyz2lonlat_fortran_indexed_state(&mut state.grid)?;
+        state
+    };
+
+    let file_dir = PathBuf::from(config.file_dir());
+    let output_path = file_dir.join("result").join(format!(
+        "gridfile_NXP{nxp:04}_{}.nc4",
+        config.mode_grid.trim()
+    ));
+    let domain_region = read_olam_domain_region(&config)?;
+    let output_mesh = gridfile_mesh_from_fortran_indexed_state(&state.grid, &state.tabs)?;
+    let has_landtype_file =
+        namelist_sets_landtype_file(&contents) && landtype_file_is_real(&config.landtype_file);
+    let (raw_output, landtype_masked_cells, coupled_outputs, output) = if has_landtype_file
+        && matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh")
+    {
+        let gridnum_perdegree = match source_gridnum_perdegree {
+            Some(value) => value,
+            None => usize::try_from(config.gridnum_perdegree).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "NL%gridnum_perdegree must be positive for OLAM landtype mask, got {}",
+                        config.gridnum_perdegree
+                    ),
+                )
+            })?,
+        };
+        if gridnum_perdegree == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "gridnum_perdegree must be positive for OLAM landtype mask",
+            ));
+        }
+        let raw_path = mkgrd_tmpfile_path(
+            &file_dir,
+            nxp,
+            max_level,
+            &format!("olam_raw_{}", config.mode_grid.trim()),
+        );
+        let raw_output = write_unstructured_mesh_netcdf(&raw_path, &output_mesh)?;
+        let landtype_input = if let Some(region) = domain_region.as_ref() {
+            let domain_path = mkgrd_tmpfile_path(
+                &file_dir,
+                nxp,
+                max_level,
+                &format!("olam_domain_{}", config.mode_grid.trim()),
+            );
+            let kept = write_regional_gridfile(
+                &raw_output.output,
+                &domain_path,
+                region,
+                config.mode_grid.trim(),
+            )?;
+            if kept == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OLAM domain mask kept no cells",
+                ));
+            }
+            domain_path
+        } else {
+            raw_output.output.clone()
+        };
+        let kept = write_landtype_masked_gridfile(
+            &landtype_input,
+            &output_path,
+            &config.landtype_file,
+            gridnum_perdegree,
+            config.mode_grid.trim(),
+            config.mesh_type.trim(),
+        )?;
+        let masked_mesh = read_unstructured_mesh_netcdf(&output_path)?;
+        let output = UnstructuredMeshWriteReport {
+            output: output_path.clone(),
+            sjx_points: masked_mesh.m_points.len(),
+            lbx_points: masked_mesh.w_points.len(),
+            dimc: unstructured_dimc(&masked_mesh),
+        };
+        (Some(raw_output), Some(kept), None, output)
+    } else if config.mesh_type.trim() == "LOCmesh" {
+        if !has_landtype_file {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LOCmesh OLAM specified refine requires a real NL%landtype_file",
+            ));
+        }
+        let gridnum_perdegree = match source_gridnum_perdegree {
+            Some(value) => value,
+            None => usize::try_from(config.gridnum_perdegree).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "NL%gridnum_perdegree must be positive for OLAM LOC coupling, got {}",
+                        config.gridnum_perdegree
+                    ),
+                )
+            })?,
+        };
+        if gridnum_perdegree == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "gridnum_perdegree must be positive for OLAM LOC coupling",
+            ));
+        }
+        let raw_path = mkgrd_tmpfile_path(
+            &file_dir,
+            nxp,
+            max_level,
+            &format!("olam_raw_{}", config.mode_grid.trim()),
+        );
+        let (raw_output, output) = write_olam_mesh_with_optional_domain(
+            &output_mesh,
+            &raw_path,
+            &output_path,
+            domain_region.as_ref(),
+            config.mode_grid.trim(),
+        )?;
+        let land_output_path = file_dir.join("result").join(format!(
+            "gridfile_NXP{nxp:04}_{}_landmesh.nc4",
+            config.mode_grid.trim()
+        ));
+        let ocean_output_path = file_dir.join("result").join(format!(
+            "gridfile_NXP{nxp:04}_{}_oceanmesh.nc4",
+            config.mode_grid.trim()
+        ));
+        let land_kept = write_landtype_masked_gridfile(
+            &output.output,
+            &land_output_path,
+            &config.landtype_file,
+            gridnum_perdegree,
+            config.mode_grid.trim(),
+            "landmesh",
+        )?;
+        let ocean_kept = write_landtype_masked_gridfile(
+            &output.output,
+            &ocean_output_path,
+            &config.landtype_file,
+            gridnum_perdegree,
+            config.mode_grid.trim(),
+            "oceanmesh",
+        )?;
+        let land_mesh = read_unstructured_mesh_netcdf(&land_output_path)?;
+        let ocean_mesh = read_unstructured_mesh_netcdf(&ocean_output_path)?;
+        let land_output = UnstructuredMeshWriteReport {
+            output: land_output_path,
+            sjx_points: land_mesh.m_points.len(),
+            lbx_points: land_mesh.w_points.len(),
+            dimc: unstructured_dimc(&land_mesh),
+        };
+        let ocean_output = UnstructuredMeshWriteReport {
+            output: ocean_output_path,
+            sjx_points: ocean_mesh.m_points.len(),
+            lbx_points: ocean_mesh.w_points.len(),
+            dimc: unstructured_dimc(&ocean_mesh),
+        };
+        let output_stem = output_path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("gridfile_NXP{nxp:04}_{}", config.mode_grid.trim()));
+        let standard_dir = file_dir.join("standard");
+        let coupling_csv = standard_dir.join(format!("CoLM_{output_stem}_cells.csv"));
+        let coupling_netcdf_path = standard_dir.join(format!("CoLM_{output_stem}_coupling.nc4"));
+        let manifest_path = standard_dir.join(format!("CoLM_{output_stem}_manifest.json"));
+        let case_name = config.experiment_name.trim();
+        let counts = write_colm_coupling_csv_from_mesh(
+            &output.output,
+            &config.landtype_file,
+            gridnum_perdegree,
+            case_name,
+            config.mode_grid.trim(),
+            &coupling_csv,
+        )?;
+        let coupling_netcdf = write_colm_coupling_netcdf_from_csv(
+            &coupling_csv,
+            &coupling_netcdf_path,
+            case_name,
+            &manifest_path,
+        )?;
+        let manifest = write_colm_package_delivery_manifest(
+            &manifest_path,
+            case_name,
+            coupling_netcdf.rows,
+            &coupling_netcdf.output,
+            None,
+            None,
+        )?;
+        let coupled_outputs = MkgrdOlamCoupledOutputReport {
+            land_output,
+            ocean_output,
+            coupling_csv,
+            coupling_netcdf,
+            manifest,
+            counts,
+        };
+        (
+            raw_output.or_else(|| Some(output.clone())),
+            Some(land_kept + ocean_kept),
+            Some(coupled_outputs),
+            output,
+        )
+    } else {
+        let raw_path = mkgrd_tmpfile_path(
+            &file_dir,
+            nxp,
+            max_level,
+            &format!("olam_raw_{}", config.mode_grid.trim()),
+        );
+        let (raw_output, output) = write_olam_mesh_with_optional_domain(
+            &output_mesh,
+            &raw_path,
+            &output_path,
+            domain_region.as_ref(),
+            config.mode_grid.trim(),
+        )?;
+        (raw_output, None, None, output)
+    };
+
+    let mut runtime_state =
+        EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
+    runtime_state.grid = state.grid;
+    runtime_state.ijtabs = state.tabs;
+    runtime_state
+        .record_pentagon_indices_from_icosahedron(state.impent)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    runtime_state
+        .record_mesh_counts_for_step(max_level, runtime_state.grid.nma, runtime_state.grid.nwa)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+
+    Ok(MkgrdOlamSpecifiedRefineRunReport {
+        gridinit,
+        refine,
+        regions,
+        max_level,
+        transition_faces,
+        spring_nest_passes,
+        spring_nest_iterations,
+        raw_output,
+        landtype_masked_cells,
+        coupled_outputs,
+        output,
+        runtime_state,
+    })
+}
+
+fn olam_method_c_spring_iterations(refine: &RefineConfig, is_atmosmesh: bool) -> io::Result<usize> {
+    if refine.spring_global_type != 1 {
+        return Ok(0);
+    }
+    if refine.niter_refine_specified {
+        return final_quality_non_negative_usize(
+            refine.niter_refine,
+            "OLAM specified refine niter_refine must be non-negative",
+        );
+    }
+    Ok(if is_atmosmesh { 5000 } else { 2000 })
+}
+
+fn olam_native_method_c_spring_iterations(
+    _refine: &RefineConfig,
+    is_atmosmesh: bool,
+    runtype: &str,
+) -> io::Result<usize> {
+    Ok(if runtype.trim() == "MAKEGRID_PLOT" {
+        100
+    } else if is_atmosmesh {
+        5000
+    } else {
+        2000
+    })
+}
+
+fn olam_native_method_c_uses_cartesian_xy(
+    native_mdomain: Option<usize>,
+    mask_domain_global: bool,
+    native_only_spawn: bool,
+) -> bool {
+    native_only_spawn && native_mdomain.map_or(!mask_domain_global, |mdomain| mdomain == 5)
+}
+
+fn validate_olam_native_method_c_spawn_mdomain(native_mdomain: Option<usize>) -> io::Result<()> {
+    match native_mdomain {
+        Some(mdomain @ 1..=4) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM Method-C spawn_nest supports mdomain 0 or 5; mdomain={} uses a different Fortran gridinit path",
+                mdomain
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn olam_native_initial_delaunay_mesh(
+    nxp: usize,
+    native_mdomain: Option<usize>,
+    native_deltax: f64,
+) -> io::Result<Option<OlamDelaunayMesh>> {
+    if native_mdomain == Some(5) {
+        return OlamDelaunayMesh::from_cart_hex(nxp, native_deltax).map(Some);
+    }
+    Ok(None)
+}
+
+fn olam_direct_refine_dispatch_requested(
+    contents: &str,
+    config: &EarthmeshConfig,
+) -> io::Result<bool> {
+    if !matches!(
+        config.mesh_type.trim(),
+        "atmos" | "atmosmesh" | "landmesh" | "oceanmesh" | "LOCmesh" | "earthmesh"
+    ) {
+        return Ok(false);
+    }
+    let native_surface_global_expansion =
+        olam_native_surface_global_expansion_requested(contents, config.mesh_type.trim())?;
+    let native_olam_regions_requested =
+        olam_native_refinement_requested(contents, config.mesh_type.trim())?;
+    let native_mdomain = read_olam_native_mdomain(contents)?;
+    let legacy_specified_refine = config.refine;
+    Ok(native_mdomain.is_some()
+        || native_surface_global_expansion
+        || native_olam_regions_requested
+        || legacy_specified_refine)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn olam_method_c_uses_fortran_spring_defaults_when_niter_refine_is_unspecified() {
+        let mut refine = RefineConfig::default();
+        refine.spring_global_type = 1;
+        refine.niter_refine = 100;
+        refine.niter_refine_specified = false;
+
+        assert_eq!(
+            olam_method_c_spring_iterations(&refine, false).expect("surface iterations"),
+            2000
+        );
+        assert_eq!(
+            olam_method_c_spring_iterations(&refine, true).expect("atmos iterations"),
+            5000
+        );
+    }
+
+    #[test]
+    fn olam_method_c_respects_explicit_niter_refine_for_fast_or_custom_runs() {
+        let mut refine = RefineConfig::default();
+        refine.spring_global_type = 1;
+        refine.niter_refine = 2;
+        refine.niter_refine_specified = true;
+
+        assert_eq!(
+            olam_method_c_spring_iterations(&refine, false).expect("explicit iterations"),
+            2
+        );
+    }
+
+    #[test]
+    fn olam_method_c_skips_spring_when_global_spring_is_disabled() {
+        let mut refine = RefineConfig::default();
+        refine.spring_global_type = 0;
+        refine.niter_refine_specified = false;
+
+        assert_eq!(
+            olam_method_c_spring_iterations(&refine, true).expect("disabled spring"),
+            0
+        );
+    }
+
+    #[test]
+    fn olam_calculated_refine_level_promotes_zero_and_filters_above_active_max() {
+        assert_eq!(olam_calculated_region_level(0, 3), Some(3));
+        assert_eq!(olam_calculated_region_level(1, 3), Some(1));
+        assert_eq!(olam_calculated_region_level(3, 3), Some(3));
+        assert_eq!(olam_calculated_region_level(4, 3), None);
+    }
+
+    #[test]
+    fn olam_native_method_c_uses_cartesian_xy_only_for_native_regional_spawn() {
+        assert!(olam_native_method_c_uses_cartesian_xy(None, false, true));
+        assert!(!olam_native_method_c_uses_cartesian_xy(None, true, true));
+        assert!(!olam_native_method_c_uses_cartesian_xy(None, false, false));
+        assert!(olam_native_method_c_uses_cartesian_xy(Some(5), true, true));
+        assert!(!olam_native_method_c_uses_cartesian_xy(Some(2), true, true));
+        assert!(!olam_native_method_c_uses_cartesian_xy(Some(4), true, true));
+        assert!(!olam_native_method_c_uses_cartesian_xy(Some(0), false, true));
+    }
+
+    #[test]
+    fn olam_native_method_c_rejects_unported_explicit_mdomain_spawn() {
+        validate_olam_native_method_c_spawn_mdomain(None).expect("default mdomain");
+        validate_olam_native_method_c_spawn_mdomain(Some(0)).expect("Fortran global spawn");
+        validate_olam_native_method_c_spawn_mdomain(Some(5)).expect("Fortran cart_hex spawn");
+
+        let err = validate_olam_native_method_c_spawn_mdomain(Some(4))
+            .expect_err("mdomain=4 uses cart4_hex, not Method-C spawn_nest");
+        assert!(
+            err.to_string().contains("mdomain=4"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn olam_native_initial_delaunay_mesh_uses_cart_hex_for_mdomain_five() {
+        let mesh = olam_native_initial_delaunay_mesh(2, Some(5), 1000.0)
+            .expect("mdomain=5 selection")
+            .expect("mdomain=5 uses cart_hex");
+
+        assert_eq!(mesh.nmd, 28);
+        assert_eq!(mesh.nud, 64);
+        assert_eq!(mesh.nwd, 53);
+        assert_eq!(mesh.m_points[2].z, 0.0);
+
+        assert!(
+            olam_native_initial_delaunay_mesh(2, Some(0), 1000.0)
+                .expect("mdomain=0 selection")
+                .is_none(),
+            "mdomain=0 should keep the existing global-source path"
+        );
+    }
+
+    #[test]
+    fn olam_native_deltax_matches_fortran_default_and_bounds() {
+        assert_eq!(
+            read_olam_native_deltax("&mkgrd\n/\n").expect("default deltax"),
+            1000.0
+        );
+        assert_eq!(
+            read_olam_native_deltax("&mkgrd\n  NL%deltax=2500.0\n/\n")
+                .expect("explicit deltax"),
+            2500.0
+        );
+
+        let err = read_olam_native_deltax("&mkgrd\n  NL%deltax=0.0005\n/\n")
+            .expect_err("Fortran rejects deltax below dzxmin");
+        assert!(
+            err.to_string().contains("DELTAX"),
+            "error should identify DELTAX: {err}"
+        );
+    }
+
+    #[test]
+    fn olam_native_method_c_ignores_mkrefine_niter_refine_like_fortran_spawn_nest() {
+        let mut refine = RefineConfig::default();
+        refine.niter_refine = 1;
+        refine.niter_refine_specified = true;
+
+        assert_eq!(
+            olam_native_method_c_spring_iterations(&refine, true, "MAKEGRID")
+                .expect("native atmos iterations"),
+            5000
+        );
+        assert_eq!(
+            olam_native_method_c_spring_iterations(&refine, false, "MAKEGRID")
+                .expect("native surface iterations"),
+            2000
+        );
+    }
+
+    #[test]
+    fn olam_native_method_c_uses_makegrid_plot_iterations_like_fortran_spawn_nest() {
+        let refine = RefineConfig::default();
+
+        assert_eq!(
+            olam_native_method_c_spring_iterations(&refine, true, "MAKEGRID_PLOT")
+                .expect("MAKEGRID_PLOT atmos iterations"),
+            100
+        );
+        assert_eq!(
+            olam_native_method_c_spring_iterations(&refine, false, "MAKEGRID_PLOT")
+                .expect("MAKEGRID_PLOT surface iterations"),
+            100
+        );
+    }
+
+    #[test]
+    fn olam_specified_multipoint_circle_reader_uses_fortran_corridor_with_parent_halo() {
+        let source = std::env::temp_dir().join(format!(
+            "earthmesh_cli_olam_circle_spc_{}_{}.nml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &source,
+            "circle_num = 2\ncircle_refine = 2\n115.0 25.0 500.0\n90.0 25.0 500.0\n",
+        )
+        .expect("write circle mask source");
+
+        let mut refine = RefineConfig::default();
+        refine.halo = [0, 4, 0, 0, 0, 0, 0, 0, 0, 0];
+        refine.max_transition_row = [0, 4, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut regions = Vec::new();
+        read_olam_circle_refinement_regions(&source, &refine, 2, 16, &mut regions)
+            .expect("read specified circle refinement regions");
+
+        assert_eq!(regions.len(), 2);
+        let OlamRefinementRegion::Corridor {
+            points,
+            radius_meters,
+            level,
+        } = &regions[0]
+        else {
+            panic!("parent halo should preserve Fortran multipoint corridor");
+        };
+        assert_eq!(*level, 1);
+        assert_eq!(points.len(), 2);
+        assert_eq!(radius_meters.len(), 2);
+        assert!(radius_meters.iter().all(|radius| *radius > 500_000.0));
+
+        let OlamRefinementRegion::Corridor {
+            points,
+            radius_meters,
+            level,
+        } = &regions[1]
+        else {
+            panic!("child source should preserve Fortran multipoint corridor");
+        };
+        assert_eq!(*level, 2);
+        assert_eq!(points.len(), 2);
+        assert_eq!(radius_meters, &vec![500_000.0, 500_000.0]);
+
+        let _ = fs::remove_file(source);
+    }
+
+    #[test]
+    fn olam_calculated_multipoint_circle_reader_uses_fortran_corridor() {
+        let source = std::env::temp_dir().join(format!(
+            "earthmesh_cli_olam_circle_cal_{}_{}.nml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &source,
+            "circle_num = 2\ncircle_refine = 0\n115.0 25.0 500.0\n90.0 25.0 400.0\n",
+        )
+        .expect("write calculated circle mask source");
+
+        let mut regions = Vec::new();
+        read_olam_calculated_circle_refinement_regions(&source, 3, &mut regions)
+            .expect("read calculated circle refinement regions");
+
+        assert_eq!(regions.len(), 1);
+        let OlamRefinementRegion::Corridor {
+            points,
+            radius_meters,
+            level,
+        } = &regions[0]
+        else {
+            panic!("calculated multipoint circle source should produce Fortran corridor");
+        };
+        assert_eq!(*level, 3);
+        assert_eq!(points.len(), 2);
+        assert_eq!(radius_meters, &vec![500_000.0, 400_000.0]);
+
+        let _ = fs::remove_file(source);
+    }
+
+    #[test]
+    fn olam_close_mask_reader_repeats_first_point_for_fortran_ngrdll() {
+        let source = std::env::temp_dir().join(format!(
+            "earthmesh_cli_olam_close_mask_{}_{}.nml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &source,
+            "close_num = 4\nclose_refine = 1\n100.0 15.0\n130.0 15.0\n130.0 35.0\n100.0 35.0\n",
+        )
+        .expect("write close mask source");
+
+        let mut regions = Vec::new();
+        read_olam_close_refinement_regions(&source, 1, &mut regions)
+            .expect("read close refinement regions");
+
+        let OlamRefinementRegion::Polygon { points, level } = &regions[0] else {
+            panic!("close mask should produce OLAM polygon region");
+        };
+        assert_eq!(*level, 1);
+        assert_eq!(points.len(), 5);
+        assert_eq!(points.first(), points.last());
+
+        let _ = fs::remove_file(source);
+    }
+}
+
+fn olam_delaunay_mesh_from_unstructured_gridfile(
+    mesh: &UnstructuredMesh,
+    nxp: usize,
+    nspring: usize,
+    beta: f64,
+    spring_relax: f64,
+    max_tris: usize,
+) -> io::Result<OlamDelaunayMesh> {
+    let m_point_lonlat = mesh
+        .w_points
+        .iter()
+        .map(|point| LonLatDegrees::new(point.lon, point.lat))
+        .collect::<Vec<_>>();
+    let w_face_m_points = mesh
+        .m_to_w
+        .iter()
+        .map(|row| {
+            Ok([
+                usize::try_from(row[0]).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("OLAM gridfile face contains negative M id {}", row[0]),
+                    )
+                })?,
+                usize::try_from(row[1]).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("OLAM gridfile face contains negative M id {}", row[1]),
+                    )
+                })?,
+                usize::try_from(row[2]).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("OLAM gridfile face contains negative M id {}", row[2]),
+                    )
+                })?,
+            ])
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let m_face_counts = mesh
+        .n_w_to_m
+        .iter()
+        .map(|&count| {
+            usize::try_from(count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OLAM gridfile M-point valence is negative: {count}"),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+
+    let pentagons = m_face_counts
+        .iter()
+        .enumerate()
+        .filter(|&(row, &count)| row > 0 && count == 5)
+        .count();
+    if pentagons == 12 {
+        return OlamDelaunayMesh::from_voronoi_gridfile_tables(
+            &m_point_lonlat,
+            &w_face_m_points,
+            &m_face_counts,
+        );
+    }
+    let factors = olam_gridinit_factorization_fortran(nxp).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid OLAM gridinit NXP {nxp}"),
+        )
+    })?;
+    let mut mesh = OlamDelaunayMesh::from_icosahedron(
+        factors.base_nxp,
+        nspring,
+        beta,
+        spring_relax,
+        max_tris,
+    )
+    .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "failed to build OLAM icosahedron fallback for NXP={}",
+                    factors.base_nxp
+                ),
+            )
+        })?;
+    if factors.expansion_factor > 1 {
+        mesh = mesh.expand_by_factor(factors.expansion_factor)?;
+    }
+    Ok(mesh)
+}
+
+fn read_olam_native_refine_controls(contents: &str) -> io::Result<RefineConfig> {
+    let mut refine = RefineConfig::default();
+    for assignment in olam_namelist_assignments(contents, "mkrefine")? {
+        match assignment.field.as_str() {
+            "istransition" => {
+                refine.is_transition =
+                    parse_olam_native_bool(&assignment.field, &assignment.value)?
+            }
+            "iterd" => {
+                refine.iter_d = parse_olam_native_bool(&assignment.field, &assignment.value)?
+            }
+            "springglobal_type" => {
+                refine.spring_global_type =
+                    parse_olam_native_i32(&assignment.field, &assignment.value)?
+            }
+            "springregional_type" => {
+                refine.spring_regional_type =
+                    parse_olam_native_i32(&assignment.field, &assignment.value)?
+            }
+            "num_rc" => {
+                refine.num_rc = parse_olam_native_i32(&assignment.field, &assignment.value)?
+            }
+            "set_dis_type" => {
+                refine.set_dis_type = parse_olam_native_string(&assignment.value);
+            }
+            "niter_refine" => {
+                refine.niter_refine = parse_olam_native_i32(&assignment.field, &assignment.value)?;
+                refine.niter_refine_specified = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(refine)
+}
+
+fn read_olam_native_refinement_regions(
+    contents: &str,
+    is_atmosmesh: bool,
+    validate_geographic_bounds: bool,
+) -> io::Result<Vec<OlamRefinementRegion>> {
+    validate_olam_native_optional_usize_bounds(contents, "gridplot_base", 2, OLAM_NATIVE_MAX_GRIDS)?;
+    validate_olam_native_optional_usize_bounds(
+        contents,
+        "sfcgridplot_base",
+        1,
+        OLAM_NATIVE_MAX_GRIDS,
+    )?;
+    if is_atmosmesh {
+        return read_olam_native_refinement_regions_for_grid(
+            contents,
+            true,
+            validate_geographic_bounds,
+        );
+    }
+    let mut regions = read_olam_native_refinement_regions_for_grid(
+        contents,
+        true,
+        validate_geographic_bounds,
+    )?;
+    regions.extend(read_olam_native_refinement_regions_for_grid(
+        contents,
+        false,
+        validate_geographic_bounds,
+    )?);
+    Ok(regions)
+}
+
+const OLAM_NATIVE_MAX_GRIDS: usize = 20;
+const OLAM_NATIVE_MAX_GRID_POINTS: usize = 20;
+const OLAM_NATIVE_MIN_GRID_SPACING_METERS: f64 = 0.001;
+
+fn read_olam_native_refinement_regions_for_grid(
+    contents: &str,
+    is_atmosgrid: bool,
+    validate_geographic_bounds: bool,
+) -> io::Result<Vec<OlamRefinementRegion>> {
+    let grid_count_field = if is_atmosgrid { "ngrids" } else { "nsfcgrids" };
+    let point_count_field = if is_atmosgrid {
+        "ngrdll"
+    } else {
+        "nsfcgrdll"
+    };
+    let radius_field = if is_atmosgrid {
+        "grdrad"
+    } else {
+        "sfcgrdrad"
+    };
+    let lat_field = if is_atmosgrid { "grdlat" } else { "sfcgrdlat" };
+    let lon_field = if is_atmosgrid { "grdlon" } else { "sfcgrdlon" };
+
+    let mut grid_count = None;
+    let mut point_counts = BTreeMap::<usize, usize>::new();
+    let mut radii = BTreeMap::<(usize, usize), f64>::new();
+    let mut lats = BTreeMap::<(usize, usize), f64>::new();
+    let mut lons = BTreeMap::<(usize, usize), f64>::new();
+
+    for assignment in olam_namelist_assignments(contents, "mkgrd")? {
+        match assignment.field.as_str() {
+            field if field == grid_count_field => {
+                grid_count = Some(parse_olam_native_usize(&assignment.field, &assignment.value)?);
+            }
+            field if field == point_count_field => {
+                let grid_index = olam_native_index(&assignment, 0)?;
+                validate_olam_native_assignment_grid_index(
+                    point_count_field,
+                    grid_index,
+                    OLAM_NATIVE_MAX_GRIDS,
+                )?;
+                point_counts.insert(
+                    grid_index,
+                    parse_olam_native_usize(&assignment.field, &assignment.value)?,
+                );
+            }
+            field if field == radius_field => {
+                let grid_index = olam_native_index(&assignment, 0)?;
+                let point_index = olam_native_index(&assignment, 1)?;
+                validate_olam_native_assignment_grid_point_index(
+                    radius_field,
+                    grid_index,
+                    point_index,
+                    OLAM_NATIVE_MAX_GRIDS,
+                    OLAM_NATIVE_MAX_GRID_POINTS,
+                )?;
+                radii.insert(
+                    (grid_index, point_index),
+                    parse_olam_native_f64(&assignment.field, &assignment.value)?,
+                );
+            }
+            field if field == lat_field => {
+                let grid_index = olam_native_index(&assignment, 0)?;
+                let point_index = olam_native_index(&assignment, 1)?;
+                validate_olam_native_assignment_grid_point_index(
+                    lat_field,
+                    grid_index,
+                    point_index,
+                    OLAM_NATIVE_MAX_GRIDS,
+                    OLAM_NATIVE_MAX_GRID_POINTS,
+                )?;
+                lats.insert(
+                    (grid_index, point_index),
+                    parse_olam_native_f64(&assignment.field, &assignment.value)?,
+                );
+            }
+            field if field == lon_field => {
+                let grid_index = olam_native_index(&assignment, 0)?;
+                let point_index = olam_native_index(&assignment, 1)?;
+                validate_olam_native_assignment_grid_point_index(
+                    lon_field,
+                    grid_index,
+                    point_index,
+                    OLAM_NATIVE_MAX_GRIDS,
+                    OLAM_NATIVE_MAX_GRID_POINTS,
+                )?;
+                lons.insert(
+                    (grid_index, point_index),
+                    parse_olam_native_f64(&assignment.field, &assignment.value)?,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let Some(grid_count) = grid_count else {
+        return Ok(Vec::new());
+    };
+    if is_atmosgrid && grid_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native OLAM ngrids must be at least 1",
+        ));
+    }
+    if grid_count > OLAM_NATIVE_MAX_GRIDS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {grid_count_field} must be no greater than {OLAM_NATIVE_MAX_GRIDS}, got {grid_count}"
+            ),
+        ));
+    }
+    if is_atmosgrid
+        && !olam_native_atmosphere_grid_count_spawns(read_olam_native_mdomain(contents)?, grid_count)
+    {
+        return Ok(Vec::new());
+    }
+    let first_grid = if is_atmosgrid { 2 } else { 1 };
+    if grid_count < first_grid {
+        return Ok(Vec::new());
+    }
+
+    let mut regions = Vec::new();
+    for grid_index in first_grid..=grid_count {
+        let point_count = *point_counts.get(&grid_index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("native OLAM {point_count_field}({grid_index}) is required"),
+            )
+        })?;
+        if point_count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("native OLAM {point_count_field}({grid_index}) must be positive"),
+            ));
+        }
+        if point_count > OLAM_NATIVE_MAX_GRID_POINTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "native OLAM {point_count_field}({grid_index}) must be no greater than {OLAM_NATIVE_MAX_GRID_POINTS}, got {point_count}"
+                ),
+            ));
+        }
+        let level = if is_atmosgrid {
+            grid_index - 1
+        } else {
+            grid_index
+        };
+        let mut points = Vec::with_capacity(point_count);
+        let mut radius_meters = Vec::with_capacity(point_count);
+        for point_index in 1..=point_count {
+            let key = (grid_index, point_index);
+            let lat = *lats.get(&key).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("native OLAM {lat_field}({grid_index},{point_index}) is required"),
+                )
+            })?;
+            let lon = *lons.get(&key).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("native OLAM {lon_field}({grid_index},{point_index}) is required"),
+                )
+            })?;
+            let radius = *radii.get(&key).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("native OLAM {radius_field}({grid_index},{point_index}) is required"),
+                )
+            })?;
+            if validate_geographic_bounds {
+                validate_olam_native_lat_lon_radius(
+                    lat_field,
+                    lon_field,
+                    radius_field,
+                    grid_index,
+                    point_index,
+                    lat,
+                    lon,
+                    radius,
+                )?;
+            }
+            points.push(LonLatDegrees::new(lon, lat));
+            radius_meters.push(radius);
+        }
+        if points.len() == 1 {
+            regions.push(OlamRefinementRegion::Circle {
+                center: points[0],
+                radius_meters: radius_meters[0],
+                level,
+            });
+        } else {
+            regions.push(OlamRefinementRegion::Corridor {
+                points,
+                radius_meters,
+                level,
+            });
+        }
+    }
+    Ok(regions)
+}
+
+fn validate_olam_native_optional_usize_bounds(
+    contents: &str,
+    field: &str,
+    min_value: usize,
+    max_value: usize,
+) -> io::Result<()> {
+    for assignment in olam_namelist_assignments(contents, "mkgrd")? {
+        if assignment.field == field {
+            let value = parse_olam_native_usize(&assignment.field, &assignment.value)?;
+            if value < min_value || value > max_value {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "native OLAM {field} must be in [{min_value}, {max_value}], got {value}"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_olam_native_assignment_grid_index(
+    field: &str,
+    grid_index: usize,
+    max_grids: usize,
+) -> io::Result<()> {
+    if grid_index == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("native OLAM {field} index must be at least 1"),
+        ));
+    }
+    if grid_index > max_grids {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {field} index {grid_index} exceeds Fortran OLAM maxgrds {max_grids}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_olam_native_assignment_grid_point_index(
+    field: &str,
+    grid_index: usize,
+    point_index: usize,
+    max_grids: usize,
+    max_grid_points: usize,
+) -> io::Result<()> {
+    validate_olam_native_assignment_grid_index(field, grid_index, max_grids)?;
+    if point_index == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("native OLAM {field} point index must be at least 1"),
+        ));
+    }
+    if point_index > max_grid_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {field} index ({grid_index},{point_index}) exceeds Fortran OLAM maxngrdll {max_grid_points}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_olam_native_lat_lon_radius(
+    lat_field: &str,
+    lon_field: &str,
+    radius_field: &str,
+    grid_index: usize,
+    point_index: usize,
+    lat: f64,
+    lon: f64,
+    radius: f64,
+) -> io::Result<()> {
+    if !(-90.0..=90.0).contains(&lat) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {lat_field}({grid_index},{point_index}) must be in [-90, 90], got {lat}"
+            ),
+        ));
+    }
+    if !(-180.0..=180.0).contains(&lon) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {lon_field}({grid_index},{point_index}) must be in [-180, 180], got {lon}"
+            ),
+        ));
+    }
+    if radius < OLAM_NATIVE_MIN_GRID_SPACING_METERS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {radius_field}({grid_index},{point_index}) must be at least {OLAM_NATIVE_MIN_GRID_SPACING_METERS}, got {radius}"
+            ),
+        ));
+    }
+    let max_radius = earthmesh_core::EARTH_RADIUS_METERS * 2.0;
+    if radius > max_radius {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM {radius_field}({grid_index},{point_index}) must be no greater than {max_radius}, got {radius}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn olam_native_grid_count(contents: &str, field: &str) -> io::Result<Option<usize>> {
+    for assignment in olam_namelist_assignments(contents, "mkgrd")? {
+        if assignment.field == field {
+            return parse_olam_native_usize(&assignment.field, &assignment.value).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn read_olam_native_mdomain(contents: &str) -> io::Result<Option<usize>> {
+    let Some(mdomain) = olam_native_grid_count(contents, "mdomain")? else {
+        return Ok(None);
+    };
+    if mdomain > 5 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("native OLAM mdomain must be in [0, 5], got {mdomain}"),
+        ));
+    }
+    Ok(Some(mdomain))
+}
+
+fn read_olam_native_deltax(contents: &str) -> io::Result<f64> {
+    let mut deltax = 1000.0;
+    for assignment in olam_namelist_assignments(contents, "mkgrd")? {
+        if assignment.field == "deltax" {
+            deltax = parse_olam_native_f64(&assignment.field, &assignment.value)?;
+        }
+    }
+    if deltax < OLAM_NATIVE_MIN_GRID_SPACING_METERS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM DELTAX must be at least {OLAM_NATIVE_MIN_GRID_SPACING_METERS}, got {deltax}"
+            ),
+        ));
+    }
+    Ok(deltax)
+}
+
+fn olam_native_atmosphere_grid_count_spawns(
+    native_mdomain: Option<usize>,
+    grid_count: usize,
+) -> bool {
+    grid_count > 1 && native_mdomain.map_or(true, |mdomain| matches!(mdomain, 0 | 5))
+}
+
+fn read_olam_native_sfcgrid_res_factor(contents: &str) -> io::Result<usize> {
+    let factor = olam_native_grid_count(contents, "sfcgrid_res_factor")?.unwrap_or(1);
+    if factor == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native OLAM sfcgrid_res_factor must be positive",
+        ));
+    }
+    let mut remaining_factor = factor;
+    while remaining_factor % 2 == 0 {
+        remaining_factor /= 2;
+    }
+    while remaining_factor % 3 == 0 {
+        remaining_factor /= 3;
+    }
+    if remaining_factor != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM sfcgrid_res_factor must be 1 or have prime factors only of 2 and/or 3, got {factor}"
+            ),
+        ));
+    }
+    Ok(factor)
+}
+
+fn olam_native_surface_global_expansion_requested(
+    contents: &str,
+    mesh_type: &str,
+) -> io::Result<bool> {
+    if matches!(mesh_type, "atmos" | "atmosmesh") {
+        return Ok(false);
+    }
+    Ok(read_olam_native_sfcgrid_res_factor(contents)? > 1)
+}
+
+fn olam_native_refinement_requested(contents: &str, mesh_type: &str) -> io::Result<bool> {
+    let native_mdomain = read_olam_native_mdomain(contents)?;
+    let atmosphere_requested = match olam_native_grid_count(contents, "ngrids")? {
+        Some(0) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "native OLAM ngrids must be at least 1",
+            ))
+        }
+        Some(count) => olam_native_atmosphere_grid_count_spawns(native_mdomain, count),
+        None => false,
+    };
+    if matches!(mesh_type, "atmos" | "atmosmesh") {
+        return Ok(atmosphere_requested);
+    }
+    let surface_requested = olam_native_grid_count(contents, "nsfcgrids")?.is_some_and(|count| count > 0);
+    Ok(atmosphere_requested || surface_requested)
+}
+
+#[derive(Debug, Clone)]
+struct OlamNamelistAssignment {
+    field: String,
+    indices: Vec<usize>,
+    value: String,
+}
+
+fn olam_namelist_assignments(
+    contents: &str,
+    section: &str,
+) -> io::Result<Vec<OlamNamelistAssignment>> {
+    let section_header = format!("&{}", section.to_ascii_lowercase());
+    let mut assignments = Vec::new();
+    let mut in_section = false;
+    for line in contents.lines() {
+        let uncommented = line.split('!').next().unwrap_or("").trim();
+        let lower = uncommented.to_ascii_lowercase();
+        if lower.starts_with(&section_header) {
+            in_section = true;
+            continue;
+        }
+        if in_section && uncommented == "/" {
+            break;
+        }
+        if !in_section || uncommented.is_empty() {
+            continue;
+        }
+        let Some((lhs, rhs)) = uncommented.split_once('=') else {
+            continue;
+        };
+        let Some((field, indices)) = parse_olam_native_lhs(lhs)? else {
+            continue;
+        };
+        assignments.push(OlamNamelistAssignment {
+            field,
+            indices,
+            value: parse_olam_native_string(rhs.trim_end_matches(',')),
+        });
+    }
+    Ok(assignments)
+}
+
+fn parse_olam_native_lhs(lhs: &str) -> io::Result<Option<(String, Vec<usize>)>> {
+    let raw = lhs.trim().to_ascii_lowercase();
+    let field = raw.rsplit('%').next().unwrap_or(&raw).trim();
+    if field.is_empty() {
+        return Ok(None);
+    }
+    let Some(open) = field.find('(') else {
+        return Ok(Some((field.to_string(), Vec::new())));
+    };
+    let Some(close) = field[open + 1..].find(')') else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid OLAM native namelist field index syntax: {lhs}"),
+        ));
+    };
+    let close = open + 1 + close;
+    let name = field[..open].trim().to_string();
+    let mut indices = Vec::new();
+    for raw_index in field[open + 1..close].split(',') {
+        let index = raw_index.trim().parse::<usize>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid OLAM native namelist index in {lhs}: {err}"),
+            )
+        })?;
+        indices.push(index);
+    }
+    Ok(Some((name, indices)))
+}
+
+fn olam_native_index(assignment: &OlamNamelistAssignment, offset: usize) -> io::Result<usize> {
+    assignment.indices.get(offset).copied().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native OLAM field {} requires index {}",
+                assignment.field,
+                offset + 1
+            ),
+        )
+    })
+}
+
+fn parse_olam_native_string(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"')
+        .trim()
+        .to_string()
+}
+
+fn parse_olam_native_bool(field: &str, value: &str) -> io::Result<bool> {
+    match value.trim().trim_matches('.').to_ascii_lowercase().as_str() {
+        "true" | "t" => Ok(true),
+        "false" | "f" => Ok(false),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid OLAM native boolean {field}={value}"),
+        )),
+    }
+}
+
+fn parse_olam_native_i32(field: &str, value: &str) -> io::Result<i32> {
+    value.trim().parse::<i32>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid OLAM native integer {field}={value}: {err}"),
+        )
+    })
+}
+
+fn parse_olam_native_usize(field: &str, value: &str) -> io::Result<usize> {
+    value.trim().parse::<usize>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid OLAM native integer {field}={value}: {err}"),
+        )
+    })
+}
+
+fn parse_olam_native_f64(field: &str, value: &str) -> io::Result<f64> {
+    value
+        .trim()
+        .replace('D', "E")
+        .replace('d', "e")
+        .parse::<f64>()
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid OLAM native real {field}={value}: {err}"),
+            )
+        })
+}
+
+fn olam_native_refinement_depth(contents: &str, is_atmosmesh: bool) -> io::Result<usize> {
+    let native_mdomain = read_olam_native_mdomain(contents)?;
+    let atmosphere_grid_count = olam_native_grid_count(contents, "ngrids")?.unwrap_or(1);
+    let atmosphere_depth =
+        if olam_native_atmosphere_grid_count_spawns(native_mdomain, atmosphere_grid_count) {
+            atmosphere_grid_count.saturating_sub(1)
+        } else {
+            0
+        };
+    if is_atmosmesh {
+        return Ok(atmosphere_depth);
+    }
+    let surface_grid_count = olam_native_grid_count(contents, "nsfcgrids")?.unwrap_or(0);
+    Ok(atmosphere_depth + surface_grid_count)
+}
+
+fn olam_refinement_region_level(region: &OlamRefinementRegion) -> usize {
+    match region {
+        OlamRefinementRegion::Circle { level, .. }
+        | OlamRefinementRegion::Bbox { level, .. }
+        | OlamRefinementRegion::Corridor { level, .. }
+        | OlamRefinementRegion::Polygon { level, .. } => *level,
+    }
+}
+
+fn read_olam_specified_refinement_regions(
+    refine: &RefineConfig,
+    max_level: usize,
+    nxp: usize,
+) -> io::Result<Vec<OlamRefinementRegion>> {
+    let discovery = discover_mask_sources(&refine.mask_refine_spc_fprefix)?;
+    let mut regions = Vec::new();
+    for source in discovery.files {
+        match refine.mask_refine_spc_type.trim() {
+            "circle" => {
+                read_olam_circle_refinement_regions(&source, refine, max_level, nxp, &mut regions)?
+            }
+            "bbox" => read_olam_bbox_refinement_regions(&source, max_level, &mut regions)?,
+            "close" => read_olam_close_refinement_regions(&source, max_level, &mut regions)?,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("OLAM direct specified refine does not yet support {other} regions"),
+                ));
+            }
+        }
+    }
+    merge_olam_method_c_regions_by_shape(&mut regions);
+    Ok(regions)
+}
+
+fn read_olam_calculated_refinement_regions(
+    refine: &RefineConfig,
+    max_level: usize,
+) -> io::Result<Vec<OlamRefinementRegion>> {
+    let discovery = discover_mask_sources(&refine.mask_refine_cal_fprefix)?;
+    let mut regions = Vec::new();
+    for source in discovery.files {
+        match refine.mask_refine_cal_type.trim() {
+            "circle" => {
+                read_olam_calculated_circle_refinement_regions(&source, max_level, &mut regions)?
+            }
+            "bbox" => {
+                read_olam_calculated_bbox_refinement_regions(&source, max_level, &mut regions)?
+            }
+            "close" => {
+                read_olam_calculated_close_refinement_regions(&source, max_level, &mut regions)?
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("OLAM direct calculated refine does not yet support {other} regions"),
+                ));
+            }
+        }
+    }
+    Ok(regions)
+}
+
+fn olam_calculated_region_level(mask_refine_degree: usize, max_level: usize) -> Option<usize> {
+    if mask_refine_degree == 0 {
+        Some(max_level)
+    } else if mask_refine_degree <= max_level {
+        Some(mask_refine_degree)
+    } else {
+        None
+    }
+}
+
+fn read_olam_circle_refinement_regions(
+    source: &Path,
+    refine: &RefineConfig,
+    max_level: usize,
+    nxp: usize,
+    regions: &mut Vec<OlamRefinementRegion>,
+) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_circle_mask_nml(source, max_level)?,
+        Some("nc") | Some("nc4") => {
+            let mask = read_circle_mask_netcdf(source)?;
+            if mask.refine_degree > max_level {
+                None
+            } else {
+                Some(mask)
+            }
+        }
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    if mask.refine_degree == 0 {
+        return Ok(());
+    }
+    let points = mask
+        .points
+        .iter()
+        .map(|point| LonLatDegrees::new(point.lon, point.lat))
+        .collect::<Vec<_>>();
+    let radius_meters = mask
+        .radius_km
+        .iter()
+        .map(|radius_km| radius_km * 1_000.0)
+        .collect::<Vec<_>>();
+    push_olam_circle_or_corridor_region_with_parent_halos(
+        regions,
+        points,
+        radius_meters,
+        mask.refine_degree,
+        refine,
+        nxp,
+    )?;
+    Ok(())
+}
+
+fn push_olam_circle_or_corridor_region_with_parent_halos(
+    regions: &mut Vec<OlamRefinementRegion>,
+    points: Vec<LonLatDegrees>,
+    radius_meters: Vec<f64>,
+    level: usize,
+    refine: &RefineConfig,
+    nxp: usize,
+) -> io::Result<()> {
+    if nxp == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OLAM specified circle halo expansion requires positive NXP",
+        ));
+    }
+    let base_spacing =
+        std::f64::consts::PI * 2.0 * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
+    for parent_level in 1..level {
+        let mut halo_meters = 0.0;
+        for transition_level in parent_level..level {
+            let halo_rows = refine
+                .halo
+                .get(transition_level)
+                .copied()
+                .unwrap_or(0)
+                .max(refine.max_transition_row.get(transition_level).copied().unwrap_or(0));
+            if halo_rows > 0 {
+                halo_meters +=
+                    halo_rows as f64 * base_spacing / 2.0_f64.powi((transition_level - 1) as i32);
+            }
+        }
+        let expanded_radius_meters = radius_meters
+            .iter()
+            .map(|radius_meters| radius_meters + halo_meters)
+            .collect::<Vec<_>>();
+        push_olam_circle_or_corridor_region(
+            regions,
+            points.clone(),
+            expanded_radius_meters,
+            parent_level,
+        );
+    }
+    push_olam_circle_or_corridor_region(regions, points, radius_meters, level);
+    Ok(())
+}
+
+fn push_olam_circle_or_corridor_region(
+    regions: &mut Vec<OlamRefinementRegion>,
+    points: Vec<LonLatDegrees>,
+    radius_meters: Vec<f64>,
+    level: usize,
+) {
+    if points.len() == 1 && radius_meters.len() == 1 {
+        regions.push(OlamRefinementRegion::Circle {
+            center: points[0],
+            radius_meters: radius_meters[0],
+            level,
+        });
+    } else {
+        regions.push(OlamRefinementRegion::Corridor {
+            points,
+            radius_meters,
+            level,
+        });
+    }
+}
+
+fn merge_olam_method_c_regions_by_shape(regions: &mut Vec<OlamRefinementRegion>) {
+    let mut merged = Vec::<OlamRefinementRegion>::with_capacity(regions.len());
+    'next_region: for region in regions.drain(..) {
+        match region {
+            OlamRefinementRegion::Circle {
+                center,
+                radius_meters,
+                level,
+            } => {
+                for existing in &mut merged {
+                    let OlamRefinementRegion::Circle {
+                        center: existing_center,
+                        radius_meters: existing_radius,
+                        level: existing_level,
+                    } = existing
+                    else {
+                        continue;
+                    };
+                    if *existing_level == level
+                        && existing_center.lon_degrees == center.lon_degrees
+                        && existing_center.lat_degrees == center.lat_degrees
+                    {
+                        *existing_radius = existing_radius.max(radius_meters);
+                        continue 'next_region;
+                    }
+                }
+                merged.push(OlamRefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    level,
+                });
+            }
+            OlamRefinementRegion::Corridor {
+                points,
+                radius_meters,
+                level,
+            } => {
+                for existing in &mut merged {
+                    let OlamRefinementRegion::Corridor {
+                        points: existing_points,
+                        radius_meters: existing_radius,
+                        level: existing_level,
+                    } = existing
+                    else {
+                        continue;
+                    };
+                    if *existing_level == level
+                        && *existing_points == points
+                        && existing_radius.len() == radius_meters.len()
+                    {
+                        for (existing_radius, radius_meters) in
+                            existing_radius.iter_mut().zip(radius_meters.iter())
+                        {
+                            *existing_radius = existing_radius.max(*radius_meters);
+                        }
+                        continue 'next_region;
+                    }
+                }
+                merged.push(OlamRefinementRegion::Corridor {
+                    points,
+                    radius_meters,
+                    level,
+                });
+            }
+            other => merged.push(other),
+        }
+    }
+    *regions = merged;
+}
+
+fn read_olam_calculated_circle_refinement_regions(
+    source: &Path,
+    max_level: usize,
+    regions: &mut Vec<OlamRefinementRegion>,
+) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_circle_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_circle_mask_netcdf(source)?),
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    let Some(level) = olam_calculated_region_level(mask.refine_degree, max_level) else {
+        return Ok(());
+    };
+    let points = mask
+        .points
+        .iter()
+        .map(|point| LonLatDegrees::new(point.lon, point.lat))
+        .collect::<Vec<_>>();
+    let radius_meters = mask
+        .radius_km
+        .iter()
+        .map(|radius_km| radius_km * 1_000.0)
+        .collect::<Vec<_>>();
+    push_olam_circle_or_corridor_region(regions, points, radius_meters, level);
+    Ok(())
+}
+
+fn read_olam_bbox_refinement_regions(
+    source: &Path,
+    max_level: usize,
+    regions: &mut Vec<OlamRefinementRegion>,
+) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_bbox_mask_nml(source, max_level)?,
+        Some("nc") | Some("nc4") => {
+            let mask = read_bbox_mask_netcdf(source)?;
+            if mask.refine_degree > max_level {
+                None
+            } else {
+                Some(mask)
+            }
+        }
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    if mask.refine_degree == 0 {
+        return Ok(());
+    }
+    for point in &mask.points {
+        regions.push(OlamRefinementRegion::Bbox {
+            west_degrees: point.west,
+            east_degrees: point.east,
+            south_degrees: point.south,
+            north_degrees: point.north,
+            level: mask.refine_degree,
+        });
+    }
+    Ok(())
+}
+
+fn read_olam_calculated_bbox_refinement_regions(
+    source: &Path,
+    max_level: usize,
+    regions: &mut Vec<OlamRefinementRegion>,
+) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_bbox_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_bbox_mask_netcdf(source)?),
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    let Some(level) = olam_calculated_region_level(mask.refine_degree, max_level) else {
+        return Ok(());
+    };
+    for point in &mask.points {
+        regions.push(OlamRefinementRegion::Bbox {
+            west_degrees: point.west,
+            east_degrees: point.east,
+            south_degrees: point.south,
+            north_degrees: point.north,
+            level,
+        });
+    }
+    Ok(())
+}
+
+fn read_olam_close_refinement_regions(
+    source: &Path,
+    max_level: usize,
+    regions: &mut Vec<OlamRefinementRegion>,
+) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_close_mask_nml(source, max_level)?,
+        Some("nc") | Some("nc4") => {
+            let mask = read_close_mask_netcdf(source)?;
+            if mask.refine_degree > max_level {
+                None
+            } else {
+                Some(mask)
+            }
+        }
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    if mask.refine_degree == 0 {
+        return Ok(());
+    }
+    regions.push(OlamRefinementRegion::Polygon {
+        points: olam_close_mask_points_for_fortran_ngrdll(&mask.points),
+        level: mask.refine_degree,
+    });
+    Ok(())
+}
+
+fn read_olam_calculated_close_refinement_regions(
+    source: &Path,
+    max_level: usize,
+    regions: &mut Vec<OlamRefinementRegion>,
+) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_close_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_close_mask_netcdf(source)?),
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    let Some(level) = olam_calculated_region_level(mask.refine_degree, max_level) else {
+        return Ok(());
+    };
+    regions.push(OlamRefinementRegion::Polygon {
+        points: olam_close_mask_points_for_fortran_ngrdll(&mask.points),
+        level,
+    });
+    Ok(())
+}
+
+fn olam_close_mask_points_for_fortran_ngrdll(points: &[LonLatPoint]) -> Vec<LonLatDegrees> {
+    let mut converted = points
+        .iter()
+        .map(|point| LonLatDegrees::new(point.lon, point.lat))
+        .collect::<Vec<_>>();
+    if converted.len() >= 3 && converted.first() != converted.last() {
+        if let Some(first) = converted.first().cloned() {
+            converted.push(first);
+        }
+    }
+    converted
+}
+
+fn read_olam_domain_region(config: &EarthmeshConfig) -> io::Result<Option<GridRegion>> {
+    if config.mask_domain_global {
+        return Ok(None);
+    }
+    let prefix = config.mask_domain_fprefix.trim();
+    if prefix.is_empty() || prefix == "none" || prefix == "/tmp" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "regional OLAM direct path requires NL%mask_domain_fprefix",
+        ));
+    }
+    let discovery = discover_mask_sources(prefix)?;
+    let mut regions = Vec::new();
+    for source in discovery.files {
+        match config.mask_domain_type.trim() {
+            "bbox" => read_olam_bbox_domain_regions(&source, &mut regions)?,
+            "circle" => read_olam_circle_domain_regions(&source, &mut regions)?,
+            "close" => read_olam_close_domain_regions(&source, &mut regions)?,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("OLAM direct regional domain does not support {other} masks"),
+                ));
+            }
+        }
+    }
+    match regions.len() {
+        0 => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no domain mask sources matched {prefix}"),
+        )),
+        1 => Ok(regions.pop()),
+        _ => Ok(Some(GridRegion::Any(regions))),
+    }
+}
+
+fn read_olam_bbox_domain_regions(source: &Path, regions: &mut Vec<GridRegion>) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_bbox_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_bbox_mask_netcdf(source)?),
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    for point in mask.points {
+        regions.push(GridRegion::Bbox {
+            west: point.west,
+            east: point.east,
+            north: point.north,
+            south: point.south,
+        });
+    }
+    Ok(())
+}
+
+fn read_olam_circle_domain_regions(source: &Path, regions: &mut Vec<GridRegion>) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_circle_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_circle_mask_netcdf(source)?),
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    let Some(mask) = mask else {
+        return Ok(());
+    };
+    for (point, radius_km) in mask.points.into_iter().zip(mask.radius_km) {
+        regions.push(GridRegion::Circle {
+            lon: point.lon,
+            lat: point.lat,
+            radius_km,
+        });
+    }
+    Ok(())
+}
+
+fn read_olam_close_domain_regions(source: &Path, regions: &mut Vec<GridRegion>) -> io::Result<()> {
+    let mask = match source_extension(source).as_deref() {
+        Some("nml") => parse_close_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_close_mask_netcdf(source)?),
+        _ => return Err(unsupported_mask_source(source)),
+    };
+    if let Some(mask) = mask {
+        regions.push(GridRegion::Close {
+            points: mask.points,
+        });
+    }
+    Ok(())
+}
+
+fn unstructured_mesh_write_report_from_file(
+    output: impl AsRef<Path>,
+) -> io::Result<UnstructuredMeshWriteReport> {
+    let output = output.as_ref();
+    let mesh = read_unstructured_mesh_netcdf(output)?;
+    Ok(UnstructuredMeshWriteReport {
+        output: output.to_path_buf(),
+        sjx_points: mesh.m_points.len(),
+        lbx_points: mesh.w_points.len(),
+        dimc: unstructured_dimc(&mesh),
+    })
+}
+
+fn write_olam_mesh_with_optional_domain(
+    mesh: &UnstructuredMesh,
+    raw_output_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    domain_region: Option<&GridRegion>,
+    mode_grid: &str,
+) -> io::Result<(
+    Option<UnstructuredMeshWriteReport>,
+    UnstructuredMeshWriteReport,
+)> {
+    let output_path = output_path.as_ref();
+    match domain_region {
+        Some(region) => {
+            let raw_output = write_unstructured_mesh_netcdf(raw_output_path, mesh)?;
+            let kept = write_regional_gridfile(&raw_output.output, output_path, region, mode_grid)?;
+            if kept == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OLAM domain mask kept no cells",
+                ));
+            }
+            let output = unstructured_mesh_write_report_from_file(output_path)?;
+            Ok((Some(raw_output), output))
+        }
+        None => {
+            let output = write_unstructured_mesh_netcdf(output_path, mesh)?;
+            Ok((None, output))
+        }
+    }
 }
 
 /// Run the migrated top-level `mkgrd.x` namelist path with the standard
@@ -9317,7 +11514,7 @@ pub fn run_mkgrd_restart_refine_compact_source_state_namelist(
             maybe_infer_mask_restart_non_ocean_num_vertex_from_config(&config)?
                 .or(Some(source_bundle.source_state.num_vertex))
         }
-        None if config.mesh_type.trim() == "atmosmesh" => {
+        None if matches!(config.mesh_type.trim(), "atmos" | "atmosmesh") => {
             Some(source_bundle.source_state.num_vertex)
         }
         None => None,
@@ -10750,13 +12947,14 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             ));
         }
 
-        state.num_vertex = self.num_vertex;
+        let num_vertex = self.num_vertex.max(1).min(old_mp);
+        state.num_vertex = num_vertex;
         state.ref_sjx = ref_sjx[..=old_mp]
             .iter()
             .map(|&marker| if marker > 1 { 1 } else { marker })
             .collect();
         state.mrl_new = mrl_new[..=old_mp].to_vec();
-        let marked_triangles = state.ref_sjx[self.num_vertex + 1..=old_mp]
+        let marked_triangles = state.ref_sjx[num_vertex + 1..=old_mp]
             .iter()
             .filter(|&&marker| marker != 0)
             .count();
@@ -10835,7 +13033,8 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         } else {
             step.max_transition_row
         };
-        state.num_vertex = self.num_vertex;
+        let num_vertex = self.num_vertex.max(1).min(old_mp);
+        state.num_vertex = num_vertex;
         state.ref_sjx = ref_sjx[..=old_mp]
             .iter()
             .map(|&marker| if marker > 1 { 1 } else { marker })
@@ -10850,15 +13049,19 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                 state,
             )?;
         }
-        remove_isolated_one_into_four_markers(
-            self.num_vertex,
-            old_mp,
-            &state.triangle_neighbors,
-            &mut state.ref_sjx,
-        )?;
-        if !state.ref_sjx[self.num_vertex + 1..=old_mp]
-            .iter()
-            .any(|&marker| marker != 0)
+        if set_dis_in == 0 {
+            remove_isolated_one_into_four_markers(
+                num_vertex,
+                old_mp,
+                &state.triangle_neighbors,
+                &mut state.ref_sjx,
+            )?;
+        }
+        let active_refine_start = num_vertex + 1;
+        if active_refine_start > old_mp
+            || !state.ref_sjx[active_refine_start..=old_mp]
+                .iter()
+                .any(|&marker| marker != 0)
         {
             return Ok((
                 OnedivideFourConnectionReport {
@@ -10877,22 +13080,31 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             ));
         }
         let mut ref_sjx_segment = state.ref_sjx.clone();
-        state.num_tranrow_sjx = ref_sjx_segment[self.num_vertex + 1..=old_mp]
+        state.num_tranrow_sjx = ref_sjx_segment[num_vertex + 1..=old_mp]
             .iter()
             .filter(|&&marker| marker != 0)
             .count();
 
         let mut connection = state.apply_onedivide_four_connection()?;
-        self.expand_one_into_four_transition_band(
-            state,
+        let can_expand_transition = marked_triangles_have_valid_neighbors(
+            num_vertex,
             old_mp,
-            old_wp,
-            set_dis_in,
-            &mut ref_sjx_segment,
-            &mut connection,
-        )?;
+            &state.triangle_neighbors,
+            &state.ref_sjx,
+        );
+        if can_expand_transition {
+            self.expand_one_into_four_transition_band(
+                state,
+                num_vertex,
+                old_mp,
+                old_wp,
+                set_dis_in,
+                &mut ref_sjx_segment,
+                &mut connection,
+            )?;
+        }
         state.ref_sjx = ref_sjx_segment;
-        state.num_tranrow_sjx = state.ref_sjx[self.num_vertex + 1..=old_mp]
+        state.num_tranrow_sjx = state.ref_sjx[num_vertex + 1..=old_mp]
             .iter()
             .filter(|&&marker| marker != 0)
             .count();
@@ -10947,6 +13159,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     fn expand_one_into_four_transition_band(
         &self,
         state: &mut RefineLoopWorkingState,
+        num_vertex: usize,
         old_mp: usize,
         old_wp: usize,
         set_dis_in: usize,
@@ -10963,12 +13176,13 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             loop {
                 let markers = refine_iter_b_judge_fortran_indexed(
                     set_dis_in,
-                    self.num_vertex,
+                    num_vertex,
                     &state.triangle_neighbors,
                     &state.mrl_new,
                 )?;
                 if !self.apply_transition_markers(
                     state,
+                    num_vertex,
                     old_mp,
                     &markers,
                     ref_sjx_segment,
@@ -10984,8 +13198,8 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                     transition_cell_views(state, old_mp, old_wp)?;
                 let markers = refine_iter_c_judge_fortran_indexed(
                     set_dis_in,
-                    self.num_vertex,
-                    self.num_vertex,
+                    num_vertex,
+                    num_vertex,
                     old_wp,
                     &state.triangle_neighbors,
                     &triangles_on_cell,
@@ -10996,6 +13210,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                 drop(cells_on_triangle);
                 if !self.apply_transition_markers(
                     state,
+                    num_vertex,
                     old_mp,
                     &markers,
                     ref_sjx_segment,
@@ -11009,7 +13224,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             let (cells_on_triangle, triangles_on_cell) =
                 transition_cell_views(state, old_mp, old_wp)?;
             let markers = refine_iter_e_judge_fortran_indexed(
-                self.num_vertex,
+                num_vertex,
                 old_wp,
                 &cells_on_triangle,
                 &triangles_on_cell,
@@ -11019,6 +13234,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             )?;
             if self.apply_transition_markers(
                 state,
+                num_vertex,
                 old_mp,
                 &markers,
                 ref_sjx_segment,
@@ -11034,7 +13250,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
             loop {
                 let (_, triangles_on_cell) = transition_cell_views(state, old_mp, old_wp)?;
                 let markers = refine_iter_g_judge_fortran_indexed(
-                    self.num_vertex,
+                    num_vertex,
                     old_wp,
                     &triangles_on_cell,
                     &state.n_ngrwm,
@@ -11042,6 +13258,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                 )?;
                 if !self.apply_transition_markers(
                     state,
+                    num_vertex,
                     old_mp,
                     &markers,
                     ref_sjx_segment,
@@ -11063,6 +13280,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
     fn apply_transition_markers(
         &self,
         state: &mut RefineLoopWorkingState,
+        num_vertex: usize,
         old_mp: usize,
         markers: &[i32],
         ref_sjx_segment: &mut [i32],
@@ -11076,7 +13294,7 @@ impl MkgrdRefineLoopWorkingStateExecutor {
         }
         state.ref_sjx.fill(0);
         let mut any = false;
-        for triangle in (self.num_vertex + 1)..=old_mp {
+        for triangle in (num_vertex + 1)..=old_mp {
             if markers[triangle] == 0 || state.mrl_new[triangle] == 4 {
                 continue;
             }
@@ -11150,6 +13368,9 @@ impl MkgrdRefineLoopWorkingStateExecutor {
                     continue;
                 }
                 for &triangle in segment.iter().take(*remaining) {
+                    if triangle == 1 {
+                        break;
+                    }
                     if triangle != 0
                         && triangle < state.ref_sjx.len()
                         && state.mrl_new[triangle] != 4
@@ -11339,6 +13560,27 @@ fn remove_isolated_one_into_four_markers(
         }
     }
     Ok(())
+}
+
+fn marked_triangles_have_valid_neighbors(
+    num_vertex: usize,
+    old_mp: usize,
+    triangle_neighbors: &[Vec<usize>],
+    ref_sjx: &[i32],
+) -> bool {
+    if triangle_neighbors.len() <= old_mp || ref_sjx.len() <= old_mp {
+        return false;
+    }
+    if !((num_vertex + 1)..=old_mp).any(|triangle| ref_sjx[triangle] != 0) {
+        return false;
+    }
+    ((num_vertex + 1)..=old_mp)
+        .filter(|&triangle| ref_sjx[triangle] != 0)
+        .all(|triangle| {
+            triangle_neighbors[triangle]
+                .iter()
+                .all(|&neighbor| neighbor != 0 && neighbor <= old_mp)
+        })
 }
 
 fn apply_previous_refine_region_prefilter(
@@ -11641,7 +13883,18 @@ impl MkgrdRefineLoopExecutor for MkgrdRefineLoopWorkingStateExecutor {
         source: &MkgrdRefineSourceIoPlan,
         report: &MkgrdRefineSourceBranchReport,
     ) -> io::Result<()> {
-        self.num_vertex = report.contain_runtime_counts().previous_num_vertex;
+        let counts = report.contain_runtime_counts();
+        if counts.previous_num_vertex > 0 {
+            self.num_vertex = counts.previous_num_vertex;
+        }
+        if let MkgrdRefineSourceBranchReport::Calculated(report) = report {
+            let threshold_files = report.getref.written_threshold_outputs();
+            if !threshold_files.is_empty() {
+                self.specified_threshold_file = None;
+                self.calculated_threshold_files = threshold_files;
+                return Ok(());
+            }
+        }
         self.accept_source_branch_outputs(step, source)
     }
 
@@ -12978,7 +15231,9 @@ pub fn apply_onedivide_two_fortran_indexed(
         ));
     }
     let old_mp = num_mp[iter - 1];
-    let base_mp = mrl_new.len().saturating_sub(1);
+    let base_mp = *num_mp
+        .get(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "num_mp[1] is required"))?;
     let new_mp = num_mp[iter];
     let old_wp = num_wp[iter - 1];
     let new_wp = num_wp[iter];
@@ -13000,7 +15255,11 @@ pub fn apply_onedivide_two_fortran_indexed(
             "ngrmw/ngrmw_new must expose one-based rows 1..=3",
         ));
     }
-    if ngrmw[1..=3].iter().any(|row| row.len() <= base_mp) {
+    let parent_ngrmw: &[Vec<usize>] = if ngrmw[1..=3].iter().all(|row| row.len() > base_mp) {
+        ngrmw
+    } else if ngrmw_new[1..=3].iter().all(|row| row.len() > base_mp) {
+        &*ngrmw_new
+    } else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -13008,7 +15267,7 @@ pub fn apply_onedivide_two_fortran_indexed(
                 base_mp + 1
             ),
         ));
-    }
+    };
     if ngrmw_new[1..=3].iter().any(|row| row.len() <= new_mp) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -13026,7 +15285,11 @@ pub fn apply_onedivide_two_fortran_indexed(
     let mut new_vertex_ids = Vec::with_capacity(split_triangles.len());
     let mut dateline_adjusted = false;
     for (split_idx, &triangle) in split_triangles.iter().enumerate() {
-        let vertex_ids = [ngrmw[1][triangle], ngrmw[2][triangle], ngrmw[3][triangle]];
+        let vertex_ids = [
+            parent_ngrmw[1][triangle],
+            parent_ngrmw[2][triangle],
+            parent_ngrmw[3][triangle],
+        ];
         let mut min_lon = f64::INFINITY;
         let mut max_lon = f64::NEG_INFINITY;
         for &vertex_id in &vertex_ids {
@@ -13057,7 +15320,7 @@ pub fn apply_onedivide_two_fortran_indexed(
         new_vertex_ids.push(w4);
     }
 
-    let mut cells_on_triangle = fortran_rows_to_triangle_major(ngrmw, base_mp)?;
+    let mut cells_on_triangle = fortran_rows_to_triangle_major(parent_ngrmw, base_mp)?;
     let mut cells_on_triangle_new = fortran_rows_to_triangle_major(ngrmw_new, new_mp)?;
     cells_on_triangle.resize(new_mp + 1, [0, 0, 0]);
     let mut triangle_points: Vec<LonLatDegrees> = mp_new
@@ -13457,26 +15720,15 @@ pub fn infer_mkgrd_effective_final_step_from_gridfiles(
     if planned_step != plan.max_iter + 1 || planned_step <= 1 {
         return Ok(planned_step);
     }
-    let previous_gridfile =
-        mkgrd_gridfile_path(&plan.file_dir, plan.nxp, planned_step - 1, &plan.mode_grid);
-    if !previous_gridfile.exists() || !plan.final_domain_gridfile.exists() {
-        return Ok(planned_step);
+    if !plan.final_domain_gridfile.exists() {
+        let previous_gridfile =
+            mkgrd_gridfile_path(&plan.file_dir, plan.nxp, planned_step - 1, &plan.mode_grid);
+        if !previous_gridfile.exists() {
+            return Ok(planned_step);
+        }
+        return Ok(planned_step - 1);
     }
-    // The no-op-collapse check is a best-effort optimisation; if either gridfile
-    // cannot be read for a point-count comparison, fall back to the planned step
-    // rather than failing the whole refine run (mirrors the not-found fallback
-    // above).
-    let (Ok(previous_counts), Ok(planned_counts)) = (
-        read_gridfile_point_counts(&previous_gridfile),
-        read_gridfile_point_counts(&plan.final_domain_gridfile),
-    ) else {
-        return Ok(planned_step);
-    };
-    if previous_counts == planned_counts {
-        Ok(planned_step - 1)
-    } else {
-        Ok(planned_step)
-    }
+    Ok(planned_step)
 }
 
 fn effective_mkgrd_refine_loop_io_plan(
@@ -13530,29 +15782,6 @@ fn retarget_final_quality_check_step(
         retargeted.output_gridfile = Some(input_gridfile);
     }
     retargeted
-}
-
-fn read_gridfile_point_counts(path: &Path) -> io::Result<(usize, usize)> {
-    let file = netcdf::open(path).map_err(netcdf_to_io_error)?;
-    let triangles = file
-        .dimension("sjx_points")
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} is missing sjx_points", path.display()),
-            )
-        })?
-        .len();
-    let cells = file
-        .dimension("lbx_points")
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} is missing lbx_points", path.display()),
-            )
-        })?
-        .len();
-    Ok((triangles, cells))
 }
 
 fn plan_mkgrd_refine_source_io(
@@ -13613,7 +15842,7 @@ fn mkgrd_calculated_threshold_outputs(
             .push(threshold_dir.join(format!("threshold_calculate_land_NXP{nxp:04}_{stepc}.nc4"))),
         "oceanmesh" => outputs
             .push(threshold_dir.join(format!("threshold_calculate_ocean_NXP{nxp:04}_{stepc}.nc4"))),
-        "atmosmesh" => outputs
+        "atmos" | "atmosmesh" => outputs
             .push(threshold_dir.join(format!("threshold_calculate_atmos_NXP{nxp:04}_{stepc}.nc4"))),
         "LOCmesh" | "earthmesh" => {
             outputs.push(
@@ -13941,12 +16170,12 @@ pub fn refine_loop_post_counts_fortran_indexed(
             )
         })?;
     let num_vertex = old_triangle_count
-        .checked_sub(removed_triangle_count)
-        .and_then(|value| value.checked_add(lop_triangle_count))
+        .saturating_sub(removed_triangle_count)
+        .checked_add(lop_triangle_count)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "post-refine num_vertex calculation overflowed or underflowed",
+                "post-refine num_vertex calculation overflowed",
             )
         })?;
     let mut num_center = old_cell_count;
@@ -14268,6 +16497,16 @@ pub fn run_mkgrd_top_level_namelist(
             .map(MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge);
         }
         return Ok(MkgrdTopLevelDispatchRunReport::MaskRestartPlan(plan));
+    }
+
+        if olam_direct_refine_dispatch_requested(&contents, &config)? {
+        return run_mkgrd_olam_specified_refine_global_source_namelist(
+            namelist_source,
+            workdir,
+            max_tris,
+            None,
+        )
+        .map(MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource);
     }
 
     run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)
@@ -14627,20 +16866,15 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
                 .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
             }
         }
-        if !config.mask_restart
-            && config.refine
-            && namelist_sets_landtype_file(&contents)
-            && landtype_file_is_real(&config.landtype_file)
-        {
-            return run_mkgrd_refine_landtype_source_namelist(
+        if !config.mask_restart && olam_direct_refine_dispatch_requested(&contents, &config)? {
+            let _ = source_first_triangle_id;
+            return run_mkgrd_olam_specified_refine_global_source_namelist(
                 namelist_source,
                 workdir,
                 max_tris,
                 source_gridnum_perdegree,
-                source_first_triangle_id,
-                MkgrdRefineLoopWorkingStateExecutor::default(),
             )
-            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource);
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource);
         }
         return run_mkgrd_top_level_namelist(
             namelist_source,
@@ -14659,27 +16893,93 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
                     "default source-state restart-refine handoff requires a source-state path",
                 )
             })?;
-            run_mkgrd_restart_refine_compact_source_state_namelist(
+            fs::metadata(source_state)?;
+            let _ = mask_postproc_num_vertex;
+            let rewritten = rewrite_restart_refine_namelist_for_olam_direct(
                 namelist_source,
                 workdir,
-                source_state,
                 &handoff.initial_gridfile,
-                mask_postproc_num_vertex,
+            )?;
+            run_mkgrd_olam_specified_refine_global_source_namelist(
+                &rewritten,
+                workdir,
+                max_tris,
+                source_gridnum_perdegree,
             )
-            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact)
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource)
         }
         MkgrdDefaultRestartRefineSource::LandtypeFile => {
-            run_mkgrd_restart_refine_landtype_source_namelist(
+            let _ = source_first_triangle_id;
+            let _ = mask_postproc_num_vertex;
+            let rewritten = rewrite_restart_refine_namelist_for_olam_direct(
                 namelist_source,
                 workdir,
                 &handoff.initial_gridfile,
+            )?;
+            run_mkgrd_olam_specified_refine_global_source_namelist(
+                &rewritten,
+                workdir,
+                max_tris,
                 source_gridnum_perdegree,
-                source_first_triangle_id,
-                mask_postproc_num_vertex,
             )
-            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype)
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource)
         }
     }
+}
+
+fn rewrite_restart_refine_namelist_for_olam_direct(
+    namelist_source: &Path,
+    workdir: &Path,
+    initial_gridfile: &Path,
+) -> io::Result<PathBuf> {
+    fs::metadata(initial_gridfile)?;
+    let contents = fs::read_to_string(namelist_source)?;
+    let mut saw_mode_file = false;
+    let mut saw_mode_file_description = false;
+    let mut in_mkgrd = false;
+    let initial_gridfile = initial_gridfile.display().to_string();
+    let mut rewritten = Vec::new();
+    for line in contents.lines() {
+        let trimmed_lower = line.trim_start().to_ascii_lowercase();
+        if trimmed_lower.starts_with("&mkgrd") {
+            in_mkgrd = true;
+            rewritten.push(line.to_string());
+            continue;
+        }
+        if in_mkgrd && line.trim() == "/" {
+            if !saw_mode_file {
+                rewritten.push(format!("  NL%mode_file='{initial_gridfile}'"));
+            }
+            if !saw_mode_file_description {
+                rewritten.push("  NL%mode_file_description='EarthMesh'".to_string());
+            }
+            in_mkgrd = false;
+            rewritten.push(line.to_string());
+            continue;
+        }
+        rewritten.push(if trimmed_lower.starts_with("nl%mask_restart") {
+            "  NL%mask_restart=.false.".to_string()
+        } else if trimmed_lower.starts_with("nl%mode_file_description") {
+            saw_mode_file_description = true;
+            "  NL%mode_file_description='EarthMesh'".to_string()
+        } else if trimmed_lower.starts_with("nl%mode_file") {
+            saw_mode_file = true;
+            format!("  NL%mode_file='{initial_gridfile}'")
+        } else {
+            line.to_string()
+        });
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    let path = workdir.join(format!(
+        "earthmesh_olam_default_restart_refine_{}_{}.nml",
+        std::process::id(),
+        stamp
+    ));
+    fs::write(&path, format!("{}\n", rewritten.join("\n")))?;
+    Ok(path)
 }
 
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
@@ -14890,6 +17190,146 @@ pub fn read_landtype_data_preprocess_fortran_indexed(
         landtypes_global,
         maxlc,
     })
+}
+
+/// Sample `landtype` values at mesh/grid cell centres without materialising the
+/// full global source raster.
+pub fn sample_landtype_values_for_points_fortran_indexed(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    points: &[LonLatPoint],
+) -> io::Result<Vec<i32>> {
+    if gridnum_perdegree == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree must be positive for landtype sampling",
+        ));
+    }
+    let nlons_source = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree * 360 overflows usize",
+        )
+    })?;
+    let nlats_source = gridnum_perdegree.checked_mul(180).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree * 180 overflows usize",
+        )
+    })?;
+    let axes =
+        build_global_source_axes_fortran_indexed(gridnum_perdegree, nlons_source, nlats_source)?;
+    if axes.lon_i.len() < 3 || axes.lat_i.len() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "land-type axes too short to derive sampling step",
+        ));
+    }
+
+    let file = netcdf::open(landtype_file.as_ref()).map_err(netcdf_to_io_error)?;
+    let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
+    let lat_dim = first_existing_dimension_len(&file, &["lat", "latitude"])?;
+    if lon_dim != nlons_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "nlons_source from landtype_file {lon_dim} != gridnum_perdegree * 360 {nlons_source}"
+            ),
+        ));
+    }
+    if lat_dim != nlats_source {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "nlats_source from landtype_file {lat_dim} != gridnum_perdegree * 180 {nlats_source}"
+            ),
+        ));
+    }
+
+    let variable = file
+        .variable("landtype")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing landtype variable"))?;
+    let dimensions = variable.dimensions();
+    if dimensions.len() != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "landtype must be 2-D over longitude and latitude",
+        ));
+    }
+    let dimension_names = dimensions
+        .iter()
+        .map(|dimension| dimension.name())
+        .collect::<Vec<_>>();
+    let dimension_lengths = dimensions
+        .iter()
+        .map(|dimension| dimension.len())
+        .collect::<Vec<_>>();
+    let lon_lat_order = if dimension_lengths == [nlons_source, nlats_source] {
+        true
+    } else if dimension_lengths == [nlats_source, nlons_source] {
+        false
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "landtype dimensions {:?} with lengths {:?} do not match expected longitude x latitude",
+                dimension_names, dimension_lengths
+            ),
+        ));
+    };
+
+    let lon0 = axes.lon_i[1];
+    let lat0 = axes.lat_i[1];
+    let dlon = axes.lon_i[2] - axes.lon_i[1];
+    let dlat = axes.lat_i[2] - axes.lat_i[1];
+    let mut cache = BTreeMap::<(usize, usize), i32>::new();
+    let mut sampled = Vec::with_capacity(points.len());
+    for point in points {
+        let lon_index =
+            (((point.lon - lon0) / dlon).round() as i64).rem_euclid(nlons_source as i64) as usize;
+        let lat_index =
+            (((point.lat - lat0) / dlat).round() as i64).clamp(0, nlats_source as i64 - 1) as usize;
+        let value = if let Some(value) = cache.get(&(lon_index, lat_index)) {
+            *value
+        } else {
+            let raw = if lon_lat_order {
+                variable
+                    .get_value::<i8, _>((lon_index, lat_index))
+                    .map_err(netcdf_to_io_error)?
+            } else {
+                variable
+                    .get_value::<i8, _>((lat_index, lon_index))
+                    .map_err(netcdf_to_io_error)?
+            };
+            let value = i32::from(raw);
+            cache.insert((lon_index, lat_index), value);
+            value
+        };
+        sampled.push(value);
+    }
+    Ok(sampled)
+}
+
+/// Sample land-type values at points and return preview/coupling surface class
+/// codes: 1=LAND, 2=OCEAN. Coast classes require separate hydro/coast data.
+pub fn sample_landtype_surface_class_codes_for_points_fortran_indexed(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    points: &[LonLatPoint],
+) -> io::Result<Vec<i8>> {
+    sample_landtype_values_for_points_fortran_indexed(landtype_file, gridnum_perdegree, points).map(
+        |values| {
+            values
+                .into_iter()
+                .map(
+                    |value| match classify_area_judge_landtype_fortran_indexed(value) {
+                        AreaJudgeLandtypeClass::Land => 1,
+                        AreaJudgeLandtypeClass::Ocean => 2,
+                    },
+                )
+                .collect()
+        },
+    )
 }
 
 /// Read the `data_preprocess` landtype source and immediately build the
@@ -16073,6 +18513,31 @@ pub struct GetRefIntegratedFileRunReport {
     pub loc_mesh: Option<GetRefLocMeshFileRunReport>,
 }
 
+impl GetRefIntegratedFileRunReport {
+    pub fn written_threshold_outputs(&self) -> Vec<PathBuf> {
+        let writes = self
+            .single_mesh
+            .as_ref()
+            .map(|report| &report.writes)
+            .or_else(|| self.loc_mesh.as_ref().map(|report| &report.writes));
+        let Some(writes) = writes else {
+            return Vec::new();
+        };
+
+        let mut outputs = Vec::new();
+        if let Some(report) = writes.land.as_ref() {
+            outputs.push(report.output.clone());
+        }
+        if let Some(report) = writes.ocean.as_ref() {
+            outputs.push(report.output.clone());
+        }
+        if let Some(report) = writes.atmos.as_ref() {
+            outputs.push(report.output.clone());
+        }
+        outputs
+    }
+}
+
 /// Evidence report from writing `MOD_grid_preprocess.F90:Springjustment_global`
 /// persistence side effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16240,13 +18705,37 @@ pub fn gridfile_mesh_from_fortran_indexed_state(
     let mut n_w_to_m = Vec::with_capacity(nwa);
     let mut w_to_m = Vec::with_capacity(nwa);
     for iw in 1..=nwa {
-        if iw == 1 {
-            n_w_to_m.push(1);
+        let explicit_npoly = tabs.w[iw].npoly;
+        let count = if iw == 1 {
+            1
+        } else if explicit_npoly > 0 {
+            let count = usize::try_from(explicit_npoly).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("itab_w[{iw}] has invalid npoly {explicit_npoly}"),
+                )
+            })?;
+            if count > tabs.w[iw].im.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "itab_w[{iw}] npoly {count} exceeds im width {}",
+                        tabs.w[iw].im.len()
+                    ),
+                ));
+            }
+            i32::try_from(count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("itab_w[{iw}] npoly {count} does not fit i32"),
+                )
+            })?
         } else if tabs.w[iw].im[5] == 1 {
-            n_w_to_m.push(5);
+            5
         } else {
-            n_w_to_m.push(6);
-        }
+            6
+        };
+        n_w_to_m.push(count);
         w_to_m.push(tabs.w[iw].im.to_vec());
     }
 
@@ -16294,7 +18783,12 @@ pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileM
     let w_to_m_width = file.dimension("dimc").map(|d| d.len()).unwrap_or(0);
     let (w_to_m, n_w) = if w_to_m_width > 0 {
         let im = required_values_i32_matrix(
-            &file, "itab_w%im", "lbx_points", "dimc", w_lon.len(), w_to_m_width,
+            &file,
+            "itab_w%im",
+            "lbx_points",
+            "dimc",
+            w_lon.len(),
+            w_to_m_width,
         )
         .unwrap_or_default();
         let n = required_values_i32(&file, "n_ngrwm").unwrap_or_default();
@@ -16400,7 +18894,16 @@ pub fn write_unstructured_mesh_netcdf(
 /// Read the compact EarthMesh unstructured gridfile schema produced by
 /// `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
 pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<UnstructuredMesh> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let input = input.as_ref();
+    let file = netcdf::open(input).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "failed to open unstructured mesh {}: {err}",
+                input.display()
+            ),
+        )
+    })?;
     let sjx_points = required_dimension_len(&file, "sjx_points")?;
     let lbx_points = required_dimension_len(&file, "lbx_points")?;
     let dimb = required_dimension_len(&file, "dimb")?;
@@ -17089,7 +19592,13 @@ pub fn read_cellwidth_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<f64>> {
 /// Read the `contain_*.nc4` schema produced by
 /// `MOD_file_preprocess.F90:Contain_Save`.
 pub fn read_contain_netcdf(input: impl AsRef<Path>) -> io::Result<ContainMesh> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let input = input.as_ref();
+    let file = netcdf::open(input).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to open contain mesh {}: {err}", input.display()),
+        )
+    })?;
     let num_ustr = required_dimension_len(&file, "num_ustr")?;
     let num_ii = required_dimension_len(&file, "num_ii")?;
     let dim_a = required_dimension_len(&file, "dim_a")?;
@@ -17418,7 +19927,7 @@ pub fn restart_refine_final_postproc_request(
             mask_sea_ratio,
             num_vertex,
         })),
-        "atmosmesh" => Ok(Some(MkgrdRestartRefineFinalPostprocRequest::Atmos)),
+        "atmos" | "atmosmesh" => Ok(Some(MkgrdRestartRefineFinalPostprocRequest::Atmos)),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -18462,7 +20971,7 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
                 bounds,
             )?;
         }
-        "atmosmesh" => {
+        "atmos" | "atmosmesh" => {
             atmos_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
                 config.threshold_dir,
                 &AREA_JUDGE_ATMOS_ONELAYER_NAMES,
@@ -20185,7 +22694,7 @@ pub fn calculate_getref_single_mesh_threshold_reports_fortran_indexed(
             )?),
             None,
         ),
-        "atmosmesh" => (
+        "atmos" | "atmosmesh" => (
             None,
             None,
             Some(calculate_getref_atmos_threshold_report_fortran_indexed(
@@ -20498,7 +23007,7 @@ fn contain_rows_to_fortran_indexed_with_empty_width(
 fn getref_ustr_ii_width_for_mesh_type(mesh_type: &str) -> io::Result<usize> {
     match mesh_type {
         "landmesh" | "oceanmesh" => Ok(2),
-        "atmosmesh" | "LOCmesh" | "earthmesh" => Ok(3),
+        "atmos" | "atmosmesh" | "LOCmesh" | "earthmesh" => Ok(3),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported GetRef mesh_type {other}"),
@@ -21218,7 +23727,7 @@ pub fn build_area_judge_seaorland_fortran_indexed(
         .unwrap_or(0);
     let mut seaorland = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
 
-    if mesh_type == "atmosmesh" && !refine {
+    if matches!(mesh_type, "atmos" | "atmosmesh") && !refine {
         return Ok(AreaJudgeSeaOrLandReport {
             seaorland,
             sum_land_grid: 0,
@@ -23406,8 +25915,9 @@ pub fn write_mpas_simple_mesh_netcdf(
 ///
 /// The Rust data shape preserves the legacy placeholder row at index `0`; all
 /// MPAS-facing variables are written from index `1..`, matching Fortran slices
-/// such as `2:num_dbx`, `2:num_sjx`, and `2:num_edge` after the earlier
-/// zero-based connectivity conversion in `mask_postproc_Atmos`.
+/// such as `2:num_dbx`, `2:num_sjx`, and `2:num_edge`. Connectivity ids have
+/// the internal placeholder row removed before writing, so valid file ids stay
+/// 1-based while `0` remains the no-neighbour/missing marker.
 pub fn write_mpas_mesh_netcdf(
     output: impl AsRef<Path>,
     mesh: &MpasMesh,
@@ -23597,7 +26107,7 @@ pub fn write_mpas_mesh_netcdf(
 ///
 /// Inputs keep the legacy placeholder row at Rust index `0`; only rows/edges
 /// from index `1` onward are written or counted, matching Fortran `2:nCells`
-/// and `2:nEdges` loops after MPAS zero-based connectivity conversion.
+/// and `2:nEdges` loops after internal placeholder-row removal.
 pub fn write_mpas_graph_info(
     output: impl AsRef<Path>,
     max_edges: usize,
@@ -23714,8 +26224,9 @@ pub fn write_mpas_graph_info(
 /// before `MPAS_Mesh_Save` and `MPAS_info_Save` write side effects.
 ///
 /// The input mesh preserves EarthMesh/Fortran indexing. The returned payload
-/// keeps a placeholder row at index 0 but converts connectivity ids to MPAS
-/// zero-based ids for rows written by `write_mpas_mesh_netcdf`.
+/// keeps a placeholder row at index 0. Connectivity ids have that internal
+/// placeholder removed before `write_mpas_mesh_netcdf` writes rows, so `0` stays
+/// a missing/boundary marker and valid file ids start at `1`.
 pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
     mesh: &UnstructuredMesh,
     cellwidth: &[f64],
@@ -24425,7 +26936,13 @@ pub fn write_regional_mpas_from_gridfile(
         &regional.cells_on_edge,
         &regional.n_edges_on_cell,
     )?;
-    Ok((MpasFullMeshPipelineReport { mesh: mesh_report, graph_info }, kept))
+    Ok((
+        MpasFullMeshPipelineReport {
+            mesh: mesh_report,
+            graph_info,
+        },
+        kept,
+    ))
 }
 
 /// Carve a CLEAN regional ocean (FVCOM) mesh from a global gridfile + a close
@@ -24455,7 +26972,10 @@ pub fn write_clean_regional_ocean_fvcom(
     }
     write_close_mask_netcdf(
         &close_path,
-        &CloseMask { refine_degree: 0, points: close_points.to_vec() },
+        &CloseMask {
+            refine_degree: 0,
+            points: close_points.to_vec(),
+        },
     )?;
 
     // Domain membership (is_in_domain) from the close curve — geometric, no data.
@@ -24491,8 +27011,13 @@ pub fn write_clean_regional_ocean_fvcom(
     fs::copy(global_gridfile, &plan.source_gridfile)?;
 
     // Area_judge payload → Get_Contain (Ocean) → contain file the carve reads.
-    let payload =
-        select_area_judge_grid_fortran_indexed(&domain.is_in_domain, None, &pre.lon_i, &pre.lat_i, bounds)?;
+    let payload = select_area_judge_grid_fortran_indexed(
+        &domain.is_in_domain,
+        None,
+        &pre.lon_i,
+        &pre.lat_i,
+        bounds,
+    )?;
     let area_grid_file = work_dir.join("tmpfile").join("area_judge_domain.nc4");
     write_area_judge_grid_netcdf(&area_grid_file, &payload)?;
     run_getcontain_refine_file_fortran_indexed(GetContainRefineFileRunConfig {
@@ -24511,7 +27036,10 @@ pub fn write_clean_regional_ocean_fvcom(
     // Clean ocean carve (tri boundary peel + carved gridfile + OBC).
     run_mask_postproc_ocean_domain(
         &plan,
-        MaskPostprocOceanRunOptions { mask_sea_ratio, num_vertex: 0 },
+        MaskPostprocOceanRunOptions {
+            mask_sea_ratio,
+            num_vertex: 0,
+        },
     )?;
 
     // Carved mesh → FVCOM .2dm. The mask_postproc output uses a 2-placeholder +
@@ -24558,7 +27086,10 @@ fn write_fvcom_2dm_from_carved(
     let mut elements = 0usize;
     for tri in mesh.m_to_w.iter().skip(1) {
         let ids = [tri[0], tri[1], tri[2]];
-        if ids.iter().any(|&v| v < 1 || (v as usize) >= new_id.len() || new_id[v as usize] == 0) {
+        if ids
+            .iter()
+            .any(|&v| v < 1 || (v as usize) >= new_id.len() || new_id[v as usize] == 0)
+        {
             continue; // touches a placeholder / boundary marker
         }
         elements += 1;
@@ -24601,33 +27132,103 @@ pub fn write_standard_fvcom_from_gridfile(
 }
 
 /// A geographic region used to carve a gridfile down to an area of interest.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum GridRegion {
-    Bbox { west: f64, east: f64, north: f64, south: f64 },
-    Circle { lon: f64, lat: f64, radius_km: f64 },
+    Bbox {
+        west: f64,
+        east: f64,
+        north: f64,
+        south: f64,
+    },
+    Circle {
+        lon: f64,
+        lat: f64,
+        radius_km: f64,
+    },
+    Close {
+        points: Vec<LonLatPoint>,
+    },
+    Any(Vec<GridRegion>),
 }
 
 impl GridRegion {
     fn contains(&self, lon: f64, lat: f64) -> bool {
         let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
-        match *self {
-            GridRegion::Bbox { west, east, north, south } => {
-                let (s, n) = (south.min(north), south.max(north));
-                let (w, e) = (norm(west), norm(east));
+        match self {
+            GridRegion::Bbox {
+                west,
+                east,
+                north,
+                south,
+            } => {
+                let (s, n) = ((*south).min(*north), (*south).max(*north));
+                let (w, e) = (norm(*west), norm(*east));
                 let lon = norm(lon);
                 lat >= s && lat <= n && lon >= w.min(e) && lon <= w.max(e)
             }
-            GridRegion::Circle { lon: clon, lat: clat, radius_km } => {
+            GridRegion::Circle {
+                lon: clon,
+                lat: clat,
+                radius_km,
+            } => {
                 let r = 6371.0_f64;
                 let (la1, la2) = (clat.to_radians(), lat.to_radians());
-                let dlat = (lat - clat).to_radians();
-                let dlon = (norm(lon) - norm(clon)).to_radians();
-                let a = (dlat / 2.0).sin().powi(2)
-                    + la1.cos() * la2.cos() * (dlon / 2.0).sin().powi(2);
-                2.0 * r * a.sqrt().asin() <= radius_km
+                let dlat = (lat - *clat).to_radians();
+                let dlon = (norm(lon) - norm(*clon)).to_radians();
+                let a =
+                    (dlat / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlon / 2.0).sin().powi(2);
+                2.0 * r * a.sqrt().asin() <= *radius_km
+            }
+            GridRegion::Close { points } => point_in_close_region(points, lon, lat),
+            GridRegion::Any(regions) => regions.iter().any(|region| region.contains(lon, lat)),
+        }
+    }
+}
+
+fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
+    if points.len() < 3 || !lon.is_finite() || !lat.is_finite() {
+        return false;
+    }
+    let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
+    let lon0 = norm(lon);
+    let unwrap = |x: f64| {
+        let mut y = norm(x);
+        if y - lon0 > 180.0 {
+            y -= 360.0;
+        } else if y - lon0 < -180.0 {
+            y += 360.0;
+        }
+        y
+    };
+    let mut inside = false;
+    let eps = 1.0e-12;
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        if !a.lon.is_finite() || !a.lat.is_finite() || !b.lon.is_finite() || !b.lat.is_finite() {
+            return false;
+        }
+        let ax = unwrap(a.lon);
+        let bx = unwrap(b.lon);
+        let ay = a.lat;
+        let by = b.lat;
+        let cross = (lon0 - ax) * (by - ay) - (lat - ay) * (bx - ax);
+        let on_segment = cross.abs() <= eps
+            && lon0 >= ax.min(bx) - eps
+            && lon0 <= ax.max(bx) + eps
+            && lat >= ay.min(by) - eps
+            && lat <= ay.max(by) + eps;
+        if on_segment {
+            return true;
+        }
+        if (ay > lat) != (by > lat) {
+            let x_at_lat = ax + (lat - ay) * (bx - ax) / (by - ay);
+            if lon0 < x_at_lat {
+                inside = !inside;
             }
         }
     }
+    inside
 }
 
 /// Carve a global gridfile down to `region` and write the regional gridfile, in
@@ -24643,14 +27244,19 @@ pub fn write_regional_gridfile(
     mode_grid: &str,
 ) -> io::Result<usize> {
     let mesh = read_unstructured_mesh_netcdf(global_gridfile)?;
-    let layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
+    let raw_layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
+    let layout = ensure_leading_mask_postproc_placeholder(raw_layout);
     let mut is_in_domain = vec![-1i32; layout.ustr_points];
     let mut kept = 0usize;
-    // Index 0 is the reserved placeholder point; keep it as the offset.
+    // Indices 0 and 1 are reserved placeholder points in the Fortran-indexed
+    // mask-postproc layout.
     if !is_in_domain.is_empty() {
         is_in_domain[0] = 0;
     }
-    for i in 1..layout.ustr_points {
+    if is_in_domain.len() > 1 {
+        is_in_domain[1] = 0;
+    }
+    for i in 2..layout.ustr_points {
         let c = layout.center_points[i];
         if region.contains(c.lon, c.lat) {
             is_in_domain[i] = 1;
@@ -24660,6 +27266,70 @@ pub fn write_regional_gridfile(
     let report =
         finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
     write_unstructured_mesh_netcdf(regional_gridfile, &report.mesh)?;
+    Ok(kept)
+}
+
+/// Carve a gridfile to land-only or ocean-only cells from a land-type NetCDF.
+///
+/// This is the direct, post-run counterpart of the data_preprocess/Area_judge
+/// sea-land classification: sample each grid cell centre against `landtype_file`,
+/// keep land cells for `landmesh`, keep ocean cells for `oceanmesh`, then use the
+/// existing mask-postproc finalization path so connectivity is compacted and
+/// renumbered consistently. Returns the number of cells kept.
+pub fn write_landtype_masked_gridfile(
+    input_gridfile: impl AsRef<Path>,
+    output_gridfile: impl AsRef<Path>,
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    mode_grid: &str,
+    mesh_type: &str,
+) -> io::Result<usize> {
+    let keep_land = match mesh_type.trim() {
+        "landmesh" => true,
+        "oceanmesh" => false,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("landtype masked gridfile supports landmesh or oceanmesh, got {other}"),
+            ))
+        }
+    };
+    let mesh = read_unstructured_mesh_netcdf(input_gridfile)?;
+    let raw_layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
+    let layout = ensure_leading_mask_postproc_placeholder(raw_layout);
+    let landtype_values = sample_landtype_values_for_points_fortran_indexed(
+        landtype_file,
+        gridnum_perdegree,
+        &layout.center_points[2..],
+    )?;
+
+    let mut is_in_domain = vec![-1i32; layout.ustr_points];
+    let mut kept = 0usize;
+    if !is_in_domain.is_empty() {
+        is_in_domain[0] = 0;
+    }
+    if is_in_domain.len() > 1 {
+        is_in_domain[1] = 0;
+    }
+    for (i, landtype_value) in (2..layout.ustr_points).zip(landtype_values) {
+        let is_land = matches!(
+            classify_area_judge_landtype_fortran_indexed(landtype_value),
+            AreaJudgeLandtypeClass::Land
+        );
+        if is_land == keep_land {
+            is_in_domain[i] = 1;
+            kept += 1;
+        }
+    }
+    if kept == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{mesh_type} landtype mask kept no cells"),
+        ));
+    }
+    let report =
+        finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
+    write_unstructured_mesh_netcdf(output_gridfile, &report.mesh)?;
     Ok(kept)
 }
 
@@ -24678,7 +27348,7 @@ pub fn write_mask_postproc_atmos_mpas_simple_netcdf(
     mesh_type: &str,
     output_format: &str,
 ) -> io::Result<MpasSimpleMeshWriteReport> {
-    if mesh_type.trim() != "atmosmesh" {
+    if !matches!(mesh_type.trim(), "atmos" | "atmosmesh") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "MPAS-Simple mask_postproc writer requires mesh_type atmosmesh",
@@ -24729,7 +27399,7 @@ pub fn write_mask_postproc_atmos_mpas_netcdf(
     mesh_type: &str,
     output_format: &str,
 ) -> io::Result<MpasFullMeshPipelineReport> {
-    if mesh_type.trim() != "atmosmesh" {
+    if !matches!(mesh_type.trim(), "atmos" | "atmosmesh") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "MPAS mask_postproc writer requires mesh_type atmosmesh",
@@ -25574,12 +28244,28 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
     )?;
     let vertex_reindex =
         earthmesh_mesh::sort_and_reindex_vertices(&unique_vertices, layout.ustr_bounds)?;
+    final_data.bounds_final = vertex_reindex.sorted_vertices.len();
+    final_data.vertex_coordinates_final = vec![[0.0, 0.0]; final_data.bounds_final + 1];
+    for (offset, &source_vertex_id) in vertex_reindex.sorted_vertices.iter().enumerate() {
+        let final_vertex_id = offset + 1;
+        if final_vertex_id <= 1 || source_vertex_id <= 1 {
+            continue;
+        }
+        let Some(&coordinates) = vertex_coordinates.get(source_vertex_id) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("sorted final vertex {source_vertex_id} outside vertex coordinate table"),
+            ));
+        };
+        final_data.vertex_coordinates_final[final_vertex_id] = coordinates;
+    }
     final_data.center_neighbors_final =
         earthmesh_mesh::reindex_final_center_vertices_fortran_indexed(
             &final_data.center_neighbors_final,
             &final_data.center_neighbor_counts_final,
             &vertex_reindex.vertex_mapping,
         )?;
+    rebuild_final_vertex_neighbors_from_reindexed_centers(&mut final_data)?;
 
     let mesh = unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)?;
     Ok(MaskPostprocFinalizationReport {
@@ -25604,6 +28290,80 @@ pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
         finalize_mask_postproc_layout_with_reindex_report(layout, is_in_domain_ustr, mode_grid)?
             .mesh,
     )
+}
+
+fn rebuild_final_vertex_neighbors_from_reindexed_centers(
+    final_data: &mut earthmesh_mesh::MaskPostprocFinalData,
+) -> io::Result<()> {
+    let vertex_width = final_data
+        .vertex_neighbors_final
+        .first()
+        .map(|row| row.len())
+        .unwrap_or(0);
+    if vertex_width == 0 && final_data.bounds_final > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "final vertex neighbor rows must have positive width",
+        ));
+    }
+    if final_data.center_neighbors_final.len() <= final_data.points_final
+        || final_data.center_neighbor_counts_final.len() <= final_data.points_final
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "final center neighbor tables must cover points_final",
+        ));
+    }
+
+    let mut vertex_neighbors_final = vec![vec![1; vertex_width]; final_data.bounds_final + 1];
+    let mut vertex_neighbor_counts_final = vec![0usize; final_data.bounds_final + 1];
+    for center_id in 2..=final_data.points_final {
+        let count = final_data.center_neighbor_counts_final[center_id];
+        if count > final_data.center_neighbors_final[center_id].len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("final center {center_id} neighbor count exceeds row width"),
+            ));
+        }
+        for &vertex_id in final_data.center_neighbors_final[center_id]
+            .iter()
+            .take(count)
+        {
+            if vertex_id > final_data.bounds_final {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "final center {center_id} references vertex {vertex_id}, outside bounds_final {}",
+                        final_data.bounds_final
+                    ),
+                ));
+            }
+            let slot = vertex_neighbor_counts_final[vertex_id];
+            if slot >= vertex_width {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "final vertex {vertex_id} has more than {vertex_width} neighboring centers"
+                    ),
+                ));
+            }
+            vertex_neighbors_final[vertex_id][slot] = center_id;
+            vertex_neighbor_counts_final[vertex_id] += 1;
+        }
+    }
+    for vertex_id in 2..=final_data.bounds_final {
+        let count = vertex_neighbor_counts_final[vertex_id];
+        if count == 0 || count >= vertex_width {
+            continue;
+        }
+        let fill = vertex_neighbors_final[vertex_id][0];
+        for slot in count..vertex_width {
+            vertex_neighbors_final[vertex_id][slot] = fill;
+        }
+    }
+    final_data.vertex_neighbors_final = vertex_neighbors_final;
+    final_data.vertex_neighbor_counts_final = vertex_neighbor_counts_final;
+    Ok(())
 }
 
 /// Compose the Earth branch role/refinement payload with the legacy
@@ -25706,7 +28466,7 @@ pub fn read_mask_postproc_domain_inputs(
 }
 
 fn normalize_mask_postproc_layout_for_contain_domain(
-    mut layout: MaskPostprocLayout,
+    layout: MaskPostprocLayout,
     contain_ustr_len: usize,
 ) -> MaskPostprocLayout {
     let max_vertex_id = layout
@@ -25720,6 +28480,32 @@ fn normalize_mask_postproc_layout_for_contain_domain(
         return layout;
     }
 
+    add_leading_mask_postproc_placeholder(layout)
+}
+
+fn ensure_leading_mask_postproc_placeholder(layout: MaskPostprocLayout) -> MaskPostprocLayout {
+    if has_leading_mask_postproc_placeholder(&layout) {
+        layout
+    } else {
+        add_leading_mask_postproc_placeholder(layout)
+    }
+}
+
+fn has_leading_mask_postproc_placeholder(layout: &MaskPostprocLayout) -> bool {
+    let is_zero_point = |point: &LonLatPoint| point.lon == 0.0 && point.lat == 0.0;
+    layout.center_points.len() > 1
+        && layout.vertex_points.len() > 1
+        && is_zero_point(&layout.center_points[0])
+        && is_zero_point(&layout.center_points[1])
+        && is_zero_point(&layout.vertex_points[0])
+        && is_zero_point(&layout.vertex_points[1])
+        && layout
+            .center_neighbor_counts
+            .get(0..=1)
+            .map_or(false, |counts| counts.iter().all(|&count| count == 0))
+}
+
+fn add_leading_mask_postproc_placeholder(mut layout: MaskPostprocLayout) -> MaskPostprocLayout {
     layout.ustr_points += 1;
     layout.ustr_bounds += 1;
     layout
@@ -25986,7 +28772,7 @@ pub fn plan_mask_postproc_domain_io(
     if !matches!(mesh_type, "earthmesh" | "landmesh" | "oceanmesh") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "domain mask_postproc I/O plan supports earthmesh, landmesh, or oceanmesh; atmosmesh uses the MPAS branch",
+            "domain mask_postproc I/O plan supports earthmesh, landmesh, or oceanmesh; atmos/atmosmesh uses the MPAS branch",
         ));
     }
 
@@ -26153,6 +28939,15 @@ pub struct ColmSurfaceCounts {
     pub land: usize,
     pub ocean: usize,
     pub coast: usize,
+}
+
+/// A CoLM coupling surface class tied to one mesh-cell centre.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColmSurfaceClassPoint {
+    pub lon: f64,
+    pub lat: f64,
+    /// `surface_class_code`: 0=UNKNOWN, 1=LAND, 2=OCEAN, 3=COAST.
+    pub code: i8,
 }
 
 /// Generate a CoLM coupling CSV directly from a mesh gridfile and a global
@@ -26392,6 +29187,34 @@ pub fn write_colm_coupling_netcdf_from_csv(
         output,
         rows: rows.len(),
     })
+}
+
+/// Read the surface-class points from a CoLM coupling NetCDF for GUI preview
+/// coloring and lightweight inspection.
+pub fn read_colm_surface_class_points_netcdf(
+    input_netcdf: impl AsRef<Path>,
+) -> io::Result<Vec<ColmSurfaceClassPoint>> {
+    let file = netcdf::open(input_netcdf.as_ref()).map_err(netcdf_to_io_error)?;
+    let lon = required_values_f64(&file, "center_lon")?;
+    let lat = required_values_f64(&file, "center_lat")?;
+    let code = required_values_i8(&file, "surface_class_code")?;
+    if lon.len() != lat.len() || lon.len() != code.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "CoLM coupling coordinate/class lengths differ: lon={} lat={} code={}",
+                lon.len(),
+                lat.len(),
+                code.len()
+            ),
+        ));
+    }
+    Ok(lon
+        .into_iter()
+        .zip(lat)
+        .zip(code)
+        .map(|((lon, lat), code)| ColmSurfaceClassPoint { lon, lat, code })
+        .collect())
 }
 
 /// Write a small CoLM restart-template handoff from the same package CSV used
@@ -27304,6 +30127,18 @@ fn required_values_i32(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> 
         .map_err(netcdf_to_io_error)
 }
 
+fn required_values_i8(file: &netcdf::File, name: &str) -> io::Result<Vec<i8>> {
+    file.variable(name)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("missing {name} variable"),
+            )
+        })?
+        .get_values::<i8, _>(..)
+        .map_err(netcdf_to_io_error)
+}
+
 fn required_values_i32_any_matrix(
     file: &netcdf::File,
     name: &str,
@@ -27922,6 +30757,138 @@ fn validate_unstructured_mesh(mesh: &UnstructuredMesh) -> io::Result<()> {
     Ok(())
 }
 
+pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> UnstructuredMeshTopologyReport {
+    let mut violations = Vec::new();
+    if let Err(err) = validate_unstructured_mesh(mesh) {
+        violations.push(err.to_string());
+        return UnstructuredMeshTopologyReport {
+            m_rows: mesh.m_points.len(),
+            w_rows: mesh.w_points.len(),
+            violations,
+        };
+    }
+
+    let m_rows = mesh.m_points.len();
+    let w_rows = mesh.w_points.len();
+    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
+    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
+    let cap = 80usize;
+    let push_violation = |violations: &mut Vec<String>, message: String| {
+        if violations.len() < cap {
+            violations.push(message);
+        }
+    };
+
+    for (m_row, w_ids) in mesh.m_to_w.iter().enumerate() {
+        let Some(m_id) = mesh_fortran_id_for_row(m_row, m_has_two_placeholders) else {
+            continue;
+        };
+        for (slot, &w_id) in w_ids.iter().enumerate() {
+            let Some(w_row) = mesh_row_for_fortran_id(w_id, w_rows, w_has_two_placeholders) else {
+                push_violation(
+                    &mut violations,
+                    format!("m row {m_row} slot {slot} references invalid w id {w_id}"),
+                );
+                continue;
+            };
+            let count = mesh.n_w_to_m.get(w_row).copied().unwrap_or_default().max(0) as usize;
+            if count > mesh.w_to_m[w_row].len() {
+                push_violation(
+                    &mut violations,
+                    format!(
+                        "w row {w_row} n_w_to_m {count} exceeds row width {}",
+                        mesh.w_to_m[w_row].len()
+                    ),
+                );
+                continue;
+            }
+            if m_id > 1 && !mesh.w_to_m[w_row].iter().take(count).any(|&id| id == m_id) {
+                push_violation(
+                    &mut violations,
+                    format!(
+                        "m row {m_row} -> w id {w_id}, but w row {w_row} does not list m id {m_id}"
+                    ),
+                );
+            }
+        }
+    }
+
+    for (w_row, m_ids) in mesh.w_to_m.iter().enumerate() {
+        let Some(w_id) = mesh_fortran_id_for_row(w_row, w_has_two_placeholders) else {
+            continue;
+        };
+        let count = mesh.n_w_to_m[w_row].max(0) as usize;
+        if count > m_ids.len() {
+            push_violation(
+                &mut violations,
+                format!(
+                    "w row {w_row} n_w_to_m {count} exceeds row width {}",
+                    m_ids.len()
+                ),
+            );
+            continue;
+        }
+        for (slot, &m_id) in m_ids.iter().take(count).enumerate() {
+            let Some(m_row) = mesh_row_for_fortran_id(m_id, m_rows, m_has_two_placeholders) else {
+                push_violation(
+                    &mut violations,
+                    format!("w row {w_row} slot {slot} references invalid m id {m_id}"),
+                );
+                continue;
+            };
+            if w_id > 1 && !mesh.m_to_w[m_row].iter().any(|&id| id == w_id) {
+                push_violation(
+                    &mut violations,
+                    format!(
+                        "w row {w_row} -> m id {m_id}, but m row {m_row} does not list w id {w_id}"
+                    ),
+                );
+            }
+        }
+    }
+
+    UnstructuredMeshTopologyReport {
+        m_rows,
+        w_rows,
+        violations,
+    }
+}
+
+fn mesh_points_have_two_placeholder_rows(points: &[LonLatPoint]) -> bool {
+    points.len() > 2
+        && points[0].lon == 0.0
+        && points[0].lat == 0.0
+        && points[1].lon == 0.0
+        && points[1].lat == 0.0
+}
+
+fn mesh_row_for_fortran_id(id: i32, rows: usize, has_two_placeholder_rows: bool) -> Option<usize> {
+    if id < 1 {
+        return None;
+    }
+    let id = usize::try_from(id).ok()?;
+    let row = if has_two_placeholder_rows {
+        if id < 2 {
+            return None;
+        }
+        id
+    } else {
+        id.checked_sub(1)?
+    };
+    (row < rows).then_some(row)
+}
+
+fn mesh_fortran_id_for_row(row: usize, has_two_placeholder_rows: bool) -> Option<i32> {
+    if has_two_placeholder_rows {
+        if row < 2 {
+            return None;
+        }
+        i32::try_from(row).ok()
+    } else {
+        i32::try_from(row.checked_add(1)?).ok()
+    }
+}
+
 fn validate_contain_mesh(contain: &ContainMesh) -> io::Result<()> {
     matrix_width("ustr_id", &contain.ustr_id)?;
     matrix_width("ustr_ii", &contain.ustr_ii)?;
@@ -28370,12 +31337,42 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
             v.push(format!("{name} length {got} != {want}"));
         }
     };
-    check_len(&mut v, "cells_on_cell", mesh.cells_on_cell.len().saturating_sub(1), n_cells);
-    check_len(&mut v, "vertices_on_cell", mesh.vertices_on_cell.len().saturating_sub(1), n_cells);
-    check_len(&mut v, "edges_on_cell", mesh.edges_on_cell.len().saturating_sub(1), n_cells);
-    check_len(&mut v, "cells_on_vertex", mesh.cells_on_vertex.len().saturating_sub(1), n_vertices);
-    check_len(&mut v, "cells_on_edge", mesh.cells_on_edge.len().saturating_sub(1), n_edges);
-    check_len(&mut v, "vertices_on_edge", mesh.vertices_on_edge.len().saturating_sub(1), n_edges);
+    check_len(
+        &mut v,
+        "cells_on_cell",
+        mesh.cells_on_cell.len().saturating_sub(1),
+        n_cells,
+    );
+    check_len(
+        &mut v,
+        "vertices_on_cell",
+        mesh.vertices_on_cell.len().saturating_sub(1),
+        n_cells,
+    );
+    check_len(
+        &mut v,
+        "edges_on_cell",
+        mesh.edges_on_cell.len().saturating_sub(1),
+        n_cells,
+    );
+    check_len(
+        &mut v,
+        "cells_on_vertex",
+        mesh.cells_on_vertex.len().saturating_sub(1),
+        n_vertices,
+    );
+    check_len(
+        &mut v,
+        "cells_on_edge",
+        mesh.cells_on_edge.len().saturating_sub(1),
+        n_edges,
+    );
+    check_len(
+        &mut v,
+        "vertices_on_edge",
+        mesh.vertices_on_edge.len().saturating_sub(1),
+        n_edges,
+    );
     if !v.is_empty() {
         // Bail early: downstream indexing would panic on mismatched lengths.
         return MeshTopologyReport {
@@ -28390,31 +31387,39 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
     }
 
     let cap = 60usize; // stop spamming after this many violations of one kind
-    // Per-cell: verticesOnCell/edgesOnCell must be real (>0) in range; cellsOnCell
-    // may be 0 on the boundary. nEdgesOnCell must not exceed the row width.
+                       // Per-cell: verticesOnCell/edgesOnCell must be real (>0) in range; cellsOnCell
+                       // may be 0 on the boundary. nEdgesOnCell must not exceed the row width.
     for c in 1..=n_cells {
         let ne = mesh.n_edges_on_cell[c].max(0) as usize;
         if ne > mesh.vertices_on_cell[c].len() {
-            v.push(format!("cell {c}: nEdges {ne} exceeds verticesOnCell width"));
+            v.push(format!(
+                "cell {c}: nEdges {ne} exceeds verticesOnCell width"
+            ));
             continue;
         }
         for k in 0..ne {
             let vv = mesh.vertices_on_cell[c][k];
             if vv <= 0 || vv as usize > n_vertices {
                 if v.len() < cap {
-                    v.push(format!("cell {c}: verticesOnCell[{k}]={vv} out of 1..={n_vertices}"));
+                    v.push(format!(
+                        "cell {c}: verticesOnCell[{k}]={vv} out of 1..={n_vertices}"
+                    ));
                 }
             }
             let ee = mesh.edges_on_cell[c][k];
             if ee <= 0 || ee as usize > n_edges {
                 if v.len() < cap {
-                    v.push(format!("cell {c}: edgesOnCell[{k}]={ee} out of 1..={n_edges}"));
+                    v.push(format!(
+                        "cell {c}: edgesOnCell[{k}]={ee} out of 1..={n_edges}"
+                    ));
                 }
             }
             let cc = mesh.cells_on_cell[c][k];
             if cc < 0 || cc as usize > n_cells {
                 if v.len() < cap {
-                    v.push(format!("cell {c}: cellsOnCell[{k}]={cc} out of 0..={n_cells}"));
+                    v.push(format!(
+                        "cell {c}: cellsOnCell[{k}]={cc} out of 0..={n_cells}"
+                    ));
                 }
             }
         }
@@ -28444,7 +31449,9 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
         for &c in &[c0, c1] {
             if c > 0 && (c as usize) <= n_cells {
                 if !mesh.edges_on_cell[c as usize].contains(&(e as i32)) && v.len() < cap {
-                    v.push(format!("edge {e}: cell {c} does not list it in edgesOnCell"));
+                    v.push(format!(
+                        "edge {e}: cell {c} does not list it in edgesOnCell"
+                    ));
                 }
             } else if c < 0 || c as usize > n_cells {
                 if v.len() < cap {
@@ -28455,7 +31462,9 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
         for &vv in &mesh.vertices_on_edge[e] {
             if vv <= 0 || vv as usize > n_vertices {
                 if v.len() < cap {
-                    v.push(format!("edge {e}: verticesOnEdge {vv} out of 1..={n_vertices}"));
+                    v.push(format!(
+                        "edge {e}: verticesOnEdge {vv} out of 1..={n_vertices}"
+                    ));
                 }
             }
         }
@@ -28467,7 +31476,9 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
             if e > 0 && (e as usize) <= n_edges {
                 let [a, b] = mesh.vertices_on_edge[e as usize];
                 if a != vert as i32 && b != vert as i32 && v.len() < cap {
-                    v.push(format!("vertex {vert}: edge {e} does not list it in verticesOnEdge"));
+                    v.push(format!(
+                        "vertex {vert}: edge {e} does not list it in verticesOnEdge"
+                    ));
                 }
             }
         }
@@ -28511,7 +31522,10 @@ pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<Mpa
     if keep_cell.len() != nc {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("keep_cell length {} must equal nCells rows {nc}", keep_cell.len()),
+            format!(
+                "keep_cell length {} must equal nCells rows {nc}",
+                keep_cell.len()
+            ),
         ));
     }
 
@@ -28569,9 +31583,24 @@ pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<Mpa
     let mut edges_on_cell = vec![global.edges_on_cell[0].clone()];
     let mut n_edges_on_cell = vec![global.n_edges_on_cell[0]];
     for &c in &kept_cells {
-        cells_on_cell.push(global.cells_on_cell[c].iter().map(|&x| remap(x, &new_cell)).collect());
-        vertices_on_cell.push(global.vertices_on_cell[c].iter().map(|&x| remap(x, &new_vertex)).collect());
-        edges_on_cell.push(global.edges_on_cell[c].iter().map(|&x| remap(x, &new_edge)).collect());
+        cells_on_cell.push(
+            global.cells_on_cell[c]
+                .iter()
+                .map(|&x| remap(x, &new_cell))
+                .collect(),
+        );
+        vertices_on_cell.push(
+            global.vertices_on_cell[c]
+                .iter()
+                .map(|&x| remap(x, &new_vertex))
+                .collect(),
+        );
+        edges_on_cell.push(
+            global.edges_on_cell[c]
+                .iter()
+                .map(|&x| remap(x, &new_edge))
+                .collect(),
+        );
         n_edges_on_cell.push(global.n_edges_on_cell[c]);
     }
 
@@ -28580,8 +31609,18 @@ pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<Mpa
     let mut edges_on_vertex = vec![global.edges_on_vertex[0].clone()];
     let mut kite_areas_on_vertex = vec![global.kite_areas_on_vertex[0].clone()];
     for &v in &kept_vertices {
-        cells_on_vertex.push(global.cells_on_vertex[v].iter().map(|&x| remap(x, &new_cell)).collect());
-        edges_on_vertex.push(global.edges_on_vertex[v].iter().map(|&x| remap(x, &new_edge)).collect());
+        cells_on_vertex.push(
+            global.cells_on_vertex[v]
+                .iter()
+                .map(|&x| remap(x, &new_cell))
+                .collect(),
+        );
+        edges_on_vertex.push(
+            global.edges_on_vertex[v]
+                .iter()
+                .map(|&x| remap(x, &new_edge))
+                .collect(),
+        );
         kite_areas_on_vertex.push(global.kite_areas_on_vertex[v].clone());
     }
 
@@ -28596,7 +31635,10 @@ pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<Mpa
         cells_on_edge.push([remap(coe[0], &new_cell), remap(coe[1], &new_cell)]);
         let voe = global.vertices_on_edge[e];
         vertices_on_edge.push([remap(voe[0], &new_vertex), remap(voe[1], &new_vertex)]);
-        let eoe: Vec<i32> = global.edges_on_edge[e].iter().map(|&x| remap(x, &new_edge)).collect();
+        let eoe: Vec<i32> = global.edges_on_edge[e]
+            .iter()
+            .map(|&x| remap(x, &new_edge))
+            .collect();
         let woe: Vec<f64> = global.weights_on_edge[e]
             .iter()
             .zip(eoe.iter())
@@ -29796,15 +32838,30 @@ pub fn apply_read_nl_workspace_plan(
     workdir: &Path,
 ) -> io::Result<WorkspaceApplyReport> {
     let mut report = WorkspaceApplyReport::default();
-    let file_dir = PathBuf::from(&plan.file_dir);
+    let workdir_for_io = workdir.to_path_buf();
+    let canonical_workdir = workdir.canonicalize()?;
+    let mut allowed_roots = vec![canonical_workdir];
+    if let Some(parent) = namelist_source.parent() {
+        allowed_roots.push(parent.canonicalize()?);
+    }
+    allowed_roots.sort();
+    allowed_roots.dedup();
+    let file_dir = workspace_bound_path(&plan.file_dir, &allowed_roots, "file_dir")?;
 
     if plan.remove_existing_file_dir && file_dir.exists() {
+        let canonical_file_dir = file_dir.canonicalize()?;
+        if allowed_roots.iter().any(|root| &canonical_file_dir == root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("refusing to delete workspace root {}", file_dir.display()),
+            ));
+        }
         fs::remove_dir_all(&file_dir)?;
         report.removed_file_dir = Some(file_dir.clone());
     }
 
-    if plan.remove_filelists && workdir.exists() {
-        for entry in fs::read_dir(workdir)? {
+    if plan.remove_filelists && workdir_for_io.exists() {
+        for entry in fs::read_dir(&workdir_for_io)? {
             let entry = entry?;
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
@@ -29819,12 +32876,16 @@ pub fn apply_read_nl_workspace_plan(
     }
 
     for directory in &plan.directories_to_create {
-        let path = PathBuf::from(directory);
+        let path = workspace_bound_path(directory, &allowed_roots, "directory")?;
         fs::create_dir_all(&path)?;
         report.created_directories.push(path);
     }
 
-    let namelist_save_path = PathBuf::from(&plan.namelist_save_path);
+    let namelist_save_path = workspace_bound_path(
+        &plan.namelist_save_path,
+        &allowed_roots,
+        "namelist_save_path",
+    )?;
     if let Some(parent) = namelist_save_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -29832,6 +32893,71 @@ pub fn apply_read_nl_workspace_plan(
     report.copied_namelist_to = Some(namelist_save_path);
 
     Ok(report)
+}
+
+fn workspace_bound_path(path: &str, allowed_roots: &[PathBuf], role: &str) -> io::Result<PathBuf> {
+    let raw = PathBuf::from(path);
+    let candidate = if raw.is_absolute() {
+        raw
+    } else {
+        allowed_roots
+            .first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no allowed roots"))?
+            .join(raw)
+    };
+    let normalized = canonicalize_existing_prefix(&candidate)?;
+    if !allowed_roots
+        .iter()
+        .any(|root| normalized.starts_with(root))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{role} outside workdir or namelist directory: {}",
+                normalized.display()
+            ),
+        ));
+    }
+    Ok(normalize_lexical(&candidate))
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> io::Result<PathBuf> {
+    if path.exists() {
+        return path.canonicalize();
+    }
+
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    while !cursor.exists() {
+        let Some(name) = cursor.file_name() else {
+            return Ok(normalize_lexical(path));
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            return Ok(normalize_lexical(path));
+        };
+        cursor = parent;
+    }
+
+    let mut normalized = cursor.canonicalize()?;
+    for component in missing.iter().rev() {
+        normalized.push(component);
+    }
+    Ok(normalize_lexical(&normalized))
 }
 
 /// Result of applying one Rust `Mask_make` operation.

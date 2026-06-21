@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -19,6 +19,10 @@ fn run() -> Result<(), String> {
     let first = args
         .next()
         .ok_or_else(|| usage("missing command or mkgrd namelist path"))?;
+    if first == "-h" || first == "--help" {
+        println!("{}", usage(""));
+        return Ok(());
+    }
     if first == "--cama-reach-jsonl" || first == "--cama-reach-geojson" {
         return run_cama_reach_export(&first, args);
     }
@@ -179,21 +183,10 @@ fn run() -> Result<(), String> {
                 earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
                     print_top_level_dispatch_report(&report);
                 }
-                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RefineLandtypeSource(
+                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(
                     run,
                 ) => {
-                    println!("refine_source=landtype_file");
-                    print_refine_landtype_source_report(&run);
-                }
-                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineCompact(
-                    run,
-                ) => {
-                    print_restart_refine_report(&run.report, Some("source_state"))?;
-                }
-                earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::RestartRefineLandtype(
-                    run,
-                ) => {
-                    print_restart_refine_report(&run.report, Some("landtype_file"))?;
+                    print_olam_refine_report(&run);
                 }
             }
         }
@@ -404,53 +397,29 @@ fn run() -> Result<(), String> {
             &namelist,
             restart_refine_initial_gridfile.as_deref(),
         )?;
-        let run = earthmesh_cli::run_mkgrd_restart_refine_compact_source_state_namelist(
-            PathBuf::from(&namelist),
+        fs::metadata(&source_state_path).map_err(|err| {
+            format!(
+                "--restart-refine-source-state could not read {}: {err}",
+                source_state_path.display()
+            )
+        })?;
+        fs::metadata(&initial_gridfile).map_err(|err| {
+            format!(
+                "--restart-refine-initial-gridfile could not read {}: {err}",
+                initial_gridfile.display()
+            )
+        })?;
+        let olam_namelist =
+            write_olam_restart_refine_namelist(&namelist, &workdir, &initial_gridfile)?;
+        let report = earthmesh_cli::run_mkgrd_olam_specified_refine_global_source_namelist(
+            &olam_namelist,
             &workdir,
-            &source_state_path,
-            &initial_gridfile,
-            mask_postproc_num_vertex,
+            max_tris,
+            source_gridnum_perdegree,
         )
         .map_err(|err| err.to_string())?;
-        let report = run.report;
-
-        println!("mask_restart_action=RefineHandoff");
-        println!("restart_refine_source=source_state");
-        let domain_write = report.restart.domain_write.as_ref().ok_or_else(|| {
-            "restart refine handoff did not write domain Area_judge grid".to_string()
-        })?;
-        println!(
-            "restart_refine_area_selected_cells={}",
-            domain_write.selected_cells
-        );
-        println!("restart_refine_area_grid={}", domain_write.output.display());
-        if let Some(refine_write) = &report.restart.refine_write {
-            println!(
-                "restart_refine_calculated_grid={}",
-                refine_write.output.display()
-            );
-        }
-        println!(
-            "restart_refine_steps={}",
-            report.execution.executed_refine_steps
-        );
-        println!(
-            "restart_refine_sources={}",
-            report.execution.executed_sources
-        );
-        println!(
-            "restart_refine_final_gridfile={}",
-            report.prepare.plan.final_result_gridfile.display()
-        );
-        if report.execution.final_handoff.generated_contain.is_some() {
-            println!(
-                "restart_refine_final_contain={}",
-                report.prepare.plan.final_domain_contain_output.display()
-            );
-        }
-        if let Some(postproc) = &report.execution.final_handoff.postproc {
-            print_restart_refine_postproc_outputs(postproc);
-        }
+        println!("mask_restart_action=OlamRefine");
+        print_olam_refine_report(&report);
         return Ok(());
     }
     if run_mask_restart_area_judge_refine_landtype_source {
@@ -458,136 +427,66 @@ fn run() -> Result<(), String> {
             &namelist,
             restart_refine_initial_gridfile.as_deref(),
         )?;
-        let run = earthmesh_cli::run_mkgrd_restart_refine_landtype_source_namelist(
-            PathBuf::from(&namelist),
+        fs::metadata(&initial_gridfile).map_err(|err| {
+            format!(
+                "--restart-refine-initial-gridfile could not read {}: {err}",
+                initial_gridfile.display()
+            )
+        })?;
+        let olam_namelist =
+            write_olam_restart_refine_namelist(&namelist, &workdir, &initial_gridfile)?;
+        let report = earthmesh_cli::run_mkgrd_olam_specified_refine_global_source_namelist(
+            &olam_namelist,
             &workdir,
-            &initial_gridfile,
+            max_tris,
             source_gridnum_perdegree,
-            source_first_triangle_id,
-            mask_postproc_num_vertex,
         )
         .map_err(|err| err.to_string())?;
-        let report = run.report;
-
-        println!("mask_restart_action=RefineHandoff");
-        println!("restart_refine_source=landtype_file");
-        let domain_write = report.restart.domain_write.as_ref().ok_or_else(|| {
-            "restart refine handoff did not write domain Area_judge grid".to_string()
-        })?;
-        println!(
-            "restart_refine_area_selected_cells={}",
-            domain_write.selected_cells
-        );
-        println!("restart_refine_area_grid={}", domain_write.output.display());
-        if let Some(refine_write) = &report.restart.refine_write {
-            println!(
-                "restart_refine_calculated_grid={}",
-                refine_write.output.display()
-            );
-        }
-        println!(
-            "restart_refine_steps={}",
-            report.execution.executed_refine_steps
-        );
-        println!(
-            "restart_refine_sources={}",
-            report.execution.executed_sources
-        );
-        println!(
-            "restart_refine_final_gridfile={}",
-            report.prepare.plan.final_result_gridfile.display()
-        );
-        if report.execution.final_handoff.generated_contain.is_some() {
-            println!(
-                "restart_refine_final_contain={}",
-                report.prepare.plan.final_domain_contain_output.display()
-            );
-        }
-        if let Some(postproc) = &report.execution.final_handoff.postproc {
-            print_restart_refine_postproc_outputs(postproc);
-        }
+        let _ = source_first_triangle_id;
+        let _ = mask_postproc_num_vertex;
+        println!("mask_restart_action=OlamRefine");
+        print_olam_refine_report(&report);
         return Ok(());
     }
     if run_refine_landtype_source {
         let namelist_path = PathBuf::from(&namelist);
-        let report = earthmesh_cli::run_mkgrd_refine_landtype_source_namelist(
+        let report = earthmesh_cli::run_mkgrd_olam_specified_refine_global_source_namelist(
             &namelist_path,
             &workdir,
             max_tris,
             source_gridnum_perdegree,
-            source_first_triangle_id,
-            earthmesh_cli::MkgrdRefineLoopWorkingStateExecutor::default(),
         )
         .map_err(|err| err.to_string())?;
-        print_refine_landtype_source_report(&report);
+        print_olam_refine_report(&report);
         return Ok(());
     }
 
     if let Some(source_state_path) = source_state_path {
-        let report = earthmesh_cli::run_mkgrd_refine_compact_source_state_namelist(
+        fs::metadata(&source_state_path).map_err(|err| {
+            format!(
+                "--run-refine-source-state could not read {}: {err}",
+                source_state_path.display()
+            )
+        })?;
+        let report = earthmesh_cli::run_mkgrd_olam_specified_refine_global_source_namelist(
             PathBuf::from(&namelist),
             &workdir,
-            &source_state_path,
             max_tris,
-            earthmesh_cli::MkgrdRefineLoopWorkingStateExecutor::default(),
+            source_gridnum_perdegree,
         )
         .map_err(|err| err.to_string())?;
-
-        println!("gridfile={}", report.gridinit.gridfile.output.display());
-        println!("sjx_points={}", report.gridinit.gridfile.sjx_points);
-        println!("lbx_points={}", report.gridinit.gridfile.lbx_points);
-        if let Some(refine) = report.refine {
-            println!("refine_steps={}", refine.execution.executed_refine_steps);
-            println!("refine_sources={}", refine.execution.executed_sources);
-            println!(
-                "refine_final_gridfile={}",
-                refine.prepare.plan.final_result_gridfile.display()
-            );
-            if refine.execution.final_handoff.generated_contain.is_some() {
-                println!(
-                    "refine_final_contain={}",
-                    refine.prepare.plan.final_domain_contain_output.display()
-                );
-            }
-            if let Some(postproc) = &refine.execution.final_handoff.postproc {
-                print_refine_final_postproc_outputs(postproc);
-            }
-        } else {
-            println!("refine_steps=0");
-        }
+        print_olam_refine_report(&report);
         return Ok(());
     }
     if run_refine_passthrough {
-        let gridnum_perdegree = source_gridnum_perdegree
-            .ok_or_else(|| usage("--run-refine-passthrough requires --source-gridnum-perdegree"))?;
-        let nlons_source = source_nlons
-            .ok_or_else(|| usage("--run-refine-passthrough requires --source-nlons"))?;
-        let nlats_source = source_nlats
-            .ok_or_else(|| usage("--run-refine-passthrough requires --source-nlats"))?;
-        let report = earthmesh_cli::run_mkgrd_refine_passthrough_global_source_namelist(
+        let report = earthmesh_cli::run_mkgrd_olam_specified_refine_global_source_namelist(
             PathBuf::from(namelist),
             &workdir,
             max_tris,
-            gridnum_perdegree,
-            nlons_source,
-            nlats_source,
-            source_first_triangle_id,
+            source_gridnum_perdegree,
         )
         .map_err(|err| err.to_string())?;
-
-        println!("gridfile={}", report.gridinit.gridfile.output.display());
-        println!("sjx_points={}", report.gridinit.gridfile.sjx_points);
-        println!("lbx_points={}", report.gridinit.gridfile.lbx_points);
-        if let Some(refine) = report.refine {
-            println!("refine_steps={}", refine.execution.executed_refine_steps);
-            println!("refine_sources={}", refine.execution.executed_sources);
-            println!(
-                "refine_final_gridfile={}",
-                refine.prepare.plan.final_result_gridfile.display()
-            );
-        } else {
-            println!("refine_steps=0");
-        }
+        print_olam_refine_report(&report);
         return Ok(());
     }
 
@@ -604,6 +503,9 @@ fn run() -> Result<(), String> {
             println!("gridfile={}", report.gridfile.output.display());
             println!("sjx_points={}", report.gridfile.sjx_points);
             println!("lbx_points={}", report.gridfile.lbx_points);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource(report) => {
+            print_olam_refine_report(&report);
         }
         earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
             println!("mask_restart_action={:?}", report.plan.remask.action);
@@ -648,6 +550,9 @@ fn print_top_level_dispatch_report(report: &earthmesh_cli::MkgrdTopLevelDispatch
             println!("sjx_points={}", report.gridfile.sjx_points);
             println!("lbx_points={}", report.gridfile.lbx_points);
         }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource(report) => {
+            print_olam_refine_report(report);
+        }
         earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
             println!("mask_restart_action={:?}", report.plan.remask.action);
             println!(
@@ -683,87 +588,113 @@ fn print_top_level_dispatch_report(report: &earthmesh_cli::MkgrdTopLevelDispatch
     }
 }
 
-fn print_refine_landtype_source_report(
-    report: &earthmesh_cli::MkgrdRefineLandtypeSourceNamelistRunReport,
-) {
-    println!("gridfile={}", report.gridinit.gridfile.output.display());
-    println!("sjx_points={}", report.gridinit.gridfile.sjx_points);
-    println!("lbx_points={}", report.gridinit.gridfile.lbx_points);
-    let Some(refine) = report.refine.as_ref() else {
-        println!("refine_steps=0");
-        return;
-    };
-
-    let execution = &refine.execution;
-    println!("refine_steps={}", execution.executed_refine_steps);
-    println!("refine_sources={}", execution.executed_sources);
+fn print_olam_refine_report(report: &earthmesh_cli::MkgrdOlamSpecifiedRefineRunReport) {
+    println!("refine_source=olam_global_source");
+    println!("gridfile={}", report.output.output.display());
+    println!("sjx_points={}", report.output.sjx_points);
+    println!("lbx_points={}", report.output.lbx_points);
+    println!("olam_regions={}", report.regions.len());
+    println!("olam_max_level={}", report.max_level);
+    println!("olam_transition_faces={}", report.transition_faces);
+    println!("olam_spring_nest_passes={}", report.spring_nest_passes);
     println!(
-        "refine_final_gridfile={}",
-        refine.prepare.plan.final_result_gridfile.display()
+        "olam_spring_nest_iterations={}",
+        report.spring_nest_iterations
     );
-    if execution.final_handoff.generated_contain.is_some() {
-        println!(
-            "refine_final_contain={}",
-            refine.prepare.plan.final_domain_contain_output.display()
-        );
+    if let Some(raw_output) = &report.raw_output {
+        println!("olam_raw_gridfile={}", raw_output.output.display());
     }
-    if let Some(postproc) = &execution.final_handoff.postproc {
-        print_refine_final_postproc_outputs(postproc);
+    if let Some(landtype_masked_cells) = report.landtype_masked_cells {
+        println!("olam_landtype_masked_cells={landtype_masked_cells}");
+    }
+    if let Some(coupled) = &report.coupled_outputs {
+        println!(
+            "olam_land_gridfile={}",
+            coupled.land_output.output.display()
+        );
+        println!(
+            "olam_ocean_gridfile={}",
+            coupled.ocean_output.output.display()
+        );
+        println!("olam_coupling_csv={}", coupled.coupling_csv.display());
+        println!(
+            "olam_coupling_netcdf={}",
+            coupled.coupling_netcdf.output.display()
+        );
+        println!("olam_coupling_manifest={}", coupled.manifest.display());
+        println!("olam_coupling_rows={}", coupled.coupling_netcdf.rows);
     }
 }
 
-fn print_refine_final_postproc_outputs(postproc: &earthmesh_cli::MkgrdFinalDomainPostprocReport) {
-    let output = match postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) => {
-            &report.final_gridfile.output
+fn write_olam_restart_refine_namelist(
+    namelist: &str,
+    workdir: &Path,
+    initial_gridfile: &Path,
+) -> Result<PathBuf, String> {
+    let contents = fs::read_to_string(namelist)
+        .map_err(|err| format!("failed to read namelist {namelist}: {err}"))?;
+    let mut saw_mode_file = false;
+    let mut saw_mode_file_description = false;
+    let mut in_mkgrd = false;
+    let initial_gridfile = initial_gridfile.display().to_string();
+    let mut rewritten = Vec::new();
+    for line in contents.lines() {
+        let trimmed_lower = line.trim_start().to_ascii_lowercase();
+        if trimmed_lower.starts_with("&mkgrd") {
+            in_mkgrd = true;
+            rewritten.push(line.to_string());
+            continue;
         }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) => {
-            &report.final_gridfile.output
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) => {
-            &report.final_gridfile.output
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(report) => &report.output,
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) => &report.mesh.output,
-    };
-    println!("refine_final_postproc_gridfile={}", output.display());
-    match postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) => {
-            println!(
-                "refine_final_postproc_patchtype={}",
-                report.patchtype.output.display()
-            );
-            println!(
-                "refine_final_postproc_earthmesh_info={}",
-                report.earthmesh_info.output.display()
-            );
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) => {
-            println!(
-                "refine_final_postproc_patchtype={}",
-                report.patchtype.output.display()
-            );
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) => {
-            if let Some(obc) = &report.obc {
-                println!("refine_final_postproc_obc={}", obc.output.display());
+        if in_mkgrd && line.trim() == "/" {
+            if !saw_mode_file {
+                rewritten.push(format!("  NL%mode_file='{initial_gridfile}'"));
             }
-            if let Some(obcv2) = &report.obcv2 {
-                println!("refine_final_postproc_obcv2={}", obcv2.output.display());
+            if !saw_mode_file_description {
+                rewritten.push("  NL%mode_file_description='EarthMesh'".to_string());
             }
+            in_mkgrd = false;
+            rewritten.push(line.to_string());
+            continue;
         }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) => {
-            println!(
-                "refine_final_postproc_mpas={}",
-                report.mesh.output.display()
-            );
-            println!(
-                "refine_final_postproc_mpas_graph={}",
-                report.graph_info.output.display()
-            );
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(_) => {}
+        rewritten.push(
+            if line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("nl%mask_restart")
+            {
+                "  NL%mask_restart=.false.".to_string()
+            } else if line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("nl%mode_file_description")
+            {
+                saw_mode_file_description = true;
+                "  NL%mode_file_description='EarthMesh'".to_string()
+            } else if line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("nl%mode_file")
+            {
+                saw_mode_file = true;
+                format!("  NL%mode_file='{initial_gridfile}'")
+            } else {
+                line.to_string()
+            },
+        );
     }
+    let rewritten = rewritten.join("\n");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_nanos();
+    let path = workdir.join(format!(
+        "earthmesh_olam_restart_refine_{}_{}.nml",
+        std::process::id(),
+        stamp
+    ));
+    fs::write(&path, format!("{rewritten}\n"))
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    Ok(path)
 }
 
 fn print_mask_restart_area_judge_report(
@@ -843,110 +774,6 @@ fn print_mask_restart_area_judge_report(
             }
         }
     }
-}
-
-fn print_restart_refine_postproc_outputs(postproc: &earthmesh_cli::MkgrdFinalDomainPostprocReport) {
-    let output = match postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) => {
-            &report.final_gridfile.output
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) => {
-            &report.final_gridfile.output
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) => {
-            &report.final_gridfile.output
-        }
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(report) => &report.output,
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) => &report.mesh.output,
-    };
-    println!(
-        "restart_refine_final_postproc_gridfile={}",
-        output.display()
-    );
-    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(report) = postproc {
-        println!(
-            "restart_refine_final_postproc_patchtype={}",
-            report.patchtype.output.display()
-        );
-        println!(
-            "restart_refine_final_postproc_earthmesh_info={}",
-            report.earthmesh_info.output.display()
-        );
-    }
-    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(report) = postproc {
-        println!(
-            "restart_refine_final_postproc_patchtype={}",
-            report.patchtype.output.display()
-        );
-    }
-    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(report) = postproc {
-        println!(
-            "restart_refine_final_postproc_mpas={}",
-            report.mesh.output.display()
-        );
-        println!(
-            "restart_refine_final_postproc_mpas_graph={}",
-            report.graph_info.output.display()
-        );
-    }
-    if let earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(report) = postproc {
-        if let Some(obc) = &report.obc {
-            println!("restart_refine_final_postproc_obc={}", obc.output.display());
-        }
-        if let Some(obcv2) = &report.obcv2 {
-            println!(
-                "restart_refine_final_postproc_obcv2={}",
-                obcv2.output.display()
-            );
-        }
-    }
-}
-
-fn print_restart_refine_report(
-    report: &earthmesh_cli::MkgrdAreaJudgeRestartRefineLoopRunReport,
-    source_label: Option<&str>,
-) -> Result<(), String> {
-    println!("mask_restart_action=RefineHandoff");
-    if let Some(source_label) = source_label {
-        println!("restart_refine_source={source_label}");
-    }
-    let domain_write =
-        report.restart.domain_write.as_ref().ok_or_else(|| {
-            "restart refine handoff did not write domain Area_judge grid".to_string()
-        })?;
-    println!(
-        "restart_refine_area_selected_cells={}",
-        domain_write.selected_cells
-    );
-    println!("restart_refine_area_grid={}", domain_write.output.display());
-    if let Some(refine_write) = &report.restart.refine_write {
-        println!(
-            "restart_refine_calculated_grid={}",
-            refine_write.output.display()
-        );
-    }
-    println!(
-        "restart_refine_steps={}",
-        report.execution.executed_refine_steps
-    );
-    println!(
-        "restart_refine_sources={}",
-        report.execution.executed_sources
-    );
-    println!(
-        "restart_refine_final_gridfile={}",
-        report.prepare.plan.final_result_gridfile.display()
-    );
-    if report.execution.final_handoff.generated_contain.is_some() {
-        println!(
-            "restart_refine_final_contain={}",
-            report.prepare.plan.final_domain_contain_output.display()
-        );
-    }
-    if let Some(postproc) = &report.execution.final_handoff.postproc {
-        print_restart_refine_postproc_outputs(postproc);
-    }
-    Ok(())
 }
 
 fn infer_restart_refine_initial_gridfile_arg(

@@ -1,6 +1,6 @@
 &mkgrd
   NL%EXPNME = 'quickstart_n16'
-  NL%base_dir = '/tmp/earthmesh_cases/'
+  NL%base_dir = './cases/'
   NL%mesh_type = 'atmosmesh'
   NL%mode_grid = 'hex'
   NL%mode_file = 'none'
@@ -36,7 +36,7 @@
   RL%niter_refine = 500
   RL%refine_spc = .TRUE.
   RL%refine_cal = .FALSE.
-  RL%max_iter_spc = 2
+  RL%max_iter_spc = 5
   RL%mask_refine_spc_type = 'circle'
   RL%mask_refine_spc_fprefix = 'none'
 /

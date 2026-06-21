@@ -895,9 +895,15 @@ Promoted the direct `--run-mask-restart-area-judge-refine-landtype-source` orche
 
 Promoted the direct `--run-mask-restart-area-judge` source-axis expansion into `rust/earthmesh_cli::run_mkgrd_mask_restart_area_judge_global_source_namelist`. The library now owns global source-axis reconstruction from compact dimensions and optional final `Get_Contain(0)`/`mask_postproc` continuation for this restart path; the CLI branch now only validates scalar inputs, invokes the runner, and formats the report.
 
-### 2026-06-14: global-source refine passthrough runner is reusable
+### 2026-06-14: global-source refine passthrough runner was a temporary smoke path
 
-Promoted the direct `--run-refine-passthrough` source-axis expansion and smoke executor into `rust/earthmesh_cli::run_mkgrd_refine_passthrough_global_source_namelist` plus `MkgrdPassthroughRefineExecutor`. The library now owns global source-axis reconstruction and top-level gridinit/refine passthrough orchestration for this smoke path; the CLI branch now only validates scalar inputs, invokes the runner, and formats the report.
+Promoted the direct `--run-refine-passthrough` source-axis expansion and smoke executor into the library as an intermediate migration step. This path has since been retired as a production surface: ordinary specified-refine dispatch now routes through the OLAM direct implementation described below, and the file-copying passthrough executor has been removed to avoid confusing smoke behavior with real refinement.
+
+### 2026-06-18: refine public dispatch routes to OLAM direct
+
+Replaced the reusable passthrough/synthetic-source refine entry points with OLAM direct dispatch. `run_mkgrd_refine_passthrough_global_source_namelist` and `run_mkgrd_atmos_specified_refine_global_source_namelist` now preserve their compatibility signatures but return `MkgrdOlamSpecifiedRefineRunReport` from `run_mkgrd_olam_specified_refine_global_source_namelist`; the legacy source-grid dimension arguments are no longer used to drive a refine-loop executor. The plain `run_mkgrd_top_level_namelist` dispatcher now also routes non-restart `NL%refine=.true.` namelists for supported mesh types directly to the OLAM Delaunay/Voronoi refine branch instead of falling back to gridinit-only output.
+
+The obsolete injected-executor passthrough wrappers and their tests were removed after this routing change. Remaining `run_mkgrd_refine_loop_*migrated_executor*` APIs are restart/data-preprocess compatibility surfaces for the older Area_judge/GetRef/refine-loop handoff and should not be used for new ordinary specified-region refinement work.
 
 ### 2026-06-14: default restart-refine dispatch runner is reusable
 

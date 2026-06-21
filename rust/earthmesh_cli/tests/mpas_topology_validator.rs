@@ -25,8 +25,20 @@ fn two_cell_open() -> MpasMesh {
         cells_on_cell: vec![vec![0, 0, 0], vec![2, 0, 0], vec![1, 0, 0]],
         vertices_on_cell: vec![vec![0, 0, 0], vec![1, 2, 3], vec![1, 2, 4]],
         edges_on_cell: vec![vec![0, 0, 0], vec![1, 2, 3], vec![1, 4, 5]],
-        cells_on_vertex: vec![vec![0, 0, 0], vec![1, 2, 0], vec![1, 2, 0], vec![1, 0, 0], vec![2, 0, 0]],
-        edges_on_vertex: vec![vec![0, 0, 0], vec![1, 2, 4], vec![1, 3, 5], vec![2, 3, 0], vec![4, 5, 0]],
+        cells_on_vertex: vec![
+            vec![0, 0, 0],
+            vec![1, 2, 0],
+            vec![1, 2, 0],
+            vec![1, 0, 0],
+            vec![2, 0, 0],
+        ],
+        edges_on_vertex: vec![
+            vec![0, 0, 0],
+            vec![1, 2, 4],
+            vec![1, 3, 5],
+            vec![2, 3, 0],
+            vec![4, 5, 0],
+        ],
         cells_on_edge: vec![[0, 0], [1, 2], [1, 0], [1, 0], [2, 0], [2, 0]],
         vertices_on_edge: vec![[0, 0], [1, 2], [1, 3], [2, 3], [1, 4], [2, 4]],
         n_edges_on_edge: vec![0, 0, 0, 0, 0, 0],
@@ -48,7 +60,11 @@ fn two_cell_open() -> MpasMesh {
 fn consistent_open_patch_passes_with_disk_euler() {
     let m = two_cell_open();
     let r = check_mpas_mesh_topology(&m);
-    assert!(r.is_consistent(), "unexpected violations: {:?}", r.violations);
+    assert!(
+        r.is_consistent(),
+        "unexpected violations: {:?}",
+        r.violations
+    );
     assert_eq!((r.n_cells, r.n_vertices, r.n_edges), (2, 4, 5));
     assert_eq!(r.euler_characteristic, 1); // disk
     assert!(!r.is_closed);
@@ -94,8 +110,15 @@ fn global_mpas_is_closed_sphere_when_fixture_present() {
     let g = earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cw, 16, 1)
         .unwrap();
     let r = check_mpas_mesh_topology(&g);
-    assert!(r.is_consistent(), "global violations: {:?}", &r.violations[..r.violations.len().min(8)]);
-    assert_eq!(r.euler_characteristic, 2, "global mesh should be a closed sphere");
+    assert!(
+        r.is_consistent(),
+        "global violations: {:?}",
+        &r.violations[..r.violations.len().min(8)]
+    );
+    assert_eq!(
+        r.euler_characteristic, 2,
+        "global mesh should be a closed sphere"
+    );
     assert_eq!(r.boundary_edges, 0);
     assert!(r.is_closed);
 }

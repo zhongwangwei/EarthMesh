@@ -97,3 +97,46 @@ fn apply_read_nl_workspace_plan_preserves_restart_short_circuit() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn apply_read_nl_workspace_plan_rejects_delete_outside_workdir() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_workspace_guard_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let outside = std::env::temp_dir().join(format!(
+        "earthmesh_cli_workspace_outside_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&outside);
+    fs::create_dir_all(outside.join("important")).expect("create outside dir");
+    fs::write(outside.join("important/keep.txt"), "keep").expect("write outside file");
+    let namelist = root.join("mkgrd.nml");
+    fs::write(&namelist, "&mkgrd\n/\n").expect("write namelist");
+
+    let plan = MkgrdWorkspacePlan {
+        file_dir: outside.to_string_lossy().into_owned(),
+        remove_existing_file_dir: true,
+        remove_filelists: false,
+        directories_to_create: Vec::new(),
+        namelist_save_path: outside.join("namelist.save").to_string_lossy().into_owned(),
+        mask_operations: Vec::new(),
+    };
+
+    let err = earthmesh_cli::apply_read_nl_workspace_plan(&plan, &namelist, &root)
+        .expect_err("outside file_dir must be rejected before deletion");
+
+    assert!(
+        err.to_string().contains("outside workdir"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("important/keep.txt")).unwrap(),
+        "keep"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&outside);
+}

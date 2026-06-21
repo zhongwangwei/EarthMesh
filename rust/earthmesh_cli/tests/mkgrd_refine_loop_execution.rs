@@ -368,10 +368,9 @@ fn refine_loop_execution_can_generate_final_domain_contain_during_handoff() {
         .runtime_state
         .as_ref()
         .expect("final contain handoff should preserve runtime state");
-    // The execution records counts at the EFFECTIVE final step, which collapses
-    // from max_iter+1 when the last refine step did not change the mesh (the mock
-    // writes the same mesh each step). Assert against that invariant, not the
-    // naive plan step. See infer_mkgrd_effective_final_step_from_gridfiles.
+    // The execution records counts at the effective final step. When the
+    // planned final gridfile exists, it remains authoritative even if point
+    // counts match the previous step.
     let eff = earthmesh_cli::infer_mkgrd_effective_final_step_from_gridfiles(&plan)
         .expect("infer effective final step");
     assert_eq!(runtime_state.step, eff);
@@ -483,7 +482,7 @@ fn refine_loop_final_domain_contain_records_previous_num_vertex_in_runtime_state
         .runtime_state
         .as_ref()
         .expect("final contain handoff should preserve runtime state");
-    // See note above: assert against the effective (collapsed) final step.
+    // See note above: assert against the effective final step.
     let eff = earthmesh_cli::infer_mkgrd_effective_final_step_from_gridfiles(&plan)
         .expect("infer effective final step");
     assert_eq!(runtime_state.step, eff);

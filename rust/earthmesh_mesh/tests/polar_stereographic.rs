@@ -1,8 +1,9 @@
 use earthmesh_core::{deg_to_rad, EARTH_RADIUS_METERS};
 use earthmesh_mesh::{
-    circumcenter_spherical_mesh_fortran_indexed, project_to_polar_stereographic,
+    circumcenter_spherical_mesh_fortran_indexed, lonlat_degrees_to_unit_xyz,
+    project_to_polar_stereographic, spherical_centroid_degrees,
     spherical_circumcenter_from_barycenter, unproject_from_polar_stereographic, CartesianPoint,
-    PlanePoint, PoleBasis,
+    LonLatDegrees, PlanePoint, PoleBasis,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -105,6 +106,117 @@ fn circumcenter_spherical_mesh_preserves_fortran_indexing_and_inout_slots() {
     approx_eq(centers[2].x, initial_centers[2].x, 1.0e-6);
     approx_eq(centers[2].y, initial_centers[2].y, 1.0e-6);
     approx_eq(centers[2].z, initial_centers[2].z, 1.0e-6);
+}
+
+#[test]
+fn circumcenter_spherical_mesh_falls_back_for_nonlocal_near_collinear_triangle() {
+    let r = EARTH_RADIUS_METERS;
+    let triangle = [
+        LonLatDegrees::new(-21.591571, -51.613641),
+        LonLatDegrees::new(-28.757277, -51.768891),
+        LonLatDegrees::new(-24.323722, -51.622878),
+    ];
+    let barycenter = spherical_centroid_degrees(&triangle).expect("triangle centroid");
+    let scale = |point: CartesianPoint| CartesianPoint::new(point.x * r, point.y * r, point.z * r);
+    let initial_centers = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(barycenter)),
+    ];
+    let vertex_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(triangle[0])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[1])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[2])),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [1, 2, 3]];
+
+    let centers = circumcenter_spherical_mesh_fortran_indexed(
+        &initial_centers,
+        &vertex_points,
+        &cells_on_triangle,
+    )
+    .expect("valid triangle");
+    let center_lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
+
+    assert!(
+        center_lonlat.lat_degrees > -55.0,
+        "near-collinear circumcenter should remain local, got {center_lonlat:?}"
+    );
+}
+
+#[test]
+fn circumcenter_spherical_mesh_falls_back_for_laterally_nonlocal_triangle() {
+    let r = EARTH_RADIUS_METERS;
+    let triangle = [
+        LonLatDegrees::new(-65.469629, -36.870840),
+        LonLatDegrees::new(-64.478027, -39.012391),
+        LonLatDegrees::new(-64.196106, -40.931882),
+    ];
+    let barycenter = spherical_centroid_degrees(&triangle).expect("triangle centroid");
+    let scale = |point: CartesianPoint| CartesianPoint::new(point.x * r, point.y * r, point.z * r);
+    let initial_centers = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(barycenter)),
+    ];
+    let vertex_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(triangle[0])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[1])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[2])),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [1, 2, 3]];
+
+    let centers = circumcenter_spherical_mesh_fortran_indexed(
+        &initial_centers,
+        &vertex_points,
+        &cells_on_triangle,
+    )
+    .expect("valid triangle");
+    let center_lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
+
+    assert!(
+        center_lonlat.lon_degrees > -70.0,
+        "near-collinear circumcenter should not run laterally away from its cells, got {center_lonlat:?}"
+    );
+}
+
+#[test]
+fn circumcenter_spherical_mesh_falls_back_outside_local_latitude_envelope() {
+    let r = EARTH_RADIUS_METERS;
+    let triangle = [
+        LonLatDegrees::new(165.165231, -63.551627),
+        LonLatDegrees::new(161.942536, -62.451797),
+        LonLatDegrees::new(171.024151, -63.893140),
+    ];
+    let barycenter = spherical_centroid_degrees(&triangle).expect("triangle centroid");
+    let scale = |point: CartesianPoint| CartesianPoint::new(point.x * r, point.y * r, point.z * r);
+    let initial_centers = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(barycenter)),
+    ];
+    let vertex_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(triangle[0])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[1])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[2])),
+    ];
+    let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [1, 2, 3]];
+
+    let centers = circumcenter_spherical_mesh_fortran_indexed(
+        &initial_centers,
+        &vertex_points,
+        &cells_on_triangle,
+    )
+    .expect("valid triangle");
+    let center_lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
+
+    assert!(
+        center_lonlat.lat_degrees < -60.0,
+        "circumcenter should stay inside the local latitude envelope, got {center_lonlat:?}"
+    );
 }
 
 #[test]

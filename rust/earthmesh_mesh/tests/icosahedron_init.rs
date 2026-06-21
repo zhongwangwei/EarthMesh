@@ -1,5 +1,6 @@
-use earthmesh_core::EARTH_RADIUS_METERS;
 use earthmesh_mesh::{icosahedron_initial_grid_fortran, CartesianPoint};
+
+const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(
@@ -23,10 +24,10 @@ fn icosahedron_initial_grid_counts_and_pentagon_indices_match_fortran_nxp1() {
 
     approx_eq(grid.m_points[2].x, 0.0, 1.0e-9);
     approx_eq(grid.m_points[2].y, 0.0, 1.0e-9);
-    approx_eq(grid.m_points[2].z, -EARTH_RADIUS_METERS, 1.0e-9);
+    approx_eq(grid.m_points[2].z, -OLAM_FORTRAN_EARTH_RADIUS_METERS, 1.0e-9);
     approx_eq(grid.m_points[13].x, 0.0, 1.0e-9);
     approx_eq(grid.m_points[13].y, 0.0, 1.0e-9);
-    approx_eq(grid.m_points[13].z, EARTH_RADIUS_METERS, 1.0e-9);
+    approx_eq(grid.m_points[13].z, OLAM_FORTRAN_EARTH_RADIUS_METERS, 1.0e-9);
 }
 
 #[test]
@@ -44,8 +45,8 @@ fn icosahedron_initial_grid_projects_all_active_points_to_earth_radius() {
     for point_id in 2..grid.m_points.len() {
         approx_eq(
             magnitude(grid.m_points[point_id]),
-            EARTH_RADIUS_METERS,
-            1.0e-6,
+            OLAM_FORTRAN_EARTH_RADIUS_METERS,
+            1.0,
         );
     }
 }

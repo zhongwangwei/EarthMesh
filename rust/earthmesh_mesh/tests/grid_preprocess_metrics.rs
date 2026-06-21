@@ -264,7 +264,7 @@ fn spherical_cell_area_fans_vertices_like_fortran_getarea() {
     ];
 
     approx_eq(
-        spherical_cell_area_from_vertices_unit(&vertices).expect("valid cell"),
+        spherical_cell_area_from_vertices_unit(&vertices, 4).expect("valid cell"),
         0.000304609680288118,
         1.0e-15,
     );
@@ -272,11 +272,14 @@ fn spherical_cell_area_fans_vertices_like_fortran_getarea() {
 
 #[test]
 fn spherical_cell_area_rejects_degenerate_cells() {
-    assert!(spherical_cell_area_from_vertices_unit(&[]).is_none());
-    assert!(spherical_cell_area_from_vertices_unit(&[
-        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
-        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
-    ])
+    assert!(spherical_cell_area_from_vertices_unit(&[], 0).is_none());
+    assert!(spherical_cell_area_from_vertices_unit(
+        &[
+            lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
+            lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
+        ],
+        2
+    )
     .is_none());
 }
 
@@ -904,6 +907,216 @@ fn springjustment_global_core_matches_manual_migrated_pipeline() {
         output.spring.diagnostic_max_displacements,
         spring_output.diagnostic_max_displacements
     );
+}
+
+#[test]
+fn springjustment_global_core_scales_centroids_for_radius_scaled_circumcenters() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut n_edges_on_cell = vec![0usize; 14];
+    n_edges_on_cell[10] = 3;
+    n_edges_on_cell[11] = 3;
+    n_edges_on_cell[12] = 3;
+    n_edges_on_cell[13] = 3;
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+
+    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        base_dists_on_edge: 2.0,
+        base_cellwidth: None,
+        distance_num_rc: 0,
+        distance_spacing: DistanceLayerSpacing::Linear,
+        distance_steps: &[],
+        niter_refine: 1,
+        relax: 0.25,
+        radius,
+        diagnostic_every: 100,
+    })
+    .expect("valid springjustment global core input");
+
+    let centroid_lonlat =
+        centroid_spherical_mesh_fortran_indexed(&output.updated_cell_lonlat, &cells_on_triangle)
+            .expect("centroids");
+    let scaled_centroid_cartesian = centroid_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| CartesianPoint::new(point.x * radius, point.y * radius, point.z * radius))
+        .collect::<Vec<_>>();
+    let expected = circumcenter_spherical_mesh_fortran_indexed(
+        &scaled_centroid_cartesian,
+        &output.spring.updated_cell_points,
+        &cells_on_triangle,
+    )
+    .expect("scaled circumcenters")
+    .into_iter()
+    .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+    .collect::<Vec<_>>();
+
+    let unscaled_centroid_cartesian = centroid_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .collect::<Vec<_>>();
+    let unscaled = circumcenter_spherical_mesh_fortran_indexed(
+        &unscaled_centroid_cartesian,
+        &output.spring.updated_cell_points,
+        &cells_on_triangle,
+    )
+    .expect("unscaled circumcenters")
+    .into_iter()
+    .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+    .collect::<Vec<_>>();
+
+    assert_eq!(output.updated_triangle_lonlat, expected);
+    assert_ne!(output.updated_triangle_lonlat[2], unscaled[2]);
+}
+
+#[test]
+fn springjustment_global_core_scales_cell_points_before_global_spring() {
+    let cells_on_triangle = vec![
+        [0, 0, 0],
+        [0, 0, 0],
+        [10, 11, 12],
+        [10, 11, 13],
+        [10, 12, 13],
+        [11, 12, 13],
+    ];
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 14];
+    triangles_on_cell[10] = vec![2, 3, 4];
+    triangles_on_cell[11] = vec![2, 3, 5];
+    triangles_on_cell[12] = vec![2, 4, 5];
+    triangles_on_cell[13] = vec![3, 4, 5];
+    let mut n_edges_on_cell = vec![0usize; 14];
+    n_edges_on_cell[10] = 3;
+    n_edges_on_cell[11] = 3;
+    n_edges_on_cell[12] = 3;
+    n_edges_on_cell[13] = 3;
+    let triangle_lonlat = vec![
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(0.2, 0.2),
+        LonLatDegrees::new(0.8, 0.2),
+        LonLatDegrees::new(0.2, 0.8),
+        LonLatDegrees::new(0.8, 0.8),
+    ];
+    let mut cell_lonlat = vec![LonLatDegrees::new(0.0, 0.0); 14];
+    cell_lonlat[10] = LonLatDegrees::new(0.0, 0.0);
+    cell_lonlat[11] = LonLatDegrees::new(1.0, 0.0);
+    cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
+    cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let target_edge_distance = radius * earthmesh_core::deg_to_rad(1.0);
+
+    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        base_dists_on_edge: target_edge_distance,
+        base_cellwidth: None,
+        distance_num_rc: 0,
+        distance_spacing: DistanceLayerSpacing::Linear,
+        distance_steps: &[],
+        niter_refine: 1,
+        relax: 0.25,
+        radius,
+        diagnostic_every: 100,
+    })
+    .expect("valid springjustment global core input");
+
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+        &cells_on_triangle,
+        &triangles_on_cell,
+        &n_edges_on_cell,
+    )
+    .expect("triangle neighbors");
+    let edge_output = get_edge_production_fortran_indexed(
+        &triangle_neighbors,
+        &cells_on_triangle,
+        &triangle_lonlat,
+        &cell_lonlat,
+    )
+    .expect("edge production");
+    let cell_connectivity = earthmesh_mesh::connect_on_cell_fortran_indexed(
+        &n_edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edge_output.edges_on_vertex,
+        &triangles_on_cell,
+    )
+    .expect("cell connectivity");
+    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(
+        &edge_output.vertices_on_edge,
+        &edge_output.edges_on_vertex,
+    )
+    .expect("edges on edge tri");
+    let dists_on_edge = vec![target_edge_distance; edge_output.cells_on_edge.len()];
+    let scaled_cell_points = cell_lonlat
+        .iter()
+        .copied()
+        .map(lonlat_degrees_to_unit_xyz)
+        .map(|point| CartesianPoint::new(point.x * radius, point.y * radius, point.z * radius))
+        .collect::<Vec<_>>();
+    let expected = spring_dynamics_global_fortran_indexed(
+        &scaled_cell_points,
+        &n_edges_on_cell,
+        &cell_connectivity.edges_on_cell,
+        &edge_output.cells_on_edge,
+        &edges_on_edge_tri,
+        &dists_on_edge,
+        1,
+        0.25,
+        radius,
+        100,
+    )
+    .expect("spring dynamics");
+
+    for cell_id in [10usize, 11, 12, 13] {
+        approx_eq(
+            output.spring.updated_cell_points[cell_id].x,
+            expected.updated_cell_points[cell_id].x,
+            1.0e-6,
+        );
+        approx_eq(
+            output.spring.updated_cell_points[cell_id].y,
+            expected.updated_cell_points[cell_id].y,
+            1.0e-6,
+        );
+        approx_eq(
+            output.spring.updated_cell_points[cell_id].z,
+            expected.updated_cell_points[cell_id].z,
+            1.0e-6,
+        );
+    }
 }
 
 #[test]
@@ -1703,7 +1916,11 @@ fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_fortran() {
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(120.0, 45.0)),
     ];
     let edge_points = vec![zero; vertices.len()];
-    let cell_points = vec![zero, zero, lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.5))];
+    let cell_points = vec![
+        zero,
+        zero,
+        lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.5, 0.5)),
+    ];
     let cells_on_vertex = vec![[0, 0, 0]; vertices.len()];
     let edges_on_vertex = vec![[0, 0, 0]; vertices.len()];
     let cells_on_edge = vec![[0, 0]; vertices.len()];
@@ -1721,7 +1938,7 @@ fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_fortran() {
         n_edges_on_cell: &n_edges_on_cell,
     })
     .expect("valid padded Fortran-indexed area input");
-    let expected = spherical_cell_area_from_vertices_unit(&vertices[2..=5])
+    let expected = spherical_cell_area_from_vertices_unit(&vertices[2..=5], 4)
         .expect("expected unpadded cell area");
 
     approx_eq(output.area_cell[2], expected, 1.0e-15);

@@ -27,7 +27,10 @@ fn circle_mask_round_trips() {
     let path = std::env::temp_dir().join("test_em_circle_mask.nc");
     let mask = earthmesh_cli::CircleMask {
         refine_degree: 0,
-        points: vec![earthmesh_cli::LonLatPoint { lon: 115.0, lat: 25.0 }],
+        points: vec![earthmesh_cli::LonLatPoint {
+            lon: 115.0,
+            lat: 25.0,
+        }],
         radius_km: vec![500.0],
     };
     earthmesh_cli::write_circle_mask_netcdf(&path, &mask).expect("write circle mask");

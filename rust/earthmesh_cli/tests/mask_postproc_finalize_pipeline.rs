@@ -132,6 +132,7 @@ fn mask_postproc_finalize_report_exposes_vertex_mapping_for_ocean_boundary_write
     assert_eq!(report.vertex_reindex.vertex_mapping[3], 0);
     assert_eq!(report.vertex_reindex.vertex_mapping[4], 3);
     assert_eq!(report.vertex_reindex.vertex_mapping[5], 4);
+    assert_eq!(report.final_data.vertex_coordinates_final[1], [0.0, 0.0]);
     assert_eq!(report.final_data.center_neighbors_final[2], vec![2, 3, 4]);
     assert_eq!(report.mesh.m_to_w[2], [2, 3, 4]);
 }

@@ -53,6 +53,40 @@ fn getref_land_basic_counts_landtypes_and_mainland_fraction_like_fortran() {
 }
 
 #[test]
+fn getref_land_basic_mainland_fraction_keeps_maxlc_cells_in_area_denominator() {
+    let is_in_refine_sjx = vec![0, 0, 1];
+    let lnd_id = one_based_i32(&[[0, 0], [3, 1]]);
+    let lnd_ii = one_based_i32(&[[1, 1], [1, 2], [1, 3]]);
+    let mut landtypes = vec![vec![0; 4]; 2];
+    landtypes[1][1] = 2;
+    landtypes[1][2] = 2;
+    landtypes[1][3] = 9;
+
+    let report = calculate_getref_land_basic_fortran_indexed(
+        &is_in_refine_sjx,
+        &lnd_id,
+        &lnd_ii,
+        &landtypes,
+        GetRefLandBasicConfig {
+            num_vertex: 1,
+            maxlc: 9,
+            refine_num_landtypes: false,
+            th_num_landtypes: 0,
+            refine_area_mainland: true,
+            th_area_mainland: 0.70,
+        },
+    )
+    .expect("calculate mainland fraction threshold");
+
+    assert!((report.f_mainarea.as_ref().unwrap()[2] - (2.0 / 3.0)).abs() < 1.0e-12);
+    assert_eq!(
+        report.ref_th_land[2][1], 1,
+        "Fortran GetRef_Lnd excludes maxlc from the mainland-class numerator but keeps it in the total area denominator"
+    );
+    assert_eq!(report.ref_sjx[2], 1);
+}
+
+#[test]
 fn getref_land_basic_ignores_maxlc_and_inactive_refine_cells() {
     let is_in_refine_sjx = vec![0, 0, 0, 1, 0];
     let lnd_id = one_based_i32(&[[0, 0], [0, 0], [2, 1], [2, 3]]);
