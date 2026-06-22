@@ -78,6 +78,7 @@ test-slow:
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_mask_restart $(CLI_FEATURES) -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test colm_coupling_csv_from_mesh $(CLI_FEATURES) mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test colm_coupling_csv_from_mesh $(CLI_FEATURES) mesh_plus_landtype_coupling_quality_report -- --ignored
+	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test hydro_workflow $(CLI_FEATURES) full_chain_with_mesh_landtype_coupling_quality -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test refine_end_to_end_topology $(CLI_FEATURES) specified_bbox_refine_produces_consistent_closed_mpas -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_gridinit $(CLI_FEATURES) run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture -- --ignored
 
