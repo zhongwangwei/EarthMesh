@@ -19,7 +19,7 @@ jobs:
     name: fast (fmt + no-netcdf crates)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install rustfmt + clippy
         run: rustup component add rustfmt clippy
       - name: Format check (fix locally with `cargo fmt`)
@@ -40,7 +40,7 @@ jobs:
     name: heavy (cli + gui, system NetCDF)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install NetCDF + GUI system deps
         run: |
           sudo apt-get update
