@@ -279,12 +279,11 @@ Current nested grid 3 crosses (or is too close to) the next coarser grid boundar
 
 Rust regression test:
 - `olam_method_c_rejects_reduced_fortran_nxp6_two_circle_too_close_boundary`
-- Rust also rejects the case, but currently via the perimeter-triple grouping guard: perimeter length `17` cannot be grouped into transition triples after `fill_rad3` closure.
+- Rust rejects the case through a boundary-style error before the Rust-only perimeter-triple grouping guard.
 
 Interpretation:
 - Behavior-level agreement: both implementations reject this invalid/tight two-level circle case.
-- Diagnostic-path difference remains: Fortran rejects through the coarser-grid boundary check, while Rust reaches a later perimeter grouping invariant first.
-- I did not change core mesh construction for this, because changing the rejection path would require altering upstream perimeter/selection ordering and should be handled only after an explicit core-code approval.
+- Rejection-path agreement is now closer: Rust no longer reaches the later perimeter grouping invariant first for this reduced negative case.
 
 ### NXP6 single corridor, accepted case
 
@@ -411,11 +410,11 @@ Current nested grid 3 crosses (or is too close to) the next coarser grid boundar
 
 Rust regression test:
 - `olam_method_c_rejects_reduced_fortran_nxp6_two_level_corridor_too_close_boundary`
-- Rust also rejects this invalid same-length child corridor, currently through the perimeter-triple grouping guard: perimeter length `23` cannot be grouped into transition triples after `fill_rad3` closure.
+- Rust rejects this invalid same-length child corridor through a boundary-style error before the Rust-only perimeter-triple grouping guard.
 
 Interpretation:
 - Behavior-level agreement: both implementations reject the invalid/tight two-level corridor case.
-- Diagnostic-path difference remains: Fortran rejects through the parent-boundary check; Rust reaches a later perimeter grouping invariant first.
+- Rejection-path agreement is now closer: Rust no longer reaches the later perimeter grouping invariant first for this reduced negative case.
 - No core mesh construction change was made for this diagnostic-path difference.
 
 ### NXP7 single circle, accepted case
@@ -546,15 +545,10 @@ Current behavioral conclusion:
 - The accepted reduced-Fortran topology summaries match Rust exactly for `nmd/nud/nwd`, active W-face `ngr` counts, and nonzero `mrow` min/max/count.
 - The reduced-Fortran rejected too-close boundary cases are also rejected by Rust.
 
-Remaining non-equivalence:
+Resolved rejection-path non-equivalence:
 - Fortran rejects the too-close boundary cases earlier through parent-boundary / next-coarser-grid checks.
-- Rust currently rejects the same invalid cases later through the Method-C perimeter-triple invariant, for example `perimeter length ... cannot be grouped into transition triples after fill_rad3 closure`.
-
-Decision gate before core changes:
-- Continuing to add similar reduced-Fortran positive cases is now lower value than addressing the rejection-path mismatch.
-- Making the rejection path match Fortran requires a core mesh-construction change, most likely an earlier parent-boundary consistency check after selected-face / `fill_rad3` closure and before perimeter triple grouping.
-- That core change should preserve all accepted reduced-Fortran cases and convert the two rejected cases from late perimeter errors into earlier parent-boundary errors.
-- No such core change has been made in this audit step.
+- Rust now performs the corresponding parent `mrlw` consistency check after selected-face / `fill_rad3` closure and before Method-C perimeter triple grouping.
+- The two reduced-Fortran rejected cases are covered by Rust tests that require a boundary-style error and reject the later `cannot be grouped into transition triples` path.
 
 ## Re-running reduced Fortran probes
 
@@ -730,11 +724,117 @@ That command proves all of the following:
 - Rust matches all 10 accepted Fortran summaries through direct regression tests.
 - Rust rejects both invalid/tight two-level cases through direct regression tests.
 
-What this does not yet prove:
-- It does not prove that Rust emits the exact same diagnostic path as Fortran for the rejected/tight boundary cases.
-- Fortran rejects those cases earlier through parent-boundary checks.
-- Rust currently rejects them later through the Method-C perimeter-triple invariant.
+What this now proves:
+- Rust rejects the two reduced invalid/tight cases before the Method-C perimeter-triple invariant, matching the reduced Fortran rejection class more closely.
+- Rust preserves the accepted reduced-Fortran summary cases after that earlier check.
+
+What this still does not prove:
+- It does not prove full table-by-table equality for every M/U/W field; the tests currently lock the same summary fields that the reduced probe reports.
+- It does not prove full OLAM executable parity. The direct Fortran side here is a reduced Method-C harness because the full OLAM build still fails outside this Method-C path.
+- It does not prove spring-dynamics parity; the reduced probe keeps spring dynamics as a stub/no-op, while the Rust side has separate spring behavior tests.
 
 Current decision:
-- Adding more similar accepted topology cases is lower-value than fixing the rejection-path mismatch.
-- Fixing the rejection-path mismatch requires a core Method-C mesh-construction change and should be done only after explicit approval.
+- Further parity work should either expand the reduced probe to table-by-table M/U/W dumps or restore a complete OLAM executable build, rather than adding more summary-only cases.
+
+## Expanded parity gates after full-table and spring work
+
+The direct parity gate is now:
+
+```text
+scripts/check_olam_method_c_fortran_parity.sh
+```
+
+That command now proves more than summary-level topology:
+- It still rebuilds and runs the reduced Fortran Method-C harness for the 10 accepted golden cases and 2 rejected boundary cases.
+- It still runs the Rust accepted/rejected reduced-Fortran regression tests.
+- It now generates canonical reduced-Fortran M/U/W topology-table dumps for all 10 accepted cases and diffs them against Rust dumps generated by `cargo run --example olam_method_c_probe -- tables <case>`.
+- The canonical table dump includes active M/U/W ids, M `npoly`, active M `iu/iw`, U `mrlu/im/iu/iw`, W `npoly/mrlw/mrlw_orig/mrow/ngr/im/iu/iw`, and M refinement/grid metadata.
+- It normalizes inactive M-tail slots beyond `npoly`, because Fortran leaves some inactive `itab_md%iu/iw` tail entries as ring-walk scratch values while Rust stores them as inactive placeholders.
+- It now compiles and runs the real Fortran `spring_dynamics.f90` global spring path for `nxp6_circle` under `MAKEGRID_PLOT` 100-iteration behavior, then compares sampled Rust `spring_global` coordinates at rounded-meter precision.
+
+The full OLAM binary build smoke gate is now:
+
+```text
+scripts/check_olam_full_gfortran_build.sh
+```
+
+This command builds the complete OLAM `build_olam_test` source list with `gfortran` in a temporary work directory and produces `olam-7.0` on this machine. It does not modify the OLAM source tree. The smoke build applies temporary compatibility shims only inside the scratch directory:
+- removes Intel-style module-procedure `import` lines that `gfortran` rejects;
+- removes the invalid `sdt/sds` duplicate import from the UMWM source-function use-list;
+- removes a stale `map_proj:get_weights_lonlat` use-list entry where the symbol is actually provided by `minterp_lib`;
+- links no-op NCAR/GKS plotting stubs so the non-plotting OLAM executable can link without NCAR Graphics libraries.
+
+Remaining boundary:
+- The full binary smoke proves the whole OLAM source list can compile and link locally with gfortran plus temporary compatibility shims.
+- It does not yet run a full OLAM MAKEGRID namelist end-to-end and compare HDF5 output tables against Rust.
+- The spring gate currently proves global `spring_dynamics_globe` sampled numeric parity at rounded-meter precision; nest spring has Rust behavioral tests but does not yet have a full Fortran sampled-coordinate diff gate.
+
+## Method-C automatic mask repair boundary
+
+Rust now treats Fortran `perim_fill3` non-triplet perimeter overruns as a repairable
+mask-construction problem rather than reproducing the unchecked Fortran array overrun.
+When a selected Method-C mask cannot be consumed in transition triples, Rust first
+tries local same-MRL boundary growth, then validates the result through the real
+Method-C table emission path. If table emission exposes a local transition-patch or
+`npoly > 7` failure, Rust tries targeted boundary fill/shrink repairs and, as a final
+single-pass fallback, erodes the selected boundary layer before retrying.
+
+This repair layer is intentionally inactive for already valid golden cases. The
+current parity gate still passes all reduced Fortran accepted/rejected cases and all
+full M/U/W table diffs for the stable golden set.
+
+Newly covered boundary cases:
+- `nxp=7`, single-level circle, radius `4,000,000`: Fortran overruns `perim_fill3`
+  on this parameter set; Rust repairs the selected mask and emits a closed topology.
+- `nxp=7`, single-level corridor, endpoint radii `4,000,000`: Fortran overruns
+  `perim_fill3`; Rust repairs the selected mask and emits a closed topology.
+
+Remaining limitation:
+- The same `nxp=7`, radius `4,000,000` parent combined with a second child nest is
+  now past the original parent `perim_fill3` overrun, but can still fail at the child
+  pass because parent repair and child halo are not planned jointly. Solving that
+  requires a Phase 3 parent-child planner that can co-optimize parent expansion or
+  child shrinkage before either pass is committed.
+
+### Parent-child retry status
+
+A conservative parent-child retry path now exists for no-spring table generation: if a
+child pass fails after a repaired parent pass, Rust can return to the previous parent
+checkpoint, erode the parent mask, rebuild the parent, then reselect and retry the
+child. Child fallback uses a stricter annealed-mask path so it does not expand itself
+back into the repaired parent transition halo.
+
+This improves the architecture for Phase 3 without changing the stable Fortran parity
+cases. The full `olam_method_c` regression gate and the reduced Fortran/Rust full-table
+parity script still pass after this change.
+
+Current future gates remain ignored:
+- `olam_method_c_anneals_nxp7_two_circle_after_repaired_parent`
+- `olam_method_c_anneals_nxp7_two_corridor_after_repaired_parent`
+
+Those two cases still require a stronger parent-child halo optimizer. The attempted
+local parent erosion / child strict annealing can move the failure boundary but does
+not yet prove a legal two-level Method-C layout for the `nxp=7`, parent-radius
+`4,000,000` combinations. They are therefore documented as future gates rather than
+claimed supported cases.
+
+### Parent-child geometric annealing update
+
+The parent-child retry path now has a geometry-level annealing step for circle and
+corridor parent regions. When a child pass fails and the previous parent pass itself
+required Method-C repair, Rust retries the parent with scaled parent radii
+(`0.95`, `0.90`, ...), rebuilds the parent, then reselects and retries the child.
+This allows large parent specifications to retreat to the nearest legal Method-C
+layout while keeping the child request active.
+
+The retry is deliberately gated: it is enabled only when the previous parent pass
+needed automatic repair. If the parent was already valid under strict Method-C and the
+child is too close to the parent boundary, Rust still preserves the reduced Fortran
+negative behavior and rejects the case.
+
+New default regression coverage:
+- `olam_method_c_anneals_nxp7_two_circle_after_repaired_parent`
+- `olam_method_c_anneals_nxp7_two_corridor_after_repaired_parent`
+
+Both previously represented future gates for `nxp=7`, parent radius `4,000,000`; both
+now pass with closed topology and `npoly <= 7` after parent geometric annealing.

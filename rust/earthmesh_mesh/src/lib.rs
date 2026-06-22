@@ -728,6 +728,39 @@ struct OlamMethodCPerimeterPoint {
 
 const OLAM_METHOD_C_MIN_GRID_SPACING_METERS: f64 = 0.001;
 
+fn scale_olam_refinement_region_radius(
+    region: &OlamRefinementRegion,
+    factor: f64,
+) -> Option<OlamRefinementRegion> {
+    if !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    match region {
+        OlamRefinementRegion::Circle {
+            center,
+            radius_meters,
+            level,
+        } => Some(OlamRefinementRegion::Circle {
+            center: *center,
+            radius_meters: radius_meters * factor,
+            level: *level,
+        }),
+        OlamRefinementRegion::Corridor {
+            points,
+            radius_meters,
+            level,
+        } => Some(OlamRefinementRegion::Corridor {
+            points: points.clone(),
+            radius_meters: radius_meters
+                .iter()
+                .map(|radius| radius * factor)
+                .collect(),
+            level: *level,
+        }),
+        OlamRefinementRegion::Bbox { .. } | OlamRefinementRegion::Polygon { .. } => None,
+    }
+}
+
 impl OlamRefinementRegion {
     pub fn level(&self) -> usize {
         match self {
@@ -1985,6 +2018,62 @@ impl OlamDelaunayMesh {
         self.spawn_nest(regions, max_level)
     }
 
+    /// Canonical text dump of the migrated OLAM Delaunay M/U/W topology tables.
+    ///
+    /// This is intentionally exhaustive for fields owned by `earthmesh_mesh` and
+    /// stable across platforms, so external Fortran parity harnesses can compare
+    /// full table contents without carrying large golden fixture files.
+    pub fn olam_delaunay_topology_dump(&self) -> String {
+        let mut dump = String::new();
+        dump.push_str(&format!(
+            "counts nmd={} nud={} nwd={}\n",
+            self.nmd, self.nud, self.nwd
+        ));
+        for im in 2..=self.nmd {
+            let neighbors = self.m_neighbors[im];
+            let metadata = self.m_metadata[im];
+            let stored_m_neighbors = [1usize; 7];
+            dump.push_str(&format!(
+                "M {im} npoly={} mrlm={} mrlm_orig={} ngr={}",
+                neighbors.npoly,
+                metadata.mrlm,
+                metadata.mrlm_orig,
+                metadata.ngr
+            ));
+            push_usize_fields(&mut dump, " im", &stored_m_neighbors);
+            push_usize_fields(&mut dump, " iu", &neighbors.iu);
+            push_usize_fields(&mut dump, " iw", &neighbors.iw);
+            dump.push('\n');
+        }
+        for iu in 2..=self.nud {
+            let edge = self.u_edges[iu];
+            dump.push_str(&format!(
+                "U {iu} mrlu={}",
+                edge.mrlu
+            ));
+            push_usize_fields(&mut dump, " im", &edge.im);
+            push_usize_fields(&mut dump, " iu", &edge.iu);
+            push_usize_fields(&mut dump, " iw", &edge.iw);
+            dump.push('\n');
+        }
+        for iw in 2..=self.nwd {
+            let face = self.w_faces[iw];
+            dump.push_str(&format!(
+                "W {iw} npoly={} mrlw={} mrlw_orig={} mrow={} ngr={}",
+                face.npoly,
+                face.mrlw,
+                face.mrlw_orig,
+                face.mrow,
+                face.ngr
+            ));
+            push_usize_fields(&mut dump, " im", &face.im);
+            push_usize_fields(&mut dump, " iu", &face.iu);
+            push_usize_fields(&mut dump, " iw", &face.iw);
+            dump.push('\n');
+        }
+        dump
+    }
+
     /// OLAM refinement using an explicit perimeter transition width.
     ///
     /// `max_mrows` controls the `perim_mrow` propagation width and allows callers
@@ -2158,6 +2247,13 @@ impl OlamDelaunayMesh {
             .unwrap_or(1)
             .max(1)
             + 1;
+        let mut previous_pass_checkpoint: Option<(
+            Self,
+            Vec<bool>,
+            usize,
+            OlamRefinementRegion,
+            bool,
+        )> = None;
         for region in regions.iter().filter(|region| region.level() <= max_level) {
             let pass = region.level();
             if pass > 1 && matches!(region, OlamRefinementRegion::Polygon { .. }) {
@@ -2189,6 +2285,15 @@ impl OlamDelaunayMesh {
                 ));
             }
             let grid_number = next_grid_number;
+            let mesh_before_pass = mesh.clone();
+            let pass_requires_repair = mesh
+                .spawn_nest_pass_method_c_without_mask_repair(
+                    &selected_faces,
+                    grid_number,
+                    max_mrows,
+                    !use_cartesian_xy,
+                )
+                .is_err();
             match mesh.spawn_nest_pass_with_max_mrows(
                 &selected_faces,
                 grid_number,
@@ -2196,13 +2301,66 @@ impl OlamDelaunayMesh {
                 !use_cartesian_xy,
             ) {
                 Ok(refined) => mesh = refined,
-                Err(error) => {
-                    return Err(io::Error::new(
-                        error.kind(),
-                        format!("OLAM spawn_nest pass {pass} failed: {error}"),
-                    ));
-                }
+                Err(error) => match mesh.spawn_nest_pass_with_mask_annealing(
+                    &selected_faces,
+                    grid_number,
+                    max_mrows,
+                    !use_cartesian_xy,
+                    pass > 1,
+                )? {
+                    Some(refined) => mesh = refined,
+                    None => {
+                        if pass > 1 && spring.is_none() {
+                            if let Some((
+                                parent_base,
+                                parent_selected,
+                                parent_grid_number,
+                                parent_region,
+                                parent_required_repair,
+                            )) =
+                                previous_pass_checkpoint.as_ref()
+                            {
+                                if *parent_required_repair {
+                                    if let Some(refined) = parent_base
+                                        .retry_child_with_eroded_parent_mask(
+                                        parent_selected,
+                                        *parent_grid_number,
+                                        parent_region,
+                                        region,
+                                        grid_number,
+                                        max_mrows,
+                                        !use_cartesian_xy,
+                                        use_cartesian_xy,
+                                    )?
+                                    {
+                                        mesh = refined;
+                                        previous_pass_checkpoint = Some((
+                                            mesh_before_pass,
+                                            selected_faces.clone(),
+                                            grid_number,
+                                            region.clone(),
+                                            pass_requires_repair,
+                                        ));
+                                        next_grid_number += 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!("OLAM spawn_nest pass {pass} failed: {error}"),
+                        ));
+                    }
+                },
             }
+            previous_pass_checkpoint = Some((
+                mesh_before_pass,
+                selected_faces.clone(),
+                grid_number,
+                region.clone(),
+                pass_requires_repair,
+            ));
             next_grid_number += 1;
 
             if let Some((nxp, niter, cartesian_dist00)) = spring {
@@ -2221,6 +2379,311 @@ impl OlamDelaunayMesh {
         }
 
         Ok((mesh, spring_passes))
+    }
+
+    fn spawn_nest_pass_with_mask_annealing(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        strict: bool,
+    ) -> io::Result<Option<Self>> {
+        let mut selected = selected_faces.to_vec();
+        for _ in 0..32 {
+            let eroded = if strict {
+                self.erode_method_c_selected_m_boundary(&selected)?
+            } else {
+                self.erode_method_c_selected_boundary(&selected)?
+            };
+            let Some(eroded) = eroded else {
+                return Ok(None);
+            };
+            selected = eroded;
+            if selected.iter().skip(2).all(|selected| !*selected) {
+                return Ok(None);
+            }
+            let attempt = if strict {
+                self.spawn_nest_pass_method_c_without_mask_repair(
+                    &selected,
+                    child_level,
+                    max_mrows,
+                    project_to_radius,
+                )
+            } else {
+                self.spawn_nest_pass_with_max_mrows(
+                    &selected,
+                    child_level,
+                    max_mrows,
+                    project_to_radius,
+                )
+            };
+            if let Ok(refined) = attempt {
+                return Ok(Some(refined));
+            }
+        }
+        Ok(None)
+    }
+
+    fn erode_method_c_selected_boundary(&self, selected: &[bool]) -> io::Result<Option<Vec<bool>>> {
+        require_olam_len("Method-C selected faces", selected.len(), self.nwd + 1)?;
+        let mut eroded = selected.to_vec();
+        let mut removed = false;
+        for iw in 2..=self.nwd {
+            if !selected[iw] {
+                continue;
+            }
+            let face = self.w_faces[iw];
+            for &neighbor in face.iw.iter().take(3) {
+                if neighbor <= 1 || neighbor > self.nwd || !selected[neighbor] {
+                    eroded[iw] = false;
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        if removed {
+            Ok(Some(eroded))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn erode_method_c_selected_m_boundary(
+        &self,
+        selected: &[bool],
+    ) -> io::Result<Option<Vec<bool>>> {
+        require_olam_len("Method-C selected faces", selected.len(), self.nwd + 1)?;
+        let m_neighbors = self.method_c_m_neighbors()?;
+        let mut eroded = selected.to_vec();
+        let mut removed = false;
+        for im in 2..=self.nmd {
+            let neighbors = m_neighbors[im];
+            let mut selected_count = 0usize;
+            for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                require_olam_id("OLAM Method-C M-boundary erosion W face", iw, self.nwd)?;
+                selected_count += usize::from(selected[iw]);
+            }
+            if selected_count == 0 || selected_count == neighbors.npoly {
+                continue;
+            }
+            for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                if selected[iw] {
+                    eroded[iw] = false;
+                    removed = true;
+                }
+            }
+        }
+        if removed {
+            Ok(Some(eroded))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn retry_child_with_eroded_parent_mask(
+        &self,
+        parent_selected_faces: &[bool],
+        parent_grid_number: usize,
+        parent_region: &OlamRefinementRegion,
+        child_region: &OlamRefinementRegion,
+        child_grid_number: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<Self>> {
+        if let Some(refined) = self.retry_child_with_scaled_parent_region(
+            parent_region,
+            parent_grid_number,
+            child_region,
+            child_grid_number,
+            max_mrows,
+            project_to_radius,
+            use_cartesian_xy,
+        )? {
+            return Ok(Some(refined));
+        }
+        if let Some(refined) = self.retry_child_with_parent_mask_sequence(
+            parent_selected_faces.to_vec(),
+            true,
+            parent_grid_number,
+            child_region,
+            child_grid_number,
+            max_mrows,
+            project_to_radius,
+            use_cartesian_xy,
+        )? {
+            return Ok(Some(refined));
+        }
+        self.retry_child_with_parent_mask_sequence(
+            parent_selected_faces.to_vec(),
+            false,
+            parent_grid_number,
+            child_region,
+            child_grid_number,
+            max_mrows,
+            project_to_radius,
+            use_cartesian_xy,
+        )
+    }
+
+    fn retry_child_with_scaled_parent_region(
+        &self,
+        parent_region: &OlamRefinementRegion,
+        parent_grid_number: usize,
+        child_region: &OlamRefinementRegion,
+        child_grid_number: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<Self>> {
+        for step in 1..=12 {
+            let factor = 1.0 - (step as f64 * 0.05);
+            let Some(scaled_parent_region) =
+                scale_olam_refinement_region_radius(parent_region, factor)
+            else {
+                return Ok(None);
+            };
+            let parent_selected = self.selected_regions_faces(
+                std::slice::from_ref(&scaled_parent_region),
+                scaled_parent_region.level(),
+                use_cartesian_xy,
+            )?;
+            if parent_selected.iter().skip(2).all(|selected| !*selected) {
+                return Ok(None);
+            }
+            let Ok(parent_mesh) = self.spawn_nest_pass_with_max_mrows(
+                &parent_selected,
+                parent_grid_number,
+                max_mrows,
+                project_to_radius,
+            ) else {
+                continue;
+            };
+            let child_selected = parent_mesh.selected_regions_faces(
+                std::slice::from_ref(child_region),
+                child_region.level(),
+                use_cartesian_xy,
+            )?;
+            if child_selected.iter().skip(2).all(|selected| !*selected) {
+                continue;
+            }
+            if let Ok(refined) = parent_mesh.spawn_nest_pass_with_max_mrows(
+                &child_selected,
+                child_grid_number,
+                max_mrows,
+                project_to_radius,
+            ) {
+                return Ok(Some(refined));
+            }
+            if let Some(refined) = parent_mesh.spawn_nest_pass_with_mask_annealing(
+                &child_selected,
+                child_grid_number,
+                max_mrows,
+                project_to_radius,
+                true,
+            )? {
+                return Ok(Some(refined));
+            }
+        }
+        Ok(None)
+    }
+
+    fn retry_child_with_parent_mask_sequence(
+        &self,
+        mut parent_selected: Vec<bool>,
+        grow_parent: bool,
+        parent_grid_number: usize,
+        child_region: &OlamRefinementRegion,
+        child_grid_number: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<Self>> {
+        for _ in 0..32 {
+            let next_parent = if grow_parent {
+                self.grow_method_c_selected_boundary(&parent_selected)?
+            } else {
+                self.erode_method_c_selected_boundary(&parent_selected)?
+            };
+            let Some(next_parent) = next_parent else {
+                return Ok(None);
+            };
+            parent_selected = next_parent;
+            if parent_selected.iter().skip(2).all(|selected| !*selected) {
+                return Ok(None);
+            }
+
+            let Ok(parent_mesh) = self.spawn_nest_pass_method_c_without_mask_repair(
+                &parent_selected,
+                parent_grid_number,
+                max_mrows,
+                project_to_radius,
+            ) else {
+                continue;
+            };
+            let child_selected = parent_mesh.selected_regions_faces(
+                std::slice::from_ref(child_region),
+                child_region.level(),
+                use_cartesian_xy,
+            )?;
+            if child_selected.iter().skip(2).all(|selected| !*selected) {
+                continue;
+            }
+
+            if let Ok(refined) = parent_mesh.spawn_nest_pass_with_max_mrows(
+                &child_selected,
+                child_grid_number,
+                max_mrows,
+                project_to_radius,
+            ) {
+                return Ok(Some(refined));
+            }
+            if let Some(refined) = parent_mesh.spawn_nest_pass_with_mask_annealing(
+                &child_selected,
+                child_grid_number,
+                max_mrows,
+                project_to_radius,
+                true,
+            )? {
+                return Ok(Some(refined));
+            }
+        }
+        Ok(None)
+    }
+
+    fn grow_method_c_selected_boundary(&self, selected: &[bool]) -> io::Result<Option<Vec<bool>>> {
+        require_olam_len("Method-C selected faces", selected.len(), self.nwd + 1)?;
+        let parent_mrlw = selected
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find_map(|(iw, is_selected)| is_selected.then_some(self.w_faces[iw].mrlw));
+        let Some(parent_mrlw) = parent_mrlw else {
+            return Ok(None);
+        };
+        let mut grown = selected.to_vec();
+        let mut added = false;
+        for iw in 2..=self.nwd {
+            if !selected[iw] {
+                continue;
+            }
+            let face = self.w_faces[iw];
+            for &neighbor in face.iw.iter().take(3) {
+                if neighbor <= 1 || neighbor > self.nwd {
+                    continue;
+                }
+                if !selected[neighbor] && self.w_faces[neighbor].mrlw == parent_mrlw {
+                    grown[neighbor] = true;
+                    added = true;
+                }
+            }
+        }
+        if added {
+            Ok(Some(grown))
+        } else {
+            Ok(None)
+        }
     }
 
     #[cfg(test)]
@@ -2797,6 +3260,50 @@ impl OlamDelaunayMesh {
         self.close_olam_method_c_concavities(selected_faces)
     }
 
+    fn ensure_method_c_selected_faces_share_parent_mrlw(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+    ) -> io::Result<()> {
+        require_olam_len(
+            "Method-C selected faces",
+            selected_faces.len(),
+            self.nwd + 1,
+        )?;
+
+        let radius = active_mesh_radius(self)?;
+        let mut parent_mrlw = None;
+        for iw in 2..=self.nwd {
+            if !selected_faces[iw] {
+                continue;
+            }
+
+            let face = self.w_faces[iw];
+            if let Some(expected_mrlw) = parent_mrlw {
+                if face.mrlw != expected_mrlw {
+                    let center = normalized_face_center(
+                        self.m_points[face.im[0]],
+                        self.m_points[face.im[1]],
+                        self.m_points[face.im[2]],
+                        radius,
+                    )?;
+                    let ll = xyz_to_lonlat_degrees(center);
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Current nested grid {child_level} crosses (or is too close to) the next coarser grid boundary at W face {iw} (mrlw={}, expected_mrlw={}, lon={:.3}, lat={:.3})",
+                            face.mrlw, expected_mrlw, ll.lon_degrees, ll.lat_degrees
+                        ),
+                    ));
+                }
+            } else {
+                parent_mrlw = Some(face.mrlw);
+            }
+        }
+
+        Ok(())
+    }
+
     fn spawn_nest_pass_with_max_mrows(
         &self,
         selected_faces: &[bool],
@@ -2829,7 +3336,464 @@ impl OlamDelaunayMesh {
             &mut selected,
             &method_c_m_neighbors,
         )?;
+        self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
 
+        let mut last_repairable_error = None;
+        for _ in 0..64 {
+            let perimeter = self.repair_method_c_non_triplet_perimeter(
+                &mut selected,
+                &method_c_m_neighbors,
+                child_level,
+            )?;
+            let mut nest_wd =
+                self.method_c_nest_wd_from_selected_and_perimeter(&selected, &perimeter)?;
+            match self.emit_method_c_tables(
+                &perimeter,
+                &method_c_m_neighbors,
+                &mut nest_wd,
+                child_level,
+                max_mrows,
+                project_to_radius,
+            ) {
+                Ok(mesh) => return Ok(mesh),
+                Err(error) if Self::is_repairable_method_c_transition_error(&error) => {
+                    let valence_m = Self::method_c_valence_error_m_point(&error);
+                    let mut repaired = if valence_m.is_some() {
+                        self.try_shrink_method_c_perimeter_once(
+                            &selected,
+                            &method_c_m_neighbors,
+                            child_level,
+                            Some(&perimeter),
+                        )?
+                    } else {
+                        None
+                    };
+                    if repaired.is_none() {
+                        repaired = if let Some(im) = valence_m {
+                            self.try_fill_method_c_specific_m_point(
+                                &selected,
+                                &method_c_m_neighbors,
+                                child_level,
+                                im,
+                            )?
+                        } else {
+                            None
+                        };
+                    }
+                    if repaired.is_none() {
+                        repaired = self.try_fill_method_c_perimeter_boundary(
+                            &selected,
+                            &method_c_m_neighbors,
+                            child_level,
+                            Some(&perimeter),
+                        )?;
+                    }
+                    if repaired.is_none() {
+                        repaired = self.try_grow_method_c_non_triplet_perimeter_once(
+                            &selected,
+                            &method_c_m_neighbors,
+                            child_level,
+                            Some(&perimeter),
+                        )?;
+                    }
+                    let Some((repaired, _)) = repaired else {
+                        return Err(error);
+                    };
+                    selected.clone_from_slice(&repaired);
+                    last_repairable_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(last_repairable_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Method-C automatic perimeter repair exceeded its iteration limit",
+            )
+        }))
+    }
+
+    fn spawn_nest_pass_method_c_without_mask_repair(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+    ) -> io::Result<Self> {
+        self.validate_topology()?;
+        require_olam_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
+        if child_level <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OLAM Method-C child level must be greater than one",
+            ));
+        }
+
+        let mut selected = selected_faces.to_vec();
+        let method_c_m_neighbors = self.method_c_m_neighbors()?;
+        self.close_olam_method_c_concavities_for_level_with_neighbors(
+            &mut selected,
+            &method_c_m_neighbors,
+        )?;
+        self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
+
+        let perimeter =
+            self.method_c_perimeter_from_selected_faces(&selected, &method_c_m_neighbors)?;
+        if perimeter.len() % 3 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Method-C perimeter length invalid: perimeter length {} cannot be grouped into transition triples",
+                    perimeter.len()
+                ),
+            ));
+        }
+        let mut nest_wd =
+            self.method_c_nest_wd_from_selected_and_perimeter(&selected, &perimeter)?;
+        self.emit_method_c_tables(
+            &perimeter,
+            &method_c_m_neighbors,
+            &mut nest_wd,
+            child_level,
+            max_mrows,
+            project_to_radius,
+        )
+    }
+
+    fn is_repairable_method_c_transition_error(error: &io::Error) -> bool {
+        let message = error.to_string();
+        message.contains("transition patch")
+            || message.contains("exceeds 7-edge OLAM ring")
+            || message.contains("cannot be grouped into transition triples")
+    }
+
+    fn method_c_valence_error_m_point(error: &io::Error) -> Option<usize> {
+        let message = error.to_string();
+        let start = message.find("M point ")? + "M point ".len();
+        let rest = &message[start..];
+        let digit_count = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digit_count == 0 || !rest[digit_count..].starts_with(" exceeds 7-edge") {
+            return None;
+        }
+        rest[..digit_count].parse().ok()
+    }
+
+    fn repair_method_c_non_triplet_perimeter(
+        &self,
+        selected: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+    ) -> io::Result<Vec<OlamMethodCPerimeterPoint>> {
+        const MAX_REPAIR_PASSES: usize = 12;
+
+        let mut last_error = None;
+        for _ in 0..MAX_REPAIR_PASSES {
+            let perimeter = match self.method_c_perimeter_from_selected_faces(selected, m_neighbors)
+            {
+                Ok(perimeter) if perimeter.len() % 3 == 0 => return Ok(perimeter),
+                Ok(perimeter) => Some(perimeter),
+                Err(error) => {
+                    last_error = Some(error);
+                    None
+                }
+            };
+            let Some((repaired, repaired_perimeter)) = self
+                .try_grow_method_c_non_triplet_perimeter_once(
+                    selected,
+                    m_neighbors,
+                    child_level,
+                    perimeter.as_deref(),
+                )?
+            else {
+                break;
+            };
+            selected.clone_from_slice(&repaired);
+            if repaired_perimeter.len() % 3 == 0 {
+                return Ok(repaired_perimeter);
+            }
+        }
+
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+
+        let perimeter = self.method_c_perimeter_from_selected_faces(selected, m_neighbors)?;
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Method-C perimeter length invalid: perimeter length {} cannot be grouped into transition triples without crossing the parent boundary",
+                perimeter.len()
+            ),
+        ))
+    }
+
+    fn try_grow_method_c_non_triplet_perimeter_once(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+        perimeter: Option<&[OlamMethodCPerimeterPoint]>,
+    ) -> io::Result<Option<(Vec<bool>, Vec<OlamMethodCPerimeterPoint>)>> {
+        let parent_mrlw = selected
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find_map(|(iw, is_selected)| is_selected.then_some(self.w_faces[iw].mrlw))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OLAM Method-C cannot repair an empty selected face mask",
+                )
+            })?;
+        let selected_count = selected.iter().filter(|&&item| item).count();
+        let mut candidates = BTreeSet::new();
+
+        if let Some(perimeter) = perimeter {
+            for point in perimeter {
+                let neighbors = m_neighbors[point.im];
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    require_olam_id("OLAM Method-C repair candidate W face", iw, self.nwd)?;
+                    if !selected[iw] && self.w_faces[iw].mrlw == parent_mrlw {
+                        candidates.insert(iw);
+                    }
+                }
+            }
+        } else {
+            for im in 2..=self.nmd {
+                let neighbors = m_neighbors[im];
+                let mut selected_count_at_m = 0usize;
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    require_olam_id("OLAM Method-C repair boundary W face", iw, self.nwd)?;
+                    selected_count_at_m += usize::from(selected[iw]);
+                }
+                if selected_count_at_m == 0 || selected_count_at_m == neighbors.npoly {
+                    continue;
+                }
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    if !selected[iw] && self.w_faces[iw].mrlw == parent_mrlw {
+                        candidates.insert(iw);
+                    }
+                }
+            }
+        }
+
+        let mut best: Option<(usize, usize, usize, Vec<bool>, Vec<OlamMethodCPerimeterPoint>)> =
+            None;
+        for candidate in candidates {
+            let mut trial = selected.to_vec();
+            trial[candidate] = true;
+            self.close_olam_method_c_concavities_for_level_with_neighbors(
+                &mut trial,
+                m_neighbors,
+            )?;
+            if self
+                .ensure_method_c_selected_faces_share_parent_mrlw(&trial, child_level)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok(trial_perimeter) =
+                self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+            else {
+                continue;
+            };
+            let added = trial.iter().filter(|&&item| item).count() - selected_count;
+            if added == 0 {
+                continue;
+            }
+            let remainder = trial_perimeter.len() % 3;
+            if remainder == 0 {
+                return Ok(Some((trial, trial_perimeter)));
+            }
+            let score = (added, remainder, trial_perimeter.len(), trial, trial_perimeter);
+            if best
+                .as_ref()
+                .is_none_or(|current| (score.0, score.1, score.2) < (current.0, current.1, current.2))
+            {
+                best = Some(score);
+            }
+        }
+
+        Ok(best.map(|(_, _, _, trial, trial_perimeter)| (trial, trial_perimeter)))
+    }
+
+    fn try_shrink_method_c_perimeter_once(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+        perimeter: Option<&[OlamMethodCPerimeterPoint]>,
+    ) -> io::Result<Option<(Vec<bool>, Vec<OlamMethodCPerimeterPoint>)>> {
+        let selected_count = selected.iter().filter(|&&item| item).count();
+        let mut candidates = BTreeSet::new();
+        if let Some(perimeter) = perimeter {
+            for point in perimeter {
+                let neighbors = m_neighbors[point.im];
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    require_olam_id("OLAM Method-C shrink candidate W face", iw, self.nwd)?;
+                    if selected[iw] {
+                        candidates.insert(iw);
+                    }
+                }
+            }
+        } else {
+            for im in 2..=self.nmd {
+                let neighbors = m_neighbors[im];
+                let mut selected_count_at_m = 0usize;
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    require_olam_id("OLAM Method-C shrink boundary W face", iw, self.nwd)?;
+                    selected_count_at_m += usize::from(selected[iw]);
+                }
+                if selected_count_at_m > 0 && selected_count_at_m < neighbors.npoly {
+                    for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                        if selected[iw] {
+                            candidates.insert(iw);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut best: Option<(usize, usize, usize, Vec<bool>, Vec<OlamMethodCPerimeterPoint>)> =
+            None;
+        for candidate in candidates {
+            let mut trial = selected.to_vec();
+            trial[candidate] = false;
+            self.close_olam_method_c_concavities_for_level_with_neighbors(
+                &mut trial,
+                m_neighbors,
+            )?;
+            let trial_count = trial.iter().filter(|&&item| item).count();
+            if trial_count == 0 || trial_count >= selected_count {
+                continue;
+            }
+            if self
+                .ensure_method_c_selected_faces_share_parent_mrlw(&trial, child_level)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok(trial_perimeter) =
+                self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+            else {
+                continue;
+            };
+            let removed = selected_count - trial_count;
+            let remainder = trial_perimeter.len() % 3;
+            let score = (removed, remainder, trial_perimeter.len(), trial, trial_perimeter);
+            if best
+                .as_ref()
+                .is_none_or(|current| (score.0, score.1, score.2) < (current.0, current.1, current.2))
+            {
+                best = Some(score);
+            }
+        }
+
+        Ok(best.map(|(_, _, _, trial, trial_perimeter)| (trial, trial_perimeter)))
+    }
+
+    fn try_fill_method_c_specific_m_point(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+        im: usize,
+    ) -> io::Result<Option<(Vec<bool>, Vec<OlamMethodCPerimeterPoint>)>> {
+        require_olam_id("OLAM Method-C valence repair M point", im, self.nmd)?;
+        let selected_count = selected.iter().filter(|&&item| item).count();
+        let mut trial = selected.to_vec();
+        self.mark_fill_rad3_faces_with_neighbors(im, &mut trial, m_neighbors)?;
+        self.close_olam_method_c_concavities_for_level_with_neighbors(&mut trial, m_neighbors)?;
+        if trial.iter().filter(|&&item| item).count() == selected_count {
+            return Ok(None);
+        }
+        if self
+            .ensure_method_c_selected_faces_share_parent_mrlw(&trial, child_level)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let Ok(trial_perimeter) =
+            self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+        else {
+            return Ok(None);
+        };
+        Ok(Some((trial, trial_perimeter)))
+    }
+
+    fn try_fill_method_c_perimeter_boundary(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+        perimeter: Option<&[OlamMethodCPerimeterPoint]>,
+    ) -> io::Result<Option<(Vec<bool>, Vec<OlamMethodCPerimeterPoint>)>> {
+        let mut boundary_m = BTreeSet::new();
+        if let Some(perimeter) = perimeter {
+            for point in perimeter {
+                boundary_m.insert(point.im);
+            }
+        } else {
+            for im in 2..=self.nmd {
+                let neighbors = m_neighbors[im];
+                let mut selected_count_at_m = 0usize;
+                for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                    require_olam_id("OLAM Method-C repair boundary W face", iw, self.nwd)?;
+                    selected_count_at_m += usize::from(selected[iw]);
+                }
+                if selected_count_at_m > 0 && selected_count_at_m < neighbors.npoly {
+                    boundary_m.insert(im);
+                }
+            }
+        }
+        if boundary_m.is_empty() {
+            return Ok(None);
+        }
+
+        let selected_count = selected.iter().filter(|&&item| item).count();
+        let mut best: Option<(usize, usize, usize, Vec<bool>, Vec<OlamMethodCPerimeterPoint>)> =
+            None;
+        for im in boundary_m {
+            let mut trial = selected.to_vec();
+            self.mark_fill_rad3_faces_with_neighbors(im, &mut trial, m_neighbors)?;
+            self.close_olam_method_c_concavities_for_level_with_neighbors(
+                &mut trial,
+                m_neighbors,
+            )?;
+            let added = trial.iter().filter(|&&item| item).count() - selected_count;
+            if added == 0 {
+                continue;
+            }
+            if self
+                .ensure_method_c_selected_faces_share_parent_mrlw(&trial, child_level)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok(trial_perimeter) =
+                self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+            else {
+                continue;
+            };
+            let remainder = trial_perimeter.len() % 3;
+            let score = (added, remainder, trial_perimeter.len(), trial, trial_perimeter);
+            if best
+                .as_ref()
+                .is_none_or(|current| (score.0, score.1, score.2) < (current.0, current.1, current.2))
+            {
+                best = Some(score);
+            }
+        }
+
+        Ok(best.map(|(_, _, _, trial, trial_perimeter)| (trial, trial_perimeter)))
+    }
+
+    fn method_c_perimeter_from_selected_faces(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<Vec<OlamMethodCPerimeterPoint>> {
         let mut probe_nest_wd = vec![OlamMethodCNestWd::default(); self.nwd + 1];
         for iw in 2..=self.nwd {
             if selected[iw] {
@@ -2837,23 +3801,21 @@ impl OlamDelaunayMesh {
             }
         }
 
-        let perimeter = self.perim_map2_method_c(&probe_nest_wd, &method_c_m_neighbors)?;
+        let perimeter = self.perim_map2_method_c(&probe_nest_wd, m_neighbors)?;
         if perimeter.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "OLAM Method-C perimeter is empty",
             ));
         }
-        if perimeter.len() % 3 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "OLAM Method-C perimeter length {} cannot be grouped into transition triples after fill_rad3 closure",
-                    perimeter.len()
-                ),
-            ));
-        }
+        Ok(perimeter)
+    }
 
+    fn method_c_nest_wd_from_selected_and_perimeter(
+        &self,
+        selected: &[bool],
+        perimeter: &[OlamMethodCPerimeterPoint],
+    ) -> io::Result<Vec<OlamMethodCNestWd>> {
         let mut nest_wd = vec![OlamMethodCNestWd::default(); self.nwd + 1];
         for iw in 2..=self.nwd {
             if selected[iw] {
@@ -2872,17 +3834,7 @@ impl OlamDelaunayMesh {
             require_olam_id("OLAM Method-C suppressed W face", suppressed_w, self.nwd)?;
             nest_wd[suppressed_w].iw[2] = -1;
         }
-        match self.emit_method_c_tables(
-            &perimeter,
-            &method_c_m_neighbors,
-            &mut nest_wd,
-            child_level,
-            max_mrows,
-            project_to_radius,
-        ) {
-            Ok(mesh) => Ok(mesh),
-            Err(error) => Err(error),
-        }
+        Ok(nest_wd)
     }
 
     #[cfg(test)]
@@ -4374,6 +5326,13 @@ fn active_mesh_radius(mesh: &OlamDelaunayMesh) -> io::Result<f64> {
         io::ErrorKind::InvalidData,
         "OLAM mesh has no active point with a positive radius",
     ))
+}
+
+fn push_usize_fields<const N: usize>(output: &mut String, label: &str, values: &[usize; N]) {
+    output.push_str(label);
+    for value in values {
+        output.push_str(&format!(" {value}"));
+    }
 }
 
 fn euclidean_distance(a: CartesianPoint, b: CartesianPoint) -> f64 {
@@ -7916,7 +8875,7 @@ mod tests {
     }
 
     #[test]
-    fn olam_method_c_does_not_auto_expand_non_triplet_perimeter_like_fortran() {
+    fn olam_method_c_repairs_non_triplet_perimeter_by_local_growth() {
         let mesh =
             OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
         let method_c_m_neighbors = mesh
@@ -7956,18 +8915,21 @@ mod tests {
 
         let (selected, perimeter_len) =
             selected_case.expect("test requires a non-triplet Fortran perimeter case");
-        let err = mesh
+        let refined = mesh
             .spawn_nest_pass_with_max_mrows(
                 &selected,
                 2,
                 OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
                 true,
             )
-            .expect_err("Fortran Method-C does not auto-expand perimeter just to reach triples");
-        assert!(
-            err.to_string().contains("cannot be grouped"),
-            "unexpected Method-C perimeter error for length {perimeter_len}: {err}"
-        );
+            .unwrap_or_else(|error| {
+                panic!(
+                    "non-triplet perimeter length {perimeter_len} should be locally repairable when same-MRL boundary faces are available: {error}"
+                )
+            });
+        refined
+            .validate_topology()
+            .expect("locally repaired Method-C mesh topology");
     }
 
     #[test]
@@ -8594,13 +9556,17 @@ mod tests {
         let error = mesh
             .spawn_nest_as_atmosmesh(&regions, 2)
             .expect_err("reduced Fortran probe rejects this same-length two-level corridor as too close to the parent boundary");
+        let message = error.to_string();
         assert!(
-            error.to_string().contains("perimeter length")
-                || error.to_string().contains("crosses")
-                || error.to_string().contains("too close")
-                || error.to_string().contains("parent boundary")
-                || error.to_string().contains("next coarser grid boundary"),
+            message.contains("crosses")
+                || message.contains("too close")
+                || message.contains("parent boundary")
+                || message.contains("next coarser grid boundary"),
             "Rust should reject the same invalid two-level corridor as the reduced Fortran probe; got {error}"
+        );
+        assert!(
+            !message.contains("cannot be grouped into transition triples"),
+            "Rust should reject this invalid two-level corridor before Method-C perimeter triple grouping; got {error}"
         );
     }
 
@@ -8709,6 +9675,125 @@ mod tests {
     }
 
     #[test]
+    fn olam_method_c_repairs_nxp7_circle_parent_radius_that_fortran_overruns_perimeter() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [OlamRefinementRegion::Circle {
+            center: LonLatDegrees::new(115.0, 25.0),
+            radius_meters: 4_000_000.0,
+            level: 1,
+        }];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 1)
+            .expect("Rust should repair the non-triplet parent perimeter instead of reproducing Fortran's perim_fill3 overrun");
+        refined
+            .validate_topology()
+            .expect("repaired nxp7 circle topology");
+        for im in 2..=refined.nmd {
+            assert!(
+                refined.m_neighbors[im].npoly <= 7,
+                "repaired nxp7 circle M point {im} exceeds OLAM-supported valence"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_repairs_nxp7_corridor_parent_radius_that_fortran_overruns_perimeter() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [OlamRefinementRegion::Corridor {
+            points: vec![
+                LonLatDegrees::new(115.0, 25.0),
+                LonLatDegrees::new(130.0, 25.0),
+            ],
+            radius_meters: vec![4_000_000.0, 4_000_000.0],
+            level: 1,
+        }];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 1)
+            .expect("Rust should repair the non-triplet corridor parent perimeter instead of reproducing Fortran's perim_fill3 overrun");
+        refined
+            .validate_topology()
+            .expect("repaired nxp7 corridor topology");
+        for im in 2..=refined.nmd {
+            assert!(
+                refined.m_neighbors[im].npoly <= 7,
+                "repaired nxp7 corridor M point {im} exceeds OLAM-supported valence"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_anneals_nxp7_two_circle_after_repaired_parent() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 4_000_000.0,
+                level: 1,
+            },
+            OlamRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 1_000_000.0,
+                level: 2,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect("child mask should anneal after repaired nxp7 parent circle");
+        refined
+            .validate_topology()
+            .expect("annealed nxp7 two-circle topology");
+        for im in 2..=refined.nmd {
+            assert!(
+                refined.m_neighbors[im].npoly <= 7,
+                "annealed nxp7 two-circle M point {im} exceeds OLAM-supported valence"
+            );
+        }
+    }
+
+    #[test]
+    fn olam_method_c_anneals_nxp7_two_corridor_after_repaired_parent() {
+        let mesh =
+            OlamDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
+        let regions = [
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(115.0, 25.0),
+                    LonLatDegrees::new(130.0, 25.0),
+                ],
+                radius_meters: vec![4_000_000.0, 4_000_000.0],
+                level: 1,
+            },
+            OlamRefinementRegion::Corridor {
+                points: vec![
+                    LonLatDegrees::new(120.0, 25.0),
+                    LonLatDegrees::new(125.0, 25.0),
+                ],
+                radius_meters: vec![500_000.0, 500_000.0],
+                level: 2,
+            },
+        ];
+
+        let refined = mesh
+            .spawn_nest_as_atmosmesh(&regions, 2)
+            .expect("child mask should anneal after repaired nxp7 parent corridor");
+        refined
+            .validate_topology()
+            .expect("annealed nxp7 two-corridor topology");
+        for im in 2..=refined.nmd {
+            assert!(
+                refined.m_neighbors[im].npoly <= 7,
+                "annealed nxp7 two-corridor M point {im} exceeds OLAM-supported valence"
+            );
+        }
+    }
+
+    #[test]
     fn olam_method_c_rejects_reduced_fortran_nxp6_two_circle_too_close_boundary() {
         let mesh =
             OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
@@ -8728,13 +9813,17 @@ mod tests {
         let error = mesh
             .spawn_nest_as_atmosmesh(&regions, 2)
             .expect_err("reduced Fortran probe rejects this two-level circle as too close to the parent boundary");
+        let message = error.to_string();
         assert!(
-            error.to_string().contains("perimeter length")
-                || error.to_string().contains("crosses")
-                || error.to_string().contains("too close")
-                || error.to_string().contains("parent boundary")
-                || error.to_string().contains("next coarser grid boundary"),
+            message.contains("crosses")
+                || message.contains("too close")
+                || message.contains("parent boundary")
+                || message.contains("next coarser grid boundary"),
             "Rust should reject the same invalid two-level circle as the reduced Fortran probe; got {error}"
+        );
+        assert!(
+            !message.contains("cannot be grouped into transition triples"),
+            "Rust should reject this invalid two-level circle before Method-C perimeter triple grouping; got {error}"
         );
     }
 
