@@ -1,0 +1,15 @@
+[package]
+name = "earthmesh_refine_planner"
+version = "0.1.0"
+edition = "2021"
+description = "Score-based / physics-aware refinement planning skeleton for EarthMesh v3"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "earthmesh_refine_planner"
+path = "src/lib.rs"
+
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_geometry = { path = "../earthmesh_geometry" }
+earthmesh_quality = { path = "../earthmesh_quality" }

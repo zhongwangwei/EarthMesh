@@ -1013,6 +1013,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "earthmesh_refine_planner"
+version = "0.1.0"
+dependencies = [
+ "earthmesh_core",
+ "earthmesh_geometry",
+ "earthmesh_quality",
+]
+
+[[package]]
 name = "ecolor"
 version = "0.34.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
