@@ -991,6 +991,7 @@ version = "0.1.0"
 dependencies = [
  "earthmesh_cli",
  "earthmesh_core",
+ "earthmesh_quality",
  "eframe",
  "open",
  "rfd",

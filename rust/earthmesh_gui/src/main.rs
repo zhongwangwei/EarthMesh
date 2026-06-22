@@ -2088,6 +2088,21 @@ impl EarthMeshApp {
                         Some(path) => match earthmesh_cli::read_gridfile_mesh_points(&path) {
                             Ok(mesh) => {
                                 self.log.push(format!("Preview: loaded {}", path.display()));
+                                // Generate quality reports into the run dir so the
+                                // dashboard has real data (reuses the CLI's gridfile→
+                                // quality path; read-only, no schema change).
+                                let qinput = earthmesh_cli::quality_input_from_gridfile(&mesh);
+                                let qreport = earthmesh_quality::compute(
+                                    &qinput,
+                                    &earthmesh_quality::QualityThresholds::default(),
+                                );
+                                match earthmesh_quality::io::write_all(&qreport, &run.output_dir) {
+                                    Ok(_) => self.log.push(format!(
+                                        "Quality: {} (quality_summary.json written)",
+                                        qreport.verdict.as_str()
+                                    )),
+                                    Err(e) => self.log.push(format!("Quality report failed: {e}")),
+                                }
                                 match surface_classes_for_mesh(
                                     &all_outputs,
                                     &mesh,
