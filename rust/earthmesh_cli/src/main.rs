@@ -123,6 +123,9 @@ fn run() -> Result<(), String> {
     if first == "--colm-coupling-csv-to-netcdf" {
         return run_colm_coupling_csv_to_netcdf(args);
     }
+    if first == "--colm-coupling-from-intersections" {
+        return run_colm_coupling_from_intersections(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1382,6 +1385,35 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--colm-coupling-from-intersections <intersection.geojson> <out.csv> [min_fraction]`:
+/// assemble a CoLM coupling CSV from an EarthMesh cell×river intersection GeoJSON
+/// (Rust port of util/hydro_mesh/colm_coupling.py).
+fn run_colm_coupling_from_intersections(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut args = args.collect::<Vec<_>>().into_iter();
+    let input_geojson = PathBuf::from(args.next().ok_or_else(|| {
+        usage("--colm-coupling-from-intersections requires an input intersection GeoJSON")
+    })?);
+    let output_csv = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--colm-coupling-from-intersections requires an output CSV"))?,
+    );
+    let min_fraction = match args.next() {
+        Some(value) => value
+            .parse::<f64>()
+            .map_err(|_| usage("min_fraction must be a number in [0,1]"))?,
+        None => 0.0,
+    };
+    let rows = earthmesh_cli::write_colm_coupling_csv_from_intersections(
+        &input_geojson,
+        &output_csv,
+        min_fraction,
+    )
+    .map_err(|err| format!("write coupling csv {}: {err}", output_csv.display()))?;
+    println!("colm_coupling_rows={rows}");
+    println!("colm_coupling_output={}", output_csv.display());
     Ok(())
 }
 
