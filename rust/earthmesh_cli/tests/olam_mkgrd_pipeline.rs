@@ -58,18 +58,12 @@ fn run_olam_atmos_landlike_case(
     .expect("write namelist");
 
     let report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &namelist,
-        root,
-        20_000,
-        0,
-        None,
-        None,
-        None,
-        1,
-        None,
+        &namelist, root, 20_000, 0, None, None, None, 1, None,
     )
     .expect("run default OLAM specified refine");
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(run) = report else {
+    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(run) =
+        report
+    else {
         panic!("default OLAM specified refine should use OLAM direct path");
     };
     assert_eq!(run.runtime_state.config.mesh_type.trim(), mesh_type);
@@ -132,8 +126,7 @@ fn method_c_atmos_and_surface_constants_match_fortran_defaults() {
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS, 13);
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE, 7);
     assert!(
-        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
-            > OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS > OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
     );
 }
 
@@ -142,18 +135,10 @@ fn default_atmos_and_landlike_meshes_use_different_transition_widths() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = temp_root("olam_transition_width_comparison");
 
-    let atmos = run_olam_atmos_landlike_case(
-        &root,
-        "atmosmesh",
-        "MPAS",
-        "case_olam_atmos_transition_cmp",
-    );
-    let land = run_olam_atmos_landlike_case(
-        &root,
-        "landmesh",
-        "CoLM",
-        "case_olam_land_transition_cmp",
-    );
+    let atmos =
+        run_olam_atmos_landlike_case(&root, "atmosmesh", "MPAS", "case_olam_atmos_transition_cmp");
+    let land =
+        run_olam_atmos_landlike_case(&root, "landmesh", "CoLM", "case_olam_land_transition_cmp");
 
     assert_eq!(atmos.max_level, land.max_level);
     assert_eq!(atmos.spring_nest_passes, land.spring_nest_passes);
@@ -595,7 +580,10 @@ fn default_atmos_native_olam_rejects_ngrids_above_fortran_maxgrds() {
     )
     .expect_err("native OLAM ngrids above Fortran maxgrds should fail");
 
-    assert!(err.to_string().contains("ngrids"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("ngrids"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -667,7 +655,10 @@ fn default_atmos_native_olam_rejects_ngrdll_above_fortran_maxngrdll() {
     )
     .expect_err("native OLAM ngrdll above Fortran maxngrdll should fail");
 
-    assert!(err.to_string().contains("ngrdll"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("ngrdll"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -689,7 +680,10 @@ fn default_atmos_native_olam_rejects_ngrdll_index_above_fortran_maxgrds() {
     )
     .expect_err("native OLAM ngrdll index above Fortran maxgrds should fail");
 
-    assert!(err.to_string().contains("ngrdll"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("ngrdll"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -715,7 +709,10 @@ fn default_atmos_native_olam_rejects_zero_ngrdll_index_like_fortran_array() {
     );
     let err = result.unwrap_err();
 
-    assert!(err.to_string().contains("ngrdll"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("ngrdll"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -737,7 +734,10 @@ fn default_atmos_native_olam_rejects_coordinate_point_index_above_fortran_maxngr
     )
     .expect_err("native OLAM coordinate point index above Fortran maxngrdll should fail");
 
-    assert!(err.to_string().contains("grdrad"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("grdrad"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -1005,8 +1005,7 @@ fn default_surface_native_olam_rejects_regional_nsfcgrids_like_fortran() {
     .expect_err("native OLAM surface nsfcgrids should require a global domain like Fortran");
 
     assert!(
-        err.to_string().contains("surface")
-            && err.to_string().contains("global domain"),
+        err.to_string().contains("surface") && err.to_string().contains("global domain"),
         "unexpected error: {err}"
     );
 }
@@ -1047,8 +1046,7 @@ fn default_surface_native_olam_rejects_regional_inherited_atmos_ngrids_like_fort
     .expect_err("native OLAM surface inherited atmosphere grids should require a global domain like Fortran");
 
     assert!(
-        err.to_string().contains("surface")
-            && err.to_string().contains("global domain"),
+        err.to_string().contains("surface") && err.to_string().contains("global domain"),
         "unexpected error: {err}"
     );
 }
@@ -1266,14 +1264,32 @@ fn default_surface_native_olam_ngrids_without_nsfcgrids_matches_atmos_spawn() {
     )
     .expect("write native land atmosphere-only namelist");
 
-    let atmos_report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &atmos_namelist, &root, 20_000, 0, None, None, None, 1, None,
-    )
-    .expect("run native atmosphere-only atmosphere refine");
-    let land_report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &land_namelist, &root, 20_000, 0, None, None, None, 1, None,
-    )
-    .expect("run native atmosphere-only surface refine");
+    let atmos_report =
+        earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+            &atmos_namelist,
+            &root,
+            20_000,
+            0,
+            None,
+            None,
+            None,
+            1,
+            None,
+        )
+        .expect("run native atmosphere-only atmosphere refine");
+    let land_report =
+        earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+            &land_namelist,
+            &root,
+            20_000,
+            0,
+            None,
+            None,
+            None,
+            1,
+            None,
+        )
+        .expect("run native atmosphere-only surface refine");
 
     let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(
         atmos_run,
@@ -1281,9 +1297,8 @@ fn default_surface_native_olam_ngrids_without_nsfcgrids_matches_atmos_spawn() {
     else {
         panic!("native atmosphere-only atmosmesh should use OLAM direct path");
     };
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(
-        land_run,
-    ) = land_report
+    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource(land_run) =
+        land_report
     else {
         panic!("native atmosphere-only landmesh should use OLAM direct path");
     };
@@ -1393,7 +1408,8 @@ fn default_surface_native_olam_allows_sfcgrid_res_factor_four_like_fortran() {
 }
 
 #[test]
-fn default_surface_native_olam_rejects_sfcgrid_res_factor_with_prime_factor_other_than_two_or_three_like_fortran() {
+fn default_surface_native_olam_rejects_sfcgrid_res_factor_with_prime_factor_other_than_two_or_three_like_fortran(
+) {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = temp_root("olam_surface_native_bad_sfcgrid_res");
     let namelist = root.join("mkgrd_olam_surface_bad_sfcgrid_res.nml");
@@ -2378,12 +2394,9 @@ fn olam_direct_refine_uses_existing_mode_file_as_olam_source() {
         ),
     )
     .expect("write gridinit namelist");
-    let gridinit = earthmesh_cli::run_mkgrd_gridinit_global_namelist(
-        &gridinit_namelist,
-        &root,
-        20_000,
-    )
-    .expect("write initial mode_file grid");
+    let gridinit =
+        earthmesh_cli::run_mkgrd_gridinit_global_namelist(&gridinit_namelist, &root, 20_000)
+            .expect("write initial mode_file grid");
 
     write_bbox_mask_netcdf(
         sources.join("refine_bbox_001.nc4"),

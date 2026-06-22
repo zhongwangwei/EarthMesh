@@ -464,8 +464,7 @@ fn is_native_olam_mkgrd_line(line: &str) -> bool {
         .filter(|ch| !ch.is_whitespace())
         .collect::<String>();
     NATIVE_OLAM_MKGRD_FIELDS.iter().any(|field| {
-        compact.starts_with(&format!("nl%{field}="))
-            || compact.starts_with(&format!("nl%{field}("))
+        compact.starts_with(&format!("nl%{field}=")) || compact.starts_with(&format!("nl%{field}("))
     })
 }
 
@@ -1501,10 +1500,7 @@ impl EarthMeshApp {
         }
         format!(
             "{}\n{}",
-            insert_native_olam_mkgrd_lines(
-                &mkgrd.to_mkgrd_namelist(),
-                &self.native_olam_mkgrd,
-            ),
+            insert_native_olam_mkgrd_lines(&mkgrd.to_mkgrd_namelist(), &self.native_olam_mkgrd,),
             refine.to_mkrefine_namelist()
         )
     }
@@ -4121,7 +4117,9 @@ fn configure_style(ctx: &egui::Context) {
 
 impl EarthMeshApp {
     fn theme(&self) -> theme::EarthMeshTheme {
-        theme::EarthMeshTheme { dark: self.theme_dark }
+        theme::EarthMeshTheme {
+            dark: self.theme_dark,
+        }
     }
 
     /// Apply a target template preset to the config (additive convenience; the user
@@ -4176,7 +4174,12 @@ impl EarthMeshApp {
         }
 
         if !d.top_warnings.is_empty() {
-            components::status_message(ui, theme, components::MessageKind::Warning, tr(lang, "dash.warnings"));
+            components::status_message(
+                ui,
+                theme,
+                components::MessageKind::Warning,
+                tr(lang, "dash.warnings"),
+            );
             for w in d.top_warnings.iter().take(8) {
                 ui.label(format!("• {w}"));
             }

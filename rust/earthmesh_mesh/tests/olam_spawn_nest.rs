@@ -342,12 +342,14 @@ fn spawn_nest_rejects_tiny_contained_region_that_crosses_method_c_boundary() {
         level: 1,
     };
 
-    let error = mesh
-        .spawn_nest(&[region], 1)
-        .expect_err("Fortran Method-C rejects a tiny nest that is too close to the coarse boundary");
+    let error = mesh.spawn_nest(&[region], 1).expect_err(
+        "Fortran Method-C rejects a tiny nest that is too close to the coarse boundary",
+    );
 
     assert!(
-        error.to_string().contains("Method-C perimeter length invalid"),
+        error
+            .to_string()
+            .contains("Method-C perimeter length invalid"),
         "unexpected error: {error}"
     );
 }
@@ -626,7 +628,9 @@ fn debug_single_south_america_method_c_region() {
         .expect_err("Fortran Method-C rejects this coarse South America region");
 
     assert!(
-        error.to_string().contains("Method-C perimeter length invalid"),
+        error
+            .to_string()
+            .contains("Method-C perimeter length invalid"),
         "unexpected error: {error}"
     );
 }
@@ -710,7 +714,10 @@ fn spawn_nest_with_spring_runs_per_pass_for_mixed_level_regions_like_fortran() {
         .filter_map(|face| (face.ngr > 1).then_some(face.ngr))
         .collect::<std::collections::BTreeSet<_>>();
 
-    assert_eq!(spring_passes, 2, "one spring pass should run for each spawned nested pass");
+    assert_eq!(
+        spring_passes, 2,
+        "one spring pass should run for each spawned nested pass"
+    );
     assert_eq!(
         spawned_grid_numbers,
         std::collections::BTreeSet::from([2, 3]),
@@ -788,10 +795,18 @@ fn spawn_nest_explicit_max_mrows_controls_transition_width() {
     };
 
     let narrow = mesh
-        .spawn_nest_with_max_mrows(std::slice::from_ref(&region), 5, OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_with_max_mrows(
+            std::slice::from_ref(&region),
+            5,
+            OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
         .expect("surface-width nest");
     let wide = mesh
-        .spawn_nest_with_max_mrows(std::slice::from_ref(&region), 5, OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS)
+        .spawn_nest_with_max_mrows(
+            std::slice::from_ref(&region),
+            5,
+            OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+        )
         .expect("atmos-width nest");
 
     let narrow_max_abs_mrow = narrow
@@ -827,10 +842,18 @@ fn spawn_nest_explicit_widths_change_transition_band_for_same_input() {
     };
 
     let narrow = mesh
-        .spawn_nest_with_max_mrows(std::slice::from_ref(&region), 5, OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_with_max_mrows(
+            std::slice::from_ref(&region),
+            5,
+            OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
         .expect("surface-width nest");
     let wide = mesh
-        .spawn_nest_with_max_mrows(std::slice::from_ref(&region), 5, OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS)
+        .spawn_nest_with_max_mrows(
+            std::slice::from_ref(&region),
+            5,
+            OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+        )
         .expect("atmos-width nest");
 
     assert!(
@@ -852,8 +875,7 @@ fn spawn_nest_olam_method_c_constant_widths_match_fortran_defaults() {
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS, 13);
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE, 7);
     assert!(
-        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
-            > OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS > OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
     );
 }
 
@@ -893,8 +915,7 @@ fn spawn_nest_default_width_matches_surface_max_mrows() {
         .unwrap_or_default();
 
     assert_eq!(
-        default_max_abs_mrow,
-        explicit_surface_max_abs_mrow,
+        default_max_abs_mrow, explicit_surface_max_abs_mrow,
         "spawn_nest default width should match METHOD_C_MAX_MROWS_SURFACE"
     );
 }

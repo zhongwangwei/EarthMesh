@@ -55,22 +55,15 @@ fn method_c_fortran_indexed_state() -> (GridMemory, IjTabs) {
 fn fortran_indexed_gridfile_handoff_preserves_explicit_method_c_w_npoly() {
     let (grid, tabs) = method_c_fortran_indexed_state();
 
-    let mesh =
-        gridfile_mesh_from_fortran_indexed_state(&grid, &tabs).expect("build compact mesh");
+    let mesh = gridfile_mesh_from_fortran_indexed_state(&grid, &tabs).expect("build compact mesh");
     assert_eq!(mesh.n_w_to_m, vec![1, 7, 3]);
     assert_eq!(mesh.w_to_m[1], vec![1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(mesh.w_to_m[2], vec![2, 4, 6, 7, 7, 7, 7]);
 
     let root = temp_root("olam_method_c_gridfile_handoff");
-    let report = write_gridfile_from_fortran_indexed_state(
-        &root,
-        66,
-        1,
-        "olam_method_c",
-        &grid,
-        &tabs,
-    )
-    .expect("write compact gridfile");
+    let report =
+        write_gridfile_from_fortran_indexed_state(&root, 66, 1, "olam_method_c", &grid, &tabs)
+            .expect("write compact gridfile");
     let round_trip = read_unstructured_mesh_netcdf(&report.output).expect("read compact gridfile");
 
     assert_eq!(round_trip.n_w_to_m, vec![1, 7, 3]);

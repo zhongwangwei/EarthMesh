@@ -96,7 +96,13 @@ fn getref_calculated_threshold_reader_or_aggregates_component_files_like_fortran
     );
 }
 
-fn write_ref_th_matrix(path: &Path, name: &str, sjx_points: usize, ref_colnum: usize, values: &[i32]) {
+fn write_ref_th_matrix(
+    path: &Path,
+    name: &str,
+    sjx_points: usize,
+    ref_colnum: usize,
+    values: &[i32],
+) {
     let mut file = netcdf::create(path).expect("create threshold fixture");
     file.add_dimension("sjx_points", sjx_points)
         .expect("add sjx_points");
@@ -105,5 +111,7 @@ fn write_ref_th_matrix(path: &Path, name: &str, sjx_points: usize, ref_colnum: u
     let mut variable = file
         .add_variable::<i32>(name, &["sjx_points", "ref_colnum"])
         .expect("add ref_th variable");
-    variable.put_values(values, (.., ..)).expect("write ref_th values");
+    variable
+        .put_values(values, (.., ..))
+        .expect("write ref_th values");
 }

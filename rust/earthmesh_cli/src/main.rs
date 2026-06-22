@@ -8,7 +8,10 @@ fn main() -> ExitCode {
     let started = now_epoch_secs();
     let command = env::args().collect::<Vec<_>>().join(" ");
     // Skip pure help / no-arg invocations; every real run records a manifest.
-    let is_help = matches!(env::args().nth(1).as_deref(), None | Some("-h") | Some("--help"));
+    let is_help = matches!(
+        env::args().nth(1).as_deref(),
+        None | Some("-h") | Some("--help")
+    );
     let result = run();
     if !is_help {
         write_cli_run_manifest(&command, started, &result);
@@ -52,7 +55,10 @@ fn write_cli_run_manifest(command: &str, started_at: String, result: &Result<(),
     }
     let out = Path::new(&cwd).join("run_manifest.json");
     if let Err(err) = manifest.write_json(&out) {
-        eprintln!("earthmesh_cli: warning: could not write {}: {err}", out.display());
+        eprintln!(
+            "earthmesh_cli: warning: could not write {}: {err}",
+            out.display()
+        );
     }
 }
 
@@ -80,7 +86,10 @@ fn run_mesh_quality(mut args: impl Iterator<Item = String>) -> Result<(), String
         .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
     println!("mesh_quality_verdict={}", report.verdict.as_str());
     println!("mesh_quality_cells={}", report.geometry.cell_count);
-    println!("mesh_quality_min_angle_deg={}", report.geometry.min_angle_deg);
+    println!(
+        "mesh_quality_min_angle_deg={}",
+        report.geometry.min_angle_deg
+    );
     for path in &written {
         println!("mesh_quality_output={}", path.display());
     }

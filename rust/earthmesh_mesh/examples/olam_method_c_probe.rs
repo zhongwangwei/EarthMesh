@@ -16,7 +16,10 @@ fn main() -> io::Result<()> {
             let nxp = case_nxp(&case_name)?;
             let mesh = OlamDelaunayMesh::from_icosahedron(nxp, 100, 1.25, 0.035, 100)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Rust spring failed"))?;
-            println!("spring counts nmd={} nud={} nwd={}", mesh.nmd, mesh.nud, mesh.nwd);
+            println!(
+                "spring counts nmd={} nud={} nwd={}",
+                mesh.nmd, mesh.nud, mesh.nwd
+            );
             for &im in spring_sample_points(mesh.nmd).iter() {
                 let point = mesh.m_points[im];
                 println!(
@@ -178,14 +181,5 @@ fn case_regions(case_name: &str) -> io::Result<Vec<OlamRefinementRegion>> {
 }
 
 fn spring_sample_points(nmd: usize) -> [usize; 8] {
-    [
-        2,
-        3,
-        4,
-        5,
-        nmd / 4,
-        nmd / 2,
-        nmd * 3 / 4,
-        nmd,
-    ]
+    [2, 3, 4, 5, nmd / 4, nmd / 2, nmd * 3 / 4, nmd]
 }

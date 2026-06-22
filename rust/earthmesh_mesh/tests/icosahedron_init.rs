@@ -24,10 +24,18 @@ fn icosahedron_initial_grid_counts_and_pentagon_indices_match_fortran_nxp1() {
 
     approx_eq(grid.m_points[2].x, 0.0, 1.0e-9);
     approx_eq(grid.m_points[2].y, 0.0, 1.0e-9);
-    approx_eq(grid.m_points[2].z, -OLAM_FORTRAN_EARTH_RADIUS_METERS, 1.0e-9);
+    approx_eq(
+        grid.m_points[2].z,
+        -OLAM_FORTRAN_EARTH_RADIUS_METERS,
+        1.0e-9,
+    );
     approx_eq(grid.m_points[13].x, 0.0, 1.0e-9);
     approx_eq(grid.m_points[13].y, 0.0, 1.0e-9);
-    approx_eq(grid.m_points[13].z, OLAM_FORTRAN_EARTH_RADIUS_METERS, 1.0e-9);
+    approx_eq(
+        grid.m_points[13].z,
+        OLAM_FORTRAN_EARTH_RADIUS_METERS,
+        1.0e-9,
+    );
 }
 
 #[test]

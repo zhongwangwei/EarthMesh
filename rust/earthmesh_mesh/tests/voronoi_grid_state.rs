@@ -70,8 +70,9 @@ fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
 fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
     let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
-    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
-        .expect("voronoi grid state");
+    let mut state =
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
+            .expect("voronoi grid state");
 
     earthmesh_mesh::grid_xyz2lonlat_fortran_indexed_state(&mut state.grid)
         .expect("fill one-based lonlat arrays");
@@ -89,8 +90,9 @@ fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
 fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
     let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
-    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
-        .expect("voronoi grid state");
+    let mut state =
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
+            .expect("voronoi grid state");
 
     let im = (2..=state.grid.nma)
         .find(|&candidate| {
@@ -164,8 +166,9 @@ fn gridinit_voronoi_state_uses_olam_factor2_expansion_when_selected() {
     let base =
         OlamDelaunayMesh::from_icosahedron(24, 0, 1.0, 0.25, 100).expect("OLAM base NXP 24 mesh");
     let expanded = base.expand_by_factor(2).expect("OLAM factor-2 expansion");
-    let mut expected = voronoi_grid_from_olam_delaunay_mesh(&expanded, OLAM_FORTRAN_EARTH_RADIUS_METERS)
-        .expect("expanded OLAM Voronoi state");
+    let mut expected =
+        voronoi_grid_from_olam_delaunay_mesh(&expanded, OLAM_FORTRAN_EARTH_RADIUS_METERS)
+            .expect("expanded OLAM Voronoi state");
     pcvt_adjust_voronoi_grid_state(&mut expected).expect("expected pcvt");
     grid_xyz2lonlat_fortran_indexed_state(&mut expected.grid).expect("expected lonlat fill");
 

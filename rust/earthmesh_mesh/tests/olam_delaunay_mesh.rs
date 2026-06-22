@@ -379,8 +379,7 @@ fn olam_global_cartesian_spring_keeps_points_unprojected_like_fortran_mdomain_ge
 
 #[test]
 fn olam_global_cartesian_spring_uses_fortran_deltax_target_distance() {
-    let mesh =
-        OlamDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid OLAM mesh");
+    let mesh = OlamDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid OLAM mesh");
     let regular_point_id = (2..=mesh.nmd)
         .find(|point_id| !mesh.impent.contains(point_id))
         .expect("non-pentagon M point");
