@@ -79,8 +79,13 @@
 - **MPAS cell 读取**:`mpas_cell_polygons_geojson` + `write_mpas_cell_polygons_geojson` + `--mpas-cell-polygons`(读 MPAS/EarthMesh netcdf 的 lonCell/lonVertex/verticesOnCell/nEdgesOnCell/areaCell → cell-polygon geojson,即交叠 writer 的 cells 输入)。port `read_mpas_cell_polygons`;度数转换与真 Python `_degrees_from_radians` 一致。
 - **domain clip**:交叠 writer 新增 `--domain-bbox W S E N`,把 corridor 裁到分析窗口(凸 bbox,精确)。`corridor∩domain∩cell` 面积与真 shapely 一致(0.25)。
 
-**仍未迁(可忽略)**:
-- **任意多边形 domain**(非 bbox 的 region geojson 裁剪,需通用裁剪;bbox 已覆盖常见情形)、**MultiPolygon 洞**(交叠 writer 用外环)。
-- **可视化**(`geojson_map`/`corridor_preview` leaflet)—— 不迁,GUI 自绘。
+**任意多边形 domain 裁剪 —— 已实现 ✅**:
+- `earthmesh_geometry::polygon_intersection_pieces`:任意两个简单多边形的交 → 不相交凸片集(ear-clip 三角剖分 + 三角对裁剪);`intersection_area` 现基于它。
+- 交叠 writer 的 domain 从凸 bbox 推广到**任意多边形集**(`--domain-bbox` 构矩形 / `--domain-geojson` 经 `read_polygon_outer_rings` 读 region 环),`corridor∩domain` 经三角剖分精确。
+- 验证:非凸 **L 形 domain** → river_fraction 0.75,与真 shapely `cell∩corridor∩domain`(12/16)一致(±1e-9)。
 
-> 结论:`util/hydro_mesh` 的**全部数值/几何逻辑 + 端到端管线 + IO(MPAS cell 读取、CaMa elevtn→band→dissolve、domain bbox-clip)**已在 Rust 并逐一与真 Python(含 shapely)对照一致。剩余仅:任意多边形 domain 裁剪(bbox 已覆盖)、MultiPolygon 洞、可视化(交给 GUI)——无数值逻辑空白,均可忽略或属 GUI 职责。
+**仍未迁(纯 GUI 职责)**:
+- **可视化**(`geojson_map`/`corridor_preview` leaflet HTML)—— 不迁,GUI 用 walkers/egui 自绘。
+- MultiPolygon **洞**(交叠 writer 取外环;hydro 掩膜实际为简单多边形)。
+
+> 结论:`util/hydro_mesh` 的**全部数值/几何/IO 逻辑**已 Rust 化、shapely-free、并逐一与真 Python(含 shapely)对照一致——分类/读取/掩膜/交叠/精确 union 面积/union 多边形 dissolve/任意多边形 domain 裁剪/MPAS cell 读取/CaMa elevtn→band→dissolve 端到端/coupling/qa/eval/ranking/package/两 overlay-writer。**唯一剩余是 leaflet 可视化(GUI 职责)**——无数值/几何逻辑空白。
