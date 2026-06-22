@@ -190,6 +190,78 @@ fn trim_num(v: f64) -> String {
     }
 }
 
+// ------------------------- coupling-quality / refinement-plan -------------------------
+
+/// Read-only summary of `coupling_quality.json` (R7 land/ocean coupling validator).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CouplingQualitySummary {
+    pub present: bool,
+    /// pass / warn / fail / unknown
+    pub verdict: String,
+    pub fields: Vec<(String, String)>,
+}
+
+impl CouplingQualitySummary {
+    pub fn parse(text: &str) -> CouplingQualitySummary {
+        let mut s = CouplingQualitySummary {
+            present: true,
+            verdict: json_string(text, "verdict").unwrap_or_else(|| "unknown".into()),
+            fields: Vec::new(),
+        };
+        for key in [
+            "total_land_cells",
+            "total_ocean_cells",
+            "mixed_coastline_cells",
+            "coast_overlap_cells",
+            "orphan_land_cells",
+            "orphan_ocean_cells",
+            "coastline_preservation_score",
+            "river_ocean_connectivity_score",
+        ] {
+            if let Some(v) = json_number(text, key) {
+                s.fields.push((key.to_string(), trim_num(v)));
+            }
+        }
+        s
+    }
+
+    pub fn from_dir(dir: &Path) -> CouplingQualitySummary {
+        std::fs::read_to_string(dir.join("coupling_quality.json"))
+            .ok()
+            .map(|t| CouplingQualitySummary::parse(&t))
+            .unwrap_or_default()
+    }
+}
+
+/// Read-only summary of `refinement_plan.json` (R8 hydro-driven target_level plan).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RefinementPlanSummary {
+    pub present: bool,
+    pub fields: Vec<(String, String)>,
+}
+
+impl RefinementPlanSummary {
+    pub fn parse(text: &str) -> RefinementPlanSummary {
+        let mut s = RefinementPlanSummary {
+            present: true,
+            fields: Vec::new(),
+        };
+        for key in ["total_cells", "cells_refined", "max_level"] {
+            if let Some(v) = json_number(text, key) {
+                s.fields.push((key.to_string(), trim_num(v)));
+            }
+        }
+        s
+    }
+
+    pub fn from_dir(dir: &Path) -> RefinementPlanSummary {
+        std::fs::read_to_string(dir.join("refinement_plan.json"))
+            .ok()
+            .map(|t| RefinementPlanSummary::parse(&t))
+            .unwrap_or_default()
+    }
+}
+
 // ----------------------------- target templates -----------------------------
 
 /// A target-mesh starting template. Plain fields so this module stays core-free; the
@@ -442,5 +514,48 @@ mod tests {
     #[test]
     fn seven_workflow_steps() {
         assert_eq!(workflow_steps().len(), 7);
+    }
+
+    #[test]
+    fn coupling_quality_summary_parses_verdict_and_counts() {
+        let json = r#"{
+  "kind": "earthmesh_coupling_quality",
+  "verdict": "warn",
+  "total_land_cells": 6,
+  "total_ocean_cells": 3,
+  "mixed_coastline_cells": 3,
+  "coast_overlap_cells": 3,
+  "orphan_land_cells": 0,
+  "orphan_ocean_cells": 0,
+  "coastline_preservation_score": 1
+}"#;
+        let s = CouplingQualitySummary::parse(json);
+        assert!(s.present);
+        assert_eq!(s.verdict, "warn");
+        assert!(s
+            .fields
+            .contains(&("total_land_cells".to_string(), "6".to_string())));
+        assert!(s
+            .fields
+            .contains(&("mixed_coastline_cells".to_string(), "3".to_string())));
+    }
+
+    #[test]
+    fn refinement_plan_summary_parses_counts() {
+        let json = r#"{
+  "kind": "earthmesh_refinement_plan",
+  "total_cells": 3,
+  "cells_refined": 2,
+  "max_level": 3,
+  "level_histogram": {"0": 1, "2": 1, "3": 1}
+}"#;
+        let s = RefinementPlanSummary::parse(json);
+        assert!(s.present);
+        assert!(s
+            .fields
+            .contains(&("cells_refined".to_string(), "2".to_string())));
+        assert!(s
+            .fields
+            .contains(&("max_level".to_string(), "3".to_string())));
     }
 }

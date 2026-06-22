@@ -3310,6 +3310,62 @@ impl EarthMeshApp {
             }
         }
     }
+
+    /// Render the R7 land/ocean coupling-quality summary from the run output dir's
+    /// `coupling_quality.json` (read-only; produced by `--coupling-quality-from-mesh`).
+    fn render_coupling_quality(
+        &self,
+        ui: &mut egui::Ui,
+        theme: &theme::EarthMeshTheme,
+        lang: Lang,
+    ) {
+        let dir = self
+            .output_files
+            .iter()
+            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
+        let s = dir
+            .as_deref()
+            .map(ui_helpers::CouplingQualitySummary::from_dir)
+            .unwrap_or_default();
+        if !s.present {
+            components::empty_state(ui, tr(lang, "coupling.empty"));
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label(tr(lang, "dash.verdict"));
+            components::status_badge(ui, theme, &s.verdict, &s.verdict.to_uppercase());
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (k, v) in &s.fields {
+                ui.label(format!("{k}: {v}"));
+                ui.separator();
+            }
+        });
+    }
+
+    /// Render the R8 refinement-plan summary from the run output dir's
+    /// `refinement_plan.json` (read-only; produced by `--plan-refinement-from-hydro` /
+    /// `--hydro-workflow`).
+    fn render_refinement_plan(&self, ui: &mut egui::Ui, lang: Lang) {
+        let dir = self
+            .output_files
+            .iter()
+            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
+        let s = dir
+            .as_deref()
+            .map(ui_helpers::RefinementPlanSummary::from_dir)
+            .unwrap_or_default();
+        if !s.present {
+            components::empty_state(ui, tr(lang, "refine_plan.empty"));
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            for (k, v) in &s.fields {
+                ui.label(format!("{k}: {v}"));
+                ui.separator();
+            }
+        });
+    }
 }
 
 impl eframe::App for EarthMeshApp {
@@ -3472,6 +3528,17 @@ impl eframe::App for EarthMeshApp {
                     .show(ui, |ui| {
                         let theme = self.theme();
                         self.render_quality_dashboard(ui, &theme, lang);
+                    });
+                egui::CollapsingHeader::new(tr(lang, "coupling.title"))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let theme = self.theme();
+                        self.render_coupling_quality(ui, &theme, lang);
+                    });
+                egui::CollapsingHeader::new(tr(lang, "refine_plan.title"))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        self.render_refinement_plan(ui, lang);
                     });
                 ui.separator();
                 if self.results_detached {
