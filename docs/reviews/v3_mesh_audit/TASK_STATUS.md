@@ -32,7 +32,8 @@
 | R7 | Land-Ocean Coupling / LOCmesh MVP | Done | dev | 2026-06-22 | 2026-06-22 | [`fix_reports/R7_coupled_mesh.md`](./fix_reports/R7_coupled_mesh.md) | cli 接线(LOCmesh→CoupledCellInput,overlay 守恒 fraction)；score 实现(R8+) | 已做并验证:`quality::coupling`(CoupledCellClass 8 + Fractions + CouplingMap + CouplingQualityReport 15 指标 + CSV/JSON/manifest 输出);36 测试绿;cli 编译绿。下一步:cli 接线 + push |
 | R8 | Score-based / Physics-aware refinement skeleton | Done | dev | 2026-06-22 | 2026-06-22 | [`fix_reports/R8_score_refinement.md`](./fix_reports/R8_score_refinement.md) | 接真实 features(cli)；lower 到引擎；multi-objective/repair loop(完整 optimizer) | 已做并验证:新 crate `earthmesh_refine_planner`(11 类型 + trait + 6 criteria + plan() 复用 quality::topology 约束 + csv/geojson/json);6 测试绿。下一步:接真实 features + push |
 | R9 | GUI workflow + quality dashboard + visual polish MVP | Done | dev | 2026-06-22 | 2026-06-22 | [`fix_reports/R9_gui_workflow_visual.md`](./fix_reports/R9_gui_workflow_visual.md) | 向导式重排(避免架构重写)；expert 逐字段折叠；ProjectConfig save/load；逐控件 tooltip | 已做并验证:新 theme/components/ui_helpers 模块 + main.rs additive(模板选择/主题/expert/dashboard);gui 45 测试绿、check/fmt 绿。下一步:push 或继续 |
-| P8 | 补丁实施（= R1–R10，见 FIX_PLAN） | Not started | dev | — | — | `fix_reports/R{n}_*.md` + 源码改动 | 见 FIX_QUEUE 各 item Deps | R1：单线落地 P0+构建卫生 |
+| R10 | CI / regression examples / release hardening MVP | Done | dev | 2026-06-22 | 2026-06-22 | [`fix_reports/R10_ci_regression_release.md`](./fix_reports/R10_ci_regression_release.md) | CI 未实跑(需 push)；cli/gui headless e2e smoke；版本/CHANGELOG | 已做并验证:`.github/workflows/ci.yml`(fast+heavy)、Makefile test-fast/release-check、examples 分类(README+测试)、snapshot 测试;test-fast 全绿、全 7 crate fmt PASS |
+| P8 | 补丁实施（= R1–R10，见 FIX_PLAN）| Done | dev | 2026-06-22 | 2026-06-22 | `fix_reports/R1..R10_*.md` + 源码 | — | R1–R10 全部落地并验证;构建卫生→路径/manifest→geometry safety→quality→topology→hydro-coast→coupling→refine planner→GUI→CI 全链成型;本地领先 origin 未 push |
 
 ## 阶段权限提醒（来自 PROJECT_AUDIT_PLAN §8）
 
