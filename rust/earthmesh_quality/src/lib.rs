@@ -14,6 +14,7 @@ use earthmesh_geometry::safety::{validate_polygon, GeometryQualityFlag};
 use earthmesh_geometry::{haversine_km, polygon_area, Point};
 
 pub mod io;
+pub mod topology;
 
 /// Pass / warn / fail level for one gate or the whole report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +182,8 @@ pub struct MeshQualityReport {
     pub topology: TopologyMetrics,
     pub gates: Vec<GateResult>,
     pub worst_cells: Vec<WorstCell>,
+    /// Structured topology problems from [`topology::MeshTopologyValidator`].
+    pub topology_issues: Vec<topology::TopologyIssue>,
     pub verdict: QualityLevel,
 }
 
@@ -432,7 +435,18 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
         }
     }
 
-    let (gates, worst_cells, verdict) = evaluate(input, &geom, &topo, thresholds);
+    let (gates, worst_cells, gate_verdict) = evaluate(input, &geom, &topo, thresholds);
+
+    // Run the detailed topology validator and fold its worst severity into the
+    // verdict (catastrophic connectivity = Fail; transition degradation = Warn).
+    let topology_issues = topology::MeshTopologyValidator::new(input).validate_all();
+    let validator_level = match topology::worst_severity(&topology_issues) {
+        Some(topology::Severity::Fail) => QualityLevel::Fail,
+        Some(topology::Severity::Warn) => QualityLevel::Warn,
+        None => QualityLevel::Pass,
+    };
+    let verdict = gate_verdict.worse(validator_level);
+
     MeshQualityReport {
         mesh_name: String::new(),
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -440,6 +454,7 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
         topology: topo,
         gates,
         worst_cells,
+        topology_issues,
         verdict,
     }
 }

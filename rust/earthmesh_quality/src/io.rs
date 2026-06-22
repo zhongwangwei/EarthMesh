@@ -153,6 +153,34 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
             comma
         ));
     }
+    s.push_str("  ],\n");
+    s.push_str("  \"topology_issues\": [\n");
+    for (i, issue) in r.topology_issues.iter().enumerate() {
+        let comma = if i + 1 < r.topology_issues.len() {
+            ","
+        } else {
+            ""
+        };
+        let cell = issue
+            .cell_id
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "null".into());
+        let vertex = issue
+            .vertex_id
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".into());
+        s.push_str(&format!(
+            "    {{\"issue_type\": \"{}\", \"severity\": \"{}\", \"cell_id\": {}, \"vertex_id\": {}, \
+             \"message\": \"{}\", \"suggested_fix\": \"{}\"}}{}\n",
+            issue.issue_type.as_str(),
+            issue.severity.as_str(),
+            cell,
+            vertex,
+            esc(&issue.message),
+            esc(&issue.suggested_fix),
+            comma
+        ));
+    }
     s.push_str("  ]\n}\n");
     s
 }
@@ -345,6 +373,23 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
             num(gate.value),
             gate.level.as_str()
         ));
+    }
+    if !r.topology_issues.is_empty() {
+        s.push_str(
+            "\n## Topology issues\n\n| Type | Severity | Cell | Message | Suggested fix |\n",
+        );
+        s.push_str("|------|----------|------|---------|---------------|\n");
+        for issue in &r.topology_issues {
+            let cell = issue.cell_id.map(|c| c.to_string()).unwrap_or_default();
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                issue.issue_type.as_str(),
+                issue.severity.as_str(),
+                cell,
+                issue.message,
+                issue.suggested_fix
+            ));
+        }
     }
     s.push_str(&format!(
         "\n**Verdict: {}**\n",
