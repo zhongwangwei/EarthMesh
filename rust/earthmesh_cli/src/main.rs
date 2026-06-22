@@ -144,6 +144,9 @@ fn run() -> Result<(), String> {
     if first == "--hydro-cell-intersections" {
         return run_hydro_cell_intersections(args);
     }
+    if first == "--hydro-complete-cell-mask" {
+        return run_hydro_complete_cell_mask(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1403,6 +1406,58 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--hydro-complete-cell-mask <background.geojson> <out.geojson>
+/// [--river-geojson R] [--coast-geojson C] [--surface-geojson S]`:
+/// annotate every background cell with surface_class + dominant mask_class
+/// (port of cell_mask_merge.py). The output is the file --hydro-mesh-qa consumes.
+fn run_hydro_complete_cell_mask(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut river: Option<PathBuf> = None;
+    let mut coast: Option<PathBuf> = None;
+    let mut surface: Option<PathBuf> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        let need = |i: &mut usize, flag: &str| -> Result<PathBuf, String> {
+            *i += 1;
+            rest.get(*i)
+                .map(PathBuf::from)
+                .ok_or_else(|| usage(&format!("{flag} requires a value")))
+        };
+        match rest[i].as_str() {
+            "--river-geojson" => river = Some(need(&mut i, "--river-geojson")?),
+            "--coast-geojson" => coast = Some(need(&mut i, "--coast-geojson")?),
+            "--surface-geojson" => surface = Some(need(&mut i, "--surface-geojson")?),
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --hydro-complete-cell-mask option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 2 {
+        return Err(usage(
+            "--hydro-complete-cell-mask needs <background.geojson> <out.geojson>",
+        ));
+    }
+    let count = earthmesh_cli::write_complete_cell_mask_geojson(
+        &positional[0],
+        &positional[1],
+        river.as_deref(),
+        coast.as_deref(),
+        surface.as_deref(),
+    )
+    .map_err(|err| format!("complete cell mask: {err}"))?;
+    println!("hydro_complete_cell_mask_features={count}");
+    println!(
+        "hydro_complete_cell_mask_output={}",
+        positional[1].display()
+    );
     Ok(())
 }
 
