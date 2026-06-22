@@ -372,6 +372,10 @@ struct EarthMeshApp {
     hydro_cells: Option<PathBuf>,
     hydro_corridors: Option<PathBuf>,
     hydro_out_dir: Option<PathBuf>,
+    hydro_mesh: Option<PathBuf>,
+    hydro_landtype: Option<PathBuf>,
+    hydro_wf_running: bool,
+    hydro_wf_rx: Option<Receiver<Result<earthmesh_cli::HydroWorkflowReport, String>>>,
 }
 
 impl Default for EarthMeshApp {
@@ -432,6 +436,10 @@ impl Default for EarthMeshApp {
             hydro_cells: None,
             hydro_corridors: None,
             hydro_out_dir: None,
+            hydro_mesh: None,
+            hydro_landtype: None,
+            hydro_wf_running: false,
+            hydro_wf_rx: None,
         }
     }
 }
@@ -2056,6 +2064,7 @@ impl EarthMeshApp {
     }
 
     fn poll_run(&mut self) {
+        self.poll_hydro_workflow();
         let mut updates = Vec::new();
         if let Some(prx) = &self.prog_rx {
             while let Ok(update) = prx.try_recv() {
@@ -3379,40 +3388,43 @@ impl EarthMeshApp {
         });
     }
 
-    /// File pickers + a Run button that triggers the GeoJSON hydro workflow
+    /// File pickers + a Run button that triggers the hydro workflow
     /// (`earthmesh_cli::run_hydro_workflow`): cells × corridors -> intersections +
-    /// CoLM coupling CSV + R8 refinement plan + manifest, into a chosen out dir. The
-    /// mesh+land-type (R7) branch stays CLI-only (slow NetCDF). The refinement-plan panel
-    /// above reads the result. Additive: invokes the existing tested library function.
-    fn render_hydro_workflow_controls(&mut self, ui: &mut egui::Ui, lang: Lang) {
+    /// CoLM coupling CSV + R8 refinement plan + manifest, into a chosen out dir. Optional
+    /// mesh + land-type add the R7 coupling-quality step. Runs on a background thread, so
+    /// the slow NetCDF (mesh+land-type) path does not block the UI. The coupling /
+    /// refinement panels above read the result. Additive: invokes the tested library fn.
+    fn render_hydro_workflow_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        lang: Lang,
+    ) {
         let none = tr(lang, "hydro_wf.none");
         let path_label = |p: &Option<PathBuf>| {
             p.as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| none.to_string())
         };
-        ui.horizontal(|ui| {
-            if ui.button(tr(lang, "hydro_wf.pick_cells")).clicked() {
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("geojson", &["geojson", "json"])
-                    .pick_file()
-                {
-                    self.hydro_cells = Some(p);
+        let pick_geojson = |ui: &mut egui::Ui, label: &str, slot: &mut Option<PathBuf>| {
+            ui.horizontal(|ui| {
+                if ui.button(label).clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("geojson", &["geojson", "json"])
+                        .pick_file()
+                    {
+                        *slot = Some(p);
+                    }
                 }
-            }
-            ui.label(path_label(&self.hydro_cells));
-        });
-        ui.horizontal(|ui| {
-            if ui.button(tr(lang, "hydro_wf.pick_corridors")).clicked() {
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("geojson", &["geojson", "json"])
-                    .pick_file()
-                {
-                    self.hydro_corridors = Some(p);
-                }
-            }
-            ui.label(path_label(&self.hydro_corridors));
-        });
+                ui.label(path_label(slot));
+            });
+        };
+        pick_geojson(ui, tr(lang, "hydro_wf.pick_cells"), &mut self.hydro_cells);
+        pick_geojson(
+            ui,
+            tr(lang, "hydro_wf.pick_corridors"),
+            &mut self.hydro_corridors,
+        );
         ui.horizontal(|ui| {
             if ui.button(tr(lang, "hydro_wf.pick_out")).clicked() {
                 if let Some(p) = rfd::FileDialog::new().pick_folder() {
@@ -3421,17 +3433,52 @@ impl EarthMeshApp {
             }
             ui.label(path_label(&self.hydro_out_dir));
         });
-        let ready = !self.running && self.hydro_cells.is_some() && self.hydro_corridors.is_some();
-        ui.add_enabled_ui(ready, |ui| {
-            if ui.button(tr(lang, "hydro_wf.run")).clicked() {
-                self.run_hydro_workflow_now();
+        // optional R7 mesh + land-type (NetCDF) — slow, hence the background thread.
+        ui.horizontal(|ui| {
+            if ui.button(tr(lang, "hydro_wf.pick_mesh")).clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("netcdf", &["nc", "nc4"])
+                    .pick_file()
+                {
+                    self.hydro_mesh = Some(p);
+                }
+            }
+            ui.label(path_label(&self.hydro_mesh));
+        });
+        ui.horizontal(|ui| {
+            if ui.button(tr(lang, "hydro_wf.pick_landtype")).clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("netcdf", &["nc", "nc4"])
+                    .pick_file()
+                {
+                    self.hydro_landtype = Some(p);
+                }
+            }
+            ui.label(path_label(&self.hydro_landtype));
+        });
+        let ready = !self.running
+            && !self.hydro_wf_running
+            && self.hydro_cells.is_some()
+            && self.hydro_corridors.is_some();
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(ready, |ui| {
+                if ui.button(tr(lang, "hydro_wf.run")).clicked() {
+                    self.run_hydro_workflow_now(ctx);
+                }
+            });
+            if self.hydro_wf_running {
+                ui.add(egui::Spinner::new());
+                ui.label(tr(lang, "hydro_wf.running"));
             }
         });
     }
 
-    /// Run the GeoJSON hydro workflow synchronously (the chain is fast for GeoJSON inputs)
-    /// and log the outcome; the refinement-plan panel then reads the chosen out dir.
-    fn run_hydro_workflow_now(&mut self) {
+    /// Spawn the hydro workflow on a background thread (the mesh+land-type NetCDF path is
+    /// slow); the result arrives via `hydro_wf_rx` and is drained in `poll_run`.
+    fn run_hydro_workflow_now(&mut self, ctx: &egui::Context) {
+        if self.hydro_wf_running {
+            return;
+        }
         let (Some(cells), Some(corridors)) =
             (self.hydro_cells.clone(), self.hydro_corridors.clone())
         else {
@@ -3439,32 +3486,62 @@ impl EarthMeshApp {
                 .push("hydro workflow: pick cells + corridors GeoJSON first".into());
             return;
         };
+        if self.hydro_mesh.is_some() != self.hydro_landtype.is_some() {
+            self.log
+                .push("hydro workflow: pick both mesh + land-type, or neither".into());
+            return;
+        }
         let out_dir = self
             .hydro_out_dir
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join("earthmesh_hydro_workflow"));
-        match earthmesh_cli::run_hydro_workflow(
-            &cells,
-            &corridors,
-            &out_dir,
-            &["R2".to_string(), "R3".to_string()],
-            0.0,
-            false,
-            None,
-            3,
-            None,
-            None,
-            None,
-            1,
-        ) {
+        let mesh = self.hydro_mesh.clone();
+        let landtype = self.hydro_landtype.clone();
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let res = earthmesh_cli::run_hydro_workflow(
+                &cells,
+                &corridors,
+                &out_dir,
+                &["R2".to_string(), "R3".to_string()],
+                0.0,
+                false,
+                None,
+                3,
+                None,
+                mesh.as_deref(),
+                landtype.as_deref(),
+                120,
+            )
+            .map_err(|e| e.to_string());
+            let _ = tx.send(res);
+            ctx.request_repaint();
+        });
+        self.hydro_wf_rx = Some(rx);
+        self.hydro_wf_running = true;
+        self.log.push("hydro workflow: running…".into());
+    }
+
+    /// Drain a finished background hydro workflow (called from `poll_run`).
+    fn poll_hydro_workflow(&mut self) {
+        let Some(result) = self.hydro_wf_rx.as_ref().and_then(|rx| rx.try_recv().ok()) else {
+            return;
+        };
+        self.hydro_wf_running = false;
+        self.hydro_wf_rx = None;
+        match result {
             Ok(r) => {
-                self.hydro_out_dir = Some(out_dir.clone());
+                if let Some(d) = r.manifest_path.parent() {
+                    self.hydro_out_dir = Some(d.to_path_buf());
+                }
+                let coupling = r
+                    .coupling_quality_verdict
+                    .map(|v| format!(", coupling={v}"))
+                    .unwrap_or_default();
                 self.log.push(format!(
-                    "hydro workflow: {} intersection cells, {} coupling rows, {} refined → {}",
-                    r.intersection_cells,
-                    r.coupling_rows,
-                    r.cells_refined,
-                    out_dir.display()
+                    "hydro workflow done: {} intersection cells, {} coupling rows, {} refined{}",
+                    r.intersection_cells, r.coupling_rows, r.cells_refined, coupling
                 ));
             }
             Err(e) => self.log.push(format!("hydro workflow failed: {e}")),
@@ -3480,7 +3557,7 @@ impl eframe::App for EarthMeshApp {
     #[allow(deprecated)]
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_run();
-        if self.running {
+        if self.running || self.hydro_wf_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
         let lang = self.lang;
@@ -3647,7 +3724,7 @@ impl eframe::App for EarthMeshApp {
                 egui::CollapsingHeader::new(tr(lang, "hydro_wf.title"))
                     .default_open(false)
                     .show(ui, |ui| {
-                        self.render_hydro_workflow_controls(ui, lang);
+                        self.render_hydro_workflow_controls(ui, ctx, lang);
                     });
                 ui.separator();
                 if self.results_detached {
