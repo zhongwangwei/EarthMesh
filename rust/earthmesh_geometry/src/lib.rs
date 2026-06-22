@@ -251,13 +251,17 @@ pub fn polygon_union_area(polygons: &[Vec<Point>]) -> f64 {
 /// remaining edges are traced into closed rings (outer rings CCW / positive signed
 /// area, holes CW / negative). Exact + robust for a grid-aligned set (combinatorial,
 /// no floating-point area test). Rings touching only at a corner are kept separate.
+// The ring-tracing loops inspect `out` (out.get/find) and then mutate it (out.get_mut)
+// in the same body, so they cannot be rewritten as `while let` without a borrow clash.
+#[allow(clippy::while_let_loop)]
 pub fn dissolve_axis_aligned_boxes(boxes: &[(f64, f64, f64, f64)]) -> Vec<Vec<Point>> {
     use std::collections::HashMap;
-    let key =
-        |x: f64, y: f64| -> (i64, i64) { ((x * 1e9).round() as i64, (y * 1e9).round() as i64) };
-    let mut edge_count: HashMap<((i64, i64), (i64, i64)), i32> = HashMap::new();
-    let mut pts: HashMap<(i64, i64), Point> = HashMap::new();
-    let mut add_edge = |a: Point, b: Point, ec: &mut HashMap<((i64, i64), (i64, i64)), i32>| {
+    type NodeKey = (i64, i64);
+    type EdgeCount = HashMap<(NodeKey, NodeKey), i32>;
+    let key = |x: f64, y: f64| -> NodeKey { ((x * 1e9).round() as i64, (y * 1e9).round() as i64) };
+    let mut edge_count: EdgeCount = HashMap::new();
+    let mut pts: HashMap<NodeKey, Point> = HashMap::new();
+    let mut add_edge = |a: Point, b: Point, ec: &mut EdgeCount| {
         let (ka, kb) = (key(a.x, a.y), key(b.x, b.y));
         pts.insert(ka, a);
         pts.insert(kb, b);

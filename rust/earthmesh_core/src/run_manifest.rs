@@ -9,8 +9,9 @@ use std::io;
 use std::path::Path;
 
 /// Lifecycle status of a run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RunStatus {
+    #[default]
     Started,
     Completed,
     Failed,
@@ -25,12 +26,6 @@ impl RunStatus {
             RunStatus::Failed => "failed",
             RunStatus::DryRun => "dry_run",
         }
-    }
-}
-
-impl Default for RunStatus {
-    fn default() -> Self {
-        RunStatus::Started
     }
 }
 
