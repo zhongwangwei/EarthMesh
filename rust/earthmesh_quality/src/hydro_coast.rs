@@ -1,5 +1,10 @@
 //! MERIT-Hydro / hydro-coast validation report (MVP).
 //!
+//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** The CLI MERIT pipeline does not
+//! build [`HydroCoastInputs`] or call [`build_report`] yet — only unit tests do. (The
+//! antimeridian tile-selection bug it diagnoses was fixed directly in the reader,
+//! `merit_bbox_intersects`.) Wiring is future work (R6 report §5).
+//!
 //! A pure, dependency-light diagnostic layer: the caller (CLI MERIT pipeline) feeds
 //! already-extracted facts (selected tiles, bbox, feature counts, close-mask rings…)
 //! into [`HydroCoastInputs`], and [`build_report`] returns a structured

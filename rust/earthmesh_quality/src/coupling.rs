@@ -1,6 +1,10 @@
 //! Land-ocean coupled mesh (LOCmesh) classification, fractions, coupling map and a
 //! coupling-quality report (MVP).
 //!
+//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** The real coupling output path
+//! (`earthmesh_cli::write_colm_coupling_csv_from_mesh`) does not call this module yet;
+//! it is exercised only by unit tests. Wiring is future work (R7 report §9).
+//!
 //! Pure + dependency-light (no NetCDF, no GIS dependency): the caller builds
 //! [`CoupledCellInput`]s from its mesh + landtype/MERIT/CaMa data, and this module
 //! classifies cells, validates fractions (mass conservation), builds a simple
