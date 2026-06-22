@@ -31441,6 +31441,102 @@ pub fn plan_refinement_from_hydro_geojson(
     Ok(report)
 }
 
+/// Artifacts + summary produced by [`run_hydro_workflow`].
+#[derive(Clone, Debug)]
+pub struct HydroWorkflowReport {
+    pub intersection_cells: usize,
+    pub coupling_rows: usize,
+    pub cells_refined: usize,
+    pub refinement_max_level: u8,
+    pub intersections_path: PathBuf,
+    pub coupling_csv_path: PathBuf,
+    pub refinement_plan_path: PathBuf,
+    pub manifest_path: PathBuf,
+}
+
+/// End-to-end hydro workflow: cells (from a mesh, e.g. `--mpas-cell-polygons`) ×
+/// corridors → per-cell intersection GeoJSON → CoLM coupling CSV + R8 refinement plan,
+/// all under `out_dir`, plus a `workflow_manifest.json` listing the artifacts. Chains the
+/// migrated overlay / coupling / planner pieces into one command.
+#[allow(clippy::too_many_arguments)]
+pub fn run_hydro_workflow(
+    cells_geojson: impl AsRef<Path>,
+    corridors_geojson: impl AsRef<Path>,
+    out_dir: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[Vec<(f64, f64)>]>,
+    max_level: u8,
+    max_refined_cells: Option<usize>,
+) -> io::Result<HydroWorkflowReport> {
+    let out_dir = out_dir.as_ref();
+    fs::create_dir_all(out_dir)?;
+    let intersections_path = out_dir.join("intersections.geojson");
+    let coupling_csv_path = out_dir.join("colm_coupling.csv");
+    let refinement_plan_path = out_dir.join("refinement_plan.json");
+    let manifest_path = out_dir.join("workflow_manifest.json");
+
+    // 1. overlay cells × corridors -> per-cell river/coast intersection GeoJSON
+    let intersection_cells = write_earthmesh_intersection_geojson(
+        cells_geojson,
+        corridors_geojson,
+        &intersections_path,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain,
+    )?;
+    // 2. intersections -> CoLM coupling rows (CSV)
+    let coupling_rows = write_colm_coupling_csv_from_intersections(
+        &intersections_path,
+        &coupling_csv_path,
+        min_fraction,
+    )?;
+    // 3. intersections -> R8 refinement plan (target_level map)
+    let report = plan_refinement_from_hydro_geojson(
+        &intersections_path,
+        &refinement_plan_path,
+        max_level,
+        max_refined_cells,
+    )?;
+    let cells_refined = report.budget_used.cells_refined_after;
+    let refinement_max_level = report
+        .target_levels
+        .level
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+
+    // 4. workflow manifest
+    let manifest = format!(
+        "{{\n  \"kind\": \"earthmesh_hydro_workflow\",\n  \"intersection_cells\": {},\n  \
+         \"coupling_rows\": {},\n  \"cells_refined\": {},\n  \"refinement_max_level\": {},\n  \
+         \"artifacts\": {{\n    \"intersections_geojson\": \"{}\",\n    \
+         \"colm_coupling_csv\": \"{}\",\n    \"refinement_plan_json\": \"{}\"\n  }}\n}}\n",
+        intersection_cells,
+        coupling_rows,
+        cells_refined,
+        refinement_max_level,
+        json_escape_string(&intersections_path.display().to_string()),
+        json_escape_string(&coupling_csv_path.display().to_string()),
+        json_escape_string(&refinement_plan_path.display().to_string()),
+    );
+    fs::write(&manifest_path, manifest)?;
+
+    Ok(HydroWorkflowReport {
+        intersection_cells,
+        coupling_rows,
+        cells_refined,
+        refinement_max_level,
+        intersections_path,
+        coupling_csv_path,
+        refinement_plan_path,
+        manifest_path,
+    })
+}
+
 /// Write the CoLM package coupling metadata NetCDF schema from the package CSV.
 ///
 /// This is a Rust-native equivalent of the numeric/string-code boundary in

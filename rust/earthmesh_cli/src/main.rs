@@ -159,6 +159,9 @@ fn run() -> Result<(), String> {
     if first == "--plan-refinement-from-hydro" {
         return run_plan_refinement_from_hydro(args);
     }
+    if first == "--hydro-workflow" {
+        return run_hydro_workflow(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1582,6 +1585,115 @@ fn run_plan_refinement_from_hydro(args: impl Iterator<Item = String>) -> Result<
         report.budget_used.cells_refined_after
     );
     println!("refinement_plan_output={}", positional[1].display());
+    Ok(())
+}
+
+/// `--hydro-workflow <cells.geojson> <corridors.geojson> <out_dir> [--classes R2,R3]
+/// [--min-fraction F] [--unit-sphere-area] [--domain-bbox W S E N | --domain-geojson P]
+/// [--max-level N] [--max-refined-cells N]`: end-to-end hydro chain — overlay cells ×
+/// corridors -> intersections -> CoLM coupling CSV + R8 refinement plan + manifest.
+fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut classes: Vec<String> = vec!["R2".into(), "R3".into()];
+    let mut min_fraction = 0.0f64;
+    let mut unit_sphere = false;
+    let mut domain: Option<Vec<Vec<(f64, f64)>>> = None;
+    let mut max_level: u8 = 3;
+    let mut max_refined_cells: Option<usize> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--domain-bbox" => {
+                let mut v = [0.0; 4];
+                for slot in v.iter_mut() {
+                    i += 1;
+                    *slot = rest
+                        .get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--domain-bbox needs W S E N"))?;
+                }
+                domain = Some(vec![vec![
+                    (v[0], v[1]),
+                    (v[2], v[1]),
+                    (v[2], v[3]),
+                    (v[0], v[3]),
+                ]]);
+            }
+            "--domain-geojson" => {
+                i += 1;
+                let path = rest
+                    .get(i)
+                    .ok_or_else(|| usage("--domain-geojson requires a value"))?;
+                domain = Some(
+                    earthmesh_cli::read_polygon_outer_rings(path)
+                        .map_err(|err| format!("read domain geojson: {err}"))?,
+                );
+            }
+            "--classes" => {
+                i += 1;
+                classes = rest
+                    .get(i)
+                    .ok_or_else(|| usage("--classes requires a value"))?
+                    .split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .collect();
+            }
+            "--min-fraction" => {
+                i += 1;
+                min_fraction = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--min-fraction requires a number"))?;
+            }
+            "--unit-sphere-area" => unit_sphere = true,
+            "--max-level" => {
+                i += 1;
+                max_level = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--max-level requires an integer 1..=255"))?;
+            }
+            "--max-refined-cells" => {
+                i += 1;
+                max_refined_cells = Some(
+                    rest.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--max-refined-cells requires an integer"))?,
+                );
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!("unknown --hydro-workflow option: {other}")))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 3 {
+        return Err(usage(
+            "--hydro-workflow needs <cells.geojson> <corridors.geojson> <out_dir>",
+        ));
+    }
+    let report = earthmesh_cli::run_hydro_workflow(
+        &positional[0],
+        &positional[1],
+        &positional[2],
+        &classes,
+        min_fraction,
+        unit_sphere,
+        domain.as_deref(),
+        max_level,
+        max_refined_cells,
+    )
+    .map_err(|err| format!("hydro workflow: {err}"))?;
+    println!(
+        "hydro_workflow_intersection_cells={}",
+        report.intersection_cells
+    );
+    println!("hydro_workflow_coupling_rows={}", report.coupling_rows);
+    println!("hydro_workflow_cells_refined={}", report.cells_refined);
+    println!("hydro_workflow_manifest={}", report.manifest_path.display());
     Ok(())
 }
 
