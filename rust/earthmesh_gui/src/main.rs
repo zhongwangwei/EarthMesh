@@ -261,7 +261,7 @@ fn collect_nml(dir: &Path, out: &mut Vec<PathBuf>) {
             let p = entry.path();
             if p.is_dir() {
                 collect_nml(&p, out);
-            } else if p.extension().map_or(false, |x| x == "nml") {
+            } else if p.extension().is_some_and(|x| x == "nml") {
                 out.push(p);
             }
         }
@@ -372,10 +372,14 @@ struct EarthMeshApp {
 
 impl Default for EarthMeshApp {
     fn default() -> Self {
-        let mut mkgrd = EarthmeshConfig::default();
-        mkgrd.openmp = 4;
-        let mut refine = RefineConfig::default();
-        refine.max_iter_spc = SPECIFIED_REFINE_LEVEL_MAX;
+        let mkgrd = EarthmeshConfig {
+            openmp: 4,
+            ..Default::default()
+        };
+        let refine = RefineConfig {
+            max_iter_spc: SPECIFIED_REFINE_LEVEL_MAX,
+            ..Default::default()
+        };
         Self {
             mkgrd,
             refine,
@@ -1068,7 +1072,7 @@ fn collect_outputs(dir: &Path) -> Vec<PathBuf> {
                 let p = entry.path();
                 if p.is_dir() {
                     walk(&p, out);
-                } else if p.extension().map_or(false, |x| x == "nc4" || x == "nc") {
+                } else if p.extension().is_some_and(|x| x == "nc4" || x == "nc") {
                     out.push(p);
                 }
             }
@@ -1088,7 +1092,7 @@ fn preview_output_path(files: &[PathBuf]) -> Option<PathBuf> {
     fn is_gridfile(path: &Path) -> bool {
         path.file_name()
             .and_then(|name| name.to_str())
-            .map_or(false, |name| name.contains("gridfile"))
+            .is_some_and(|name| name.contains("gridfile"))
     }
 
     files
@@ -1119,9 +1123,7 @@ fn colm_coupling_output_path(files: &[PathBuf]) -> Option<PathBuf> {
         .find(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map_or(false, |name| {
-                    name.starts_with("CoLM_") && name.ends_with("_coupling.nc4")
-                })
+                .is_some_and(|name| name.starts_with("CoLM_") && name.ends_with("_coupling.nc4"))
         })
         .cloned()
 }
@@ -1268,9 +1270,8 @@ fn produce_outputs(
         let reg_dir = base.join("regional");
         std::fs::create_dir_all(&reg_dir).map_err(|e| e.to_string())?;
         let reg_gf = reg_dir.join(format!("gridfile_NXP{nxp:04}_{grid}_regional.nc4"));
-        let kept =
-            earthmesh_cli::write_regional_gridfile(&domain_source_gf, &reg_gf, &region, grid)
-                .map_err(|e| format!("regional carve failed: {e}"))?;
+        let kept = earthmesh_cli::write_regional_gridfile(&domain_source_gf, &reg_gf, region, grid)
+            .map_err(|e| format!("regional carve failed: {e}"))?;
         notes.push(format!("regional gridfile ({kept} cells)"));
         reg_gf
     } else {
@@ -1292,7 +1293,7 @@ fn produce_outputs(
                     &global_for_regional,
                     &mesh_out,
                     &graph_out,
-                    &region,
+                    region,
                     nxp,
                 ) {
                     Ok((_, kept)) => notes.push(format!("regional MPAS ({kept} cells)")),
@@ -1444,9 +1445,10 @@ impl EarthMeshApp {
                         Err(err) => return self.set_status("status.parse_error", err),
                     }
                 } else {
-                    let mut refine = RefineConfig::default();
-                    refine.max_iter_spc = SPECIFIED_REFINE_LEVEL_MAX;
-                    refine
+                    RefineConfig {
+                        max_iter_spc: SPECIFIED_REFINE_LEVEL_MAX,
+                        ..Default::default()
+                    }
                 };
                 if refine.max_iter_spc <= 0 {
                     refine.max_iter_spc = SPECIFIED_REFINE_LEVEL_MAX;
@@ -2069,7 +2071,7 @@ impl EarthMeshApp {
             let cancelled = self
                 .cancel_flag
                 .as_ref()
-                .map_or(false, |f| f.load(Ordering::Relaxed));
+                .is_some_and(|f| f.load(Ordering::Relaxed));
             match result {
                 Ok(run) => {
                     let shown = run.output_dir.display().to_string();
@@ -2161,6 +2163,1449 @@ impl EarthMeshApp {
             self.progress = None;
         }
     }
+}
+
+// ---- grid-row helpers ----------------------------------------------------------
+
+fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.label(label);
+    ui.add(egui::TextEdit::singleline(value).desired_width(280.0));
+    ui.end_row();
+}
+fn int_row(ui: &mut egui::Ui, label: &str, value: &mut i32, range: std::ops::RangeInclusive<i32>) {
+    ui.label(label);
+    ui.add(egui::DragValue::new(value).range(range).speed(1.0));
+    ui.end_row();
+}
+fn f32_row(ui: &mut egui::Ui, label: &str, value: &mut f32) {
+    ui.label(label);
+    ui.add(egui::DragValue::new(value).speed(0.01));
+    ui.end_row();
+}
+fn f64_row(ui: &mut egui::Ui, label: &str, value: &mut f64) {
+    ui.label(label);
+    ui.add(egui::DragValue::new(value).speed(0.01));
+    ui.end_row();
+}
+fn combo_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str]) {
+    ui.label(label);
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(value.clone())
+        .show_ui(ui, |ui| {
+            for opt in options {
+                ui.selectable_value(value, (*opt).to_string(), *opt);
+            }
+        });
+    ui.end_row();
+}
+/// Combo whose options display a translated label but store an engine value.
+fn mapped_combo_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    options: &'static [(&'static str, &'static str)],
+    lang: Lang,
+) {
+    ui.label(label);
+    let current = options
+        .iter()
+        .find(|(v, _)| v == value)
+        .map(|(_, k)| tr(lang, k))
+        .unwrap_or(value.as_str());
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (v, k) in options {
+                ui.selectable_value(value, (*v).to_string(), tr(lang, k));
+            }
+        });
+    ui.end_row();
+}
+fn int_combo_row(ui: &mut egui::Ui, label: &str, value: &mut i32, options: &[(i32, &str)]) {
+    ui.label(label);
+    let current = options
+        .iter()
+        .find(|(v, _)| *v == *value)
+        .map(|(_, t)| *t)
+        .unwrap_or("?");
+    egui::ComboBox::from_id_salt(label)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (v, t) in options {
+                ui.selectable_value(value, *v, *t);
+            }
+        });
+    ui.end_row();
+}
+fn check_row(ui: &mut egui::Ui, label: &str, value: &mut bool) {
+    ui.label(label);
+    ui.checkbox(value, "");
+    ui.end_row();
+}
+fn crit_row(ui: &mut egui::Ui, label: &str, on: &mut bool, thr: &mut f64) {
+    ui.checkbox(on, label);
+    ui.add_enabled(*on, egui::DragValue::new(thr).speed(0.1));
+    ui.end_row();
+}
+fn crit_pair_row(ui: &mut egui::Ui, label: &str, on: &mut bool, thr: &mut [f64; 2]) {
+    ui.checkbox(on, label);
+    ui.horizontal(|ui| {
+        ui.add_enabled(*on, egui::DragValue::new(&mut thr[0]).speed(0.1));
+        ui.add_enabled(*on, egui::DragValue::new(&mut thr[1]).speed(0.1));
+    });
+    ui.end_row();
+}
+
+impl EarthMeshApp {
+    fn tab_basics(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        ui.heading(tr(lang, "head.basics"));
+        ui.separator();
+        egui::Grid::new("basics").num_columns(2).show(ui, |ui| {
+            // Case identity first.
+            text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
+            text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
+            ui.label("");
+            ui.label("");
+            ui.end_row();
+
+            // Cascade: mesh type → model (output format) → grid shape.
+            mapped_combo_row(
+                ui,
+                tr(lang, "f.mesh_type"),
+                &mut self.mkgrd.mesh_type,
+                MESH_TYPES,
+                lang,
+            );
+            ui.label("");
+            ui.weak(tr(lang, "mesh.custom_note"));
+            ui.end_row();
+
+            let allowed = output_formats_for(&self.mkgrd.mesh_type);
+            if !allowed.contains(&self.mkgrd.output_format.as_str()) {
+                self.mkgrd.output_format = allowed[0].to_string();
+            }
+            combo_row(
+                ui,
+                tr(lang, "f.output_format"),
+                &mut self.mkgrd.output_format,
+                allowed,
+            );
+            let refinement_supported = self.refinement_supported();
+            if !refinement_supported {
+                self.mkgrd.refine = false;
+                self.refine.refine_spc = false;
+                self.refine.refine_cal = false;
+            }
+
+            // The selected model's standard file is produced in pure Rust.
+            check_row(ui, tr(lang, "f.gen_mpas"), &mut self.gen_output);
+
+            let grids = grid_modes_for(&self.mkgrd.mesh_type);
+            mapped_combo_row(
+                ui,
+                tr(lang, "f.mode_grid"),
+                &mut self.mkgrd.mode_grid,
+                grids,
+                lang,
+            );
+
+            int_row(ui, tr(lang, "f.nxp"), &mut self.mkgrd.nxp, 1..=100_000);
+
+            // Domain: global vs regional, with conditional boundary options.
+            ui.label(tr(lang, "f.domain_mode"));
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.mkgrd.mask_domain_global,
+                    true,
+                    tr(lang, "opt.global"),
+                );
+                ui.selectable_value(
+                    &mut self.mkgrd.mask_domain_global,
+                    false,
+                    tr(lang, "opt.regional"),
+                );
+            });
+            ui.end_row();
+            if !self.mkgrd.mask_domain_global {
+                combo_row(
+                    ui,
+                    tr(lang, "f.domain_shape"),
+                    &mut self.mkgrd.mask_domain_type,
+                    REGION_TYPES,
+                );
+                match self.mkgrd.mask_domain_type.as_str() {
+                    "bbox" => {
+                        f64_row(ui, tr(lang, "dom.west"), &mut self.dom_bbox[0]);
+                        f64_row(ui, tr(lang, "dom.east"), &mut self.dom_bbox[1]);
+                        f64_row(ui, tr(lang, "dom.north"), &mut self.dom_bbox[2]);
+                        f64_row(ui, tr(lang, "dom.south"), &mut self.dom_bbox[3]);
+                    }
+                    "circle" => {
+                        f64_row(ui, tr(lang, "dom.clon"), &mut self.dom_circle[0]);
+                        f64_row(ui, tr(lang, "dom.clat"), &mut self.dom_circle[1]);
+                        f64_row(ui, tr(lang, "dom.radius"), &mut self.dom_circle[2]);
+                    }
+                    "close" => {
+                        ui.label(tr(lang, "dom.poly_points"));
+                        ui.vertical(|ui| {
+                            let mut remove = None;
+                            for i in 0..self.dom_close.len() {
+                                ui.horizontal(|ui| {
+                                    let p = &mut self.dom_close[i];
+                                    ui.add(
+                                        egui::DragValue::new(&mut p[0]).speed(0.1).prefix("lon "),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut p[1]).speed(0.1).prefix("lat "),
+                                    );
+                                    if self.dom_close.len() > 3 && ui.small_button("✕").clicked()
+                                    {
+                                        remove = Some(i);
+                                    }
+                                });
+                            }
+                            if let Some(i) = remove {
+                                self.dom_close.remove(i);
+                            }
+                            if ui.button(tr(lang, "dom.add_point")).clicked() {
+                                let last = self.dom_close.last().copied().unwrap_or([115.0, 22.0]);
+                                self.dom_close.push(last);
+                            }
+                        });
+                        ui.end_row();
+                    }
+                    _ => {
+                        ui.label("");
+                        ui.weak(tr(lang, "dom.poly_note"));
+                        ui.end_row();
+                        text_row(
+                            ui,
+                            tr(lang, "f.domain_prefix"),
+                            &mut self.mkgrd.mask_domain_fprefix,
+                        );
+                    }
+                }
+            }
+
+            // Land/Ocean/coupled meshes need the sea-land source from NetCDF.
+            if matches!(
+                self.mkgrd.mesh_type.as_str(),
+                "landmesh" | "oceanmesh" | "LOCmesh"
+            ) {
+                ui.label(tr(lang, "f.landtype_file"));
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.mkgrd.landtype_file)
+                            .desired_width(210.0),
+                    );
+                    if ui.button(tr(lang, "btn.browse")).clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("NetCDF", &["nc", "nc4"])
+                            .pick_file()
+                        {
+                            self.mkgrd.landtype_file = p.display().to_string();
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+
+            ui.label(tr(lang, "f.refine_master"));
+            ui.add_enabled(
+                refinement_supported,
+                egui::Checkbox::new(&mut self.mkgrd.refine, ""),
+            );
+            ui.end_row();
+            if !refinement_supported {
+                ui.label("");
+                ui.weak(tr(lang, "note.refine_unsupported"));
+                ui.end_row();
+            }
+            int_row(ui, tr(lang, "f.threads"), &mut self.mkgrd.openmp, 1..=1024);
+        });
+    }
+
+    fn refine_regions_ui(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        let lang = self.lang;
+        let max_level = self.default_refine_level();
+        match self.refine.mask_refine_spc_type.as_str() {
+            "bbox" => {
+                ui.label(tr(lang, "refine.regions"));
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.vertical(|ui| {
+                        let mut remove = None;
+                        for i in 0..self.refine_bboxes.len() {
+                            ui.horizontal(|ui| {
+                                let bbox = &mut self.refine_bboxes[i];
+                                ui.add(
+                                    egui::DragValue::new(&mut bbox.bounds[0])
+                                        .speed(0.1)
+                                        .prefix("W "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut bbox.bounds[1])
+                                        .speed(0.1)
+                                        .prefix("E "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut bbox.bounds[2])
+                                        .speed(0.1)
+                                        .prefix("N "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut bbox.bounds[3])
+                                        .speed(0.1)
+                                        .prefix("S "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut bbox.level)
+                                        .range(1..=max_level)
+                                        .prefix(format!("{} ", tr(lang, "refine.level"))),
+                                );
+                                if self.refine_bboxes.len() > 1 && ui.small_button("✕").clicked()
+                                {
+                                    remove = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(index) = remove {
+                            self.refine_bboxes.remove(index);
+                        }
+                        if ui.button(tr(lang, "refine.add_bbox")).clicked() {
+                            self.refine_bboxes.push(RefineBboxRegion {
+                                bounds: [110.0, 120.0, 35.0, 20.0],
+                                level: max_level,
+                            });
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            "circle" => {
+                ui.label(tr(lang, "refine.regions"));
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.vertical(|ui| {
+                        let mut remove = None;
+                        for i in 0..self.refine_circles.len() {
+                            ui.horizontal(|ui| {
+                                let circle = &mut self.refine_circles[i];
+                                ui.add(
+                                    egui::DragValue::new(&mut circle.circle[0])
+                                        .speed(0.1)
+                                        .prefix("lon "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut circle.circle[1])
+                                        .speed(0.1)
+                                        .prefix("lat "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut circle.circle[2])
+                                        .speed(1.0)
+                                        .prefix("km "),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut circle.level)
+                                        .range(1..=max_level)
+                                        .prefix(format!("{} ", tr(lang, "refine.level"))),
+                                );
+                                if self.refine_circles.len() > 1 && ui.small_button("✕").clicked()
+                                {
+                                    remove = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(index) = remove {
+                            self.refine_circles.remove(index);
+                        }
+                        if ui.button(tr(lang, "refine.add_circle")).clicked() {
+                            self.refine_circles.push(RefineCircleRegion {
+                                circle: [115.0, 25.0, 500.0],
+                                level: max_level,
+                            });
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            "close" => {
+                ui.label(tr(lang, "refine.regions"));
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.vertical(|ui| {
+                        let mut remove_polygon = None;
+                        for polygon_index in 0..self.refine_closes.len() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!(
+                                    "{} {}",
+                                    tr(lang, "refine.polygon"),
+                                    polygon_index + 1
+                                ));
+                                ui.add(
+                                    egui::DragValue::new(
+                                        &mut self.refine_closes[polygon_index].level,
+                                    )
+                                    .range(1..=max_level)
+                                    .prefix(format!("{} ", tr(lang, "refine.level"))),
+                                );
+                            });
+                            let mut remove_point = None;
+                            let can_remove_point =
+                                self.refine_closes[polygon_index].points.len() > 3;
+                            for point_index in 0..self.refine_closes[polygon_index].points.len() {
+                                ui.horizontal(|ui| {
+                                    let point =
+                                        &mut self.refine_closes[polygon_index].points[point_index];
+                                    ui.add(
+                                        egui::DragValue::new(&mut point[0])
+                                            .speed(0.1)
+                                            .prefix("lon "),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(&mut point[1])
+                                            .speed(0.1)
+                                            .prefix("lat "),
+                                    );
+                                    if can_remove_point && ui.small_button("✕").clicked() {
+                                        remove_point = Some(point_index);
+                                    }
+                                });
+                            }
+                            if let Some(point_index) = remove_point {
+                                self.refine_closes[polygon_index].points.remove(point_index);
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.button(tr(lang, "dom.add_point")).clicked() {
+                                    self.refine_closes[polygon_index].points.push([115.0, 25.0]);
+                                }
+                                if self.refine_closes.len() > 1
+                                    && ui.button(tr(lang, "refine.remove_polygon")).clicked()
+                                {
+                                    remove_polygon = Some(polygon_index);
+                                }
+                            });
+                        }
+                        if let Some(polygon_index) = remove_polygon {
+                            self.refine_closes.remove(polygon_index);
+                        }
+                        if ui.button(tr(lang, "refine.add_polygon")).clicked() {
+                            self.refine_closes.push(RefineCloseRegion {
+                                points: vec![
+                                    [110.0, 15.0],
+                                    [125.0, 15.0],
+                                    [125.0, 30.0],
+                                    [110.0, 30.0],
+                                ],
+                                level: max_level,
+                            });
+                        }
+                    });
+                });
+                ui.end_row();
+            }
+            _ => {
+                ui.label(tr(lang, "f.spc_prefix"));
+                ui.add_enabled(
+                    enabled,
+                    egui::TextEdit::singleline(&mut self.refine.mask_refine_spc_fprefix)
+                        .desired_width(280.0),
+                );
+                ui.end_row();
+            }
+        }
+    }
+
+    fn tab_refinement(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        ui.heading(tr(lang, "head.refinement"));
+        ui.separator();
+        let refinement_supported = self.refinement_supported();
+        if !refinement_supported {
+            self.normalize_refinement_for_mesh();
+            ui.weak(tr(lang, "note.refine_unsupported"));
+        } else if !self.mkgrd.refine {
+            ui.weak(tr(lang, "note.refine_off"));
+        }
+        let mt = self.mkgrd.mesh_type.clone();
+        let show_land = mt == "landmesh" || mt == "earthmesh" || mt == "LOCmesh";
+        let show_ocean = mt == "oceanmesh" || mt == "earthmesh" || mt == "LOCmesh";
+        let show_atmos = mt == "atmosmesh" || mt == "earthmesh" || mt == "LOCmesh";
+        let atmos_only = mt == "atmosmesh";
+
+        ui.add_enabled_ui(refinement_supported && self.mkgrd.refine, |ui| {
+            egui::Grid::new("ref_ctrl").num_columns(2).show(ui, |ui| {
+                check_row(ui, tr(lang, "f.refine_spc"), &mut self.refine.refine_spc);
+                let spc = self.refine.refine_spc;
+                ui.label(tr(lang, "f.max_iter_spc"));
+                ui.add_enabled(
+                    spc,
+                    egui::DragValue::new(&mut self.refine.max_iter_spc)
+                        .range(1..=SPECIFIED_REFINE_LEVEL_MAX),
+                );
+                ui.end_row();
+                ui.label(tr(lang, "f.spc_shape"));
+                ui.add_enabled_ui(spc, |ui| {
+                    egui::ComboBox::from_id_salt("spc_type")
+                        .selected_text(self.refine.mask_refine_spc_type.clone())
+                        .show_ui(ui, |ui| {
+                            for opt in REGION_TYPES {
+                                ui.selectable_value(
+                                    &mut self.refine.mask_refine_spc_type,
+                                    (*opt).to_string(),
+                                    *opt,
+                                );
+                            }
+                        });
+                });
+                ui.end_row();
+                self.refine_regions_ui(ui, spc);
+            });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled(
+                    !atmos_only,
+                    egui::Checkbox::new(&mut self.refine.refine_cal, tr(lang, "f.refine_cal")),
+                );
+                if atmos_only {
+                    ui.weak(tr(lang, "note.cal_atmos"));
+                }
+            });
+            let cal = self.refine.refine_cal && !atmos_only;
+            ui.add_enabled_ui(cal, |ui| {
+                egui::Grid::new("ref_cal").num_columns(2).show(ui, |ui| {
+                    int_row(
+                        ui,
+                        tr(lang, "f.max_iter_cal"),
+                        &mut self.refine.max_iter_cal,
+                        0..=100,
+                    );
+                    combo_row(
+                        ui,
+                        tr(lang, "f.cal_shape"),
+                        &mut self.refine.mask_refine_cal_type,
+                        REGION_TYPES,
+                    );
+                    text_row(
+                        ui,
+                        tr(lang, "f.cal_prefix"),
+                        &mut self.refine.mask_refine_cal_fprefix,
+                    );
+                    text_row(
+                        ui,
+                        tr(lang, "f.threshold_dir"),
+                        &mut self.refine.threshold_dir,
+                    );
+                    text_row(
+                        ui,
+                        tr(lang, "f.landtype_file"),
+                        &mut self.mkgrd.landtype_file,
+                    );
+                });
+            });
+
+            ui.add_space(6.0);
+            if show_land {
+                egui::CollapsingHeader::new(tr(lang, "sec.land_crit"))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new("lnd1").num_columns(2).show(ui, |ui| {
+                            ui.checkbox(
+                                &mut self.refine.refine_num_landtypes,
+                                tr(lang, "c.num_landtypes"),
+                            );
+                            ui.add_enabled(
+                                self.refine.refine_num_landtypes,
+                                egui::DragValue::new(&mut self.refine.th_num_landtypes)
+                                    .range(0..=1000),
+                            );
+                            ui.end_row();
+                            crit_row(
+                                ui,
+                                tr(lang, "c.area_mainland"),
+                                &mut self.refine.refine_area_mainland,
+                                &mut self.refine.th_area_mainland,
+                            );
+                            crit_row(
+                                ui,
+                                tr(lang, "c.lai_m"),
+                                &mut self.refine.refine_onelayer_lnd[0],
+                                &mut self.refine.th_onelayer_lnd[0],
+                            );
+                            crit_row(
+                                ui,
+                                tr(lang, "c.lai_s"),
+                                &mut self.refine.refine_onelayer_lnd[1],
+                                &mut self.refine.th_onelayer_lnd[1],
+                            );
+                            crit_row(
+                                ui,
+                                tr(lang, "c.slope_m"),
+                                &mut self.refine.refine_onelayer_lnd[2],
+                                &mut self.refine.th_onelayer_lnd[2],
+                            );
+                            crit_row(
+                                ui,
+                                tr(lang, "c.slope_s"),
+                                &mut self.refine.refine_onelayer_lnd[3],
+                                &mut self.refine.th_onelayer_lnd[3],
+                            );
+                        });
+                        let keys = [
+                            "c.ks_m",
+                            "c.ks_s",
+                            "c.ksol_m",
+                            "c.ksol_s",
+                            "c.tkdry_m",
+                            "c.tkdry_s",
+                            "c.tksatf_m",
+                            "c.tksatf_s",
+                            "c.tksatu_m",
+                            "c.tksatu_s",
+                        ];
+                        egui::Grid::new("lnd2").num_columns(2).show(ui, |ui| {
+                            for i in 0..10 {
+                                crit_pair_row(
+                                    ui,
+                                    tr(lang, keys[i]),
+                                    &mut self.refine.refine_twolayer_lnd[i],
+                                    &mut self.refine.th_twolayer_lnd[i],
+                                );
+                            }
+                        });
+                    });
+            }
+            if show_ocean {
+                egui::CollapsingHeader::new(tr(lang, "sec.ocean_crit")).show(ui, |ui| {
+                    egui::Grid::new("ocn").num_columns(2).show(ui, |ui| {
+                        crit_pair_row(
+                            ui,
+                            tr(lang, "c.sea_ratio"),
+                            &mut self.refine.refine_sea_ratio,
+                            &mut self.refine.th_sea_ratio,
+                        );
+                        let keys = [
+                            "c.sst_m",
+                            "c.sst_s",
+                            "c.ssh_m",
+                            "c.ssh_s",
+                            "c.eke_m",
+                            "c.eke_s",
+                            "c.seaslope_m",
+                            "c.seaslope_s",
+                        ];
+                        for i in 0..8 {
+                            crit_row(
+                                ui,
+                                tr(lang, keys[i]),
+                                &mut self.refine.refine_onelayer_ocn[i],
+                                &mut self.refine.th_onelayer_ocn[i],
+                            );
+                        }
+                    });
+                });
+            }
+            if show_atmos {
+                egui::CollapsingHeader::new(tr(lang, "sec.atmos_crit")).show(ui, |ui| {
+                    egui::Grid::new("atm").num_columns(2).show(ui, |ui| {
+                        crit_row(
+                            ui,
+                            tr(lang, "c.typhoon_m"),
+                            &mut self.refine.refine_onelayer_atmos[0],
+                            &mut self.refine.th_onelayer_atmos[0],
+                        );
+                        crit_row(
+                            ui,
+                            tr(lang, "c.typhoon_s"),
+                            &mut self.refine.refine_onelayer_atmos[1],
+                            &mut self.refine.th_onelayer_atmos[1],
+                        );
+                    });
+                });
+            }
+
+            egui::CollapsingHeader::new(tr(lang, "sec.adv_refine")).show(ui, |ui| {
+                egui::Grid::new("adv_ref").num_columns(2).show(ui, |ui| {
+                    check_row(
+                        ui,
+                        tr(lang, "f.weak_concav"),
+                        &mut self.refine.weak_concav_eliminate,
+                    );
+                    check_row(
+                        ui,
+                        tr(lang, "f.is_transition"),
+                        &mut self.refine.is_transition,
+                    );
+                    check_row(ui, tr(lang, "f.iter_d"), &mut self.refine.iter_d);
+                    ui.label(tr(lang, "f.halo"));
+                    ui.horizontal(|ui| {
+                        for i in 1..=9 {
+                            ui.add(egui::DragValue::new(&mut self.refine.halo[i]).speed(1.0));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(tr(lang, "f.max_transition"));
+                    ui.horizontal(|ui| {
+                        for i in 1..=9 {
+                            ui.add(
+                                egui::DragValue::new(&mut self.refine.max_transition_row[i])
+                                    .speed(1.0),
+                            );
+                        }
+                    });
+                    ui.end_row();
+                });
+            });
+        });
+    }
+
+    fn tab_advanced(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        self.normalize_refinement_for_mesh();
+        ui.heading(tr(lang, "head.advanced"));
+        ui.separator();
+        egui::CollapsingHeader::new(tr(lang, "sec.import")).show(ui, |ui| {
+            egui::Grid::new("import").num_columns(2).show(ui, |ui| {
+                text_row(ui, tr(lang, "f.mode_file"), &mut self.mkgrd.mode_file);
+                combo_row(
+                    ui,
+                    tr(lang, "f.mode_file_desc"),
+                    &mut self.mkgrd.mode_file_description,
+                    MODE_FILE_DESCS,
+                );
+            });
+        });
+        egui::CollapsingHeader::new(tr(lang, "sec.smoothing")).show(ui, |ui| {
+            egui::Grid::new("smooth").num_columns(2).show(ui, |ui| {
+                int_row(
+                    ui,
+                    tr(lang, "f.niter"),
+                    &mut self.mkgrd.niter,
+                    0..=1_000_000,
+                );
+                f32_row(ui, tr(lang, "f.beta"), &mut self.mkgrd.beta);
+                f32_row(ui, tr(lang, "f.relax"), &mut self.mkgrd.relax);
+                int_row(
+                    ui,
+                    tr(lang, "f.niter_refine"),
+                    &mut self.refine.niter_refine,
+                    0..=1_000_000,
+                );
+                int_combo_row(
+                    ui,
+                    tr(lang, "f.spring_global"),
+                    &mut self.refine.spring_global_type,
+                    &[
+                        (0, tr(lang, "opt.spring_none")),
+                        (1, tr(lang, "opt.spring_olam")),
+                    ],
+                );
+                int_row(ui, tr(lang, "f.num_rc"), &mut self.refine.num_rc, 0..=1000);
+                combo_row(
+                    ui,
+                    tr(lang, "f.set_dis"),
+                    &mut self.refine.set_dis_type,
+                    SET_DIS_TYPES,
+                );
+                int_combo_row(
+                    ui,
+                    tr(lang, "f.spring_regional"),
+                    &mut self.refine.spring_regional_type,
+                    &[
+                        (0, tr(lang, "opt.spring_none")),
+                        (1, tr(lang, "opt.reg_each")),
+                        (2, tr(lang, "opt.reg_final")),
+                    ],
+                );
+                int_row(
+                    ui,
+                    tr(lang, "f.vertex_layers"),
+                    &mut self.refine.vertex_pretect_layers,
+                    0..=1000,
+                );
+            });
+        });
+        egui::CollapsingHeader::new(tr(lang, "sec.native_olam")).show(ui, |ui| {
+            ui.weak(tr(lang, "note.native_olam"));
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.native_olam_mkgrd)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(8)
+                    .hint_text("NL%ngrids = 2\nNL%ngrdll(2) = 1\nNL%grdrad(2,1) = 2500000.0\nNL%grdlat(2,1) = 25.0\nNL%grdlon(2,1) = 115.0"),
+            );
+        });
+        egui::CollapsingHeader::new(tr(lang, "head.mask")).show(ui, |ui| {
+            egui::Grid::new("adv_mask").num_columns(2).show(ui, |ui| {
+                int_combo_row(
+                    ui,
+                    tr(lang, "f.gridnum"),
+                    &mut self.mkgrd.gridnum_perdegree,
+                    &[(120, "120"), (240, "240")],
+                );
+                f64_row(ui, tr(lang, "f.sea_ratio"), &mut self.mkgrd.mask_sea_ratio);
+                check_row(ui, tr(lang, "f.mask_restart"), &mut self.mkgrd.mask_restart);
+                check_row(
+                    ui,
+                    tr(lang, "f.isolated_ocean"),
+                    &mut self.mkgrd.isolated_ocean,
+                );
+                check_row(ui, tr(lang, "f.patch_on"), &mut self.mkgrd.mask_patch_on);
+                let patch = self.mkgrd.mask_patch_on;
+                ui.label(tr(lang, "f.patch_shape"));
+                ui.add_enabled_ui(patch, |ui| {
+                    egui::ComboBox::from_id_salt("patch_type")
+                        .selected_text(self.mkgrd.mask_patch_type.clone())
+                        .show_ui(ui, |ui| {
+                            for opt in REGION_TYPES {
+                                ui.selectable_value(
+                                    &mut self.mkgrd.mask_patch_type,
+                                    (*opt).to_string(),
+                                    *opt,
+                                );
+                            }
+                        });
+                });
+                ui.end_row();
+                ui.label(tr(lang, "f.patch_prefix"));
+                ui.add_enabled(
+                    patch,
+                    egui::TextEdit::singleline(&mut self.mkgrd.mask_patch_fprefix)
+                        .desired_width(280.0),
+                );
+                ui.end_row();
+            });
+        });
+    }
+
+    fn render_tab(&mut self, ui: &mut egui::Ui) {
+        match self.tab {
+            Tab::Basics => self.tab_basics(ui),
+            Tab::Refinement => self.tab_refinement(ui),
+            Tab::Advanced => self.tab_advanced(ui),
+        }
+    }
+
+    fn render_search(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        ui.heading(tr(lang, "search.results"));
+        ui.separator();
+        let q = self.search.to_lowercase();
+        let matches: Vec<(&'static str, Tab)> = FIELD_INDEX
+            .iter()
+            .filter(|(k, _)| tr(lang, k).to_lowercase().contains(&q))
+            .copied()
+            .collect();
+        if matches.is_empty() {
+            ui.label(tr(lang, "search.none"));
+            return;
+        }
+        let mut goto: Option<Tab> = None;
+        for (k, tab) in matches {
+            if ui
+                .button(format!(
+                    "{}   ·   {}",
+                    tr(lang, k),
+                    tr(lang, tab_nav_key(tab))
+                ))
+                .clicked()
+            {
+                goto = Some(tab);
+            }
+        }
+        if let Some(t) = goto {
+            self.tab = t;
+            self.search.clear();
+        }
+    }
+
+    /// Centre the basemap on the freshly-loaded mesh and pick a zoom that frames
+    /// it within the actual map widget. A global mesh is sized to fill the width
+    /// (its poles are stretched/clipped anyway); a regional mesh is fit whole.
+    /// Web Mercator screen-x is linear in longitude, so 1° spans `256·2^z / 360`
+    /// px; latitude is non-linear but a linear estimate is fine for framing.
+    fn frame_mesh_view(&mut self, avail_w: f32, avail_h: f32) {
+        if self.mesh_view.as_ref().is_none_or(|m| m.m_lon.is_empty()) {
+            return;
+        }
+        // Frame to the user's region of interest when one exists. That includes
+        // explicit regional domains and global grids with specified refinement:
+        // the mesh remains global, but the initial view should show the refined
+        // area instead of a full-world wireframe.
+        let focus_extent = self
+            .results_focus_domain()
+            .and_then(|domain| domain.extent());
+        let focused = focus_extent.is_some();
+        let (lon_min, lon_max, lat_min, lat_max) = focus_extent.unwrap_or_else(|| {
+            let mesh = self.mesh_view.as_ref().unwrap();
+            let (mut lo0, mut lo1) = (f64::MAX, f64::MIN);
+            let (mut la0, mut la1) = (f64::MAX, f64::MIN);
+            for (&lo, &la) in mesh.m_lon.iter().zip(&mesh.m_lat) {
+                let lo = ((lo + 180.0).rem_euclid(360.0)) - 180.0;
+                lo0 = lo0.min(lo);
+                lo1 = lo1.max(lo);
+                la0 = la0.min(la);
+                la1 = la1.max(la);
+            }
+            (lo0, lo1, la0, la1)
+        });
+        // Tolerate reversed entries (e.g. west > east) and centre on the extent.
+        let (lon_min, lon_max) = (lon_min.min(lon_max), lon_min.max(lon_max));
+        let (lat_min, lat_max) = (lat_min.min(lat_max), lat_min.max(lat_max));
+        let clon = 0.5 * (lon_min + lon_max);
+        let clat = 0.5 * (lat_min + lat_max);
+        // Pad a region so it isn't drawn edge-to-edge.
+        let pad = if focused { 1.3 } else { 1.0 };
+        let lon_span = ((lon_max - lon_min) * pad).max(0.5);
+        let lat_span = ((lat_max - lat_min) * pad).max(0.5);
+        let zoom_w = (avail_w as f64 * 360.0 / (256.0 * lon_span)).log2();
+        // Fill the width by default. The leftover available height is unreliable in
+        // a short dock (it can read ~0 before the map widget is allocated), so only
+        // constrain by height when it is clearly usable — e.g. the detached window.
+        let zoom = if avail_h > 60.0 && lon_span < 350.0 {
+            let zoom_h = (avail_h as f64 * 360.0 / (256.0 * lat_span)).log2();
+            zoom_w.min(zoom_h)
+        } else {
+            zoom_w
+        };
+        self.map_memory.center_at(walkers::lon_lat(clon, clat));
+        let _ = self.map_memory.set_zoom(zoom.clamp(0.0, 8.0));
+    }
+
+    fn results_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        if self.output_files.is_empty() {
+            ui.label(tr(lang, "results.empty"));
+            return;
+        }
+        let hex = self.mkgrd.mode_grid == "hex";
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tr(lang, "results.files")).strong());
+            if let Some(m) = &self.mesh_view {
+                // Hex cells are the W points (triangles are the vertices); tri is
+                // the other way round.
+                let (cells, verts) = if hex {
+                    (m.w_lon.len(), m.m_lon.len())
+                } else {
+                    (m.m_lon.len(), m.w_lon.len())
+                };
+                if ui.button("Focus").clicked() {
+                    let map_w = ui.available_width().max(360.0);
+                    self.frame_mesh_view(map_w, 540.0);
+                }
+                ui.weak(format!(
+                    "·  {} {}  ·  {} {}",
+                    cells,
+                    tr(lang, "results.cells"),
+                    verts,
+                    tr(lang, "results.vertices"),
+                ));
+            }
+        });
+        let files = self.output_files.clone();
+        egui::ScrollArea::vertical()
+            .max_height(36.0)
+            .id_salt("files_list")
+            .show(ui, |ui| {
+                for f in &files {
+                    let name = f
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if ui
+                        .button(name)
+                        .on_hover_text(f.display().to_string())
+                        .clicked()
+                    {
+                        let _ = open::that(f);
+                    }
+                }
+            });
+        let class_counts = surface_class_counts(&self.cell_classes);
+        if !class_counts.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.weak("Classes");
+                for (code, count) in class_counts {
+                    let stroke = surface_class_stroke(Some(code));
+                    ui.colored_label(
+                        stroke.color,
+                        format!("{} {count}", surface_class_name(code)),
+                    );
+                }
+            });
+        }
+        ui.separator();
+        if self.mesh_view.is_some() {
+            ui.weak(tr(lang, "results.map_hint"));
+            let map_w = ui.available_width();
+            let map_h = ui.available_height().max(240.0);
+            // Frame on the first render after a run, now that the map widget's
+            // real size is known (the dock and the detached window differ).
+            if self.frame_pending {
+                self.frame_mesh_view(map_w, map_h);
+                self.frame_pending = false;
+            }
+            let domain = self.results_draw_domain();
+            if let Some(tiles) = &mut self.tiles {
+                // Offline Protomaps basemap with the mesh wireframe overlaid.
+                let mesh = self.mesh_view.as_ref().unwrap();
+                let map = walkers::Map::new(
+                    Some(tiles as &mut dyn walkers::Tiles),
+                    &mut self.map_memory,
+                    walkers::lon_lat(0.0, 0.0),
+                )
+                // Plain wheel zooms (walkers defaults to ctrl+wheel, treating a
+                // bare wheel as a vertical pan); drag still pans.
+                .zoom_with_ctrl(false)
+                .with_plugin(MeshOverlay {
+                    mesh,
+                    class_codes: &self.cell_classes,
+                    domain,
+                    hex,
+                });
+                ui.add_sized([map_w, map_h], map);
+                ui.weak("© OpenStreetMap contributors · Protomaps");
+            } else {
+                // No bundled basemap -> equirectangular wireframe fallback.
+                draw_mesh_2d(ui, self.mesh_view.as_ref().unwrap());
+            }
+        } else {
+            ui.weak(tr(lang, "results.3d_soon"));
+        }
+    }
+}
+
+fn install_fonts(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Kailasa.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+    ];
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = Vec::new();
+    for (index, path) in CANDIDATES.iter().enumerate() {
+        if let Ok(bytes) = std::fs::read(path) {
+            let name = format!("earthmesh_fallback_{index}");
+            fonts.font_data.insert(
+                name.clone(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            loaded.push(name);
+        }
+    }
+    if loaded.is_empty() {
+        return;
+    }
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(fam) = fonts.families.get_mut(&family) {
+            for name in loaded.iter().rev() {
+                fam.insert(0, name.clone());
+            }
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn configure_style(ctx: &egui::Context) {
+    let mut style = (*ctx.global_style()).clone();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(8.0, 4.0);
+    style.spacing.interact_size.y = 24.0;
+    for (_s, font) in style.text_styles.iter_mut() {
+        font.size *= 1.05;
+    }
+    ctx.set_global_style(style);
+}
+
+impl EarthMeshApp {
+    fn theme(&self) -> theme::EarthMeshTheme {
+        theme::EarthMeshTheme {
+            dark: self.theme_dark,
+        }
+    }
+
+    /// Apply a target template preset to the config (additive convenience; the user
+    /// can still edit every field afterwards).
+    fn apply_template(&mut self, t: ui_helpers::TargetTemplate) {
+        self.mkgrd.mesh_type = t.mesh_type.to_string();
+        self.mkgrd.mode_grid = t.mode_grid.to_string();
+        self.mkgrd.output_format = t.output_format.to_string();
+        self.mkgrd.nxp = t.default_nxp;
+        self.mkgrd.mask_domain_global = t.global;
+        self.mkgrd.refine = t.refine;
+        self.log.push(format!("template: {}", t.id));
+    }
+
+    /// Render the quality dashboard from the run output dir's existing artifacts
+    /// (read-only: quality_summary.json / run_manifest.json / worst_cells.geojson /
+    /// quality_report.md). No schema change.
+    fn render_quality_dashboard(
+        &self,
+        ui: &mut egui::Ui,
+        theme: &theme::EarthMeshTheme,
+        lang: Lang,
+    ) {
+        let dir = self
+            .output_files
+            .iter()
+            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
+        let Some(dir) = dir else {
+            components::empty_state(ui, tr(lang, "dash.empty"));
+            return;
+        };
+        let d = ui_helpers::QualityDashboard::from_dir(&dir);
+
+        ui.horizontal(|ui| {
+            ui.label(tr(lang, "dash.verdict"));
+            components::status_badge(ui, theme, &d.verdict, &d.verdict.to_uppercase());
+            if let Some(status) = &d.manifest_status {
+                ui.separator();
+                ui.label(format!("{}: {}", tr(lang, "dash.run_status"), status));
+            }
+        })
+        .response
+        .on_hover_text(ui_helpers::tooltip("quality_status"));
+
+        if !d.headline.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for (k, v) in &d.headline {
+                    ui.label(format!("{k}: {v}"));
+                    ui.separator();
+                }
+            });
+        }
+
+        if !d.top_warnings.is_empty() {
+            components::status_message(
+                ui,
+                theme,
+                components::MessageKind::Warning,
+                tr(lang, "dash.warnings"),
+            );
+            for w in d.top_warnings.iter().take(8) {
+                ui.label(format!("• {w}"));
+            }
+        }
+        for w in d.manifest_warnings.iter().take(4) {
+            components::status_message(ui, theme, components::MessageKind::Warning, w);
+        }
+
+        for s in &d.next_steps {
+            components::status_message(ui, theme, components::MessageKind::Info, s);
+        }
+
+        if let Some(p) = &d.worst_cells_path {
+            ui.label(format!("{}: {p}", tr(lang, "dash.worst_cells")));
+        }
+        if let Some(p) = &d.quality_report_path {
+            if ui.button(tr(lang, "dash.open_report")).clicked() {
+                let _ = open::that(p);
+            }
+        }
+    }
+}
+
+impl eframe::App for EarthMeshApp {
+    // eframe 0.34 requires `ui`; we keep the multi-panel layout in `update`
+    // (still invoked by the run loop) and leave `ui` empty.
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+
+    #[allow(deprecated)]
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_run();
+        if self.running {
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        }
+        let lang = self.lang;
+
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.heading(tr(lang, "app.title"));
+                ui.separator();
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.project_name)
+                        .hint_text(tr(lang, "project.name"))
+                        .desired_width(130.0),
+                );
+                ui.separator();
+                ui.add_enabled_ui(!self.running, |ui| {
+                    if ui.button(tr(lang, "btn.run")).clicked() {
+                        self.start_run(ctx);
+                    }
+                });
+                if ui
+                    .add_enabled(self.running, egui::Button::new(tr(lang, "btn.cancel")))
+                    .clicked()
+                {
+                    self.request_cancel();
+                }
+                if self.running {
+                    ui.add(egui::Spinner::new());
+                }
+                ui.separator();
+                if ui.button(tr(lang, "btn.load")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("namelist", &["nml"])
+                        .set_directory(examples_root())
+                        .pick_file()
+                    {
+                        self.load(path);
+                    }
+                }
+                if ui.button(tr(lang, "btn.save")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("namelist", &["nml"])
+                        .set_file_name("earthmesh.nml")
+                        .set_directory(runtime_workdir())
+                        .save_file()
+                    {
+                        self.save(path);
+                    }
+                }
+                if ui.button(tr(lang, "btn.open_output")).clicked() {
+                    self.open_output_dir();
+                }
+                ui.separator();
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text(tr(lang, "search.placeholder"))
+                        .desired_width(170.0),
+                );
+                ui.separator();
+                // Target template selector (applies a preset to the config).
+                let templates = ui_helpers::target_templates();
+                let current = templates
+                    .get(self.target_template)
+                    .map(|t| tr(lang, t.name_key))
+                    .unwrap_or("—");
+                egui::ComboBox::from_id_salt("target_template")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (i, t) in templates.iter().enumerate() {
+                            if ui
+                                .selectable_label(self.target_template == i, tr(lang, t.name_key))
+                                .on_hover_text(tr(lang, t.help_key))
+                                .clicked()
+                            {
+                                self.target_template = i;
+                                self.apply_template(*t);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr(lang, "tpl.tooltip"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.selectable_value(&mut self.lang, Lang::Zh, "中文");
+                    ui.selectable_value(&mut self.lang, Lang::En, "EN");
+                    ui.label(tr(lang, "lang.label"));
+                    ui.separator();
+                    if ui
+                        .selectable_label(self.theme_dark, "🌓")
+                        .on_hover_text(tr(lang, "theme.toggle"))
+                        .clicked()
+                    {
+                        self.theme_dark = !self.theme_dark;
+                        self.theme().apply(ctx);
+                    }
+                    ui.checkbox(&mut self.expert_mode, tr(lang, "mode.expert"))
+                        .on_hover_text(tr(lang, "mode.expert.help"));
+                });
+            });
+            ui.add_space(2.0);
+        });
+
+        // Results dock with a detach-to-window control (egui multi-viewport: a
+        // real, resizable/maximizable OS window).
+        if self.results_detached {
+            let mut close = false;
+            ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("results_window"),
+                egui::ViewportBuilder::default()
+                    .with_title(tr(lang, "results.window"))
+                    .with_inner_size([760.0, 540.0]),
+                |vctx, _class| {
+                    egui::CentralPanel::default().show(vctx, |ui| {
+                        ui.heading(tr(lang, "results.title"));
+                        ui.separator();
+                        self.results_ui(ui);
+                    });
+                    if vctx.input(|i| i.viewport().close_requested()) {
+                        close = true;
+                    }
+                },
+            );
+            if close {
+                self.results_detached = false;
+                self.frame_pending = true; // re-frame for the dock's size
+            }
+        }
+
+        // Cap the dock at half the window so it can never swallow the form (and
+        // a persisted oversized height gets clamped back). Big-map viewing is the
+        // detached window's job.
+        let dock_max = (ctx.screen_rect().height() * 0.5).max(200.0);
+        egui::TopBottomPanel::bottom("results_dock")
+            .resizable(true)
+            .default_height(220.0)
+            .min_height(120.0)
+            .max_height(dock_max)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.heading(tr(lang, "results.title"));
+                    if ui.button(tr(lang, "results.detach")).clicked() {
+                        self.results_detached = true;
+                        self.frame_pending = true; // re-frame for the window's size
+                    }
+                });
+                ui.separator();
+                egui::CollapsingHeader::new(tr(lang, "dash.title"))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let theme = self.theme();
+                        self.render_quality_dashboard(ui, &theme, lang);
+                    });
+                ui.separator();
+                if self.results_detached {
+                    ui.weak(tr(lang, "results.dock"));
+                } else {
+                    self.results_ui(ui);
+                }
+            });
+
+        egui::SidePanel::left("cases")
+            .resizable(true)
+            .default_width(190.0)
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                ui.heading(tr(lang, "cases.title"));
+                ui.separator();
+                let templates = bundled_templates();
+                let recent = self.recent.clone();
+                let mut to_load: Option<PathBuf> = None;
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.label(egui::RichText::new(tr(lang, "cases.templates")).strong());
+                    for (label, path) in templates {
+                        if ui.button(label).clicked() {
+                            to_load = Some(path);
+                        }
+                    }
+                    if !recent.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(tr(lang, "cases.recent")).strong());
+                        for path in recent {
+                            let label = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            if ui
+                                .button(label)
+                                .on_hover_text(path.display().to_string())
+                                .clicked()
+                            {
+                                to_load = Some(path);
+                            }
+                        }
+                    }
+                });
+                if let Some(p) = to_load {
+                    self.load(p);
+                }
+            });
+
+        egui::SidePanel::right("run")
+            .resizable(true)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                ui.heading(tr(lang, "run.title"));
+                ui.separator();
+                ui.label(tr(
+                    lang,
+                    if self.running {
+                        "run.running"
+                    } else {
+                        "run.idle"
+                    },
+                ));
+                let status = if self.status_detail.is_empty() {
+                    tr(lang, self.status_key).to_string()
+                } else {
+                    format!("{} {}", tr(lang, self.status_key), self.status_detail)
+                };
+                ui.label(status);
+                if let Some((phase, done, total)) = &self.progress {
+                    let frac = if *total > 0 {
+                        *done as f32 / *total as f32
+                    } else {
+                        0.0
+                    };
+                    ui.add(egui::ProgressBar::new(frac).text(format!("{phase} {done}/{total}")));
+                }
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(tr(lang, "run.log")).strong());
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.log {
+                            ui.monospace(line);
+                        }
+                    });
+            });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if !self.search.trim().is_empty() {
+                egui::ScrollArea::vertical().show(ui, |ui| self.render_search(ui));
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Basics, tr(lang, "nav.basics"));
+                ui.selectable_value(&mut self.tab, Tab::Refinement, tr(lang, "nav.refinement"));
+                ui.selectable_value(&mut self.tab, Tab::Advanced, tr(lang, "nav.advanced"));
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| self.render_tab(ui));
+        });
+    }
+}
+
+fn main() -> eframe::Result {
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1040.0, 680.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "EarthMesh",
+        native_options,
+        Box::new(|cc| {
+            install_fonts(&cc.egui_ctx);
+            configure_style(&cc.egui_ctx);
+            let mut app = EarthMeshApp::default();
+            // Offline vector basemap, if bundled. Missing file → wireframe fallback.
+            // tile_size 256 makes the map zoom equal the source tile zoom and,
+            // crucially, zeroes walkers' tile-size zoom adjustment — its default
+            // 1024 subtracts 2 from the zoom in mercator::tile_id, which underflows
+            // (panics) for any map zoom below 2, e.g. a framed global mesh.
+            app.tiles = basemap_path().map(|p| {
+                walkers::PmTiles::with_style(
+                    p,
+                    walkers::Style::protomaps_light(),
+                    cc.egui_ctx.clone(),
+                )
+                .with_tile_size(256)
+            });
+            app.load(default_example_path());
+            Ok(Box::new(app))
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -3069,1447 +4514,4 @@ case_3,3,112.000000,22.000000,COAST,false,none,0.0,0.0,true,COAST,0.5,0.0,0.0\n"
         assert_eq!(gridfile_row_index_for_id(1, &lon, &lat), Some(0));
         assert_eq!(gridfile_row_index_for_id(3, &lon, &lat), Some(2));
     }
-}
-
-// ---- grid-row helpers ----------------------------------------------------------
-
-fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    ui.label(label);
-    ui.add(egui::TextEdit::singleline(value).desired_width(280.0));
-    ui.end_row();
-}
-fn int_row(ui: &mut egui::Ui, label: &str, value: &mut i32, range: std::ops::RangeInclusive<i32>) {
-    ui.label(label);
-    ui.add(egui::DragValue::new(value).range(range).speed(1.0));
-    ui.end_row();
-}
-fn f32_row(ui: &mut egui::Ui, label: &str, value: &mut f32) {
-    ui.label(label);
-    ui.add(egui::DragValue::new(value).speed(0.01));
-    ui.end_row();
-}
-fn f64_row(ui: &mut egui::Ui, label: &str, value: &mut f64) {
-    ui.label(label);
-    ui.add(egui::DragValue::new(value).speed(0.01));
-    ui.end_row();
-}
-fn combo_row(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str]) {
-    ui.label(label);
-    egui::ComboBox::from_id_salt(label)
-        .selected_text(value.clone())
-        .show_ui(ui, |ui| {
-            for opt in options {
-                ui.selectable_value(value, (*opt).to_string(), *opt);
-            }
-        });
-    ui.end_row();
-}
-/// Combo whose options display a translated label but store an engine value.
-fn mapped_combo_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut String,
-    options: &'static [(&'static str, &'static str)],
-    lang: Lang,
-) {
-    ui.label(label);
-    let current = options
-        .iter()
-        .find(|(v, _)| v == value)
-        .map(|(_, k)| tr(lang, k))
-        .unwrap_or(value.as_str());
-    egui::ComboBox::from_id_salt(label)
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            for (v, k) in options {
-                ui.selectable_value(value, (*v).to_string(), tr(lang, k));
-            }
-        });
-    ui.end_row();
-}
-fn int_combo_row(ui: &mut egui::Ui, label: &str, value: &mut i32, options: &[(i32, &str)]) {
-    ui.label(label);
-    let current = options
-        .iter()
-        .find(|(v, _)| *v == *value)
-        .map(|(_, t)| *t)
-        .unwrap_or("?");
-    egui::ComboBox::from_id_salt(label)
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            for (v, t) in options {
-                ui.selectable_value(value, *v, *t);
-            }
-        });
-    ui.end_row();
-}
-fn check_row(ui: &mut egui::Ui, label: &str, value: &mut bool) {
-    ui.label(label);
-    ui.checkbox(value, "");
-    ui.end_row();
-}
-fn crit_row(ui: &mut egui::Ui, label: &str, on: &mut bool, thr: &mut f64) {
-    ui.checkbox(on, label);
-    ui.add_enabled(*on, egui::DragValue::new(thr).speed(0.1));
-    ui.end_row();
-}
-fn crit_pair_row(ui: &mut egui::Ui, label: &str, on: &mut bool, thr: &mut [f64; 2]) {
-    ui.checkbox(on, label);
-    ui.horizontal(|ui| {
-        ui.add_enabled(*on, egui::DragValue::new(&mut thr[0]).speed(0.1));
-        ui.add_enabled(*on, egui::DragValue::new(&mut thr[1]).speed(0.1));
-    });
-    ui.end_row();
-}
-
-impl EarthMeshApp {
-    fn tab_basics(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        ui.heading(tr(lang, "head.basics"));
-        ui.separator();
-        egui::Grid::new("basics").num_columns(2).show(ui, |ui| {
-            // Case identity first.
-            text_row(ui, tr(lang, "f.expnme"), &mut self.mkgrd.experiment_name);
-            text_row(ui, tr(lang, "f.base_dir"), &mut self.mkgrd.base_dir);
-            ui.label("");
-            ui.label("");
-            ui.end_row();
-
-            // Cascade: mesh type → model (output format) → grid shape.
-            mapped_combo_row(
-                ui,
-                tr(lang, "f.mesh_type"),
-                &mut self.mkgrd.mesh_type,
-                MESH_TYPES,
-                lang,
-            );
-            ui.label("");
-            ui.weak(tr(lang, "mesh.custom_note"));
-            ui.end_row();
-
-            let allowed = output_formats_for(&self.mkgrd.mesh_type);
-            if !allowed.contains(&self.mkgrd.output_format.as_str()) {
-                self.mkgrd.output_format = allowed[0].to_string();
-            }
-            combo_row(
-                ui,
-                tr(lang, "f.output_format"),
-                &mut self.mkgrd.output_format,
-                allowed,
-            );
-            let refinement_supported = self.refinement_supported();
-            if !refinement_supported {
-                self.mkgrd.refine = false;
-                self.refine.refine_spc = false;
-                self.refine.refine_cal = false;
-            }
-
-            // The selected model's standard file is produced in pure Rust.
-            check_row(ui, tr(lang, "f.gen_mpas"), &mut self.gen_output);
-
-            let grids = grid_modes_for(&self.mkgrd.mesh_type);
-            mapped_combo_row(
-                ui,
-                tr(lang, "f.mode_grid"),
-                &mut self.mkgrd.mode_grid,
-                grids,
-                lang,
-            );
-
-            int_row(ui, tr(lang, "f.nxp"), &mut self.mkgrd.nxp, 1..=100_000);
-
-            // Domain: global vs regional, with conditional boundary options.
-            ui.label(tr(lang, "f.domain_mode"));
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.mkgrd.mask_domain_global,
-                    true,
-                    tr(lang, "opt.global"),
-                );
-                ui.selectable_value(
-                    &mut self.mkgrd.mask_domain_global,
-                    false,
-                    tr(lang, "opt.regional"),
-                );
-            });
-            ui.end_row();
-            if !self.mkgrd.mask_domain_global {
-                combo_row(
-                    ui,
-                    tr(lang, "f.domain_shape"),
-                    &mut self.mkgrd.mask_domain_type,
-                    REGION_TYPES,
-                );
-                match self.mkgrd.mask_domain_type.as_str() {
-                    "bbox" => {
-                        f64_row(ui, tr(lang, "dom.west"), &mut self.dom_bbox[0]);
-                        f64_row(ui, tr(lang, "dom.east"), &mut self.dom_bbox[1]);
-                        f64_row(ui, tr(lang, "dom.north"), &mut self.dom_bbox[2]);
-                        f64_row(ui, tr(lang, "dom.south"), &mut self.dom_bbox[3]);
-                    }
-                    "circle" => {
-                        f64_row(ui, tr(lang, "dom.clon"), &mut self.dom_circle[0]);
-                        f64_row(ui, tr(lang, "dom.clat"), &mut self.dom_circle[1]);
-                        f64_row(ui, tr(lang, "dom.radius"), &mut self.dom_circle[2]);
-                    }
-                    "close" => {
-                        ui.label(tr(lang, "dom.poly_points"));
-                        ui.vertical(|ui| {
-                            let mut remove = None;
-                            for i in 0..self.dom_close.len() {
-                                ui.horizontal(|ui| {
-                                    let p = &mut self.dom_close[i];
-                                    ui.add(
-                                        egui::DragValue::new(&mut p[0]).speed(0.1).prefix("lon "),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(&mut p[1]).speed(0.1).prefix("lat "),
-                                    );
-                                    if self.dom_close.len() > 3 && ui.small_button("✕").clicked()
-                                    {
-                                        remove = Some(i);
-                                    }
-                                });
-                            }
-                            if let Some(i) = remove {
-                                self.dom_close.remove(i);
-                            }
-                            if ui.button(tr(lang, "dom.add_point")).clicked() {
-                                let last = self.dom_close.last().copied().unwrap_or([115.0, 22.0]);
-                                self.dom_close.push(last);
-                            }
-                        });
-                        ui.end_row();
-                    }
-                    _ => {
-                        ui.label("");
-                        ui.weak(tr(lang, "dom.poly_note"));
-                        ui.end_row();
-                        text_row(
-                            ui,
-                            tr(lang, "f.domain_prefix"),
-                            &mut self.mkgrd.mask_domain_fprefix,
-                        );
-                    }
-                }
-            }
-
-            // Land/Ocean/coupled meshes need the sea-land source from NetCDF.
-            if matches!(
-                self.mkgrd.mesh_type.as_str(),
-                "landmesh" | "oceanmesh" | "LOCmesh"
-            ) {
-                ui.label(tr(lang, "f.landtype_file"));
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.mkgrd.landtype_file)
-                            .desired_width(210.0),
-                    );
-                    if ui.button(tr(lang, "btn.browse")).clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("NetCDF", &["nc", "nc4"])
-                            .pick_file()
-                        {
-                            self.mkgrd.landtype_file = p.display().to_string();
-                        }
-                    }
-                });
-                ui.end_row();
-            }
-
-            ui.label(tr(lang, "f.refine_master"));
-            ui.add_enabled(
-                refinement_supported,
-                egui::Checkbox::new(&mut self.mkgrd.refine, ""),
-            );
-            ui.end_row();
-            if !refinement_supported {
-                ui.label("");
-                ui.weak(tr(lang, "note.refine_unsupported"));
-                ui.end_row();
-            }
-            int_row(ui, tr(lang, "f.threads"), &mut self.mkgrd.openmp, 1..=1024);
-        });
-    }
-
-    fn refine_regions_ui(&mut self, ui: &mut egui::Ui, enabled: bool) {
-        let lang = self.lang;
-        let max_level = self.default_refine_level();
-        match self.refine.mask_refine_spc_type.as_str() {
-            "bbox" => {
-                ui.label(tr(lang, "refine.regions"));
-                ui.add_enabled_ui(enabled, |ui| {
-                    ui.vertical(|ui| {
-                        let mut remove = None;
-                        for i in 0..self.refine_bboxes.len() {
-                            ui.horizontal(|ui| {
-                                let bbox = &mut self.refine_bboxes[i];
-                                ui.add(
-                                    egui::DragValue::new(&mut bbox.bounds[0])
-                                        .speed(0.1)
-                                        .prefix("W "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut bbox.bounds[1])
-                                        .speed(0.1)
-                                        .prefix("E "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut bbox.bounds[2])
-                                        .speed(0.1)
-                                        .prefix("N "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut bbox.bounds[3])
-                                        .speed(0.1)
-                                        .prefix("S "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut bbox.level)
-                                        .range(1..=max_level)
-                                        .prefix(format!("{} ", tr(lang, "refine.level"))),
-                                );
-                                if self.refine_bboxes.len() > 1 && ui.small_button("✕").clicked()
-                                {
-                                    remove = Some(i);
-                                }
-                            });
-                        }
-                        if let Some(index) = remove {
-                            self.refine_bboxes.remove(index);
-                        }
-                        if ui.button(tr(lang, "refine.add_bbox")).clicked() {
-                            self.refine_bboxes.push(RefineBboxRegion {
-                                bounds: [110.0, 120.0, 35.0, 20.0],
-                                level: max_level,
-                            });
-                        }
-                    });
-                });
-                ui.end_row();
-            }
-            "circle" => {
-                ui.label(tr(lang, "refine.regions"));
-                ui.add_enabled_ui(enabled, |ui| {
-                    ui.vertical(|ui| {
-                        let mut remove = None;
-                        for i in 0..self.refine_circles.len() {
-                            ui.horizontal(|ui| {
-                                let circle = &mut self.refine_circles[i];
-                                ui.add(
-                                    egui::DragValue::new(&mut circle.circle[0])
-                                        .speed(0.1)
-                                        .prefix("lon "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut circle.circle[1])
-                                        .speed(0.1)
-                                        .prefix("lat "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut circle.circle[2])
-                                        .speed(1.0)
-                                        .prefix("km "),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut circle.level)
-                                        .range(1..=max_level)
-                                        .prefix(format!("{} ", tr(lang, "refine.level"))),
-                                );
-                                if self.refine_circles.len() > 1 && ui.small_button("✕").clicked()
-                                {
-                                    remove = Some(i);
-                                }
-                            });
-                        }
-                        if let Some(index) = remove {
-                            self.refine_circles.remove(index);
-                        }
-                        if ui.button(tr(lang, "refine.add_circle")).clicked() {
-                            self.refine_circles.push(RefineCircleRegion {
-                                circle: [115.0, 25.0, 500.0],
-                                level: max_level,
-                            });
-                        }
-                    });
-                });
-                ui.end_row();
-            }
-            "close" => {
-                ui.label(tr(lang, "refine.regions"));
-                ui.add_enabled_ui(enabled, |ui| {
-                    ui.vertical(|ui| {
-                        let mut remove_polygon = None;
-                        for polygon_index in 0..self.refine_closes.len() {
-                            ui.horizontal(|ui| {
-                                ui.label(format!(
-                                    "{} {}",
-                                    tr(lang, "refine.polygon"),
-                                    polygon_index + 1
-                                ));
-                                ui.add(
-                                    egui::DragValue::new(
-                                        &mut self.refine_closes[polygon_index].level,
-                                    )
-                                    .range(1..=max_level)
-                                    .prefix(format!("{} ", tr(lang, "refine.level"))),
-                                );
-                            });
-                            let mut remove_point = None;
-                            let can_remove_point =
-                                self.refine_closes[polygon_index].points.len() > 3;
-                            for point_index in 0..self.refine_closes[polygon_index].points.len() {
-                                ui.horizontal(|ui| {
-                                    let point =
-                                        &mut self.refine_closes[polygon_index].points[point_index];
-                                    ui.add(
-                                        egui::DragValue::new(&mut point[0])
-                                            .speed(0.1)
-                                            .prefix("lon "),
-                                    );
-                                    ui.add(
-                                        egui::DragValue::new(&mut point[1])
-                                            .speed(0.1)
-                                            .prefix("lat "),
-                                    );
-                                    if can_remove_point && ui.small_button("✕").clicked() {
-                                        remove_point = Some(point_index);
-                                    }
-                                });
-                            }
-                            if let Some(point_index) = remove_point {
-                                self.refine_closes[polygon_index].points.remove(point_index);
-                            }
-                            ui.horizontal(|ui| {
-                                if ui.button(tr(lang, "dom.add_point")).clicked() {
-                                    self.refine_closes[polygon_index].points.push([115.0, 25.0]);
-                                }
-                                if self.refine_closes.len() > 1
-                                    && ui.button(tr(lang, "refine.remove_polygon")).clicked()
-                                {
-                                    remove_polygon = Some(polygon_index);
-                                }
-                            });
-                        }
-                        if let Some(polygon_index) = remove_polygon {
-                            self.refine_closes.remove(polygon_index);
-                        }
-                        if ui.button(tr(lang, "refine.add_polygon")).clicked() {
-                            self.refine_closes.push(RefineCloseRegion {
-                                points: vec![
-                                    [110.0, 15.0],
-                                    [125.0, 15.0],
-                                    [125.0, 30.0],
-                                    [110.0, 30.0],
-                                ],
-                                level: max_level,
-                            });
-                        }
-                    });
-                });
-                ui.end_row();
-            }
-            _ => {
-                ui.label(tr(lang, "f.spc_prefix"));
-                ui.add_enabled(
-                    enabled,
-                    egui::TextEdit::singleline(&mut self.refine.mask_refine_spc_fprefix)
-                        .desired_width(280.0),
-                );
-                ui.end_row();
-            }
-        }
-    }
-
-    fn tab_refinement(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        ui.heading(tr(lang, "head.refinement"));
-        ui.separator();
-        let refinement_supported = self.refinement_supported();
-        if !refinement_supported {
-            self.normalize_refinement_for_mesh();
-            ui.weak(tr(lang, "note.refine_unsupported"));
-        } else if !self.mkgrd.refine {
-            ui.weak(tr(lang, "note.refine_off"));
-        }
-        let mt = self.mkgrd.mesh_type.clone();
-        let show_land = mt == "landmesh" || mt == "earthmesh" || mt == "LOCmesh";
-        let show_ocean = mt == "oceanmesh" || mt == "earthmesh" || mt == "LOCmesh";
-        let show_atmos = mt == "atmosmesh" || mt == "earthmesh" || mt == "LOCmesh";
-        let atmos_only = mt == "atmosmesh";
-
-        ui.add_enabled_ui(refinement_supported && self.mkgrd.refine, |ui| {
-            egui::Grid::new("ref_ctrl").num_columns(2).show(ui, |ui| {
-                check_row(ui, tr(lang, "f.refine_spc"), &mut self.refine.refine_spc);
-                let spc = self.refine.refine_spc;
-                ui.label(tr(lang, "f.max_iter_spc"));
-                ui.add_enabled(
-                    spc,
-                    egui::DragValue::new(&mut self.refine.max_iter_spc)
-                        .range(1..=SPECIFIED_REFINE_LEVEL_MAX),
-                );
-                ui.end_row();
-                ui.label(tr(lang, "f.spc_shape"));
-                ui.add_enabled_ui(spc, |ui| {
-                    egui::ComboBox::from_id_salt("spc_type")
-                        .selected_text(self.refine.mask_refine_spc_type.clone())
-                        .show_ui(ui, |ui| {
-                            for opt in REGION_TYPES {
-                                ui.selectable_value(
-                                    &mut self.refine.mask_refine_spc_type,
-                                    (*opt).to_string(),
-                                    *opt,
-                                );
-                            }
-                        });
-                });
-                ui.end_row();
-                self.refine_regions_ui(ui, spc);
-            });
-
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.add_enabled(
-                    !atmos_only,
-                    egui::Checkbox::new(&mut self.refine.refine_cal, tr(lang, "f.refine_cal")),
-                );
-                if atmos_only {
-                    ui.weak(tr(lang, "note.cal_atmos"));
-                }
-            });
-            let cal = self.refine.refine_cal && !atmos_only;
-            ui.add_enabled_ui(cal, |ui| {
-                egui::Grid::new("ref_cal").num_columns(2).show(ui, |ui| {
-                    int_row(
-                        ui,
-                        tr(lang, "f.max_iter_cal"),
-                        &mut self.refine.max_iter_cal,
-                        0..=100,
-                    );
-                    combo_row(
-                        ui,
-                        tr(lang, "f.cal_shape"),
-                        &mut self.refine.mask_refine_cal_type,
-                        REGION_TYPES,
-                    );
-                    text_row(
-                        ui,
-                        tr(lang, "f.cal_prefix"),
-                        &mut self.refine.mask_refine_cal_fprefix,
-                    );
-                    text_row(
-                        ui,
-                        tr(lang, "f.threshold_dir"),
-                        &mut self.refine.threshold_dir,
-                    );
-                    text_row(
-                        ui,
-                        tr(lang, "f.landtype_file"),
-                        &mut self.mkgrd.landtype_file,
-                    );
-                });
-            });
-
-            ui.add_space(6.0);
-            if show_land {
-                egui::CollapsingHeader::new(tr(lang, "sec.land_crit"))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        egui::Grid::new("lnd1").num_columns(2).show(ui, |ui| {
-                            ui.checkbox(
-                                &mut self.refine.refine_num_landtypes,
-                                tr(lang, "c.num_landtypes"),
-                            );
-                            ui.add_enabled(
-                                self.refine.refine_num_landtypes,
-                                egui::DragValue::new(&mut self.refine.th_num_landtypes)
-                                    .range(0..=1000),
-                            );
-                            ui.end_row();
-                            crit_row(
-                                ui,
-                                tr(lang, "c.area_mainland"),
-                                &mut self.refine.refine_area_mainland,
-                                &mut self.refine.th_area_mainland,
-                            );
-                            crit_row(
-                                ui,
-                                tr(lang, "c.lai_m"),
-                                &mut self.refine.refine_onelayer_lnd[0],
-                                &mut self.refine.th_onelayer_lnd[0],
-                            );
-                            crit_row(
-                                ui,
-                                tr(lang, "c.lai_s"),
-                                &mut self.refine.refine_onelayer_lnd[1],
-                                &mut self.refine.th_onelayer_lnd[1],
-                            );
-                            crit_row(
-                                ui,
-                                tr(lang, "c.slope_m"),
-                                &mut self.refine.refine_onelayer_lnd[2],
-                                &mut self.refine.th_onelayer_lnd[2],
-                            );
-                            crit_row(
-                                ui,
-                                tr(lang, "c.slope_s"),
-                                &mut self.refine.refine_onelayer_lnd[3],
-                                &mut self.refine.th_onelayer_lnd[3],
-                            );
-                        });
-                        let keys = [
-                            "c.ks_m",
-                            "c.ks_s",
-                            "c.ksol_m",
-                            "c.ksol_s",
-                            "c.tkdry_m",
-                            "c.tkdry_s",
-                            "c.tksatf_m",
-                            "c.tksatf_s",
-                            "c.tksatu_m",
-                            "c.tksatu_s",
-                        ];
-                        egui::Grid::new("lnd2").num_columns(2).show(ui, |ui| {
-                            for i in 0..10 {
-                                crit_pair_row(
-                                    ui,
-                                    tr(lang, keys[i]),
-                                    &mut self.refine.refine_twolayer_lnd[i],
-                                    &mut self.refine.th_twolayer_lnd[i],
-                                );
-                            }
-                        });
-                    });
-            }
-            if show_ocean {
-                egui::CollapsingHeader::new(tr(lang, "sec.ocean_crit")).show(ui, |ui| {
-                    egui::Grid::new("ocn").num_columns(2).show(ui, |ui| {
-                        crit_pair_row(
-                            ui,
-                            tr(lang, "c.sea_ratio"),
-                            &mut self.refine.refine_sea_ratio,
-                            &mut self.refine.th_sea_ratio,
-                        );
-                        let keys = [
-                            "c.sst_m",
-                            "c.sst_s",
-                            "c.ssh_m",
-                            "c.ssh_s",
-                            "c.eke_m",
-                            "c.eke_s",
-                            "c.seaslope_m",
-                            "c.seaslope_s",
-                        ];
-                        for i in 0..8 {
-                            crit_row(
-                                ui,
-                                tr(lang, keys[i]),
-                                &mut self.refine.refine_onelayer_ocn[i],
-                                &mut self.refine.th_onelayer_ocn[i],
-                            );
-                        }
-                    });
-                });
-            }
-            if show_atmos {
-                egui::CollapsingHeader::new(tr(lang, "sec.atmos_crit")).show(ui, |ui| {
-                    egui::Grid::new("atm").num_columns(2).show(ui, |ui| {
-                        crit_row(
-                            ui,
-                            tr(lang, "c.typhoon_m"),
-                            &mut self.refine.refine_onelayer_atmos[0],
-                            &mut self.refine.th_onelayer_atmos[0],
-                        );
-                        crit_row(
-                            ui,
-                            tr(lang, "c.typhoon_s"),
-                            &mut self.refine.refine_onelayer_atmos[1],
-                            &mut self.refine.th_onelayer_atmos[1],
-                        );
-                    });
-                });
-            }
-
-            egui::CollapsingHeader::new(tr(lang, "sec.adv_refine")).show(ui, |ui| {
-                egui::Grid::new("adv_ref").num_columns(2).show(ui, |ui| {
-                    check_row(
-                        ui,
-                        tr(lang, "f.weak_concav"),
-                        &mut self.refine.weak_concav_eliminate,
-                    );
-                    check_row(
-                        ui,
-                        tr(lang, "f.is_transition"),
-                        &mut self.refine.is_transition,
-                    );
-                    check_row(ui, tr(lang, "f.iter_d"), &mut self.refine.iter_d);
-                    ui.label(tr(lang, "f.halo"));
-                    ui.horizontal(|ui| {
-                        for i in 1..=9 {
-                            ui.add(egui::DragValue::new(&mut self.refine.halo[i]).speed(1.0));
-                        }
-                    });
-                    ui.end_row();
-                    ui.label(tr(lang, "f.max_transition"));
-                    ui.horizontal(|ui| {
-                        for i in 1..=9 {
-                            ui.add(
-                                egui::DragValue::new(&mut self.refine.max_transition_row[i])
-                                    .speed(1.0),
-                            );
-                        }
-                    });
-                    ui.end_row();
-                });
-            });
-        });
-    }
-
-    fn tab_advanced(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        self.normalize_refinement_for_mesh();
-        ui.heading(tr(lang, "head.advanced"));
-        ui.separator();
-        egui::CollapsingHeader::new(tr(lang, "sec.import")).show(ui, |ui| {
-            egui::Grid::new("import").num_columns(2).show(ui, |ui| {
-                text_row(ui, tr(lang, "f.mode_file"), &mut self.mkgrd.mode_file);
-                combo_row(
-                    ui,
-                    tr(lang, "f.mode_file_desc"),
-                    &mut self.mkgrd.mode_file_description,
-                    MODE_FILE_DESCS,
-                );
-            });
-        });
-        egui::CollapsingHeader::new(tr(lang, "sec.smoothing")).show(ui, |ui| {
-            egui::Grid::new("smooth").num_columns(2).show(ui, |ui| {
-                int_row(
-                    ui,
-                    tr(lang, "f.niter"),
-                    &mut self.mkgrd.niter,
-                    0..=1_000_000,
-                );
-                f32_row(ui, tr(lang, "f.beta"), &mut self.mkgrd.beta);
-                f32_row(ui, tr(lang, "f.relax"), &mut self.mkgrd.relax);
-                int_row(
-                    ui,
-                    tr(lang, "f.niter_refine"),
-                    &mut self.refine.niter_refine,
-                    0..=1_000_000,
-                );
-                int_combo_row(
-                    ui,
-                    tr(lang, "f.spring_global"),
-                    &mut self.refine.spring_global_type,
-                    &[
-                        (0, tr(lang, "opt.spring_none")),
-                        (1, tr(lang, "opt.spring_olam")),
-                    ],
-                );
-                int_row(ui, tr(lang, "f.num_rc"), &mut self.refine.num_rc, 0..=1000);
-                combo_row(
-                    ui,
-                    tr(lang, "f.set_dis"),
-                    &mut self.refine.set_dis_type,
-                    SET_DIS_TYPES,
-                );
-                int_combo_row(
-                    ui,
-                    tr(lang, "f.spring_regional"),
-                    &mut self.refine.spring_regional_type,
-                    &[
-                        (0, tr(lang, "opt.spring_none")),
-                        (1, tr(lang, "opt.reg_each")),
-                        (2, tr(lang, "opt.reg_final")),
-                    ],
-                );
-                int_row(
-                    ui,
-                    tr(lang, "f.vertex_layers"),
-                    &mut self.refine.vertex_pretect_layers,
-                    0..=1000,
-                );
-            });
-        });
-        egui::CollapsingHeader::new(tr(lang, "sec.native_olam")).show(ui, |ui| {
-            ui.weak(tr(lang, "note.native_olam"));
-            ui.add_space(4.0);
-            ui.add(
-                egui::TextEdit::multiline(&mut self.native_olam_mkgrd)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(8)
-                    .hint_text("NL%ngrids = 2\nNL%ngrdll(2) = 1\nNL%grdrad(2,1) = 2500000.0\nNL%grdlat(2,1) = 25.0\nNL%grdlon(2,1) = 115.0"),
-            );
-        });
-        egui::CollapsingHeader::new(tr(lang, "head.mask")).show(ui, |ui| {
-            egui::Grid::new("adv_mask").num_columns(2).show(ui, |ui| {
-                int_combo_row(
-                    ui,
-                    tr(lang, "f.gridnum"),
-                    &mut self.mkgrd.gridnum_perdegree,
-                    &[(120, "120"), (240, "240")],
-                );
-                f64_row(ui, tr(lang, "f.sea_ratio"), &mut self.mkgrd.mask_sea_ratio);
-                check_row(ui, tr(lang, "f.mask_restart"), &mut self.mkgrd.mask_restart);
-                check_row(
-                    ui,
-                    tr(lang, "f.isolated_ocean"),
-                    &mut self.mkgrd.isolated_ocean,
-                );
-                check_row(ui, tr(lang, "f.patch_on"), &mut self.mkgrd.mask_patch_on);
-                let patch = self.mkgrd.mask_patch_on;
-                ui.label(tr(lang, "f.patch_shape"));
-                ui.add_enabled_ui(patch, |ui| {
-                    egui::ComboBox::from_id_salt("patch_type")
-                        .selected_text(self.mkgrd.mask_patch_type.clone())
-                        .show_ui(ui, |ui| {
-                            for opt in REGION_TYPES {
-                                ui.selectable_value(
-                                    &mut self.mkgrd.mask_patch_type,
-                                    (*opt).to_string(),
-                                    *opt,
-                                );
-                            }
-                        });
-                });
-                ui.end_row();
-                ui.label(tr(lang, "f.patch_prefix"));
-                ui.add_enabled(
-                    patch,
-                    egui::TextEdit::singleline(&mut self.mkgrd.mask_patch_fprefix)
-                        .desired_width(280.0),
-                );
-                ui.end_row();
-            });
-        });
-    }
-
-    fn render_tab(&mut self, ui: &mut egui::Ui) {
-        match self.tab {
-            Tab::Basics => self.tab_basics(ui),
-            Tab::Refinement => self.tab_refinement(ui),
-            Tab::Advanced => self.tab_advanced(ui),
-        }
-    }
-
-    fn render_search(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        ui.heading(tr(lang, "search.results"));
-        ui.separator();
-        let q = self.search.to_lowercase();
-        let matches: Vec<(&'static str, Tab)> = FIELD_INDEX
-            .iter()
-            .filter(|(k, _)| tr(lang, k).to_lowercase().contains(&q))
-            .copied()
-            .collect();
-        if matches.is_empty() {
-            ui.label(tr(lang, "search.none"));
-            return;
-        }
-        let mut goto: Option<Tab> = None;
-        for (k, tab) in matches {
-            if ui
-                .button(format!(
-                    "{}   ·   {}",
-                    tr(lang, k),
-                    tr(lang, tab_nav_key(tab))
-                ))
-                .clicked()
-            {
-                goto = Some(tab);
-            }
-        }
-        if let Some(t) = goto {
-            self.tab = t;
-            self.search.clear();
-        }
-    }
-
-    /// Centre the basemap on the freshly-loaded mesh and pick a zoom that frames
-    /// it within the actual map widget. A global mesh is sized to fill the width
-    /// (its poles are stretched/clipped anyway); a regional mesh is fit whole.
-    /// Web Mercator screen-x is linear in longitude, so 1° spans `256·2^z / 360`
-    /// px; latitude is non-linear but a linear estimate is fine for framing.
-    fn frame_mesh_view(&mut self, avail_w: f32, avail_h: f32) {
-        if self.mesh_view.as_ref().map_or(true, |m| m.m_lon.is_empty()) {
-            return;
-        }
-        // Frame to the user's region of interest when one exists. That includes
-        // explicit regional domains and global grids with specified refinement:
-        // the mesh remains global, but the initial view should show the refined
-        // area instead of a full-world wireframe.
-        let focus_extent = self
-            .results_focus_domain()
-            .and_then(|domain| domain.extent());
-        let focused = focus_extent.is_some();
-        let (lon_min, lon_max, lat_min, lat_max) = focus_extent.unwrap_or_else(|| {
-            let mesh = self.mesh_view.as_ref().unwrap();
-            let (mut lo0, mut lo1) = (f64::MAX, f64::MIN);
-            let (mut la0, mut la1) = (f64::MAX, f64::MIN);
-            for (&lo, &la) in mesh.m_lon.iter().zip(&mesh.m_lat) {
-                let lo = ((lo + 180.0).rem_euclid(360.0)) - 180.0;
-                lo0 = lo0.min(lo);
-                lo1 = lo1.max(lo);
-                la0 = la0.min(la);
-                la1 = la1.max(la);
-            }
-            (lo0, lo1, la0, la1)
-        });
-        // Tolerate reversed entries (e.g. west > east) and centre on the extent.
-        let (lon_min, lon_max) = (lon_min.min(lon_max), lon_min.max(lon_max));
-        let (lat_min, lat_max) = (lat_min.min(lat_max), lat_min.max(lat_max));
-        let clon = 0.5 * (lon_min + lon_max);
-        let clat = 0.5 * (lat_min + lat_max);
-        // Pad a region so it isn't drawn edge-to-edge.
-        let pad = if focused { 1.3 } else { 1.0 };
-        let lon_span = ((lon_max - lon_min) * pad).max(0.5);
-        let lat_span = ((lat_max - lat_min) * pad).max(0.5);
-        let zoom_w = (avail_w as f64 * 360.0 / (256.0 * lon_span)).log2();
-        // Fill the width by default. The leftover available height is unreliable in
-        // a short dock (it can read ~0 before the map widget is allocated), so only
-        // constrain by height when it is clearly usable — e.g. the detached window.
-        let zoom = if avail_h > 60.0 && lon_span < 350.0 {
-            let zoom_h = (avail_h as f64 * 360.0 / (256.0 * lat_span)).log2();
-            zoom_w.min(zoom_h)
-        } else {
-            zoom_w
-        };
-        self.map_memory.center_at(walkers::lon_lat(clon, clat));
-        let _ = self.map_memory.set_zoom(zoom.clamp(0.0, 8.0));
-    }
-
-    fn results_ui(&mut self, ui: &mut egui::Ui) {
-        let lang = self.lang;
-        if self.output_files.is_empty() {
-            ui.label(tr(lang, "results.empty"));
-            return;
-        }
-        let hex = self.mkgrd.mode_grid == "hex";
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tr(lang, "results.files")).strong());
-            if let Some(m) = &self.mesh_view {
-                // Hex cells are the W points (triangles are the vertices); tri is
-                // the other way round.
-                let (cells, verts) = if hex {
-                    (m.w_lon.len(), m.m_lon.len())
-                } else {
-                    (m.m_lon.len(), m.w_lon.len())
-                };
-                if ui.button("Focus").clicked() {
-                    let map_w = ui.available_width().max(360.0);
-                    self.frame_mesh_view(map_w, 540.0);
-                }
-                ui.weak(format!(
-                    "·  {} {}  ·  {} {}",
-                    cells,
-                    tr(lang, "results.cells"),
-                    verts,
-                    tr(lang, "results.vertices"),
-                ));
-            }
-        });
-        let files = self.output_files.clone();
-        egui::ScrollArea::vertical()
-            .max_height(36.0)
-            .id_salt("files_list")
-            .show(ui, |ui| {
-                for f in &files {
-                    let name = f
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    if ui
-                        .button(name)
-                        .on_hover_text(f.display().to_string())
-                        .clicked()
-                    {
-                        let _ = open::that(f);
-                    }
-                }
-            });
-        let class_counts = surface_class_counts(&self.cell_classes);
-        if !class_counts.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.weak("Classes");
-                for (code, count) in class_counts {
-                    let stroke = surface_class_stroke(Some(code));
-                    ui.colored_label(
-                        stroke.color,
-                        format!("{} {count}", surface_class_name(code)),
-                    );
-                }
-            });
-        }
-        ui.separator();
-        if self.mesh_view.is_some() {
-            ui.weak(tr(lang, "results.map_hint"));
-            let map_w = ui.available_width();
-            let map_h = ui.available_height().max(240.0);
-            // Frame on the first render after a run, now that the map widget's
-            // real size is known (the dock and the detached window differ).
-            if self.frame_pending {
-                self.frame_mesh_view(map_w, map_h);
-                self.frame_pending = false;
-            }
-            let domain = self.results_draw_domain();
-            if let Some(tiles) = &mut self.tiles {
-                // Offline Protomaps basemap with the mesh wireframe overlaid.
-                let mesh = self.mesh_view.as_ref().unwrap();
-                let map = walkers::Map::new(
-                    Some(tiles as &mut dyn walkers::Tiles),
-                    &mut self.map_memory,
-                    walkers::lon_lat(0.0, 0.0),
-                )
-                // Plain wheel zooms (walkers defaults to ctrl+wheel, treating a
-                // bare wheel as a vertical pan); drag still pans.
-                .zoom_with_ctrl(false)
-                .with_plugin(MeshOverlay {
-                    mesh,
-                    class_codes: &self.cell_classes,
-                    domain,
-                    hex,
-                });
-                ui.add_sized([map_w, map_h], map);
-                ui.weak("© OpenStreetMap contributors · Protomaps");
-            } else {
-                // No bundled basemap -> equirectangular wireframe fallback.
-                draw_mesh_2d(ui, self.mesh_view.as_ref().unwrap());
-            }
-        } else {
-            ui.weak(tr(lang, "results.3d_soon"));
-        }
-    }
-}
-
-fn install_fonts(ctx: &egui::Context) {
-    const CANDIDATES: &[&str] = &[
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Kailasa.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-    ];
-    let mut fonts = egui::FontDefinitions::default();
-    let mut loaded = Vec::new();
-    for (index, path) in CANDIDATES.iter().enumerate() {
-        if let Ok(bytes) = std::fs::read(path) {
-            let name = format!("earthmesh_fallback_{index}");
-            fonts.font_data.insert(
-                name.clone(),
-                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-            );
-            loaded.push(name);
-        }
-    }
-    if loaded.is_empty() {
-        return;
-    }
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        if let Some(fam) = fonts.families.get_mut(&family) {
-            for name in loaded.iter().rev() {
-                fam.insert(0, name.clone());
-            }
-        }
-    }
-    ctx.set_fonts(fonts);
-}
-
-fn configure_style(ctx: &egui::Context) {
-    let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-    style.spacing.button_padding = egui::vec2(8.0, 4.0);
-    style.spacing.interact_size.y = 24.0;
-    for (_s, font) in style.text_styles.iter_mut() {
-        font.size *= 1.05;
-    }
-    ctx.set_global_style(style);
-}
-
-impl EarthMeshApp {
-    fn theme(&self) -> theme::EarthMeshTheme {
-        theme::EarthMeshTheme {
-            dark: self.theme_dark,
-        }
-    }
-
-    /// Apply a target template preset to the config (additive convenience; the user
-    /// can still edit every field afterwards).
-    fn apply_template(&mut self, t: ui_helpers::TargetTemplate) {
-        self.mkgrd.mesh_type = t.mesh_type.to_string();
-        self.mkgrd.mode_grid = t.mode_grid.to_string();
-        self.mkgrd.output_format = t.output_format.to_string();
-        self.mkgrd.nxp = t.default_nxp;
-        self.mkgrd.mask_domain_global = t.global;
-        self.mkgrd.refine = t.refine;
-        self.log.push(format!("template: {}", t.id));
-    }
-
-    /// Render the quality dashboard from the run output dir's existing artifacts
-    /// (read-only: quality_summary.json / run_manifest.json / worst_cells.geojson /
-    /// quality_report.md). No schema change.
-    fn render_quality_dashboard(
-        &self,
-        ui: &mut egui::Ui,
-        theme: &theme::EarthMeshTheme,
-        lang: Lang,
-    ) {
-        let dir = self
-            .output_files
-            .iter()
-            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
-        let Some(dir) = dir else {
-            components::empty_state(ui, tr(lang, "dash.empty"));
-            return;
-        };
-        let d = ui_helpers::QualityDashboard::from_dir(&dir);
-
-        ui.horizontal(|ui| {
-            ui.label(tr(lang, "dash.verdict"));
-            components::status_badge(ui, theme, &d.verdict, &d.verdict.to_uppercase());
-            if let Some(status) = &d.manifest_status {
-                ui.separator();
-                ui.label(format!("{}: {}", tr(lang, "dash.run_status"), status));
-            }
-        })
-        .response
-        .on_hover_text(ui_helpers::tooltip("quality_status"));
-
-        if !d.headline.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                for (k, v) in &d.headline {
-                    ui.label(format!("{k}: {v}"));
-                    ui.separator();
-                }
-            });
-        }
-
-        if !d.top_warnings.is_empty() {
-            components::status_message(
-                ui,
-                theme,
-                components::MessageKind::Warning,
-                tr(lang, "dash.warnings"),
-            );
-            for w in d.top_warnings.iter().take(8) {
-                ui.label(format!("• {w}"));
-            }
-        }
-        for w in d.manifest_warnings.iter().take(4) {
-            components::status_message(ui, theme, components::MessageKind::Warning, w);
-        }
-
-        for s in &d.next_steps {
-            components::status_message(ui, theme, components::MessageKind::Info, s);
-        }
-
-        if let Some(p) = &d.worst_cells_path {
-            ui.label(format!("{}: {p}", tr(lang, "dash.worst_cells")));
-        }
-        if let Some(p) = &d.quality_report_path {
-            if ui.button(tr(lang, "dash.open_report")).clicked() {
-                let _ = open::that(p);
-            }
-        }
-    }
-}
-
-impl eframe::App for EarthMeshApp {
-    // eframe 0.34 requires `ui`; we keep the multi-panel layout in `update`
-    // (still invoked by the run loop) and leave `ui` empty.
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
-
-    #[allow(deprecated)]
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_run();
-        if self.running {
-            ctx.request_repaint_after(std::time::Duration::from_millis(120));
-        }
-        let lang = self.lang;
-
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.heading(tr(lang, "app.title"));
-                ui.separator();
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.project_name)
-                        .hint_text(tr(lang, "project.name"))
-                        .desired_width(130.0),
-                );
-                ui.separator();
-                ui.add_enabled_ui(!self.running, |ui| {
-                    if ui.button(tr(lang, "btn.run")).clicked() {
-                        self.start_run(ctx);
-                    }
-                });
-                if ui
-                    .add_enabled(self.running, egui::Button::new(tr(lang, "btn.cancel")))
-                    .clicked()
-                {
-                    self.request_cancel();
-                }
-                if self.running {
-                    ui.add(egui::Spinner::new());
-                }
-                ui.separator();
-                if ui.button(tr(lang, "btn.load")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("namelist", &["nml"])
-                        .set_directory(examples_root())
-                        .pick_file()
-                    {
-                        self.load(path);
-                    }
-                }
-                if ui.button(tr(lang, "btn.save")).clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("namelist", &["nml"])
-                        .set_file_name("earthmesh.nml")
-                        .set_directory(runtime_workdir())
-                        .save_file()
-                    {
-                        self.save(path);
-                    }
-                }
-                if ui.button(tr(lang, "btn.open_output")).clicked() {
-                    self.open_output_dir();
-                }
-                ui.separator();
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(tr(lang, "search.placeholder"))
-                        .desired_width(170.0),
-                );
-                ui.separator();
-                // Target template selector (applies a preset to the config).
-                let templates = ui_helpers::target_templates();
-                let current = templates
-                    .get(self.target_template)
-                    .map(|t| tr(lang, t.name_key))
-                    .unwrap_or("—");
-                egui::ComboBox::from_id_salt("target_template")
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        for (i, t) in templates.iter().enumerate() {
-                            if ui
-                                .selectable_label(self.target_template == i, tr(lang, t.name_key))
-                                .on_hover_text(tr(lang, t.help_key))
-                                .clicked()
-                            {
-                                self.target_template = i;
-                                self.apply_template(*t);
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text(tr(lang, "tpl.tooltip"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.selectable_value(&mut self.lang, Lang::Zh, "中文");
-                    ui.selectable_value(&mut self.lang, Lang::En, "EN");
-                    ui.label(tr(lang, "lang.label"));
-                    ui.separator();
-                    if ui
-                        .selectable_label(self.theme_dark, "🌓")
-                        .on_hover_text(tr(lang, "theme.toggle"))
-                        .clicked()
-                    {
-                        self.theme_dark = !self.theme_dark;
-                        self.theme().apply(ctx);
-                    }
-                    ui.checkbox(&mut self.expert_mode, tr(lang, "mode.expert"))
-                        .on_hover_text(tr(lang, "mode.expert.help"));
-                });
-            });
-            ui.add_space(2.0);
-        });
-
-        // Results dock with a detach-to-window control (egui multi-viewport: a
-        // real, resizable/maximizable OS window).
-        if self.results_detached {
-            let mut close = false;
-            ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("results_window"),
-                egui::ViewportBuilder::default()
-                    .with_title(tr(lang, "results.window"))
-                    .with_inner_size([760.0, 540.0]),
-                |vctx, _class| {
-                    egui::CentralPanel::default().show(vctx, |ui| {
-                        ui.heading(tr(lang, "results.title"));
-                        ui.separator();
-                        self.results_ui(ui);
-                    });
-                    if vctx.input(|i| i.viewport().close_requested()) {
-                        close = true;
-                    }
-                },
-            );
-            if close {
-                self.results_detached = false;
-                self.frame_pending = true; // re-frame for the dock's size
-            }
-        }
-
-        // Cap the dock at half the window so it can never swallow the form (and
-        // a persisted oversized height gets clamped back). Big-map viewing is the
-        // detached window's job.
-        let dock_max = (ctx.screen_rect().height() * 0.5).max(200.0);
-        egui::TopBottomPanel::bottom("results_dock")
-            .resizable(true)
-            .default_height(220.0)
-            .min_height(120.0)
-            .max_height(dock_max)
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.heading(tr(lang, "results.title"));
-                    if ui.button(tr(lang, "results.detach")).clicked() {
-                        self.results_detached = true;
-                        self.frame_pending = true; // re-frame for the window's size
-                    }
-                });
-                ui.separator();
-                egui::CollapsingHeader::new(tr(lang, "dash.title"))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let theme = self.theme();
-                        self.render_quality_dashboard(ui, &theme, lang);
-                    });
-                ui.separator();
-                if self.results_detached {
-                    ui.weak(tr(lang, "results.dock"));
-                } else {
-                    self.results_ui(ui);
-                }
-            });
-
-        egui::SidePanel::left("cases")
-            .resizable(true)
-            .default_width(190.0)
-            .show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.heading(tr(lang, "cases.title"));
-                ui.separator();
-                let templates = bundled_templates();
-                let recent = self.recent.clone();
-                let mut to_load: Option<PathBuf> = None;
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(egui::RichText::new(tr(lang, "cases.templates")).strong());
-                    for (label, path) in templates {
-                        if ui.button(label).clicked() {
-                            to_load = Some(path);
-                        }
-                    }
-                    if !recent.is_empty() {
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new(tr(lang, "cases.recent")).strong());
-                        for path in recent {
-                            let label = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            if ui
-                                .button(label)
-                                .on_hover_text(path.display().to_string())
-                                .clicked()
-                            {
-                                to_load = Some(path);
-                            }
-                        }
-                    }
-                });
-                if let Some(p) = to_load {
-                    self.load(p);
-                }
-            });
-
-        egui::SidePanel::right("run")
-            .resizable(true)
-            .default_width(300.0)
-            .show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.heading(tr(lang, "run.title"));
-                ui.separator();
-                ui.label(tr(
-                    lang,
-                    if self.running {
-                        "run.running"
-                    } else {
-                        "run.idle"
-                    },
-                ));
-                let status = if self.status_detail.is_empty() {
-                    tr(lang, self.status_key).to_string()
-                } else {
-                    format!("{} {}", tr(lang, self.status_key), self.status_detail)
-                };
-                ui.label(status);
-                if let Some((phase, done, total)) = &self.progress {
-                    let frac = if *total > 0 {
-                        *done as f32 / *total as f32
-                    } else {
-                        0.0
-                    };
-                    ui.add(egui::ProgressBar::new(frac).text(format!("{phase} {done}/{total}")));
-                }
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(tr(lang, "run.log")).strong());
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for line in &self.log {
-                            ui.monospace(line);
-                        }
-                    });
-            });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if !self.search.trim().is_empty() {
-                egui::ScrollArea::vertical().show(ui, |ui| self.render_search(ui));
-                return;
-            }
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Basics, tr(lang, "nav.basics"));
-                ui.selectable_value(&mut self.tab, Tab::Refinement, tr(lang, "nav.refinement"));
-                ui.selectable_value(&mut self.tab, Tab::Advanced, tr(lang, "nav.advanced"));
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| self.render_tab(ui));
-        });
-    }
-}
-
-fn main() -> eframe::Result {
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1040.0, 680.0]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "EarthMesh",
-        native_options,
-        Box::new(|cc| {
-            install_fonts(&cc.egui_ctx);
-            configure_style(&cc.egui_ctx);
-            let mut app = EarthMeshApp::default();
-            // Offline vector basemap, if bundled. Missing file → wireframe fallback.
-            // tile_size 256 makes the map zoom equal the source tile zoom and,
-            // crucially, zeroes walkers' tile-size zoom adjustment — its default
-            // 1024 subtracts 2 from the zoom in mercator::tile_id, which underflows
-            // (panics) for any map zoom below 2, e.g. a framed global mesh.
-            app.tiles = basemap_path().map(|p| {
-                walkers::PmTiles::with_style(
-                    p,
-                    walkers::Style::protomaps_light(),
-                    cc.egui_ctx.clone(),
-                )
-                .with_tile_size(256)
-            });
-            app.load(default_example_path());
-            Ok(Box::new(app))
-        }),
-    )
 }

@@ -13,6 +13,15 @@ rfd = "0.17.2"
 open = "5.3.5"
 walkers = { version = "0.53.0", features = ["pmtiles", "mvt"] }
 
+# egui desktop app: a few lints fire on idiomatic UI patterns kept for clarity —
+# imperative app/test setup (`EarthMeshApp::default()` then field assignment is clearer
+# than a 30-field struct literal), parallel-array criterion-row loops, and a couple of
+# wide UI/output helper signatures. Allowed package-wide rather than contorted.
+[lints.clippy]
+field_reassign_with_default = "allow"
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+
 [package.metadata.packager]
 product-name = "EarthMesh"
 identifier = "edu.sysu.earthmesh.gui"
