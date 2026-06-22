@@ -126,6 +126,9 @@ fn run() -> Result<(), String> {
     if first == "--colm-coupling-from-intersections" {
         return run_colm_coupling_from_intersections(args);
     }
+    if first == "--hydro-mesh-qa" {
+        return run_hydro_mesh_qa(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1385,6 +1388,74 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--hydro-mesh-qa --delivery-manifest <m.json> --output-json <out.json>
+/// [--colm-summary-json <s.json>] [--min-river-cells N] [--min-coast-cells N]`:
+/// evaluate delivery-package QA gates (Rust port of util/hydro_mesh/qa_gates.py).
+fn run_hydro_mesh_qa(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut delivery_manifest: Option<PathBuf> = None;
+    let mut output_json: Option<PathBuf> = None;
+    let mut colm_summary: Option<PathBuf> = None;
+    let mut min_river: i64 = 1;
+    let mut min_coast: i64 = 1;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--delivery-manifest" => {
+                i += 1;
+                delivery_manifest =
+                    Some(PathBuf::from(rest.get(i).ok_or_else(|| {
+                        usage("--delivery-manifest requires a value")
+                    })?));
+            }
+            "--output-json" => {
+                i += 1;
+                output_json = Some(PathBuf::from(
+                    rest.get(i)
+                        .ok_or_else(|| usage("--output-json requires a value"))?,
+                ));
+            }
+            "--colm-summary-json" => {
+                i += 1;
+                colm_summary =
+                    Some(PathBuf::from(rest.get(i).ok_or_else(|| {
+                        usage("--colm-summary-json requires a value")
+                    })?));
+            }
+            "--min-river-cells" => {
+                i += 1;
+                min_river = rest
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| usage("--min-river-cells requires an integer"))?;
+            }
+            "--min-coast-cells" => {
+                i += 1;
+                min_coast = rest
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| usage("--min-coast-cells requires an integer"))?;
+            }
+            other => return Err(usage(&format!("unknown --hydro-mesh-qa option: {other}"))),
+        }
+        i += 1;
+    }
+    let delivery_manifest =
+        delivery_manifest.ok_or_else(|| usage("--hydro-mesh-qa requires --delivery-manifest"))?;
+    let output_json = output_json.ok_or_else(|| usage("--hydro-mesh-qa requires --output-json"))?;
+    let report = earthmesh_cli::write_hydro_mesh_qa_report(
+        &delivery_manifest,
+        &output_json,
+        colm_summary.as_deref(),
+        min_river,
+        min_coast,
+    )
+    .map_err(|err| format!("hydro mesh qa: {err}"))?;
+    println!("hydro_mesh_qa_status={}", report.status);
+    println!("hydro_mesh_qa_output={}", output_json.display());
     Ok(())
 }
 

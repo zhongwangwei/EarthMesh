@@ -29151,6 +29151,261 @@ pub fn write_colm_coupling_csv_from_intersections(
     Ok(rows.len())
 }
 
+/// One hydro-mesh QA gate result (faithful to `qa_gates.py::_check`).
+#[derive(Debug, Clone)]
+pub struct HydroMeshQaCheck {
+    pub id: String,
+    pub passed: bool,
+    pub observed: String,
+    pub expected: Option<String>,
+}
+
+/// Delivery-package QA report (faithful port of `util/hydro_mesh/qa_gates.py`).
+/// Distinct from `earthmesh_quality::coupling` (R7), which validates per-cell coupling;
+/// this gates a *delivery package* (mask completeness, known surfaces, non-empty
+/// river/coast overlays) before promotion.
+#[derive(Debug, Clone)]
+pub struct HydroMeshQaReport {
+    pub status: String,
+    pub background_cell_count: i64,
+    pub complete_mask_cell_count: i64,
+    pub surface_class_counts: BTreeMap<String, i64>,
+    pub river_overlap_cells: i64,
+    pub coast_overlap_cells: i64,
+    pub min_river_cells: i64,
+    pub min_coast_cells: i64,
+    pub colm_rows_written: Option<i64>,
+    pub checks: Vec<HydroMeshQaCheck>,
+}
+
+fn manifest_metric_i64(metrics: Option<&BTreeMap<String, JsonNode>>, key: &str) -> i64 {
+    metrics
+        .and_then(|m| m.get(key))
+        .and_then(JsonNode::as_f64)
+        .unwrap_or(0.0) as i64
+}
+
+/// Evaluate delivery-package QA gates. Faithful to `qa_gates.py::evaluate_hydro_mesh_qa`.
+pub fn evaluate_hydro_mesh_qa(
+    delivery_manifest_json: impl AsRef<Path>,
+    colm_summary_json: Option<&Path>,
+    min_river_cells: i64,
+    min_coast_cells: i64,
+) -> io::Result<HydroMeshQaReport> {
+    let manifest_text = fs::read_to_string(delivery_manifest_json.as_ref())?;
+    let manifest = JsonParser::new(&manifest_text).parse()?;
+    let manifest_obj = manifest.as_object();
+    let metrics = manifest_obj
+        .and_then(|m| m.get("metrics"))
+        .and_then(JsonNode::as_object);
+    let background_count = manifest_metric_i64(metrics, "background_cell_count");
+    let river_cells = manifest_metric_i64(metrics, "river_overlap_cells");
+    let coast_cells = manifest_metric_i64(metrics, "coast_overlap_cells");
+
+    let complete_mask_path = manifest_obj
+        .and_then(|m| m.get("files"))
+        .and_then(JsonNode::as_object)
+        .and_then(|f| f.get("complete_cell_mask_geojson"))
+        .and_then(JsonNode::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+
+    let mut surface_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut complete_feature_count: i64 = 0;
+    let mut unknown_surface_count: i64 = 0;
+    if let Some(path) = &complete_mask_path {
+        let text = fs::read_to_string(path)?;
+        let root = JsonParser::new(&text).parse()?;
+        for feature in geojson_feature_nodes(&root) {
+            complete_feature_count += 1;
+            let surface = feature
+                .as_object()
+                .and_then(|o| o.get("properties"))
+                .and_then(JsonNode::as_object)
+                .and_then(|p| p.get("surface_class"))
+                .and_then(JsonNode::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("UNKNOWN")
+                .to_string();
+            if surface != "LAND" && surface != "OCEAN" {
+                unknown_surface_count += 1;
+            }
+            *surface_counts.entry(surface).or_insert(0) += 1;
+        }
+    }
+
+    let surface_counts_str = format!(
+        "{{{}}}",
+        surface_counts
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut checks = vec![
+        HydroMeshQaCheck {
+            id: "complete_mask_present".into(),
+            passed: complete_mask_path.is_some(),
+            observed: complete_mask_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            expected: None,
+        },
+        HydroMeshQaCheck {
+            id: "complete_mask_cell_count_matches_background".into(),
+            passed: complete_feature_count == background_count,
+            observed: complete_feature_count.to_string(),
+            expected: Some(background_count.to_string()),
+        },
+        HydroMeshQaCheck {
+            id: "surface_classes_known".into(),
+            passed: unknown_surface_count == 0,
+            observed: unknown_surface_count.to_string(),
+            expected: Some("0".into()),
+        },
+        HydroMeshQaCheck {
+            id: "land_ocean_both_present".into(),
+            passed: surface_counts.get("LAND").copied().unwrap_or(0) > 0
+                && surface_counts.get("OCEAN").copied().unwrap_or(0) > 0,
+            observed: surface_counts_str,
+            expected: Some("{LAND: >0, OCEAN: >0}".into()),
+        },
+        HydroMeshQaCheck {
+            id: "river_cells_present".into(),
+            passed: river_cells >= min_river_cells,
+            observed: river_cells.to_string(),
+            expected: Some(format!(">={min_river_cells}")),
+        },
+        HydroMeshQaCheck {
+            id: "coast_cells_present".into(),
+            passed: coast_cells >= min_coast_cells,
+            observed: coast_cells.to_string(),
+            expected: Some(format!(">={min_coast_cells}")),
+        },
+    ];
+
+    let mut colm_rows_written = None;
+    if let Some(colm_path) = colm_summary_json {
+        let text = fs::read_to_string(colm_path)?;
+        let colm = JsonParser::new(&text).parse()?;
+        let colm_obj = colm.as_object();
+        let rows_written = colm_obj
+            .and_then(|c| c.get("rows_written"))
+            .and_then(JsonNode::as_f64)
+            .unwrap_or(0.0) as i64;
+        let unknown_colm = colm_obj
+            .and_then(|c| c.get("surface_class_counts"))
+            .and_then(JsonNode::as_object)
+            .and_then(|s| s.get("UNKNOWN"))
+            .and_then(JsonNode::as_f64)
+            .unwrap_or(0.0) as i64;
+        colm_rows_written = Some(rows_written);
+        checks.push(HydroMeshQaCheck {
+            id: "colm_rows_match_background".into(),
+            passed: rows_written == background_count,
+            observed: rows_written.to_string(),
+            expected: Some(background_count.to_string()),
+        });
+        checks.push(HydroMeshQaCheck {
+            id: "colm_surface_unknown_zero".into(),
+            passed: unknown_colm == 0,
+            observed: unknown_colm.to_string(),
+            expected: Some("0".into()),
+        });
+    }
+
+    let status = if checks.iter().all(|c| c.passed) {
+        "pass"
+    } else {
+        "fail"
+    }
+    .to_string();
+
+    Ok(HydroMeshQaReport {
+        status,
+        background_cell_count: background_count,
+        complete_mask_cell_count: complete_feature_count,
+        surface_class_counts: surface_counts,
+        river_overlap_cells: river_cells,
+        coast_overlap_cells: coast_cells,
+        min_river_cells,
+        min_coast_cells,
+        colm_rows_written,
+        checks,
+    })
+}
+
+/// Serialize a [`HydroMeshQaReport`] to JSON (`kind=earthmesh_hydro_mesh_qa_report`).
+pub fn hydro_mesh_qa_report_json(report: &HydroMeshQaReport) -> String {
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut s = String::from("{\n  \"kind\": \"earthmesh_hydro_mesh_qa_report\",\n");
+    s.push_str(&format!("  \"status\": \"{}\",\n", report.status));
+    s.push_str("  \"thresholds\": {\n");
+    s.push_str(&format!(
+        "    \"min_river_cells\": {},\n    \"min_coast_cells\": {},\n    \"max_unknown_surface_cells\": 0,\n    \"require_land_ocean_both_present\": true\n  }},\n",
+        report.min_river_cells, report.min_coast_cells
+    ));
+    s.push_str("  \"metrics\": {\n");
+    s.push_str(&format!(
+        "    \"background_cell_count\": {},\n    \"complete_mask_cell_count\": {},\n    \"river_overlap_cells\": {},\n    \"coast_overlap_cells\": {},\n",
+        report.background_cell_count,
+        report.complete_mask_cell_count,
+        report.river_overlap_cells,
+        report.coast_overlap_cells
+    ));
+    let sc = report
+        .surface_class_counts
+        .iter()
+        .map(|(k, v)| format!("\"{}\": {}", esc(k), v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    s.push_str(&format!("    \"surface_class_counts\": {{{sc}}}"));
+    if let Some(rows) = report.colm_rows_written {
+        s.push_str(&format!(",\n    \"colm_rows_written\": {rows}"));
+    }
+    s.push_str("\n  },\n  \"checks\": [\n");
+    for (i, c) in report.checks.iter().enumerate() {
+        let comma = if i + 1 < report.checks.len() { "," } else { "" };
+        let expected = c
+            .expected
+            .as_ref()
+            .map(|e| format!(", \"expected\": \"{}\"", esc(e)))
+            .unwrap_or_default();
+        s.push_str(&format!(
+            "    {{\"id\": \"{}\", \"status\": \"{}\", \"observed\": \"{}\"{}}}{}\n",
+            esc(&c.id),
+            if c.passed { "pass" } else { "fail" },
+            esc(&c.observed),
+            expected,
+            comma
+        ));
+    }
+    s.push_str("  ]\n}\n");
+    s
+}
+
+/// Faithful port of `qa_gates.py::write_hydro_mesh_qa_report`.
+pub fn write_hydro_mesh_qa_report(
+    delivery_manifest_json: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    colm_summary_json: Option<&Path>,
+    min_river_cells: i64,
+    min_coast_cells: i64,
+) -> io::Result<HydroMeshQaReport> {
+    let report = evaluate_hydro_mesh_qa(
+        delivery_manifest_json,
+        colm_summary_json,
+        min_river_cells,
+        min_coast_cells,
+    )?;
+    if let Some(parent) = output_json.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_json, hydro_mesh_qa_report_json(&report))?;
+    Ok(report)
+}
+
 pub fn write_colm_coupling_csv_from_mesh(
     gridfile: impl AsRef<Path>,
     landtype_file: impl AsRef<Path>,
