@@ -13,6 +13,7 @@
 use earthmesh_geometry::safety::{validate_polygon, GeometryQualityFlag};
 use earthmesh_geometry::{haversine_km, polygon_area, Point};
 
+pub mod hydro_coast;
 pub mod io;
 pub mod topology;
 
