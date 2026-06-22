@@ -138,6 +138,9 @@ fn run() -> Result<(), String> {
     if first == "--hydro-sweep-rank" {
         return run_hydro_sweep_rank(args);
     }
+    if first == "--hydro-delivery-manifest" {
+        return run_hydro_delivery_manifest(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1397,6 +1400,64 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--hydro-delivery-manifest --case-name <n> --eval-json <e> --ranking-json <r>
+/// --output-json <m> [--file role=path ...] [--source role=path ...]`:
+/// assemble the delivery-package manifest (port of refinement_package.py::_build_manifest).
+fn run_hydro_delivery_manifest(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut case_name = String::new();
+    let mut eval_json: Option<PathBuf> = None;
+    let mut ranking_json: Option<PathBuf> = None;
+    let mut output_json: Option<PathBuf> = None;
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut source_files: Vec<(String, String)> = Vec::new();
+    let mut i = 0usize;
+    let split_kv = |s: &str| -> Result<(String, String), String> {
+        s.split_once('=')
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .ok_or_else(|| usage("expected role=path"))
+    };
+    while i < rest.len() {
+        let need = |i: &mut usize| -> Result<String, String> {
+            *i += 1;
+            rest.get(*i)
+                .cloned()
+                .ok_or_else(|| usage("flag requires a value"))
+        };
+        match rest[i].as_str() {
+            "--case-name" => case_name = need(&mut i)?,
+            "--eval-json" => eval_json = Some(PathBuf::from(need(&mut i)?)),
+            "--ranking-json" => ranking_json = Some(PathBuf::from(need(&mut i)?)),
+            "--output-json" => output_json = Some(PathBuf::from(need(&mut i)?)),
+            "--file" => files.push(split_kv(&need(&mut i)?)?),
+            "--source" => source_files.push(split_kv(&need(&mut i)?)?),
+            other => {
+                return Err(usage(&format!(
+                    "unknown --hydro-delivery-manifest option: {other}"
+                )))
+            }
+        }
+        i += 1;
+    }
+    let eval_json =
+        eval_json.ok_or_else(|| usage("--hydro-delivery-manifest requires --eval-json"))?;
+    let ranking_json =
+        ranking_json.ok_or_else(|| usage("--hydro-delivery-manifest requires --ranking-json"))?;
+    let output_json =
+        output_json.ok_or_else(|| usage("--hydro-delivery-manifest requires --output-json"))?;
+    earthmesh_cli::write_hydro_delivery_manifest(
+        &case_name,
+        &eval_json,
+        &ranking_json,
+        &output_json,
+        &files,
+        &source_files,
+    )
+    .map_err(|err| format!("delivery manifest: {err}"))?;
+    println!("hydro_delivery_manifest_output={}", output_json.display());
     Ok(())
 }
 
