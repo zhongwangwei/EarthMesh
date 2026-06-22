@@ -580,7 +580,7 @@ fn normalized_polygon_vertices(polygon: &[Point]) -> Vec<Point> {
             && point.y.is_finite()
             && vertices
                 .last()
-                .map_or(true, |last| !points_almost_equal(*last, *point))
+                .is_none_or(|last| !points_almost_equal(*last, *point))
         {
             vertices.push(*point);
         }
