@@ -1402,10 +1402,10 @@ fn springjustment_regional_from_refinement_derives_mask_then_runs_core_pipeline(
 
     assert_eq!(output.mask, expected_mask);
     assert_eq!(output.core, expected_core);
-    assert_eq!(output.mask.move_mask[10], true);
-    assert_eq!(output.mask.move_mask[11], false);
-    assert_eq!(output.mask.move_mask[12], false);
-    assert_eq!(output.mask.move_mask[13], false);
+    assert!(output.mask.move_mask[10]);
+    assert!(!output.mask.move_mask[11]);
+    assert!(!output.mask.move_mask[12]);
+    assert!(!output.mask.move_mask[13]);
     assert_eq!(output.core.regional.moved_cells, vec![10]);
 }
 
