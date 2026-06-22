@@ -56,9 +56,15 @@
 | 5 | `refinement_package.py`(manifest) | `write_hydro_delivery_manifest` | `--hydro-delivery-manifest` | manifest metrics + recommended 一致 ✅(端到端编排另需 §下方两 writer) |
 | 6 | `geojson_map.py`/`corridor_preview.py`(可视化) | — | — | **不迁**:leaflet HTML 无 Rust 消费方,GUI 用 walkers/egui 自绘地图 |
 
-**仍未迁(真实剩余,需 Rust 多边形并集/几何 IO)**:
-- `cell_mask_merge.py::write_complete_cell_mask_geojson`、`earthmesh_intersection.py::write_earthmesh_intersection_geojson` —— overlay 原语(`overlay_cell`/`intersection_area`)已在 Rust,但**把 overlay 结果写成 complete-cell-mask / cell×river intersection geojson 的 writer + MPAS cell 多边形读取 + 面积归一化**未迁;它们是 colm_coupling(#已迁,消费方)的上游生产者,也是 #5 端到端编排的依赖。
-- `coastal_band` 的 dissolve、`composite_refine_mask_export` 的并集类操作 —— 需 Rust 多边形 union(当前只有 clip/intersection,无 union)。
-- CaMa 编排(`merit_mesh_regeneration.py` 的 namelist patch 写出)—— 纯组合,可后续接。
+**两个 overlay→geojson writer —— 已补齐 ✅**:
+- `earthmesh_intersection.py::write_earthmesh_intersection_geojson` → Rust `write_earthmesh_intersection_geojson` / `--hydro-cell-intersections`。cell×corridor 交叠 → 逐 cell intersection geojson(river_fraction、面积归一化);用 `intersection_area`(Sutherland-Hodgman,无 shapely)。**river_fraction 与真 shapely Python 一致**;并已串通 → colm_coupling(#1)**纯 Rust 端到端**。
+- `cell_mask_merge.py::write_complete_cell_mask_geojson` → Rust `write_complete_cell_mask_geojson` / `--hydro-complete-cell-mask`。每 cell surface_class(最大交叠面积)+ dominant mask_class(R3>R2>COAST>陆/海)+ 合并 river/coast 属性。**每 cell (mask_class, surface_class, is_hydro_masked) 与真 shapely Python 一致**。
 
-> 结论:本轮把 qa_gates/eval/sweep/coastal-核心/package-manifest 五块纯逻辑忠实迁到 Rust 并逐一与真 Python 对照一致。真正还差的是 **overlay→geojson 的两个 writer**(需补 MPAS cell 读取 + geojson 写出;overlay 数学已具备)与 **多边形 union**(dissolve/composite),以及编排胶水与可视化(可不迁)。
+至此**完整 hydro 交付链在 Rust 跑通**:cells/masks → (intersections + complete-mask) → coupling(#1)+ qa(#1)+ eval(#2)+ ranking(#3)+ manifest(#5)。
+
+**仍未迁(真实剩余)**:
+- **多边形 union**:Rust 现只有 clip/intersection,无通用 union。影响:① intersection writer 对**同类 corridor 互相重叠**时用 Σ-clamped 近似(river reaches 互不相交时精确,已注明);② `coastal_band` dissolve(纯外观,non-dissolve 等价);③ `composite_refine_mask_export` 的并集。通用多边形 union 是独立的、对正确性敏感的大原语,需专门实现 + 充分测试,不宜仓促。
+- **domain clip**(intersection 把 corridor 裁到 domain)、**MultiPolygon 洞**、**MPAS netcdf cell 读取**(已支持 cells-from-geojson;mpas_mesh 路径未接)—— geojson/IO 工作。
+- **可视化**(`geojson_map`/`corridor_preview` leaflet)—— 不迁,GUI 自绘。
+
+> 结论:hydro 数据/几何/eval/ranking/coupling/qa/package/两 overlay-writer **均已在 Rust 并逐一与真 Python 对照一致**。剩余仅:通用多边形 **union**(几个外观/重叠去重场景,需专门实现)、domain-clip/MPAS-IO 细节、可视化(交给 GUI)。
