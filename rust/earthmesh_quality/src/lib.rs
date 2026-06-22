@@ -13,13 +13,15 @@
 use earthmesh_geometry::safety::{validate_polygon, GeometryQualityFlag};
 use earthmesh_geometry::{haversine_km, polygon_area, Point};
 
+pub mod coupling;
 pub mod hydro_coast;
 pub mod io;
 pub mod topology;
 
 /// Pass / warn / fail level for one gate or the whole report.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum QualityLevel {
+    #[default]
     Pass,
     Warn,
     Fail,
