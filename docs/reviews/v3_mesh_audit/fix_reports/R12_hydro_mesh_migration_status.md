@@ -71,9 +71,12 @@
 - `cli::write_coastal_band_dissolve_geojson`:`coastal_band.py` dissolve=True 输出——band cell → 合并 **MultiPolygon geojson**,CW 洞按射线法嵌到 CCW 外环下。
 - 验证:2×2 块→1 环、甜甜圈→外环+洞;**并集区域面积 == shapely `unary_union`**(donut 8、2×2 4)。
 
-**仍未迁(均为 IO 接线,非数值逻辑)**:
-- **CaMa elevtn → band → dissolve 的端到端 CLI**(`coastal_band_cells` + `read_cama_elevtn` + `write_coastal_band_dissolve_geojson` 都在,差一个读 elevtn.bin 串起来的子命令)。
-- **domain clip**(把 corridor 裁到 domain)、**MultiPolygon 洞**(交叠 writer 用外环)、**MPAS netcdf cell 读取**(cells-from-geojson 已支持;mpas_mesh 路径未接)。
+**CaMa elevtn → band → dissolve 端到端 CLI —— 已接通 ✅**:
+- `cli::write_coastal_band_geojson_from_cama` / `--coastal-band-geojson <map_dir> <out> --bbox W S E N [--radius-cells N] [--no-dissolve] [--no-yrev]`:读 `params.txt`+`elevtn.bin` → land mask → coastal band → dissolved MultiPolygon(或逐 cell)geojson。`y_reversed` 默认 true(对齐 Python)。
+- 验证:合成 params.txt+elevtn.bin 端到端;**dissolved band 区域面积 == 真 Python `write_coastal_band_geojson`**(8 deg²)。
+
+**仍未迁(零散 IO,非数值逻辑)**:
+- **domain clip**(交叠把 corridor 裁到 domain)、**MultiPolygon 洞**(交叠 writer 用外环)、**MPAS netcdf cell 读取**(cells-from-geojson 已支持;mpas_mesh 路径未接)。
 - **可视化**(`geojson_map`/`corridor_preview` leaflet)—— 不迁,GUI 自绘。
 
-> 结论:hydro 全部**数值/几何逻辑**已在 Rust 并逐一与真 Python(含 shapely)对照一致——分类/读取/掩膜/交叠/**精确 union 面积**/**union 多边形(dissolve)**/CaMa/coupling/qa/eval/ranking/package/两 overlay-writer。剩余纯属 **IO 接线**(CaMa-elevtn→band 串联、domain-clip、MPAS cell 读取)与**可视化**(交给 GUI)。
+> 结论:`util/hydro_mesh` 的**全部数值/几何逻辑 + 主要端到端管线**已在 Rust 并逐一与真 Python(含 shapely)对照一致——分类/读取/掩膜/交叠/**精确 union 面积**/**union 多边形 dissolve**/CaMa elevtn→band→dissolve 端到端/coupling/qa/eval/ranking/package/两 overlay-writer。剩余仅少量零散 IO(domain-clip、MPAS cell 读取)与可视化(交给 GUI),无数值逻辑空白。
