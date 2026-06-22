@@ -150,6 +150,9 @@ fn run() -> Result<(), String> {
     if first == "--coastal-band-geojson" {
         return run_coastal_band_geojson(args);
     }
+    if first == "--mpas-cell-polygons" {
+        return run_mpas_cell_polygons(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1412,6 +1415,60 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     Ok(())
 }
 
+/// `--mpas-cell-polygons <mesh.nc> <out.geojson> [--bbox W S E N] [--max-cells N]`:
+/// read an MPAS/EarthMesh mesh NetCDF into cell-polygon GeoJSON (the cells input for
+/// --hydro-cell-intersections / --hydro-complete-cell-mask). Port of read_mpas_cell_polygons.
+fn run_mpas_cell_polygons(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut bbox: Option<[f64; 4]> = None;
+    let mut max_cells: Option<usize> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--bbox" => {
+                let mut v = [0.0; 4];
+                for slot in v.iter_mut() {
+                    i += 1;
+                    *slot = rest
+                        .get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--bbox needs W S E N"))?;
+                }
+                bbox = Some(v);
+            }
+            "--max-cells" => {
+                i += 1;
+                max_cells = Some(
+                    rest.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--max-cells requires an integer"))?,
+                );
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --mpas-cell-polygons option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 2 {
+        return Err(usage("--mpas-cell-polygons needs <mesh.nc> <out.geojson>"));
+    }
+    let count = earthmesh_cli::write_mpas_cell_polygons_geojson(
+        &positional[0],
+        &positional[1],
+        bbox,
+        max_cells,
+    )
+    .map_err(|err| format!("mpas cell polygons: {err}"))?;
+    println!("mpas_cell_features={count}");
+    println!("mpas_cell_output={}", positional[1].display());
+    Ok(())
+}
+
 /// `--coastal-band-geojson <map_dir> <out.geojson> --bbox W S E N
 /// [--radius-cells N] [--no-dissolve] [--no-yrev] [--undef U]`:
 /// CaMa elevtn -> land mask -> coastal band -> GeoJSON (port of coastal_band.py end-to-end).
@@ -1549,9 +1606,21 @@ fn run_hydro_cell_intersections(args: impl Iterator<Item = String>) -> Result<()
     let mut classes: Vec<String> = vec!["R2".into(), "R3".into()];
     let mut min_fraction = 0.0f64;
     let mut unit_sphere = false;
+    let mut domain_bbox: Option<[f64; 4]> = None;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
+            "--domain-bbox" => {
+                let mut v = [0.0; 4];
+                for slot in v.iter_mut() {
+                    i += 1;
+                    *slot = rest
+                        .get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--domain-bbox needs W S E N"))?;
+                }
+                domain_bbox = Some(v);
+            }
             "--classes" => {
                 i += 1;
                 classes = rest
@@ -1591,6 +1660,7 @@ fn run_hydro_cell_intersections(args: impl Iterator<Item = String>) -> Result<()
         &classes,
         min_fraction,
         unit_sphere,
+        domain_bbox,
     )
     .map_err(|err| format!("cell intersections: {err}"))?;
     println!("hydro_cell_intersection_features={count}");

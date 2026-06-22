@@ -38,6 +38,7 @@ fn cell_river_overlap_fraction_and_coupling_chain() {
         &["R3".to_string()],
         0.0,
         false,
+        None,
     )
     .expect("intersections");
     assert_eq!(n, 1, "one cell x R3 overlap feature");
@@ -84,9 +85,51 @@ fn min_fraction_filters_small_overlaps() {
         &["R3".to_string()],
         0.1,
         false,
+        None,
     )
     .expect("x");
     assert_eq!(n, 0, "0.05 fraction filtered out by min_fraction 0.1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn domain_bbox_clips_corridors() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_dom_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Cell 4x4 (area 16). R3 corridor [0,6]x[0,2] (wider than the cell).
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[6,0],[6,2],[0,2],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    let out = dir.join("x.geojson");
+    // domain bbox [0,0,2,4] keeps only the left half -> corridor∩domain∩cell = [0,2]x[0,2]
+    // area 4 -> fraction 4/16 = 0.25 (without domain it would be [0,4]x[0,2]=8 -> 0.5).
+    write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        Some([0.0, 0.0, 2.0, 4.0]),
+    )
+    .expect("x");
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        json.contains("\"river_fraction\": 0.25"),
+        "domain-clipped fraction:\n{json}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -122,6 +165,7 @@ fn overlapping_same_class_corridors_use_union_not_sum() {
         &["R3".to_string()],
         0.0,
         false,
+        None,
     )
     .expect("x");
     let json = std::fs::read_to_string(&out).unwrap();

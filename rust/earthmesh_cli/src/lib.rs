@@ -30022,6 +30022,138 @@ pub fn write_coastal_band_geojson_from_cama(
     }
 }
 
+// ---- util/hydro_mesh/earthmesh_intersection.py::read_mpas_cell_polygons port ----
+
+fn mpas_deg_lon(rad: f64) -> f64 {
+    let d = rad.to_degrees();
+    let mut n = (d + 180.0).rem_euclid(360.0) - 180.0;
+    if n == -180.0 && d > 0.0 {
+        n = 180.0;
+    }
+    round12(n)
+}
+fn mpas_deg_lat(rad: f64) -> f64 {
+    round12(rad.to_degrees())
+}
+
+/// Faithful port of `read_mpas_cell_polygons` geometry: MPAS/EarthMesh cell arrays
+/// (lon/lat in radians, 1-based `vertices_on_cell` flattened `n_cells × max_edges`) →
+/// cell-polygon GeoJSON (the cells input the overlay writers consume). `bbox` filters
+/// by cell center; `area_cell` (if given) becomes `source_areaCell`.
+#[allow(clippy::too_many_arguments)]
+pub fn mpas_cell_polygons_geojson(
+    lon_cell: &[f64],
+    lat_cell: &[f64],
+    lon_vertex: &[f64],
+    lat_vertex: &[f64],
+    n_edges_on_cell: &[i32],
+    vertices_on_cell: &[i32],
+    area_cell: Option<&[f64]>,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> String {
+    let n_cells = lon_cell.len();
+    let max_edges = if n_cells > 0 {
+        vertices_on_cell.len() / n_cells
+    } else {
+        0
+    };
+    let lon_v: Vec<f64> = lon_vertex.iter().map(|&r| mpas_deg_lon(r)).collect();
+    let lat_v: Vec<f64> = lat_vertex.iter().map(|&r| mpas_deg_lat(r)).collect();
+    let mut features: Vec<String> = Vec::new();
+    for ci in 0..n_cells {
+        let clon = mpas_deg_lon(lon_cell[ci]);
+        let clat = mpas_deg_lat(lat_cell[ci]);
+        if let Some(b) = bbox {
+            if !(b[0] <= clon && clon <= b[2] && b[1] <= clat && clat <= b[3]) {
+                continue;
+            }
+        }
+        let ne = (n_edges_on_cell.get(ci).copied().unwrap_or(0).max(0) as usize).min(max_edges);
+        let mut ring: Vec<(f64, f64)> = Vec::with_capacity(ne + 1);
+        for k in 0..ne {
+            let vid = vertices_on_cell[ci * max_edges + k];
+            if vid > 0 && (vid as usize) <= lon_v.len() {
+                ring.push((lon_v[vid as usize - 1], lat_v[vid as usize - 1]));
+            }
+        }
+        if ring.len() < 3 {
+            continue;
+        }
+        let first = ring[0];
+        ring.push(first); // close
+        let coords = ring
+            .iter()
+            .map(|(x, y)| format!("[{x}, {y}]"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut props = format!(
+            "\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
+             \"center_lon\": {}, \"center_lat\": {}",
+            ci + 1,
+            ci,
+            clon,
+            clat
+        );
+        if let Some(area) = area_cell {
+            if let Some(a) = area.get(ci) {
+                props.push_str(&format!(
+                    ", \"source_areaCell\": {}, \"source_areaCell_units\": \"file_units\"",
+                    a
+                ));
+            }
+        }
+        features.push(format!(
+            "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": [[{}]]}}, \"properties\": {{{}}}}}",
+            coords, props
+        ));
+        if let Some(mc) = max_cells {
+            if features.len() >= mc {
+                break;
+            }
+        }
+    }
+    format!(
+        "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
+        features.join(",\n")
+    )
+}
+
+/// Read an MPAS/EarthMesh mesh NetCDF and write cell-polygon GeoJSON (the cells input
+/// for `--hydro-cell-intersections` / `--hydro-complete-cell-mask`).
+pub fn write_mpas_cell_polygons_geojson(
+    mesh_netcdf: impl AsRef<Path>,
+    output_geojson: impl AsRef<Path>,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> io::Result<usize> {
+    let file = netcdf::open(mesh_netcdf.as_ref()).map_err(netcdf_to_io_error)?;
+    let lon_cell = required_values_f64(&file, "lonCell")?;
+    let lat_cell = required_values_f64(&file, "latCell")?;
+    let lon_vertex = required_values_f64(&file, "lonVertex")?;
+    let lat_vertex = required_values_f64(&file, "latVertex")?;
+    let n_edges_on_cell = required_values_i32(&file, "nEdgesOnCell")?;
+    let vertices_on_cell = required_values_i32_2d(&file, "verticesOnCell")?;
+    let area_cell = required_values_f64(&file, "areaCell").ok();
+    let json = mpas_cell_polygons_geojson(
+        &lon_cell,
+        &lat_cell,
+        &lon_vertex,
+        &lat_vertex,
+        &n_edges_on_cell,
+        &vertices_on_cell,
+        area_cell.as_deref(),
+        bbox,
+        max_cells,
+    );
+    let feature_count = json.matches("\"type\": \"Feature\"").count();
+    if let Some(parent) = output_geojson.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_geojson, json)?;
+    Ok(feature_count)
+}
+
 // ---- util/hydro_mesh/refinement_package.py manifest builder port ----
 
 fn manifest_feature_count(node: Option<&JsonNode>) -> i64 {
@@ -30220,6 +30352,7 @@ fn feature_river_class(props: Option<&BTreeMap<String, JsonNode>>) -> String {
 /// per-cell overlap area is the SUM of `intersection_area(cell, corridor)` clamped to the
 /// cell area — exact when same-class corridors are disjoint (river reaches), which is the
 /// realistic case; Python unions same-class corridors first (matters only when they overlap).
+#[allow(clippy::too_many_arguments)]
 pub fn write_earthmesh_intersection_geojson(
     cell_geojson: impl AsRef<Path>,
     corridor_geojson: impl AsRef<Path>,
@@ -30227,8 +30360,18 @@ pub fn write_earthmesh_intersection_geojson(
     include_classes: &[String],
     min_fraction: f64,
     unit_sphere_area: bool,
+    domain_bbox: Option<[f64; 4]>,
 ) -> io::Result<usize> {
-    use earthmesh_geometry::{clip_convex_polygon, polygon_area, polygon_union_area};
+    use earthmesh_geometry::{clip_convex_polygon, polygon_area, polygon_union_area, Point};
+    // Convex bbox clip region [W,S,E,N] -> corridor ∩ domain (exact, bbox is convex).
+    let domain_rect = domain_bbox.map(|b| {
+        vec![
+            Point::new(b[0], b[1]),
+            Point::new(b[2], b[1]),
+            Point::new(b[2], b[3]),
+            Point::new(b[0], b[3]),
+        ]
+    });
     if !(0.0..=1.0).contains(&min_fraction) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -30254,6 +30397,14 @@ pub fn write_earthmesh_intersection_geojson(
         }
         if let Some(geom) = obj.and_then(|o| o.get("geometry")) {
             for ring in geometry_outer_rings(geom) {
+                if ring.len() < 3 {
+                    continue;
+                }
+                // optional domain clip: corridor ∩ domain bbox (convex, exact)
+                let ring = match &domain_rect {
+                    Some(rect) => clip_convex_polygon(&ring, rect),
+                    None => ring,
+                };
                 if ring.len() >= 3 {
                     class_rings.entry(class.clone()).or_default().push(ring);
                 }
