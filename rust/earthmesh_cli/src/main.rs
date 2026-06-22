@@ -141,6 +141,9 @@ fn run() -> Result<(), String> {
     if first == "--hydro-delivery-manifest" {
         return run_hydro_delivery_manifest(args);
     }
+    if first == "--hydro-cell-intersections" {
+        return run_hydro_cell_intersections(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1400,6 +1403,66 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--hydro-cell-intersections <cells.geojson> <corridors.geojson> <out.geojson>
+/// [--classes R2,R3] [--min-fraction F] [--unit-sphere-area]`:
+/// overlay EarthMesh cells x river/coast corridors -> per-cell intersection GeoJSON
+/// (the input that --colm-coupling-from-intersections consumes). Port of
+/// earthmesh_intersection.py.
+fn run_hydro_cell_intersections(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut classes: Vec<String> = vec!["R2".into(), "R3".into()];
+    let mut min_fraction = 0.0f64;
+    let mut unit_sphere = false;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--classes" => {
+                i += 1;
+                classes = rest
+                    .get(i)
+                    .ok_or_else(|| usage("--classes requires a value"))?
+                    .split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .collect();
+            }
+            "--min-fraction" => {
+                i += 1;
+                min_fraction = rest
+                    .get(i)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| usage("--min-fraction requires a number"))?;
+            }
+            "--unit-sphere-area" => unit_sphere = true,
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --hydro-cell-intersections option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 3 {
+        return Err(usage(
+            "--hydro-cell-intersections needs <cells.geojson> <corridors.geojson> <out.geojson>",
+        ));
+    }
+    let count = earthmesh_cli::write_earthmesh_intersection_geojson(
+        &positional[0],
+        &positional[1],
+        &positional[2],
+        &classes,
+        min_fraction,
+        unit_sphere,
+    )
+    .map_err(|err| format!("cell intersections: {err}"))?;
+    println!("hydro_cell_intersection_features={count}");
+    println!("hydro_cell_intersection_output={}", positional[2].display());
     Ok(())
 }
 

@@ -1,0 +1,91 @@
+//! Rust port of util/hydro_mesh/earthmesh_intersection.py: overlay cells x corridors
+//! into a per-cell intersection GeoJSON, then feed that into the colm_coupling port —
+//! proving the full mesh+masks -> intersections -> coupling pipeline runs in Rust
+//! (shapely-free). Pure geometry (no NetCDF data).
+
+use earthmesh_cli::{colm_coupling_rows_from_intersections, write_earthmesh_intersection_geojson};
+
+#[test]
+fn cell_river_overlap_fraction_and_coupling_chain() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Cell = 2x2 square (area 4). R3 corridor = left half [0,1]x[0,2] (area 2).
+    // Overlap area 2 -> river_fraction 0.5.
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1","source_areaCell":4.0},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let out = dir.join("intersections.geojson");
+    let n = write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+    )
+    .expect("intersections");
+    assert_eq!(n, 1, "one cell x R3 overlap feature");
+
+    let geojson = std::fs::read_to_string(&out).unwrap();
+    assert!(geojson.contains("\"river_class\": \"R3\""), "{geojson}");
+    assert!(geojson.contains("\"river_fraction\": 0.5"), "{geojson}");
+
+    // Full Rust chain: feed the intersection GeoJSON into the colm_coupling port.
+    let rows = colm_coupling_rows_from_intersections(&geojson, 0.0).expect("coupling");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], "c1"); // cell_id
+    assert_eq!(rows[0][2], "R3"); // river_class
+    assert_eq!(rows[0][3], "0.5"); // river_fraction
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn min_fraction_filters_small_overlaps() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_min_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // R3 corridor covers only a thin 0.1-wide strip -> fraction 0.05, below min 0.1.
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[0.1,0],[0.1,2],[0,2],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    let out = dir.join("x.geojson");
+    let n = write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.1,
+        false,
+    )
+    .expect("x");
+    assert_eq!(n, 0, "0.05 fraction filtered out by min_fraction 0.1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
