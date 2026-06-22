@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build clean test test-fast test-gui test-slow test-full fmt release-check check-method-c-neighbors
+.PHONY: all build clean test test-fast test-gui test-slow test-full fmt clippy clippy-full release-check check-method-c-neighbors
 
 all: build
 
@@ -37,6 +37,21 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_planner/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_gui/Cargo.toml --check
+
+# Lint gate: deny every clippy + rustc warning. Per-crate `[lints.clippy]` in each
+# Cargo.toml already allows the intentionally-kept patterns (Fortran-mirroring
+# signatures/loops in mesh+cli, idiomatic egui setup in gui); anything else fails CI.
+# `clippy` = no-netcdf crates (CI fast job); `clippy-full` adds cli+gui (needs NetCDF).
+clippy:
+	$(CARGO) clippy --manifest-path rust/earthmesh_core/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets -- -D warnings
+
+clippy-full: clippy
+	$(CARGO) clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES) -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_gui/Cargo.toml --all-targets -- -D warnings
 
 # Fast regression gate: no NetCDF, no GUI — pure Rust crates only. Used by CI's
 # `fast` job and as the quick local loop. Builds in seconds (no netcdf-c/HDF5).
