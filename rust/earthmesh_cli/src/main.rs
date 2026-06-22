@@ -153,6 +153,9 @@ fn run() -> Result<(), String> {
     if first == "--mpas-cell-polygons" {
         return run_mpas_cell_polygons(args);
     }
+    if first == "--coupling-quality-from-mesh" {
+        return run_coupling_quality_from_mesh(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1466,6 +1469,56 @@ fn run_mpas_cell_polygons(args: impl Iterator<Item = String>) -> Result<(), Stri
     .map_err(|err| format!("mpas cell polygons: {err}"))?;
     println!("mpas_cell_features={count}");
     println!("mpas_cell_output={}", positional[1].display());
+    Ok(())
+}
+
+/// `--coupling-quality-from-mesh <gridfile.nc> <landtype.nc> <out.json>
+/// [--gridnum-perdegree N]`: classify each mesh cell's land/ocean fraction from the
+/// land-type grid + derive neighbours, then run the R7 coupling-quality validator and
+/// write coupling_quality.json (the mesh+land-type counterpart of --hydro-mesh-qa).
+fn run_coupling_quality_from_mesh(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut gridnum_perdegree = 1usize;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--gridnum-perdegree" => {
+                i += 1;
+                gridnum_perdegree = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--gridnum-perdegree requires an integer"))?;
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --coupling-quality-from-mesh option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 3 {
+        return Err(usage(
+            "--coupling-quality-from-mesh needs <gridfile.nc> <landtype.nc> <out.json>",
+        ));
+    }
+    let report = earthmesh_cli::write_coupling_quality_from_gridfile(
+        &positional[0],
+        &positional[1],
+        gridnum_perdegree,
+        &positional[2],
+    )
+    .map_err(|err| format!("coupling quality from mesh: {err}"))?;
+    println!("coupling_quality_verdict={}", report.verdict.as_str());
+    println!("coupling_quality_land_cells={}", report.total_land_cells);
+    println!("coupling_quality_ocean_cells={}", report.total_ocean_cells);
+    println!(
+        "coupling_quality_mixed_coast={}",
+        report.mixed_coastline_cells
+    );
+    println!("coupling_quality_output={}", positional[2].display());
     Ok(())
 }
 

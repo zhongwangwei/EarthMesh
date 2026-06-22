@@ -94,3 +94,38 @@ fn mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf() {
         .expect("CSV -> CoLM coupling NetCDF");
     assert!(nc.exists() && std::fs::metadata(&nc).unwrap().len() > 0);
 }
+
+// R7 coupling-quality validator end-to-end on the same mesh+land-type fixtures: each
+// cell's land/ocean fraction (centre + corners) + adjacency feed
+// earthmesh_quality::coupling, producing coupling_quality.json. Ignored like the sibling
+// (needs the NXP16 gridfile + a land-type NetCDF); run with `make test-slow`.
+#[test]
+#[ignore = "slow local-fixture coupling-quality smoke; run with make test-slow"]
+fn mesh_plus_landtype_coupling_quality_report() {
+    let gf =
+        PathBuf::from("/tmp/earthmesh_cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4");
+    let Some(lt) = landtype() else {
+        eprintln!("skip: no land-type NetCDF (set EARTHMESH_LANDTYPE)");
+        return;
+    };
+    if !gf.exists() {
+        eprintln!("skip: no NXP16 hex gridfile fixture");
+        return;
+    }
+    let out = std::env::temp_dir().join("coupling_quality_test.json");
+    let report = earthmesh_cli::write_coupling_quality_from_gridfile(&gf, &lt, 120, &out)
+        .expect("coupling quality from gridfile");
+    let total = report.total_land_cells + report.total_ocean_cells;
+    assert!(total > 2000, "global NXP16 mesh ~2562 cells, got {total}");
+    // a real global coastline must produce some fractional mixed-coast cells
+    assert!(
+        report.mixed_coastline_cells > 0,
+        "expected coastline cells on a global mesh"
+    );
+    assert!(matches!(report.verdict.as_str(), "pass" | "warn" | "fail"));
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        json.contains("\"kind\": \"earthmesh_coupling_quality\""),
+        "{json}"
+    );
+}
