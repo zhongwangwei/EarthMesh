@@ -4396,8 +4396,21 @@ fn clean_merit_fill(value: f64) -> f64 {
     }
 }
 
+/// Does tile `a` (a 5° MERIT tile, never spans the antimeridian) intersect query
+/// `b`? A query whose `west > east` is interpreted as crossing the antimeridian
+/// (e.g. west=178, east=-178 means 178..180 ∪ -180..-178); without this, tiles near
+/// ±180 were silently dropped for trans-Pacific / Bering / Fiji regions.
 fn merit_bbox_intersects(a: MeritLonLatBbox, b: MeritLonLatBbox) -> bool {
-    a.west < b.east && a.east > b.west && a.south < b.north && a.north > b.south
+    let lat_overlap = a.south < b.north && a.north > b.south;
+    if !lat_overlap {
+        return false;
+    }
+    if b.west <= b.east {
+        a.west < b.east && a.east > b.west
+    } else {
+        // query wraps the antimeridian: split into [west, 180] and [-180, east]
+        (a.east > b.west && a.west < 180.0) || (a.west < b.east && a.east > -180.0)
+    }
 }
 
 fn classify_merit_cell(
@@ -18769,6 +18782,42 @@ pub struct GridfileMeshPoints {
     pub n_w: Vec<i32>,
 }
 
+/// Build an engine-agnostic [`earthmesh_quality::QualityMeshInput`] from a gridfile's
+/// triangle (M→W) view: W-points become vertices, each non-degenerate M triangle
+/// becomes a cell. Shared by the CLI `--mesh-quality` path and the GUI (so a normal
+/// run can write `quality_summary.json` for the dashboard).
+pub fn quality_input_from_gridfile(
+    mesh: &GridfileMeshPoints,
+) -> earthmesh_quality::QualityMeshInput {
+    use earthmesh_geometry::Point;
+    use earthmesh_quality::{QualityCell, QualityMeshInput};
+    let vertices: Vec<Point> = mesh
+        .w_lon
+        .iter()
+        .zip(&mesh.w_lat)
+        .map(|(&lon, &lat)| Point::new(lon, lat))
+        .collect();
+    let wn = vertices.len();
+    let mut cells = Vec::new();
+    for tri in mesh.m_to_w.chunks_exact(3) {
+        let idx: Vec<usize> = tri
+            .iter()
+            .filter(|&&v| v >= 1 && (v as usize) <= wn)
+            .map(|&v| (v as usize) - 1)
+            .collect();
+        // Require 3 distinct W vertices; OLAM gridfiles carry sentinel/dummy M cells
+        // (1-based arrays) whose triplets are degenerate — skip them.
+        if idx.len() == 3 && idx[0] != idx[1] && idx[1] != idx[2] && idx[0] != idx[2] {
+            cells.push(QualityCell {
+                vertices: idx,
+                refine_level: None,
+                neighbors: Vec::new(),
+            });
+        }
+    }
+    QualityMeshInput { vertices, cells }
+}
+
 /// Read the M-point (cell-centre) and W-point (vertex) lon/lat arrays plus the
 /// triangle→vertex connectivity from an EarthMesh gridfile (`Unstructured_Mesh_Save`
 /// schema) for GUI visualisation.
@@ -32844,6 +32893,13 @@ pub fn apply_read_nl_workspace_plan(
     let canonical_workdir = workdir.canonicalize()?;
     let mut allowed_roots = vec![canonical_workdir];
     if let Some(parent) = namelist_source.parent() {
+        // A bare filename (e.g. `mkgrd.x case.nml` run from the case dir) has an
+        // empty parent; canonicalizing "" errors with ENOENT. Treat it as cwd.
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         allowed_roots.push(parent.canonicalize()?);
     }
     allowed_roots.sort();

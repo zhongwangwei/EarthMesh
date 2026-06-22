@@ -79,7 +79,7 @@ fn run_mesh_quality(mut args: impl Iterator<Item = String>) -> Result<(), String
 
     let mesh = earthmesh_cli::read_gridfile_mesh_points(&gridfile)
         .map_err(|e| format!("read gridfile {}: {e}", gridfile.display()))?;
-    let input = quality_input_from_gridfile(&mesh);
+    let input = earthmesh_cli::quality_input_from_gridfile(&mesh);
     let report =
         earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
     let written = earthmesh_quality::io::write_all(&report, &out_dir)
@@ -94,41 +94,6 @@ fn run_mesh_quality(mut args: impl Iterator<Item = String>) -> Result<(), String
         println!("mesh_quality_output={}", path.display());
     }
     Ok(())
-}
-
-/// Build a `QualityMeshInput` from a gridfile's triangle (M->W) connectivity.
-/// `m_to_w` is 1-based into the W points; sentinel / out-of-range triplets are skipped.
-fn quality_input_from_gridfile(
-    mesh: &earthmesh_cli::GridfileMeshPoints,
-) -> earthmesh_quality::QualityMeshInput {
-    use earthmesh_geometry::Point;
-    use earthmesh_quality::{QualityCell, QualityMeshInput};
-    let vertices: Vec<Point> = mesh
-        .w_lon
-        .iter()
-        .zip(&mesh.w_lat)
-        .map(|(&lon, &lat)| Point::new(lon, lat))
-        .collect();
-    let wn = vertices.len();
-    let mut cells = Vec::new();
-    for tri in mesh.m_to_w.chunks_exact(3) {
-        let idx: Vec<usize> = tri
-            .iter()
-            .filter(|&&v| v >= 1 && (v as usize) <= wn)
-            .map(|&v| (v as usize) - 1)
-            .collect();
-        // Require 3 distinct W vertices; OLAM gridfiles carry sentinel/dummy M cells
-        // (1-based arrays) whose triplets are degenerate — skip them, they are not
-        // real mesh cells.
-        if idx.len() == 3 && idx[0] != idx[1] && idx[1] != idx[2] && idx[0] != idx[2] {
-            cells.push(QualityCell {
-                vertices: idx,
-                refine_level: None,
-                neighbors: Vec::new(),
-            });
-        }
-    }
-    QualityMeshInput { vertices, cells }
 }
 
 fn run() -> Result<(), String> {
