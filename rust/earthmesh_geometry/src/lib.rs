@@ -114,20 +114,36 @@ pub fn clip_convex_polygon(subject: &[Point], clip: &[Point]) -> Vec<Point> {
     output
 }
 
+/// Intersection of two simple polygons as a set of disjoint convex pieces (each a
+/// triangle-pair clip). Exact for arbitrary (non-convex) simple polygons via
+/// ear-clip triangulation. Empty if they do not overlap. Falls back to a single
+/// convex clip if a polygon cannot be triangulated.
+pub fn polygon_intersection_pieces(a: &[Point], b: &[Point]) -> Vec<Vec<Point>> {
+    let (Some(a_tri), Some(b_tri)) = (triangulate_simple_polygon(a), triangulate_simple_polygon(b))
+    else {
+        let c = clip_convex_polygon(a, b);
+        return if c.len() >= 3 && polygon_area(&c) > 0.0 {
+            vec![c]
+        } else {
+            Vec::new()
+        };
+    };
+    let mut pieces = Vec::new();
+    for at in &a_tri {
+        for bt in &b_tri {
+            let c = clip_convex_polygon(at, bt);
+            if c.len() >= 3 && polygon_area(&c) > 0.0 {
+                pieces.push(c);
+            }
+        }
+    }
+    pieces
+}
+
 pub fn intersection_area(a: &[Point], b: &[Point]) -> f64 {
-    let Some(a_triangles) = triangulate_simple_polygon(a) else {
-        return polygon_area(&clip_convex_polygon(a, b));
-    };
-    let Some(b_triangles) = triangulate_simple_polygon(b) else {
-        return polygon_area(&clip_convex_polygon(a, b));
-    };
-    a_triangles
+    polygon_intersection_pieces(a, b)
         .iter()
-        .flat_map(|a_triangle| {
-            b_triangles
-                .iter()
-                .map(move |b_triangle| polygon_area(&clip_convex_polygon(a_triangle, b_triangle)))
-        })
+        .map(|p| polygon_area(p))
         .sum()
 }
 

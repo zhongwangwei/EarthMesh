@@ -30296,6 +30296,24 @@ fn json_node_to_string(node: &JsonNode) -> String {
 
 /// Outer ring(s) of a Polygon / MultiPolygon geometry node as lon/lat point lists.
 /// Holes are ignored (the hydro masks are simple polygons).
+/// Read all Polygon/MultiPolygon outer rings from a GeoJSON file (e.g. an analysis
+/// domain) as lon/lat tuple rings. Used to feed an arbitrary-polygon domain into the
+/// intersection writer.
+pub fn read_polygon_outer_rings(geojson: impl AsRef<Path>) -> io::Result<Vec<Vec<(f64, f64)>>> {
+    let root = JsonParser::new(&fs::read_to_string(geojson.as_ref())?).parse()?;
+    let mut rings = Vec::new();
+    for feature in geojson_feature_nodes(&root) {
+        if let Some(geom) = feature.as_object().and_then(|o| o.get("geometry")) {
+            for ring in geometry_outer_rings(geom) {
+                if ring.len() >= 3 {
+                    rings.push(ring.iter().map(|p| (p.x, p.y)).collect());
+                }
+            }
+        }
+    }
+    Ok(rings)
+}
+
 fn geometry_outer_rings(geometry: &JsonNode) -> Vec<Vec<earthmesh_geometry::Point>> {
     use earthmesh_geometry::Point;
     let obj = geometry.as_object();
@@ -30360,17 +30378,17 @@ pub fn write_earthmesh_intersection_geojson(
     include_classes: &[String],
     min_fraction: f64,
     unit_sphere_area: bool,
-    domain_bbox: Option<[f64; 4]>,
+    domain: Option<&[Vec<(f64, f64)>]>,
 ) -> io::Result<usize> {
-    use earthmesh_geometry::{clip_convex_polygon, polygon_area, polygon_union_area, Point};
-    // Convex bbox clip region [W,S,E,N] -> corridor ∩ domain (exact, bbox is convex).
-    let domain_rect = domain_bbox.map(|b| {
-        vec![
-            Point::new(b[0], b[1]),
-            Point::new(b[2], b[1]),
-            Point::new(b[2], b[3]),
-            Point::new(b[0], b[3]),
-        ]
+    use earthmesh_geometry::{
+        clip_convex_polygon, polygon_area, polygon_intersection_pieces, polygon_union_area, Point,
+    };
+    // Arbitrary-polygon analysis domain (lon/lat tuple rings) -> Point rings.
+    let domain_polys: Option<Vec<Vec<Point>>> = domain.map(|polys| {
+        polys
+            .iter()
+            .map(|ring| ring.iter().map(|&(x, y)| Point::new(x, y)).collect())
+            .collect()
     });
     if !(0.0..=1.0).contains(&min_fraction) {
         return Err(io::Error::new(
@@ -30400,13 +30418,18 @@ pub fn write_earthmesh_intersection_geojson(
                 if ring.len() < 3 {
                     continue;
                 }
-                // optional domain clip: corridor ∩ domain bbox (convex, exact)
-                let ring = match &domain_rect {
-                    Some(rect) => clip_convex_polygon(&ring, rect),
-                    None => ring,
-                };
-                if ring.len() >= 3 {
-                    class_rings.entry(class.clone()).or_default().push(ring);
+                match &domain_polys {
+                    // optional domain clip: corridor ∩ domain (arbitrary polygons,
+                    // exact via triangulation); a piece per domain polygon, deduped
+                    // later by the per-cell union.
+                    Some(dpolys) => {
+                        for dpoly in dpolys {
+                            for piece in polygon_intersection_pieces(&ring, dpoly) {
+                                class_rings.entry(class.clone()).or_default().push(piece);
+                            }
+                        }
+                    }
+                    None => class_rings.entry(class.clone()).or_default().push(ring),
                 }
             }
         }

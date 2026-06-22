@@ -1606,7 +1606,7 @@ fn run_hydro_cell_intersections(args: impl Iterator<Item = String>) -> Result<()
     let mut classes: Vec<String> = vec!["R2".into(), "R3".into()];
     let mut min_fraction = 0.0f64;
     let mut unit_sphere = false;
-    let mut domain_bbox: Option<[f64; 4]> = None;
+    let mut domain: Option<Vec<Vec<(f64, f64)>>> = None;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -1619,7 +1619,22 @@ fn run_hydro_cell_intersections(args: impl Iterator<Item = String>) -> Result<()
                         .and_then(|s| s.parse().ok())
                         .ok_or_else(|| usage("--domain-bbox needs W S E N"))?;
                 }
-                domain_bbox = Some(v);
+                domain = Some(vec![vec![
+                    (v[0], v[1]),
+                    (v[2], v[1]),
+                    (v[2], v[3]),
+                    (v[0], v[3]),
+                ]]);
+            }
+            "--domain-geojson" => {
+                i += 1;
+                let path = rest
+                    .get(i)
+                    .ok_or_else(|| usage("--domain-geojson requires a value"))?;
+                domain = Some(
+                    earthmesh_cli::read_polygon_outer_rings(path)
+                        .map_err(|err| format!("read domain geojson: {err}"))?,
+                );
             }
             "--classes" => {
                 i += 1;
@@ -1660,7 +1675,7 @@ fn run_hydro_cell_intersections(args: impl Iterator<Item = String>) -> Result<()
         &classes,
         min_fraction,
         unit_sphere,
-        domain_bbox,
+        domain.as_deref(),
     )
     .map_err(|err| format!("cell intersections: {err}"))?;
     println!("hydro_cell_intersection_features={count}");

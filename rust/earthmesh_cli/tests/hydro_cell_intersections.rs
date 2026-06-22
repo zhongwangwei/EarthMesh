@@ -115,6 +115,7 @@ fn domain_bbox_clips_corridors() {
     let out = dir.join("x.geojson");
     // domain bbox [0,0,2,4] keeps only the left half -> corridor∩domain∩cell = [0,2]x[0,2]
     // area 4 -> fraction 4/16 = 0.25 (without domain it would be [0,4]x[0,2]=8 -> 0.5).
+    let domain = vec![vec![(0.0, 0.0), (2.0, 0.0), (2.0, 4.0), (0.0, 4.0)]];
     write_earthmesh_intersection_geojson(
         dir.join("cells.geojson"),
         dir.join("corridors.geojson"),
@@ -122,13 +123,69 @@ fn domain_bbox_clips_corridors() {
         &["R3".to_string()],
         0.0,
         false,
-        Some([0.0, 0.0, 2.0, 4.0]),
+        Some(&domain),
     )
     .expect("x");
     let json = std::fs::read_to_string(&out).unwrap();
     assert!(
         json.contains("\"river_fraction\": 0.25"),
         "domain-clipped fraction:\n{json}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn non_convex_domain_clips_corridor_exactly() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_ncdom_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Cell 4x4 (area 16). R3 corridor covers the whole cell [0,4]x[0,4].
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,4],[0,4],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    // L-shaped (non-convex) domain = 4x4 minus the top-right 2x2 quadrant -> area 12.
+    // corridor∩domain∩cell = the L = 12 -> fraction 12/16 = 0.75.
+    let l_domain = vec![vec![
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 2.0),
+        (2.0, 2.0),
+        (2.0, 4.0),
+        (0.0, 4.0),
+    ]];
+    let out = dir.join("x.geojson");
+    write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        Some(&l_domain),
+    )
+    .expect("x");
+    let json = std::fs::read_to_string(&out).unwrap();
+    // triangulation accumulates tiny float error -> compare approximately to 12/16.
+    let frac: f64 = json
+        .split("\"river_fraction\": ")
+        .nth(1)
+        .and_then(|s| s.split(|c: char| c == ',' || c == '}').next())
+        .and_then(|s| s.trim().parse().ok())
+        .expect("river_fraction");
+    assert!(
+        (frac - 0.75).abs() < 1e-9,
+        "L-domain fraction ~0.75, got {frac}\n{json}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
