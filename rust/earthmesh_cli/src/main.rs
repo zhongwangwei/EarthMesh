@@ -147,6 +147,9 @@ fn run() -> Result<(), String> {
     if first == "--hydro-complete-cell-mask" {
         return run_hydro_complete_cell_mask(args);
     }
+    if first == "--coastal-band-geojson" {
+        return run_coastal_band_geojson(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1406,6 +1409,80 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--coastal-band-geojson <map_dir> <out.geojson> --bbox W S E N
+/// [--radius-cells N] [--no-dissolve] [--no-yrev] [--undef U]`:
+/// CaMa elevtn -> land mask -> coastal band -> GeoJSON (port of coastal_band.py end-to-end).
+fn run_coastal_band_geojson(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut bbox: Option<[f64; 4]> = None;
+    let mut radius_cells: i64 = 3;
+    let mut dissolve = true;
+    let mut y_reversed = true; // matches Python default y_reversed_storage=True
+    let mut undef = -9999.0f64;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--bbox" => {
+                let mut v = [0.0; 4];
+                for slot in v.iter_mut() {
+                    i += 1;
+                    *slot = rest
+                        .get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--bbox needs W S E N"))?;
+                }
+                bbox = Some(v);
+            }
+            "--radius-cells" => {
+                i += 1;
+                radius_cells = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--radius-cells requires an integer"))?;
+            }
+            "--undef" => {
+                i += 1;
+                undef = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--undef requires a number"))?;
+            }
+            "--no-dissolve" => dissolve = false,
+            "--no-yrev" => y_reversed = false,
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --coastal-band-geojson option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 2 {
+        return Err(usage(
+            "--coastal-band-geojson needs <map_dir> <out.geojson>",
+        ));
+    }
+    let bbox = bbox.ok_or_else(|| usage("--coastal-band-geojson requires --bbox W S E N"))?;
+    let count = earthmesh_cli::write_coastal_band_geojson_from_cama(
+        &positional[0],
+        &positional[1],
+        bbox[0],
+        bbox[1],
+        bbox[2],
+        bbox[3],
+        radius_cells,
+        y_reversed,
+        dissolve,
+        undef,
+    )
+    .map_err(|err| format!("coastal band geojson: {err}"))?;
+    println!("coastal_band_features={count}");
+    println!("coastal_band_output={}", positional[1].display());
     Ok(())
 }
 

@@ -29916,6 +29916,112 @@ pub fn write_coastal_band_dissolve_geojson(
     Ok(outers.len())
 }
 
+/// Non-dissolve coastal-band output: one Polygon Feature per band cell (port of the
+/// `coastal_band.py::coastal_band_geojson` dissolve=False path).
+fn write_coastal_band_cells_geojson(
+    band: &[Vec<bool>],
+    land_mask: &[Vec<bool>],
+    x_start: i64,
+    y_start: i64,
+    west: f64,
+    south: f64,
+    grid_size_deg: f64,
+    output_geojson: impl AsRef<Path>,
+) -> io::Result<usize> {
+    let mut cells: Vec<(i64, i64, bool)> = Vec::new();
+    for (row, line) in band.iter().enumerate() {
+        for (col, &selected) in line.iter().enumerate() {
+            if selected {
+                let is_land = land_mask
+                    .get(row)
+                    .and_then(|r| r.get(col))
+                    .copied()
+                    .unwrap_or(false);
+                cells.push((x_start + col as i64, y_start + row as i64, is_land));
+            }
+        }
+    }
+    let land_count = cells.iter().filter(|(_, _, l)| *l).count();
+    let total = cells.len();
+    let mut features = Vec::new();
+    for (xi, yi, is_land) in &cells {
+        let x0 = west + *xi as f64 * grid_size_deg;
+        let y0 = south + *yi as f64 * grid_size_deg;
+        let (x1, y1) = (x0 + grid_size_deg, y0 + grid_size_deg);
+        features.push(format!(
+            "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": \
+             [[[{x0}, {y0}], [{x1}, {y0}], [{x1}, {y1}], [{x0}, {y1}], [{x0}, {y0}]]]}}, \
+             \"properties\": {{\"mask_class\": \"COAST\", \"coastal_band_cell_count\": {total}, \
+             \"land_side_cell_count\": {land_count}, \"ocean_side_cell_count\": {}, \
+             \"corridor_source_geometry\": \"cama_elevtn_coastal_band\", \"x_index\": {xi}, \
+             \"y_index\": {yi}, \"coastal_side\": \"{}\"}}}}",
+            total - land_count,
+            if *is_land { "land" } else { "ocean" }
+        ));
+    }
+    let out = format!(
+        "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
+        features.join(",\n")
+    );
+    if let Some(parent) = output_geojson.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_geojson, out)?;
+    Ok(total)
+}
+
+/// End-to-end port of `coastal_band.py::write_coastal_band_geojson`: read a CaMa map
+/// directory (`params.txt` + `elevtn.bin`), derive the land mask over the bbox window,
+/// select the coastal band, and write it as GeoJSON (dissolved MultiPolygon or per-cell
+/// polygons). `y_reversed` matches Python's default `y_reversed_storage=True`.
+#[allow(clippy::too_many_arguments)]
+pub fn write_coastal_band_geojson_from_cama(
+    map_dir: impl AsRef<Path>,
+    output_geojson: impl AsRef<Path>,
+    west: f64,
+    south: f64,
+    east: f64,
+    north: f64,
+    radius_cells: i64,
+    y_reversed: bool,
+    dissolve: bool,
+    undef: f64,
+) -> io::Result<usize> {
+    let root = map_dir.as_ref();
+    let mut grid = read_cama_grid_spec_from_params_file(root.join("params.txt"))?;
+    grid.y_reversed_storage = y_reversed;
+    let window = grid.window_for_bbox(west, east, south, north)?;
+    let report = read_cama_elevtn_surface_window(root.join("elevtn.bin"), grid, window, undef)?;
+    let land_mask: Vec<Vec<bool>> = report
+        .surface_mask
+        .iter()
+        .map(|row| row.iter().map(|&c| c == CamaSurfaceClass::Land).collect())
+        .collect();
+    let band = coastal_band_cells(&land_mask, radius_cells, true, true)?;
+    if dissolve {
+        write_coastal_band_dissolve_geojson(
+            &band,
+            window.x_start as i64,
+            window.y_start as i64,
+            grid.west,
+            grid.south,
+            grid.grid_size_deg,
+            output_geojson,
+        )
+    } else {
+        write_coastal_band_cells_geojson(
+            &band,
+            &land_mask,
+            window.x_start as i64,
+            window.y_start as i64,
+            grid.west,
+            grid.south,
+            grid.grid_size_deg,
+            output_geojson,
+        )
+    }
+}
+
 // ---- util/hydro_mesh/refinement_package.py manifest builder port ----
 
 fn manifest_feature_count(node: Option<&JsonNode>) -> i64 {
