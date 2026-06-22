@@ -368,6 +368,10 @@ struct EarthMeshApp {
     theme_dark: bool,
     project_name: String,
     target_template: usize,
+    // hydro-workflow trigger (additive; invokes the tested earthmesh_cli::run_hydro_workflow)
+    hydro_cells: Option<PathBuf>,
+    hydro_corridors: Option<PathBuf>,
+    hydro_out_dir: Option<PathBuf>,
 }
 
 impl Default for EarthMeshApp {
@@ -425,6 +429,9 @@ impl Default for EarthMeshApp {
             theme_dark: false,
             project_name: String::new(),
             target_template: 0,
+            hydro_cells: None,
+            hydro_corridors: None,
+            hydro_out_dir: None,
         }
     }
 }
@@ -3311,19 +3318,27 @@ impl EarthMeshApp {
         }
     }
 
-    /// Render the R7 land/ocean coupling-quality summary from the run output dir's
-    /// `coupling_quality.json` (read-only; produced by `--coupling-quality-from-mesh`).
+    /// Result dir for the coupling/refinement panels: the hydro-workflow output dir if a
+    /// workflow has run, else the mesh run's output dir.
+    fn results_dir(&self) -> Option<PathBuf> {
+        self.hydro_out_dir.clone().or_else(|| {
+            self.output_files
+                .iter()
+                .find_map(|p| p.parent().map(|d| d.to_path_buf()))
+        })
+    }
+
+    /// Render the R7 land/ocean coupling-quality summary from the result dir's
+    /// `coupling_quality.json` (read-only; produced by `--coupling-quality-from-mesh` or
+    /// `--hydro-workflow --mesh … --landtype …`).
     fn render_coupling_quality(
         &self,
         ui: &mut egui::Ui,
         theme: &theme::EarthMeshTheme,
         lang: Lang,
     ) {
-        let dir = self
-            .output_files
-            .iter()
-            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
-        let s = dir
+        let s = self
+            .results_dir()
             .as_deref()
             .map(ui_helpers::CouplingQualitySummary::from_dir)
             .unwrap_or_default();
@@ -3343,15 +3358,12 @@ impl EarthMeshApp {
         });
     }
 
-    /// Render the R8 refinement-plan summary from the run output dir's
+    /// Render the R8 refinement-plan summary from the result dir's
     /// `refinement_plan.json` (read-only; produced by `--plan-refinement-from-hydro` /
     /// `--hydro-workflow`).
     fn render_refinement_plan(&self, ui: &mut egui::Ui, lang: Lang) {
-        let dir = self
-            .output_files
-            .iter()
-            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
-        let s = dir
+        let s = self
+            .results_dir()
             .as_deref()
             .map(ui_helpers::RefinementPlanSummary::from_dir)
             .unwrap_or_default();
@@ -3365,6 +3377,98 @@ impl EarthMeshApp {
                 ui.separator();
             }
         });
+    }
+
+    /// File pickers + a Run button that triggers the GeoJSON hydro workflow
+    /// (`earthmesh_cli::run_hydro_workflow`): cells × corridors -> intersections +
+    /// CoLM coupling CSV + R8 refinement plan + manifest, into a chosen out dir. The
+    /// mesh+land-type (R7) branch stays CLI-only (slow NetCDF). The refinement-plan panel
+    /// above reads the result. Additive: invokes the existing tested library function.
+    fn render_hydro_workflow_controls(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let none = tr(lang, "hydro_wf.none");
+        let path_label = |p: &Option<PathBuf>| {
+            p.as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| none.to_string())
+        };
+        ui.horizontal(|ui| {
+            if ui.button(tr(lang, "hydro_wf.pick_cells")).clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("geojson", &["geojson", "json"])
+                    .pick_file()
+                {
+                    self.hydro_cells = Some(p);
+                }
+            }
+            ui.label(path_label(&self.hydro_cells));
+        });
+        ui.horizontal(|ui| {
+            if ui.button(tr(lang, "hydro_wf.pick_corridors")).clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("geojson", &["geojson", "json"])
+                    .pick_file()
+                {
+                    self.hydro_corridors = Some(p);
+                }
+            }
+            ui.label(path_label(&self.hydro_corridors));
+        });
+        ui.horizontal(|ui| {
+            if ui.button(tr(lang, "hydro_wf.pick_out")).clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    self.hydro_out_dir = Some(p);
+                }
+            }
+            ui.label(path_label(&self.hydro_out_dir));
+        });
+        let ready = !self.running && self.hydro_cells.is_some() && self.hydro_corridors.is_some();
+        ui.add_enabled_ui(ready, |ui| {
+            if ui.button(tr(lang, "hydro_wf.run")).clicked() {
+                self.run_hydro_workflow_now();
+            }
+        });
+    }
+
+    /// Run the GeoJSON hydro workflow synchronously (the chain is fast for GeoJSON inputs)
+    /// and log the outcome; the refinement-plan panel then reads the chosen out dir.
+    fn run_hydro_workflow_now(&mut self) {
+        let (Some(cells), Some(corridors)) =
+            (self.hydro_cells.clone(), self.hydro_corridors.clone())
+        else {
+            self.log
+                .push("hydro workflow: pick cells + corridors GeoJSON first".into());
+            return;
+        };
+        let out_dir = self
+            .hydro_out_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("earthmesh_hydro_workflow"));
+        match earthmesh_cli::run_hydro_workflow(
+            &cells,
+            &corridors,
+            &out_dir,
+            &["R2".to_string(), "R3".to_string()],
+            0.0,
+            false,
+            None,
+            3,
+            None,
+            None,
+            None,
+            1,
+        ) {
+            Ok(r) => {
+                self.hydro_out_dir = Some(out_dir.clone());
+                self.log.push(format!(
+                    "hydro workflow: {} intersection cells, {} coupling rows, {} refined → {}",
+                    r.intersection_cells,
+                    r.coupling_rows,
+                    r.cells_refined,
+                    out_dir.display()
+                ));
+            }
+            Err(e) => self.log.push(format!("hydro workflow failed: {e}")),
+        }
     }
 }
 
@@ -3540,6 +3644,11 @@ impl eframe::App for EarthMeshApp {
                     .show(ui, |ui| {
                         self.render_refinement_plan(ui, lang);
                     });
+                egui::CollapsingHeader::new(tr(lang, "hydro_wf.title"))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        self.render_hydro_workflow_controls(ui, lang);
+                    });
                 ui.separator();
                 if self.results_detached {
                     ui.weak(tr(lang, "results.dock"));
@@ -3680,6 +3789,19 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn results_dir_prefers_hydro_workflow_out_dir() {
+        let mut app = EarthMeshApp::default();
+        // no inputs -> no result dir
+        assert_eq!(app.results_dir(), None);
+        // a mesh run output dir is used when present
+        app.output_files = vec![PathBuf::from("/tmp/run42/preview.geojson")];
+        assert_eq!(app.results_dir(), Some(PathBuf::from("/tmp/run42")));
+        // a hydro-workflow out dir takes precedence
+        app.hydro_out_dir = Some(PathBuf::from("/tmp/wf99"));
+        assert_eq!(app.results_dir(), Some(PathBuf::from("/tmp/wf99")));
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let stamp = SystemTime::now()
