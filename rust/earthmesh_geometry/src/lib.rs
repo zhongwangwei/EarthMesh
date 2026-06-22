@@ -131,6 +131,104 @@ pub fn intersection_area(a: &[Point], b: &[Point]) -> f64 {
         .sum()
 }
 
+/// x-coordinate of the intersection point of two segments, if they properly cross.
+fn segment_intersection_x(p1: Point, p2: Point, p3: Point, p4: Point) -> Option<f64> {
+    let d1 = (p2.x - p1.x, p2.y - p1.y);
+    let d2 = (p4.x - p3.x, p4.y - p3.y);
+    let denom = d1.0 * d2.1 - d1.1 * d2.0;
+    if denom.abs() < 1e-15 {
+        return None; // parallel / collinear
+    }
+    let t = ((p3.x - p1.x) * d2.1 - (p3.y - p1.y) * d2.0) / denom;
+    let u = ((p3.x - p1.x) * d1.1 - (p3.y - p1.y) * d1.0) / denom;
+    if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+        Some(p1.x + t * d1.0)
+    } else {
+        None
+    }
+}
+
+/// Exact area of the union of a set of simple polygons (overlaps counted once),
+/// via vertical-slab decomposition + even-odd coverage. Slab boundaries are every
+/// vertex x and every edge-edge intersection x, so within a slab the covered length
+/// is linear in x and the midpoint rule is exact. Handles arbitrary (non-convex)
+/// simple polygons and overlaps; no external GIS dependency.
+pub fn polygon_union_area(polygons: &[Vec<Point>]) -> f64 {
+    let polys: Vec<&Vec<Point>> = polygons.iter().filter(|p| p.len() >= 3).collect();
+    if polys.is_empty() {
+        return 0.0;
+    }
+    let mut edges: Vec<(Point, Point)> = Vec::new();
+    let mut xs: Vec<f64> = Vec::new();
+    for p in &polys {
+        for i in 0..p.len() {
+            let a = p[i];
+            let b = p[(i + 1) % p.len()];
+            edges.push((a, b));
+            xs.push(a.x);
+        }
+    }
+    for i in 0..edges.len() {
+        for j in (i + 1)..edges.len() {
+            if let Some(x) = segment_intersection_x(edges[i].0, edges[i].1, edges[j].0, edges[j].1)
+            {
+                xs.push(x);
+            }
+        }
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+
+    let mut area = 0.0;
+    for w in xs.windows(2) {
+        let (xl, xr) = (w[0], w[1]);
+        let width = xr - xl;
+        if width <= 1e-15 {
+            continue;
+        }
+        let xm = 0.5 * (xl + xr);
+        let mut intervals: Vec<(f64, f64)> = Vec::new();
+        for p in &polys {
+            let mut ys: Vec<f64> = Vec::new();
+            for i in 0..p.len() {
+                let a = p[i];
+                let b = p[(i + 1) % p.len()];
+                if (a.x < xm && xm < b.x) || (b.x < xm && xm < a.x) {
+                    let t = (xm - a.x) / (b.x - a.x);
+                    ys.push(a.y + t * (b.y - a.y));
+                }
+            }
+            ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mut k = 0;
+            while k + 1 < ys.len() {
+                intervals.push((ys[k], ys[k + 1]));
+                k += 2;
+            }
+        }
+        intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut covered = 0.0;
+        let mut cur: Option<(f64, f64)> = None;
+        for (s, e) in intervals {
+            match cur {
+                None => cur = Some((s, e)),
+                Some((cs, ce)) => {
+                    if s <= ce {
+                        cur = Some((cs, ce.max(e)));
+                    } else {
+                        covered += ce - cs;
+                        cur = Some((s, e));
+                    }
+                }
+            }
+        }
+        if let Some((cs, ce)) = cur {
+            covered += ce - cs;
+        }
+        area += covered * width;
+    }
+    area
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverlayMask {
     pub feature_id: String,
@@ -395,7 +493,46 @@ fn line_intersection(a0: Point, a1: Point, b0: Point, b1: Point) -> Point {
 
 #[cfg(test)]
 mod tests {
-    use super::{intersection_area, polygon_area, Point};
+    use super::{intersection_area, polygon_area, polygon_union_area, Point};
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
+        vec![
+            Point::new(x0, y0),
+            Point::new(x1, y0),
+            Point::new(x1, y1),
+            Point::new(x0, y1),
+        ]
+    }
+
+    #[test]
+    fn union_area_overlap_disjoint_nested_identical() {
+        // overlapping half: |A|+|B|-|A∩B| = 4+4-2 = 6
+        let a = rect(0.0, 0.0, 2.0, 2.0);
+        let b = rect(1.0, 0.0, 3.0, 2.0);
+        assert!((polygon_union_area(&[a.clone(), b.clone()]) - 6.0).abs() < 1e-9);
+        // disjoint -> sum
+        let far = rect(5.0, 0.0, 7.0, 2.0);
+        assert!((polygon_union_area(&[a.clone(), far]) - 8.0).abs() < 1e-9);
+        // identical -> single
+        assert!((polygon_union_area(&[a.clone(), a.clone()]) - 4.0).abs() < 1e-9);
+        // nested -> outer
+        let big = rect(0.0, 0.0, 4.0, 4.0);
+        let small = rect(1.0, 1.0, 3.0, 3.0);
+        assert!((polygon_union_area(&[big, small]) - 16.0).abs() < 1e-9);
+        // single polygon -> its own area
+        assert!((polygon_union_area(&[a]) - 4.0).abs() < 1e-9);
+        // empty
+        assert_eq!(polygon_union_area(&[]), 0.0);
+    }
+
+    #[test]
+    fn union_area_three_overlapping_squares() {
+        // chain: [0,2],[1,3],[2,4] each 2x2; union spans x[0,4] fully covered y[0,2] -> 8
+        let a = rect(0.0, 0.0, 2.0, 2.0);
+        let b = rect(1.0, 0.0, 3.0, 2.0);
+        let c = rect(2.0, 0.0, 4.0, 2.0);
+        assert!((polygon_union_area(&[a, b, c]) - 8.0).abs() < 1e-9);
+    }
 
     #[test]
     fn empty_or_short_polygons_have_zero_area() {

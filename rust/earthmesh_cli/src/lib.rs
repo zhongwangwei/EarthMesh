@@ -30035,7 +30035,7 @@ pub fn write_earthmesh_intersection_geojson(
     min_fraction: f64,
     unit_sphere_area: bool,
 ) -> io::Result<usize> {
-    use earthmesh_geometry::{intersection_area, polygon_area};
+    use earthmesh_geometry::{clip_convex_polygon, polygon_area, polygon_union_area};
     if !(0.0..=1.0).contains(&min_fraction) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -30098,13 +30098,19 @@ pub fn write_earthmesh_intersection_geojson(
             .and_then(JsonNode::as_f64);
 
         for (class, rings) in &class_rings {
-            let mut inter: f64 = 0.0;
+            // area(cell ∩ union(same-class corridors)): clip each corridor to the
+            // (convex) cell, then take the exact union area — counts overlap between
+            // same-class corridors once (Python unions first; equivalent here).
+            let mut clipped: Vec<Vec<earthmesh_geometry::Point>> = Vec::new();
             for cr in &cell_rings {
                 for corridor in rings {
-                    inter += intersection_area(cr, corridor);
+                    let piece = clip_convex_polygon(corridor, cr);
+                    if piece.len() >= 3 {
+                        clipped.push(piece);
+                    }
                 }
             }
-            inter = inter.min(cell_area);
+            let inter = polygon_union_area(&clipped).min(cell_area);
             if inter <= 0.0 {
                 continue;
             }
