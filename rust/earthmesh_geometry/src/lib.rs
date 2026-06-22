@@ -229,6 +229,130 @@ pub fn polygon_union_area(polygons: &[Vec<Point>]) -> f64 {
     area
 }
 
+/// Dissolve a set of axis-aligned boxes `(x0, y0, x1, y1)` (e.g. equal grid cells)
+/// into the boundary rings of their union, via directed-edge cancellation + face
+/// tracing. Shared full edges between adjacent boxes cancel (opposite directions);
+/// remaining edges are traced into closed rings (outer rings CCW / positive signed
+/// area, holes CW / negative). Exact + robust for a grid-aligned set (combinatorial,
+/// no floating-point area test). Rings touching only at a corner are kept separate.
+pub fn dissolve_axis_aligned_boxes(boxes: &[(f64, f64, f64, f64)]) -> Vec<Vec<Point>> {
+    use std::collections::HashMap;
+    let key =
+        |x: f64, y: f64| -> (i64, i64) { ((x * 1e9).round() as i64, (y * 1e9).round() as i64) };
+    let mut edge_count: HashMap<((i64, i64), (i64, i64)), i32> = HashMap::new();
+    let mut pts: HashMap<(i64, i64), Point> = HashMap::new();
+    let mut add_edge = |a: Point, b: Point, ec: &mut HashMap<((i64, i64), (i64, i64)), i32>| {
+        let (ka, kb) = (key(a.x, a.y), key(b.x, b.y));
+        pts.insert(ka, a);
+        pts.insert(kb, b);
+        if let Some(c) = ec.get_mut(&(kb, ka)) {
+            *c -= 1;
+            if *c == 0 {
+                ec.remove(&(kb, ka));
+            }
+        } else {
+            *ec.entry((ka, kb)).or_insert(0) += 1;
+        }
+    };
+    for &(x0, y0, x1, y1) in boxes {
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        add_edge(Point::new(x0, y0), Point::new(x1, y0), &mut edge_count); // bottom →
+        add_edge(Point::new(x1, y0), Point::new(x1, y1), &mut edge_count); // right ↑
+        add_edge(Point::new(x1, y1), Point::new(x0, y1), &mut edge_count); // top ←
+        add_edge(Point::new(x0, y1), Point::new(x0, y0), &mut edge_count); // left ↓
+    }
+
+    // outgoing edges per node
+    let mut out: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
+    for ((a, b), c) in &edge_count {
+        for _ in 0..(*c).max(0) {
+            out.entry(*a).or_default().push(*b);
+        }
+    }
+
+    let ang = |from: (i64, i64), to: (i64, i64)| -> f64 {
+        let a = pts[&from];
+        let b = pts[&to];
+        (b.y - a.y).atan2(b.x - a.x)
+    };
+    let mut rings: Vec<Vec<Point>> = Vec::new();
+    loop {
+        let Some(start) = out.iter().find(|(_, v)| !v.is_empty()).map(|(k, _)| *k) else {
+            break;
+        };
+        let mut ring_keys: Vec<(i64, i64)> = Vec::new();
+        let mut cur = start;
+        let mut prev: Option<(i64, i64)> = None;
+        loop {
+            let Some(candidates) = out.get(&cur) else {
+                break;
+            };
+            if candidates.is_empty() {
+                break;
+            }
+            // pick the next edge: the first one clockwise from the reverse-incoming
+            // direction (left-hand boundary trace). With no incoming edge, take the
+            // smallest-angle outgoing edge for determinism.
+            let chosen = match prev {
+                None => candidates
+                    .iter()
+                    .copied()
+                    .min_by(|x, y| {
+                        ang(cur, *x)
+                            .partial_cmp(&ang(cur, *y))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .unwrap(),
+                Some(p) => {
+                    let rev_in = ang(cur, p);
+                    *candidates
+                        .iter()
+                        .min_by(|x, y| {
+                            let dx = (rev_in - ang(cur, **x)).rem_euclid(std::f64::consts::TAU);
+                            let dy = (rev_in - ang(cur, **y)).rem_euclid(std::f64::consts::TAU);
+                            // smallest positive clockwise delta (treat ~0 as full turn)
+                            let norm = |d: f64| if d < 1e-9 { std::f64::consts::TAU } else { d };
+                            norm(dx)
+                                .partial_cmp(&norm(dy))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .unwrap()
+                }
+            };
+            let v = out.get_mut(&cur).unwrap();
+            let pos = v.iter().position(|&n| n == chosen).unwrap();
+            v.remove(pos);
+            ring_keys.push(cur);
+            prev = Some(cur);
+            cur = chosen;
+            if cur == start {
+                break;
+            }
+        }
+        if ring_keys.len() >= 3 {
+            rings.push(ring_keys.iter().map(|k| pts[k]).collect());
+        }
+    }
+    rings
+}
+
+/// Signed area of a ring (positive = CCW). Useful to split union rings into outer
+/// rings vs holes.
+pub fn signed_ring_area(ring: &[Point]) -> f64 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    let mut total = 0.0;
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[(i + 1) % ring.len()];
+        total += a.x * b.y - b.x * a.y;
+    }
+    total * 0.5
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverlayMask {
     pub feature_id: String,
@@ -523,6 +647,47 @@ mod tests {
         assert!((polygon_union_area(&[a]) - 4.0).abs() < 1e-9);
         // empty
         assert_eq!(polygon_union_area(&[]), 0.0);
+    }
+
+    #[test]
+    fn dissolve_boxes_into_union_rings() {
+        use super::{dissolve_axis_aligned_boxes, signed_ring_area};
+        let sum_abs =
+            |rings: &[Vec<Point>]| rings.iter().map(|r| signed_ring_area(r).abs()).sum::<f64>();
+        let net = |rings: &[Vec<Point>]| rings.iter().map(|r| signed_ring_area(r)).sum::<f64>();
+
+        // single unit box
+        let r = dissolve_axis_aligned_boxes(&[(0.0, 0.0, 1.0, 1.0)]);
+        assert_eq!(r.len(), 1);
+        assert!((signed_ring_area(&r[0]).abs() - 1.0).abs() < 1e-9);
+
+        // 2x2 block of unit cells -> one outer ring, area 4
+        let block = [
+            (0.0, 0.0, 1.0, 1.0),
+            (1.0, 0.0, 2.0, 1.0),
+            (0.0, 1.0, 1.0, 2.0),
+            (1.0, 1.0, 2.0, 2.0),
+        ];
+        let r = dissolve_axis_aligned_boxes(&block);
+        assert_eq!(r.len(), 1, "2x2 block dissolves to one ring");
+        assert!((sum_abs(&r) - 4.0).abs() < 1e-9);
+
+        // 3x3 ring with a hole in the middle -> outer ring + hole ring, net area 8
+        let mut donut = Vec::new();
+        for i in 0..3 {
+            for j in 0..3 {
+                if i == 1 && j == 1 {
+                    continue; // hole
+                }
+                donut.push((i as f64, j as f64, i as f64 + 1.0, j as f64 + 1.0));
+            }
+        }
+        let r = dissolve_axis_aligned_boxes(&donut);
+        assert_eq!(r.len(), 2, "donut -> outer + hole");
+        assert!((net(&r) - 8.0).abs() < 1e-9, "net signed area = 9 - 1 = 8");
+        // one ring CCW (+), one CW (-)
+        assert!(r.iter().any(|x| signed_ring_area(x) > 0.0));
+        assert!(r.iter().any(|x| signed_ring_area(x) < 0.0));
     }
 
     #[test]
