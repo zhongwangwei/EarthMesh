@@ -156,6 +156,9 @@ fn run() -> Result<(), String> {
     if first == "--coupling-quality-from-mesh" {
         return run_coupling_quality_from_mesh(args);
     }
+    if first == "--plan-refinement-from-hydro" {
+        return run_plan_refinement_from_hydro(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1519,6 +1522,66 @@ fn run_coupling_quality_from_mesh(args: impl Iterator<Item = String>) -> Result<
         report.mixed_coastline_cells
     );
     println!("coupling_quality_output={}", positional[2].display());
+    Ok(())
+}
+
+/// `--plan-refinement-from-hydro <cells.geojson> <plan.json> [--max-level N]
+/// [--max-refined-cells N]`: score each cell from the MERIT-Hydro river/coast signal in
+/// a per-cell intersection / complete-mask GeoJSON and write an `earthmesh_refinement_plan`
+/// target_level map (R8 planner driven by real hydro features).
+fn run_plan_refinement_from_hydro(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut max_level: u8 = 3;
+    let mut max_refined_cells: Option<usize> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--max-level" => {
+                i += 1;
+                max_level = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--max-level requires an integer 1..=255"))?;
+            }
+            "--max-refined-cells" => {
+                i += 1;
+                max_refined_cells = Some(
+                    rest.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--max-refined-cells requires an integer"))?,
+                );
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --plan-refinement-from-hydro option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 2 {
+        return Err(usage(
+            "--plan-refinement-from-hydro needs <cells.geojson> <plan.json>",
+        ));
+    }
+    let report = earthmesh_cli::plan_refinement_from_hydro_geojson(
+        &positional[0],
+        &positional[1],
+        max_level,
+        max_refined_cells,
+    )
+    .map_err(|err| format!("plan refinement from hydro: {err}"))?;
+    println!(
+        "refinement_plan_total_cells={}",
+        report.target_levels.level.len()
+    );
+    println!(
+        "refinement_plan_cells_refined={}",
+        report.budget_used.cells_refined_after
+    );
+    println!("refinement_plan_output={}", positional[1].display());
     Ok(())
 }
 

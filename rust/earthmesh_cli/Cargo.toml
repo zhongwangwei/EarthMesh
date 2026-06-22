@@ -10,6 +10,7 @@ earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
 earthmesh_quality = { path = "../earthmesh_quality" }
+earthmesh_refine_planner = { path = "../earthmesh_refine_planner" }
 netcdf = { version = "0.12.0", default-features = false }
 
 [features]

@@ -971,6 +971,7 @@ dependencies = [
  "earthmesh_geometry",
  "earthmesh_mesh",
  "earthmesh_quality",
+ "earthmesh_refine_planner",
  "netcdf",
 ]
 

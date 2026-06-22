@@ -31300,6 +31300,147 @@ pub fn write_coupling_quality_from_gridfile(
     Ok(report)
 }
 
+/// Build an R8 refine-planner [`CellFeatureTable`] from a per-cell hydro intersection /
+/// complete-mask GeoJSON — the real MERIT-Hydro river/coast signal (the same overlay
+/// output that feeds coupling/colm). Columns: `hydro_coast_score` =
+/// max(river_fraction, coastal_fraction) (the importance the `hydro_coast_score`
+/// criterion targets), plus `river_fraction` / `coastal_fraction`; centroids from each
+/// cell's `center_lon`/`center_lat` or its geometry. Neighbours are empty (the per-cell
+/// overlay has no topology), so callers disable the planner's topology passes.
+pub fn hydro_refine_feature_table(
+    geojson: &str,
+) -> io::Result<earthmesh_refine_planner::CellFeatureTable> {
+    use earthmesh_geometry::Point;
+    let root = JsonParser::new(geojson).parse()?;
+    let mut hydro = Vec::new();
+    let mut river = Vec::new();
+    let mut coast = Vec::new();
+    let mut centroids = Vec::new();
+    for feature in geojson_feature_nodes(&root) {
+        let obj = feature.as_object();
+        let props = obj
+            .and_then(|o| o.get("properties"))
+            .and_then(|p| p.as_object());
+        let prop_f64 = |k: &str| props.and_then(|p| p.get(k)).and_then(|v| v.as_f64());
+        let rf = prop_f64("river_fraction").unwrap_or(0.0);
+        let cf = prop_f64("coastal_fraction").unwrap_or(0.0);
+        river.push(rf);
+        coast.push(cf);
+        hydro.push(rf.max(cf));
+        let centroid = match (prop_f64("center_lon"), prop_f64("center_lat")) {
+            (Some(x), Some(y)) => Point::new(x, y),
+            _ => obj
+                .and_then(|o| o.get("geometry"))
+                .map(geometry_outer_rings)
+                .and_then(|rings| rings.into_iter().find(|r| !r.is_empty()))
+                .map(|ring| {
+                    let n = ring.len() as f64;
+                    let (sx, sy) = ring
+                        .iter()
+                        .fold((0.0, 0.0), |(ax, ay), p| (ax + p.x, ay + p.y));
+                    Point::new(sx / n, sy / n)
+                })
+                .unwrap_or(Point::new(0.0, 0.0)),
+        };
+        centroids.push(centroid);
+    }
+    let cell_count = hydro.len();
+    let mut columns = std::collections::BTreeMap::new();
+    columns.insert("hydro_coast_score".to_string(), hydro);
+    columns.insert("river_fraction".to_string(), river);
+    columns.insert("coastal_fraction".to_string(), coast);
+    Ok(earthmesh_refine_planner::CellFeatureTable {
+        cell_count,
+        centroids,
+        columns,
+        neighbors: Vec::new(),
+        regions: Vec::new(),
+    })
+}
+
+fn hydro_refine_plan_json(report: &earthmesh_refine_planner::RefinementReport) -> String {
+    let levels = &report.target_levels.level;
+    let max_level = levels.iter().copied().max().unwrap_or(0);
+    let mut hist = vec![0usize; max_level as usize + 1];
+    for &l in levels {
+        hist[l as usize] += 1;
+    }
+    let hist_items: Vec<String> = hist
+        .iter()
+        .enumerate()
+        .map(|(l, c)| format!("\"{l}\": {c}"))
+        .collect();
+    let rows: Vec<String> = report
+        .decisions
+        .iter()
+        .map(|d| {
+            format!(
+                "    {{\"cell\": {}, \"target_level\": {}, \"composite_score\": {}, \"why\": \"{}\"}}",
+                d.cell,
+                d.final_level,
+                json_number(d.composite_score),
+                json_escape_string(&d.top_reason),
+            )
+        })
+        .collect();
+    format!(
+        "{{\n  \"kind\": \"earthmesh_refinement_plan\",\n  \"total_cells\": {},\n  \
+         \"cells_refined\": {},\n  \"max_level\": {},\n  \"budget_hit\": {},\n  \
+         \"level_histogram\": {{{}}},\n  \"cells\": [\n{}\n  ]\n}}\n",
+        levels.len(),
+        report.budget_used.cells_refined_after,
+        max_level,
+        report.budget_used.budget_hit,
+        hist_items.join(", "),
+        rows.join(",\n"),
+    )
+}
+
+/// R8 refinement planner driven by the real MERIT-Hydro river/coast signal: read a
+/// per-cell hydro intersection / complete-mask GeoJSON, score each cell with the
+/// `hydro_coast_score` criterion, and write a `target_level` plan
+/// (`earthmesh_refinement_plan` JSON). `max_level` caps the level
+/// (`target_level = round(demand * max_level)`); `max_refined_cells` optionally budgets
+/// the highest-demand cells. The per-cell overlay has no adjacency, so the planner's
+/// topology passes are disabled (they would drop isolated high-demand river/coast cells).
+pub fn plan_refinement_from_hydro_geojson(
+    geojson: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    max_level: u8,
+    max_refined_cells: Option<usize>,
+) -> io::Result<earthmesh_refine_planner::RefinementReport> {
+    use earthmesh_refine_planner as rp;
+    let features = hydro_refine_feature_table(&fs::read_to_string(geojson.as_ref())?)?;
+    let criteria = vec![rp::hydro_coast_score_criterion()];
+    let cfg = rp::CompositeScoreConfig {
+        weights: vec![("hydro_coast_score".to_string(), 1.0)],
+        combine: rp::CombineRule::WeightedMax,
+        max_passes: max_level.max(1),
+    };
+    let budget = rp::RefinementBudget {
+        max_refined_cells,
+        ..Default::default()
+    };
+    let quality = rp::QualityConstraint {
+        no_isolated_refined: false,
+        smooth_transition: false,
+        ..Default::default()
+    };
+    let report = rp::plan(
+        &features,
+        &criteria,
+        &cfg,
+        &budget,
+        &quality,
+        rp::MeshDomain::Coupled,
+    );
+    if let Some(parent) = output_json.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_json, hydro_refine_plan_json(&report))?;
+    Ok(report)
+}
+
 /// Write the CoLM package coupling metadata NetCDF schema from the package CSV.
 ///
 /// This is a Rust-native equivalent of the numeric/string-code boundary in
