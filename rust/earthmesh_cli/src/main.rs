@@ -1601,9 +1601,33 @@ fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(), String> 
     let mut domain: Option<Vec<Vec<(f64, f64)>>> = None;
     let mut max_level: u8 = 3;
     let mut max_refined_cells: Option<usize> = None;
+    let mut mesh: Option<PathBuf> = None;
+    let mut landtype: Option<PathBuf> = None;
+    let mut gridnum_perdegree = 1usize;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
+            "--mesh" => {
+                i += 1;
+                mesh = Some(PathBuf::from(
+                    rest.get(i)
+                        .ok_or_else(|| usage("--mesh requires a value"))?,
+                ));
+            }
+            "--landtype" => {
+                i += 1;
+                landtype = Some(PathBuf::from(
+                    rest.get(i)
+                        .ok_or_else(|| usage("--landtype requires a value"))?,
+                ));
+            }
+            "--gridnum-perdegree" => {
+                i += 1;
+                gridnum_perdegree = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--gridnum-perdegree requires an integer"))?;
+            }
             "--domain-bbox" => {
                 let mut v = [0.0; 4];
                 for slot in v.iter_mut() {
@@ -1675,6 +1699,11 @@ fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(), String> 
             "--hydro-workflow needs <cells.geojson> <corridors.geojson> <out_dir>",
         ));
     }
+    if mesh.is_some() != landtype.is_some() {
+        return Err(usage(
+            "--mesh and --landtype must be given together (R7 coupling quality)",
+        ));
+    }
     let report = earthmesh_cli::run_hydro_workflow(
         &positional[0],
         &positional[1],
@@ -1685,6 +1714,9 @@ fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(), String> 
         domain.as_deref(),
         max_level,
         max_refined_cells,
+        mesh.as_deref(),
+        landtype.as_deref(),
+        gridnum_perdegree,
     )
     .map_err(|err| format!("hydro workflow: {err}"))?;
     println!(
@@ -1693,6 +1725,9 @@ fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(), String> 
     );
     println!("hydro_workflow_coupling_rows={}", report.coupling_rows);
     println!("hydro_workflow_cells_refined={}", report.cells_refined);
+    if let Some(verdict) = &report.coupling_quality_verdict {
+        println!("hydro_workflow_coupling_quality_verdict={verdict}");
+    }
     println!("hydro_workflow_manifest={}", report.manifest_path.display());
     Ok(())
 }

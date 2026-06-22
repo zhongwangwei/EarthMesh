@@ -40,6 +40,9 @@ fn cells_and_corridors_to_coupling_and_plan() {
         None,
         3,
         None,
+        None, // mesh (no R7 coupling-quality step in the geojson-only path)
+        None, // landtype
+        1,    // gridnum_perdegree (unused without mesh+landtype)
     )
     .expect("hydro workflow");
 
@@ -49,6 +52,9 @@ fn cells_and_corridors_to_coupling_and_plan() {
     assert_eq!(report.coupling_rows, 1);
     assert_eq!(report.cells_refined, 1);
     assert_eq!(report.refinement_max_level, 2);
+    // no mesh + land-type given -> no R7 coupling-quality step
+    assert!(report.coupling_quality_verdict.is_none());
+    assert!(report.coupling_quality_path.is_none());
 
     // all four artifacts exist
     for p in [
