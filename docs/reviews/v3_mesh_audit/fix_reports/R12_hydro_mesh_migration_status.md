@@ -44,3 +44,21 @@
 6. `geojson_map.py`(364)/`corridor_preview.py`(795)— HTML/leaflet 可视化(GUI 自绘,优先级低)。
 
 > 数据/几何核心(分类·读取·掩膜·交叠·CaMa·coupling)已全在 Rust。剩余主要是 eval/ranking/编排 与可视化。可按 1→6 逐个忠实 port + Python 对照。
+
+## 5. 后续迁移进度(逐模块忠实 port + 真 Python 对照)
+
+| # | Python 模块 | Rust(cli) | CLI | 对照验证 |
+|---|---|---|---|---|
+| 1 | `qa_gates.py` | `evaluate_hydro_mesh_qa`/`write_hydro_mesh_qa_report` | `--hydro-mesh-qa` | status + 全 6 项 check id:status 一致 ✅ |
+| 2 | `refinement_eval.py` | `write_refinement_eval_json`/`parse_refinement_log`/summaries | `--hydro-refinement-eval` | 背景/河流摘要数值一致 ✅ |
+| 3 | `refinement_sweep.py` | `write_sweep_recipes`/`write_sweep_ranking` | `--hydro-sweep-recipes`/`--hydro-sweep-rank` | 排序顺序 + recommended 一致 ✅ |
+| 4 | `coastal_band.py`(纯核心) | `coastal_land_mask_from_elevation`/`coastal_band_cells` | — | band 网格 + land mask 一致 ✅(dissolve 用 shapely union,Rust 无 union,未迁) |
+| 5 | `refinement_package.py`(manifest) | `write_hydro_delivery_manifest` | `--hydro-delivery-manifest` | manifest metrics + recommended 一致 ✅(端到端编排另需 §下方两 writer) |
+| 6 | `geojson_map.py`/`corridor_preview.py`(可视化) | — | — | **不迁**:leaflet HTML 无 Rust 消费方,GUI 用 walkers/egui 自绘地图 |
+
+**仍未迁(真实剩余,需 Rust 多边形并集/几何 IO)**:
+- `cell_mask_merge.py::write_complete_cell_mask_geojson`、`earthmesh_intersection.py::write_earthmesh_intersection_geojson` —— overlay 原语(`overlay_cell`/`intersection_area`)已在 Rust,但**把 overlay 结果写成 complete-cell-mask / cell×river intersection geojson 的 writer + MPAS cell 多边形读取 + 面积归一化**未迁;它们是 colm_coupling(#已迁,消费方)的上游生产者,也是 #5 端到端编排的依赖。
+- `coastal_band` 的 dissolve、`composite_refine_mask_export` 的并集类操作 —— 需 Rust 多边形 union(当前只有 clip/intersection,无 union)。
+- CaMa 编排(`merit_mesh_regeneration.py` 的 namelist patch 写出)—— 纯组合,可后续接。
+
+> 结论:本轮把 qa_gates/eval/sweep/coastal-核心/package-manifest 五块纯逻辑忠实迁到 Rust 并逐一与真 Python 对照一致。真正还差的是 **overlay→geojson 的两个 writer**(需补 MPAS cell 读取 + geojson 写出;overlay 数学已具备)与 **多边形 union**(dissolve/composite),以及编排胶水与可视化(可不迁)。
