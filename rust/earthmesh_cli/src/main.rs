@@ -129,6 +129,9 @@ fn run() -> Result<(), String> {
     if first == "--hydro-mesh-qa" {
         return run_hydro_mesh_qa(args);
     }
+    if first == "--hydro-refinement-eval" {
+        return run_hydro_refinement_eval(args);
+    }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
@@ -1388,6 +1391,59 @@ fn run_hydro_composite_close_mask_nmls(args: impl Iterator<Item = String>) -> Re
     for file in &report.files {
         println!("hydro_composite_close_mask_file={}", file.display());
     }
+    Ok(())
+}
+
+/// `--hydro-refinement-eval <background.geojson> <intersections.geojson> <out.json>
+/// [--coast-intersections-geojson <g>] [--log-path <l>] [--file-area-m2]`:
+/// summarize hydro-refinement cells + river/coast overlaps (port of refinement_eval.py).
+fn run_hydro_refinement_eval(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut coast: Option<PathBuf> = None;
+    let mut log_path: Option<PathBuf> = None;
+    let mut unit_sphere = true;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--coast-intersections-geojson" => {
+                i += 1;
+                coast = Some(PathBuf::from(rest.get(i).ok_or_else(|| {
+                    usage("--coast-intersections-geojson requires a value")
+                })?));
+            }
+            "--log-path" => {
+                i += 1;
+                log_path = Some(PathBuf::from(
+                    rest.get(i)
+                        .ok_or_else(|| usage("--log-path requires a value"))?,
+                ));
+            }
+            "--file-area-m2" => unit_sphere = false,
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --hydro-refinement-eval option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 3 {
+        return Err(usage(
+            "--hydro-refinement-eval needs <background.geojson> <intersections.geojson> <out.json>",
+        ));
+    }
+    earthmesh_cli::write_refinement_eval_json(
+        &positional[0],
+        &positional[1],
+        &positional[2],
+        coast.as_deref(),
+        log_path.as_deref(),
+        unit_sphere,
+    )
+    .map_err(|err| format!("refinement eval: {err}"))?;
+    println!("hydro_refinement_eval_output={}", positional[2].display());
     Ok(())
 }
 

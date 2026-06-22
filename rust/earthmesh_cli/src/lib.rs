@@ -29151,6 +29151,369 @@ pub fn write_colm_coupling_csv_from_intersections(
     Ok(rows.len())
 }
 
+/// Unit-sphere radius used by `util/hydro_mesh/earthmesh_intersection.py`.
+const HYDRO_EARTH_RADIUS_M: f64 = 6_371_000.0;
+
+fn round12(value: f64) -> f64 {
+    (value * 1e12).round() / 1e12
+}
+
+/// `statistics.median`: middle for odd n, mean of the two middle for even n.
+fn slice_median(values: &mut [f64]) -> f64 {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = values.len();
+    if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) / 2.0
+    }
+}
+
+/// All `-?\d+` integers on a line (faithful to the regex in refinement_eval.py).
+fn line_integers(line: &str) -> Vec<i64> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let neg = bytes[i] == b'-';
+        let start = i;
+        let digit_start = if neg { i + 1 } else { i };
+        let mut j = digit_start;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > digit_start {
+            if let Ok(v) = line[start..j].parse::<i64>() {
+                out.push(v);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HydroBackgroundSummary {
+    pub cell_count: usize,
+    pub size_km_min: Option<f64>,
+    pub size_km_median: Option<f64>,
+    pub size_km_max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HydroIntersectionSummary {
+    pub feature_count: usize,
+    pub class_counts: BTreeMap<String, usize>,
+    pub fraction_min: Option<f64>,
+    pub fraction_median: Option<f64>,
+    pub fraction_max: Option<f64>,
+    pub area_sum: Option<f64>,
+}
+
+/// Faithful port of `refinement_eval.py::summarize_background_cells`.
+fn summarize_background_cells(root: &JsonNode, unit_sphere_area: bool) -> HydroBackgroundSummary {
+    let features = geojson_feature_nodes(root);
+    let mut sizes_km = Vec::new();
+    for feature in &features {
+        let props = feature
+            .as_object()
+            .and_then(|o| o.get("properties"))
+            .and_then(JsonNode::as_object);
+        let Some(props) = props else { continue };
+        let area = if let Some(a) = props
+            .get("normalized_cell_area_m2")
+            .and_then(JsonNode::as_f64)
+        {
+            Some(a)
+        } else {
+            props
+                .get("source_areaCell")
+                .and_then(JsonNode::as_f64)
+                .map(|s| {
+                    if unit_sphere_area {
+                        s * HYDRO_EARTH_RADIUS_M * HYDRO_EARTH_RADIUS_M
+                    } else {
+                        s
+                    }
+                })
+        };
+        if let Some(a) = area {
+            if a > 0.0 {
+                sizes_km.push(a.sqrt() / 1000.0);
+            }
+        }
+    }
+    let mut summary = HydroBackgroundSummary {
+        cell_count: features.len(),
+        ..Default::default()
+    };
+    if !sizes_km.is_empty() {
+        let min = sizes_km.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = sizes_km.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        summary.size_km_min = Some(round12(min));
+        summary.size_km_median = Some(round12(slice_median(&mut sizes_km)));
+        summary.size_km_max = Some(round12(max));
+    }
+    summary
+}
+
+fn summarize_intersection_generic(
+    root: &JsonNode,
+    class_keys: &[&str],
+    fraction_keys: &[&str],
+    area_keys: &[&str],
+) -> HydroIntersectionSummary {
+    let features = geojson_feature_nodes(root);
+    let mut class_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut fractions = Vec::new();
+    let mut area_sum = 0.0;
+    for feature in &features {
+        let Some(props) = feature
+            .as_object()
+            .and_then(|o| o.get("properties"))
+            .and_then(JsonNode::as_object)
+        else {
+            continue;
+        };
+        let class = class_keys
+            .iter()
+            .find_map(|k| {
+                props
+                    .get(*k)
+                    .and_then(JsonNode::as_str)
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or("");
+        if !class.is_empty() {
+            *class_counts.entry(class.to_string()).or_insert(0) += 1;
+        }
+        for fk in fraction_keys {
+            if let Some(v) = props.get(*fk).and_then(JsonNode::as_f64) {
+                fractions.push(v);
+                break;
+            }
+        }
+        for ak in area_keys {
+            if let Some(v) = props.get(*ak).and_then(JsonNode::as_f64) {
+                area_sum += v;
+                break;
+            }
+        }
+    }
+    let mut summary = HydroIntersectionSummary {
+        feature_count: features.len(),
+        class_counts,
+        ..Default::default()
+    };
+    if !fractions.is_empty() {
+        let min = fractions.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = fractions.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        summary.fraction_min = Some(round12(min));
+        summary.fraction_median = Some(round12(slice_median(&mut fractions)));
+        summary.fraction_max = Some(round12(max));
+    }
+    if area_sum > 0.0 {
+        summary.area_sum = Some(round12(area_sum));
+    }
+    summary
+}
+
+/// Faithful port of `refinement_eval.py::summarize_intersections` (river).
+fn summarize_river_intersections(root: &JsonNode) -> HydroIntersectionSummary {
+    summarize_intersection_generic(
+        root,
+        &["river_class"],
+        &["river_fraction"],
+        &["estimated_river_area_m2"],
+    )
+}
+
+/// Faithful port of `refinement_eval.py::summarize_coast_intersections`.
+fn summarize_coast_intersections(root: &JsonNode) -> HydroIntersectionSummary {
+    summarize_intersection_generic(
+        root,
+        &["mask_class", "overlap_class", "coast_class"],
+        &["coastal_fraction", "coast_fraction"],
+        &["estimated_coastal_area_m2", "estimated_coast_area_m2"],
+    )
+}
+
+/// Faithful port of `refinement_eval.py::parse_refinement_log`.
+pub fn parse_refinement_log(log_text: &str) -> BTreeMap<String, BTreeMap<String, i64>> {
+    let mut result: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+    let mut current: Option<String> = None;
+    for line in log_text.lines() {
+        let nums = line_integers(line);
+        let last = nums.last().copied();
+        let norm = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.contains("refine_degree") {
+            if let Some(d) = last {
+                current = Some(d.to_string());
+                result.entry(d.to_string()).or_default();
+            }
+        } else if line.contains("需要细化的三角形个数") {
+            if let (Some(d), Some(v)) = (&current, last) {
+                result
+                    .entry(d.clone())
+                    .or_default()
+                    .insert("selected_triangles".into(), v);
+            }
+        } else if norm.contains("before num_ref") {
+            if let (Some(d), Some(v)) = (&current, last) {
+                result
+                    .entry(d.clone())
+                    .or_default()
+                    .insert("before_nested_cleanup_triangles".into(), v);
+            }
+        } else if norm.contains("after num_ref") {
+            if let (Some(d), Some(v)) = (&current, last) {
+                result
+                    .entry(d.clone())
+                    .or_default()
+                    .insert("after_nested_cleanup_triangles".into(), v);
+            }
+        } else if line.contains("去除孤立细化三角形后") {
+            if let (Some(d), Some(v)) = (&current, last) {
+                result
+                    .entry(d.clone())
+                    .or_default()
+                    .insert("retained_triangles".into(), v);
+            }
+        }
+    }
+    result
+}
+
+fn opt_num_field(buf: &mut String, key: &str, value: Option<f64>) {
+    if let Some(v) = value {
+        if v.is_finite() {
+            buf.push_str(&format!(",\n    \"{key}\": {v}"));
+        }
+    }
+}
+
+fn intersection_summary_json(summary: &HydroIntersectionSummary, kind: &str) -> String {
+    let cc = summary
+        .class_counts
+        .iter()
+        .map(|(k, v)| format!("\"{}\": {}", k.replace('"', "\\\""), v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut s = format!(
+        "{{\n    \"feature_count\": {},\n    \"class_counts\": {{{cc}}}",
+        summary.feature_count
+    );
+    let (fmin, fmed, fmax, asum) = if kind == "river" {
+        (
+            "river_fraction_min",
+            "river_fraction_median",
+            "river_fraction_max",
+            "estimated_river_area_m2_sum",
+        )
+    } else {
+        (
+            "coastal_fraction_min",
+            "coastal_fraction_median",
+            "coastal_fraction_max",
+            "estimated_coastal_area_m2_sum",
+        )
+    };
+    opt_num_field(&mut s, fmin, summary.fraction_min);
+    opt_num_field(&mut s, fmed, summary.fraction_median);
+    opt_num_field(&mut s, fmax, summary.fraction_max);
+    opt_num_field(&mut s, asum, summary.area_sum);
+    s.push_str("\n  }");
+    s
+}
+
+/// Assemble the refinement-eval report JSON (faithful to `build_refinement_eval`).
+pub fn build_refinement_eval_json(
+    background: &HydroBackgroundSummary,
+    river: &HydroIntersectionSummary,
+    coast: Option<&HydroIntersectionSummary>,
+    log: Option<&BTreeMap<String, BTreeMap<String, i64>>>,
+) -> String {
+    let mut s = String::from("{\n  \"kind\": \"earthmesh_hydro_refinement_eval\",\n");
+    let mut bg = format!(
+        "  \"background_cells\": {{\n    \"cell_count\": {}",
+        background.cell_count
+    );
+    opt_num_field(
+        &mut bg,
+        "equivalent_cell_size_km_min",
+        background.size_km_min,
+    );
+    opt_num_field(
+        &mut bg,
+        "equivalent_cell_size_km_median",
+        background.size_km_median,
+    );
+    opt_num_field(
+        &mut bg,
+        "equivalent_cell_size_km_max",
+        background.size_km_max,
+    );
+    bg.push_str("\n  }");
+    s.push_str(&bg);
+    s.push_str(",\n  \"river_intersections\": ");
+    s.push_str(&intersection_summary_json(river, "river"));
+    if let Some(c) = coast {
+        s.push_str(",\n  \"coast_intersections\": ");
+        s.push_str(&intersection_summary_json(c, "coast"));
+    }
+    if let Some(log) = log {
+        s.push_str(",\n  \"refinement_log\": {");
+        let degrees: Vec<String> = log
+            .iter()
+            .map(|(deg, metrics)| {
+                let inner = metrics
+                    .iter()
+                    .map(|(k, v)| format!("\"{k}\": {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("\n    \"{deg}\": {{{inner}}}")
+            })
+            .collect();
+        s.push_str(&degrees.join(","));
+        s.push_str("\n  }");
+    }
+    s.push_str("\n}\n");
+    s
+}
+
+/// Faithful port of `refinement_eval.py::write_refinement_eval_json`.
+pub fn write_refinement_eval_json(
+    background_geojson: impl AsRef<Path>,
+    intersections_geojson: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    coast_intersections_geojson: Option<&Path>,
+    log_path: Option<&Path>,
+    unit_sphere_area: bool,
+) -> io::Result<()> {
+    let bg_root = JsonParser::new(&fs::read_to_string(background_geojson.as_ref())?).parse()?;
+    let river_root =
+        JsonParser::new(&fs::read_to_string(intersections_geojson.as_ref())?).parse()?;
+    let background = summarize_background_cells(&bg_root, unit_sphere_area);
+    let river = summarize_river_intersections(&river_root);
+    let coast = match coast_intersections_geojson {
+        Some(p) => Some(summarize_coast_intersections(
+            &JsonParser::new(&fs::read_to_string(p)?).parse()?,
+        )),
+        None => None,
+    };
+    let log = match log_path {
+        Some(p) => Some(parse_refinement_log(&fs::read_to_string(p)?)),
+        None => None,
+    };
+    let json = build_refinement_eval_json(&background, &river, coast.as_ref(), log.as_ref());
+    if let Some(parent) = output_json.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_json, json)
+}
+
 /// One hydro-mesh QA gate result (faithful to `qa_gates.py::_check`).
 #[derive(Debug, Clone)]
 pub struct HydroMeshQaCheck {
