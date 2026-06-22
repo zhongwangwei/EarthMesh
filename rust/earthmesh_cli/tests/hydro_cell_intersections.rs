@@ -180,7 +180,7 @@ fn non_convex_domain_clips_corridor_exactly() {
     let frac: f64 = json
         .split("\"river_fraction\": ")
         .nth(1)
-        .and_then(|s| s.split(|c: char| c == ',' || c == '}').next())
+        .and_then(|s| s.split([',', '}']).next())
         .and_then(|s| s.trim().parse().ok())
         .expect("river_fraction");
     assert!(

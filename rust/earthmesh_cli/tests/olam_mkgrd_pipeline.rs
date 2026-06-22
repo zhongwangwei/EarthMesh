@@ -125,9 +125,7 @@ fn non_placeholder_points(points: &[LonLatPoint]) -> Vec<LonLatPoint> {
 fn method_c_atmos_and_surface_constants_match_fortran_defaults() {
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS, 13);
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE, 7);
-    assert!(
-        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS > OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
-    );
+    // (the exact-value assertions above already pin ATMOS > SURFACE)
 }
 
 #[test]
@@ -2062,7 +2060,7 @@ fn default_regional_specified_refine_uses_olam_and_subsets_domain() {
     else {
         panic!("default regional specified refine should use OLAM direct path");
     };
-    assert_eq!(run.runtime_state.config.mask_domain_global, false);
+    assert!(!run.runtime_state.config.mask_domain_global);
     assert!(run.output.output.exists());
 
     let refined_mesh =

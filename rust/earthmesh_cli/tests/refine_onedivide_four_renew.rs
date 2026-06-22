@@ -42,7 +42,7 @@ fn onedivide_four_renew_splits_selected_triangle_into_four_children() {
     assert_eq!(report.refined_triangles, vec![2]);
     assert_eq!(report.new_triangle_ids, vec![3, 4, 5, 6]);
     assert_eq!(report.new_vertex_ids, vec![4, 5, 6]);
-    assert_eq!(report.dateline_adjusted, false);
+    assert!(!report.dateline_adjusted);
 
     assert_eq!(wp_new[4], point(3.0, 3.0));
     assert_eq!(wp_new[5], point(0.0, 3.0));
@@ -110,7 +110,7 @@ fn onedivide_four_renew_applies_fortran_dateline_shift_and_crossline_cleanup() {
     assert_eq!(report.refined_triangles, vec![2]);
     assert_eq!(report.new_triangle_ids, vec![3, 4, 5, 6]);
     assert_eq!(report.new_vertex_ids, vec![5, 6, 7]);
-    assert_eq!(report.dateline_adjusted, true);
+    assert!(report.dateline_adjusted);
 
     assert_eq!(wp_new[5], point(-175.0, 3.0));
     assert_eq!(wp_new[6], point(175.0, 3.0));

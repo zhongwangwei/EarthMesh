@@ -60,7 +60,7 @@ fn gba_region_produces_river_close_mask_nmls() {
     );
     // Refinement-ready close-mask namelists were emitted for rivers.
     assert!(
-        rep.river_nml.files.len() > 0,
+        !rep.river_nml.files.is_empty(),
         "expected river close-mask .nml files"
     );
     for f in &rep.river_nml.files {

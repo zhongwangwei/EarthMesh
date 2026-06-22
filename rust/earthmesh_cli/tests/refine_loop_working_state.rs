@@ -615,7 +615,7 @@ fn working_state_applies_delaunay_lop_into_new_connectivity() {
 
     assert_eq!(report.flipped_pairs, vec![(2, 3)]);
     assert_eq!(report.new_triangle_ids, vec![4, 5]);
-    assert_eq!(report.dateline_adjusted, false);
+    assert!(!report.dateline_adjusted);
     assert_eq!(
         [
             state.ngrmw_new[1][4],

@@ -625,9 +625,9 @@ fn run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture() {
             } else {
                 2.0e-4
             };
-            if var_name.starts_with("GLO") && expected[index].abs() < 89.999 {
-                assert_close(actual[index], expected[index], tolerance);
-            } else if var_name.starts_with("GLA") {
+            if (var_name.starts_with("GLO") && expected[index].abs() < 89.999)
+                || var_name.starts_with("GLA")
+            {
                 assert_close(actual[index], expected[index], tolerance);
             }
         }

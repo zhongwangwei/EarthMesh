@@ -42,7 +42,7 @@ fn setup(background: i64, river: i64, coast: i64, surfaces: &[&str]) -> (PathBuf
     (manifest, dir)
 }
 
-fn check_status<'a>(report: &'a earthmesh_cli::HydroMeshQaReport, id: &str) -> Option<bool> {
+fn check_status(report: &earthmesh_cli::HydroMeshQaReport, id: &str) -> Option<bool> {
     report.checks.iter().find(|c| c.id == id).map(|c| c.passed)
 }
 

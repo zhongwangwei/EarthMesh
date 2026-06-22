@@ -171,7 +171,7 @@ fn integrated_runner_dispatches_locmesh_threshold_files_to_all_component_outputs
             land_threshold_output: Some(&land_output),
             ocean_threshold_output: Some(&ocean_output),
             atmos_threshold_output: Some(&atmos_output),
-            landtypes_global: &vec![vec![0, 0, 0], vec![0, 1, 1], vec![0, 2, 1], vec![0, 1, 1]],
+            landtypes_global: &[vec![0, 0, 0], vec![0, 1, 1], vec![0, 2, 1], vec![0, 1, 1]],
             threshold_bounds: AreaJudgeSourceBounds {
                 minlon_source: 1,
                 maxlon_source: 3,

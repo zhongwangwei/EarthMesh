@@ -1963,8 +1963,8 @@ fn decompose_non_axis_aligned_exterior_holes_vertical_slabs(
             }
             for (center, left, right) in center_spans
                 .into_iter()
-                .zip(left_spans.into_iter())
-                .zip(right_spans.into_iter())
+                .zip(left_spans)
+                .zip(right_spans)
                 .map(|((center, left), right)| (center, left, right))
             {
                 hole_spans.push((center, left, right));
@@ -2385,7 +2385,7 @@ fn decompose_axis_aligned_exterior_non_rectilinear_holes_vertical_slabs(
             if left_spans.len() != center_spans.len() || right_spans.len() != center_spans.len() {
                 return None;
             }
-            spans.extend(left_spans.into_iter().zip(right_spans.into_iter()));
+            spans.extend(left_spans.into_iter().zip(right_spans));
         }
         if spans.is_empty() {
             rings.push(rectangle_ring((xl, outer.1, xr, outer.3)));
@@ -3296,17 +3296,16 @@ fn merge_contained_polygon_close_masks(
     left: &[(f64, f64)],
     right: &[(f64, f64)],
 ) -> Option<Vec<(f64, f64)>> {
-    match (rectilinear_ring_cells(left), rectilinear_ring_cells(right)) {
-        (Some(left_cells), Some(right_cells)) => {
-            if rectilinear_cells_contain_cells(&left_cells, &right_cells) {
-                return Some(left.to_vec());
-            }
-            if rectilinear_cells_contain_cells(&right_cells, &left_cells) {
-                return Some(right.to_vec());
-            }
-            return None;
+    if let (Some(left_cells), Some(right_cells)) =
+        (rectilinear_ring_cells(left), rectilinear_ring_cells(right))
+    {
+        if rectilinear_cells_contain_cells(&left_cells, &right_cells) {
+            return Some(left.to_vec());
         }
-        _ => {}
+        if rectilinear_cells_contain_cells(&right_cells, &left_cells) {
+            return Some(right.to_vec());
+        }
+        return None;
     }
     if ring_contains_ring(left, right) {
         return Some(left.to_vec());
@@ -6843,7 +6842,7 @@ pub fn enrich_mkgrd_final_quality_with_global_distance_steps_io(
             .unwrap_or(&0);
         if mask_patch_ndm == 0 {
             mask_patch_ndm = count_area_judge_area_sources(
-                &runtime_state.config.file_dir(),
+                runtime_state.config.file_dir(),
                 "mask_patch",
                 &runtime_state.config.mask_patch_type,
                 iter,
@@ -6859,7 +6858,7 @@ pub fn enrich_mkgrd_final_quality_with_global_distance_steps_io(
             )
         })?;
         let source = build_area_judge_area_sources_fortran_indexed(
-            &runtime_state.config.file_dir(),
+            runtime_state.config.file_dir(),
             "mask_patch",
             &runtime_state.config.mask_patch_type,
             iter,
@@ -6925,7 +6924,7 @@ fn source_gridnum_perdegree_from_dims(
             "final global spring requires nonzero source-grid dimensions",
         ));
     }
-    if nlons_source % 360 != 0 || nlats_source % 180 != 0 {
+    if !nlons_source.is_multiple_of(360) || !nlats_source.is_multiple_of(180) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -8480,7 +8479,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
             let source_mesh = read_unstructured_mesh_netcdf(&postproc_plan.source_gridfile)?;
             let num_mp_step = vec![source_mesh.m_points.len()];
             MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
-                &postproc_plan,
+                postproc_plan,
                 MaskPostprocEarthRunOptions {
                     mask_sea_ratio: config.mask_sea_ratio,
                     minlon_dm_area,
@@ -8505,7 +8504,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
                 bounds,
             )?;
             MkgrdFinalDomainPostprocReport::Land(run_mask_postproc_land_domain(
-                &postproc_plan,
+                postproc_plan,
                 MaskPostprocLandRunOptions {
                     seaorland: &selected_seaorland,
                     minlon_dm_area,
@@ -9021,13 +9020,15 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
         }
         Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err)),
     };
-    if !refine.refine_spc && !refine.refine_cal {
-        if native_regions.is_empty() && !native_surface_global_expansion {
-            return Err(io::Error::new(
+    if !refine.refine_spc
+        && !refine.refine_cal
+        && native_regions.is_empty()
+        && !native_surface_global_expansion
+    {
+        return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "OLAM direct path requires refine_spc, refine_cal, or native OLAM ngrids/nsfcgrids to be active.",
             ));
-        }
     }
     let max_spc_level = if refine.refine_spc {
         final_quality_non_negative_usize(
@@ -9088,13 +9089,11 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
             max_cal_level,
         )?);
     }
-    if regions.is_empty() {
-        if !native_surface_global_expansion {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "OLAM direct refine found no region sources",
-            ));
-        }
+    if regions.is_empty() && !native_surface_global_expansion {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "OLAM direct refine found no region sources",
+        ));
     }
 
     let nxp = usize::try_from(config.nxp)
@@ -9639,10 +9638,12 @@ mod tests {
 
     #[test]
     fn olam_method_c_uses_fortran_spring_defaults_when_niter_refine_is_unspecified() {
-        let mut refine = RefineConfig::default();
-        refine.spring_global_type = 1;
-        refine.niter_refine = 100;
-        refine.niter_refine_specified = false;
+        let refine = RefineConfig {
+            spring_global_type: 1,
+            niter_refine: 100,
+            niter_refine_specified: false,
+            ..Default::default()
+        };
 
         assert_eq!(
             olam_method_c_spring_iterations(&refine, false).expect("surface iterations"),
@@ -9656,10 +9657,12 @@ mod tests {
 
     #[test]
     fn olam_method_c_respects_explicit_niter_refine_for_fast_or_custom_runs() {
-        let mut refine = RefineConfig::default();
-        refine.spring_global_type = 1;
-        refine.niter_refine = 2;
-        refine.niter_refine_specified = true;
+        let refine = RefineConfig {
+            spring_global_type: 1,
+            niter_refine: 2,
+            niter_refine_specified: true,
+            ..Default::default()
+        };
 
         assert_eq!(
             olam_method_c_spring_iterations(&refine, false).expect("explicit iterations"),
@@ -9669,9 +9672,11 @@ mod tests {
 
     #[test]
     fn olam_method_c_skips_spring_when_global_spring_is_disabled() {
-        let mut refine = RefineConfig::default();
-        refine.spring_global_type = 0;
-        refine.niter_refine_specified = false;
+        let refine = RefineConfig {
+            spring_global_type: 0,
+            niter_refine_specified: false,
+            ..Default::default()
+        };
 
         assert_eq!(
             olam_method_c_spring_iterations(&refine, true).expect("disabled spring"),
@@ -9756,9 +9761,11 @@ mod tests {
 
     #[test]
     fn olam_native_method_c_ignores_mkrefine_niter_refine_like_fortran_spawn_nest() {
-        let mut refine = RefineConfig::default();
-        refine.niter_refine = 1;
-        refine.niter_refine_specified = true;
+        let refine = RefineConfig {
+            niter_refine: 1,
+            niter_refine_specified: true,
+            ..Default::default()
+        };
 
         assert_eq!(
             olam_native_method_c_spring_iterations(&refine, true, "MAKEGRID")
@@ -9804,9 +9811,11 @@ mod tests {
         )
         .expect("write circle mask source");
 
-        let mut refine = RefineConfig::default();
-        refine.halo = [0, 4, 0, 0, 0, 0, 0, 0, 0, 0];
-        refine.max_transition_row = [0, 4, 0, 0, 0, 0, 0, 0, 0, 0];
+        let refine = RefineConfig {
+            halo: [0, 4, 0, 0, 0, 0, 0, 0, 0, 0],
+            max_transition_row: [0, 4, 0, 0, 0, 0, 0, 0, 0, 0],
+            ..Default::default()
+        };
         let mut regions = Vec::new();
         read_olam_circle_refinement_regions(&source, &refine, 2, 16, &mut regions)
             .expect("read specified circle refinement regions");
@@ -10422,7 +10431,7 @@ fn olam_native_atmosphere_grid_count_spawns(
     native_mdomain: Option<usize>,
     grid_count: usize,
 ) -> bool {
-    grid_count > 1 && native_mdomain.map_or(true, |mdomain| matches!(mdomain, 0 | 5))
+    grid_count > 1 && native_mdomain.is_none_or(|mdomain| matches!(mdomain, 0 | 5))
 }
 
 fn read_olam_native_sfcgrid_res_factor(contents: &str) -> io::Result<usize> {
@@ -17057,25 +17066,25 @@ pub fn run_mkgrd_gridinit_global_namelist(
         let gridfile = match config.mode_file_description.trim() {
             "EarthMesh" => copy_existing_earthmesh_mode_file(
                 &mode_file,
-                &config.file_dir(),
+                config.file_dir(),
                 nxp,
                 &config.mode_grid,
             )?,
             "MPAS" => convert_mpas_mode_file_to_earthmesh(
                 &mode_file,
-                &config.file_dir(),
+                config.file_dir(),
                 nxp,
                 &config.mode_grid,
             )?,
             "FVCOM" => convert_fvcom_mode_file_to_earthmesh(
                 &mode_file,
-                &config.file_dir(),
+                config.file_dir(),
                 nxp,
                 &config.mode_grid,
             )?,
             "IAP-Ocean" => convert_iap_ocean_mode_file_to_earthmesh(
                 &mode_file,
-                &config.file_dir(),
+                config.file_dir(),
                 nxp,
                 &config.mode_grid,
             )?,
@@ -17580,19 +17589,17 @@ pub struct FlatContainMesh {
 
 impl FlatContainMesh {
     pub fn num_ustr(&self) -> usize {
-        if self.ustr_id_width == 0 {
-            0
-        } else {
-            self.ustr_id_values.len() / self.ustr_id_width
-        }
+        self.ustr_id_values
+            .len()
+            .checked_div(self.ustr_id_width)
+            .unwrap_or(0)
     }
 
     pub fn num_ii(&self) -> usize {
-        if self.ustr_ii_width == 0 {
-            0
-        } else {
-            self.ustr_ii_values.len() / self.ustr_ii_width
-        }
+        self.ustr_ii_values
+            .len()
+            .checked_div(self.ustr_ii_width)
+            .unwrap_or(0)
     }
 
     pub fn to_contain_mesh(&self) -> io::Result<ContainMesh> {
@@ -18059,7 +18066,7 @@ fn getcontain_restore_dateline_source_index(
     index: usize,
     nlons_source: usize,
 ) -> io::Result<usize> {
-    if nlons_source == 0 || nlons_source % 2 != 0 {
+    if nlons_source == 0 || !nlons_source.is_multiple_of(2) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -19176,7 +19183,7 @@ fn write_fvcom_ns_records(file: &mut fs::File, obc_order: &[usize]) -> io::Resul
                 "obc_order contains zero boundary vertex id",
             ));
         }
-        if position_in_record % 10 == 0 {
+        if position_in_record.is_multiple_of(10) {
             write!(file, "NS ")?;
         }
         if order[idx + 1] == 1 {
@@ -24917,7 +24924,7 @@ fn area_judge_circle_scan_bounds_fortran(
     let mut edgen_temp = center.lat + (radius_km / temp) * 1.2;
     let mut edges_temp = center.lat - (radius_km / temp) * 1.2;
 
-    if edgee_temp > 180.0 || edgew_temp < -180.0 || edgen_temp > 90.0 || edgen_temp < -90.0 {
+    if edgee_temp > 180.0 || edgew_temp < -180.0 || !(-90.0..=90.0).contains(&edgen_temp) {
         edgew_temp = -180.0;
         edgee_temp = 180.0;
     }
@@ -28579,7 +28586,7 @@ fn has_leading_mask_postproc_placeholder(layout: &MaskPostprocLayout) -> bool {
         && layout
             .center_neighbor_counts
             .get(0..=1)
-            .map_or(false, |counts| counts.iter().all(|&count| count == 0))
+            .is_some_and(|counts| counts.iter().all(|&count| count == 0))
 }
 
 fn add_leading_mask_postproc_placeholder(mut layout: MaskPostprocLayout) -> MaskPostprocLayout {
@@ -29634,7 +29641,7 @@ fn rankable_row(report: &JsonNode, max_background_cells: Option<i64>) -> RankedS
     let background_cells = num(background, "cell_count") as i64;
     let promotion_status = if status != "pass" {
         "failed".to_string()
-    } else if max_background_cells.map_or(false, |cap| background_cells > cap) {
+    } else if max_background_cells.is_some_and(|cap| background_cells > cap) {
         "blocked_background_cell_cap".to_string()
     } else {
         "candidate".to_string()
@@ -29891,7 +29898,7 @@ pub fn write_coastal_band_dissolve_geojson(
         for &hole in &holes {
             if hole
                 .first()
-                .map_or(false, |p| point_in_polygon_ring(*p, outer))
+                .is_some_and(|p| point_in_polygon_ring(*p, outer))
             {
                 rings_json.push(ring_coords(hole));
             }
@@ -30053,11 +30060,7 @@ pub fn mpas_cell_polygons_geojson(
     max_cells: Option<usize>,
 ) -> String {
     let n_cells = lon_cell.len();
-    let max_edges = if n_cells > 0 {
-        vertices_on_cell.len() / n_cells
-    } else {
-        0
-    };
+    let max_edges = vertices_on_cell.len().checked_div(n_cells).unwrap_or(0);
     let lon_v: Vec<f64> = lon_vertex.iter().map(|&r| mpas_deg_lon(r)).collect();
     let lat_v: Vec<f64> = lat_vertex.iter().map(|&r| mpas_deg_lat(r)).collect();
     let mut features: Vec<String> = Vec::new();
@@ -32961,7 +32964,7 @@ pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> Unstructured
                 );
                 continue;
             };
-            if w_id > 1 && !mesh.m_to_w[m_row].iter().any(|&id| id == w_id) {
+            if w_id > 1 && !mesh.m_to_w[m_row].contains(&w_id) {
                 push_violation(
                     &mut violations,
                     format!(
@@ -33037,7 +33040,11 @@ fn validate_flat_contain_mesh(contain: &FlatContainMesh) -> io::Result<()> {
             "flat ustr_id width must be positive",
         ));
     }
-    if contain.ustr_id_values.len() % contain.ustr_id_width != 0 {
+    if !contain
+        .ustr_id_values
+        .len()
+        .is_multiple_of(contain.ustr_id_width)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "flat ustr_id length must be a multiple of row width",
@@ -33049,7 +33056,12 @@ fn validate_flat_contain_mesh(contain: &FlatContainMesh) -> io::Result<()> {
             "flat ustr_ii width must be positive when values are present",
         ));
     }
-    if contain.ustr_ii_width != 0 && contain.ustr_ii_values.len() % contain.ustr_ii_width != 0 {
+    if contain.ustr_ii_width != 0
+        && !contain
+            .ustr_ii_values
+            .len()
+            .is_multiple_of(contain.ustr_ii_width)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "flat ustr_ii length must be a multiple of row width",
@@ -33524,28 +33536,22 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
         }
         for k in 0..ne {
             let vv = mesh.vertices_on_cell[c][k];
-            if vv <= 0 || vv as usize > n_vertices {
-                if v.len() < cap {
-                    v.push(format!(
-                        "cell {c}: verticesOnCell[{k}]={vv} out of 1..={n_vertices}"
-                    ));
-                }
+            if (vv <= 0 || vv as usize > n_vertices) && v.len() < cap {
+                v.push(format!(
+                    "cell {c}: verticesOnCell[{k}]={vv} out of 1..={n_vertices}"
+                ));
             }
             let ee = mesh.edges_on_cell[c][k];
-            if ee <= 0 || ee as usize > n_edges {
-                if v.len() < cap {
-                    v.push(format!(
-                        "cell {c}: edgesOnCell[{k}]={ee} out of 1..={n_edges}"
-                    ));
-                }
+            if (ee <= 0 || ee as usize > n_edges) && v.len() < cap {
+                v.push(format!(
+                    "cell {c}: edgesOnCell[{k}]={ee} out of 1..={n_edges}"
+                ));
             }
             let cc = mesh.cells_on_cell[c][k];
-            if cc < 0 || cc as usize > n_cells {
-                if v.len() < cap {
-                    v.push(format!(
-                        "cell {c}: cellsOnCell[{k}]={cc} out of 0..={n_cells}"
-                    ));
-                }
+            if (cc < 0 || cc as usize > n_cells) && v.len() < cap {
+                v.push(format!(
+                    "cell {c}: cellsOnCell[{k}]={cc} out of 0..={n_cells}"
+                ));
             }
         }
     }
@@ -33578,19 +33584,15 @@ pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
                         "edge {e}: cell {c} does not list it in edgesOnCell"
                     ));
                 }
-            } else if c < 0 || c as usize > n_cells {
-                if v.len() < cap {
-                    v.push(format!("edge {e}: cellsOnEdge {c} out of 0..={n_cells}"));
-                }
+            } else if (c < 0 || c as usize > n_cells) && v.len() < cap {
+                v.push(format!("edge {e}: cellsOnEdge {c} out of 0..={n_cells}"));
             }
         }
         for &vv in &mesh.vertices_on_edge[e] {
-            if vv <= 0 || vv as usize > n_vertices {
-                if v.len() < cap {
-                    v.push(format!(
-                        "edge {e}: verticesOnEdge {vv} out of 1..={n_vertices}"
-                    ));
-                }
+            if (vv <= 0 || vv as usize > n_vertices) && v.len() < cap {
+                v.push(format!(
+                    "edge {e}: verticesOnEdge {vv} out of 1..={n_vertices}"
+                ));
             }
         }
     }

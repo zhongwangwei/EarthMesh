@@ -53,7 +53,7 @@ fn delaunay_lop_adapter_flips_diagonal_and_updates_fortran_rows() {
 
     assert_eq!(report.flipped_pairs, vec![(2, 3)]);
     assert_eq!(report.new_triangle_ids, vec![4, 5]);
-    assert_eq!(report.dateline_adjusted, false);
+    assert!(!report.dateline_adjusted);
     assert_eq!(
         [ngrmw_new[1][4], ngrmw_new[2][4], ngrmw_new[3][4]],
         [10, 11, 13]
@@ -110,7 +110,7 @@ fn delaunay_lop_adapter_skips_zero_pairs_and_preserves_dateline_cleanup() {
 
     assert_eq!(report.flipped_pairs, vec![(2, 3)]);
     assert_eq!(report.new_triangle_ids, vec![4, 5]);
-    assert_eq!(report.dateline_adjusted, true);
+    assert!(report.dateline_adjusted);
     assert_point(mp_new[4], -178.33333333333334, 2.0);
     assert_point(mp_new[5], 178.33333333333334, 4.0);
 }

@@ -67,7 +67,7 @@ fn onedivide_two_adapter_splits_transition_triangle_and_updates_fortran_rows() {
     assert_eq!(report.split_triangles, vec![2]);
     assert_eq!(report.new_triangle_ids, vec![4, 5]);
     assert_eq!(report.new_vertex_ids, vec![7]);
-    assert_eq!(report.dateline_adjusted, false);
+    assert!(!report.dateline_adjusted);
 
     assert_point(wp_new[7], 3.0, 3.0);
     assert_point(mp_new[4], 3.0, 1.0);
@@ -135,7 +135,7 @@ fn onedivide_two_adapter_preserves_dateline_cleanup() {
     .expect("apply reverse one-into-two transition split through CLI adapter");
 
     assert_eq!(report.split_triangles, vec![2]);
-    assert_eq!(report.dateline_adjusted, true);
+    assert!(report.dateline_adjusted);
     assert_point(wp_new[7], -175.0, 3.0);
     assert_point(mp_new[4], -178.33333333333334, 1.0);
     assert_point(mp_new[5], 178.33333333333334, 3.0);

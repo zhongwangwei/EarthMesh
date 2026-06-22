@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 
 static NETCDF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -287,7 +286,7 @@ fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
     var.put_values(values, ..).expect("cellwidth values");
 }
 
-fn prepare_restart_ocean_inputs(root: &PathBuf, case_name: &str, nxp: usize) {
+fn prepare_restart_ocean_inputs(root: &std::path::Path, case_name: &str, nxp: usize) {
     let case_dir = root.join(case_name);
     fs::create_dir_all(case_dir.join("result")).expect("create result dir");
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");

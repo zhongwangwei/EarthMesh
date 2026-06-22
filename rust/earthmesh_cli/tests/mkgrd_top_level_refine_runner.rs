@@ -617,10 +617,7 @@ fn binary_can_run_refine_namelist_with_source_state_through_migrated_stack() {
     .expect("write namelist");
     let source_state = root.join("source_state.txt");
     let row = "1 1 1 1 1 1 1";
-    let seven_rows = std::iter::repeat(row)
-        .take(7)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let seven_rows = std::iter::repeat_n(row, 7).collect::<Vec<_>>().join("\n");
     fs::write(
         &source_state,
         format!(
@@ -719,12 +716,10 @@ fn library_runner_can_execute_compact_source_state_namelist_without_cli_orchestr
     let source_state = root.join("compact_source_state.txt");
     let nlons = 360usize;
     let nlats = 180usize;
-    let row = std::iter::repeat("1")
-        .take(nlats + 1)
+    let row = std::iter::repeat_n("1", nlats + 1)
         .collect::<Vec<_>>()
         .join(" ");
-    let seven_rows = std::iter::repeat(row)
-        .take(nlons + 1)
+    let seven_rows = std::iter::repeat_n(row, nlons + 1)
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(
@@ -800,12 +795,8 @@ fn binary_source_state_can_generate_final_domain_contain() {
     )
     .expect("write namelist");
     let source_state = root.join("source_state_contain.txt");
-    let row = std::iter::repeat("1")
-        .take(91)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let source_rows = std::iter::repeat(row.as_str())
-        .take(81)
+    let row = std::iter::repeat_n("1", 91).collect::<Vec<_>>().join(" ");
+    let source_rows = std::iter::repeat_n(row.as_str(), 81)
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(
@@ -876,12 +867,10 @@ fn binary_source_state_land_reports_patchtype_output() {
     let source_state = root.join("source_state_land_postproc.txt");
     let nlons = 40usize;
     let nlats = 60usize;
-    let domain_row = std::iter::repeat("1")
-        .take(nlats + 1)
+    let domain_row = std::iter::repeat_n("1", nlats + 1)
         .collect::<Vec<_>>()
         .join(" ");
-    let domain_rows = std::iter::repeat(domain_row.as_str())
-        .take(nlons + 1)
+    let domain_rows = std::iter::repeat_n(domain_row.as_str(), nlons + 1)
         .collect::<Vec<_>>()
         .join("\n");
     let land_pixels = [
@@ -987,12 +976,8 @@ fn binary_source_state_can_run_ocean_final_domain_postproc() {
     let source_state = root.join("source_state_ocean_postproc.txt");
     let row = "1 1 1 1 1 1 1";
     let ocean_row = "0 0 0 0 0 0 0";
-    let seven_rows = std::iter::repeat(row)
-        .take(7)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let seven_ocean_rows = std::iter::repeat(ocean_row)
-        .take(7)
+    let seven_rows = std::iter::repeat_n(row, 7).collect::<Vec<_>>().join("\n");
+    let seven_ocean_rows = std::iter::repeat_n(ocean_row, 7)
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(
@@ -1063,12 +1048,10 @@ fn binary_source_state_ocean_tri_final_postproc_reports_boundary_outputs() {
     let source_state = root.join("source_state_ocean_tri_postproc.txt");
     let domain_row = "1 1 1 1 1 1 1";
     let ocean_row = "0 0 0 0 0 0 0";
-    let seven_domain_rows = std::iter::repeat(domain_row)
-        .take(7)
+    let seven_domain_rows = std::iter::repeat_n(domain_row, 7)
         .collect::<Vec<_>>()
         .join("\n");
-    let seven_ocean_rows = std::iter::repeat(ocean_row)
-        .take(7)
+    let seven_ocean_rows = std::iter::repeat_n(ocean_row, 7)
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(
@@ -1138,10 +1121,7 @@ fn binary_source_state_atmos_full_mpas_reports_mesh_and_graph_outputs() {
     .expect("write namelist");
     let source_state = root.join("source_state_atmos_full_mpas.txt");
     let row = "1 1 1 1 1 1 1";
-    let seven_rows = std::iter::repeat(row)
-        .take(7)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let seven_rows = std::iter::repeat_n(row, 7).collect::<Vec<_>>().join("\n");
     fs::write(
         &source_state,
         format!(
@@ -1208,12 +1188,8 @@ fn binary_source_state_earth_reports_patchtype_and_info_outputs() {
     )
     .expect("write namelist");
     let source_state = root.join("source_state_earth_postproc.txt");
-    let row = std::iter::repeat("1")
-        .take(91)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let source_rows = std::iter::repeat(row.as_str())
-        .take(81)
+    let row = std::iter::repeat_n("1", 91).collect::<Vec<_>>().join(" ");
+    let source_rows = std::iter::repeat_n(row.as_str(), 81)
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(
@@ -1283,10 +1259,7 @@ fn binary_accepts_source_state_with_calculated_refine_metadata() {
     .expect("write namelist");
     let source_state = root.join("source_state_with_calculated_metadata.txt");
     let row = "1 1 1 1 1 1 1";
-    let seven_rows = std::iter::repeat(row)
-        .take(7)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let seven_rows = std::iter::repeat_n(row, 7).collect::<Vec<_>>().join("\n");
     let calculated_rows = [
         "0 0 0 0 0 0 0",
         "0 1 1 0 0 0 0",
@@ -1377,8 +1350,7 @@ fn binary_can_run_calculated_refine_namelist_with_source_state() {
     .expect("write namelist");
     let source_state = root.join("source_state_calculated.txt");
     let all_land = "1 1 1 1 1 1 1";
-    let all_land_rows = std::iter::repeat(all_land)
-        .take(7)
+    let all_land_rows = std::iter::repeat_n(all_land, 7)
         .collect::<Vec<_>>()
         .join("\n");
     let calculated_rows = [
@@ -1490,8 +1462,7 @@ fn binary_can_run_locmesh_calculated_refine_source_state_to_component_thresholds
     .expect("write LOCmesh calculated namelist");
 
     let source_state = root.join("source_state_locmesh_calculated.txt");
-    let domain_rows = std::iter::repeat("1 1 1 1 1 1 1")
-        .take(7)
+    let domain_rows = std::iter::repeat_n("1 1 1 1 1 1 1", 7)
         .collect::<Vec<_>>()
         .join("\n");
     let seaorland_rows = [

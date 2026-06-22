@@ -24,13 +24,13 @@ fn data_preprocess_onelayer_and_twolayer_read_fortran_windows() {
         minlat_source: 2,
     };
 
-    let one = data_read_onelayer_fortran_indexed(&root.join("lai.nc"), "lai", bounds)
+    let one = data_read_onelayer_fortran_indexed(root.join("lai.nc"), "lai", bounds)
         .expect("read onelayer window");
     assert_eq!(one.name, "lai");
     assert_eq!(one.values[1][1], 3.0);
     assert_eq!(one.values[2][2], 6.0);
 
-    let two = data_read_twolayer_fortran_indexed(&root.join("k_s.nc"), "k_s", bounds)
+    let two = data_read_twolayer_fortran_indexed(root.join("k_s.nc"), "k_s", bounds)
         .expect("read twolayer window");
     assert_eq!(two.name, "k_s");
     assert_eq!(two.layers[0][1][1], 30.0);
