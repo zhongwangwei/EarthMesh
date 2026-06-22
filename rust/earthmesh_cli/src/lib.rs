@@ -18815,6 +18815,32 @@ pub fn quality_input_from_gridfile(
             });
         }
     }
+    // Derive cell adjacency from shared edges so the topology validator and
+    // neighbor-reciprocity / transition metrics have real data (otherwise every
+    // neighbor-based check is a no-op). Two cells sharing an edge (2 vertices) are
+    // neighbors; reciprocal by construction. Non-manifold edges (>2 cells) are left
+    // unlinked — the report flags duplicate edges separately.
+    let mut edge_to_cells: std::collections::HashMap<(usize, usize), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (ci, cell) in cells.iter().enumerate() {
+        let v = &cell.vertices;
+        for k in 0..v.len() {
+            let (a, b) = (v[k], v[(k + 1) % v.len()]);
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_to_cells.entry(key).or_default().push(ci);
+        }
+    }
+    for shared in edge_to_cells.values() {
+        if shared.len() == 2 {
+            let (x, y) = (shared[0], shared[1]);
+            cells[x].neighbors.push(y);
+            cells[y].neighbors.push(x);
+        }
+    }
+    for cell in &mut cells {
+        cell.neighbors.sort_unstable();
+        cell.neighbors.dedup();
+    }
     QualityMeshInput { vertices, cells }
 }
 

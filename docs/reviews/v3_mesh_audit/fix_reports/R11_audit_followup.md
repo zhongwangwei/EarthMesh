@@ -22,6 +22,11 @@
 **修**：空 parent 视作当前目录(`Path::new(".")`)。这是真 cli bug(在 case 目录里跑 `mkgrd.x case.nml` 是最自然用法)。
 **验证**：quickstart 现 0.93s 跑通出图;smoke 用裸名调用,回归守护此修复。✓
 
+## 修复 5 — R5 拓扑校验"接了但没牙" → 派生真实邻接
+**问题**：`quality_input_from_gridfile` 给每个 cell 的 `neighbors` 设空 Vec。于是我之前声称"已接线"的 R5 拓扑校验器,以及报告的 neighbor-reciprocity / transition / max_adjacent_ratio 指标,在真实 gridfile 上**全是空转**(遍历空邻接)。(报告的 `orphan_cell_count` 例外——它自算边,所以 R4 当时没误判,掩盖了这个洞。)
+**修**：在 `quality_input_from_gridfile` 里按**共享边**派生 cell 邻接(两 cell 共享 2 顶点即互为邻居,reciprocal by construction;非流形边>2 不连,另有 duplicate-edge 标记)。
+**验证**：新测试 `quality_input_neighbors.rs`——共享边的两三角互为邻居、孤立三角无邻居、`compute()` 的 `orphan_cell_count==1`。现在 GUI/cli 写出的 quality 报告里拓扑段是**真有数据**的。✓
+
 ## 修复 4 — 诚实标注未接线的实验模块（R6/R7/R8）
 `refine_planner`(整 crate 孤岛,cli/gui 都不依赖)、`quality::coupling`、`quality::hydro_coast` 顶部加 **`INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED`**,说明产品无代码路径执行它们、仅单测覆盖,避免文档夸大。
 
