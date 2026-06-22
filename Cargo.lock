@@ -970,6 +970,7 @@ dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
  "earthmesh_mesh",
+ "earthmesh_quality",
  "netcdf",
 ]
 
@@ -1001,6 +1002,14 @@ name = "earthmesh_mesh"
 version = "0.1.0"
 dependencies = [
  "earthmesh_core",
+]
+
+[[package]]
+name = "earthmesh_quality"
+version = "0.1.0"
+dependencies = [
+ "earthmesh_core",
+ "earthmesh_geometry",
 ]
 
 [[package]]

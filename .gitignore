@@ -18,3 +18,6 @@ target/
 
 # GUI "Save as" scratch output
 *.saved.nml
+
+# Per-run reproducibility manifest written to the working directory
+run_manifest.json

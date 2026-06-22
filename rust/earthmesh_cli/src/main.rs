@@ -56,6 +56,72 @@ fn write_cli_run_manifest(command: &str, started_at: String, result: &Result<(),
     }
 }
 
+/// `--mesh-quality <gridfile.nc4> [out_dir]`: read a gridfile, build the quality
+/// input from its triangle (M->W) view, and write quality_summary.json/.csv,
+/// worst_cells.geojson and quality_report.md.
+fn run_mesh_quality(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    let gridfile = PathBuf::from(
+        args.next()
+            .ok_or_else(|| usage("--mesh-quality needs a gridfile path"))?,
+    );
+    let out_dir = args.next().map(PathBuf::from).unwrap_or_else(|| {
+        gridfile
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    });
+
+    let mesh = earthmesh_cli::read_gridfile_mesh_points(&gridfile)
+        .map_err(|e| format!("read gridfile {}: {e}", gridfile.display()))?;
+    let input = quality_input_from_gridfile(&mesh);
+    let report =
+        earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
+    let written = earthmesh_quality::io::write_all(&report, &out_dir)
+        .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
+    println!("mesh_quality_verdict={}", report.verdict.as_str());
+    println!("mesh_quality_cells={}", report.geometry.cell_count);
+    println!("mesh_quality_min_angle_deg={}", report.geometry.min_angle_deg);
+    for path in &written {
+        println!("mesh_quality_output={}", path.display());
+    }
+    Ok(())
+}
+
+/// Build a `QualityMeshInput` from a gridfile's triangle (M->W) connectivity.
+/// `m_to_w` is 1-based into the W points; sentinel / out-of-range triplets are skipped.
+fn quality_input_from_gridfile(
+    mesh: &earthmesh_cli::GridfileMeshPoints,
+) -> earthmesh_quality::QualityMeshInput {
+    use earthmesh_geometry::Point;
+    use earthmesh_quality::{QualityCell, QualityMeshInput};
+    let vertices: Vec<Point> = mesh
+        .w_lon
+        .iter()
+        .zip(&mesh.w_lat)
+        .map(|(&lon, &lat)| Point::new(lon, lat))
+        .collect();
+    let wn = vertices.len();
+    let mut cells = Vec::new();
+    for tri in mesh.m_to_w.chunks_exact(3) {
+        let idx: Vec<usize> = tri
+            .iter()
+            .filter(|&&v| v >= 1 && (v as usize) <= wn)
+            .map(|&v| (v as usize) - 1)
+            .collect();
+        // Require 3 distinct W vertices; OLAM gridfiles carry sentinel/dummy M cells
+        // (1-based arrays) whose triplets are degenerate — skip them, they are not
+        // real mesh cells.
+        if idx.len() == 3 && idx[0] != idx[1] && idx[1] != idx[2] && idx[0] != idx[2] {
+            cells.push(QualityCell {
+                vertices: idx,
+                refine_level: None,
+                neighbors: Vec::new(),
+            });
+        }
+    }
+    QualityMeshInput { vertices, cells }
+}
+
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let first = args
@@ -82,6 +148,9 @@ fn run() -> Result<(), String> {
     }
     if first == "--colm-coupling-csv-to-netcdf" {
         return run_colm_coupling_csv_to_netcdf(args);
+    }
+    if first == "--mesh-quality" {
+        return run_mesh_quality(args);
     }
     let namelist = first;
     let mut max_tris = 100_000usize;

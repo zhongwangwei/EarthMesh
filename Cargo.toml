@@ -8,6 +8,7 @@ members = [
     "rust/earthmesh_core",
     "rust/earthmesh_geometry",
     "rust/earthmesh_mesh",
+    "rust/earthmesh_quality",
     "rust/earthmesh_cli",
     "rust/earthmesh_gui",
 ]
