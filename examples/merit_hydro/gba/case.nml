@@ -7,7 +7,7 @@
  !--------------------------------------------------------------------------
  ! Grid, Land, and Sea files path/names; Sea grid configuration
  !--------------------------------------------------------------------------
-  NL%base_dir = '/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_gba_regeneration_smoke/cases/'   ! 存放case的位置
+  NL%base_dir = '${EARTHMESH_DATA}/merit_gba_regeneration_smoke/cases/'   ! 存放case的位置
 
  !--------------------------------------------------------------------------
  ! Horizontal grid specifications definition
@@ -60,7 +60,7 @@
   RL%refine_spc              = .TRUE.
   RL%max_iter_spc = 3         ! 最大指定细化次数，控制相关文件的读取次数
   RL%mask_refine_spc_type    = 'close' ! bbox, lambert, close, circle 
-  RL%mask_refine_spc_fprefix = '/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_gba_regeneration_smoke/refine_spc_merit'
+  RL%mask_refine_spc_fprefix = '${EARTHMESH_DATA}/merit_gba_regeneration_smoke/refine_spc_merit'
 
   !!!!!!!!!!!! below work when refine_setting is 'calculate' or 'mixed' !!!!!!!!!!!!!!
   RL%refine_cal              = .FALSE.

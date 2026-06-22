@@ -1,11 +1,11 @@
 {
   "case_name": "merit_gba_90m_bridge_smoke",
   "files": {
-    "complete_cell_mask_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_complete_cell_mask.geojson",
-    "eval_json": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_refinement_eval.json",
-    "html_map": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_rivers_and_integrated_coast_leaflet.html",
-    "manifest_json": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/delivery_manifest.json",
-    "ranking_json": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/refinement_sweep_ranking.json"
+    "complete_cell_mask_geojson": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_complete_cell_mask.geojson",
+    "eval_json": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_refinement_eval.json",
+    "html_map": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_rivers_and_integrated_coast_leaflet.html",
+    "manifest_json": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/delivery_manifest.json",
+    "ranking_json": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/refinement_sweep_ranking.json"
   },
   "kind": "earthmesh_hydro_coast_delivery_package",
   "metrics": {
@@ -20,12 +20,12 @@
   },
   "recommended_case": "merit_gba_90m_bridge_smoke",
   "source_files": {
-    "background_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/background_cells.geojson",
-    "coast_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_merit_coast_cell_intersections.geojson",
+    "background_geojson": "${EARTHMESH_DATA}/merit_package_bridge_smoke/background_cells.geojson",
+    "coast_geojson": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_merit_coast_cell_intersections.geojson",
     "comparison_reports": [],
     "failed_reports": [],
-    "log_path": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/mkgrd_placeholder.log",
-    "river_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_merit_river_cell_intersections.geojson",
-    "surface_geojson": "/Users/zhongwangwei/Desktop/EarthMesh_cama_scratch/merit_package_bridge_smoke/package/merit_source/merit_surface_masks.geojson"
+    "log_path": "${EARTHMESH_DATA}/merit_package_bridge_smoke/mkgrd_placeholder.log",
+    "river_geojson": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/merit_gba_90m_bridge_smoke_merit_river_cell_intersections.geojson",
+    "surface_geojson": "${EARTHMESH_DATA}/merit_package_bridge_smoke/package/merit_source/merit_surface_masks.geojson"
   }
 }

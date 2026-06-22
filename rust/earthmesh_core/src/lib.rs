@@ -5,6 +5,11 @@
 //! downstream mesh kernels while preserving the exact defaults and formulas that
 //! existing EarthMesh workflows rely on.
 
+/// Unified path resolution + pre-run input checks shared by CLI and GUI.
+pub mod paths;
+/// Reproducible `run_manifest.json` record for one run.
+pub mod run_manifest;
+
 /// Opt-in, thread-local progress + cooperative-cancellation channel between a
 /// long engine run and its caller (e.g. the GUI). Pure CLI/library callers never
 /// install a callback, so [`report`] is a no-op there and the engine stays

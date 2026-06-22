@@ -6,6 +6,7 @@
 //! choice, mesh-type-filtered refinement criteria, and the import/smoothing
 //! plumbing tucked under Advanced. The verbatim namelist mirror is gone.
 
+use earthmesh_core::paths::home_dir;
 use earthmesh_core::{deg_to_rad, rad_to_deg, EarthmeshConfig, RefineConfig};
 use eframe::egui;
 use std::collections::HashMap;
@@ -90,8 +91,8 @@ fn runtime_workdir() -> PathBuf {
     if dev_root.join("examples").exists() {
         return dev_root;
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join("EarthMesh");
+    if let Some(home) = home_dir() {
+        return home.join("EarthMesh");
     }
     std::env::current_dir().unwrap_or(dev_root)
 }
