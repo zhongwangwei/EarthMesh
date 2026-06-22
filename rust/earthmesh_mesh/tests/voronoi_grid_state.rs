@@ -1,4 +1,4 @@
-use earthmesh_core::EARTH_RADIUS_METERS;
+use earthmesh_mesh::OLAM_FORTRAN_EARTH_RADIUS_METERS;
 use earthmesh_mesh::{
     grid_xyz2lonlat_fortran_indexed_state, gridinit_voronoi_state_fortran,
     icosahedron_relaxed_grid_fortran, pcvt_adjust_voronoi_grid_state,
@@ -18,7 +18,7 @@ fn voronoi_grid_from_relaxed_icosahedron_swaps_delaunay_counts_and_keeps_one_bas
     let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
 
-    let state = voronoi_grid_from_icosahedron_relaxed(&relaxed, EARTH_RADIUS_METERS)
+    let state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
         .expect("voronoi grid state");
 
     assert_eq!(state.grid.nma, relaxed.nwd);
@@ -51,7 +51,7 @@ fn voronoi_grid_from_relaxed_icosahedron_swaps_delaunay_counts_and_keeps_one_bas
 fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
     let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
-    let state = voronoi_grid_from_icosahedron_relaxed(&relaxed, EARTH_RADIUS_METERS)
+    let state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
         .expect("voronoi grid state");
 
     let face = &relaxed.connectivity.w_faces[2];
@@ -59,7 +59,7 @@ fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
     let x = (relaxed.m_points[iw1].x + relaxed.m_points[iw2].x + relaxed.m_points[iw3].x) / 3.0;
     let y = (relaxed.m_points[iw1].y + relaxed.m_points[iw2].y + relaxed.m_points[iw3].y) / 3.0;
     let z = (relaxed.m_points[iw1].z + relaxed.m_points[iw2].z + relaxed.m_points[iw3].z) / 3.0;
-    let scale = EARTH_RADIUS_METERS / (x * x + y * y + z * z).sqrt();
+    let scale = OLAM_FORTRAN_EARTH_RADIUS_METERS / (x * x + y * y + z * z).sqrt();
 
     approx_eq(state.grid.xem[2], x * scale, 0.5);
     approx_eq(state.grid.yem[2], y * scale, 0.5);
@@ -70,7 +70,7 @@ fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
 fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
     let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
-    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, EARTH_RADIUS_METERS)
+    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
         .expect("voronoi grid state");
 
     earthmesh_mesh::grid_xyz2lonlat_fortran_indexed_state(&mut state.grid)
@@ -89,7 +89,7 @@ fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
 fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
     let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
-    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, EARTH_RADIUS_METERS)
+    let mut state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
         .expect("voronoi grid state");
 
     let im = (2..=state.grid.nma)
@@ -125,7 +125,7 @@ fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
         + f64::from(state.grid.yem[im]).powi(2)
         + f64::from(state.grid.zem[im]).powi(2))
     .sqrt();
-    assert!((radius - EARTH_RADIUS_METERS).abs() <= 0.5);
+    assert!((radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 0.5);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
             + f64::from(state.grid.zem[im]).powi(2))
         .sqrt();
         assert!(
-            (radius - EARTH_RADIUS_METERS).abs() <= 0.5,
+            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 0.5,
             "im={im} radius={radius}"
         );
         assert!(state.grid.glatm[im] >= -90.0 && state.grid.glatm[im] <= 90.0);
@@ -164,7 +164,7 @@ fn gridinit_voronoi_state_uses_olam_factor2_expansion_when_selected() {
     let base =
         OlamDelaunayMesh::from_icosahedron(24, 0, 1.0, 0.25, 100).expect("OLAM base NXP 24 mesh");
     let expanded = base.expand_by_factor(2).expect("OLAM factor-2 expansion");
-    let mut expected = voronoi_grid_from_olam_delaunay_mesh(&expanded, EARTH_RADIUS_METERS)
+    let mut expected = voronoi_grid_from_olam_delaunay_mesh(&expanded, OLAM_FORTRAN_EARTH_RADIUS_METERS)
         .expect("expanded OLAM Voronoi state");
     pcvt_adjust_voronoi_grid_state(&mut expected).expect("expected pcvt");
     grid_xyz2lonlat_fortran_indexed_state(&mut expected.grid).expect("expected lonlat fill");

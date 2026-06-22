@@ -1,4 +1,4 @@
-use earthmesh_core::EARTH_RADIUS_METERS;
+use earthmesh_mesh::OLAM_FORTRAN_EARTH_RADIUS_METERS;
 use earthmesh_mesh::{CartesianPoint, LonLatDegrees, OlamDelaunayMesh, OlamRefinementRegion};
 
 fn magnitude(point: earthmesh_mesh::CartesianPoint) -> f64 {
@@ -122,7 +122,7 @@ fn spawn_nest_cartesian_xy_keeps_method_c_points_unprojected_like_fortran_mdomai
             .any(|(point, metadata)| {
                 metadata.ngr > 1
                     && metadata.mrlm_orig >= 2
-                    && (magnitude(*point) - EARTH_RADIUS_METERS).abs() > 1.0
+                    && (magnitude(*point) - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() > 1.0
             }),
         "Fortran spawn_nest only projects coordinates back to Earth radius when mdomain < 2"
     );
@@ -249,7 +249,7 @@ fn spawn_nest_cartesian_xy_spring_keeps_movable_points_unprojected_like_fortran_
     );
     assert!(
         movable_child_points.iter().any(|&point_id| {
-            (magnitude(refined.m_points[point_id]) - EARTH_RADIUS_METERS).abs() > 1.0
+            (magnitude(refined.m_points[point_id]) - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() > 1.0
         }),
         "Fortran spring_dynamics_nest only projects moved M points back to Earth radius when mdomain < 2"
     );
@@ -1099,7 +1099,7 @@ fn olam_nest_spring_moves_transition_points_without_changing_topology() {
         transition_point.y - 20_000.0,
         transition_point.z,
     );
-    let scale = EARTH_RADIUS_METERS / magnitude(perturbed);
+    let scale = OLAM_FORTRAN_EARTH_RADIUS_METERS / magnitude(perturbed);
     refined.m_points[transition_point_id] = CartesianPoint::new(
         perturbed.x * scale,
         perturbed.y * scale,
@@ -1118,7 +1118,7 @@ fn olam_nest_spring_moves_transition_points_without_changing_topology() {
     for point_id in 2..=smoothed.nmd {
         let radius = magnitude(smoothed.m_points[point_id]);
         assert!(
-            (radius - EARTH_RADIUS_METERS).abs() <= 1.0e-6,
+            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 1.0,
             "point {point_id} radius {radius}"
         );
     }

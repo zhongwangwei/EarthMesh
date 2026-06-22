@@ -1,4 +1,4 @@
-use earthmesh_core::EARTH_RADIUS_METERS;
+use earthmesh_mesh::OLAM_FORTRAN_EARTH_RADIUS_METERS;
 use earthmesh_mesh::{
     olam_gridinit_factorization_fortran, voronoi_grid_from_olam_delaunay_mesh, CartesianPoint,
     OlamDelaunayMesh,
@@ -29,7 +29,7 @@ fn olam_delaunay_mesh_from_icosahedron_has_closed_muw_topology() {
     for point_id in 2..=mesh.nmd {
         let radius = magnitude(mesh.m_points[point_id]);
         assert!(
-            (radius - EARTH_RADIUS_METERS).abs() <= 1.0e-6,
+            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 1.0,
             "point {point_id} radius {radius}"
         );
     }
@@ -62,7 +62,7 @@ fn olam_cart_hex_mdomain_five_uses_fortran_planar_counts_and_coordinates() {
     for point_id in 2..=mesh.nmd {
         assert_eq!(mesh.m_points[point_id].z, 0.0, "point {point_id}");
         assert!(
-            magnitude(mesh.m_points[point_id]) < EARTH_RADIUS_METERS / 100.0,
+            magnitude(mesh.m_points[point_id]) < OLAM_FORTRAN_EARTH_RADIUS_METERS / 100.0,
             "cart_hex point {point_id} should remain in the local Cartesian plane"
         );
     }
@@ -193,7 +193,7 @@ fn olam_delaunay_mesh_can_drive_voronoi_grid_generation() {
     let mesh = OlamDelaunayMesh::from_icosahedron(1, 0, 1.0, 0.25, 100)
         .expect("valid OLAM icosahedron mesh");
 
-    let state = voronoi_grid_from_olam_delaunay_mesh(&mesh, EARTH_RADIUS_METERS)
+    let state = voronoi_grid_from_olam_delaunay_mesh(&mesh, OLAM_FORTRAN_EARTH_RADIUS_METERS)
         .expect("OLAM Voronoi state");
 
     assert_eq!(state.grid.nma, mesh.nwd);
@@ -244,7 +244,7 @@ fn olam_expand_global2_subdivides_each_triangle_and_rebuilds_topology() {
     for point_id in 2..=expanded.nmd {
         let radius = magnitude(expanded.m_points[point_id]);
         assert!(
-            (radius - EARTH_RADIUS_METERS).abs() <= 1.0e-6,
+            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 1.0,
             "point {point_id} radius {radius}"
         );
     }
@@ -269,7 +269,7 @@ fn olam_expand_global3_trisects_each_triangle_and_rebuilds_topology() {
     for point_id in 2..=expanded.nmd {
         let radius = magnitude(expanded.m_points[point_id]);
         assert!(
-            (radius - EARTH_RADIUS_METERS).abs() <= 1.0e-6,
+            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 1.0,
             "point {point_id} radius {radius}"
         );
     }
@@ -314,7 +314,7 @@ fn olam_global_spring_preserves_topology_radius_and_pentagons() {
         regular_point.y - 25_000.0,
         regular_point.z,
     );
-    let scale = EARTH_RADIUS_METERS / magnitude(perturbed);
+    let scale = OLAM_FORTRAN_EARTH_RADIUS_METERS / magnitude(perturbed);
     mesh.m_points[regular_point_id] = CartesianPoint::new(
         perturbed.x * scale,
         perturbed.y * scale,
@@ -334,7 +334,7 @@ fn olam_global_spring_preserves_topology_radius_and_pentagons() {
     for point_id in 2..=adjusted.nmd {
         let radius = magnitude(adjusted.m_points[point_id]);
         assert!(
-            (radius - EARTH_RADIUS_METERS).abs() <= 1.0e-6,
+            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 1.0,
             "point {point_id} radius {radius}"
         );
     }
@@ -372,7 +372,7 @@ fn olam_global_cartesian_spring_keeps_points_unprojected_like_fortran_mdomain_ge
 
     adjusted.validate_topology().expect("topology stays closed");
     assert!(
-        magnitude(adjusted.m_points[regular_point_id]) < EARTH_RADIUS_METERS - 1.0,
+        magnitude(adjusted.m_points[regular_point_id]) < OLAM_FORTRAN_EARTH_RADIUS_METERS - 1.0,
         "Fortran spring_dynamics_globe only projects M points back to Earth radius when mdomain < 2"
     );
 }

@@ -383,6 +383,7 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
     require_grid_coordinate_len("yew", state.grid.yew.len(), state.grid.nwa + 1)?;
     require_grid_coordinate_len("zew", state.grid.zew.len(), state.grid.nwa + 1)?;
     require_grid_coordinate_len("tabs.m", state.tabs.m.len(), state.grid.nma + 1)?;
+    let earth_radius = active_voronoi_grid_radius(state)?;
 
     for im in 2..=state.grid.nma {
         let vertex_ids = state.tabs.m[im].iw;
@@ -416,19 +417,38 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
                 f64::from(state.grid.zew[iw]),
             )
         });
-        let circumcenter = spherical_circumcenter_from_barycenter(barycenter, vertices)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("M point {im} has degenerate spherical circumcenter"),
-                )
-            })?;
+        let circumcenter =
+            spherical_circumcenter_from_barycenter_with_radius(barycenter, vertices, earth_radius)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("M point {im} has degenerate spherical circumcenter"),
+                    )
+                })?;
         state.grid.xem[im] = circumcenter.x as f32;
         state.grid.yem[im] = circumcenter.y as f32;
         state.grid.zem[im] = circumcenter.z as f32;
     }
 
     Ok(())
+}
+
+fn active_voronoi_grid_radius(state: &VoronoiGridState) -> io::Result<f64> {
+    for iw in 2..=state.grid.nwa {
+        let point = CartesianPoint::new(
+            f64::from(state.grid.xew[iw]),
+            f64::from(state.grid.yew[iw]),
+            f64::from(state.grid.zew[iw]),
+        );
+        let radius = magnitude(point);
+        if radius.is_finite() && radius > 0.0 {
+            return Ok(radius);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Voronoi grid state has no active W point with a positive radius",
+    ))
 }
 
 /// In-memory Rust orchestration for the global `mkgrd.F90:gridinit` mesh path.
@@ -464,8 +484,7 @@ pub fn gridinit_voronoi_state_fortran(
         mesh = mesh.expand_by_factor(factors.expansion_factor)?;
     }
 
-    let mut state =
-        voronoi_grid_from_olam_delaunay_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
+    let mut state = voronoi_grid_from_olam_delaunay_mesh(&mesh, OLAM_FORTRAN_EARTH_RADIUS_METERS)?;
     pcvt_adjust_voronoi_grid_state(&mut state)?;
     grid_xyz2lonlat_fortran_indexed_state(&mut state.grid)?;
     Ok(state)
@@ -727,6 +746,19 @@ struct OlamMethodCPerimeterPoint {
 }
 
 const OLAM_METHOD_C_MIN_GRID_SPACING_METERS: f64 = 0.001;
+
+fn scale_olam_refinement_regions_radius(
+    regions: &[OlamRefinementRegion],
+    factor: f64,
+) -> Option<Vec<OlamRefinementRegion>> {
+    if regions.is_empty() {
+        return None;
+    }
+    regions
+        .iter()
+        .map(|region| scale_olam_refinement_region_radius(region, factor))
+        .collect()
+}
 
 fn scale_olam_refinement_region_radius(
     region: &OlamRefinementRegion,
@@ -2251,19 +2283,47 @@ impl OlamDelaunayMesh {
             Self,
             Vec<bool>,
             usize,
-            OlamRefinementRegion,
+            Vec<OlamRefinementRegion>,
             bool,
         )> = None;
-        for region in regions.iter().filter(|region| region.level() <= max_level) {
-            let pass = region.level();
-            if pass > 1 && matches!(region, OlamRefinementRegion::Polygon { .. }) {
-                let has_nested_parent = mesh
-                    .w_faces
+        let mut pass_levels = regions
+            .iter()
+            .filter_map(|region| (region.level() <= max_level).then_some(region.level()))
+            .collect::<Vec<_>>();
+        pass_levels.sort_unstable();
+        pass_levels.dedup();
+        for pass in pass_levels {
+            let pass_regions = regions
+                .iter()
+                .filter(|region| region.level() == pass)
+                .cloned()
+                .collect::<Vec<_>>();
+            if pass_regions.is_empty() {
+                continue;
+            }
+            let has_nested_parent = mesh
+                .w_faces
+                .iter()
+                .skip(2)
+                .any(|face| face.ngr > 1);
+            let has_parent_level_region = regions.iter().any(|region| region.level() == pass - 1);
+            if pass > 1
+                && pass_regions.len() > 1
+                && !has_nested_parent
+                && !has_parent_level_region
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Method-C perimeter length invalid: pass {pass} multiple child regions require explicit parent-level halo"
+                    ),
+                ));
+            }
+            if pass > 1
+                && pass_regions
                     .iter()
-                    .skip(2)
-                    .any(|face| face.ngr > 1);
-                let has_parent_level_region =
-                    regions.iter().any(|region| region.level() == pass - 1);
+                    .any(|region| matches!(region, OlamRefinementRegion::Polygon { .. }))
+            {
                 if !has_nested_parent && !has_parent_level_region {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -2275,7 +2335,7 @@ impl OlamDelaunayMesh {
             }
 
             let selected_faces =
-                mesh.selected_regions_faces(std::slice::from_ref(region), pass, use_cartesian_xy)?;
+                mesh.selected_regions_faces(&pass_regions, pass, use_cartesian_xy)?;
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -2326,7 +2386,7 @@ impl OlamDelaunayMesh {
                                         parent_selected,
                                         *parent_grid_number,
                                         parent_region,
-                                        region,
+                                        &pass_regions,
                                         grid_number,
                                         max_mrows,
                                         !use_cartesian_xy,
@@ -2338,7 +2398,7 @@ impl OlamDelaunayMesh {
                                             mesh_before_pass,
                                             selected_faces.clone(),
                                             grid_number,
-                                            region.clone(),
+                                            pass_regions.clone(),
                                             pass_requires_repair,
                                         ));
                                         next_grid_number += 1;
@@ -2358,7 +2418,7 @@ impl OlamDelaunayMesh {
                 mesh_before_pass,
                 selected_faces.clone(),
                 grid_number,
-                region.clone(),
+                pass_regions,
                 pass_requires_repair,
             ));
             next_grid_number += 1;
@@ -2485,17 +2545,17 @@ impl OlamDelaunayMesh {
         &self,
         parent_selected_faces: &[bool],
         parent_grid_number: usize,
-        parent_region: &OlamRefinementRegion,
-        child_region: &OlamRefinementRegion,
+        parent_regions: &[OlamRefinementRegion],
+        child_regions: &[OlamRefinementRegion],
         child_grid_number: usize,
         max_mrows: usize,
         project_to_radius: bool,
         use_cartesian_xy: bool,
     ) -> io::Result<Option<Self>> {
         if let Some(refined) = self.retry_child_with_scaled_parent_region(
-            parent_region,
+            parent_regions,
             parent_grid_number,
-            child_region,
+            child_regions,
             child_grid_number,
             max_mrows,
             project_to_radius,
@@ -2504,14 +2564,14 @@ impl OlamDelaunayMesh {
             return Ok(Some(refined));
         }
         if let Some(refined) = self.retry_child_with_parent_mask_sequence(
-            parent_selected_faces.to_vec(),
-            true,
-            parent_grid_number,
-            child_region,
-            child_grid_number,
-            max_mrows,
-            project_to_radius,
-            use_cartesian_xy,
+                parent_selected_faces.to_vec(),
+                true,
+                parent_grid_number,
+                child_regions,
+                child_grid_number,
+                max_mrows,
+                project_to_radius,
+                use_cartesian_xy,
         )? {
             return Ok(Some(refined));
         }
@@ -2519,7 +2579,7 @@ impl OlamDelaunayMesh {
             parent_selected_faces.to_vec(),
             false,
             parent_grid_number,
-            child_region,
+            child_regions,
             child_grid_number,
             max_mrows,
             project_to_radius,
@@ -2529,9 +2589,9 @@ impl OlamDelaunayMesh {
 
     fn retry_child_with_scaled_parent_region(
         &self,
-        parent_region: &OlamRefinementRegion,
+        parent_regions: &[OlamRefinementRegion],
         parent_grid_number: usize,
-        child_region: &OlamRefinementRegion,
+        child_regions: &[OlamRefinementRegion],
         child_grid_number: usize,
         max_mrows: usize,
         project_to_radius: bool,
@@ -2539,14 +2599,14 @@ impl OlamDelaunayMesh {
     ) -> io::Result<Option<Self>> {
         for step in 1..=12 {
             let factor = 1.0 - (step as f64 * 0.05);
-            let Some(scaled_parent_region) =
-                scale_olam_refinement_region_radius(parent_region, factor)
+            let Some(scaled_parent_regions) =
+                scale_olam_refinement_regions_radius(parent_regions, factor)
             else {
                 return Ok(None);
             };
             let parent_selected = self.selected_regions_faces(
-                std::slice::from_ref(&scaled_parent_region),
-                scaled_parent_region.level(),
+                &scaled_parent_regions,
+                scaled_parent_regions[0].level(),
                 use_cartesian_xy,
             )?;
             if parent_selected.iter().skip(2).all(|selected| !*selected) {
@@ -2561,8 +2621,8 @@ impl OlamDelaunayMesh {
                 continue;
             };
             let child_selected = parent_mesh.selected_regions_faces(
-                std::slice::from_ref(child_region),
-                child_region.level(),
+                child_regions,
+                child_regions[0].level(),
                 use_cartesian_xy,
             )?;
             if child_selected.iter().skip(2).all(|selected| !*selected) {
@@ -2594,7 +2654,7 @@ impl OlamDelaunayMesh {
         mut parent_selected: Vec<bool>,
         grow_parent: bool,
         parent_grid_number: usize,
-        child_region: &OlamRefinementRegion,
+        child_regions: &[OlamRefinementRegion],
         child_grid_number: usize,
         max_mrows: usize,
         project_to_radius: bool,
@@ -2623,8 +2683,8 @@ impl OlamDelaunayMesh {
                 continue;
             };
             let child_selected = parent_mesh.selected_regions_faces(
-                std::slice::from_ref(child_region),
-                child_region.level(),
+                child_regions,
+                child_regions[0].level(),
                 use_cartesian_xy,
             )?;
             if child_selected.iter().skip(2).all(|selected| !*selected) {
@@ -3370,12 +3430,16 @@ impl OlamDelaunayMesh {
                     };
                     if repaired.is_none() {
                         repaired = if let Some(im) = valence_m {
-                            self.try_fill_method_c_specific_m_point(
-                                &selected,
-                                &method_c_m_neighbors,
-                                child_level,
-                                im,
-                            )?
+                            if im <= self.nmd {
+                                self.try_fill_method_c_specific_m_point(
+                                    &selected,
+                                    &method_c_m_neighbors,
+                                    child_level,
+                                    im,
+                                )?
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         };
@@ -6433,7 +6497,7 @@ fn require_unique_active_triplet(
 
 /// `mem_ijtabs:mloops` used by `mdloopf`, `udloopf`, and `wdloopf`.
 pub const ICOSAHEDRON_MLOOPS: usize = 7;
-const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
+pub const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
 const OLAM_FORTRAN_PI2: f32 = 3.1415927_f32 * 2.0;
 
 fn olam_fortran_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
@@ -7683,8 +7747,8 @@ pub fn icosahedron_relaxed_grid_fortran(
         &m_neighbors,
         relax,
     )?;
-    let radius = earthmesh_core::EARTH_RADIUS_METERS;
-    let dist00 = beta * earthmesh_core::PI2 * radius / (5.0 * nxp0 as f64);
+    let radius = OLAM_FORTRAN_EARTH_RADIUS_METERS;
+    let dist00 = olam_fortran_global_dist00(beta, radius, nxp0);
     let spring = icosahedron_spring_dynamics1_fortran(
         &initial.m_points,
         &topology,
@@ -13530,13 +13594,21 @@ impl PlanePointF32 {
 
 /// Port of `icosahedron.F90:de_ps_r8`.
 pub fn project_to_polar_stereographic(point: CartesianPoint, pole: PoleBasis) -> PlanePoint {
+    project_to_polar_stereographic_with_radius(point, pole, earthmesh_core::EARTH_RADIUS_METERS)
+}
+
+fn project_to_polar_stereographic_with_radius(
+    point: CartesianPoint,
+    pole: PoleBasis,
+    earth_radius: f64,
+) -> PlanePoint {
     let xq = -pole.sin_lon * point.x + pole.cos_lon * point.y;
     let yq =
         pole.cos_lat * point.z - pole.sin_lat * (pole.cos_lon * point.x + pole.sin_lon * point.y);
     let zq =
         pole.sin_lat * point.z + pole.cos_lat * (pole.cos_lon * point.x + pole.sin_lon * point.y);
 
-    let earth_diameter = earthmesh_core::EARTH_RADIUS_METERS * 2.0;
+    let earth_diameter = earth_radius * 2.0;
     let t = earth_diameter / (earth_diameter + zq);
 
     PlanePoint::new(xq * t, yq * t)
@@ -13561,7 +13633,15 @@ pub fn project_to_polar_stereographic_f32(
 
 /// Port of `icosahedron.F90:ps_de_r8`.
 pub fn unproject_from_polar_stereographic(point: PlanePoint, pole: PoleBasis) -> CartesianPoint {
-    let earth_diameter = earthmesh_core::EARTH_RADIUS_METERS * 2.0;
+    unproject_from_polar_stereographic_with_radius(point, pole, earthmesh_core::EARTH_RADIUS_METERS)
+}
+
+fn unproject_from_polar_stereographic_with_radius(
+    point: PlanePoint,
+    pole: PoleBasis,
+    earth_radius: f64,
+) -> CartesianPoint {
+    let earth_diameter = earth_radius * 2.0;
     let earth_diameter_sq = earth_diameter * earth_diameter;
     let t = earth_diameter_sq / (point.x * point.x + point.y * point.y + earth_diameter_sq);
 
@@ -13654,7 +13734,24 @@ pub fn spherical_circumcenter_from_barycenter(
     barycenter: CartesianPoint,
     vertices: [CartesianPoint; 3],
 ) -> Option<CartesianPoint> {
-    let earth_radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let barycenter_radius = magnitude(barycenter);
+    let earth_radius = if barycenter_radius.is_finite() && barycenter_radius > 0.0 {
+        barycenter_radius
+    } else {
+        vertices
+            .iter()
+            .map(|vertex| magnitude(*vertex))
+            .find(|radius| radius.is_finite() && *radius > 0.0)
+            .unwrap_or(earthmesh_core::EARTH_RADIUS_METERS)
+    };
+    spherical_circumcenter_from_barycenter_with_radius(barycenter, vertices, earth_radius)
+}
+
+fn spherical_circumcenter_from_barycenter_with_radius(
+    barycenter: CartesianPoint,
+    vertices: [CartesianPoint; 3],
+    earth_radius: f64,
+) -> Option<CartesianPoint> {
     let raxis = barycenter.x.hypot(barycenter.y);
     if raxis == 0.0 {
         return Some(barycenter);
@@ -13674,7 +13771,7 @@ pub fn spherical_circumcenter_from_barycenter(
             vertex.y - barycenter.y,
             vertex.z - barycenter.z,
         );
-        *slot = project_to_polar_stereographic(displacement, pole);
+        *slot = project_to_polar_stereographic_with_radius(displacement, pole, earth_radius);
     }
 
     let [p1, p2, p3] = projected;
@@ -13703,7 +13800,8 @@ pub fn spherical_circumcenter_from_barycenter(
         (s3 - s1 - ycc * 2.0 * (p3.y - p1.y)) / (2.0 * dx13)
     };
 
-    let displacement = unproject_from_polar_stereographic(PlanePoint::new(xcc, ycc), pole);
+    let displacement =
+        unproject_from_polar_stereographic_with_radius(PlanePoint::new(xcc, ycc), pole, earth_radius);
     let mut circumcenter = CartesianPoint::new(
         displacement.x + barycenter.x,
         displacement.y + barycenter.y,
