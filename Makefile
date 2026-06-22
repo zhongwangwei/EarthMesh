@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build clean test test-gui test-slow test-full fmt check-method-c-neighbors
+.PHONY: all build clean test test-fast test-gui test-slow test-full fmt release-check check-method-c-neighbors
 
 all: build
 
@@ -33,13 +33,27 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_core/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_geometry/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_mesh/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_quality/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine_planner/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_gui/Cargo.toml --check
 
+# Fast regression gate: no NetCDF, no GUI — pure Rust crates only. Used by CI's
+# `fast` job and as the quick local loop. Builds in seconds (no netcdf-c/HDF5).
+test-fast:
+	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
+
+# Full crate tests (includes cli with static-netcdf — slow first build).
 test:
 	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES)
 
 test-gui:
@@ -52,6 +66,12 @@ test-slow:
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_gridinit $(CLI_FEATURES) run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture -- --ignored
 
 test-full: check-method-c-neighbors test test-gui test-slow
+
+# Release fast gate: format + no-netcdf crates. Run before tagging a release; the
+# full gate adds `make test test-gui test-slow` (needs NetCDF) on top.
+release-check: fmt test-fast
+	@echo 'Release fast gate PASSED: fmt clean + core/geometry/mesh/quality/refine_planner green.'
+	@echo 'Full gate (needs NetCDF): make test test-gui test-slow'
 
 check-method-c-neighbors:
 	bash rust/earthmesh_mesh/scripts/check-method-c-neighbors.sh
