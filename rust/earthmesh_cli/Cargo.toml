@@ -2,6 +2,8 @@
 name = "earthmesh_cli"
 version = "0.1.0"
 edition = "2021"
+description = "mkgrd-compatible command-line adapter and workflow library for EarthMesh v3"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }

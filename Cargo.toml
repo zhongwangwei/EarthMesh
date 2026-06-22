@@ -1,0 +1,13 @@
+# Workspace root for EarthMesh v3 Rust crates.
+# Unifies the five crates under a single lockfile and lets `cargo` commands run
+# from the repo root. The Makefile keeps overriding CARGO_TARGET_DIR for the
+# mkgrd.x build, so the legacy build path is unaffected.
+[workspace]
+resolver = "2"
+members = [
+    "rust/earthmesh_core",
+    "rust/earthmesh_geometry",
+    "rust/earthmesh_mesh",
+    "rust/earthmesh_cli",
+    "rust/earthmesh_gui",
+]
