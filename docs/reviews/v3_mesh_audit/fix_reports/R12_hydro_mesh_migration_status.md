@@ -66,9 +66,14 @@
 - `earthmesh_geometry::polygon_union_area`:任意简单多边形并集的**精确面积**(垂直 slab 分解 + even-odd 覆盖;slab 边界 = 顶点 x + 边-边交点 x → 每 slab 内覆盖长度线性,中点法精确)。无 GIS 依赖。
 - intersection writer 现用它算 `area(cell ∩ union(同类 corridor))` → 对**重叠同类 corridor 精确**(原为 Σ-clamped)。重叠情形 river_fraction=0.4375 **与真 shapely unary_union 一致**(非 sum 的 0.5)。
 
-**仍未迁(真实剩余,均为 IO/外观,非逻辑)**:
-- **union 几何(多边形输出)**:`polygon_union_area` 给的是**面积**;`coastal_band` dissolve 要的是合并后的**多边形 geojson**(union 的边界环 + 洞嵌套),未做——但 dissolve 纯外观,non-dissolve 输出等价的逐 cell。`composite` 的并集同理。
-- **domain clip**(把 corridor 裁到 domain)、**MultiPolygon 洞**、**MPAS netcdf cell 读取**(cells-from-geojson 已支持;mpas_mesh 路径未接)。
+**union 多边形(dissolve 输出)—— 已实现 ✅**:
+- `earthmesh_geometry::dissolve_axis_aligned_boxes`:等网格 cell 盒 → 并集**边界环**(有向边消去 + 面追踪;外环 CCW / 洞 CW),+ `signed_ring_area`。组合精确、鲁棒(无浮点面积判定)。
+- `cli::write_coastal_band_dissolve_geojson`:`coastal_band.py` dissolve=True 输出——band cell → 合并 **MultiPolygon geojson**,CW 洞按射线法嵌到 CCW 外环下。
+- 验证:2×2 块→1 环、甜甜圈→外环+洞;**并集区域面积 == shapely `unary_union`**(donut 8、2×2 4)。
+
+**仍未迁(均为 IO 接线,非数值逻辑)**:
+- **CaMa elevtn → band → dissolve 的端到端 CLI**(`coastal_band_cells` + `read_cama_elevtn` + `write_coastal_band_dissolve_geojson` 都在,差一个读 elevtn.bin 串起来的子命令)。
+- **domain clip**(把 corridor 裁到 domain)、**MultiPolygon 洞**(交叠 writer 用外环)、**MPAS netcdf cell 读取**(cells-from-geojson 已支持;mpas_mesh 路径未接)。
 - **可视化**(`geojson_map`/`corridor_preview` leaflet)—— 不迁,GUI 自绘。
 
-> 结论:hydro 数据/几何/eval/ranking/coupling/qa/package/两 overlay-writer/**精确多边形 union 面积** 均已在 Rust 并逐一与真 Python(含 shapely)对照一致。剩余仅:union 的**多边形输出**(dissolve 外观,逐 cell 等价)、domain-clip/MPAS-IO 细节、可视化(交给 GUI)——均非数值逻辑。
+> 结论:hydro 全部**数值/几何逻辑**已在 Rust 并逐一与真 Python(含 shapely)对照一致——分类/读取/掩膜/交叠/**精确 union 面积**/**union 多边形(dissolve)**/CaMa/coupling/qa/eval/ranking/package/两 overlay-writer。剩余纯属 **IO 接线**(CaMa-elevtn→band 串联、domain-clip、MPAS cell 读取)与**可视化**(交给 GUI)。
