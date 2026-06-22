@@ -155,7 +155,7 @@ pub fn build_report(inputs: &HydroCoastInputs) -> HydroCoastValidationReport {
     let mut geometry_flags = Vec::new();
     let mut fixes = Vec::new();
     let mut severity = QualityLevel::Pass;
-    let mut bump = |s: &mut QualityLevel, level: QualityLevel| {
+    let bump = |s: &mut QualityLevel, level: QualityLevel| {
         if matches!(level, QualityLevel::Fail)
             || (matches!(level, QualityLevel::Warn) && matches!(s, QualityLevel::Pass))
         {

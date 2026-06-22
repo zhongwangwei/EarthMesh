@@ -18,7 +18,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod components;
 mod i18n;
+mod theme;
+mod ui_helpers;
 use i18n::{tr, Lang};
 
 /// Engine value paired with its friendly i18n key.
@@ -360,6 +363,11 @@ struct EarthMeshApp {
     frame_pending: bool, // re-frame the map on the next render, once the widget size is known
     gen_output: bool, // also write the selected model's standard file (MPAS/FVCOM…) after the run
     native_olam_mkgrd: String,
+    // R9 GUI workflow / polish (additive; do not affect engine behavior)
+    expert_mode: bool,
+    theme_dark: bool,
+    project_name: String,
+    target_template: usize,
 }
 
 impl Default for EarthMeshApp {
@@ -409,6 +417,10 @@ impl Default for EarthMeshApp {
             frame_pending: false,
             gen_output: false,
             native_olam_mkgrd: String::new(),
+            expert_mode: false,
+            theme_dark: false,
+            project_name: String::new(),
+            target_template: 0,
         }
     }
 }
@@ -4107,6 +4119,87 @@ fn configure_style(ctx: &egui::Context) {
     ctx.set_global_style(style);
 }
 
+impl EarthMeshApp {
+    fn theme(&self) -> theme::EarthMeshTheme {
+        theme::EarthMeshTheme { dark: self.theme_dark }
+    }
+
+    /// Apply a target template preset to the config (additive convenience; the user
+    /// can still edit every field afterwards).
+    fn apply_template(&mut self, t: ui_helpers::TargetTemplate) {
+        self.mkgrd.mesh_type = t.mesh_type.to_string();
+        self.mkgrd.mode_grid = t.mode_grid.to_string();
+        self.mkgrd.output_format = t.output_format.to_string();
+        self.mkgrd.nxp = t.default_nxp;
+        self.mkgrd.mask_domain_global = t.global;
+        self.mkgrd.refine = t.refine;
+        self.log.push(format!("template: {}", t.id));
+    }
+
+    /// Render the quality dashboard from the run output dir's existing artifacts
+    /// (read-only: quality_summary.json / run_manifest.json / worst_cells.geojson /
+    /// quality_report.md). No schema change.
+    fn render_quality_dashboard(
+        &self,
+        ui: &mut egui::Ui,
+        theme: &theme::EarthMeshTheme,
+        lang: Lang,
+    ) {
+        let dir = self
+            .output_files
+            .iter()
+            .find_map(|p| p.parent().map(|d| d.to_path_buf()));
+        let Some(dir) = dir else {
+            components::empty_state(ui, tr(lang, "dash.empty"));
+            return;
+        };
+        let d = ui_helpers::QualityDashboard::from_dir(&dir);
+
+        ui.horizontal(|ui| {
+            ui.label(tr(lang, "dash.verdict"));
+            components::status_badge(ui, theme, &d.verdict, &d.verdict.to_uppercase());
+            if let Some(status) = &d.manifest_status {
+                ui.separator();
+                ui.label(format!("{}: {}", tr(lang, "dash.run_status"), status));
+            }
+        })
+        .response
+        .on_hover_text(ui_helpers::tooltip("quality_status"));
+
+        if !d.headline.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for (k, v) in &d.headline {
+                    ui.label(format!("{k}: {v}"));
+                    ui.separator();
+                }
+            });
+        }
+
+        if !d.top_warnings.is_empty() {
+            components::status_message(ui, theme, components::MessageKind::Warning, tr(lang, "dash.warnings"));
+            for w in d.top_warnings.iter().take(8) {
+                ui.label(format!("• {w}"));
+            }
+        }
+        for w in d.manifest_warnings.iter().take(4) {
+            components::status_message(ui, theme, components::MessageKind::Warning, w);
+        }
+
+        for s in &d.next_steps {
+            components::status_message(ui, theme, components::MessageKind::Info, s);
+        }
+
+        if let Some(p) = &d.worst_cells_path {
+            ui.label(format!("{}: {p}", tr(lang, "dash.worst_cells")));
+        }
+        if let Some(p) = &d.quality_report_path {
+            if ui.button(tr(lang, "dash.open_report")).clicked() {
+                let _ = open::that(p);
+            }
+        }
+    }
+}
+
 impl eframe::App for EarthMeshApp {
     // eframe 0.34 requires `ui`; we keep the multi-panel layout in `update`
     // (still invoked by the run loop) and leave `ui` empty.
@@ -4124,6 +4217,12 @@ impl eframe::App for EarthMeshApp {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.heading(tr(lang, "app.title"));
+                ui.separator();
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.project_name)
+                        .hint_text(tr(lang, "project.name"))
+                        .desired_width(130.0),
+                );
                 ui.separator();
                 ui.add_enabled_ui(!self.running, |ui| {
                     if ui.button(tr(lang, "btn.run")).clicked() {
@@ -4168,10 +4267,44 @@ impl eframe::App for EarthMeshApp {
                         .hint_text(tr(lang, "search.placeholder"))
                         .desired_width(170.0),
                 );
+                ui.separator();
+                // Target template selector (applies a preset to the config).
+                let templates = ui_helpers::target_templates();
+                let current = templates
+                    .get(self.target_template)
+                    .map(|t| tr(lang, t.name_key))
+                    .unwrap_or("—");
+                egui::ComboBox::from_id_salt("target_template")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (i, t) in templates.iter().enumerate() {
+                            if ui
+                                .selectable_label(self.target_template == i, tr(lang, t.name_key))
+                                .on_hover_text(tr(lang, t.help_key))
+                                .clicked()
+                            {
+                                self.target_template = i;
+                                self.apply_template(*t);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr(lang, "tpl.tooltip"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.selectable_value(&mut self.lang, Lang::Zh, "中文");
                     ui.selectable_value(&mut self.lang, Lang::En, "EN");
                     ui.label(tr(lang, "lang.label"));
+                    ui.separator();
+                    if ui
+                        .selectable_label(self.theme_dark, "🌓")
+                        .on_hover_text(tr(lang, "theme.toggle"))
+                        .clicked()
+                    {
+                        self.theme_dark = !self.theme_dark;
+                        self.theme().apply(ctx);
+                    }
+                    ui.checkbox(&mut self.expert_mode, tr(lang, "mode.expert"))
+                        .on_hover_text(tr(lang, "mode.expert.help"));
                 });
             });
             ui.add_space(2.0);
@@ -4221,6 +4354,13 @@ impl eframe::App for EarthMeshApp {
                         self.frame_pending = true; // re-frame for the window's size
                     }
                 });
+                ui.separator();
+                egui::CollapsingHeader::new(tr(lang, "dash.title"))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let theme = self.theme();
+                        self.render_quality_dashboard(ui, &theme, lang);
+                    });
                 ui.separator();
                 if self.results_detached {
                     ui.weak(tr(lang, "results.dock"));
