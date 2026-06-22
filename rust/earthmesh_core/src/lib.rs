@@ -40,7 +40,7 @@ pub mod progress {
         CALLBACK.with(|cell| {
             cell.borrow()
                 .as_ref()
-                .map_or(true, |cb| cb(phase, done, total))
+                .is_none_or(|cb| cb(phase, done, total))
         })
     }
 }
@@ -671,7 +671,7 @@ impl EarthmeshRuntimeState {
         &mut self,
         indices: [usize; 12],
     ) -> Result<(), String> {
-        if indices.iter().any(|&index| index == 0) {
+        if indices.contains(&0) {
             return Err(
                 "icosahedron impent pentagon indices must be positive when recorded".to_string(),
             );

@@ -680,8 +680,10 @@ fn runtime_state_try_nxp_rejects_uninitialized_or_negative_nxp() {
     let zero = earthmesh_core::EarthmeshRuntimeState::new(EarthmeshConfig::default());
     assert!(zero.try_nxp().is_err());
 
-    let mut negative_config = EarthmeshConfig::default();
-    negative_config.nxp = -1;
+    let negative_config = EarthmeshConfig {
+        nxp: -1,
+        ..EarthmeshConfig::default()
+    };
     let negative = earthmesh_core::EarthmeshRuntimeState::new(negative_config);
     assert!(negative.try_nxp().is_err());
 }

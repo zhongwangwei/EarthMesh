@@ -11,3 +11,12 @@ path = "src/lib.rs"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
+
+# This crate is a close migration of OLAM's Fortran mesh routines. These lints fire on
+# patterns that deliberately mirror the Fortran source (multi-argument subroutine
+# signatures, 1-based index loops over parallel connectivity arrays, flattened
+# connectivity-table types). Allowed package-wide (lib + tests) for traceability.
+[lints.clippy]
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"

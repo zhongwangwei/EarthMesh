@@ -1,4 +1,7 @@
 //! Rust mesh kernels migrated from EarthMesh Fortran.
+//!
+//! Clippy lints that fire on Fortran-mirroring patterns (multi-arg signatures, 1-based
+//! index loops, connectivity-table types) are allowed package-wide in `Cargo.toml`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1264,7 +1267,7 @@ pub fn olam_gridinit_factorization_fortran(nxp: usize) -> Option<OlamGridinitFac
 }
 
 fn reduce_gridinit_candidate(candidate: &mut OlamGridinitFactors, factor: usize, nxp_min: usize) {
-    while candidate.base_nxp % factor == 0 && candidate.base_nxp / factor >= nxp_min {
+    while candidate.base_nxp.is_multiple_of(factor) && candidate.base_nxp / factor >= nxp_min {
         candidate.base_nxp /= factor;
         candidate.expansion_factor *= factor;
     }
@@ -2286,15 +2289,15 @@ impl OlamDelaunayMesh {
                 && pass_regions
                     .iter()
                     .any(|region| matches!(region, OlamRefinementRegion::Polygon { .. }))
+                && !has_nested_parent
+                && !has_parent_level_region
             {
-                if !has_nested_parent && !has_parent_level_region {
-                    return Err(io::Error::new(
+                return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
                             "Method-C perimeter length invalid: pass {pass} polygon regions require explicit parent-level halo"
                         ),
                     ));
-                }
             }
 
             let selected_faces =
@@ -4906,10 +4909,10 @@ impl OlamDelaunayMesh {
         }
 
         let mut reduced = factor;
-        while reduced % 3 == 0 {
+        while reduced.is_multiple_of(3) {
             reduced /= 3;
         }
-        while reduced % 2 == 0 {
+        while reduced.is_multiple_of(2) {
             reduced /= 2;
         }
         if reduced != 1 {
@@ -4921,7 +4924,7 @@ impl OlamDelaunayMesh {
 
         let mut expanded = self.clone();
         let mut remaining = factor;
-        while remaining % 3 == 0 {
+        while remaining.is_multiple_of(3) {
             expanded = expanded.expand_global3()?;
             remaining /= 3;
         }
@@ -6427,10 +6430,12 @@ fn insert_or_attach_olam_edge(
     if u_edges.len() <= iu {
         u_edges.resize(iu + 1, IcosahedronUEdge::default());
     }
-    let mut edge = IcosahedronUEdge::default();
-    edge.im = [from, to];
+    let mut edge = IcosahedronUEdge {
+        im: [from, to],
+        mrlu: 1,
+        ..IcosahedronUEdge::default()
+    };
     edge.iw[0] = iw;
-    edge.mrlu = 1;
     u_edges[iu] = edge;
     edge_by_key.insert(key, iu);
     Ok(iu)
@@ -6477,6 +6482,9 @@ fn require_unique_active_triplet(
 /// `mem_ijtabs:mloops` used by `mdloopf`, `udloopf`, and `wdloopf`.
 pub const ICOSAHEDRON_MLOOPS: usize = 7;
 pub const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
+// Exact OLAM Fortran single-precision literal; `f32::consts::PI` differs in the last
+// digits and would break bit-for-bit Fortran parity, so keep the literal as-is.
+#[allow(clippy::approx_constant)]
 const OLAM_FORTRAN_PI2: f32 = 3.1415927_f32 * 2.0;
 
 fn olam_fortran_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
@@ -11141,10 +11149,10 @@ mod tests {
                 iudiv[iu] = true;
                 let edge = mesh.u_edges[iu];
                 let [iw1, iw2] = [edge.iw[0], edge.iw[1]];
-                if nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided() {
-                    if !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed()) {
-                        imnext += 1;
-                    }
+                if (nest_wd[iw1].is_subdivided() || nest_wd[iw2].is_subdivided())
+                    && !(nest_wd[iw1].is_suppressed() || nest_wd[iw2].is_suppressed())
+                {
+                    imnext += 1;
                 }
             }
             imnext += 1;
@@ -12770,8 +12778,7 @@ mod tests {
                 "Fortran perim_fill3 should preserve exact adjacent-W slot order for U edge {iu}"
             );
         }
-        let has_m_endpoint =
-            |iu: usize, im: usize| u_edges[iu].im.iter().any(|&endpoint| endpoint == im);
+        let has_m_endpoint = |iu: usize, im: usize| u_edges[iu].im.contains(&im);
         assert!(has_m_endpoint(iu15, im18));
         assert!(has_m_endpoint(iu16, im18));
         assert!(has_m_endpoint(iu25, im18));
@@ -20367,7 +20374,7 @@ fn refine_boundary_segments_fortran_indexed(
                 }
                 subranges.push((sub_start, range_end));
                 if set_dis_in >= 3 && subranges.len() >= 2 {
-                    let min_len = (set_dis_in + 1) / 2;
+                    let min_len = set_dis_in.div_ceil(2);
                     let last_idx = subranges.len() - 1;
                     let (last_start, last_end) = subranges[last_idx];
                     if last_end - last_start < min_len {
@@ -20966,8 +20973,7 @@ pub fn refine_isreverse_judge_fortran_indexed(
             let next_triangle = triangle_neighbors[shared_neighbor]
                 .iter()
                 .copied()
-                .filter(|&candidate| candidate > 1 && mrl_new[candidate] != 4)
-                .last();
+                .rfind(|&candidate| candidate > 1 && mrl_new[candidate] != 4);
             let Some(next_triangle) = next_triangle else {
                 continue;
             };
@@ -21067,9 +21073,7 @@ pub fn refine_onedivide_two_fortran_indexed(
         let required_state = if is_reverse { 1 } else { 4 };
         let split_neighbor = triangle_neighbors[triangle]
             .iter()
-            .copied()
-            .filter(|&neighbor| mrl_new[neighbor] == required_state)
-            .last()
+            .copied().rfind(|&neighbor| mrl_new[neighbor] == required_state)
             .ok_or_else(|| {
                 let neighbor_states: Vec<(usize, i32)> = triangle_neighbors[triangle]
                     .iter()
@@ -21359,7 +21363,7 @@ pub fn refine_sharp_concav_lop_judge_fortran_indexed(
         if tran_degree == 1 {
             continue;
         }
-        if bdy_refine_segment[segment_id].len() <= tran_degree - 1
+        if bdy_refine_segment[segment_id].len() < tran_degree
             || bdy_refine_segment_old[segment_id].len() <= tran_degree
             || ref_sjx_segment_temp[segment_id].len() <= 4 * (tran_degree - 1)
         {

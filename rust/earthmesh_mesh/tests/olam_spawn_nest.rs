@@ -266,7 +266,7 @@ fn spawn_nest_cartesian_xy_spring_uses_fortran_deltax_target_distance_for_mdomai
 
     let (small_deltax, small_passes) = mesh
         .spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
-            &[region.clone()],
+            std::slice::from_ref(&region),
             1,
             OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
             6,
@@ -874,9 +874,7 @@ fn spawn_nest_explicit_widths_change_transition_band_for_same_input() {
 fn spawn_nest_olam_method_c_constant_widths_match_fortran_defaults() {
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS, 13);
     assert_eq!(OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE, 7);
-    assert!(
-        OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS > OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
-    );
+    // (the exact-value assertions above already pin ATMOS > SURFACE)
 }
 
 #[test]
@@ -973,10 +971,10 @@ fn spawn_nest_with_spring_as_atmosmesh_uses_atmos_transition_width_and_runs_spri
     };
 
     let (atmos, spring_passes) = mesh
-        .spawn_nest_with_spring_as_atmosmesh(&std::slice::from_ref(&region), 5, 16, 2)
+        .spawn_nest_with_spring_as_atmosmesh(std::slice::from_ref(&region), 5, 16, 2)
         .expect("atmos spring-width nest");
     let atmos_baseline = mesh
-        .spawn_nest_as_atmosmesh(&std::slice::from_ref(&region), 5)
+        .spawn_nest_as_atmosmesh(std::slice::from_ref(&region), 5)
         .expect("atmos baseline nest");
 
     let atmos_spring_max_abs_mrow = atmos
