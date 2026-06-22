@@ -1,6 +1,9 @@
 #[cfg(feature = "extension-module")]
 use pyo3::prelude::*;
 
+/// Additive geometry safety/validation layer (flags, polygon/overlay/fraction checks).
+pub mod safety;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f64,
@@ -153,20 +156,46 @@ pub struct OverlayCellResult {
 }
 
 pub fn overlay_cell(cell_vertices: &[Point], masks: &[OverlayMask]) -> OverlayCellResult {
-    let cell_area = polygon_area(cell_vertices);
-    if cell_area <= 0.0 {
+    use crate::safety::GeometryQualityFlag as Flag;
+
+    // Reject non-finite cell geometry up front: a NaN area would otherwise slip
+    // past the `<= 0.0` check below and silently produce bogus fractions.
+    if cell_vertices
+        .iter()
+        .any(|p| !p.x.is_finite() || !p.y.is_finite())
+    {
         return OverlayCellResult {
             cell_id: String::new(),
             winning_class: String::new(),
             winning_priority: 0,
             class_fractions: Vec::new(),
             source_feature_ids: Vec::new(),
-            quality_flags: vec!["zero_area_cell".to_string()],
+            quality_flags: vec![Flag::NonFiniteCoordinate.as_str().to_string()],
+        };
+    }
+
+    let cell_area = polygon_area(cell_vertices);
+    if !cell_area.is_finite() || cell_area <= 0.0 {
+        // `polygon_area` is unsigned, so a true negative cannot occur here; keep the
+        // branch defensive in case the area model changes to a signed one.
+        let flag = if cell_area.is_finite() && cell_area < 0.0 {
+            Flag::NegativeArea
+        } else {
+            Flag::ZeroAreaCell
+        };
+        return OverlayCellResult {
+            cell_id: String::new(),
+            winning_class: String::new(),
+            winning_priority: 0,
+            class_fractions: Vec::new(),
+            source_feature_ids: Vec::new(),
+            quality_flags: vec![flag.as_str().to_string()],
         };
     }
 
     let mut class_fractions = Vec::<(String, f64)>::new();
     let mut source_feature_ids = Vec::<String>::new();
+    let mut contributing_priorities = Vec::<u32>::new();
     let mut winning_class = String::new();
     let mut winning_priority = 0_u32;
 
@@ -178,6 +207,7 @@ pub fn overlay_cell(cell_vertices: &[Point], masks: &[OverlayMask]) -> OverlayCe
         let fraction = (overlap_area / cell_area).min(1.0);
         add_class_fraction(&mut class_fractions, &mask.mask_class, fraction);
         source_feature_ids.push(mask.feature_id.clone());
+        contributing_priorities.push(mask.priority);
         if mask.priority >= winning_priority {
             winning_class = mask.mask_class.clone();
             winning_priority = mask.priority;
@@ -191,12 +221,24 @@ pub fn overlay_cell(cell_vertices: &[Point], masks: &[OverlayMask]) -> OverlayCe
             winning_priority: 0,
             class_fractions: vec![("UNKNOWN".to_string(), 1.0)],
             source_feature_ids,
-            quality_flags: vec!["missing_mask".to_string()],
+            quality_flags: vec![Flag::MissingMask.as_str().to_string()],
         };
     }
 
     for (_, fraction) in &mut class_fractions {
         *fraction = (*fraction).min(1.0);
+    }
+
+    // Ambiguous winner: two or more contributing masks tie at the max priority.
+    // (A per-class fraction sum > 1 is legitimate overlap of distinct classes, not
+    // an error — use `safety::validate_fraction_partition` for exclusive partitions.)
+    let mut quality_flags = Vec::new();
+    let tie_at_top = contributing_priorities
+        .iter()
+        .filter(|&&p| p == winning_priority)
+        .count();
+    if tie_at_top >= 2 {
+        quality_flags.push(Flag::MaskOverlapConflict.as_str().to_string());
     }
 
     OverlayCellResult {
@@ -205,7 +247,7 @@ pub fn overlay_cell(cell_vertices: &[Point], masks: &[OverlayMask]) -> OverlayCe
         winning_priority,
         class_fractions,
         source_feature_ids,
-        quality_flags: Vec::new(),
+        quality_flags,
     }
 }
 
