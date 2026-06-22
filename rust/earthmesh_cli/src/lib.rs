@@ -29514,6 +29514,256 @@ pub fn write_refinement_eval_json(
     fs::write(output_json, json)
 }
 
+// ---- util/hydro_mesh/refinement_sweep.py port ----
+
+/// Build one composite close-mask recipe JSON for an (r2_cap, coast_cap) sweep case
+/// (faithful to `refinement_sweep.py::build_river_coast_sweep`).
+fn build_sweep_recipe_json(
+    river_geojson: &str,
+    coast_geojson: &str,
+    r2_cap: i64,
+    coast_cap: i64,
+    r3_cap: i64,
+) -> String {
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "{{\n  \"max_masks_per_refine_degree\": 999,\n  \"components\": [\n    \
+         {{\"name\": \"coastline_support\", \"input_geojson\": \"{coast}\", \
+         \"class_refine\": {{\"COAST\": 1}}, \"max_rings_by_class\": {{\"COAST\": {coast_cap}}}, \
+         \"simplify_tolerance_deg\": 0.005}},\n    \
+         {{\"name\": \"ranked_river_corridors\", \"input_geojson\": \"{river}\", \
+         \"class_refine\": {{\"R2\": 1, \"R3\": 3}}, \
+         \"max_rings_by_class\": {{\"R2\": {r2_cap}, \"R3\": {r3_cap}}}, \
+         \"buffer_deg_by_refine_degree\": {{\"1\": 1.5, \"2\": 1.0, \"3\": 0.5}}, \
+         \"simplify_tolerance_deg\": 0.005}}\n  ]\n}}\n",
+        coast = esc(coast_geojson),
+        river = esc(river_geojson),
+    )
+}
+
+/// Faithful port of `refinement_sweep.py::write_sweep_recipes`: write one recipe JSON
+/// per (r2_cap, coast_cap) case + a `sweep_manifest.json`.
+pub fn write_sweep_recipes(
+    output_dir: impl AsRef<Path>,
+    river_geojson: &str,
+    coast_geojson: &str,
+    mut r2_caps: Vec<i64>,
+    mut coast_caps: Vec<i64>,
+    r3_cap: i64,
+) -> io::Result<usize> {
+    let dir = output_dir.as_ref();
+    fs::create_dir_all(dir)?;
+    r2_caps.sort_unstable();
+    coast_caps.sort_unstable();
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut manifest_cases = Vec::new();
+    for &r2_cap in &r2_caps {
+        for &coast_cap in &coast_caps {
+            let case_name = format!("r2cap{r2_cap}_coast{coast_cap}");
+            let recipe_path = dir.join(format!("{case_name}_recipe.json"));
+            fs::write(
+                &recipe_path,
+                build_sweep_recipe_json(river_geojson, coast_geojson, r2_cap, coast_cap, r3_cap),
+            )?;
+            manifest_cases.push(format!(
+                "    {{\"case_name\": \"{case_name}\", \"r2_cap\": {r2_cap}, \"coast_cap\": {coast_cap}, \"recipe_json\": \"{}\"}}",
+                esc(&recipe_path.display().to_string())
+            ));
+        }
+    }
+    let case_count = manifest_cases.len();
+    let ints = |v: &[i64]| {
+        v.iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let manifest = format!(
+        "{{\n  \"kind\": \"earthmesh_refinement_sweep_manifest\",\n  \"case_count\": {},\n  \
+         \"river_geojson\": \"{}\",\n  \"coast_geojson\": \"{}\",\n  \"r2_caps\": [{}],\n  \
+         \"coast_caps\": [{}],\n  \"r3_cap\": {},\n  \"cases\": [\n{}\n  ]\n}}\n",
+        case_count,
+        esc(river_geojson),
+        esc(coast_geojson),
+        ints(&r2_caps),
+        ints(&coast_caps),
+        r3_cap,
+        manifest_cases.join(",\n"),
+    );
+    fs::write(dir.join("sweep_manifest.json"), manifest)?;
+    Ok(case_count)
+}
+
+#[derive(Debug, Clone)]
+pub struct RankedSweepCase {
+    pub case_name: String,
+    pub status: String,
+    pub promotion_status: String,
+    pub background_cell_count: i64,
+    pub background_median_dx_km: f64,
+    pub river_overlap_cells: i64,
+    pub coast_overlap_cells: i64,
+    pub retained: [i64; 3], // degrees 1,2,3
+    pub rank: usize,
+}
+
+fn promotion_bucket(status: &str) -> i32 {
+    match status {
+        "candidate" => 0,
+        "blocked_background_cell_cap" => 1,
+        _ => 2,
+    }
+}
+
+fn rankable_row(report: &JsonNode, max_background_cells: Option<i64>) -> RankedSweepCase {
+    let obj = report.as_object();
+    let get_obj = |key: &str| obj.and_then(|o| o.get(key)).and_then(JsonNode::as_object);
+    let background = get_obj("background_cells");
+    let river = get_obj("river_intersections");
+    let coast = get_obj("coast_intersections");
+    let num = |o: Option<&BTreeMap<String, JsonNode>>, k: &str| {
+        o.and_then(|m| m.get(k))
+            .and_then(JsonNode::as_f64)
+            .unwrap_or(0.0)
+    };
+    let status = obj
+        .and_then(|o| o.get("status"))
+        .and_then(JsonNode::as_str)
+        .unwrap_or("pass")
+        .to_string();
+    let background_cells = num(background, "cell_count") as i64;
+    let promotion_status = if status != "pass" {
+        "failed".to_string()
+    } else if max_background_cells.map_or(false, |cap| background_cells > cap) {
+        "blocked_background_cell_cap".to_string()
+    } else {
+        "candidate".to_string()
+    };
+    let retained_at = |deg: &str| {
+        obj.and_then(|o| o.get("refinement_log"))
+            .and_then(JsonNode::as_object)
+            .and_then(|l| l.get(deg))
+            .and_then(JsonNode::as_object)
+            .and_then(|d| d.get("retained_triangles"))
+            .and_then(JsonNode::as_f64)
+            .unwrap_or(0.0) as i64
+    };
+    RankedSweepCase {
+        case_name: obj
+            .and_then(|o| o.get("case_name"))
+            .and_then(JsonNode::as_str)
+            .unwrap_or("")
+            .to_string(),
+        status,
+        promotion_status,
+        background_cell_count: background_cells,
+        background_median_dx_km: num(background, "equivalent_cell_size_km_median"),
+        river_overlap_cells: num(river, "feature_count") as i64,
+        coast_overlap_cells: num(coast, "feature_count") as i64,
+        retained: [retained_at("1"), retained_at("2"), retained_at("3")],
+        rank: 0,
+    }
+}
+
+/// Faithful port of `refinement_sweep.py::rank_sweep_reports`: sort eval reports into
+/// promotion candidates (bucket, retained 3/2/1 desc, river/coast desc, median dx asc,
+/// cell count asc, case name) and assign 1-based ranks.
+fn rank_sweep_rows(mut rows: Vec<RankedSweepCase>) -> Vec<RankedSweepCase> {
+    rows.sort_by(|a, b| {
+        use std::cmp::Ordering;
+        let key = |r: &RankedSweepCase| {
+            (
+                promotion_bucket(&r.promotion_status),
+                -r.retained[2],
+                -r.retained[1],
+                -r.retained[0],
+                -r.river_overlap_cells,
+                -r.coast_overlap_cells,
+            )
+        };
+        key(a)
+            .cmp(&key(b))
+            .then(
+                a.background_median_dx_km
+                    .partial_cmp(&b.background_median_dx_km)
+                    .unwrap_or(Ordering::Equal),
+            )
+            .then(a.background_cell_count.cmp(&b.background_cell_count))
+            .then(a.case_name.cmp(&b.case_name))
+    });
+    for (i, row) in rows.iter_mut().enumerate() {
+        row.rank = i + 1;
+    }
+    rows
+}
+
+/// Faithful port of `refinement_sweep.py::write_sweep_ranking`.
+pub fn write_sweep_ranking(
+    report_paths: &[PathBuf],
+    output_json: impl AsRef<Path>,
+    max_background_cells: Option<i64>,
+) -> io::Result<String> {
+    let mut rows = Vec::new();
+    for path in report_paths {
+        let text = fs::read_to_string(path)?;
+        let mut report = JsonParser::new(&text).parse()?;
+        // Default case_name to the file stem when absent (Python behavior).
+        if let JsonNode::Object(map) = &mut report {
+            if !map.contains_key("case_name") {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                map.insert("case_name".into(), JsonNode::String(stem));
+            }
+        }
+        rows.push(rankable_row(&report, max_background_cells));
+    }
+    let ranked = rank_sweep_rows(rows);
+    let recommended = ranked
+        .iter()
+        .find(|r| r.promotion_status == "candidate")
+        .map(|r| r.case_name.clone());
+
+    let mut s = String::from("{\n  \"kind\": \"earthmesh_refinement_sweep_ranking\",\n");
+    match &recommended {
+        Some(c) => s.push_str(&format!(
+            "  \"recommended_case\": \"{}\",\n",
+            c.replace('"', "\\\"")
+        )),
+        None => s.push_str("  \"recommended_case\": null,\n"),
+    }
+    s.push_str("  \"ranked_cases\": [\n");
+    let n = ranked.len();
+    for (i, r) in ranked.iter().enumerate() {
+        let comma = if i + 1 < n { "," } else { "" };
+        s.push_str(&format!(
+            "    {{\"rank\": {}, \"case_name\": \"{}\", \"status\": \"{}\", \"promotion_status\": \"{}\", \
+             \"background_cell_count\": {}, \"background_median_dx_km\": {}, \"river_overlap_cells\": {}, \
+             \"coast_overlap_cells\": {}, \"retained_triangles\": {{\"1\": {}, \"2\": {}, \"3\": {}}}}}{}\n",
+            r.rank,
+            r.case_name.replace('"', "\\\""),
+            r.status,
+            r.promotion_status,
+            r.background_cell_count,
+            r.background_median_dx_km,
+            r.river_overlap_cells,
+            r.coast_overlap_cells,
+            r.retained[0],
+            r.retained[1],
+            r.retained[2],
+            comma
+        ));
+    }
+    s.push_str("  ]\n}\n");
+    if let Some(parent) = output_json.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_json, &s)?;
+    Ok(recommended.unwrap_or_default())
+}
+
 /// One hydro-mesh QA gate result (faithful to `qa_gates.py::_check`).
 #[derive(Debug, Clone)]
 pub struct HydroMeshQaCheck {
