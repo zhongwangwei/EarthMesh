@@ -62,9 +62,13 @@
 
 至此**完整 hydro 交付链在 Rust 跑通**:cells/masks → (intersections + complete-mask) → coupling(#1)+ qa(#1)+ eval(#2)+ ranking(#3)+ manifest(#5)。
 
-**仍未迁(真实剩余)**:
-- **多边形 union**:Rust 现只有 clip/intersection,无通用 union。影响:① intersection writer 对**同类 corridor 互相重叠**时用 Σ-clamped 近似(river reaches 互不相交时精确,已注明);② `coastal_band` dissolve(纯外观,non-dissolve 等价);③ `composite_refine_mask_export` 的并集。通用多边形 union 是独立的、对正确性敏感的大原语,需专门实现 + 充分测试,不宜仓促。
-- **domain clip**(intersection 把 corridor 裁到 domain)、**MultiPolygon 洞**、**MPAS netcdf cell 读取**(已支持 cells-from-geojson;mpas_mesh 路径未接)—— geojson/IO 工作。
+**通用多边形 union —— 已实现 ✅**:
+- `earthmesh_geometry::polygon_union_area`:任意简单多边形并集的**精确面积**(垂直 slab 分解 + even-odd 覆盖;slab 边界 = 顶点 x + 边-边交点 x → 每 slab 内覆盖长度线性,中点法精确)。无 GIS 依赖。
+- intersection writer 现用它算 `area(cell ∩ union(同类 corridor))` → 对**重叠同类 corridor 精确**(原为 Σ-clamped)。重叠情形 river_fraction=0.4375 **与真 shapely unary_union 一致**(非 sum 的 0.5)。
+
+**仍未迁(真实剩余,均为 IO/外观,非逻辑)**:
+- **union 几何(多边形输出)**:`polygon_union_area` 给的是**面积**;`coastal_band` dissolve 要的是合并后的**多边形 geojson**(union 的边界环 + 洞嵌套),未做——但 dissolve 纯外观,non-dissolve 输出等价的逐 cell。`composite` 的并集同理。
+- **domain clip**(把 corridor 裁到 domain)、**MultiPolygon 洞**、**MPAS netcdf cell 读取**(cells-from-geojson 已支持;mpas_mesh 路径未接)。
 - **可视化**(`geojson_map`/`corridor_preview` leaflet)—— 不迁,GUI 自绘。
 
-> 结论:hydro 数据/几何/eval/ranking/coupling/qa/package/两 overlay-writer **均已在 Rust 并逐一与真 Python 对照一致**。剩余仅:通用多边形 **union**(几个外观/重叠去重场景,需专门实现)、domain-clip/MPAS-IO 细节、可视化(交给 GUI)。
+> 结论:hydro 数据/几何/eval/ranking/coupling/qa/package/两 overlay-writer/**精确多边形 union 面积** 均已在 Rust 并逐一与真 Python(含 shapely)对照一致。剩余仅:union 的**多边形输出**(dissolve 外观,逐 cell 等价)、domain-clip/MPAS-IO 细节、可视化(交给 GUI)——均非数值逻辑。
