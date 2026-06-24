@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -eu
 
-OLAM_SRC=${OLAM_SRC:-/Users/zhongwangwei/Desktop/olam-model-code-r1095-trunk}
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [ -z "${OLAM_SRC:-}" ]; then
+  for candidate in \
+    "$REPO_ROOT/olam-model-code-r1095-trunk" \
+    "$REPO_ROOT/third_party/olam-model-code-r1095-trunk" \
+    "$REPO_ROOT/../olam-model-code-r1095-trunk"; do
+    if [ -d "$candidate" ]; then
+      OLAM_SRC=$candidate
+      break
+    fi
+  done
+fi
+OLAM_SRC=${OLAM_SRC:-}
 USER_WORKDIR_SET=${WORKDIR+x}
 WORKDIR=${WORKDIR:-/tmp/olam-reduced-probe-run-$$}
 CLEAN_WORKDIR=${CLEAN_WORKDIR:-1}
@@ -54,6 +66,11 @@ trap cleanup EXIT
 if [ "$case_name" = "-h" ] || [ "$case_name" = "--help" ]; then
   usage
   exit 0
+fi
+
+if [ -z "$OLAM_SRC" ]; then
+  echo "OLAM source tree not found. Set OLAM_SRC or place it next to this repository." >&2
+  exit 2
 fi
 
 compile_support() {

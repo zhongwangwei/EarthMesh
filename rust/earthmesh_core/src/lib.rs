@@ -1112,6 +1112,516 @@ impl EarthmeshConfig {
     }
 }
 
+/// Quality-gate thresholds + on-violation policy, carried in an optional
+/// `&quality` namelist block. **Purely additive**: the existing `&mkgrd` /
+/// `&mkrefine` parsers ignore this block, and nothing in mesh generation reads
+/// it — the CLI/GUI map it to `earthmesh_quality::QualityThresholds` and a
+/// Warn/Block policy when judging a finished mesh. Absent block ⇒ `default()`,
+/// which mirrors `earthmesh_quality::QualityThresholds::default()`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QualityNamelist {
+    pub min_angle_warn_deg: f64,
+    pub min_angle_fail_deg: f64,
+    pub aspect_ratio_warn: f64,
+    pub aspect_ratio_fail: f64,
+    pub area_cv_warn: f64,
+    pub max_adjacent_resolution_ratio_warn: f64,
+    pub worst_cells_limit: i32,
+    /// "warn" (report only) or "block" (a Fail verdict aborts the run).
+    pub on_violation: String,
+}
+
+impl Default for QualityNamelist {
+    fn default() -> Self {
+        // Keep in lock-step with earthmesh_quality::QualityThresholds::default().
+        Self {
+            min_angle_warn_deg: 20.0,
+            min_angle_fail_deg: 5.0,
+            aspect_ratio_warn: 4.0,
+            aspect_ratio_fail: 10.0,
+            area_cv_warn: 1.5,
+            max_adjacent_resolution_ratio_warn: 2.0,
+            worst_cells_limit: 50,
+            on_violation: String::from("warn"),
+        }
+    }
+}
+
+impl QualityNamelist {
+    /// Parse a `&quality` block. Lenient like the `&mkgrd` parser: unknown keys
+    /// are ignored and missing keys keep their default, so old namelists (no
+    /// `&quality` block) yield `default()`.
+    pub fn from_quality_namelist(input: &str) -> Result<Self, String> {
+        let mut config = Self::default();
+        let mut in_block = false;
+
+        for raw_line in input.lines() {
+            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with('&') {
+                in_block = line.eq_ignore_ascii_case("&quality");
+                continue;
+            }
+            if line == "/" {
+                in_block = false;
+                continue;
+            }
+            if !in_block {
+                continue;
+            }
+
+            let Some((left, right)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(field) = left.trim().split_once('%').map(|(_, field)| field.trim()) else {
+                continue;
+            };
+            let value = right.trim().trim_end_matches(',');
+
+            match field.to_ascii_lowercase().as_str() {
+                "min_angle_warn_deg" => config.min_angle_warn_deg = parse_f64(field, value)?,
+                "min_angle_fail_deg" => config.min_angle_fail_deg = parse_f64(field, value)?,
+                "aspect_ratio_warn" => config.aspect_ratio_warn = parse_f64(field, value)?,
+                "aspect_ratio_fail" => config.aspect_ratio_fail = parse_f64(field, value)?,
+                "area_cv_warn" => config.area_cv_warn = parse_f64(field, value)?,
+                "max_adjacent_resolution_ratio_warn" => {
+                    config.max_adjacent_resolution_ratio_warn = parse_f64(field, value)?
+                }
+                "worst_cells_limit" => config.worst_cells_limit = parse_i32(field, value)?,
+                "on_violation" => config.on_violation = parse_fortran_string(value),
+                _ => {}
+            }
+        }
+
+        Ok(config)
+    }
+
+    /// Serialize to a `&quality` block; `from_quality_namelist(&x.to_quality_namelist())`
+    /// reproduces `x`.
+    pub fn to_quality_namelist(&self) -> String {
+        let mut out = String::new();
+        out.push_str("&quality\n");
+        out.push_str(&format!(
+            "  NL%min_angle_warn_deg = {}\n",
+            self.min_angle_warn_deg
+        ));
+        out.push_str(&format!(
+            "  NL%min_angle_fail_deg = {}\n",
+            self.min_angle_fail_deg
+        ));
+        out.push_str(&format!(
+            "  NL%aspect_ratio_warn = {}\n",
+            self.aspect_ratio_warn
+        ));
+        out.push_str(&format!(
+            "  NL%aspect_ratio_fail = {}\n",
+            self.aspect_ratio_fail
+        ));
+        out.push_str(&format!("  NL%area_cv_warn = {}\n", self.area_cv_warn));
+        out.push_str(&format!(
+            "  NL%max_adjacent_resolution_ratio_warn = {}\n",
+            self.max_adjacent_resolution_ratio_warn
+        ));
+        out.push_str(&format!(
+            "  NL%worst_cells_limit = {}\n",
+            self.worst_cells_limit
+        ));
+        out.push_str(&format!(
+            "  NL%on_violation = {}\n",
+            fortran_quote(&self.on_violation)
+        ));
+        out.push_str("/\n");
+        out
+    }
+}
+
+/// A NetCDF criterion field that calculated refinement reads from
+/// `threshold_dir/<file_stem>.nc`. The stem is the **authoritative engine name**
+/// (`earthmesh_cli` `AREA_JUDGE_*_NAMES`); keep this in lock-step with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThresholdVar {
+    Lai,
+    Slope,
+    Ks,
+    KSolids,
+    Tkdry,
+    Tksatf,
+    Tksatu,
+    Sst,
+    Ssh,
+    Eke,
+    SeaSlope,
+    Typhoon,
+}
+
+impl ThresholdVar {
+    /// Engine file stem / NetCDF base var name (`lai`, `slope_avg`, `k_s`, ...).
+    pub fn file_stem(self) -> &'static str {
+        match self {
+            ThresholdVar::Lai => "lai",
+            ThresholdVar::Slope => "slope_avg",
+            ThresholdVar::Ks => "k_s",
+            ThresholdVar::KSolids => "k_solids",
+            ThresholdVar::Tkdry => "tkdry",
+            ThresholdVar::Tksatf => "tksatf",
+            ThresholdVar::Tksatu => "tksatu",
+            ThresholdVar::Sst => "sst",
+            ThresholdVar::Ssh => "ssh",
+            ThresholdVar::Eke => "eke",
+            ThresholdVar::SeaSlope => "sea_slope",
+            ThresholdVar::Typhoon => "typhoon",
+        }
+    }
+
+    /// Two-layer fields expose NetCDF vars `<stem>_l1` / `<stem>_l2`.
+    pub fn is_two_layer(self) -> bool {
+        matches!(
+            self,
+            ThresholdVar::Ks
+                | ThresholdVar::KSolids
+                | ThresholdVar::Tkdry
+                | ThresholdVar::Tksatf
+                | ThresholdVar::Tksatu
+        )
+    }
+
+    pub fn from_stem(s: &str) -> Option<ThresholdVar> {
+        Some(match s {
+            "lai" => ThresholdVar::Lai,
+            "slope_avg" => ThresholdVar::Slope,
+            "k_s" => ThresholdVar::Ks,
+            "k_solids" => ThresholdVar::KSolids,
+            "tkdry" => ThresholdVar::Tkdry,
+            "tksatf" => ThresholdVar::Tksatf,
+            "tksatu" => ThresholdVar::Tksatu,
+            "sst" => ThresholdVar::Sst,
+            "ssh" => ThresholdVar::Ssh,
+            "eke" => ThresholdVar::Eke,
+            "sea_slope" => ThresholdVar::SeaSlope,
+            "typhoon" => ThresholdVar::Typhoon,
+            _ => return None,
+        })
+    }
+}
+
+/// Which engine input a data layer feeds once a project is lowered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataLayerRole {
+    /// → `EarthmeshConfig.landtype_file` (sea/land + landtype).
+    LandType,
+    /// → `threshold_dir/<stem>.nc` + the matching `refine_*` switch.
+    ThresholdField(ThresholdVar),
+    /// → `mask_refine_spc_fprefix` (specified-region mask).
+    SpecifiedMask,
+    /// → MERIT-Hydro workflow root.
+    MeritHydroRoot,
+    /// → CaMa reach data.
+    CamaReach,
+}
+
+impl DataLayerRole {
+    pub fn to_token(self) -> String {
+        match self {
+            DataLayerRole::LandType => "landtype".to_string(),
+            DataLayerRole::ThresholdField(v) => format!("threshold:{}", v.file_stem()),
+            DataLayerRole::SpecifiedMask => "specified_mask".to_string(),
+            DataLayerRole::MeritHydroRoot => "merit_hydro".to_string(),
+            DataLayerRole::CamaReach => "cama_reach".to_string(),
+        }
+    }
+
+    pub fn from_token(s: &str) -> Option<DataLayerRole> {
+        if let Some(stem) = s.strip_prefix("threshold:") {
+            return ThresholdVar::from_stem(stem).map(DataLayerRole::ThresholdField);
+        }
+        Some(match s {
+            "landtype" => DataLayerRole::LandType,
+            "specified_mask" => DataLayerRole::SpecifiedMask,
+            "merit_hydro" => DataLayerRole::MeritHydroRoot,
+            "cama_reach" => DataLayerRole::CamaReach,
+            _ => return None,
+        })
+    }
+}
+
+/// One declarative input layer (the GUI step-3 data-layer manager). Lowered to
+/// the engine inputs implied by `role`. **Additive**: carried in an optional
+/// `&datalayers` block that existing parsers ignore.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataLayerConfig {
+    pub id: String,
+    pub role: DataLayerRole,
+    pub path: String,
+    pub var: Option<String>,
+    pub enabled: bool,
+    pub required: bool,
+}
+
+/// The `&datalayers` block: an ordered list of [`DataLayerConfig`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DataLayersNamelist {
+    pub layers: Vec<DataLayerConfig>,
+}
+
+impl DataLayersNamelist {
+    /// Parse a `&datalayers` block. Each layer is one
+    /// `NL%layer = 'id|role|path|var|enabled|required'` line. Lenient: malformed
+    /// or unknown-role lines are skipped; an absent block yields an empty list.
+    pub fn from_datalayers_namelist(input: &str) -> Self {
+        let mut layers = Vec::new();
+        let mut in_block = false;
+        for raw_line in input.lines() {
+            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            if line.is_empty() {
+                continue;
+            }
+            if line.starts_with('&') {
+                in_block = line.eq_ignore_ascii_case("&datalayers");
+                continue;
+            }
+            if line == "/" {
+                in_block = false;
+                continue;
+            }
+            if !in_block {
+                continue;
+            }
+            let Some((left, right)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(field) = left.trim().split_once('%').map(|(_, f)| f.trim()) else {
+                continue;
+            };
+            if field.eq_ignore_ascii_case("layer") {
+                let token = parse_fortran_string(right.trim().trim_end_matches(','));
+                if let Some(layer) = parse_data_layer_token(&token) {
+                    layers.push(layer);
+                }
+            }
+        }
+        DataLayersNamelist { layers }
+    }
+
+    /// Serialize to a `&datalayers` block; round-trips through the parser.
+    pub fn to_datalayers_namelist(&self) -> String {
+        let mut out = String::from("&datalayers\n");
+        for l in &self.layers {
+            out.push_str(&format!(
+                "  NL%layer = {}\n",
+                fortran_quote(&data_layer_token(l))
+            ));
+        }
+        out.push_str("/\n");
+        out
+    }
+}
+
+fn data_layer_token(l: &DataLayerConfig) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        l.id,
+        l.role.to_token(),
+        l.path,
+        l.var.as_deref().unwrap_or(""),
+        if l.enabled { "T" } else { "F" },
+        if l.required { "T" } else { "F" },
+    )
+}
+
+fn parse_data_layer_token(s: &str) -> Option<DataLayerConfig> {
+    let p: Vec<&str> = s.split('|').collect();
+    if p.len() < 6 {
+        return None;
+    }
+    let role = DataLayerRole::from_token(p[1])?;
+    let truthy =
+        |x: &str| x.eq_ignore_ascii_case("t") || x == "1" || x.eq_ignore_ascii_case("true");
+    Some(DataLayerConfig {
+        id: p[0].to_string(),
+        role,
+        path: p[2].to_string(),
+        var: if p[3].is_empty() {
+            None
+        } else {
+            Some(p[3].to_string())
+        },
+        enabled: truthy(p[4]),
+        required: truthy(p[5]),
+    })
+}
+
+/// Which `RefineConfig` switch array a threshold criterion lives in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefineSwitchArray {
+    OneLayerLnd,
+    TwoLayerLnd,
+    OneLayerOcn,
+    OneLayerAtmos,
+}
+
+impl ThresholdVar {
+    /// (switch array, base index of the *mean* switch; the *std* switch is
+    /// base+1) — the authoritative parallel-array layout from the threshold_dir
+    /// contract (`core` th_*/refine_* + `cli` AREA_JUDGE_*).
+    pub fn switch_slot(self) -> (RefineSwitchArray, usize) {
+        match self {
+            ThresholdVar::Lai => (RefineSwitchArray::OneLayerLnd, 0),
+            ThresholdVar::Slope => (RefineSwitchArray::OneLayerLnd, 2),
+            ThresholdVar::Ks => (RefineSwitchArray::TwoLayerLnd, 0),
+            ThresholdVar::KSolids => (RefineSwitchArray::TwoLayerLnd, 2),
+            ThresholdVar::Tkdry => (RefineSwitchArray::TwoLayerLnd, 4),
+            ThresholdVar::Tksatf => (RefineSwitchArray::TwoLayerLnd, 6),
+            ThresholdVar::Tksatu => (RefineSwitchArray::TwoLayerLnd, 8),
+            ThresholdVar::Sst => (RefineSwitchArray::OneLayerOcn, 0),
+            ThresholdVar::Ssh => (RefineSwitchArray::OneLayerOcn, 2),
+            ThresholdVar::Eke => (RefineSwitchArray::OneLayerOcn, 4),
+            ThresholdVar::SeaSlope => (RefineSwitchArray::OneLayerOcn, 6),
+            ThresholdVar::Typhoon => (RefineSwitchArray::OneLayerAtmos, 0),
+        }
+    }
+}
+
+/// Outcome of [`DataLayersNamelist::lower_into`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LowerReport {
+    pub landtype_set: bool,
+    pub enabled_thresholds: Vec<ThresholdVar>,
+    pub specified_mask_set: bool,
+    pub warnings: Vec<String>,
+}
+
+fn set_refine_switch(refine: &mut RefineConfig, arr: RefineSwitchArray, idx: usize) {
+    let slot = match arr {
+        RefineSwitchArray::OneLayerLnd => refine.refine_onelayer_lnd.get_mut(idx),
+        RefineSwitchArray::TwoLayerLnd => refine.refine_twolayer_lnd.get_mut(idx),
+        RefineSwitchArray::OneLayerOcn => refine.refine_onelayer_ocn.get_mut(idx),
+        RefineSwitchArray::OneLayerAtmos => refine.refine_onelayer_atmos.get_mut(idx),
+    };
+    if let Some(s) = slot {
+        *s = true;
+    }
+}
+
+impl DataLayersNamelist {
+    /// Apply enabled layers to the engine config (the L1→L3 lowering): set
+    /// `landtype_file` from the LandType layer; for each enabled ThresholdField
+    /// flip its mean+std `refine_*` switches and enable `refine_cal`; route a
+    /// SpecifiedMask to `mask_refine_spc_fprefix`. **Does not touch the mesh
+    /// algorithm** — it only fills config fields the engine already consumes.
+    ///
+    /// A ThresholdField whose path file stem != the engine stem (e.g. `lai`) is
+    /// recorded as a warning, since the executor reads `threshold_dir/<stem>.nc`.
+    pub fn lower_into(&self, mkgrd: &mut EarthmeshConfig, refine: &mut RefineConfig) -> LowerReport {
+        let mut report = LowerReport::default();
+        for l in &self.layers {
+            if !l.enabled {
+                continue;
+            }
+            match l.role {
+                DataLayerRole::LandType => {
+                    mkgrd.landtype_file = l.path.clone();
+                    report.landtype_set = true;
+                }
+                DataLayerRole::ThresholdField(v) => {
+                    let stem = v.file_stem();
+                    let path_stem = std::path::Path::new(&l.path)
+                        .file_stem()
+                        .and_then(|s| s.to_str());
+                    if let Some(found) = path_stem {
+                        if found != stem {
+                            report.warnings.push(format!(
+                                "layer '{}': path stem '{found}' != engine stem '{stem}' (reads threshold_dir/{stem}.nc)",
+                                l.id
+                            ));
+                        }
+                    }
+                    let (arr, base) = v.switch_slot();
+                    set_refine_switch(refine, arr, base);
+                    set_refine_switch(refine, arr, base + 1);
+                    refine.refine_cal = true;
+                    report.enabled_thresholds.push(v);
+                }
+                DataLayerRole::SpecifiedMask => {
+                    refine.mask_refine_spc_fprefix = l.path.clone();
+                    refine.refine_spc = true;
+                    report.specified_mask_set = true;
+                }
+                DataLayerRole::MeritHydroRoot | DataLayerRole::CamaReach => {
+                    // Hydro / CaMa roles flow through the dedicated hydro
+                    // workflow, not the mkgrd/mkrefine config — nothing here.
+                }
+            }
+        }
+        report
+    }
+}
+
+/// Result of [`lower_datalayers_namelist`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LoweredDatalayers {
+    /// The rewritten `&mkgrd` + `&mkrefine` namelist with lowered values applied.
+    pub namelist: String,
+    /// The `threshold_dir` the engine will read `<stem>.nc` from (user's value,
+    /// or the fallback when the user left it empty).
+    pub threshold_dir: String,
+    /// (engine stem, source path) for each enabled ThresholdField layer — the
+    /// caller stages these to `threshold_dir/<stem>.nc`.
+    pub threshold_files: Vec<(String, String)>,
+    pub warnings: Vec<String>,
+}
+
+/// Parse a namelist's `&mkgrd` / `&mkrefine` / `&datalayers` blocks, apply the
+/// data layers to the config ([`DataLayersNamelist::lower_into`]), and re-emit a
+/// `&mkgrd` + `&mkrefine` namelist with the lowered values, so a plain
+/// `mkgrd.x`-style run honours the declared layers without a GUI. The engine run
+/// path consumes only `&mkgrd`/`&mkrefine`, so other blocks are not re-emitted.
+///
+/// `threshold_dir_fallback` is used only when the parsed `&mkrefine` leaves
+/// `threshold_dir` empty (the caller typically passes `<namelist_dir>/threshold`).
+pub fn lower_datalayers_namelist(
+    text: &str,
+    threshold_dir_fallback: Option<&str>,
+) -> Result<LoweredDatalayers, String> {
+    let mut mkgrd = EarthmeshConfig::from_mkgrd_namelist(text)?;
+    let mut refine = if text.to_ascii_lowercase().contains("&mkrefine") {
+        RefineConfig::from_mkrefine_namelist(text, &mkgrd.mesh_type, &mkgrd.mode_grid)?
+    } else {
+        RefineConfig::default()
+    };
+    let dl = DataLayersNamelist::from_datalayers_namelist(text);
+    let report = dl.lower_into(&mut mkgrd, &mut refine);
+    if refine.threshold_dir.trim().is_empty() {
+        if let Some(fb) = threshold_dir_fallback {
+            refine.threshold_dir = fb.to_string();
+        }
+    }
+    let threshold_files = dl
+        .layers
+        .iter()
+        .filter_map(|l| {
+            if !l.enabled || l.path.trim().is_empty() {
+                return None;
+            }
+            match l.role {
+                DataLayerRole::ThresholdField(v) => Some((v.file_stem().to_string(), l.path.clone())),
+                _ => None,
+            }
+        })
+        .collect();
+    Ok(LoweredDatalayers {
+        namelist: format!(
+            "{}\n{}",
+            mkgrd.to_mkgrd_namelist(),
+            refine.to_mkrefine_namelist()
+        ),
+        threshold_dir: refine.threshold_dir.clone(),
+        threshold_files,
+        warnings: report.warnings,
+    })
+}
+
 fn strip_fortran_comment(line: &str) -> &str {
     let mut quote: Option<char> = None;
     let mut chars = line.char_indices().peekable();

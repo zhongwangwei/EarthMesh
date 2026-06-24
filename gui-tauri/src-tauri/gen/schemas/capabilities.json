@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Core defaults for the main window. Custom #[tauri::command]s do not require permissions; only plugin commands do.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}

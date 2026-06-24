@@ -2,7 +2,7 @@ name: CI
 
 # Minimal-but-effective regression gate for EarthMesh v3.
 # - `fast`  : fmt + pure Rust crates (no NetCDF, no GUI). Seconds, no system deps.
-# - `heavy` : cli + gui with system NetCDF + eframe deps (dynamic link, no source build).
+# - `heavy` : cli with system NetCDF (dynamic link, no source build).
 # Large MERIT-Hydro / external-data tests stay `#[ignore]` and never run here.
 
 on:
@@ -37,17 +37,15 @@ jobs:
           echo "  make test-fast  # core/geometry/mesh/quality/refine_planner (no NetCDF needed)"
 
   heavy:
-    name: heavy (cli + gui, system NetCDF)
+    name: heavy (cli, system NetCDF)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install NetCDF + GUI system deps
+      - name: Install NetCDF system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libnetcdf-dev libhdf5-dev pkg-config \
-            libgtk-3-dev libxkbcommon-dev libwayland-dev \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
+            libnetcdf-dev libhdf5-dev pkg-config
       - name: Install clippy
         run: rustup component add clippy
       - name: CLI lint gate (clippy -D warnings, dynamic system NetCDF)
@@ -56,10 +54,6 @@ jobs:
       - name: CLI tests (dynamic system NetCDF — reproduce with `make test`)
         # No `static-netcdf` feature: link the apt libnetcdf instead of building netcdf-c.
         run: cargo test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets
-      - name: GUI lint gate (clippy -D warnings)
-        run: cargo clippy --manifest-path rust/earthmesh_gui/Cargo.toml --all-targets -- -D warnings
-      - name: GUI tests (reproduce with `make test-gui`)
-        run: cargo test --manifest-path rust/earthmesh_gui/Cargo.toml --all-targets
       - name: How to reproduce a failure
         if: failure()
         run: |
@@ -68,4 +62,3 @@ jobs:
           echo "  cargo test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets   # system NetCDF"
           echo "  make clippy-full  # clippy -D warnings, all crates (bundled static-netcdf)"
           echo "  make test         # CLI with bundled static-netcdf (no system NetCDF needed)"
-          echo "  make test-gui     # GUI"

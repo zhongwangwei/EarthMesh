@@ -1,0 +1,650 @@
+<!--
+  EarthMesh Studio — GUI redesign interactive prototype
+  Single-file, no build step. Open in any browser.
+  Toggles: theme (light/dark), language (中/EN), mode (Normal/Expert).
+  This is a clickable mockup of the proposed layout — not wired to the engine.
+  Grounded in: rust/earthmesh_gui/{i18n.rs, theme.rs, ui_helpers.rs} +
+               docs/reviews/v3_mesh_audit/10_gui_redesign_proposal.md
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EarthMesh Studio — Redesign Prototype</title>
+<style>
+:root{
+  /* ---- light theme tokens (matches theme.rs Primer-like palette) ---- */
+  --bg:#ffffff; --surface:#f6f8fa; --surface-2:#eef1f4; --elevated:#ffffff;
+  --border:#d0d7de; --border-soft:#e4e8ec;
+  --text:#1f2328; --muted:#656d76; --faint:#8b949e;
+  --accent:#1f6feb; --accent-weak:#ddeaff; --accent-ink:#0a3d91;
+  --pass:#1a7f37; --pass-bg:#dafbe1; --warn:#9a6700; --warn-bg:#fff8c5;
+  --fail:#cf222e; --fail-bg:#ffebe9; --info:#2f81f7;
+  --land:#78aa5a; --ocean:#3c78c8; --river:#288cc8; --coast:#dc963c;
+  --estuary:#b464c8; --urban:#b44646;
+  --shadow:0 1px 2px rgba(31,35,40,.08), 0 2px 8px rgba(31,35,40,.06);
+  --shadow-lg:0 8px 30px rgba(31,35,40,.14);
+  --r-sm:6px; --r-md:10px; --r-lg:14px;
+  --s-xs:2px; --s-sm:4px; --s-md:8px; --s-lg:16px; --s-xl:24px;
+  --rail-w:248px; --live-w:360px; --top-h:52px; --status-h:34px;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+[data-theme="dark"]{
+  --bg:#0d1117; --surface:#161b22; --surface-2:#1c2330; --elevated:#1b2230;
+  --border:#30363d; --border-soft:#262c34;
+  --text:#e6edf3; --muted:#8b949e; --faint:#6e7681;
+  --accent:#58a6ff; --accent-weak:#13243f; --accent-ink:#cae0ff;
+  --pass:#3fb950; --pass-bg:#10261a; --warn:#d29922; --warn-bg:#2b2410;
+  --fail:#f85149; --fail-bg:#2d1414; --info:#58a6ff;
+  --land:#8fbf6e; --ocean:#5b95d6; --river:#4aa6dc; --coast:#e0a85a;
+  --estuary:#c084d6; --urban:#d65f5f;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
+  --shadow-lg:0 10px 34px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer}
+h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
+.app{display:grid;height:100vh;
+  grid-template:"top top top" var(--top-h) "rail work live" 1fr "status status status" var(--status-h)
+  / var(--rail-w) 1fr var(--live-w)}
+
+/* ---------------- top bar ---------------- */
+.top{grid-area:top;display:flex;align-items:center;gap:var(--s-md);
+  padding:0 var(--s-lg);background:var(--surface);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:-.02em;font-size:15px}
+.brand .glyph{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--ocean),var(--accent));color:#fff;box-shadow:var(--shadow)}
+.top .sep{width:1px;height:22px;background:var(--border)}
+.menu-btn{padding:5px 10px;border:1px solid var(--border);border-radius:var(--r-sm);
+  background:var(--elevated);display:flex;align-items:center;gap:6px}
+.menu-btn:hover{border-color:var(--accent);color:var(--accent)}
+.proj-name{padding:5px 10px;border:1px solid transparent;border-radius:var(--r-sm);
+  background:var(--bg);min-width:160px;color:var(--text);font-weight:600}
+.proj-name:focus{outline:none;border-color:var(--accent)}
+.grow{flex:1}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;background:var(--bg)}
+.seg button{padding:5px 11px;border:0;background:transparent;color:var(--muted)}
+.seg button.on{background:var(--accent);color:#fff}
+.icon-btn{width:32px;height:30px;border:1px solid var(--border);border-radius:var(--r-sm);
+  background:var(--elevated);display:grid;place-items:center}
+.icon-btn:hover{border-color:var(--accent)}
+.run-btn{padding:6px 16px;border:0;border-radius:var(--r-sm);background:var(--pass);color:#fff;font-weight:650;
+  display:flex;align-items:center;gap:6px;box-shadow:var(--shadow)}
+.run-btn:hover{filter:brightness(1.05)}
+
+/* ---------------- left rail (stepper) ---------------- */
+.rail{grid-area:rail;background:var(--surface);border-right:1px solid var(--border);
+  padding:var(--s-lg) var(--s-md);overflow:auto}
+.rail h4{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;
+  margin:0 8px 10px;font-weight:700}
+.step{display:flex;gap:11px;align-items:flex-start;padding:9px 10px;border-radius:var(--r-md);
+  position:relative;cursor:pointer;margin-bottom:1px}
+.step:hover{background:var(--surface-2)}
+.step.active{background:var(--accent-weak)}
+.step .num{flex:none;width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
+  font-size:12px;font-weight:700;border:1.5px solid var(--border);color:var(--muted);background:var(--bg);z-index:1}
+.step.active .num{background:var(--accent);border-color:var(--accent);color:#fff}
+.step.done .num{background:var(--pass);border-color:var(--pass);color:#fff}
+.step .stub{min-width:0}
+.step .t{font-weight:620;line-height:1.35}
+.step.active .t{color:var(--accent-ink)}
+.step .d{color:var(--muted);font-size:11.5px;margin-top:1px}
+.step:not(:last-child)::after{content:"";position:absolute;left:22px;top:34px;bottom:-2px;
+  width:1.5px;background:var(--border)}
+.step.done:not(:last-child)::after{background:var(--pass)}
+.rail .est{margin:14px 8px 0;padding:11px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg)}
+.est .lab{color:var(--muted);font-size:11px}
+.est .big{font-size:19px;font-weight:750;letter-spacing:-.02em}
+.bar{height:6px;border-radius:4px;background:var(--surface-2);overflow:hidden;margin-top:7px}
+.bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--ocean))}
+
+/* ---------------- center workspace ---------------- */
+.work{grid-area:work;overflow:auto;padding:var(--s-xl) calc(var(--s-xl) + 4px)}
+.work-head{display:flex;align-items:baseline;gap:12px;margin-bottom:3px}
+.work-head .kicker{color:var(--accent);font-weight:700;font-size:12px;letter-spacing:.02em}
+.work h1{font-size:23px}
+.work .sub{color:var(--muted);margin:4px 0 22px;max-width:62ch}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-lg)}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s-md)}
+.card{background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:var(--s-lg);box-shadow:var(--shadow);margin-bottom:var(--s-lg)}
+.card h3{font-size:14px;margin-bottom:3px}
+.card .ch{color:var(--muted);font-size:12px;margin-bottom:14px}
+.field{margin-bottom:13px}
+.field:last-child{margin-bottom:0}
+.field label{display:block;font-weight:600;font-size:12px;margin-bottom:5px}
+.field .hint{color:var(--faint);font-weight:400;font-size:11px}
+.input,.select{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);
+  background:var(--bg);color:var(--text);font-family:inherit}
+.input:focus,.select:focus{outline:none;border-color:var(--accent)}
+.row{display:flex;gap:var(--s-md)}.row>*{flex:1}
+.browse{display:flex;gap:6px}.browse .input{flex:1}
+.btn-ghost{padding:7px 11px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg);white-space:nowrap}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+/* template cards */
+.tpl{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s-md)}
+.tcard{border:1.5px solid var(--border);border-radius:var(--r-md);padding:13px;background:var(--elevated);
+  cursor:pointer;transition:.12s;position:relative}
+.tcard:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:var(--shadow)}
+.tcard.on{border-color:var(--accent);background:var(--accent-weak)}
+.tcard .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:16px;margin-bottom:9px}
+.tcard .nm{font-weight:680;font-size:13px}
+.tcard .meta{color:var(--muted);font-size:11px;margin-top:2px}
+.tcard .tags{margin-top:9px;display:flex;flex-wrap:wrap;gap:4px}
+.tag{font-size:10px;padding:2px 7px;border-radius:20px;background:var(--surface-2);color:var(--muted);font-weight:600}
+.tcard.on .check{position:absolute;top:10px;right:10px;color:var(--accent);font-weight:800}
+
+/* data-layer table */
+.layers{width:100%;border-collapse:collapse;font-size:12.5px}
+.layers th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;
+  padding:6px 8px;border-bottom:1px solid var(--border)}
+.layers td{padding:8px;border-bottom:1px solid var(--border-soft);vertical-align:middle}
+.layers tr:last-child td{border-bottom:0}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:-1px}
+.cov{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:650}
+.cov.ok{background:var(--pass-bg);color:var(--pass)} .cov.no{background:var(--fail-bg);color:var(--fail)}
+.cov.part{background:var(--warn-bg);color:var(--warn)}
+.path{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px;display:inline-block;vertical-align:middle}
+.sw{position:relative;width:34px;height:19px;border-radius:20px;background:var(--border);transition:.15s;flex:none}
+.sw.on{background:var(--accent)}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:.15s}
+.sw.on::after{left:17px}
+
+/* criteria rows */
+.crit{display:grid;grid-template-columns:18px 1.4fr 1.6fr 70px;gap:12px;align-items:center;
+  padding:10px 4px;border-bottom:1px solid var(--border-soft)}
+.crit:last-child{border-bottom:0}
+.crit .cn{font-weight:600}.crit .cu{color:var(--faint);font-size:11px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.pill-row{display:flex;gap:6px;flex-wrap:wrap}
+.pill{padding:6px 13px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--muted);font-weight:600;font-size:12px}
+.pill.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
+/* expert zone */
+.expert{border:1.5px dashed var(--accent);border-radius:var(--r-md);padding:var(--s-lg);
+  background:color-mix(in srgb,var(--accent) 6%,transparent);margin-bottom:var(--s-lg)}
+.expert-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
+  color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:11px}
+body.normal .expert{display:none}
+
+/* quality dashboard */
+.verdict{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:var(--r-md);
+  background:var(--pass-bg);border:1px solid color-mix(in srgb,var(--pass) 30%,transparent);margin-bottom:var(--s-lg)}
+.verdict .vb{font-size:13px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;
+  padding:5px 13px;border-radius:7px;background:var(--pass);color:#fff}
+.verdict .vt{font-weight:700;font-size:15px} .verdict .vs{color:var(--muted);font-size:12px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s-md)}
+.metric{border:1px solid var(--border);border-radius:var(--r-md);padding:13px;background:var(--elevated)}
+.metric .mv{font-size:21px;font-weight:760;letter-spacing:-.02em}
+.metric .ml{color:var(--muted);font-size:11px;margin-top:2px}
+.fixlist{list-style:none;padding:0;margin:0}
+.fixlist li{padding:9px 0;border-bottom:1px solid var(--border-soft);display:flex;gap:9px;align-items:flex-start}
+.fixlist li:last-child{border-bottom:0}
+.fixlist .fi{flex:none;margin-top:1px}
+
+.foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:18px;border-top:1px solid var(--border)}
+.foot .vmsg{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:7px}
+.nav-btns{display:flex;gap:8px}
+.btn-next{padding:8px 18px;border:0;border-radius:var(--r-sm);background:var(--accent);color:#fff;font-weight:650}
+.btn-back{padding:8px 16px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg)}
+
+/* ---------------- right live panel ---------------- */
+.live{grid-area:live;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+.live-tabs{display:flex;gap:2px;padding:9px var(--s-md) 0;border-bottom:1px solid var(--border)}
+.live-tabs button{padding:8px 13px;border:0;background:transparent;color:var(--muted);font-weight:600;
+  border-bottom:2px solid transparent;margin-bottom:-1px}
+.live-tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
+.live-body{flex:1;overflow:auto;padding:var(--s-md)}
+.live-pane{display:none}.live-pane.on{display:block}
+.mapwrap{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;background:var(--bg)}
+.map-cap{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;font-size:11.5px;color:var(--muted)}
+.legend{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--muted);padding:9px 11px;flex-wrap:wrap}
+.legend .sc{height:9px;width:74px;border-radius:5px;
+  background:linear-gradient(90deg,#2c7fb8,#7fcdbb,#fec44f,#f03b20)}
+.logbox{font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+.logbox .ok{color:var(--pass)} .logbox .wn{color:var(--warn)} .logbox .ac{color:var(--accent)}
+.mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
+.mini-metric b{font-weight:700}
+.progress{height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden;margin:10px 0}
+.progress>i{display:block;height:100%;width:62%;background:linear-gradient(90deg,var(--accent),var(--ocean))}
+
+/* ---------------- status bar ---------------- */
+.status{grid-area:status;display:flex;align-items:center;gap:14px;padding:0 var(--s-lg);
+  background:var(--surface);border-top:1px solid var(--border);font-size:11.5px;color:var(--muted)}
+.badge{display:inline-flex;align-items:center;gap:6px;font-weight:700;padding:2px 9px;border-radius:6px;font-size:10.5px}
+.badge.pass{background:var(--pass-bg);color:var(--pass)}
+.status .rdot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.status .rdot.on{background:var(--pass);box-shadow:0 0 0 3px var(--pass-bg)}
+.minibar{width:90px;height:6px;border-radius:4px;background:var(--surface-2);overflow:hidden;display:inline-block;vertical-align:middle}
+.minibar>i{display:block;height:100%;width:48%;background:var(--accent)}
+.hide{display:none !important}
+[data-zh] [data-en]{display:none}
+</style>
+
+<div class="app" id="app">
+  <!-- TOP BAR -->
+  <header class="top">
+    <div class="brand"><span class="glyph">◈</span><span>EarthMesh <span style="color:var(--muted);font-weight:500">Studio</span></span></div>
+    <div class="sep"></div>
+    <button class="menu-btn" data-i18n="m.project">Project ▾</button>
+    <input class="proj-name" value="south_china_coupled" spellcheck="false">
+    <div class="grow"></div>
+    <div class="seg" id="modeSeg">
+      <button class="on" data-mode="normal" data-i18n="mode.normal">Normal</button>
+      <button data-mode="expert" data-i18n="mode.expert">Expert</button>
+    </div>
+    <div class="seg" id="langSeg">
+      <button data-lang="zh" data-i18n="lang.zh">中文</button>
+      <button class="on" data-lang="en" data-i18n="lang.en">EN</button>
+    </div>
+    <button class="icon-btn" id="themeBtn" title="theme">🌙</button>
+    <button class="run-btn" id="runBtn">▶ <span data-i18n="btn.run">Run</span></button>
+  </header>
+
+  <!-- LEFT RAIL -->
+  <nav class="rail">
+    <h4 data-i18n="rail.workflow">Workflow</h4>
+    <div id="steps"></div>
+    <div class="est">
+      <div class="lab" data-i18n="est.cells">Estimated cells</div>
+      <div class="big" id="estCells">~412k</div>
+      <div class="bar"><i style="width:58%"></i></div>
+      <div class="lab" style="margin-top:6px"><span data-i18n="est.budget">of budget</span> 700k · <span style="color:var(--pass)">58%</span></div>
+    </div>
+  </nav>
+
+  <!-- CENTER WORKSPACE -->
+  <main class="work" id="work"></main>
+
+  <!-- RIGHT LIVE PANEL -->
+  <aside class="live">
+    <div class="live-tabs" id="liveTabs">
+      <button class="on" data-pane="map" data-i18n="live.map">Map</button>
+      <button data-pane="quality" data-i18n="live.quality">Quality</button>
+      <button data-pane="log" data-i18n="live.log">Log</button>
+    </div>
+    <div class="live-body">
+      <!-- MAP -->
+      <div class="live-pane on" data-pane="map">
+        <div class="mapwrap">
+          <div id="mapsvg"></div>
+          <div class="legend">
+            <span data-i18n="legend.score">Refine score</span>
+            <span class="sc"></span>
+            <span style="color:var(--muted)">low → high</span>
+          </div>
+        </div>
+        <div class="map-cap"><span data-i18n="map.hint">Domain + refinement score preview</span><span>22°N · 113°E</span></div>
+        <div style="margin-top:10px" class="pill-row">
+          <span class="pill on" data-i18n="map.l.score">Score</span>
+          <span class="pill" data-i18n="map.l.mesh">Mesh</span>
+          <span class="pill" data-i18n="map.l.coast">Coastline</span>
+          <span class="pill" data-i18n="map.l.rivers">Rivers</span>
+        </div>
+      </div>
+      <!-- QUALITY -->
+      <div class="live-pane" data-pane="quality">
+        <div class="badge pass" style="font-size:11px;margin-bottom:10px">● <span data-i18n="q.pass">PASS</span></div>
+        <div class="mini-metric"><span data-i18n="q.cells">Cells</span><b>412,388</b></div>
+        <div class="mini-metric"><span data-i18n="q.verts">Vertices</span><b>208,114</b></div>
+        <div class="mini-metric"><span data-i18n="q.minangle">Min angle</span><b style="color:var(--pass)">31.4°</b></div>
+        <div class="mini-metric"><span data-i18n="q.skew">Max skew</span><b style="color:var(--warn)">0.71</b></div>
+        <div class="mini-metric"><span data-i18n="q.coupling">Coupling err</span><b style="color:var(--pass)">0.4%</b></div>
+        <p style="color:var(--muted);font-size:11.5px;margin-top:12px" data-i18n="q.note">Full dashboard appears in step 7 after a run.</p>
+      </div>
+      <!-- LOG -->
+      <div class="live-pane" data-pane="log">
+        <div class="progress"><i></i></div>
+        <div class="logbox" id="logbox"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- STATUS BAR -->
+  <footer class="status">
+    <span class="badge pass">● <span data-i18n="q.pass">PASS</span></span>
+    <span><span data-i18n="st.cells">Cells</span> <b style="color:var(--text)">412,388</b></span>
+    <span><span data-i18n="st.budget">Budget</span> <span class="minibar"><i></i></span> 58%</span>
+    <span data-i18n="st.valid">✓ All inputs valid</span>
+    <div class="grow"></div>
+    <span class="rdot" id="rdot"></span><span id="rtext" data-i18n="st.idle">idle</span>
+  </footer>
+</div>
+
+<script>
+/* ---------------- i18n ---------------- */
+const I = {
+ "m.project":["Project ▾","项目 ▾"],
+ "mode.normal":["Normal","常规"],"mode.expert":["Expert","专家"],
+ "lang.zh":["中文","中文"],"lang.en":["EN","EN"],"btn.run":["Run","运行"],
+ "rail.workflow":["Workflow","工作流"],
+ "est.cells":["Estimated cells","预计单元数"],"est.budget":["of budget","占预算"],
+ "live.map":["Map","地图"],"live.quality":["Quality","质量"],"live.log":["Log","日志"],
+ "legend.score":["Refine score","细化评分"],
+ "map.hint":["Domain + refinement score preview","计算域 + 细化评分预览"],
+ "map.l.score":["Score","评分"],"map.l.mesh":["Mesh","网格"],"map.l.coast":["Coastline","海岸线"],"map.l.rivers":["Rivers","河网"],
+ "q.pass":["PASS","通过"],"q.cells":["Cells","单元"],"q.verts":["Vertices","顶点"],
+ "q.minangle":["Min angle","最小角"],"q.skew":["Max skew","最大偏斜"],"q.coupling":["Coupling err","耦合误差"],
+ "q.note":["Full dashboard appears in step 7 after a run.","运行后第 7 步显示完整仪表盘。"],
+ "st.cells":["Cells","单元"],"st.budget":["Budget","预算"],"st.valid":["✓ All inputs valid","✓ 输入全部有效"],"st.idle":["idle","空闲"],
+ "foot.back":["Back","上一步"],"foot.next":["Next","下一步"]
+};
+let lang=1; // 0=en,1=zh  -> default EN here (button shows EN on). We'll set below.
+lang=0;
+function L(k){return (I[k]||["",""])[lang];}
+function applyI18n(){
+  document.querySelectorAll("[data-i18n]").forEach(e=>{const k=e.getAttribute("data-i18n");if(I[k])e.textContent=L(k);});
+  renderSteps(); renderStep(cur); renderLog();
+}
+
+/* ---------------- workflow steps (from i18n.rs step.*) ---------------- */
+const STEPS=[
+ {t:["New Project","新建项目"],d:["Name, author, template","命名 · 作者 · 模板"]},
+ {t:["Target","目标"],d:["Pick a mesh template","选择网格模板"]},
+ {t:["Domain","区域"],d:["Global or regional + map","全球/区域 + 地图"]},
+ {t:["Data Layers","数据图层"],d:["Inputs & coverage","输入与覆盖校验"]},
+ {t:["Refinement","细化策略"],d:["Criteria + budget","判据 + 预算"]},
+ {t:["Quality","质量约束"],d:["Gates & thresholds","门禁与阈值"]},
+ {t:["Run / Results","运行 / 结果"],d:["Generate + dashboard","生成 + 仪表盘"]},
+];
+let cur=4; // start on Refinement so reviewers land on the richest screen
+const done=[true,true,true,true,false,false,false];
+
+function renderSteps(){
+  const el=document.getElementById("steps");el.innerHTML="";
+  STEPS.forEach((s,i)=>{
+    const d=document.createElement("div");
+    d.className="step"+(i===cur?" active":"")+(done[i]?" done":"");
+    d.innerHTML=`<div class="num">${done[i]&&i!==cur?"✓":(i+1)}</div>
+      <div class="stub"><div class="t">${s.t[lang]}</div><div class="d">${s.d[lang]}</div></div>`;
+    d.onclick=()=>{cur=i;renderSteps();renderStep(i);};
+    el.appendChild(d);
+  });
+}
+
+/* ---------------- templates (ui_helpers::target_templates, 9) ---------------- */
+const TPL=[
+ {nm:["Global atmosphere","全球大气"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"🌀",c:"var(--ocean)",tags:[["topo grad","地形梯度"],["orographic","地形降水"]]},
+ {nm:["Regional land","区域陆面"],meta:["land · CoLM","陆面 · CoLM"],ic:"🌾",c:"var(--land)",tags:[["landcover","地表覆盖"],["slope","坡度"],["LAI","LAI"]]},
+ {nm:["Regional ocean","区域海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"🌊",c:"var(--ocean)",tags:[["bathy grad","水深梯度"],["coastline","海岸线"]]},
+ {nm:["Land-ocean coupled","陆海耦合"],meta:["coupled · CoLM","耦合 · CoLM"],ic:"🔗",c:"var(--estuary)",tags:[["coastline","海岸线"],["fraction err","面积误差"]]},
+ {nm:["MERIT-Hydro river/coast","MERIT-Hydro 河海"],meta:["coupled · CoLM","耦合 · CoLM"],ic:"💧",c:"var(--river)",tags:[["river R2/R3","河流"],["coastline","海岸线"]]},
+ {nm:["Coastal estuary","河口海岸"],meta:["ocean · FVCOM","海洋 · FVCOM"],ic:"⛵",c:"var(--coast)",tags:[["estuary","河口"],["river-mouth","入海口"]]},
+ {nm:["Hydrology land","水文陆面"],meta:["land · CoLM","陆面 · CoLM"],ic:"🏞️",c:"var(--river)",tags:[["TWI","地形湿度"],["drainage","汇流"]]},
+ {nm:["Urban land","城市陆面"],meta:["land · CoLM","陆面 · CoLM"],ic:"🏙️",c:"var(--urban)",tags:[["impervious","不透水"],["urban","城市"]]},
+ {nm:["Orographic atmosphere","地形大气"],meta:["atmos · MPAS","大气 · MPAS"],ic:"⛰️",c:"var(--coast)",tags:[["topo grad","地形梯度"],["precip","降水"]]},
+];
+let tpl=4;
+
+/* ---------------- resolution control (value + reserved unit + ticked slider) ---------------- */
+const RES_UNITS=[
+ {label:["km","km"], suffix:" km", min:1, max:60, step:0.5, def:9, ticks:[1,15,30,45,60]},
+ {label:["° (lat-lon · reserved)","°（经纬度 · 预留）"], suffix:"°", min:0.05, max:2, step:0.05, def:0.25, ticks:[0.05,0.5,1,1.5,2]},
+ {label:["NXP (grid points)","NXP（格点数）"], suffix:" NXP", min:8, max:400, step:1, def:40, ticks:[8,100,200,300,400]},
+];
+let resUnitIdx=0, resVal=9;
+function fmtRes(){const u=RES_UNITS[resUnitIdx];return resVal+u.suffix;}
+function resControl(lang){
+  const u=RES_UNITS[resUnitIdx];
+  const opts=RES_UNITS.map((x,i)=>`<option value="${i}" ${i===resUnitIdx?"selected":""}>${x.label[lang]}</option>`).join("");
+  return `<div class="field"><label>${lang?"目标分辨率":"Target resolution"} <span class="hint">${lang?"可直接输入或拖动":"type a value or drag"}</span></label>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input class="input" type="number" id="resNum" style="width:84px" value="${resVal}" min="${u.min}" max="${u.max}" step="${u.step}" oninput="resInput('num')">
+      <select class="select" id="resUnit" style="width:158px" onchange="resInput('unit')">${opts}</select>
+      <span id="resOut" style="margin-left:auto;font-weight:750;font-size:17px;color:var(--accent)">${fmtRes()}</span>
+    </div>
+    <input type="range" id="resRange" style="width:100%" min="${u.min}" max="${u.max}" step="${u.step}" value="${resVal}" oninput="resInput('range')">
+    <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px">
+      ${u.ticks.map(t=>`<span>${t}</span>`).join("")}
+    </div></div>`;
+}
+function resInput(src){
+  if(src==="unit"){ resUnitIdx=+document.getElementById("resUnit").value; resVal=RES_UNITS[resUnitIdx].def; renderStep(1); return; }
+  const u=RES_UNITS[resUnitIdx];
+  let v = src==="range" ? +document.getElementById("resRange").value : +document.getElementById("resNum").value;
+  if(isNaN(v)) return;
+  v=Math.min(u.max,Math.max(u.min,v));
+  resVal=Math.round(v/u.step)*u.step; resVal=Math.round(resVal*1000)/1000;
+  const r=document.getElementById("resRange"), n=document.getElementById("resNum"), o=document.getElementById("resOut");
+  if(r) r.value=resVal;
+  if(n && src!=="num") n.value=resVal;
+  if(o) o.textContent=fmtRes();
+}
+
+/* ---------------- data layers (17, showing core 8) ---------------- */
+const LAYERS=[
+ {nm:["Land cover","地表覆盖"],role:["landcover entropy","地表覆盖熵"],c:"var(--land)",cov:"ok",p:"data/igbp_500m.nc"},
+ {nm:["DEM (elevation)","DEM 高程"],role:["slope · curvature · TWI","坡度·曲率·TWI"],c:"var(--coast)",cov:"ok",p:"data/merit_dem.nc"},
+ {nm:["MERIT-Hydro","MERIT-Hydro"],role:["river · upa · wth","河流·汇流·河宽"],c:"var(--river)",cov:"ok",p:"data/merit_hydro/"},
+ {nm:["CaMa-Flood","CaMa-Flood"],role:["estuary · discharge","河口·径流"],c:"var(--river)",cov:"part",p:"data/cama_15min/"},
+ {nm:["Coastline","海岸线"],role:["coastline complexity","海岸线复杂度"],c:"var(--coast)",cov:"ok",p:"data/gshhg_f.shp"},
+ {nm:["Bathymetry","海底地形"],role:["depth · grad · shelf","水深·梯度·陆架"],c:"var(--ocean)",cov:"ok",p:"data/gebco_2024.nc"},
+ {nm:["LAI","LAI"],role:["LAI variability","LAI 变率"],c:"var(--land)",cov:"no",p:""},
+ {nm:["Soil","土壤"],role:["hydraulic · thermal","水力·热力"],c:"var(--urban)",cov:"part",p:"data/soilgrids/"},
+];
+const COV={ok:["covers domain","覆盖完整"],part:["partial coverage","部分覆盖"],no:["missing — criterion off","缺失·判据禁用"]};
+
+/* ---------------- criteria (Refinement) ---------------- */
+const CRIT=[
+ {nm:["Coastline complexity","海岸线复杂度"],u:["FVCOM · ocean","FVCOM · 海洋"],w:85,on:true},
+ {nm:["River network (R2/R3)","河网 R2/R3"],u:["MERIT-Hydro","MERIT-Hydro"],w:72,on:true},
+ {nm:["Estuary / river-mouth","河口/入海口"],u:["CaMa-Flood","CaMa-Flood"],w:64,on:true},
+ {nm:["Bathymetry gradient","水深梯度"],u:["GEBCO","GEBCO"],w:48,on:true},
+ {nm:["Slope (DEM)","坡度 DEM"],u:["MERIT DEM","MERIT DEM"],w:30,on:false},
+];
+
+/* ---------------- step renderers ---------------- */
+function field(label,inner,hint){return `<div class="field"><label>${label} ${hint?`<span class="hint">${hint}</span>`:""}</label>${inner}</div>`;}
+function inp(v){return `<input class="input" value="${v}">`;}
+function sel(opts,si){return `<select class="select">${opts.map((o,i)=>`<option ${i===si?"selected":""}>${o}</option>`).join("")}</select>`;}
+
+function renderStep(i){
+  const w=document.getElementById("work");
+  const head=(k,t,s)=>`<div class="work-head"><span class="kicker">${L("step")||""}STEP ${i+1} / 7</span></div>
+    <h1>${t}</h1><p class="sub">${s}</p>`;
+  let html="";
+  if(i===0){
+    html=head("",STEPS[0].t[lang],lang?"给项目命名、记录作者，或从模板开始——所有设置都存进一个可保存/重开的项目文件。":"Name the project, record the author, or start from a template — everything is stored in one save/reopenable project file.")
+    +`<div class="grid2">
+       <div class="card"><h3>${lang?"项目信息":"Project"}</h3><div class="ch">${lang?"写入 ProjectConfig.metadata":"Written to ProjectConfig.metadata"}</div>
+         ${field(lang?"项目名称":"Project name",inp("south_china_coupled"))}
+         ${field(lang?"作者":"Author",inp("Zhongwang Wei @ SYSU"))}
+         ${field(lang?"描述":"Description",`<textarea class="input" rows="3">South China land–ocean coupled mesh for CoLM/FVCOM.</textarea>`)}
+       </div>
+       <div class="card"><h3>${lang?"最近项目":"Recent projects"}</h3><div class="ch">${lang?"点击重开":"Click to reopen"}</div>
+         ${["pearl_river_estuary.emproj","global_mpas_60-15km.emproj","yangtze_hydrology.emproj"].map(p=>`<div class="browse" style="margin-bottom:8px"><span class="path" style="max-width:none">📄 ${p}</span></div>`).join("")}
+       </div></div>`;
+  }
+  else if(i===1){
+    html=head("",STEPS[1].t[lang],lang?"选一个目标模板——自动填好网格类型、输出格式、默认判据和数据图层；之后任何一步都能微调。":"Pick a target template — it fills mesh type, output format, default criteria and data layers; tweak anything later.")
+    +`<div class="card"><h3>${lang?"目标模板":"Target template"}</h3><div class="ch">${lang?"12 个常见目标（此处展示 9 个已实现）":"Common targets (9 implemented shown)"}</div>
+      <div class="tpl">${TPL.map((t,k)=>`<div class="tcard ${k===tpl?"on":""}" data-tpl="${k}">
+        ${k===tpl?'<span class="check">✓</span>':""}
+        <div class="ic" style="background:color-mix(in srgb,${t.c} 18%,transparent);color:${t.c}">${t.ic}</div>
+        <div class="nm">${t.nm[lang]}</div><div class="meta">${t.meta[lang]}</div>
+        <div class="tags">${t.tags.map(g=>`<span class="tag">${g[lang]}</span>`).join("")}</div></div>`).join("")}</div></div>
+      <div class="grid2">
+        <div class="card"><h3>${lang?"分辨率与输出":"Resolution & output"}</h3>
+          ${resControl(lang)}
+          ${field(lang?"输出模型":"Output model",sel(["CoLM","FVCOM","MPAS","CoLM + FVCOM"],3))}
+        </div>
+        <div class="expert"><span class="expert-tag">⚙ ${lang?"专家":"EXPERT"}</span>
+          ${field("NXP "+(lang?"（分辨率）":"(resolution)"),inp("40"),lang?"覆盖自动推导":"overrides auto-derived")}
+          <div class="row">${field(lang?"单元形状":"Cell shape",sel(["Hexagonal","Triangular"],0))}${field("niter",inp("60"))}</div>
+        </div></div>`;
+  }
+  else if(i===2){
+    html=head("",STEPS[2].t[lang],lang?"设全球或区域；区域可填经纬度框、圆，或直接在地图上画多边形。右侧地图实时反映。":"Set global or regional; regional accepts a bbox, a circle, or a polygon drawn on the map. The map on the right reflects it live.")
+    +`<div class="card"><h3>${lang?"计算域":"Domain"}</h3>
+       <div class="pill-row" style="margin-bottom:14px"><span class="pill" data-i18nx>${lang?"全球":"Global"}</span><span class="pill on">${lang?"区域":"Regional"}</span></div>
+       <div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span><span class="pill">${lang?"圆形":"Circle"}</span><span class="pill">✏️ ${lang?"地图画多边形":"Draw polygon"}</span></div>
+       <div class="grid2">
+         ${field(lang?"西经度 (°)":"West lon (°)",inp("108.0"))}${field(lang?"东经度 (°)":"East lon (°)",inp("120.0"))}
+         ${field(lang?"南纬度 (°)":"South lat (°)",inp("18.0"))}${field(lang?"北纬度 (°)":"North lat (°)",inp("26.0"))}
+       </div>
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" min="0" max="100" value="55"><div style="color:var(--muted);font-size:11px">55% ${lang?"海洋":"ocean"}</div>`)}
+     </div>
+     <div class="expert"><span class="expert-tag">⚙ ${lang?"专家":"EXPERT"}</span>
+       <div class="row">${field("Lambert λ₀",inp("114.0"))}${field(lang?"日界线处理":"Dateline",sel(["auto-normalize","raw"],0))}</div>
+     </div>`;
+  }
+  else if(i===3){
+    html=head("",STEPS[3].t[lang],lang?"统一管理输入数据图层。每行显示角色、路径和覆盖校验；缺失的数据会让对应判据自动灰显，绝不静默细化。":"One place for input layers. Each row shows its role, path and coverage check; missing data greys out its criterion instead of silently refining.")
+    +`<div class="card"><h3>${lang?"数据图层管理器":"Data layer manager"}</h3><div class="ch">${lang?"17 个图层（核心 8 个）· 映射 DataLayerConfig":"17 layers (core 8) · maps DataLayerConfig"}</div>
+      <table class="layers"><thead><tr>
+        <th></th><th>${lang?"图层":"Layer"}</th><th>${lang?"用于判据":"Used by"}</th><th>${lang?"路径":"Path"}</th><th>${lang?"覆盖":"Coverage"}</th></tr></thead><tbody>
+        ${LAYERS.map((y,k)=>`<tr>
+          <td><div class="sw ${y.cov!=="no"?"on":""}"></div></td>
+          <td><span class="dot" style="background:${y.c}"></span><b>${y.nm[lang]}</b></td>
+          <td style="color:var(--muted)">${y.role[lang]}</td>
+          <td>${y.p?`<span class="path">${y.p}</span>`:`<span class="btn-ghost" style="padding:3px 9px">📂 ${lang?"浏览":"Browse"}</span>`}</td>
+          <td><span class="cov ${y.cov}">${COV[y.cov][lang]}</span></td></tr>`).join("")}
+      </tbody></table></div>`;
+  }
+  else if(i===4){
+    html=head("",STEPS[4].t[lang],lang?"选择细化判据并调权重——每条判据连着一个数据图层。下方预算把你的意图换算成预计单元数与成本。":"Choose refinement criteria and weights — each ties to a data layer. The budget below turns intent into estimated cell count and cost.")
+    +`<div class="card"><h3>${lang?"细化判据":"Refinement criteria"}</h3><div class="ch">${lang?"模板「陆海耦合」默认值 · 可逐条增删":"Defaults from “Land-ocean coupled” · add/remove freely"}</div>
+      ${CRIT.map((c,k)=>`<div class="crit">
+        <div class="sw ${c.on?"on":""}" style="width:18px;height:18px;border-radius:5px;background:${c.on?"var(--accent)":"var(--border)"}"></div>
+        <div><div class="cn">${c.nm[lang]}</div><div class="cu">${c.u[lang]}</div></div>
+        <input type="range" min="0" max="100" value="${c.w}" ${c.on?"":"disabled"}>
+        <div style="text-align:right;font-weight:700;color:${c.on?"var(--accent)":"var(--faint)"}">${c.w}%</div></div>`).join("")}
+    </div>
+    <div class="card"><h3>${lang?"单元预算":"Cell budget"}</h3>
+      <div class="grid2">${field(lang?"最大单元数":"Max cells",inp("700,000"))}${field(lang?"最小边长 (km)":"Min edge (km)",inp("0.8"))}</div>
+      <div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">${lang?"预计单元数":"Estimated cells"}</span><b>412,388 / 700,000</b></div>
+      <div class="bar" style="height:9px;margin-top:6px"><i style="width:58%"></i></div></div>
+    </div>
+    <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 引擎旋钮":"EXPERT — engine knobs"}</span>
+      <div class="grid2">
+        ${field("HALO "+(lang?"（每层）":"(per level)"),inp("2,2,1"))}${field(lang?"过渡行数":"Transition rows",inp("3"))}
+        ${field("Spring β",inp("0.40"))}${field("num_rc",inp("8"))}
+      </div>
+      ${field(lang?"原始阈值 th_*":"Raw th_* thresholds",`<span class="btn-ghost">${lang?"打开阈值表…":"Open threshold table…"}</span> <span class="btn-ghost">${lang?"手动掩膜…":"Manual masks…"}</span>`)}
+    </div>`;
+  }
+  else if(i===5){
+    html=head("",STEPS[5].t[lang],lang?"设质量目标，引擎据此判定网格 Pass/Warn/Fail。常规模式给三档预设，专家模式可逐项设门禁阈值。":"Set quality goals; the engine judges the mesh Pass/Warn/Fail against them. Normal offers three presets, Expert exposes per-gate thresholds.")
+    +`<div class="card"><h3>${lang?"质量模式":"Quality mode"}</h3>
+      <div class="pill-row" style="margin-bottom:14px"><span class="pill">${lang?"宽松":"Loose"}</span><span class="pill on">${lang?"均衡":"Balanced"}</span><span class="pill">${lang?"严格":"Strict"}</span></div>
+      ${field(lang?"违规时":"On violation",sel(lang?["警告并继续","直接失败","自动修复"]:["Warn & continue","Fail","Auto-repair"],0))}
+    </div>
+    <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 逐项门禁":"EXPERT — per-gate thresholds"}</span>
+      <div class="grid2">
+        ${field(lang?"最小角 ≥":"Min angle ≥",inp("25°"))}${field(lang?"最大偏斜 ≤":"Max skew ≤",inp("0.85"))}
+        ${field(lang?"面积比 ≤":"Area ratio ≤",inp("4.0"))}${field(lang?"耦合面积误差 ≤":"Coupling frac err ≤",inp("1%"))}
+      </div></div>`;
+  }
+  else{
+    html=head("",STEPS[6].t[lang],lang?"生成网格，过程可取消；完成后这里给出质量判定、关键指标、最差单元和修复建议——直接回答「是否更好」。":"Generate the mesh (cancellable); when done you get the verdict, key metrics, worst cells and recommended fixes — answering “is it better”.")
+    +`<div class="verdict"><span class="vb">PASS</span>
+       <div><div class="vt">${lang?"网格质量通过全部门禁":"Mesh passes all gates"}</div><div class="vs">${lang?"几何 ✓ · 拓扑 ✓ · 物理保真 0.92 · 耦合 ✓":"geometry ✓ · topology ✓ · physics 0.92 · coupling ✓"}</div></div></div>
+     <div class="metrics">
+       <div class="metric"><div class="mv">412,388</div><div class="ml">${lang?"单元":"cells"}</div></div>
+       <div class="metric"><div class="mv">208,114</div><div class="ml">${lang?"顶点":"vertices"}</div></div>
+       <div class="metric"><div class="mv" style="color:var(--pass)">31.4°</div><div class="ml">${lang?"最小角":"min angle"}</div></div>
+       <div class="metric"><div class="mv" style="color:var(--warn)">0.71</div><div class="ml">${lang?"最大偏斜":"max skew"}</div></div>
+     </div>
+     <div class="card" style="margin-top:16px"><h3>${lang?"修复建议":"Recommended fixes"}</h3>
+       <ul class="fixlist">
+         <li><span class="fi" style="color:var(--warn)">▲</span><div>${lang?"3,204 个单元偏斜 > 0.7（集中在珠江口）——建议提高过渡行至 4 或对该区降一级细化。":"3,204 cells skew > 0.7 (clustered at the Pearl estuary) — raise transition rows to 4 or downgrade refinement there."}</div></li>
+         <li><span class="fi" style="color:var(--info)">●</span><div>${lang?"海岸线判据贡献了 61% 的细化预算——若想省单元，可下调其权重。":"Coastline criterion drove 61% of the budget — lower its weight to save cells."}</div></li>
+       </ul></div>
+     <div class="card"><h3>${lang?"导出":"Export"}</h3><div class="pill-row">
+       <span class="btn-ghost">NetCDF</span><span class="btn-ghost">FVCOM grid</span><span class="btn-ghost">${lang?"质量报告 HTML":"Quality report HTML"}</span><span class="btn-ghost">GeoJSON</span><span class="btn-ghost">${lang?"复现 manifest":"Reproducibility manifest"}</span></div></div>`;
+  }
+  // footer nav
+  html+=`<div class="foot"><span class="vmsg">✓ ${lang?"本步输入有效":"This step is valid"}</span>
+    <div class="nav-btns">${i>0?`<button class="btn-back" onclick="go(${i-1})">${L("foot.back")}</button>`:""}
+    ${i<6?`<button class="btn-next" onclick="go(${i+1})">${L("foot.next")} →</button>`:`<button class="btn-next">${lang?"完成":"Finish"} ✓</button>`}</div></div>`;
+  w.innerHTML=html;
+  // wire template + layer toggles
+  w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>{tpl=+c.dataset.tpl;renderStep(1);});
+  w.querySelectorAll(".sw").forEach(s=>s.onclick=()=>s.classList.toggle("on"));
+}
+function go(i){cur=i;renderSteps();renderStep(i);document.getElementById("work").scrollTop=0;}
+
+/* ---------------- map svg ---------------- */
+function mapSVG(){
+  const dark=document.documentElement.getAttribute("data-theme")==="dark";
+  const sea=dark?"#0e1b2c":"#dbeafe", land=dark?"#1c2a1c":"#e7efdd", line=dark?"#30363d":"#c9d4df";
+  let hex="";
+  // coarse-to-fine hex field: denser near a diagonal "coast"
+  for(let r=0;r<10;r++)for(let c=0;c<14;c++){
+    const x=c*26+(r%2?13:0)+8, y=r*22+8;
+    const d=Math.abs((x*0.5+y)-160); // distance from coast line
+    if(d<46 && Math.random()<0.55) continue; // leave gaps -> drawn as fine below
+    const sz=6.5;
+    hex+=`<polygon points="${hexPts(x,y,sz)}" fill="none" stroke="${line}" stroke-width="0.7" opacity="0.7"/>`;
+  }
+  // fine cells near coast
+  let fine="";
+  for(let i=0;i<140;i++){
+    const t=Math.random(); const x=70+t*150+(Math.random()-0.5)*30, y=20+t*150+(Math.random()-0.5)*30;
+    const sz=3.1; const sc=t; const col=scoreColor(sc);
+    fine+=`<polygon points="${hexPts(x,y,sz)}" fill="${col}" fill-opacity="0.55" stroke="${col}" stroke-width="0.5"/>`;
+  }
+  let grat="";
+  for(let i=1;i<8;i++){grat+=`<line x1="${i*46}" y1="0" x2="${i*46}" y2="248" stroke="${line}" stroke-width="0.5" opacity="0.5"/>`;
+    grat+=`<line x1="0" y1="${i*31}" x2="368" y2="${i*31}" stroke="${line}" stroke-width="0.5" opacity="0.5"/>`;}
+  return `<svg viewBox="0 0 368 248" width="100%" style="display:block">
+    <rect width="368" height="248" fill="${sea}"/>
+    <path d="M0,248 L0,150 Q120,150 200,40 L368,-10 L368,248 Z" fill="${land}"/>
+    ${grat}
+    <path d="M0,150 Q120,150 200,40 L368,-10" fill="none" stroke="var(--coast)" stroke-width="2" opacity="0.85"/>
+    <path d="M60,248 Q110,170 150,150 Q175,138 200,100" fill="none" stroke="var(--river)" stroke-width="1.6" opacity="0.8"/>
+    <path d="M150,248 Q170,200 200,180 Q220,165 240,120" fill="none" stroke="var(--river)" stroke-width="1.3" opacity="0.7"/>
+    ${hex}${fine}
+    <rect x="46" y="31" width="240" height="170" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="6 4" rx="4"/>
+    <text x="52" y="46" fill="var(--accent)" font-size="9" font-family="monospace">domain</text>
+  </svg>`;
+}
+function hexPts(cx,cy,r){let p=[];for(let i=0;i<6;i++){const a=Math.PI/180*(60*i-30);p.push((cx+r*Math.cos(a)).toFixed(1)+","+(cy+r*Math.sin(a)).toFixed(1));}return p.join(" ");}
+function scoreColor(t){const stops=[[44,127,184],[127,205,187],[254,196,79],[240,59,32]];const x=Math.min(.999,Math.max(0,t))*3;const i=Math.floor(x),f=x-i;const a=stops[i],b=stops[i+1];return `rgb(${a.map((v,k)=>Math.round(v+(b[k]-v)*f)).join(",")})`;}
+function drawMap(){document.getElementById("mapsvg").innerHTML=mapSVG();}
+
+/* ---------------- log ---------------- */
+function renderLog(){
+  const zh=lang===1;
+  const lines=[
+    `<span class="ac">▶ ${zh?"开始运行":"run started"}</span>  south_china_coupled`,
+    `  ${zh?"载入数据图层":"loading data layers"}… 6/8 ok, soil ${zh?"部分":"partial"}, LAI <span class="wn">${zh?"缺失":"missing"}</span>`,
+    `  ${zh?"计算细化评分":"scoring refinement"}… coastline+river+estuary`,
+    `  ${zh?"初始网格":"initial mesh"} spring niter=60 β=0.40`,
+    `  ${zh?"细化":"refining"} pass 1/3 … 184k cells`,
+    `  ${zh?"细化":"refining"} pass 3/3 … 412k cells`,
+    `  ${zh?"质量门禁":"quality gates"}… min∠ 31.4° <span class="ok">PASS</span>`,
+    `<span class="ok">✓ ${zh?"运行完成":"run finished"}</span>  412,388 cells · 11.2s`,
+  ];
+  document.getElementById("logbox").innerHTML=lines.join("\n");
+}
+
+/* ---------------- toggles ---------------- */
+document.getElementById("themeBtn").onclick=function(){
+  const r=document.documentElement, dark=r.getAttribute("data-theme")==="dark";
+  r.setAttribute("data-theme",dark?"light":"dark"); this.textContent=dark?"🌙":"☀️"; drawMap();
+};
+document.getElementById("modeSeg").onclick=e=>{const b=e.target.closest("[data-mode]");if(!b)return;
+  document.querySelectorAll("#modeSeg button").forEach(x=>x.classList.toggle("on",x===b));
+  document.body.classList.toggle("normal",b.dataset.mode==="normal");};
+document.getElementById("langSeg").onclick=e=>{const b=e.target.closest("[data-lang]");if(!b)return;
+  document.querySelectorAll("#langSeg button").forEach(x=>x.classList.toggle("on",x===b));
+  lang=b.dataset.lang==="zh"?1:0; applyI18n();};
+document.getElementById("liveTabs").onclick=e=>{const b=e.target.closest("[data-pane]");if(!b)return;
+  document.querySelectorAll("#liveTabs button").forEach(x=>x.classList.toggle("on",x===b));
+  document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane===b.dataset.pane));};
+document.getElementById("runBtn").onclick=()=>{
+  document.getElementById("rdot").classList.add("on");
+  document.getElementById("rtext").textContent=lang?"运行完成":"finished";
+  document.querySelectorAll("#liveTabs button").forEach(x=>x.classList.toggle("on",x.dataset.pane==="log"));
+  document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane==="log"));
+  go(6);
+};
+
+/* init */
+document.body.classList.add("normal");
+renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n();
+</script>

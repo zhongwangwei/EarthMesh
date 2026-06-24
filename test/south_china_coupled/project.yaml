@@ -1,0 +1,32 @@
+schema_version: 3.0.0
+metadata:
+  name: south_china_coupled
+  authors: []
+  description: ''
+domain: Global
+target:
+  kind: Ocean
+  cell: Tri
+  intent: CoastalOcean
+  resolution: !Nxp 15
+  model_format: Fvcom
+data_layers:
+- id: landcover
+  role: LandType
+  path: /Users/zhongwangwei/Desktop/Github/EarthMesh/input/landtype_igbp_update.nc
+  enabled: true
+- id: sea_slope
+  role: !Threshold SeaSlope
+  path: ''
+  enabled: false
+refinement:
+  enabled: true
+  max_passes: 3
+quality:
+  min_angle_deg: 25.0
+  on_violation: Warn
+expert:
+  nxp: null
+  openmp: null
+hydro_coast: null
+coupling: null

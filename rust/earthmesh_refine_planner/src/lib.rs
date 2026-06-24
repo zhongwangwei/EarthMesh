@@ -1,7 +1,7 @@
 //! Score-based / physics-aware refinement planning **skeleton** for EarthMesh v3.
 //!
-//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** No `earthmesh_cli` or
-//! `earthmesh_gui` code path constructs a `CellFeatureTable` or calls [`plan`] yet —
+//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** No `earthmesh_cli`
+//! code path constructs a `CellFeatureTable` or calls [`plan`] yet —
 //! this crate is exercised only by its own unit tests and does not affect any mesh the
 //! product produces today. Wiring (feature extraction + lowering to the engine) is
 //! future work; see `docs/reviews/v3_mesh_audit/fix_reports/R8_score_refinement.md`.

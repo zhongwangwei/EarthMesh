@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build clean test test-fast test-gui test-slow test-full fmt clippy clippy-full release-check check-method-c-neighbors
+.PHONY: all build clean test test-fast test-slow test-full fmt clippy clippy-full release-check check-method-c-neighbors
 
 all: build
 
@@ -36,12 +36,11 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_quality/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_planner/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
-	$(CARGO) fmt --manifest-path rust/earthmesh_gui/Cargo.toml --check
 
 # Lint gate: deny every clippy + rustc warning. Per-crate `[lints.clippy]` in each
 # Cargo.toml already allows the intentionally-kept patterns (Fortran-mirroring
-# signatures/loops in mesh+cli, idiomatic egui setup in gui); anything else fails CI.
-# `clippy` = no-netcdf crates (CI fast job); `clippy-full` adds cli+gui (needs NetCDF).
+# signatures/loops in mesh+cli); anything else fails CI.
+# `clippy` = no-netcdf crates (CI fast job); `clippy-full` adds cli (needs NetCDF).
 clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_core/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets -- -D warnings
@@ -51,7 +50,6 @@ clippy:
 
 clippy-full: clippy
 	$(CARGO) clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES) -- -D warnings
-	$(CARGO) clippy --manifest-path rust/earthmesh_gui/Cargo.toml --all-targets -- -D warnings
 
 # Fast regression gate: no NetCDF, no GUI — pure Rust crates only. Used by CI's
 # `fast` job and as the quick local loop. Builds in seconds (no netcdf-c/HDF5).
@@ -71,9 +69,6 @@ test:
 	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES)
 
-test-gui:
-	$(CARGO) test --manifest-path rust/earthmesh_gui/Cargo.toml --all-targets
-
 test-slow:
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_mask_restart $(CLI_FEATURES) -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test colm_coupling_csv_from_mesh $(CLI_FEATURES) mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf -- --ignored
@@ -82,13 +77,13 @@ test-slow:
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test refine_end_to_end_topology $(CLI_FEATURES) specified_bbox_refine_produces_consistent_closed_mpas -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_gridinit $(CLI_FEATURES) run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture -- --ignored
 
-test-full: check-method-c-neighbors test test-gui test-slow
+test-full: check-method-c-neighbors test test-slow
 
 # Release fast gate: format + no-netcdf crates. Run before tagging a release; the
 # full gate adds `make test test-gui test-slow` (needs NetCDF) on top.
 release-check: fmt test-fast
 	@echo 'Release fast gate PASSED: fmt clean + core/geometry/mesh/quality/refine_planner green.'
-	@echo 'Full gate (needs NetCDF): make test test-gui test-slow'
+	@echo 'Full gate (needs NetCDF): make test test-slow'
 
 check-method-c-neighbors:
 	bash rust/earthmesh_mesh/scripts/check-method-c-neighbors.sh

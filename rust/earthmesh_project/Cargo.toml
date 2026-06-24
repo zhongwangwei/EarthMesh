@@ -1,0 +1,17 @@
+[package]
+name = "earthmesh_project"
+version = "0.1.0"
+edition = "2021"
+description = "EarthMesh v3 project schema (intent layer): serde ProjectConfig that lowers to the engine's EarthmeshConfig/RefineConfig"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "earthmesh_project"
+path = "src/lib.rs"
+
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"

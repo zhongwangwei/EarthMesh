@@ -1,0 +1,31 @@
+[package]
+name = "earthmesh_studio"
+version = "0.1.0"
+edition = "2021"
+description = "EarthMesh Studio — Tauri shell (web frontend + Rust backend over earthmesh_project)"
+license = "MIT OR Apache-2.0"
+
+# The Tauri desktop binary links against this library crate. `main.rs` is a thin
+# launcher that calls `earthmesh_studio_lib::run()`; all command logic lives in
+# `lib.rs` so the same code can serve the (future) mobile entry point.
+[lib]
+name = "earthmesh_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Intent layer only — light, hdf5-free. Actual mesh runs shell out to the
+# prebuilt `mkgrd.x --project` so the GUI process never links netcdf/hdf5.
+earthmesh_project = { path = "../../rust/earthmesh_project" }
+
+# Own workspace root: keep this app OUT of the engine workspace so the existing
+# `cargo build` / `cargo test -p earthmesh_*` flow never pulls Tauri's system
+# deps (webkit2gtk, etc.). The earthmesh_project path dep resolves across the
+# boundary fine. Run all Tauri commands from this directory (src-tauri/).
+[workspace]

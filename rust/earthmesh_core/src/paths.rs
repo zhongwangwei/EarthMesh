@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 /// Cross-platform home directory: `HOME` on Unix, `USERPROFILE` on Windows.
 ///
-/// The GUI previously read only `HOME` (`earthmesh_gui` runtime workdir), which is
-/// absent on Windows; callers should prefer this helper.
+/// The codebase previously read only `HOME`, which is absent on Windows; callers
+/// should prefer this helper.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())

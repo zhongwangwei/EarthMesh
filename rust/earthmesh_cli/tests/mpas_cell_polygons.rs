@@ -24,6 +24,7 @@ fn one_square_cell_to_polygon_ring() {
         None,
         None,
         None,
+        None,
     );
     assert!(json.contains("\"cell_id\": \"1\""));
     assert!(json.contains("\"cell_index\": 0"));
@@ -71,10 +72,57 @@ fn bbox_filters_cells_by_center() {
         &n_edges_on_cell,
         &vertices_on_cell,
         None,
+        None,
         Some([-1.0, -1.0, 2.0, 2.0]), // W S E N around the first cell only
         None,
     );
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
     assert!(json.contains("\"cell_index\": 0"));
     assert!(!json.contains("\"cell_index\": 1"));
+}
+
+#[test]
+fn preserves_mpas_index_to_cell_id_when_present() {
+    let d2r = |d: f64| d.to_radians();
+    let lon_cell = [d2r(0.5), d2r(50.5)];
+    let lat_cell = [d2r(0.5), d2r(0.5)];
+    let lon_vertex = [
+        d2r(0.0),
+        d2r(1.0),
+        d2r(1.0),
+        d2r(0.0),
+        d2r(50.0),
+        d2r(51.0),
+        d2r(51.0),
+        d2r(50.0),
+    ];
+    let lat_vertex = [
+        d2r(0.0),
+        d2r(0.0),
+        d2r(1.0),
+        d2r(1.0),
+        d2r(0.0),
+        d2r(0.0),
+        d2r(1.0),
+        d2r(1.0),
+    ];
+    let n_edges_on_cell = [4i32, 4];
+    let vertices_on_cell = [1i32, 2, 3, 4, 5, 6, 7, 8];
+    let cell_ids = [101i32, 202];
+    let json = mpas_cell_polygons_geojson(
+        &lon_cell,
+        &lat_cell,
+        &lon_vertex,
+        &lat_vertex,
+        &n_edges_on_cell,
+        &vertices_on_cell,
+        Some(&cell_ids),
+        None,
+        Some([-1.0, -1.0, 2.0, 2.0]),
+        None,
+    );
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"cell_id\": \"101\""), "{json}");
+    assert!(!json.contains("\"cell_id\": \"1\""), "{json}");
+    assert!(!json.contains("\"cell_id\": \"202\""), "{json}");
 }

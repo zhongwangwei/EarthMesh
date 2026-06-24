@@ -9,6 +9,7 @@
 /cases/ATMOS_hex_N64_refine2_global_LOM67_251027
 /cases/
 *.nc
+*.nc4
 
 # Rust build outputs
 target/
@@ -21,3 +22,6 @@ target/
 
 # Per-run reproducibility manifest written to the working directory
 run_manifest.json
+
+# Local smoke/demo run outputs
+test/**/output/

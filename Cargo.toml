@@ -11,5 +11,5 @@ members = [
     "rust/earthmesh_quality",
     "rust/earthmesh_refine_planner",
     "rust/earthmesh_cli",
-    "rust/earthmesh_gui",
+    "rust/earthmesh_project",
 ]

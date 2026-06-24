@@ -4,6 +4,16 @@
 //! (shapely-free). Pure geometry (no NetCDF data).
 
 use earthmesh_cli::{colm_coupling_rows_from_intersections, write_earthmesh_intersection_geojson};
+use flate2::{write::GzEncoder, Compression};
+use std::io::Write;
+use std::path::Path;
+
+fn write_gzip(path: &Path, content: &str) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut encoder = GzEncoder::new(file, Compression::default());
+    encoder.write_all(content.as_bytes()).unwrap();
+    encoder.finish().unwrap();
+}
 
 #[test]
 fn cell_river_overlap_fraction_and_coupling_chain() {
@@ -131,6 +141,41 @@ fn domain_bbox_clips_corridors() {
         json.contains("\"river_fraction\": 0.25"),
         "domain-clipped fraction:\n{json}"
     );
+    assert!(
+        json.contains("\"domain_clip_applied\": true"),
+        "domain clip metadata:\n{json}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reads_gzipped_geojson_inputs() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_gz_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cells = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}"#;
+    let corridors = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}]}"#;
+    write_gzip(&dir.join("cells.geojson.gz"), cells);
+    write_gzip(&dir.join("corridors.geojson.gz"), corridors);
+
+    let out = dir.join("x.geojson");
+    let n = write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson.gz"),
+        dir.join("corridors.geojson.gz"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        None,
+    )
+    .expect("gzipped intersections");
+    assert_eq!(n, 1);
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(json.contains("\"river_fraction\": 0.5"), "{json}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

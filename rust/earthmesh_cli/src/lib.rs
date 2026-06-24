@@ -5,6 +5,8 @@ use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
+use flate2::read::GzDecoder;
+
 use earthmesh_core::{
     EarthmeshConfig, EarthmeshRuntimeState, GridMemory, IjTabs, MaskCounterState, MaskOperation,
     MkgrdWorkspacePlan, RefineConfig, SourceGridState,
@@ -1020,16 +1022,12 @@ pub fn write_merit_hydro_mask_geojson_layers(
     })
 }
 
-/// Default hydro class-to-refine-degree mapping used by the Python v3 prototype.
+/// Default hydro class-to-refine-degree mapping used by the migrated hydro workflow.
 pub fn default_hydro_close_class_refine() -> BTreeMap<String, usize> {
     BTreeMap::from([("R2".to_string(), 1_usize), ("R3".to_string(), 2_usize)])
 }
 
-/// Write the Python-compatible close-refinement recipe consumed by the hydro mesh tools.
-///
-/// This migrates the downstream control-surface adapter from
-/// `util.hydro_mesh.refinement_recipe` into Rust without yet replacing the
-/// close-mask polygon/ring generator itself.
+/// Write the close-refinement recipe consumed by the hydro mesh tools.
 pub fn write_hydro_close_refinement_recipe_json(
     output_json: impl AsRef<Path>,
     options: HydroCloseRefinementRecipeOptions,
@@ -1065,9 +1063,8 @@ pub fn write_hydro_close_refinement_recipe_json(
     }
 
     let mut close_mask_command = vec![
-        "python3".to_string(),
-        "-m".to_string(),
-        "util.hydro_mesh.refine_mask_export".to_string(),
+        "earthmesh_cli".to_string(),
+        "--hydro-close-mask-nmls".to_string(),
         options.input_geojson.display().to_string(),
         options.output_prefix.display().to_string(),
     ];
@@ -1145,10 +1142,7 @@ pub fn write_hydro_close_refinement_recipe_json(
 
 /// Write EarthMesh close-mask `.nml` files from hydro/coast GeoJSON polygons.
 ///
-/// This is the Rust-native core of `util.hydro_mesh.refine_mask_export` for
-/// polygon and multipolygon exterior rings. Optional Shapely-style
-/// buffer/simplification remains a higher-level Python feature until a Rust
-/// geometry dependency is selected deliberately.
+/// This is the Rust-native core for polygon and multipolygon exterior rings.
 pub fn write_hydro_close_mask_nmls(
     input_geojson: impl AsRef<Path>,
     output_prefix: impl AsRef<Path>,
@@ -1163,7 +1157,7 @@ pub fn read_hydro_close_mask_specs(
     input_geojson: impl AsRef<Path>,
     options: HydroCloseMaskNmlOptions,
 ) -> io::Result<Vec<HydroCloseMaskSpec>> {
-    let text = fs::read_to_string(input_geojson.as_ref())?;
+    let text = read_text_maybe_gzip(input_geojson.as_ref())?;
     geojson_text_to_hydro_close_mask_specs(&text, &options)
 }
 
@@ -16900,6 +16894,28 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
             )
             .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource);
         }
+        // Pure regional CLIP (no refinement): a non-global mask domain with a real
+        // source file still subsets the base mesh. The refined regional case is
+        // already handled by the OLAM branch above (refine=.true.); here refine is
+        // off, so generate the global base grid and keep only the in-domain cells.
+        let regional_clip_source = !config.mask_restart && !config.mask_domain_global && {
+            let prefix = config.mask_domain_fprefix.trim();
+            !prefix.is_empty() && prefix != "none" && prefix != "/tmp"
+        };
+        // Land/ocean meshes with a landcover file carve to land-only / ocean-only
+        // cells even when global (no geometric clip). Refined land/ocean runs take
+        // the OLAM branch above (which masks there); this is the refine-off path.
+        let landtype_carve = !config.mask_restart
+            && matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh")
+            && {
+                let lt = config.landtype_file.trim();
+                !lt.is_empty() && lt != "none" && lt != "/tmp"
+            };
+        if regional_clip_source || landtype_carve {
+            return run_mkgrd_regional_clip_base_namelist(namelist_source, workdir, max_tris)
+                .map(MkgrdTopLevelDispatchRunReport::Gridinit)
+                .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
+        }
         return run_mkgrd_top_level_namelist(
             namelist_source,
             workdir,
@@ -17136,6 +17152,121 @@ pub fn run_mkgrd_gridinit_global_namelist(
         workspace_mask,
         gridfile,
     })
+}
+
+/// Derive `gridnum_perdegree` from a landcover file's own longitude dimension.
+///
+/// The landcover carve samples the landtype grid, and the sampler requires the
+/// passed `gridnum_perdegree` to equal `lon_dim / 360`. `NL%gridnum_perdegree` is
+/// a separate source-grid knob that need not match the landcover file's
+/// resolution (e.g. an IGBP grid at 240/° vs a namelist default of 120), so read
+/// the file's resolution instead of asserting the two are equal.
+fn landtype_gridnum_perdegree(landtype_file: &Path) -> io::Result<usize> {
+    let file = netcdf::open(landtype_file).map_err(netcdf_to_io_error)?;
+    let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
+    if lon_dim == 0 || lon_dim % 360 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "landtype_file longitude dimension {lon_dim} is not a positive multiple of 360"
+            ),
+        ));
+    }
+    Ok(lon_dim / 360)
+}
+
+/// From-scratch regional **clip** with no refinement.
+///
+/// A `mask_domain_global=.false.` run names a containment region
+/// (`mask_domain_type` + `mask_domain_fprefix`). The OLAM refine path only
+/// reaches the clip step when a refinement region is *also* active, but a plain
+/// regional grid should subset to its domain regardless. This generates the
+/// global base mesh ([`run_mkgrd_gridinit_global_namelist`]) and then keeps only
+/// the in-domain cells via the shared `write_regional_gridfile` writer — the
+/// exact clip the OLAM path performs, minus any spawn/refine. It works for every
+/// mesh type. The returned report's `gridfile` is rewritten to the clipped
+/// result, so existing `gridfile=` consumers (CLI print, GUI) pick up the subset
+/// mesh with no extra plumbing.
+pub fn run_mkgrd_regional_clip_base_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+) -> io::Result<MkgrdGridinitRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let region = read_olam_domain_region(&config)?; // None ⇒ global (no geometric clip)
+    let mesh_type = config.mesh_type.trim().to_string();
+    let landtype = config.landtype_file.trim().to_string();
+    let carve_landtype = matches!(mesh_type.as_str(), "landmesh" | "oceanmesh")
+        && !landtype.is_empty()
+        && landtype != "none"
+        && landtype != "/tmp"
+        && Path::new(&landtype).is_file();
+    if region.is_none() && !carve_landtype {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "base clip/carve needs a non-global mask domain (mask_domain_global=.false. + \
+             mask_domain_fprefix) or a land/ocean landcover file (landtype_file)",
+        ));
+    }
+
+    let mut gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let file_dir = PathBuf::from(config.file_dir());
+    let mode_grid = config.mode_grid.trim();
+
+    // 1) Optional geometric CLIP to the domain (regional bbox/circle/close): keep
+    // only the in-region cells. `mesh` is read into memory, so overwriting its
+    // result file with the subset is safe.
+    if let Some(region) = &region {
+        let mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
+        let raw_path = file_dir
+            .join("tmpfile")
+            .join(format!("gridfile_NXP{nxp:04}_clip_raw_{mode_grid}.nc4"));
+        if let Some(parent) = raw_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let output_path = gridinit.gridfile.output.clone();
+        let (_, clipped) = write_olam_mesh_with_optional_domain(
+            &mesh,
+            &raw_path,
+            &output_path,
+            Some(region),
+            mode_grid,
+        )?;
+        gridinit.gridfile = clipped;
+    }
+
+    // 2) Optional landcover CARVE: keep land cells (landmesh) / ocean cells
+    // (oceanmesh) by sampling each cell centre against the landtype file — the
+    // same land/sea masking the legacy egui did. Runs on the current result
+    // gridfile (post-clip when regional). Kept==0 leaves the mesh untouched.
+    if carve_landtype {
+        // Sample resolution must equal the landcover file's own grid, NOT
+        // NL%gridnum_perdegree (which need not match it).
+        let gpd = landtype_gridnum_perdegree(Path::new(&landtype))?;
+        if gpd > 0 {
+            let masked = file_dir
+                .join("result")
+                .join(format!("gridfile_NXP{nxp:04}_{mode_grid}_{mesh_type}.nc4"));
+            let kept = write_landtype_masked_gridfile(
+                &gridinit.gridfile.output,
+                &masked,
+                &landtype,
+                gpd,
+                mode_grid,
+                &mesh_type,
+            )?;
+            if kept > 0 {
+                gridinit.gridfile = unstructured_mesh_write_report_from_file(&masked)?;
+            }
+        }
+    }
+    Ok(gridinit)
 }
 
 /// Read the landtype source and construct one-based source-grid arrays like
@@ -18805,12 +18936,12 @@ pub fn quality_input_from_gridfile(
         .map(|(&lon, &lat)| Point::new(lon, lat))
         .collect();
     let wn = vertices.len();
+    let w_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.w_lon, &mesh.w_lat);
     let mut cells = Vec::new();
     for tri in mesh.m_to_w.chunks_exact(3) {
         let idx: Vec<usize> = tri
             .iter()
-            .filter(|&&v| v >= 1 && (v as usize) <= wn)
-            .map(|&v| (v as usize) - 1)
+            .filter_map(|&v| mesh_row_for_fortran_id(v, wn, w_has_two_placeholders))
             .collect();
         // Require 3 distinct W vertices; OLAM gridfiles carry sentinel/dummy M cells
         // (1-based arrays) whose triplets are degenerate — skip them.
@@ -18827,6 +18958,108 @@ pub fn quality_input_from_gridfile(
     // neighbor-based check is a no-op). Two cells sharing an edge (2 vertices) are
     // neighbors; reciprocal by construction. Non-manifold edges (>2 cells) are left
     // unlinked — the report flags duplicate edges separately.
+    let mut edge_to_cells: std::collections::HashMap<(usize, usize), Vec<usize>> =
+        std::collections::HashMap::new();
+    for (ci, cell) in cells.iter().enumerate() {
+        let v = &cell.vertices;
+        for k in 0..v.len() {
+            let (a, b) = (v[k], v[(k + 1) % v.len()]);
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_to_cells.entry(key).or_default().push(ci);
+        }
+    }
+    for shared in edge_to_cells.values() {
+        if shared.len() == 2 {
+            let (x, y) = (shared[0], shared[1]);
+            cells[x].neighbors.push(y);
+            cells[y].neighbors.push(x);
+        }
+    }
+    for cell in &mut cells {
+        cell.neighbors.sort_unstable();
+        cell.neighbors.dedup();
+    }
+    QualityMeshInput { vertices, cells }
+}
+
+/// Build quality input from the HEXAGON (W-cell) view: each W vertex's cell is the
+/// ring of triangle centres (M) incident to it, ordered by azimuth around W.
+///
+/// This is the correct cell for hex / atmosphere (MPAS) meshes —
+/// [`quality_input_from_gridfile`] measures the dual TRIANGLES (≈60° corner
+/// angles) instead of the hexagons (≈120°), which reads as a wrong "min angle".
+/// The ring is rebuilt from `itab_m%iw` (the reindex-stable triangle map), so a
+/// domain-clipped gridfile is measured correctly even when the stored hexagon
+/// adjacency (`itab_w%im`) was not rebuilt by the clip.
+pub fn quality_input_from_gridfile_hex(
+    mesh: &GridfileMeshPoints,
+) -> earthmesh_quality::QualityMeshInput {
+    use earthmesh_geometry::Point;
+    use earthmesh_quality::{QualityCell, QualityMeshInput};
+    // Hex corners are the M (triangle-centre) points; hex centres are the W vertices.
+    let vertices: Vec<Point> = mesh
+        .m_lon
+        .iter()
+        .zip(&mesh.m_lat)
+        .map(|(&lon, &lat)| Point::new(lon, lat))
+        .collect();
+    let mn = vertices.len();
+    let wn = mesh.w_lon.len();
+    let w_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.w_lon, &mesh.w_lat);
+    // Invert the triangle map: for each W vertex, the M triangles incident to it.
+    let mut incident: Vec<Vec<usize>> = vec![Vec::new(); wn];
+    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+        if mi >= mn {
+            break;
+        }
+        for &v in tri {
+            if let Some(w_row) = mesh_row_for_fortran_id(v, wn, w_has_two_placeholders) {
+                incident[w_row].push(mi);
+            }
+        }
+    }
+    let mut cells = Vec::new();
+    for wi in 0..wn {
+        let clon = mesh.w_lon[wi];
+        let clat = mesh.w_lat[wi];
+        if clon == 0.0 && clat == 0.0 {
+            continue; // OLAM (0,0) sentinel vertex
+        }
+        let corners: Vec<usize> = incident[wi]
+            .iter()
+            .copied()
+            .filter(|&mi| mi < mn && !(mesh.m_lon[mi] == 0.0 && mesh.m_lat[mi] == 0.0))
+            .collect();
+        if corners.len() < 3 {
+            continue;
+        }
+        // Skip antimeridian / polar cells whose corners span >180° of longitude —
+        // a planar measure reads them as wild slivers.
+        let (lo, hi) = corners.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &mi| {
+            (lo.min(mesh.m_lon[mi]), hi.max(mesh.m_lon[mi]))
+        });
+        if hi - lo > 180.0 {
+            continue;
+        }
+        // Order corners by CONVEX HULL (a Voronoi cell is convex) — the SAME order
+        // the map renderer uses, so quality and drawing agree. Azimuth-sorting
+        // around an off-centre site can self-cross and fabricate tiny ~25° corner
+        // angles that aren't really in the mesh.
+        let pts: Vec<(f64, f64, usize)> = corners
+            .iter()
+            .map(|&mi| (mesh.m_lon[mi], mesh.m_lat[mi], mi))
+            .collect();
+        let ordered = convex_hull_order_indices(pts);
+        if ordered.len() < 3 {
+            continue;
+        }
+        cells.push(QualityCell {
+            vertices: ordered,
+            refine_level: None,
+            neighbors: Vec::new(),
+        });
+    }
+    // Shared-edge adjacency (same derivation as the triangle path).
     let mut edge_to_cells: std::collections::HashMap<(usize, usize), Vec<usize>> =
         std::collections::HashMap::new();
     for (ci, cell) in cells.iter().enumerate() {
@@ -29142,7 +29375,7 @@ pub fn write_colm_coupling_csv_from_intersections(
     output_csv: impl AsRef<Path>,
     min_fraction: f64,
 ) -> io::Result<usize> {
-    let text = fs::read_to_string(input_geojson.as_ref())?;
+    let text = read_text_maybe_gzip(input_geojson.as_ref())?;
     let rows = colm_coupling_rows_from_intersections(&text, min_fraction)?;
     let mut out = String::new();
     out.push_str(&COLM_COUPLING_FIELDS.join(","));
@@ -29160,6 +29393,17 @@ pub fn write_colm_coupling_csv_from_intersections(
 
 /// Unit-sphere radius used by `util/hydro_mesh/earthmesh_intersection.py`.
 const HYDRO_EARTH_RADIUS_M: f64 = 6_371_000.0;
+
+fn read_text_maybe_gzip(path: impl AsRef<Path>) -> io::Result<String> {
+    let path = path.as_ref();
+    let bytes = fs::read(path)?;
+    if path.extension().and_then(|s| s.to_str()) == Some("gz") {
+        let mut text = String::new();
+        GzDecoder::new(bytes.as_slice()).read_to_string(&mut text)?;
+        return Ok(text);
+    }
+    String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
 
 fn round12(value: f64) -> f64 {
     (value * 1e12).round() / 1e12
@@ -29499,14 +29743,14 @@ pub fn write_refinement_eval_json(
     log_path: Option<&Path>,
     unit_sphere_area: bool,
 ) -> io::Result<()> {
-    let bg_root = JsonParser::new(&fs::read_to_string(background_geojson.as_ref())?).parse()?;
+    let bg_root = JsonParser::new(&read_text_maybe_gzip(background_geojson.as_ref())?).parse()?;
     let river_root =
-        JsonParser::new(&fs::read_to_string(intersections_geojson.as_ref())?).parse()?;
+        JsonParser::new(&read_text_maybe_gzip(intersections_geojson.as_ref())?).parse()?;
     let background = summarize_background_cells(&bg_root, unit_sphere_area);
     let river = summarize_river_intersections(&river_root);
     let coast = match coast_intersections_geojson {
         Some(p) => Some(summarize_coast_intersections(
-            &JsonParser::new(&fs::read_to_string(p)?).parse()?,
+            &JsonParser::new(&read_text_maybe_gzip(p)?).parse()?,
         )),
         None => None,
     };
@@ -30055,6 +30299,7 @@ pub fn mpas_cell_polygons_geojson(
     lat_vertex: &[f64],
     n_edges_on_cell: &[i32],
     vertices_on_cell: &[i32],
+    cell_ids: Option<&[i32]>,
     area_cell: Option<&[f64]>,
     bbox: Option<[f64; 4]>,
     max_cells: Option<usize>,
@@ -30090,13 +30335,14 @@ pub fn mpas_cell_polygons_geojson(
             .map(|(x, y)| format!("[{x}, {y}]"))
             .collect::<Vec<_>>()
             .join(", ");
+        let cell_id = cell_ids
+            .and_then(|ids| ids.get(ci))
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| (ci + 1).to_string());
         let mut props = format!(
             "\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
              \"center_lon\": {}, \"center_lat\": {}",
-            ci + 1,
-            ci,
-            clon,
-            clat
+            cell_id, ci, clon, clat
         );
         if let Some(area) = area_cell {
             if let Some(a) = area.get(ci) {
@@ -30122,6 +30368,372 @@ pub fn mpas_cell_polygons_geojson(
     )
 }
 
+/// Which connectivity view to render from a gridfile: `Tri` builds one triangle per
+/// M cell (`itab_m%iw`); `Hex` builds one polygon per W cell from its surrounding M
+/// corners (`itab_w%im`). FVCOM/triangle meshes use `Tri`, MPAS/hex meshes use `Hex`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GridfileCellKind {
+    Tri,
+    Hex,
+}
+
+/// Shift each ring vertex's longitude into a contiguous window around the first
+/// vertex, so a cell straddling the ±180° seam draws next to the seam instead of
+/// as a band stretched across the whole map. Vertices may end up outside
+/// [-180, 180]; web maps wrap them correctly.
+fn unwrap_ring_lon(ring: &mut [(f64, f64)], ref_lon: f64) {
+    for p in ring.iter_mut() {
+        while p.0 - ref_lon > 180.0 {
+            p.0 -= 360.0;
+        }
+        while p.0 - ref_lon < -180.0 {
+            p.0 += 360.0;
+        }
+    }
+}
+
+/// True if a cell is too big to be a real mesh cell — any corner farther than
+/// `max_deg` great-circle from the centre, or any edge longer than `max_deg`.
+///
+/// This is the legacy egui preview filter (`MAX_PREVIEW_CELL_DISTANCE_DEG = 30°`).
+/// A valid quasi-uniform cell is small, so an oversized one is a dateline-wrap /
+/// pole / bad-connectivity artifact. Using 3D angular distance (not a planar
+/// longitude span) catches the 30–180° "long edge" cells that streak across the
+/// map — which a `hi - lo > 180` span test misses, producing the criss-cross web.
+fn preview_cell_too_large(corners: &[(f64, f64)], clon: f64, clat: f64, max_deg: f64) -> bool {
+    fn gc_deg(a: (f64, f64), b: (f64, f64)) -> f64 {
+        let xyz = |lon: f64, lat: f64| {
+            let (lo, la) = (lon.to_radians(), lat.to_radians());
+            [la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin()]
+        };
+        let (va, vb) = (xyz(a.0, a.1), xyz(b.0, b.1));
+        (va[0] * vb[0] + va[1] * vb[1] + va[2] * vb[2])
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
+    }
+    if corners.iter().any(|&c| gc_deg((clon, clat), c) > max_deg) {
+        return true;
+    }
+    let n = corners.len();
+    (0..n).any(|i| gc_deg(corners[i], corners[(i + 1) % n]) > max_deg)
+}
+
+/// Convex hull (Andrew's monotone chain) of lon/lat points, CCW, without the
+/// closing duplicate. Used to order a hex cell's corners into a SIMPLE polygon.
+/// A Voronoi cell is convex, so interior cells are reproduced exactly; a boundary
+/// cell that lost neighbours to a domain clip yields a clean convex outline rather
+/// than the self-intersecting "bow-tie" that azimuth-sorting around an off-centre
+/// site produces. Degenerate (<3 distinct / collinear) inputs are returned as-is.
+fn convex_hull_ccw(mut pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    pts.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
+    if pts.len() < 3 {
+        return pts;
+    }
+    let cross = |o: &(f64, f64), a: &(f64, f64), b: &(f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut lower: Vec<(f64, f64)> = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], &p) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<(f64, f64)> = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], &p) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// Convex hull of indexed points `(lon, lat, index)`, returning the boundary
+/// INDICES in CCW order. Used to order a hex cell's corners for quality angles the
+/// same way the renderer orders them for drawing, so both agree and neither
+/// fabricates a self-crossing sliver.
+fn convex_hull_order_indices(mut pts: Vec<(f64, f64, usize)>) -> Vec<usize> {
+    pts.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
+    if pts.len() < 3 {
+        return pts.iter().map(|p| p.2).collect();
+    }
+    let cross = |o: &(f64, f64, usize), a: &(f64, f64, usize), b: &(f64, f64, usize)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut lower: Vec<(f64, f64, usize)> = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], &p) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<(f64, f64, usize)> = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], &p) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower.iter().map(|p| p.2).collect()
+}
+
+/// Build cell-polygon GeoJSON straight from an EarthMesh gridfile's lon/lat (degrees)
+/// and itab connectivity, so both triangle and hexagon meshes can be drawn on a map
+/// without an MPAS export. Output format matches [`mpas_cell_polygons_geojson`].
+pub fn gridfile_cell_polygons_geojson(
+    mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> String {
+    // Web maps (Leaflet) want lon in [-180, 180]; gridfiles can store 0..360.
+    let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
+    let m_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.m_lon, &mesh.m_lat);
+    let w_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.w_lon, &mesh.w_lat);
+    let in_bbox = |clon: f64, clat: f64| match bbox {
+        Some(b) => b[0] <= clon && clon <= b[2] && b[1] <= clat && clat <= b[3],
+        None => true,
+    };
+    let make_feature = |idx: usize, ring: &[(f64, f64)], clon: f64, clat: f64| -> String {
+        let coords = ring
+            .iter()
+            .map(|(x, y)| format!("[{x}, {y}]"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": [[{}]]}}, \
+             \"properties\": {{\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
+             \"center_lon\": {}, \"center_lat\": {}}}}}",
+            coords,
+            idx + 1,
+            idx,
+            clon,
+            clat
+        )
+    };
+
+    let mut features: Vec<String> = Vec::new();
+    match kind {
+        GridfileCellKind::Tri => {
+            let wn = mesh.w_lon.len();
+            for (ci, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+                let idx: Vec<usize> = tri
+                    .iter()
+                    .filter_map(|&v| mesh_row_for_fortran_id(v, wn, w_has_two_placeholders))
+                    .collect();
+                // Skip degenerate sentinel triangles (OLAM 1-based dummy M cells).
+                if idx.len() != 3 || idx[0] == idx[1] || idx[1] == idx[2] || idx[0] == idx[2] {
+                    continue;
+                }
+                let (clon, clat) = if ci < mesh.m_lon.len() {
+                    (norm_lon(mesh.m_lon[ci]), mesh.m_lat[ci])
+                } else {
+                    let cx = idx.iter().map(|&i| norm_lon(mesh.w_lon[i])).sum::<f64>() / 3.0;
+                    let cy = idx.iter().map(|&i| mesh.w_lat[i]).sum::<f64>() / 3.0;
+                    (cx, cy)
+                };
+                if !in_bbox(clon, clat) {
+                    continue;
+                }
+                let mut ring: Vec<(f64, f64)> = idx
+                    .iter()
+                    .map(|&i| (norm_lon(mesh.w_lon[i]), mesh.w_lat[i]))
+                    .collect();
+                // OLAM pads index 1.. with a (0,0) dummy point; drop any cell that
+                // touches it so the mesh isn't drawn with spikes to (0,0).
+                if (clon == 0.0 && clat == 0.0) || ring.iter().any(|&(x, y)| x == 0.0 && y == 0.0) {
+                    continue;
+                }
+                // Drop oversized cells (spurious long edges) by 3D angular distance,
+                // like the legacy egui preview — the planar span test below misses
+                // these, so they'd streak across the map.
+                if preview_cell_too_large(&ring, clon, clat, 30.0) {
+                    continue;
+                }
+                // Skip polar cells: Web Mercator stretches anything past ±80° into a
+                // huge streak (egui MESH_PREVIEW_MAX_LAT).
+                if ring.iter().any(|&(_, lat)| lat.abs() > 80.0) {
+                    continue;
+                }
+                // Unwrap longitudes around the cell CENTRE so a triangle straddling
+                // the ±180° seam draws contiguously, and neighbouring triangles
+                // unwrap into the same frame (no ±360° displaced slivers).
+                unwrap_ring_lon(&mut ring, clon);
+                // A real quasi-uniform cell stays compact; skip stretched / seam-
+                // wrapping ones (egui used a 45° unwrapped span cap).
+                let (lo, hi) = ring.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &(x, _)| {
+                    (lo.min(x), hi.max(x))
+                });
+                if hi - lo > 45.0 {
+                    continue;
+                }
+                ring.push(ring[0]); // close
+                features.push(make_feature(ci, &ring, clon, clat));
+                if max_cells.is_some_and(|mc| features.len() >= mc) {
+                    break;
+                }
+            }
+        }
+        GridfileCellKind::Hex => {
+            let mn = mesh.m_lon.len().min(mesh.m_lat.len());
+            let wn = mesh.w_lon.len();
+            // Reconstruct each W cell's corners from the TRIANGLE connectivity
+            // (itab_m%iw / m_to_w): the Voronoi cell around vertex W is bounded by
+            // the centres of the triangles incident to W. m_to_w is the fundamental
+            // mesh data (the Tri view relies on it), so it survives a domain clip's
+            // re-indexing intact — whereas the *derived* hexagon adjacency
+            // (itab_w%im / w_to_m) is not rebuilt by the mask-postproc finaliser,
+            // which is what dragged clipped cells into long stretched slivers. Fall
+            // back to the stored w_to_m only when m_to_w is absent (hand-built
+            // unit-test meshes).
+            let tris = mesh.m_to_w.len() / 3;
+            let use_inverse = tris > 0;
+            let mut incident: Vec<Vec<usize>> = Vec::new();
+            if use_inverse {
+                incident = vec![Vec::new(); wn];
+                for mi in 0..tris {
+                    for k in 0..3 {
+                        let w1 = mesh.m_to_w[mi * 3 + k];
+                        if let Some(w_row) = mesh_row_for_fortran_id(w1, wn, w_has_two_placeholders)
+                        {
+                            incident[w_row].push(mi);
+                        }
+                    }
+                }
+            }
+            let width = mesh.w_to_m_width;
+            if use_inverse || width > 0 {
+                for wi in 0..wn {
+                    let clon = norm_lon(mesh.w_lon[wi]);
+                    let clat = mesh.w_lat[wi];
+                    // OLAM pads index 1.. with a (0,0) dummy point; skip the dummy cell.
+                    if !in_bbox(clon, clat) || (clon == 0.0 && clat == 0.0) {
+                        continue;
+                    }
+                    let mut corners: Vec<(f64, f64)> = Vec::new();
+                    if use_inverse {
+                        for &mi in &incident[wi] {
+                            if mi >= mn {
+                                continue;
+                            }
+                            let (x, y) = (norm_lon(mesh.m_lon[mi]), mesh.m_lat[mi]);
+                            if x == 0.0 && y == 0.0 {
+                                continue; // drop the (0,0) sentinel corner
+                            }
+                            corners.push((x, y));
+                        }
+                    } else {
+                        let nv =
+                            (mesh.n_w.get(wi).copied().unwrap_or(0).max(0) as usize).min(width);
+                        for k in 0..nv {
+                            let mid = mesh.w_to_m[wi * width + k];
+                            if let Some(m_row) =
+                                mesh_row_for_fortran_id(mid, mn, m_has_two_placeholders)
+                            {
+                                let (x, y) = (norm_lon(mesh.m_lon[m_row]), mesh.m_lat[m_row]);
+                                if x == 0.0 && y == 0.0 {
+                                    continue; // drop the (0,0) sentinel corner
+                                }
+                                corners.push((x, y));
+                            }
+                        }
+                    }
+                    if corners.len() < 3 {
+                        continue;
+                    }
+                    // Drop oversized cells (spurious long edges) by 3D angular
+                    // distance, like the legacy egui preview.
+                    if preview_cell_too_large(&corners, clon, clat, 30.0) {
+                        continue;
+                    }
+                    // Skip polar cells (Web Mercator stretches past ±80° into streaks).
+                    if corners.iter().any(|&(_, lat)| lat.abs() > 80.0) {
+                        continue;
+                    }
+                    // Unwrap longitudes around the cell CENTRE so a seam-straddling
+                    // cell draws contiguously and neighbours share one frame.
+                    unwrap_ring_lon(&mut corners, clon);
+                    // Skip stretched / seam-wrapping cells (egui used a 45° span cap).
+                    let (lo, hi) = corners
+                        .iter()
+                        .fold((f64::MAX, f64::MIN), |(lo, hi), &(x, _)| {
+                            (lo.min(x), hi.max(x))
+                        });
+                    if hi - lo > 45.0 {
+                        continue;
+                    }
+                    // Order corners into a SIMPLE polygon via convex hull. Voronoi
+                    // cells are convex, so this reproduces interior cells exactly and
+                    // tidies clipped boundary cells (no self-crossing "bow-tie").
+                    let mut ring = convex_hull_ccw(corners);
+                    if ring.len() < 3 {
+                        continue;
+                    }
+                    ring.push(ring[0]); // close
+                    features.push(make_feature(wi, &ring, clon, clat));
+                    if max_cells.is_some_and(|mc| features.len() >= mc) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    format!(
+        "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
+        features.join(",\n")
+    )
+}
+
+fn gridfile_lonlat_has_two_placeholders(lon: &[f64], lat: &[f64]) -> bool {
+    lon.len() > 2
+        && lat.len() > 2
+        && lon[0] == 0.0
+        && lat[0] == 0.0
+        && lon[1] == 0.0
+        && lat[1] == 0.0
+}
+
+/// Read an EarthMesh gridfile and write its cell polygons as GeoJSON (degrees);
+/// returns the feature count. `kind` selects the triangle (M) vs hexagon (W) view.
+pub fn write_gridfile_cell_polygons_geojson(
+    gridfile: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> io::Result<usize> {
+    let mesh = read_gridfile_mesh_points(gridfile)?;
+    let json = gridfile_cell_polygons_geojson(&mesh, kind, bbox, max_cells);
+    if let Some(parent) = output.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output.as_ref(), json.as_bytes())?;
+    Ok(json.matches("\"type\": \"Feature\"").count())
+}
+
 /// Read an MPAS/EarthMesh mesh NetCDF and write cell-polygon GeoJSON (the cells input
 /// for `--hydro-cell-intersections` / `--hydro-complete-cell-mask`).
 pub fn write_mpas_cell_polygons_geojson(
@@ -30137,6 +30749,7 @@ pub fn write_mpas_cell_polygons_geojson(
     let lat_vertex = required_values_f64(&file, "latVertex")?;
     let n_edges_on_cell = required_values_i32(&file, "nEdgesOnCell")?;
     let vertices_on_cell = required_values_i32_2d(&file, "verticesOnCell")?;
+    let cell_ids = required_values_i32(&file, "indexToCellID").ok();
     let area_cell = required_values_f64(&file, "areaCell").ok();
     let json = mpas_cell_polygons_geojson(
         &lon_cell,
@@ -30145,6 +30758,7 @@ pub fn write_mpas_cell_polygons_geojson(
         &lat_vertex,
         &n_edges_on_cell,
         &vertices_on_cell,
+        cell_ids.as_deref(),
         area_cell.as_deref(),
         bbox,
         max_cells,
@@ -30303,7 +30917,7 @@ fn json_node_to_string(node: &JsonNode) -> String {
 /// domain) as lon/lat tuple rings. Used to feed an arbitrary-polygon domain into the
 /// intersection writer.
 pub fn read_polygon_outer_rings(geojson: impl AsRef<Path>) -> io::Result<Vec<Vec<(f64, f64)>>> {
-    let root = JsonParser::new(&fs::read_to_string(geojson.as_ref())?).parse()?;
+    let root = JsonParser::new(&read_text_maybe_gzip(geojson.as_ref())?).parse()?;
     let mut rings = Vec::new();
     for feature in geojson_feature_nodes(&root) {
         if let Some(geom) = feature.as_object().and_then(|o| o.get("geometry")) {
@@ -30399,9 +31013,9 @@ pub fn write_earthmesh_intersection_geojson(
             "min_fraction must be between 0 and 1",
         ));
     }
-    let cells_root = JsonParser::new(&fs::read_to_string(cell_geojson.as_ref())?).parse()?;
+    let cells_root = JsonParser::new(&read_text_maybe_gzip(cell_geojson.as_ref())?).parse()?;
     let corridors_root =
-        JsonParser::new(&fs::read_to_string(corridor_geojson.as_ref())?).parse()?;
+        JsonParser::new(&read_text_maybe_gzip(corridor_geojson.as_ref())?).parse()?;
     let included: std::collections::BTreeSet<&str> =
         include_classes.iter().map(|s| s.as_str()).collect();
 
@@ -30505,7 +31119,14 @@ pub fn write_earthmesh_intersection_geojson(
             props.insert("intersection_area_deg2".into(), format!("{inter}"));
             props.insert("overlap_class".into(), format!("\"{}\"", esc(class)));
             props.insert("overlap_fraction".into(), format!("{fraction}"));
-            props.insert("domain_clip_applied".into(), "false".into());
+            props.insert(
+                "domain_clip_applied".into(),
+                if domain_polys.is_some() {
+                    "true".into()
+                } else {
+                    "false".into()
+                },
+            );
             if class.to_ascii_uppercase().starts_with('R') {
                 props.insert("river_class".into(), format!("\"{}\"", esc(class)));
                 props.insert("river_fraction".into(), format!("{fraction}"));
@@ -30646,7 +31267,7 @@ pub fn write_complete_cell_mask_geojson(
 ) -> io::Result<usize> {
     use earthmesh_geometry::{intersection_area, Point};
     let read =
-        |p: &Path| -> io::Result<JsonNode> { JsonParser::new(&fs::read_to_string(p)?).parse() };
+        |p: &Path| -> io::Result<JsonNode> { JsonParser::new(&read_text_maybe_gzip(p)?).parse() };
     let background = read(background_geojson.as_ref())?;
     let river = river_geojson.map(read).transpose()?;
     let coast = coast_geojson.map(read).transpose()?;
@@ -31410,7 +32031,7 @@ pub fn plan_refinement_from_hydro_geojson(
     max_refined_cells: Option<usize>,
 ) -> io::Result<earthmesh_refine_planner::RefinementReport> {
     use earthmesh_refine_planner as rp;
-    let features = hydro_refine_feature_table(&fs::read_to_string(geojson.as_ref())?)?;
+    let features = hydro_refine_feature_table(&read_text_maybe_gzip(geojson.as_ref())?)?;
     let criteria = vec![rp::hydro_coast_score_criterion()];
     let cfg = rp::CompositeScoreConfig {
         weights: vec![("hydro_coast_score".to_string(), 1.0)],

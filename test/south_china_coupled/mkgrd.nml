@@ -1,0 +1,43 @@
+&mkgrd
+  NL%EXPNME = 'output'
+  NL%runtype = ' '
+  NL%base_dir = '/Users/zhongwangwei/Desktop/Github/EarthMesh/test/south_china_coupled/'
+  NL%mesh_type = 'oceanmesh'
+  NL%mode_grid = 'tri'
+  NL%mode_file = 'none'
+  NL%mode_file_description = '/tmp'
+  NL%NXP = 15
+  NL%refine = .FALSE.
+  NL%gridnum_perdegree = 120
+  NL%niter = 5000
+  NL%beta = 1
+  NL%relax = 0.035
+  NL%openmp = 16
+  NL%landtype_file = '/Users/zhongwangwei/Desktop/Github/EarthMesh/input/landtype_igbp_update.nc'
+  NL%mask_domain_global = .TRUE.
+  NL%mask_domain_type = '/tmp'
+  NL%mask_domain_fprefix = '/tmp'
+  NL%mask_restart = .FALSE.
+  NL%mask_sea_ratio = 0.5
+  NL%mask_patch_on = .FALSE.
+  NL%mask_patch_type = '/tmp'
+  NL%mask_patch_fprefix = '/tmp'
+  NL%isolated_ocean = .FALSE.
+  NL%output_format = 'FVCOM'
+/
+
+&quality
+  NL%min_angle_warn_deg = 25
+  NL%min_angle_fail_deg = 5
+  NL%aspect_ratio_warn = 4
+  NL%aspect_ratio_fail = 10
+  NL%area_cv_warn = 1.5
+  NL%max_adjacent_resolution_ratio_warn = 2
+  NL%worst_cells_limit = 50
+  NL%on_violation = 'warn'
+/
+
+&datalayers
+  NL%layer = 'landcover|landtype|/Users/zhongwangwei/Desktop/Github/EarthMesh/input/landtype_igbp_update.nc||T|T'
+  NL%layer = 'sea_slope|threshold:sea_slope|||F|F'
+/

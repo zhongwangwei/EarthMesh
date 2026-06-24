@@ -11,10 +11,12 @@ earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
 earthmesh_quality = { path = "../earthmesh_quality" }
 earthmesh_refine_planner = { path = "../earthmesh_refine_planner" }
+earthmesh_project = { path = "../earthmesh_project" }
+flate2 = "1"
 netcdf = { version = "0.12.0", default-features = false }
 
 [features]
-# Statically bundle netCDF-c + HDF5 + zlib so dependents (e.g. earthmesh_gui)
+# Statically bundle netCDF-c + HDF5 + zlib so the CLI / packaged mkgrd.x
 # can produce a self-contained, zero-runtime-dependency binary. Off by default
 # so the normal CLI build keeps linking the system NetCDF.
 static-netcdf = ["netcdf/static"]

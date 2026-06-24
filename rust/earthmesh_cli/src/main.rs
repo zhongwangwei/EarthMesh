@@ -62,26 +62,65 @@ fn write_cli_run_manifest(command: &str, started_at: String, result: &Result<(),
     }
 }
 
-/// `--mesh-quality <gridfile.nc4> [out_dir]`: read a gridfile, build the quality
-/// input from its triangle (M->W) view, and write quality_summary.json/.csv,
-/// worst_cells.geojson and quality_report.md.
-fn run_mesh_quality(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+/// `--mesh-quality <gridfile.nc4> [out_dir] [quality.nml]`: read a gridfile, build
+/// the quality input from its triangle (M->W) view, and write quality_summary.json
+/// /.csv, worst_cells.geojson and quality_report.md. The optional third arg is a
+/// namelist whose `&quality` block configures the gate thresholds and the
+/// on-violation policy; with `on_violation = 'block'` a Fail verdict exits non-zero
+/// (CI gate). Absent ⇒ default thresholds, warn-only (unchanged legacy behavior).
+fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(), String> {
+    // Optional `--kind hex|tri` selects the cell view: hex/atmos (MPAS) meshes are
+    // measured as their W-cell hexagons (≈120° angles); tri/FVCOM meshes as the M
+    // triangles. Default tri for backward compatibility. The rest stays positional:
+    // <gridfile> [out_dir] [quality.nml].
+    let mut kind = String::from("tri");
+    let mut positional: Vec<String> = Vec::new();
+    let mut args = args;
+    while let Some(a) = args.next() {
+        if a == "--kind" {
+            kind = args
+                .next()
+                .ok_or_else(|| usage("--kind needs a value (hex|tri)"))?;
+        } else {
+            positional.push(a);
+        }
+    }
     let gridfile = PathBuf::from(
-        args.next()
+        positional
+            .first()
             .ok_or_else(|| usage("--mesh-quality needs a gridfile path"))?,
     );
-    let out_dir = args.next().map(PathBuf::from).unwrap_or_else(|| {
+    let out_dir = positional.get(1).map(PathBuf::from).unwrap_or_else(|| {
         gridfile
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."))
     });
+    let quality_cfg_path = positional.get(2).map(PathBuf::from);
 
     let mesh = earthmesh_cli::read_gridfile_mesh_points(&gridfile)
         .map_err(|e| format!("read gridfile {}: {e}", gridfile.display()))?;
-    let input = earthmesh_cli::quality_input_from_gridfile(&mesh);
-    let report =
-        earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
+    let input = if kind.trim() == "hex" {
+        earthmesh_cli::quality_input_from_gridfile_hex(&mesh)
+    } else {
+        earthmesh_cli::quality_input_from_gridfile(&mesh)
+    };
+
+    // Optional &quality block → thresholds + policy; absent ⇒ defaults + warn.
+    let (thresholds, on_violation) = match &quality_cfg_path {
+        Some(p) => {
+            let text = fs::read_to_string(p)
+                .map_err(|e| format!("read quality config {}: {e}", p.display()))?;
+            let q = earthmesh_core::QualityNamelist::from_quality_namelist(&text)?;
+            (quality_thresholds_from_namelist(&q), q.on_violation)
+        }
+        None => (
+            earthmesh_quality::QualityThresholds::default(),
+            "warn".to_string(),
+        ),
+    };
+
+    let report = earthmesh_quality::compute(&input, &thresholds);
     let written = earthmesh_quality::io::write_all(&report, &out_dir)
         .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
     println!("mesh_quality_verdict={}", report.verdict.as_str());
@@ -93,7 +132,30 @@ fn run_mesh_quality(mut args: impl Iterator<Item = String>) -> Result<(), String
     for path in &written {
         println!("mesh_quality_output={}", path.display());
     }
+    // on_violation = block ⇒ a Fail verdict aborts with a non-zero exit code.
+    if report.verdict.as_str() == "fail" && on_violation.eq_ignore_ascii_case("block") {
+        return Err(format!(
+            "quality gate failed (verdict=fail, on_violation=block); reports in {}",
+            out_dir.display()
+        ));
+    }
     Ok(())
+}
+
+/// Map a parsed `&quality` namelist block to `earthmesh_quality::QualityThresholds`
+/// (field-for-field; the namelist's i32 worst-cell limit becomes usize).
+fn quality_thresholds_from_namelist(
+    q: &earthmesh_core::QualityNamelist,
+) -> earthmesh_quality::QualityThresholds {
+    earthmesh_quality::QualityThresholds {
+        min_angle_warn_deg: q.min_angle_warn_deg,
+        min_angle_fail_deg: q.min_angle_fail_deg,
+        aspect_ratio_warn: q.aspect_ratio_warn,
+        aspect_ratio_fail: q.aspect_ratio_fail,
+        area_cv_warn: q.area_cv_warn,
+        max_adjacent_resolution_ratio_warn: q.max_adjacent_resolution_ratio_warn,
+        worst_cells_limit: q.worst_cells_limit.max(0) as usize,
+    }
 }
 
 fn run() -> Result<(), String> {
@@ -153,6 +215,9 @@ fn run() -> Result<(), String> {
     if first == "--mpas-cell-polygons" {
         return run_mpas_cell_polygons(args);
     }
+    if first == "--gridfile-cell-polygons" {
+        return run_gridfile_cell_polygons(args);
+    }
     if first == "--coupling-quality-from-mesh" {
         return run_coupling_quality_from_mesh(args);
     }
@@ -165,7 +230,59 @@ fn run() -> Result<(), String> {
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
     }
-    let namelist = first;
+    // --project: compile a ProjectConfig (.yaml/.json) to a runnable namelist,
+    // then run it. The &datalayers block it emits is staged by the auto-lower below.
+    let first = if first == "--project" {
+        let path = args
+            .next()
+            .ok_or_else(|| usage("--project needs a project.yaml or .json path"))?;
+        let text = fs::read_to_string(&path).map_err(|e| format!("read project {path}: {e}"))?;
+        let project = if path.ends_with(".json") {
+            earthmesh_project::ProjectConfig::from_json(&text)?
+        } else {
+            earthmesh_project::ProjectConfig::from_yaml(&text)?
+        };
+        let nml_path = format!("{path}.nml");
+        fs::write(&nml_path, project.lower().to_namelist())
+            .map_err(|e| format!("write {nml_path}: {e}"))?;
+        eprintln!("earthmesh_cli: compiled project -> {nml_path}");
+        nml_path
+    } else {
+        first
+    };
+    let mut namelist = first;
+    // If the namelist declares a &datalayers block, lower it into the engine
+    // config (landtype + refine switches), stage threshold files, and run the
+    // rewritten namelist — so command-line users get the data-layer convenience
+    // without the GUI. Gated on &datalayers, so legacy namelists are untouched.
+    if let Ok(text) = fs::read_to_string(&namelist) {
+        if text.to_ascii_lowercase().contains("&datalayers") {
+            let fallback = Path::new(&namelist)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("threshold");
+            let fallback = fallback.display().to_string();
+            let lowered =
+                earthmesh_core::lower_datalayers_namelist(&text, Some(fallback.as_str()))?;
+            if !lowered.threshold_files.is_empty() {
+                let th_dir = PathBuf::from(&lowered.threshold_dir);
+                fs::create_dir_all(&th_dir)
+                    .map_err(|e| format!("create threshold dir {}: {e}", th_dir.display()))?;
+                for (stem, src) in &lowered.threshold_files {
+                    let dst = th_dir.join(format!("{stem}.nc"));
+                    fs::copy(src, &dst)
+                        .map_err(|e| format!("stage threshold {src} -> {}: {e}", dst.display()))?;
+                }
+            }
+            for w in &lowered.warnings {
+                eprintln!("earthmesh_cli: warning: {w}");
+            }
+            let lowered_path = format!("{namelist}.lowered.nml");
+            fs::write(&lowered_path, &lowered.namelist)
+                .map_err(|e| format!("write lowered namelist {lowered_path}: {e}"))?;
+            namelist = lowered_path;
+        }
+    }
     let mut max_tris = 100_000usize;
     let mut run_refine_passthrough = false;
     let mut run_refine_landtype_source = false;
@@ -1475,6 +1592,73 @@ fn run_mpas_cell_polygons(args: impl Iterator<Item = String>) -> Result<(), Stri
     .map_err(|err| format!("mpas cell polygons: {err}"))?;
     println!("mpas_cell_features={count}");
     println!("mpas_cell_output={}", positional[1].display());
+    Ok(())
+}
+
+/// `--gridfile-cell-polygons <gridfile.nc4> <out.geojson> [--kind hex|tri] [--bbox W S E N]
+/// [--max-cells N]`: read an EarthMesh gridfile (GLONM/GLONW + itab connectivity) and write
+/// cell-polygon GeoJSON in degrees. `hex` (default) draws W cells from their M corners;
+/// `tri` draws one triangle per M cell. For map overlay of either mesh type.
+fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut bbox: Option<[f64; 4]> = None;
+    let mut max_cells: Option<usize> = None;
+    let mut kind = earthmesh_cli::GridfileCellKind::Hex;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--kind" => {
+                i += 1;
+                kind = match rest.get(i).map(String::as_str) {
+                    Some("hex") => earthmesh_cli::GridfileCellKind::Hex,
+                    Some("tri") => earthmesh_cli::GridfileCellKind::Tri,
+                    _ => return Err(usage("--kind needs hex|tri")),
+                };
+            }
+            "--bbox" => {
+                let mut v = [0.0; 4];
+                for slot in v.iter_mut() {
+                    i += 1;
+                    *slot = rest
+                        .get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--bbox needs W S E N"))?;
+                }
+                bbox = Some(v);
+            }
+            "--max-cells" => {
+                i += 1;
+                max_cells = Some(
+                    rest.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--max-cells requires an integer"))?,
+                );
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --gridfile-cell-polygons option: {other}"
+                )))
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 2 {
+        return Err(usage(
+            "--gridfile-cell-polygons needs <gridfile.nc4> <out.geojson> [--kind hex|tri]",
+        ));
+    }
+    let count = earthmesh_cli::write_gridfile_cell_polygons_geojson(
+        &positional[0],
+        &positional[1],
+        kind,
+        bbox,
+        max_cells,
+    )
+    .map_err(|err| format!("gridfile cell polygons: {err}"))?;
+    println!("gridfile_cell_features={count}");
+    println!("gridfile_cell_output={}", positional[1].display());
     Ok(())
 }
 

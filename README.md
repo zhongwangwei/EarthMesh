@@ -22,7 +22,7 @@ EarthMesh/
 ├── rust/                   # Rust implementation crates
 │   ├── earthmesh_core      # Constants, configuration, runtime state
 │   ├── earthmesh_mesh      # Mesh and refinement kernels
-│   ├── earthmesh_geometry  # Geometry backend and Python extension crate
+│   ├── earthmesh_geometry  # Geometry backend
 │   └── earthmesh_cli       # mkgrd-compatible command-line adapter
 ├── examples/               # Curated runnable/reference cases
 │   ├── default/            # Default atmosphere/land/ocean hex global namelists
@@ -133,12 +133,6 @@ Add an EarthMesh gridfile + a land-type NetCDF to also write `coupling_quality.j
 ./mkgrd.x --coupling-quality-from-mesh gridfile.nc landtype.nc coupling_quality.json [--gridnum-perdegree 120]
 ```
 
-**Desktop GUI.** Launch with `cargo run -p earthmesh_gui`. The results dock has a
-**Hydro workflow** section: pick the cells/corridors GeoJSON (and an output dir, plus an
-optional mesh + land-type NetCDF for R7), then click **Run hydro workflow**. It runs on a
-background thread — the slow NetCDF path does not freeze the UI — and on completion the
-**Refinement plan** and **Coupling quality** panels in the same dock display the results.
-
 ## Output
 
 Output directories are created based on the configuration in the namelist file. Typical output includes:
@@ -155,7 +149,7 @@ The active implementation is in Rust:
 
 - `rust/earthmesh_core` - constants, namelist configuration, and runtime state
 - `rust/earthmesh_mesh` - mesh generation, geometry, refinement, and post-processing kernels
-- `rust/earthmesh_geometry` - geometry backend and optional Python extension
+- `rust/earthmesh_geometry` - geometry backend
 - `rust/earthmesh_cli` - mkgrd-compatible command-line adapter and model-output writers
 
 The legacy Fortran sources are no longer part of the active source tree. Their

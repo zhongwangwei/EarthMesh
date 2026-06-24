@@ -56,8 +56,7 @@ fn binary_can_write_hydro_close_refinement_recipe_json() {
         r#""RL%mask_refine_spc_fprefix":"'{}'""#,
         output_prefix.display()
     )));
-    assert!(text
-        .contains(r#""close_mask_command":["python3","-m","util.hydro_mesh.refine_mask_export""#));
+    assert!(text.contains(r#""close_mask_command":["earthmesh_cli","--hydro-close-mask-nmls""#));
     assert!(text.contains(r#""--class-refine","R2=1","R3=3""#));
     assert!(text.contains(r#""--buffer-deg-by-refine-degree","1=1.5","2=1","3=0.5""#));
     assert!(text.contains(r#""smoke_run_command":["./mkgrd.x","Atmos_hex_NXP64_hydro_close.nml"]"#));
