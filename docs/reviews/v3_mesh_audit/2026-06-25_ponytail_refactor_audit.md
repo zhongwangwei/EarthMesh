@@ -35,6 +35,10 @@ no algorithm changes are proposed here.
   Keep it single-file until a concrete change needs a real frontend build step.
 - The stale `window.emProject` devtools facade has been removed; GUI checks now
   guard against reintroducing that dead browser-global surface.
+- The former inline `check-gui-js` Makefile assertions now live in
+  `scripts/check_gui_js.js`; the Makefile is back to task orchestration.
+- `earthmesh_core` mesh/Delaunay runtime memory now lives in `mesh_memory`, with
+  deprecated compatibility aliases for old `legacy_*` names.
 - Verification run after these batches:
   - `make fmt`
   - `make test-gui`
@@ -59,10 +63,8 @@ single-purpose kernels; do not split them further unless a concrete edit needs
 it.
 
 `gui-tauri/dist/index.html` is a single static app file. It is acceptable for a
-minimal Tauri shell, but it is now large enough that command/API contract checks
-in `Makefile` are carrying too much knowledge. Keep the frontend one-file for
-now; do not introduce a framework unless the static file blocks a concrete
-change.
+minimal Tauri shell. Keep the frontend one-file for now; do not introduce a
+framework unless the static file blocks a concrete change.
 
 ### Legacy Naming
 
@@ -88,15 +90,15 @@ The current GUI split is in place:
 - DTOs, project commands, file commands, runner, path discovery, and quality
   parsing are separated.
 - `earthmesh_project` owns intent presets, validation, criteria, and lowering.
-- `Makefile` contains GUI drift checks for command registration, template
+- `scripts/check_gui_js.js` contains GUI drift checks for command registration, template
   catalog alignment, hidden regional domains, refinement pass behavior, and
   stale wording.
 
 Remaining drift risks:
 
-- `Makefile` has many inline Node checks. They are useful gates, but the file is
-  becoming a second test harness. Once stable, move only repeated checks into a
-  tiny script; do not add a new test framework.
+- `scripts/check_gui_js.js` is now the small GUI drift harness. Keep it tiny and
+  stdlib-only; move checks to Rust tests when they need real parsing or command
+  behavior.
 - GUI docs and HTML must keep using `earthmesh_project` as the source of truth.
 - Any deletion of hidden/deprecated GUI aliases needs a migration test first.
 
@@ -163,8 +165,8 @@ Use the current green commands as the safety baseline:
 3. Treat `legacy_*`, namelist fields, NetCDF paths, and OLAM/Fortran table
    adapters as compatibility surfaces unless a global call-site scan and a
    targeted regression test prove otherwise.
-4. Move repeated `check-gui-js` assertions into a tiny script only if editing
-   the Makefile itself becomes a recurring problem.
+4. Keep `check-gui-js` as a tiny script-backed gate; add no frontend framework
+   until the static GUI blocks a concrete change.
 5. Run slow/ignored tests only when touching the paths they cover.
 
 ## Risks

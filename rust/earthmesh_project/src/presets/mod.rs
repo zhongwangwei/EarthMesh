@@ -5,6 +5,8 @@ use crate::{
     ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
 };
 
+pub const DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID: &str = "AtmosphereTyphoonPrecip";
+
 /// Suggested scaffold defaults for a [`MeshIntentPreset`] - the GUI "pick a
 /// template" flow. Threshold `criteria` become disabled data-layer entries the
 /// user points at files; `extra_roles` are non-threshold inputs (landtype, MERIT,
@@ -48,7 +50,7 @@ impl MeshIntentPreset {
             .copied()
             .find(|preset| preset.id() == id)
             .or(match id {
-                "AtmosphereTyphoonPrecip" => Some(Self::AtmosphereMpas),
+                DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID => Some(Self::AtmosphereMpas),
                 _ => None,
             })
     }

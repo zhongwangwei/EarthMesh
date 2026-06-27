@@ -439,21 +439,22 @@ fn intent_catalog_is_single_source_for_gui_labels() {
     );
 
     assert_eq!(
-        MeshIntentPreset::from_id("AtmosphereTyphoonPrecip"),
+        MeshIntentPreset::from_id(DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID),
         Some(MeshIntentPreset::AtmosphereMpas)
     );
 
     let project = ProjectConfig::scaffold(
-        "legacy_atmosphere",
+        "deprecated_atmosphere_alias",
         MeshIntentPreset::AtmosphereMpas,
         DomainConfig::Global,
         ResolutionSpec::Nxp(40),
     );
-    let legacy_yaml = project
+    let deprecated_yaml = project
         .to_yaml()
         .expect("serialize atmosphere project")
-        .replace("AtmosphereMpas", "AtmosphereTyphoonPrecip");
-    let parsed = ProjectConfig::from_yaml(&legacy_yaml).expect("legacy atmosphere intent alias");
+        .replace("AtmosphereMpas", DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID);
+    let parsed =
+        ProjectConfig::from_yaml(&deprecated_yaml).expect("deprecated atmosphere intent alias");
     assert_eq!(parsed.target.intent, MeshIntentPreset::AtmosphereMpas);
 }
 
