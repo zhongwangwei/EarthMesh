@@ -4,17 +4,17 @@ Scope: repository-wide refactor audit for the OLAM/Fortran migration code, with
 special attention to GUI/config/runtime drift. This document is phase 1 output:
 no algorithm changes are proposed here.
 
-## Current Evidence
+## Initial Evidence
 
 - Repository size: 377 tracked candidate files from `rg --files`.
-- Largest files by current line count:
+- Largest files at audit time:
   - `rust/earthmesh_cli/src/lib.rs`: 37,678 lines.
   - `rust/earthmesh_mesh/src/lib.rs`: 22,448 lines.
   - `rust/earthmesh_cli/src/main.rs`: 2,690 lines.
   - `rust/earthmesh_core/src/lib.rs`: 2,437 lines.
   - `rust/earthmesh_project/src/lib.rs`: 1,882 lines.
   - `gui-tauri/dist/index.html`: 1,685 lines.
-- Verification already run on the current tree:
+- Verification already run on the audited tree:
   - `make fmt`
   - `make clippy`
   - `make clippy-gui`
@@ -22,20 +22,41 @@ no algorithm changes are proposed here.
   - `make test-gui`
   - `make check-method-c-neighbors`
 
+## Current Status After Refactor Batches
+
+- Root crate entry files are now thin module registries:
+  - `rust/earthmesh_cli/src/lib.rs`: 387 lines.
+  - `rust/earthmesh_cli/src/main.rs`: 37 lines.
+  - `rust/earthmesh_mesh/src/lib.rs`: 323 lines.
+  - `rust/earthmesh_core/src/lib.rs`: 49 lines.
+  - `rust/earthmesh_project/src/lib.rs`: 29 lines.
+  - `gui-tauri/src-tauri/src/lib.rs`: 65 lines.
+- `gui-tauri/dist/index.html` remains a single static frontend at 1,682 lines.
+  Keep it single-file until a concrete change needs a real frontend build step.
+- The stale `window.emProject` devtools facade has been removed; GUI checks now
+  guard against reintroducing that dead browser-global surface.
+- Verification run after these batches:
+  - `make fmt`
+  - `make test-gui`
+  - `make test-fast`
+  - `make clippy`
+  - `make clippy-gui`
+  - `git diff --cached --check`
+
 ## Findings
 
 ### Oversized Modules
 
-`rust/earthmesh_cli/src/lib.rs` is the biggest maintenance risk. It mixes CLI
-workflow orchestration, restart/refine state, NetCDF IO, project/namelist
-bridges, quality/report side effects, and compatibility adapters. The next
-split should move cohesive chunks without changing names first.
+`rust/earthmesh_cli/src/lib.rs` was the biggest maintenance risk and has been
+split into responsibility-named modules. The remaining larger files are now
+specific implementation files, not root entry points. Further CLI cleanup should
+target only proven cohesive clusters with tests, especially where NetCDF side
+effects are absent.
 
-`rust/earthmesh_mesh/src/lib.rs` is the second largest risk. It combines
-geometry kernels, Method-C refinement, icosahedron construction, spring
-dynamics, mask postprocess helpers, and Fortran-indexed table adapters. The
-test coverage is strong, so this is a good candidate for pure module extraction
-after one low-risk GUI/project cleanup batch.
+`rust/earthmesh_mesh/src/lib.rs` was the second largest risk and has also been
+split into module files. The remaining long files are mostly Method-C tests or
+single-purpose kernels; do not split them further unless a concrete edit needs
+it.
 
 `gui-tauri/dist/index.html` is a single static app file. It is acceptable for a
 minimal Tauri shell, but it is now large enough that command/API contract checks
@@ -61,7 +82,7 @@ Rename candidates are limited to names that describe current behavior poorly:
 
 ### GUI / Config / Runtime Drift
 
-The current GUI split is moving in the right direction:
+The current GUI split is in place:
 
 - Tauri command registration is centralized in `gui-tauri/src-tauri/src/lib.rs`.
 - DTOs, project commands, file commands, runner, path discovery, and quality
@@ -134,17 +155,17 @@ Use the current green commands as the safety baseline:
 - Run `make check-method-c-neighbors` after touching Method-C or neighbor paths.
 - Run slow/ignored tests only when touching their covered paths.
 
-## First Implementation Batches
+## Remaining Implementation Strategy
 
-1. Freeze the GUI split: keep current `gui-tauri/src-tauri` modules, verify they
-   compile, and only trim redundant checks or stale docs.
-2. Pure extraction from `earthmesh_project/src/lib.rs` only if a cohesive
-   schema/catalog section can move without changing public names.
-3. Pure extraction from `earthmesh_mesh/src/lib.rs` for an isolated helper group
-   with existing test files.
-4. Pure extraction from `earthmesh_cli/src/lib.rs` only after selecting a small
-   function cluster with no NetCDF side effects.
-5. Delete stale GUI/doc strings only when already covered by `check-gui-js`.
+1. Keep the current module split stable. Do not create more files unless a real
+   edit exposes a responsibility boundary.
+2. Prefer deletion of proven stale GUI/docs/checks over further extraction.
+3. Treat `legacy_*`, namelist fields, NetCDF paths, and OLAM/Fortran table
+   adapters as compatibility surfaces unless a global call-site scan and a
+   targeted regression test prove otherwise.
+4. Move repeated `check-gui-js` assertions into a tiny script only if editing
+   the Makefile itself becomes a recurring problem.
+5. Run slow/ignored tests only when touching the paths they cover.
 
 ## Risks
 
@@ -156,7 +177,8 @@ Use the current green commands as the safety baseline:
 - Review risk: a giant extraction diff is harder to review than a small rename
   or module move, even if behavior is unchanged.
 
-## Stop Condition For Phase 1
+## Stop Condition For This Cleanup Track
 
-Phase 1 is complete when this audit is present, the current safety baseline is
-recorded, and the next batch is chosen from the low-risk list above.
+The current cleanup track is complete when no stale GUI/backend/docs surface is
+left in the low-risk list, the worktree is clean, and the latest committed
+batches have the verification evidence recorded in their commit messages.
