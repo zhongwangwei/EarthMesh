@@ -29,23 +29,16 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         ResolutionSpec::Nxp(n) => (Some(n), None),
         ResolutionSpec::ApproxKm(k) => (None, Some(k)),
     };
-    let (domain, domain_shape) = match &cfg.domain {
-        DomainConfig::Global => ("global", "global"),
-        DomainConfig::Regional {
-            shape: RegionShape::Bbox { .. },
-            ..
-        } => ("regional", "bbox"),
-        DomainConfig::Regional {
-            shape: RegionShape::Circle { .. },
-            ..
-        } => ("regional", "circle"),
-    };
-    let (bbox, sea_ratio) = match &cfg.domain {
+    let (domain, domain_shape, bbox, sea_ratio) = match &cfg.domain {
+        DomainConfig::Global => ("global", "global", None, None),
         DomainConfig::Regional {
             shape: RegionShape::Bbox { w, e, n, s },
             sea_ratio,
-        } => (Some([*w, *e, *s, *n]), *sea_ratio),
-        _ => (None, None),
+        } => ("regional", "bbox", Some([*w, *e, *s, *n]), *sea_ratio),
+        DomainConfig::Regional {
+            shape: RegionShape::Circle { .. },
+            ..
+        } => ("regional", "circle", None, None),
     };
     let on_violation = match cfg.quality.on_violation {
         ViolationPolicy::Block => "block",
