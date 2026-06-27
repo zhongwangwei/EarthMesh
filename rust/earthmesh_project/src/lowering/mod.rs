@@ -75,7 +75,7 @@ impl ProjectConfig {
         mkgrd.experiment_name = self.metadata.name.clone();
         mkgrd.mesh_type = self.target.kind.engine_str().to_string();
         mkgrd.mode_grid = self.target.cell.engine_str().to_string();
-        mkgrd.output_format = self.target.model_format.engine_str().to_string();
+        mkgrd.output_format = self.target.model_format.try_engine_str()?.to_string();
         match self.target.resolution {
             ResolutionSpec::Nxp(n) => mkgrd.nxp = n,
             ResolutionSpec::ApproxKm(km) => mkgrd.nxp = km_to_nxp(km),

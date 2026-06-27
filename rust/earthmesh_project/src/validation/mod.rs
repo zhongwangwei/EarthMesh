@@ -1,7 +1,8 @@
 use crate::{
-    criterion_catalog, DomainConfig, ExpertOverrides, HydroCoastConfig, MeshDomainKind,
-    MeshTargetConfig, ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
-    QualityConfig, RefinementRecipe, RegionShape, ResolutionSpec, ThresholdField,
+    criterion_catalog, engine_mapping::DEPRECATED_OLAM_MODEL_FORMAT_ERROR, DomainConfig,
+    ExpertOverrides, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat,
+    ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe,
+    RegionShape, ResolutionSpec, ThresholdField,
 };
 use std::collections::HashSet;
 
@@ -208,10 +209,7 @@ impl MeshTargetConfig {
             _ => Ok(()),
         }?;
         if self.model_format == ModelFormat::Olam {
-            return Err(
-                "project model_format OLAM is deprecated; use CoLM, FVCOM, MPAS, or MPAS-Simple"
-                    .to_string(),
-            );
+            return Err(DEPRECATED_OLAM_MODEL_FORMAT_ERROR.to_string());
         }
         match (self.kind, self.model_format) {
             (

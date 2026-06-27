@@ -274,6 +274,9 @@ fn project_validation_rejects_engine_incompatible_target_format() {
 
     p.target.kind = MeshDomainKind::Land;
     p.target.model_format = ModelFormat::Olam;
+    let err = p.target.model_format.try_engine_str().unwrap_err();
+    assert!(err.contains("project model_format OLAM is deprecated"));
+
     let err = yaml_err(&p);
     assert!(err.contains("project model_format OLAM is deprecated"));
 

@@ -1,6 +1,9 @@
 use crate::{MeshCellKind, MeshDomainKind, ModelFormat, ProjectLayerRole, ThresholdField};
 use earthmesh_core::{DataLayerRole, ThresholdVar};
 
+pub(crate) const DEPRECATED_OLAM_MODEL_FORMAT_ERROR: &str =
+    "project model_format OLAM is deprecated; use CoLM, FVCOM, MPAS, or MPAS-Simple";
+
 impl MeshDomainKind {
     pub(crate) fn engine_str(self) -> &'static str {
         match self {
@@ -23,14 +26,20 @@ impl MeshCellKind {
 }
 
 impl ModelFormat {
-    pub fn engine_str(self) -> &'static str {
-        match self {
+    pub fn try_engine_str(self) -> Result<&'static str, String> {
+        Ok(match self {
             ModelFormat::CoLM => "CoLM",
             ModelFormat::Mpas => "MPAS",
             ModelFormat::MpasSimple => "MPAS-Simple",
             ModelFormat::Fvcom => "FVCOM",
-            ModelFormat::Olam => "OLAM",
-        }
+            ModelFormat::Olam => return Err(DEPRECATED_OLAM_MODEL_FORMAT_ERROR.to_string()),
+        })
+    }
+
+    #[deprecated(note = "use try_engine_str")]
+    pub fn engine_str(self) -> &'static str {
+        self.try_engine_str()
+            .expect("ModelFormat::engine_str requires an engine-supported format")
     }
 }
 

@@ -80,7 +80,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         description: cfg.metadata.description.clone(),
         intent: cfg.target.intent.id().to_string(),
         cell: cfg.target.cell.engine_str().to_string(),
-        model_format: cfg.target.model_format.engine_str().to_string(),
+        model_format: cfg.target.model_format.try_engine_str()?.to_string(),
         domain: domain.to_string(),
         domain_shape: domain_shape.to_string(),
         nxp,
