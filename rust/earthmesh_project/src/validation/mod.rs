@@ -9,8 +9,7 @@ use std::collections::HashSet;
 impl ProjectConfig {
     pub fn from_json(s: &str) -> Result<Self, String> {
         let config: Self = serde_json::from_str(s).map_err(|e| e.to_string())?;
-        config.validate()?;
-        Ok(config)
+        Self::validated(config)
     }
 
     pub fn to_json(&self) -> Result<String, String> {
@@ -19,8 +18,7 @@ impl ProjectConfig {
 
     pub fn from_yaml(s: &str) -> Result<Self, String> {
         let config: Self = serde_yaml::from_str(s).map_err(|e| e.to_string())?;
-        config.validate()?;
-        Ok(config)
+        Self::validated(config)
     }
 
     pub fn to_yaml(&self) -> Result<String, String> {
@@ -47,6 +45,11 @@ impl ProjectConfig {
             hydro_coast.validate()?;
         }
         Ok(())
+    }
+
+    fn validated(config: Self) -> Result<Self, String> {
+        config.validate()?;
+        Ok(config)
     }
 
     fn validate_data_layers(&self) -> Result<(), String> {
