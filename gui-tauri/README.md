@@ -94,12 +94,7 @@ cd gui-tauri && cargo tauri build          # package installers
 ## Verify the bridge
 
 Once the window is open, the Run > Log pane shows
-`✓ Rust backend connected — N refinement criteria registered` on load. Open
-devtools and use the `window.emProject` helper facade for read-only checks:
-
-```js
-await emProject.listCriteria()
-```
+`✓ Rust backend connected — N refinement criteria registered` on load.
 
 Clicking **Run** logs the real namelist lowered from the current UI project
 config and streams engine stdout/stderr to the Log pane.

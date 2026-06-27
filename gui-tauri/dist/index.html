@@ -847,9 +847,7 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     openProject:  () => invoke("open_project"),
     saveProject:  (yaml) => invoke("save_project", { yaml }),
     runProject:   (yaml, outdir) => invoke("run_project", { yaml, outdir: outdir || null }),
-    composeYaml, layerEdits,
   };
-  window.emProject = api;
 
   function logLine(txt) {
     const box = document.getElementById("logbox") || document.querySelector('.live-pane[data-pane="log"]');
