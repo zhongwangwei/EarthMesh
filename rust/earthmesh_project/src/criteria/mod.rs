@@ -18,7 +18,6 @@ pub struct CriterionGuiSpec {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CriterionSpec {
     pub id: &'static str,
-    pub display_name: &'static str,
     pub physical_process: &'static str,
     pub field: ThresholdField,
     pub applicable: &'static [MeshDomainKind],
@@ -44,7 +43,6 @@ const OCEAN: &[MeshDomainKind] = &[MeshDomainKind::Ocean, MeshDomainKind::Couple
 const CATALOG: &[CriterionSpec] = &[
     CriterionSpec {
         id: "lai",
-        display_name: "LAI variability",
         physical_process: "vegetation phenology / canopy heterogeneity",
         field: ThresholdField::Lai,
         applicable: LAND,
@@ -58,7 +56,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "slope",
-        display_name: "Terrain slope",
         physical_process: "orographic / runoff routing",
         field: ThresholdField::Slope,
         applicable: LAND,
@@ -72,7 +69,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "k_s",
-        display_name: "Saturated conductivity",
         physical_process: "soil hydraulics",
         field: ThresholdField::Ks,
         applicable: LAND,
@@ -86,7 +82,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "k_solids",
-        display_name: "Solids conductivity",
         physical_process: "soil thermal",
         field: ThresholdField::KSolids,
         applicable: LAND,
@@ -100,7 +95,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "tkdry",
-        display_name: "Dry thermal cond.",
         physical_process: "soil thermal",
         field: ThresholdField::Tkdry,
         applicable: LAND,
@@ -114,7 +108,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "tksatf",
-        display_name: "Frozen sat. thermal",
         physical_process: "soil thermal (frozen)",
         field: ThresholdField::Tksatf,
         applicable: LAND,
@@ -128,7 +121,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "tksatu",
-        display_name: "Unfrozen sat. thermal",
         physical_process: "soil thermal (unfrozen)",
         field: ThresholdField::Tksatu,
         applicable: LAND,
@@ -142,7 +134,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "sst",
-        display_name: "SST front",
         physical_process: "ocean surface temperature front",
         field: ThresholdField::Sst,
         applicable: OCEAN,
@@ -156,7 +147,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "ssh",
-        display_name: "SSH gradient",
         physical_process: "ocean dynamic height",
         field: ThresholdField::Ssh,
         applicable: OCEAN,
@@ -170,7 +160,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "eke",
-        display_name: "Eddy kinetic energy",
         physical_process: "mesoscale eddies",
         field: ThresholdField::Eke,
         applicable: OCEAN,
@@ -184,7 +173,6 @@ const CATALOG: &[CriterionSpec] = &[
     },
     CriterionSpec {
         id: "sea_slope",
-        display_name: "Seafloor slope",
         physical_process: "bathymetric gradient / shelf break",
         field: ThresholdField::SeaSlope,
         applicable: OCEAN,
