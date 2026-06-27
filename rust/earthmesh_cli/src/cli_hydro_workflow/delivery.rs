@@ -2,6 +2,17 @@ use std::path::PathBuf;
 
 use super::usage;
 
+fn next_arg(rest: &[String], index: &mut usize, flag: &str) -> Result<String, String> {
+    *index += 1;
+    rest.get(*index)
+        .cloned()
+        .ok_or_else(|| usage(&format!("{flag} requires a value")))
+}
+
+fn next_path_arg(rest: &[String], index: &mut usize, flag: &str) -> Result<PathBuf, String> {
+    next_arg(rest, index, flag).map(PathBuf::from)
+}
+
 /// `--hydro-delivery-manifest --case-name <n> --eval-json <e> --ranking-json <r>
 /// --output-json <m> [--file role=path ...] [--source role=path ...]`:
 /// assemble the delivery-package manifest (port of refinement_package.py::_build_manifest).
@@ -22,19 +33,13 @@ pub(crate) fn run_hydro_delivery_manifest(
             .ok_or_else(|| usage("expected role=path"))
     };
     while i < rest.len() {
-        let need = |i: &mut usize| -> Result<String, String> {
-            *i += 1;
-            rest.get(*i)
-                .cloned()
-                .ok_or_else(|| usage("flag requires a value"))
-        };
         match rest[i].as_str() {
-            "--case-name" => case_name = need(&mut i)?,
-            "--eval-json" => eval_json = Some(PathBuf::from(need(&mut i)?)),
-            "--ranking-json" => ranking_json = Some(PathBuf::from(need(&mut i)?)),
-            "--output-json" => output_json = Some(PathBuf::from(need(&mut i)?)),
-            "--file" => files.push(split_kv(&need(&mut i)?)?),
-            "--source" => source_files.push(split_kv(&need(&mut i)?)?),
+            "--case-name" => case_name = next_arg(&rest, &mut i, "flag")?,
+            "--eval-json" => eval_json = Some(next_path_arg(&rest, &mut i, "flag")?),
+            "--ranking-json" => ranking_json = Some(next_path_arg(&rest, &mut i, "flag")?),
+            "--output-json" => output_json = Some(next_path_arg(&rest, &mut i, "flag")?),
+            "--file" => files.push(split_kv(&next_arg(&rest, &mut i, "flag")?)?),
+            "--source" => source_files.push(split_kv(&next_arg(&rest, &mut i, "flag")?)?),
             other => {
                 return Err(usage(&format!(
                     "unknown --hydro-delivery-manifest option: {other}"
@@ -87,23 +92,17 @@ pub(crate) fn run_hydro_sweep_recipes(args: impl Iterator<Item = String>) -> Res
     let mut coast_caps = vec![10i64, 20, 40];
     let mut r3_cap = 19i64;
     let mut i = 0usize;
-    let next = |rest: &[String], i: &mut usize, flag: &str| -> Result<String, String> {
-        *i += 1;
-        rest.get(*i)
-            .cloned()
-            .ok_or_else(|| usage(&format!("{flag} requires a value")))
-    };
     while i < rest.len() {
         match rest[i].as_str() {
-            "--river-geojson" => river = Some(next(&rest, &mut i, "--river-geojson")?),
-            "--coast-geojson" => coast = Some(next(&rest, &mut i, "--coast-geojson")?),
-            "--output-dir" => {
-                output_dir = Some(PathBuf::from(next(&rest, &mut i, "--output-dir")?))
+            "--river-geojson" => river = Some(next_arg(&rest, &mut i, "--river-geojson")?),
+            "--coast-geojson" => coast = Some(next_arg(&rest, &mut i, "--coast-geojson")?),
+            "--output-dir" => output_dir = Some(next_path_arg(&rest, &mut i, "--output-dir")?),
+            "--r2-caps" => r2_caps = parse_int_csv(&next_arg(&rest, &mut i, "--r2-caps")?)?,
+            "--coast-caps" => {
+                coast_caps = parse_int_csv(&next_arg(&rest, &mut i, "--coast-caps")?)?
             }
-            "--r2-caps" => r2_caps = parse_int_csv(&next(&rest, &mut i, "--r2-caps")?)?,
-            "--coast-caps" => coast_caps = parse_int_csv(&next(&rest, &mut i, "--coast-caps")?)?,
             "--r3-cap" => {
-                r3_cap = next(&rest, &mut i, "--r3-cap")?
+                r3_cap = next_arg(&rest, &mut i, "--r3-cap")?
                     .parse()
                     .map_err(|_| usage("--r3-cap requires an integer"))?
             }
@@ -144,18 +143,13 @@ pub(crate) fn run_hydro_sweep_rank(args: impl Iterator<Item = String>) -> Result
     while i < rest.len() {
         match rest[i].as_str() {
             "--output-json" => {
-                i += 1;
-                output_json = Some(PathBuf::from(
-                    rest.get(i)
-                        .ok_or_else(|| usage("--output-json requires a value"))?,
-                ));
+                output_json = Some(next_path_arg(&rest, &mut i, "--output-json")?);
             }
             "--max-background-cells" => {
-                i += 1;
                 max_background = Some(
-                    rest.get(i)
-                        .and_then(|v| v.parse().ok())
-                        .ok_or_else(|| usage("--max-background-cells requires an integer"))?,
+                    next_arg(&rest, &mut i, "--max-background-cells")?
+                        .parse()
+                        .map_err(|_| usage("--max-background-cells requires an integer"))?,
                 );
             }
             other if other.starts_with("--") => {
@@ -194,17 +188,14 @@ pub(crate) fn run_hydro_refinement_eval(args: impl Iterator<Item = String>) -> R
     while i < rest.len() {
         match rest[i].as_str() {
             "--coast-intersections-geojson" => {
-                i += 1;
-                coast = Some(PathBuf::from(rest.get(i).ok_or_else(|| {
-                    usage("--coast-intersections-geojson requires a value")
-                })?));
+                coast = Some(next_path_arg(
+                    &rest,
+                    &mut i,
+                    "--coast-intersections-geojson",
+                )?);
             }
             "--log-path" => {
-                i += 1;
-                log_path = Some(PathBuf::from(
-                    rest.get(i)
-                        .ok_or_else(|| usage("--log-path requires a value"))?,
-                ));
+                log_path = Some(next_path_arg(&rest, &mut i, "--log-path")?);
             }
             "--file-area-m2" => unit_sphere = false,
             other if other.starts_with("--") => {
@@ -248,39 +239,23 @@ pub(crate) fn run_hydro_mesh_qa(args: impl Iterator<Item = String>) -> Result<()
     while i < rest.len() {
         match rest[i].as_str() {
             "--delivery-manifest" => {
-                i += 1;
-                delivery_manifest =
-                    Some(PathBuf::from(rest.get(i).ok_or_else(|| {
-                        usage("--delivery-manifest requires a value")
-                    })?));
+                delivery_manifest = Some(next_path_arg(&rest, &mut i, "--delivery-manifest")?);
             }
             "--output-json" => {
-                i += 1;
-                output_json = Some(PathBuf::from(
-                    rest.get(i)
-                        .ok_or_else(|| usage("--output-json requires a value"))?,
-                ));
+                output_json = Some(next_path_arg(&rest, &mut i, "--output-json")?);
             }
             "--colm-summary-json" => {
-                i += 1;
-                colm_summary =
-                    Some(PathBuf::from(rest.get(i).ok_or_else(|| {
-                        usage("--colm-summary-json requires a value")
-                    })?));
+                colm_summary = Some(next_path_arg(&rest, &mut i, "--colm-summary-json")?);
             }
             "--min-river-cells" => {
-                i += 1;
-                min_river = rest
-                    .get(i)
-                    .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| usage("--min-river-cells requires an integer"))?;
+                min_river = next_arg(&rest, &mut i, "--min-river-cells")?
+                    .parse()
+                    .map_err(|_| usage("--min-river-cells requires an integer"))?;
             }
             "--min-coast-cells" => {
-                i += 1;
-                min_coast = rest
-                    .get(i)
-                    .and_then(|v| v.parse().ok())
-                    .ok_or_else(|| usage("--min-coast-cells requires an integer"))?;
+                min_coast = next_arg(&rest, &mut i, "--min-coast-cells")?
+                    .parse()
+                    .map_err(|_| usage("--min-coast-cells requires an integer"))?;
             }
             other => return Err(usage(&format!("unknown --hydro-mesh-qa option: {other}"))),
         }
