@@ -4,6 +4,11 @@ use earthmesh_project::{
     DomainConfig, MeshIntentPreset, ProjectConfig, RegionShape, ResolutionSpec,
 };
 
+fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
+    cfg.validate()?;
+    cfg.to_yaml()
+}
+
 /// Scaffold a project from an intent preset and serialize it to YAML.
 /// The frontend applies the visible domain with `set_domain_*` after scaffolding.
 #[tauri::command]
@@ -24,8 +29,7 @@ pub(crate) fn scaffold_project(
         DomainConfig::Global,
         resolution,
     );
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
 
 /// Validate a project YAML — returns the canonical re-serialized YAML on success,
@@ -51,8 +55,7 @@ pub(crate) fn set_project_metadata(
         .filter(|author| !author.is_empty())
         .collect();
     cfg.metadata.description = description;
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
 
 /// Preserve schema fields the current Studio UI does not expose yet.
@@ -101,6 +104,5 @@ pub(crate) fn preserve_unexposed_project_fields(
         cfg.domain = base.domain;
     }
 
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
