@@ -1,0 +1,68 @@
+use serde::Serialize;
+
+/// A refinement criterion, flattened for the data-layer / quality UI.
+#[derive(Serialize)]
+pub(crate) struct CriterionInfo {
+    pub(crate) physical_process: String,
+    pub(crate) label: String,
+    pub(crate) help: String,
+    pub(crate) unit: String,
+    /// Engine file stem (= the scaffolded layer id) so the UI can match a
+    /// template's threshold layers back to their criterion metadata.
+    pub(crate) stem: String,
+}
+
+/// A loaded project: canonical YAML plus the path it came from.
+#[derive(Serialize)]
+pub(crate) struct OpenedProject {
+    pub(crate) path: String,
+    pub(crate) yaml: String,
+}
+
+/// One data layer, flattened for the live layer panel.
+#[derive(Serialize)]
+pub(crate) struct LayerSummary {
+    pub(crate) id: String,
+    pub(crate) role_kind: String,
+    pub(crate) role: String,
+    pub(crate) path: String,
+    pub(crate) enabled: bool,
+    /// True for tiled inputs (MERIT-Hydro, CaMa) that are directories of tiles,
+    /// so the UI offers a folder picker instead of a file picker.
+    pub(crate) wants_folder: bool,
+}
+
+/// A project at a glance — used to reflect a loaded YAML back into the UI.
+#[derive(Serialize)]
+pub(crate) struct ProjectSummary {
+    pub(crate) name: String,
+    pub(crate) authors: Vec<String>,
+    pub(crate) description: String,
+    pub(crate) intent: String,
+    pub(crate) cell: String,
+    pub(crate) model_format: String,
+    pub(crate) domain: String,
+    pub(crate) domain_shape: String,
+    pub(crate) nxp: Option<i32>,
+    pub(crate) approx_km: Option<f64>,
+    pub(crate) effective_nxp: i32,
+    /// `[w, e, s, n]` when the domain is a regional bounding box, else `None`.
+    pub(crate) bbox: Option<[f64; 4]>,
+    pub(crate) sea_ratio: Option<f64>,
+    pub(crate) min_angle_deg: f64,
+    pub(crate) on_violation: String,
+    pub(crate) refine_enabled: bool,
+    pub(crate) max_passes: u8,
+    pub(crate) layers: Vec<LayerSummary>,
+}
+
+/// Outcome of a mesh run: exit status + where the outputs landed.
+#[derive(Serialize)]
+pub(crate) struct RunResult {
+    pub(crate) ok: bool,
+    pub(crate) code: Option<i32>,
+    pub(crate) outdir: String,
+    /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
+    /// can run quality + draw the mesh without re-globbing. None if not seen.
+    pub(crate) gridfile: Option<String>,
+}

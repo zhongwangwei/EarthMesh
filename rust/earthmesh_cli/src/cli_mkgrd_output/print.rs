@@ -1,0 +1,163 @@
+pub(crate) fn print_top_level_dispatch_report(
+    report: &earthmesh_cli::MkgrdTopLevelDispatchRunReport,
+) {
+    match report {
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::Gridinit(report) => {
+            println!("gridfile={}", report.gridfile.output.display());
+            println!("sjx_points={}", report.gridfile.sjx_points);
+            println!("lbx_points={}", report.gridfile.lbx_points);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource(report) => {
+            print_olam_refine_report(report);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
+            println!("mask_restart_action={:?}", report.plan.remask.action);
+            println!(
+                "mask_patch_reports={}",
+                report.workspace_mask.mask_reports.len()
+            );
+            println!(
+                "mask_patch_ndm={}",
+                report.workspace_mask.mask_counts.mask_patch_ndm[0]
+            );
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => {
+            println!("mask_restart_action={:?}", report.plan.remask.action);
+            println!(
+                "mask_postproc_result_gridfile={}",
+                report.postproc.final_gridfile.output.display()
+            );
+            if let Some(obc) = &report.postproc.obc {
+                println!("mask_postproc_obc={}", obc.output.display());
+            }
+            if let Some(obcv2) = &report.postproc.obcv2 {
+                println!("mask_postproc_obcv2={}", obcv2.output.display());
+            }
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
+            print_mask_restart_area_judge_report(report);
+        }
+        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report) => {
+            println!("mask_restart_action={:?}", report.remask.action);
+            println!("mask_restart_step={}", report.remask.step);
+            println!("mask_restart_file_dir={}", report.remask.file_dir.display());
+        }
+    }
+}
+
+pub(crate) fn print_olam_refine_report(report: &earthmesh_cli::MkgrdOlamSpecifiedRefineRunReport) {
+    println!("refine_source=olam_global_source");
+    println!("gridfile={}", report.output.output.display());
+    println!("sjx_points={}", report.output.sjx_points);
+    println!("lbx_points={}", report.output.lbx_points);
+    println!("olam_regions={}", report.regions.len());
+    println!("olam_max_level={}", report.max_level);
+    println!("olam_transition_faces={}", report.transition_faces);
+    println!("olam_spring_nest_passes={}", report.spring_nest_passes);
+    println!(
+        "olam_spring_nest_iterations={}",
+        report.spring_nest_iterations
+    );
+    if let Some(raw_output) = &report.raw_output {
+        println!("olam_raw_gridfile={}", raw_output.output.display());
+    }
+    if let Some(landtype_masked_cells) = report.landtype_masked_cells {
+        println!("olam_landtype_masked_cells={landtype_masked_cells}");
+    }
+    if let Some(coupled) = &report.coupled_outputs {
+        println!(
+            "olam_land_gridfile={}",
+            coupled.land_output.output.display()
+        );
+        println!(
+            "olam_ocean_gridfile={}",
+            coupled.ocean_output.output.display()
+        );
+        println!("olam_coupling_csv={}", coupled.coupling_csv.display());
+        println!(
+            "olam_coupling_netcdf={}",
+            coupled.coupling_netcdf.output.display()
+        );
+        println!("olam_coupling_manifest={}", coupled.manifest.display());
+        println!("olam_coupling_rows={}", coupled.coupling_netcdf.rows);
+    }
+}
+
+pub(crate) fn print_mask_restart_area_judge_report(
+    report: &earthmesh_cli::MkgrdRestartAreaJudgeGlobalSourceRunReport,
+) {
+    let restart = &report.restart;
+    println!("mask_restart_action={:?}", restart.plan.remask.action);
+    println!(
+        "mask_patch_reports={}",
+        restart.workspace_mask.mask_reports.len()
+    );
+    println!(
+        "mask_restart_area_selected_cells={}",
+        restart.area_write.selected_cells
+    );
+    println!(
+        "mask_restart_area_grid={}",
+        restart.area_write.output.display()
+    );
+    if let Some(postproc_report) = &report.postproc {
+        println!(
+            "mask_restart_contain={}",
+            postproc_report.contain.output.display()
+        );
+        match &postproc_report.postproc {
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(postproc) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.final_gridfile.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_patchtype={}",
+                    postproc.patchtype.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_earthmesh_info={}",
+                    postproc.earthmesh_info.output.display()
+                );
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.final_gridfile.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_patchtype={}",
+                    postproc.patchtype.output.display()
+                );
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.final_gridfile.output.display()
+                );
+                if let Some(obc) = &postproc.obc {
+                    println!("mask_restart_postproc_obc={}", obc.output.display());
+                }
+                if let Some(obcv2) = &postproc.obcv2 {
+                    println!("mask_restart_postproc_obcv2={}", obcv2.output.display());
+                }
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
+                println!(
+                    "mask_restart_postproc_mpas_simple={}",
+                    postproc.output.display()
+                );
+            }
+            earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
+                println!(
+                    "mask_restart_postproc_mpas={}",
+                    postproc.mesh.output.display()
+                );
+                println!(
+                    "mask_restart_postproc_mpas_graph={}",
+                    postproc.graph_info.output.display()
+                );
+            }
+        }
+    }
+}

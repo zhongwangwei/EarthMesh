@@ -1,17 +1,14 @@
 <!--
-  EarthMesh Studio — GUI redesign interactive prototype
-  Single-file, no build step. Open in any browser.
-  Toggles: theme (light/dark), language (中/EN), mode (Normal/Expert).
-  This is a clickable mockup of the proposed layout — not wired to the engine.
-  Grounded in: rust/earthmesh_gui/{i18n.rs, theme.rs, ui_helpers.rs} +
-               docs/reviews/v3_mesh_audit/10_gui_redesign_proposal.md
+  EarthMesh Studio — static frontend
+  Single-file, no build step. Tauri wires it to Rust; a browser shows the shell.
+  Toggles: theme (light/dark), language (中/EN).
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EarthMesh Studio — Redesign Prototype</title>
+<title>EarthMesh Studio</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- The prototype's main script defines a global `L` i18n helper that shadows
+<!-- The frontend script defines a global `L` i18n helper that shadows
      Leaflet's global `L`; stash Leaflet under LEAF before that script runs. -->
 <script>window.LEAF = window.L;</script>
 <style>
@@ -93,19 +90,15 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .step .num{flex:none;width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
   font-size:12px;font-weight:700;border:1.5px solid var(--border);color:var(--muted);background:var(--bg);z-index:1}
 .step.active .num{background:var(--accent);border-color:var(--accent);color:#fff}
-.step.done .num{background:var(--pass);border-color:var(--pass);color:#fff}
-.step .stub{min-width:0}
+.step .step-copy{min-width:0}
 .step .t{font-weight:620;line-height:1.35}
 .step.active .t{color:var(--accent-ink)}
 .step .d{color:var(--muted);font-size:11.5px;margin-top:1px}
 .step:not(:last-child)::after{content:"";position:absolute;left:22px;top:34px;bottom:-2px;
   width:1.5px;background:var(--border)}
-.step.done:not(:last-child)::after{background:var(--pass)}
 .rail .est{margin:14px 8px 0;padding:11px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg)}
 .est .lab{color:var(--muted);font-size:11px}
 .est .big{font-size:19px;font-weight:750;letter-spacing:-.02em}
-.bar{height:6px;border-radius:4px;background:var(--surface-2);overflow:hidden;margin-top:7px}
-.bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--ocean))}
 
 /* ---------------- center workspace ---------------- */
 .work{grid-area:work;overflow:auto;padding:var(--s-xl) calc(var(--s-xl) + 4px)}
@@ -114,7 +107,6 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .work h1{font-size:23px}
 .work .sub{color:var(--muted);margin:4px 0 22px;max-width:62ch}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-lg)}
-.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s-md)}
 .card{background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-md);
   padding:var(--s-lg);box-shadow:var(--shadow);margin-bottom:var(--s-lg)}
 .card h3{font-size:14px;margin-bottom:3px}
@@ -153,29 +145,22 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:-1px}
 .cov{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:650}
 .cov.ok{background:var(--pass-bg);color:var(--pass)} .cov.no{background:var(--fail-bg);color:var(--fail)}
-.cov.part{background:var(--warn-bg);color:var(--warn)}
 .path{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px;display:inline-block;vertical-align:middle}
 .sw{position:relative;width:34px;height:19px;border-radius:20px;background:var(--border);transition:.15s;flex:none}
 .sw.on{background:var(--accent)}
 .sw::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:.15s}
 .sw.on::after{left:17px}
 
-/* criteria rows */
-.crit{display:grid;grid-template-columns:18px 1.4fr 1.6fr 70px;gap:12px;align-items:center;
-  padding:10px 4px;border-bottom:1px solid var(--border-soft)}
-.crit:last-child{border-bottom:0}
-.crit .cn{font-weight:600}.crit .cu{color:var(--faint);font-size:11px}
 input[type=range]{width:100%;accent-color:var(--accent)}
 .pill-row{display:flex;gap:6px;flex-wrap:wrap}
 .pill{padding:6px 13px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--muted);font-weight:600;font-size:12px}
 .pill.on{background:var(--accent);border-color:var(--accent);color:#fff}
 
-/* expert zone */
-.expert{border:1.5px dashed var(--accent);border-radius:var(--r-md);padding:var(--s-lg);
+/* quality detail zone */
+.quality-detail{border:1.5px dashed var(--accent);border-radius:var(--r-md);padding:var(--s-lg);
   background:color-mix(in srgb,var(--accent) 6%,transparent);margin-bottom:var(--s-lg)}
-.expert-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
+.quality-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
   color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:11px}
-body.normal .expert{display:none}
 
 /* quality dashboard */
 .verdict{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:var(--r-md);
@@ -187,14 +172,8 @@ body.normal .expert{display:none}
 .metric{border:1px solid var(--border);border-radius:var(--r-md);padding:13px;background:var(--elevated)}
 .metric .mv{font-size:21px;font-weight:760;letter-spacing:-.02em}
 .metric .ml{color:var(--muted);font-size:11px;margin-top:2px}
-.fixlist{list-style:none;padding:0;margin:0}
-.fixlist li{padding:9px 0;border-bottom:1px solid var(--border-soft);display:flex;gap:9px;align-items:flex-start}
-.fixlist li:last-child{border-bottom:0}
-.fixlist .fi{flex:none;margin-top:1px}
-
 .foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:18px;border-top:1px solid var(--border)}
-.foot .vmsg{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:7px}
-.nav-btns{display:flex;gap:8px}
+.nav-btns{display:flex;gap:8px;margin-left:auto}
 .btn-next{padding:8px 18px;border:0;border-radius:var(--r-sm);background:var(--accent);color:#fff;font-weight:650}
 .btn-back{padding:8px 16px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg)}
 
@@ -211,11 +190,7 @@ body.normal .expert{display:none}
 #mapsvg{height:280px;border-radius:8px;overflow:hidden;background:var(--bg)}
 #mapsvgModal{flex:1;min-height:300px;border-radius:8px;overflow:hidden;background:var(--bg)}
 .leaflet-container{font:inherit;background:var(--bg)}
-.legend{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--muted);padding:9px 11px;flex-wrap:wrap}
-.legend .sc{height:9px;width:74px;border-radius:5px;
-  background:linear-gradient(90deg,#2c7fb8,#7fcdbb,#fec44f,#f03b20)}
 .logbox{font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
-.logbox .ok{color:var(--pass)} .logbox .wn{color:var(--warn)} .logbox .ac{color:var(--accent)}
 .mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
 .mini-metric b{font-weight:700}
 .progress{height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden;margin:10px 0}
@@ -228,10 +203,6 @@ body.normal .expert{display:none}
 .badge.pass{background:var(--pass-bg);color:var(--pass)}
 .status .rdot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
 .status .rdot.on{background:var(--pass);box-shadow:0 0 0 3px var(--pass-bg)}
-.minibar{width:90px;height:6px;border-radius:4px;background:var(--surface-2);overflow:hidden;display:inline-block;vertical-align:middle}
-.minibar>i{display:block;height:100%;width:48%;background:var(--accent)}
-.hide{display:none !important}
-[data-zh] [data-en]{display:none}
 </style>
 
 <div class="app" id="app">
@@ -239,12 +210,8 @@ body.normal .expert{display:none}
   <header class="top">
     <div class="brand"><span class="glyph">◈</span><span>EarthMesh <span style="color:var(--muted);font-weight:500">Studio</span></span></div>
     <div class="sep"></div>
-    <input class="proj-name" value="south_china_coupled" spellcheck="false" title="Project name">
+    <input class="proj-name" value="earthmesh-project" spellcheck="false" title="Project name">
     <div class="grow"></div>
-    <div class="seg" id="modeSeg">
-      <button class="on" data-mode="normal" data-i18n="mode.normal">Normal</button>
-      <button data-mode="expert" data-i18n="mode.expert">Expert</button>
-    </div>
     <div class="seg" id="langSeg">
       <button class="on" data-lang="zh" data-i18n="lang.zh">中文</button>
       <button data-lang="en" data-i18n="lang.en">EN</button>
@@ -258,9 +225,7 @@ body.normal .expert{display:none}
     <div id="steps"></div>
     <div class="est">
       <div class="lab" data-i18n="est.cells">Estimated cells</div>
-      <div class="big" id="estCells">~412k</div>
-      <div class="bar"><i id="estBar" style="width:58%"></i></div>
-      <div class="lab" style="margin-top:6px"><span data-i18n="est.budget">of budget</span> <span id="estBudget">700k</span> · <span id="estPct" style="color:var(--pass)">58%</span></div>
+      <div class="big" id="estCells">—</div>
     </div>
   </nav>
 
@@ -280,20 +245,19 @@ body.normal .expert{display:none}
         <div class="mapwrap">
           <div id="mapsvg"></div>
         </div>
-        <div class="map-cap"><span data-i18n="map.hint">Domain on an OpenStreetMap base</span><span data-i18n="map.scroll">scroll to zoom · drag to pan</span></div>
+        <div class="map-cap"><span data-i18n="map.hint">Domain on a satellite base (no borders)</span><span data-i18n="map.scroll">scroll to zoom · drag to pan</span></div>
         <div style="margin-top:10px" class="pill-row">
           <span class="pill" onclick="openMapModal()" data-i18n="map.enlarge">⛶ Enlarge</span>
         </div>
       </div>
       <!-- QUALITY -->
       <div class="live-pane" data-pane="quality">
-        <div class="badge pass" style="font-size:11px;margin-bottom:10px">● <span data-i18n="q.pass">PASS</span></div>
-        <div class="mini-metric"><span data-i18n="q.cells">Cells</span><b>412,388</b></div>
-        <div class="mini-metric"><span data-i18n="q.verts">Vertices</span><b>208,114</b></div>
-        <div class="mini-metric"><span data-i18n="q.minangle">Min angle</span><b style="color:var(--pass)">31.4°</b></div>
-        <div class="mini-metric"><span data-i18n="q.skew">Max skew</span><b style="color:var(--warn)">0.71</b></div>
-        <div class="mini-metric"><span data-i18n="q.coupling">Coupling err</span><b style="color:var(--pass)">0.4%</b></div>
-        <p style="color:var(--muted);font-size:11.5px;margin-top:12px" data-i18n="q.note">Full dashboard appears in step 7 after a run.</p>
+        <div class="badge pass" style="display:none;font-size:11px;margin-bottom:10px">● <span data-i18n="q.pass">PASS</span></div>
+        <div class="mini-metric"><span data-i18n="q.cells">Cells</span><b style="color:var(--muted)">—</b></div>
+        <div class="mini-metric"><span data-i18n="q.verts">Vertices</span><b style="color:var(--muted)">—</b></div>
+        <div class="mini-metric"><span data-i18n="q.minangle">Min angle</span><b style="color:var(--muted)">—</b></div>
+        <div class="mini-metric"><span data-i18n="q.aspect">Aspect ratio</span><b style="color:var(--muted)">—</b></div>
+        <p style="color:var(--muted);font-size:11.5px;margin-top:12px" data-i18n="q.note">Full dashboard appears in Run / Results after a run.</p>
       </div>
       <!-- LOG -->
       <div class="live-pane" data-pane="log" style="position:relative;height:100%;min-height:0">
@@ -315,10 +279,6 @@ body.normal .expert{display:none}
 
   <!-- STATUS BAR -->
   <footer class="status">
-    <span class="badge pass">● <span data-i18n="q.pass">PASS</span></span>
-    <span><span data-i18n="st.cells">Cells</span> <b style="color:var(--text)">412,388</b></span>
-    <span><span data-i18n="st.budget">Budget</span> <span class="minibar"><i></i></span> 58%</span>
-    <span data-i18n="st.valid">✓ All inputs valid</span>
     <div class="grow"></div>
     <span class="rdot" id="rdot"></span><span id="rtext" data-i18n="st.idle">idle</span>
   </footer>
@@ -340,26 +300,23 @@ body.normal .expert{display:none}
 <script>
 /* ---------------- i18n ---------------- */
 const I = {
- "m.project":["Project ▾","项目 ▾"],
- "mode.normal":["Normal","常规"],"mode.expert":["Expert","专家"],
- "lang.zh":["中文","中文"],"lang.en":["EN","EN"],"btn.run":["Run","运行"],
+ "lang.zh":["中文","中文"],"lang.en":["EN","EN"],
  "rail.workflow":["Workflow","工作流"],
- "est.cells":["Estimated cells","预计单元数"],"est.budget":["of budget","占预算"],
+ "est.cells":["Estimated cells","预计单元数"],
  "live.map":["Map","地图"],"live.quality":["Quality","质量"],"live.log":["Log","日志"],
- "legend.score":["Refine score","细化评分"],
  "map.hint":["Domain on a satellite base (no borders)","计算域 · 卫星底图(无边界线)"],"map.scroll":["scroll to zoom · drag to pan","滚轮缩放 · 拖动平移"],
- "map.l.score":["Score","评分"],"map.enlarge":["⛶ Enlarge","⛶ 放大"],"map.inspect":["Inspect map","地图细查"],"log.clear":["Clear","清空"],
+ "map.enlarge":["⛶ Enlarge","⛶ 放大"],"map.inspect":["Inspect map","地图细查"],"log.clear":["Clear","清空"],
  "q.pass":["PASS","通过"],"q.cells":["Cells","单元"],"q.verts":["Vertices","顶点"],
- "q.minangle":["Min angle","最小角"],"q.skew":["Max skew","最大偏斜"],"q.coupling":["Coupling err","耦合误差"],
- "q.note":["Full dashboard appears in step 7 after a run.","运行后第 7 步显示完整仪表盘。"],
- "st.cells":["Cells","单元"],"st.budget":["Budget","预算"],"st.valid":["✓ All inputs valid","✓ 输入全部有效"],"st.idle":["idle","空闲"],
+ "q.minangle":["Min angle","最小角"],"q.aspect":["Aspect ratio","纵横比"],
+ "q.note":["Full dashboard appears in Run / Results after a run.","运行后在「运行 / 结果」中显示完整仪表盘。"],
+ "st.idle":["idle","空闲"],
  "foot.back":["Back","上一步"],"foot.next":["Next","下一步"]
 };
 let lang=1; // 0=en, 1=zh — default to Chinese
 function L(k){return (I[k]||["",""])[lang];}
 function applyI18n(){
   document.querySelectorAll("[data-i18n]").forEach(e=>{const k=e.getAttribute("data-i18n");if(I[k])e.textContent=L(k);});
-  renderSteps(); renderStep(cur); renderLog();
+  renderSteps(); renderStep(cur);
 }
 
 /* ---------------- workflow steps (from i18n.rs step.*) ---------------- */
@@ -368,112 +325,94 @@ const STEPS=[
  {t:["Target","目标"],d:["Pick a mesh template","选择网格模板"]},
  {t:["Domain","区域"],d:["Global or regional + map","全球/区域 + 地图"]},
  {t:["Data Layers","数据图层"],d:["Inputs & coverage","输入与覆盖校验"]},
- {t:["Refinement","细化策略"],d:["Criteria + budget","判据 + 预算"]},
- {t:["Quality","质量约束"],d:["Gates & thresholds","门禁与阈值"]},
+ {t:["Refinement","细化策略"],d:["Criteria + passes","判据 + 次数"]},
+ {t:["Quality","质量约束"],d:["Min angle + policy","最小角 + 策略"]},
  {t:["Run / Results","运行 / 结果"],d:["Generate + dashboard","生成 + 仪表盘"]},
 ];
-let cur=4; // start on Refinement so reviewers land on the richest screen
-const done=[true,true,true,true,false,false,false];
+let cur=0;
 
 function renderSteps(){
-  const el=document.getElementById("steps");el.innerHTML="";
+  const el=document.getElementById("steps");el.textContent="";
   STEPS.forEach((s,i)=>{
     const d=document.createElement("div");
-    d.className="step"+(i===cur?" active":"")+(done[i]?" done":"");
-    d.innerHTML=`<div class="num">${done[i]&&i!==cur?"✓":(i+1)}</div>
-      <div class="stub"><div class="t">${s.t[lang]}</div><div class="d">${s.d[lang]}</div></div>`;
+    d.className="step"+(i===cur?" active":"");
+    const num=document.createElement("div"); num.className="num"; num.textContent=i+1;
+    const copy=document.createElement("div"); copy.className="step-copy";
+    const title=document.createElement("div"); title.className="t"; title.textContent=s.t[lang];
+    const desc=document.createElement("div"); desc.className="d"; desc.textContent=s.d[lang];
+    copy.append(title, desc);
+    d.append(num, copy);
     d.onclick=()=>{cur=i;renderSteps();renderStep(i);};
     el.appendChild(d);
   });
 }
 
-/* ---------------- templates (ui_helpers::target_templates, 9) ---------------- */
+/* ---------------- template gallery cards ---------------- */
 const TPL=[
  // Row 1 — global
- {nm:["Global atmosphere","全球大气"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"🌀",c:"var(--ocean)",tags:[["typhoon","台风"],["precip","降水"]]},
- {nm:["Global land","全球陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🌍",c:"var(--land)",tags:[["landcover","地表覆盖"],["uniform","均匀"]]},
- {nm:["Global ocean","全球海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"🌊",c:"var(--ocean)",tags:[["bathy grad","水深梯度"],["coastline","海岸线"]]},
+ {intent:"AtmosphereMpas",global:true,nm:["Global atmosphere","全球大气"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"🌀",c:"var(--ocean)",tags:[["MPAS","MPAS"],["global","全球"]]},
+ {intent:"Custom",global:true,nm:["Global land","全球陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🌍",c:"var(--land)",tags:[["landcover","地表覆盖"],["uniform","均匀"]]},
+ {intent:"CoastalOcean",global:true,nm:["Global ocean","全球海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"🌊",c:"var(--ocean)",tags:[["sea slope","海底坡度"],["landcover","地表覆盖"]]},
  // Row 2 — regional
- {nm:["Regional atmosphere","区域大气"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"🌀",c:"var(--ocean)",tags:[["typhoon","台风"],["regional","区域"]]},
- {nm:["Regional land","区域陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🗺️",c:"var(--land)",tags:[["landcover","地表覆盖"],["regional","区域"]]},
- {nm:["Regional ocean","区域海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"⚓",c:"var(--ocean)",tags:[["coastline","海岸线"],["regional","区域"]]},
+ {intent:"AtmosphereMpas",global:false,nm:["Regional atmosphere","区域大气"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"🌀",c:"var(--ocean)",tags:[["MPAS","MPAS"],["regional","区域"]]},
+ {intent:"Custom",global:false,nm:["Regional land","区域陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🗺️",c:"var(--land)",tags:[["landcover","地表覆盖"],["regional","区域"]]},
+ {intent:"CoastalOcean",global:false,nm:["Regional ocean","区域海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"⚓",c:"var(--ocean)",tags:[["sea slope","海底坡度"],["regional","区域"]]},
  // Row 3 — coupled / specialised
- {nm:["Orographic atmosphere","地形大气"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"⛰️",c:"var(--coast)",tags:[["topo grad","地形梯度"],["precip","降水"]]},
- {nm:["Land-ocean coupled","陆海耦合"],meta:["coupled · CoLM · MERIT-Hydro","耦合 · CoLM · MERIT-Hydro"],ic:"🔗",c:"var(--estuary)",tags:[["coastline","海岸线"],["river R2/R3","河网"]]},
- {nm:["Air-sea coupled","海气耦合·台风"],meta:["atmos · MPAS · hex","大气 · MPAS · 六边形"],ic:"🌀",c:"var(--ocean)",tags:[["typhoon","台风"],["SST","海表温度"]]},
+ {intent:"MeritHydroCoast",global:false,nm:["MERIT-Hydro coast","MERIT-Hydro 海岸"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🔗",c:"var(--estuary)",tags:[["MERIT-Hydro","MERIT-Hydro"],["slope","坡度"]]},
  // Row 4 — land applications
- {nm:["Hydrology land","水文陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🏞️",c:"var(--river)",tags:[["slope","坡度"],["drainage","汇流"]]},
- {nm:["Urban land","城市陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🏙️",c:"var(--urban)",tags:[["impervious","不透水"],["LAI","LAI"]]},
- {nm:["Snow / permafrost land","积雪冻土陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"❄️",c:"var(--coast)",tags:[["slope","坡度"],["thermal","热参数"]]},
+ {intent:"HydrologyLand",global:false,nm:["Hydrology land","水文陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🏞️",c:"var(--river)",tags:[["slope","坡度"],["MERIT-Hydro","MERIT-Hydro"]]},
+ {intent:"UrbanLand",global:false,nm:["Urban land","城市陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🏙️",c:"var(--urban)",tags:[["LAI","LAI"],["landcover","地表覆盖"]]},
+ {intent:"SnowPermafrostLand",global:false,nm:["Snow / permafrost land","积雪冻土陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"❄️",c:"var(--coast)",tags:[["slope","坡度"],["tkdry+tksatf","干土/冻土导热"]]},
  // Row 5 — more
- {nm:["Carbon-cycle land","碳循环陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🌲",c:"var(--land)",tags:[["LAI","LAI"],["Ks","导水率"]]},
- {nm:["River-network land","河网陆面"],meta:["land · CoLM · MERIT-Hydro","陆面 · CoLM · MERIT-Hydro"],ic:"💧",c:"var(--river)",tags:[["river","河网"],["slope","坡度"]]},
- {nm:["Multi-objective coupled","多目标耦合"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🎯",c:"var(--estuary)",tags:[["LAI+slope","LAI+坡度"],["sea slope","海底坡度"]]},
+ {intent:"CarbonLand",global:false,nm:["Carbon-cycle land","碳循环陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🌲",c:"var(--land)",tags:[["LAI","LAI"],["Ks","导水率"]]},
+ {intent:"RiverNetwork",global:false,nm:["River-network land","河网陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"💧",c:"var(--river)",tags:[["MERIT-Hydro","MERIT-Hydro"],["slope","坡度"]]},
+ {intent:"MultiObjectiveBalanced",global:false,nm:["Multi-objective coupled","多目标耦合"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🎯",c:"var(--estuary)",tags:[["LAI+slope","LAI+坡度"],["sea slope","海底坡度"]]},
+ // Row 6 — additional backend presets
+ {intent:"Estuary",global:false,nm:["Estuary ocean","河口海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"〰",c:"var(--estuary)",tags:[["CaMa","CaMa"],["sea slope","海底坡度"]]},
+ {intent:"LandOceanCoupled",global:false,nm:["Land-ocean coupled","陆海耦合"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🔀",c:"var(--estuary)",tags:[["LAI","LAI"],["sea slope","海底坡度"]]},
 ];
-// template -> output-model index into ["CoLM","FVCOM","MPAS"], matching the
-// backend preset model_format (atmos=MPAS, ocean=FVCOM, land/coupled=CoLM).
-const TPL_MODEL=[2,0,1, 2,0,1, 2,0,2, 0,0,0, 0,0,0];
-let tpl=7; // default to "Land-ocean coupled" (row 3) to match the south_china_coupled project name
+const DEFAULT_TPL=6; // "MERIT-Hydro coast"
+let tpl=DEFAULT_TPL;
 let regional=true; // domain mode: true=regional (bbox), false=global (no bounds)
-let domBbox=[108,120,18,26]; // current regional bbox [W,E,S,N], used by the cell-count estimate
-// per-card default domain: row 1 (global atmos/land/ocean) + orographic atmosphere; rest regional
-const TPL_GLOBAL=[true,true,true, false,false,false, true,false,false, false,false,false, false,false,false];
+var hiddenDomainShape=null; // opened regional shapes this screen preserves but cannot edit yet
+const DEFAULT_BBOX=[108,120,18,26]; // [W,E,S,N]
+const DEFAULT_SEA_RATIO_PCT=50;
+let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
-let runInfo=null;   // { ok, outdir, code } from the last run
-let maxPasses=3;    // refinement passes (read by step 6 + written by the bridge)
+let runInfo=null;   // { ok, outdir, code, gridfile } from the last run
+let maxPasses=null; // null means use ProjectConfig summary default
 let outputPath=""; // base output folder; outputs go to <outputPath>/<project name>/
-let exportSel={};  // export checklist selection (persisted)
 
-// Export options targeted to the chosen output model (no generic "FVCOM grid").
-function exportCard(lang){
-  const model=["CoLM","FVCOM","MPAS"][TPL_MODEL[tpl]];
-  // id, [en,zh], default-checked. The first is the model-specific coupling data.
-  const items=[
-    ["model",   [model+" model data ("+(lang?"符合该模式要求":"model-ready")+")", model+" 模型耦合数据（符合该模式要求）"], true],
-    ["nc",      ["Mesh NetCDF","网格 NetCDF"], true],
-    ["geojson", ["GeoJSON","GeoJSON"], false],
-    ["qc",      ["Quality report (HTML)","质量报告（HTML）"], false],
-    ["manifest",["Reproducibility manifest","复现 manifest"], true],
-  ];
-  const rows=items.map(it=>{
-    const checked=(exportSel[it[0]]!==undefined)?exportSel[it[0]]:it[2];
-    return `<label style="display:flex;align-items:center;gap:9px;padding:7px 2px;cursor:pointer;border-radius:8px">
-      <input type="checkbox" data-exp="${it[0]}" ${checked?"checked":""} style="width:16px;height:16px;accent-color:var(--accent);flex:none">
-      <span style="font-size:13.5px">${it[1][lang?1:0]}</span></label>`;
-  }).join("");
-  return `<div class="card"><h3>${lang?"导出":"Export"}</h3><div class="ch">${lang?"勾选要导出的内容（运行后产生）":"check what to export (produced after a run)"}</div>
-    <div style="margin-top:4px">${rows}</div></div>`;
-}
-
-/* ---------------- resolution control (value + reserved unit + ticked slider) ---------------- */
+/* ---------------- resolution control (value + ticked slider) ---------------- */
+const KM_NXP_ANCHOR=360; // mirrors earthmesh_project::km_to_nxp display estimate
 const RES_UNITS=[
  {label:["km","km"], suffix:" km", min:1, max:60, step:0.5, def:9, ticks:[1,15,30,45,60]},
- {label:["° (lat-lon · reserved)","°（经纬度 · 预留）"], suffix:"°", min:0.05, max:2, step:0.05, def:0.25, ticks:[0.05,0.5,1,1.5,2]},
  {label:["NXP (grid points)","NXP（格点数）"], suffix:" NXP", min:8, max:400, step:1, def:40, ticks:[8,100,200,300,400]},
 ];
-let resUnitIdx=0, resVal=9;
+let resUnitIdx=0, resVal=RES_UNITS[0].def;
 function fmtRes(){const u=RES_UNITS[resUnitIdx];return resVal+u.suffix;}
-// Cross-unit equivalents. Engine relation: nxp ≈ 360/km (km_to_nxp); degrees use
-// ~111.32 km per degree near the equator.
+// Cross-unit equivalents. Engine relation: nxp ≈ 360/km (km_to_nxp).
 function fmtEquiv(){
   if(!(resVal>0)) return "";
-  if(resUnitIdx===2){ const km=360/resVal; return "≈ "+km.toFixed(1)+" km · "+(km/111.32).toFixed(3)+"°"; }      // NXP -> km, °
-  if(resUnitIdx===0){ const km=resVal;     return "≈ "+Math.round(360/km)+" NXP · "+(km/111.32).toFixed(3)+"°"; } // km  -> NXP, °
-  if(resUnitIdx===1){ const km=resVal*111.32; return "≈ "+Math.round(360/km)+" NXP · "+km.toFixed(1)+" km"; }     // °   -> NXP, km
+  if(resUnitIdx===1){ const km=KM_NXP_ANCHOR/resVal; return "≈ "+km.toFixed(1)+" km"; }      // NXP -> km
+  if(resUnitIdx===0){ const km=resVal;     return "≈ "+Math.round(KM_NXP_ANCHOR/km)+" NXP · "+(km/111.32).toFixed(3)+"°"; } // km  -> NXP, °
   return "";
+}
+function domainLabel(){
+  if(hiddenDomainShape) return lang ? "保留隐藏区域："+hiddenDomainShape : "Preserved regional: "+hiddenDomainShape;
+  return regional ? (lang ? "区域" : "Regional") : (lang ? "全球" : "Global");
 }
 // ---- cell-count estimate (updates live with resolution + domain) ----
 function cellKm(){
   if(!(resVal>0)) return 0;
-  if(resUnitIdx===2) return 360/resVal;     // NXP -> km
-  if(resUnitIdx===1) return resVal*111.32;   // °   -> km
+  if(resUnitIdx===1) return KM_NXP_ANCHOR/resVal;     // NXP -> km
   return resVal;                              // km
 }
 function estCells(){
   const km=cellKm(); if(!(km>0)) return 0;
   let area;
   if(typeof regional!=="undefined" && regional){
-    const b=(typeof domBbox!=="undefined")?domBbox:[108,120,18,26];
+    const b=(typeof domBbox!=="undefined")?domBbox:DEFAULT_BBOX;
     const midLat=(b[2]+b[3])/2;
     const dx=Math.abs(b[1]-b[0])*111.32*Math.cos(midLat*Math.PI/180);
     const dy=Math.abs(b[3]-b[2])*111.32;
@@ -484,20 +423,11 @@ function estCells(){
   return Math.max(1,Math.round(area/(km*km*0.866))); // hex cell area ≈ 0.866·s²
 }
 function fmtK(n){ return n>=1e6 ? (n/1e6).toFixed(2)+"M" : n>=1e3 ? Math.round(n/1e3)+"k" : ""+n; }
-function maxCells(){
-  const el=document.getElementById("maxCells");
-  if(el){ const v=parseInt(String(el.value).replace(/[^\d]/g,""),10); if(v>0) return v; }
-  return 700000;
-}
 function updateEstimate(){
-  const est=estCells(), max=maxCells(), pct=Math.max(0,Math.min(100,Math.round(est/max*100)));
+  if(hiddenDomainShape){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
+  const est=estCells();
   const set=(id,v,prop)=>{const el=document.getElementById(id); if(el){ if(prop) el.style[prop]=v; else el.textContent=v; }};
   set("estCells","~"+fmtK(est));
-  set("estBar",pct+"%","width");
-  set("estBudget",fmtK(max));
-  set("estPct",pct+"%");
-  set("estCellsStep",est.toLocaleString()+" / "+max.toLocaleString());
-  set("estBarStep",pct+"%","width");
 }
 function resControl(lang){
   const u=RES_UNITS[resUnitIdx];
@@ -519,50 +449,27 @@ function resInput(src){
   const u=RES_UNITS[resUnitIdx];
   let v = src==="range" ? +document.getElementById("resRange").value : +document.getElementById("resNum").value;
   if(isNaN(v)) return;
-  v=Math.min(u.max,Math.max(u.min,v));
+  if(src==="range") v=Math.min(u.max,Math.max(u.min,v));
   resVal=Math.round(v/u.step)*u.step; resVal=Math.round(resVal*1000)/1000;
   const r=document.getElementById("resRange"), n=document.getElementById("resNum"), o=document.getElementById("resOut");
-  if(r) r.value=resVal;
+  if(r && (src==="range" || (src==="num" && resVal>=u.min && resVal<=u.max))) r.value=resVal;
   if(n && src!=="num") n.value=resVal;
   if(o) o.textContent=fmtRes();
   const eq=document.getElementById("resEq"); if(eq) eq.textContent=fmtEquiv();
   updateEstimate();
 }
 
-/* ---------------- data layers (17, showing core 8) ---------------- */
-const LAYERS=[
- {nm:["Land cover","地表覆盖"],role:["landcover entropy","地表覆盖熵"],c:"var(--land)",cov:"ok",p:"data/igbp_500m.nc"},
- {nm:["DEM (elevation)","DEM 高程"],role:["slope · curvature · TWI","坡度·曲率·TWI"],c:"var(--coast)",cov:"ok",p:"data/merit_dem.nc"},
- {nm:["MERIT-Hydro","MERIT-Hydro"],role:["river · upa · wth","河流·汇流·河宽"],c:"var(--river)",cov:"ok",p:"data/merit_hydro/"},
- {nm:["CaMa-Flood","CaMa-Flood"],role:["estuary · discharge","河口·径流"],c:"var(--river)",cov:"part",p:"data/cama_15min/"},
- {nm:["Coastline","海岸线"],role:["coastline complexity","海岸线复杂度"],c:"var(--coast)",cov:"ok",p:"data/gshhg_f.shp"},
- {nm:["Bathymetry","海底地形"],role:["depth · grad · shelf","水深·梯度·陆架"],c:"var(--ocean)",cov:"ok",p:"data/gebco_2024.nc"},
- {nm:["LAI","LAI"],role:["LAI variability","LAI 变率"],c:"var(--land)",cov:"no",p:""},
- {nm:["Soil","土壤"],role:["hydraulic · thermal","水力·热力"],c:"var(--urban)",cov:"part",p:"data/soilgrids/"},
-];
-const COV={ok:["covers domain","覆盖完整"],part:["partial coverage","部分覆盖"],no:["missing — criterion off","缺失·判据禁用"]};
-
-/* ---------------- criteria (Refinement) ---------------- */
-const CRIT=[
- {nm:["Coastline complexity","海岸线复杂度"],u:["FVCOM · ocean","FVCOM · 海洋"],w:85,on:true},
- {nm:["River network (R2/R3)","河网 R2/R3"],u:["MERIT-Hydro","MERIT-Hydro"],w:72,on:true},
- {nm:["Estuary / river-mouth","河口/入海口"],u:["CaMa-Flood","CaMa-Flood"],w:64,on:true},
- {nm:["Bathymetry gradient","水深梯度"],u:["GEBCO","GEBCO"],w:48,on:true},
- {nm:["Slope (DEM)","坡度 DEM"],u:["MERIT DEM","MERIT DEM"],w:30,on:false},
-];
-
 /* ---------------- step renderers ---------------- */
 function field(label,inner,hint){return `<div class="field"><label>${label} ${hint?`<span class="hint">${hint}</span>`:""}</label>${inner}</div>`;}
 function inp(v){return `<input class="input" value="${v}">`;}
-function sel(opts,si){return `<select class="select">${opts.map((o,i)=>`<option ${i===si?"selected":""}>${o}</option>`).join("")}</select>`;}
 
 function renderStep(i){
   const w=document.getElementById("work");
-  const head=(k,t,s)=>`<div class="work-head"><span class="kicker">${L("step")||""}STEP ${i+1} / 7</span></div>
+  const head=(t,s)=>`<div class="work-head"><span class="kicker">STEP ${i+1} / 7</span></div>
     <h1>${t}</h1><p class="sub">${s}</p>`;
   let html="";
   if(i===0){
-    html=head("",STEPS[0].t[lang],lang?"新建、打开或保存项目——所有设置都存进一个可重开的项目文件。":"Create, open or save a project — every setting lives in one reopenable project file.")
+    html=head(STEPS[0].t[lang],lang?"新建、打开或保存项目——所有设置都存进一个可重开的项目文件。":"Create, open or save a project — every setting lives in one reopenable project file.")
     +`<div class="proj-actions" style="display:flex;gap:8px;margin-bottom:14px">
          <button class="menu-btn" id="projNew">🆕 ${lang?"新建":"New"}</button>
          <button class="menu-btn" id="projOpen">📂 ${lang?"打开":"Open"}</button>
@@ -570,19 +477,17 @@ function renderStep(i){
        </div>
        <div class="grid2">
        <div class="card"><h3>${lang?"项目信息":"Project"}</h3><div class="ch">${lang?"写入 ProjectConfig.metadata":"Written to ProjectConfig.metadata"}</div>
-         ${field(lang?"项目名称":"Project name",inp("south_china_coupled"))}
-         ${field(lang?"作者":"Author",inp("Zhongwang Wei @ SYSU"))}
-         ${field(lang?"描述":"Description",`<textarea class="input" rows="3">South China land–ocean coupled mesh for CoLM/FVCOM.</textarea>`)}
-         ${field(lang?"输出路径":"Output folder",`<div class="browse" id="outPathBrowse" style="cursor:pointer"><span class="path" id="outPathText" style="max-width:none">${outputPath?("📁 "+outputPath):(lang?"📁 点击选择…（默认临时目录）":"📁 Choose…  (default: temp dir)")}</span></div>`,lang?"所有输出存到 <输出路径>/<项目名>/":"outputs go to <folder>/<project name>/")}
+         ${field(lang?"项目名称":"Project name",`<input class="input" id="projectNameStep" value="earthmesh-project">`)}
+         ${field(lang?"作者":"Author",`<input class="input" id="projectAuthor" value="">`)}
+         ${field(lang?"描述":"Description",`<textarea class="input" id="projectDescription" rows="3"></textarea>`)}
+         ${field(lang?"输出路径":"Output folder",`<div class="browse" id="outPathBrowse" style="cursor:pointer"><span class="path" id="outPathText" style="max-width:none">${lang?"📁 点击选择…（默认临时目录）":"📁 Choose…  (default: temp dir)"}</span></div>`,lang?"所有输出存到 <输出路径>/<项目名>/":"outputs go to <folder>/<project name>/")}
        </div>
-       <div class="card"><h3>${lang?"最近项目":"Recent projects"}</h3><div class="ch">${lang?"点击重开":"Click to reopen"}</div>
-         ${["pearl_river_estuary.emproj","global_mpas_60-15km.emproj","yangtze_hydrology.emproj"].map(p=>`<div class="browse" style="margin-bottom:8px"><span class="path" style="max-width:none">📄 ${p}</span></div>`).join("")}
-       </div></div>
+       <div class="card"><h3>${lang?"最近项目":"Recent projects"}</h3><div class="ch">${lang?"保存或打开项目后会显示在这里":"Save or Open a project and it appears here"}</div></div></div>
        <div id="projSummary" style="margin-top:14px"></div>`;
   }
   else if(i===1){
-    html=head("",STEPS[1].t[lang],lang?"选一个目标模板——自动填好网格类型、输出格式、默认判据和数据图层；之后任何一步都能微调。":"Pick a target template — it fills mesh type, output format, default criteria and data layers; tweak anything later.")
-    +`<div class="card"><h3>${lang?"目标模板":"Target template"}</h3><div class="ch">${lang?"12 个常见目标（此处展示 9 个已实现）":"Common targets (9 implemented shown)"}</div>
+    html=head(STEPS[1].t[lang],lang?"选一个目标模板——自动填好网格类型、输出格式、默认判据和数据图层；后续步骤继续设置域、数据与质量门限。":"Pick a target template — it fills mesh type, output format, default criteria and data layers; later steps set domain, data and quality gates.")
+    +`<div class="card"><h3>${lang?"目标模板":"Target template"}</h3><div class="ch">${lang?"模板会映射到后端 intent 预设":"Templates map to backend intent presets"}</div>
       <div class="tpl">${TPL.map((t,k)=>`<div class="tcard ${k===tpl?"on":""}" data-tpl="${k}">
         ${k===tpl?'<span class="check">✓</span>':""}
         <div class="ic" style="background:color-mix(in srgb,${t.c} 18%,transparent);color:${t.c}">${t.ic}</div>
@@ -593,116 +498,86 @@ function renderStep(i){
           <div style="margin:auto 0">${resControl(lang)}</div>
         </div>
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
-          ${field(lang?"输出模型":"Output model",sel(["CoLM","FVCOM","MPAS"],TPL_MODEL[tpl]),lang?"随模板自动选择":"auto-set by template")}
-          ${field(lang?"单元形状":"Cell shape",sel(lang?["六边形","三角形"]:["Hexagonal","Triangular"],TPL_MODEL[tpl]===1?1:0),lang?"随模板自动选择（FVCOM 用三角）":"auto-set by template (FVCOM → triangular)")}
-          ${field(lang?"网格平滑迭代":"Mesh smoothing passes",inp("60"),lang?"次数越多越平滑、越慢（引擎参数 niter）":"more passes = smoother but slower (engine niter)")}
+          ${field(lang?"输出模型":"Output model",`<input class="input" id="targetModelOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
+          ${field(lang?"单元形状":"Cell shape",`<input class="input" id="targetCellOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
         </div></div>`;
   }
   else if(i===2){
-    html=head("",STEPS[2].t[lang],lang?"设全球或区域；区域可填经纬度框、圆，或直接在地图上画多边形。右侧地图实时反映。":"Set global or regional; regional accepts a bbox, a circle, or a polygon drawn on the map. The map on the right reflects it live.")
+    const hiddenDomain = hiddenDomainShape;
+    html=head(STEPS[2].t[lang],lang?"设全球或区域；区域使用经纬度矩形框。右侧地图实时反映。":"Set global or regional; regional uses a latitude/longitude bounding box. The map on the right reflects it live.")
     +`<div class="card"><h3>${lang?"计算域":"Domain"}</h3>
-       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${regional?"":"on"}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${regional?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span></div>
-       ${regional?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span><span class="pill">${lang?"圆形":"Circle"}</span><span class="pill">✏️ ${lang?"地图画多边形":"Draw polygon"}</span></div>
+       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(!regional && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(regional || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span></div>
+       ${hiddenDomain?`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"此项目使用当前界面尚未编辑的区域形状（":"This project uses a regional shape not edited by this screen ("}<span id="hiddenDomainShapeText"></span>${lang?"）；保存/运行会保留它。切换到「区域」会改为矩形框。":"); Save/Run preserves it. Switch to Regional to replace it with a bounding box."}</div>`
+       :regional?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
        <div class="grid2">
-         ${field(lang?"西经度 (°)":"West lon (°)",inp("108.0"))}${field(lang?"东经度 (°)":"East lon (°)",inp("120.0"))}
-         ${field(lang?"南纬度 (°)":"South lat (°)",inp("18.0"))}${field(lang?"北纬度 (°)":"North lat (°)",inp("26.0"))}
+         ${field(lang?"西经度 (°)":"West lon (°)",inp(DEFAULT_BBOX[0].toFixed(1)))}${field(lang?"东经度 (°)":"East lon (°)",inp(DEFAULT_BBOX[1].toFixed(1)))}
+         ${field(lang?"南纬度 (°)":"South lat (°)",inp(DEFAULT_BBOX[2].toFixed(1)))}${field(lang?"北纬度 (°)":"North lat (°)",inp(DEFAULT_BBOX[3].toFixed(1)))}
        </div>
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" min="0" max="100" value="55"><div style="color:var(--muted);font-size:11px">55% ${lang?"海洋":"ocean"}</div>`)}`
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
        :`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"🌐 全球覆盖——无需设定边界，整个地球都会被网格化。":"🌐 Global coverage — no bounds needed; the whole planet is meshed."}</div>`}
-     </div>
-     ${regional?`<div class="expert"><span class="expert-tag">⚙ ${lang?"专家":"EXPERT"}</span>
-       <div class="row">${field("Lambert λ₀",inp("114.0"))}${field(lang?"日界线处理":"Dateline",sel(["auto-normalize","raw"],0))}</div>
-     </div>`:""}`;
+     </div>`;
   }
   else if(i===3){
-    html=head("",STEPS[3].t[lang],lang?"统一管理输入数据图层。每行显示角色、路径和覆盖校验；缺失的数据会让对应判据自动灰显，绝不静默细化。":"One place for input layers. Each row shows its role, path and coverage check; missing data greys out its criterion instead of silently refining.")
-    +`<div class="card"><h3>${lang?"数据图层管理器":"Data layer manager"}</h3><div class="ch">${lang?"17 个图层（核心 8 个）· 映射 DataLayerConfig":"17 layers (core 8) · maps DataLayerConfig"}</div>
+    html=head(STEPS[3].t[lang],lang?"统一管理输入数据图层。每行来自当前 ProjectConfig；缺失的数据会让对应判据自动灰显。":"One place for input layers. Rows come from the current ProjectConfig; missing data greys out its criterion.")
+    +`<div class="card"><h3>${lang?"数据图层管理器":"Data layer manager"}</h3><div class="ch">${lang?"正在读取项目图层…":"loading project layers…"}</div>
       <table class="layers"><thead><tr>
         <th></th><th>${lang?"图层":"Layer"}</th><th>${lang?"用于判据":"Used by"}</th><th>${lang?"路径":"Path"}</th><th>${lang?"覆盖":"Coverage"}</th></tr></thead><tbody>
-        ${LAYERS.map((y,k)=>`<tr>
-          <td><div class="sw ${y.cov!=="no"?"on":""}"></div></td>
-          <td><span class="dot" style="background:${y.c}"></span><b>${y.nm[lang]}</b></td>
-          <td style="color:var(--muted)">${y.role[lang]}</td>
-          <td>${y.p?`<span class="path">${y.p}</span>`:`<span class="btn-ghost" style="padding:3px 9px">📂 ${lang?"浏览":"Browse"}</span>`}</td>
-          <td><span class="cov ${y.cov}">${COV[y.cov][lang]}</span></td></tr>`).join("")}
+        <tr><td colspan="5" style="color:var(--muted);padding:12px">${lang?"正在从当前项目配置读取图层。":"Loading layers from the current project config."}</td></tr>
       </tbody></table></div>`;
   }
   else if(i===4){
-    html=head("",STEPS[4].t[lang],lang?"选择细化判据并调权重——每条判据连着一个数据图层。下方预算把你的意图换算成预计单元数与成本。":"Choose refinement criteria and weights — each ties to a data layer. The budget below turns intent into estimated cell count and cost.")
-    +`<div class="card"><h3>${lang?"细化判据":"Refinement criteria"}</h3><div class="ch">${lang?"模板「陆海耦合」默认值 · 可逐条增删":"Defaults from “Land-ocean coupled” · add/remove freely"}</div>
-      ${CRIT.map((c,k)=>`<div class="crit">
-        <div class="sw ${c.on?"on":""}" style="width:18px;height:18px;border-radius:5px;background:${c.on?"var(--accent)":"var(--border)"}"></div>
-        <div><div class="cn">${c.nm[lang]}</div><div class="cu">${c.u[lang]}</div></div>
-        <input type="range" min="0" max="100" value="${c.w}" ${c.on?"":"disabled"}>
-        <div style="text-align:right;font-weight:700;color:${c.on?"var(--accent)":"var(--faint)"}">${c.w}%</div></div>`).join("")}
-    </div>
-    <div class="card"><h3>${lang?"单元预算":"Cell budget"}</h3>
-      <div class="grid2">${field(lang?"最大单元数":"Max cells",`<input class="input" id="maxCells" value="700,000" oninput="updateEstimate()">`)}${field(lang?"最小边长 (km) · 数据分辨率":"Min edge (km) · data res",`<input class="input" id="minEdge" value="0.8" oninput="updateEstimate()">`)}</div>
-      <div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">${lang?"预计单元数（估算）":"Estimated cells (est.)"}</span><b id="estCellsStep">—</b></div>
-      <div class="bar" style="height:9px;margin-top:6px"><i id="estBarStep" style="width:0%"></i></div></div>
-    </div>
-    <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 引擎旋钮":"EXPERT — engine knobs"}</span>
-      <div class="grid2">
-        ${field("HALO "+(lang?"（每层）":"(per level)"),inp("2,2,1"))}${field(lang?"过渡行数":"Transition rows",inp("3"))}
-        ${field("Spring β",inp("0.40"))}${field("num_rc",inp("8"))}
-      </div>
-      ${field(lang?"原始阈值 th_*":"Raw th_* thresholds",`<span class="btn-ghost">${lang?"打开阈值表…":"Open threshold table…"}</span> <span class="btn-ghost">${lang?"手动掩膜…":"Manual masks…"}</span>`)}
-    </div>`;
+    html=head(STEPS[4].t[lang],lang?"查看当前模板的细化判据；每条判据连着一个数据图层。":"Review the selected template's refinement criteria; each criterion ties to a data layer.")
+    +`<div class="card"><h3>${lang?"细化判据":"Refinement criteria"}</h3><div class="ch">${lang?"正在读取项目判据…":"loading project criteria…"}</div></div>`;
   }
   else if(i===5){
-    html=head("",STEPS[5].t[lang],lang?"设质量目标，引擎据此判定网格 Pass/Warn/Fail。常规模式给三档预设，专家模式可逐项设门禁阈值。":"Set quality goals; the engine judges the mesh Pass/Warn/Fail against them. Normal offers three presets, Expert exposes per-gate thresholds.")
-    +`<div class="card"><h3>${lang?"质量模式":"Quality mode"}</h3>
-      <div class="pill-row" style="margin-bottom:14px"><span class="pill">${lang?"宽松":"Loose"}</span><span class="pill on">${lang?"均衡":"Balanced"}</span><span class="pill">${lang?"严格":"Strict"}</span></div>
-      ${field(lang?"违规时":"On violation",sel(lang?["警告并继续","直接失败","自动修复"]:["Warn & continue","Fail","Auto-repair"],0))}
+    html=head(STEPS[5].t[lang],lang?"设质量门限；当前会写入最小角和违规策略。":"Set the quality gate; Studio writes the minimum angle and violation policy.")
+    +`<div class="card"><h3>${lang?"违规处理":"Violation behavior"}</h3>
+      ${field(lang?"违规时":"On violation",`<select class="select"><option selected>${lang?"警告并继续":"Warn & continue"}</option><option>${lang?"直接失败":"Fail"}</option></select>`)}
     </div>
-    <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 逐项门禁":"EXPERT — per-gate thresholds"}</span>
-      <div class="grid2">
-        ${field(lang?"最小角 ≥":"Min angle ≥",inp("25°"))}${field(lang?"最大偏斜 ≤":"Max skew ≤",inp("0.85"))}
-        ${field(lang?"面积比 ≤":"Area ratio ≤",inp("4.0"))}${field(lang?"耦合面积误差 ≤":"Coupling frac err ≤",inp("1%"))}
-      </div></div>`;
+    <div class="quality-detail"><span class="quality-tag">⚙ ${lang?"质量门限":"Quality gate"}</span>
+      ${field(lang?"最小角 ≥":"Min angle ≥",inp("25°"))}</div>`;
   }
   else{
-    html=head("",STEPS[6].t[lang],lang?"点击下方「运行」生成网格；过程日志见右侧。完成后这里显示结果与导出。":"Click Run below to generate; live log on the right. Results and export appear here when it finishes.");
+    html=head(STEPS[6].t[lang],lang?"点击下方「运行」生成网格；过程日志见右侧。完成后这里显示结果与质量指标。":"Click Run below to generate; live log on the right. Results and quality metrics appear here when it finishes.");
     if(!hasRun){
-      const model=["CoLM","FVCOM","MPAS"][TPL_MODEL[tpl]];
       html+=`<div class="card"><h3>${lang?"准备生成":"Ready to generate"}</h3>
         <div class="ch">${lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run."}</div>
         <div class="grid2" style="margin-top:8px">
-          ${field(lang?"输出模型":"Output model",`<b style="font-size:15px">${model}</b>`)}
+          ${field(lang?"输出模型":"Output model",`<b id="readyModelOutput" style="font-size:15px">—</b>`)}
           ${field(lang?"分辨率":"Resolution",`<b style="font-size:15px">${fmtRes()}</b> <span style="color:var(--muted);font-size:12px">${fmtEquiv()}</span>`)}
-          ${field(lang?"计算域":"Domain",`<b style="font-size:15px">${regional?(lang?"区域":"Regional"):(lang?"全球":"Global")}</b>`)}
-          ${field(lang?"细化":"Refinement",`<b style="font-size:15px">${lang?"最多 ":"up to "}${maxPasses}${lang?" 次":" passes"}</b> <span style="color:var(--muted);font-size:12px">${lang?"（需对应数据）":"(needs data)"}</span>`)}
+          ${field(lang?"计算域":"Domain",`<b id="readyDomainOutput" style="font-size:15px">—</b>`)}
+          ${field(lang?"细化":"Refinement",`<b id="readyRefinementOutput" style="font-size:15px">—</b>`)}
         </div></div>`;
     } else {
       const ok=runInfo&&runInfo.ok;
       html+=`<div class="verdict"><span class="vb" style="background:${ok?'var(--pass)':'#e5484d'}">${ok?'DONE':'FAIL'}</span>
         <div><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
-        <div class="vs">${runInfo&&runInfo.outdir?(lang?"输出目录：":"output: ")+runInfo.outdir:""}${(!ok&&runInfo&&runInfo.code!=null)?" · code "+runInfo.code:""}</div></div></div>
+        <div class="vs" id="runOutputSummary"></div></div></div>
         ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><span class="btn-ghost" id="openOutBtn" style="cursor:pointer">📂 ${lang?"打开输出文件夹":"Open output folder"}</span></div>`:""}
         <div class="card" id="qualityCard" style="margin-top:16px"><h3>${lang?"质量指标":"Quality metrics"}</h3>
-          <div class="ch">${lang?"运行后自动解析（quality_summary.json）。":"Parsed automatically after a run (quality_summary.json)."}</div></div>
-        ${exportCard(lang)}`;
+          <div class="ch">${lang?"运行后自动解析（quality_summary.json）。":"Parsed automatically after a run (quality_summary.json)."}</div></div>`;
     }
   }
   // footer nav
-  html+=`<div class="foot"><span class="vmsg">✓ ${lang?"本步输入有效":"This step is valid"}</span>
-    <div class="nav-btns">${i>0?`<button class="btn-back" onclick="go(${i-1})">${L("foot.back")}</button>`:""}
+  html+=`<div class="foot"><div class="nav-btns">${i>0?`<button class="btn-back" onclick="go(${i-1})">${L("foot.back")}</button>`:""}
     ${i<6?`<button class="btn-next" onclick="go(${i+1})">${L("foot.next")} →</button>`:`<button class="btn-next run-btn" id="runBtn">▶ ${lang?"运行":"Run"}</button><button class="btn-next" id="killBtn" onclick="killRun()" style="display:none;margin-left:8px;background:#dc2626;border-color:#dc2626;color:#fff">■ ${lang?"终止":"Kill"}</button>`}</div></div>`;
   w.innerHTML=html;
+  const hiddenDomainText=document.getElementById("hiddenDomainShapeText"); if(hiddenDomainText) hiddenDomainText.textContent=hiddenDomainShape || "";
+  const readyDomain=document.getElementById("readyDomainOutput"); if(readyDomain) readyDomain.textContent=domainLabel();
+  const runOut=document.getElementById("runOutputSummary"); if(runOut&&runInfo){ const parts=[]; if(runInfo.outdir) parts.push((lang?"输出目录：":"output: ")+runInfo.outdir); if(!runInfo.ok&&runInfo.code!=null) parts.push("code "+runInfo.code); runOut.textContent=parts.join(" · "); }
   // wire template + layer toggles
-  w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>{tpl=+c.dataset.tpl;regional=!TPL_GLOBAL[tpl];renderStep(1);});
-  w.querySelectorAll(".sw").forEach(s=>s.onclick=()=>s.classList.toggle("on"));
+  w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>selectTemplate(+c.dataset.tpl));
   // domain mode pills (global hides the bbox section)
-  w.querySelectorAll(".dom-mode").forEach(p=>p.onclick=()=>{regional=p.dataset.mode==="regional";renderStep(2);});
+  w.querySelectorAll(".dom-mode").forEach(p=>p.onclick=()=>{regional=p.dataset.mode==="regional";hiddenDomainShape=null;renderStep(2);});
   // the Run button now lives in the final step's footer
-  const rb=document.getElementById("runBtn"); if(rb) rb.onclick=mockRun;
+  const rb=document.getElementById("runBtn"); if(rb) rb.onclick=backendUnavailableRun;
   updateEstimate();
   drawMap(); // keep the map's domain box in sync with regional/global + template
 }
 function go(i){cur=i;renderSteps();renderStep(i);document.getElementById("work").scrollTop=0;}
 
-/* ---------------- map (real OSM basemap + domain box + mesh overlay) ---------------- */
-function osmLayer(){
+/* ---------------- map (satellite base + domain box + mesh overlay) ---------------- */
+function baseMapLayer(){
   // Satellite imagery base. Unlike OSM, it draws NO national borders or maritime/
   // territorial lines, so the map depicts no disputed boundary of any kind.
   // (Esri World Imagery — free with attribution. Note {y}/{x} order, no {s}.)
@@ -715,7 +590,7 @@ function ensureMap(elId){
   if(!el || !window.LEAF) return null;
   if(el._lmap) return el._lmap;        // one Leaflet instance per container
   const m=window.LEAF.map(el,{ zoomControl:true, attributionControl:true }).setView([22,113],4);
-  osmLayer().addTo(m);
+  baseMapLayer().addTo(m);
   // Drop Leaflet's default attribution prefix — the "Leaflet" link AND the
   // Ukrainian flag (🇺🇦) it ships since v1.8 — so no flag shows on the map. The
   // small imagery credit (© Esri) stays for licensing.
@@ -783,36 +658,31 @@ function openMapModal(){
   }
 }
 function closeMapModal(){const mm=document.getElementById("mapModal"); if(mm) mm.style.display="none";}
-function clearLog(){const lb=document.getElementById("logbox"); if(lb) lb.innerHTML="";}
+function clearLog(){const lb=document.getElementById("logbox"); if(lb) lb.textContent="";}
 function setLogStatus(text, ok){
   const s=document.getElementById("logStatus"); if(s) s.textContent=text;
   const d=document.getElementById("logDot"); if(d) d.classList.toggle("on", ok!==false);
 }
+function setRunControls(on){
+  const runBtn=document.getElementById("runBtn"), killBtn=document.getElementById("killBtn");
+  if(runBtn){
+    runBtn.disabled=on;
+    runBtn.style.opacity=on?"0.55":"";
+    runBtn.style.cursor=on?"not-allowed":"";
+    runBtn.textContent=on?(lang?"⏳ 运行中…":"⏳ Running…"):("▶ "+(lang?"运行":"Run"));
+  }
+  if(killBtn) killBtn.style.display=on?"inline-flex":"none";
+}
 async function killRun(){
   const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
   const lb=document.getElementById("logbox");
-  const add=(s)=>{ if(lb){ lb.innerHTML += "\n"+s; lb.scrollTop=lb.scrollHeight; } };
+  const add=(s)=>{ if(lb){ const div=document.createElement("div"); div.textContent=s; lb.appendChild(div); lb.scrollTop=lb.scrollHeight; } };
   if(!inv){ add("✗ "+(lang?"无法连接后端":"backend unavailable")); return; }
   try{
     const r = await inv("kill_run");
-    add('<span class="wn">■ '+(r?(lang?"已终止正在运行的引擎":"killed the running engine"):(lang?"当前没有正在运行的程序":"no running process"))+'</span>');
+    add("■ "+(r?(lang?"已终止正在运行的引擎":"killed the running engine"):(lang?"当前没有正在运行的程序":"no running process")));
+    if(r){ setRunControls(false); const rt=document.getElementById("rtext"); if(rt) rt.textContent=lang?"已终止":"killed"; }
   }catch(e){ add("✗ kill: "+e); }
-}
-
-/* ---------------- log ---------------- */
-function renderLog(){
-  const zh=lang===1;
-  const lines=[
-    `<span class="ac">▶ ${zh?"开始运行":"run started"}</span>  south_china_coupled`,
-    `  ${zh?"载入数据图层":"loading data layers"}… 6/8 ok, soil ${zh?"部分":"partial"}, LAI <span class="wn">${zh?"缺失":"missing"}</span>`,
-    `  ${zh?"计算细化评分":"scoring refinement"}… coastline+river+estuary`,
-    `  ${zh?"初始网格":"initial mesh"} spring niter=60 β=0.40`,
-    `  ${zh?"细化":"refining"} pass 1/3 … 184k cells`,
-    `  ${zh?"细化":"refining"} pass 3/3 … 412k cells`,
-    `  ${zh?"质量门禁":"quality gates"}… min∠ 31.4° <span class="ok">PASS</span>`,
-    `<span class="ok">✓ ${zh?"运行完成":"run finished"}</span>  412,388 cells · 11.2s`,
-  ];
-  document.getElementById("logbox").innerHTML=lines.join("\n");
 }
 
 /* ---------------- toggles ---------------- */
@@ -820,24 +690,20 @@ document.getElementById("themeBtn").onclick=function(){
   const r=document.documentElement, dark=r.getAttribute("data-theme")==="dark";
   r.setAttribute("data-theme",dark?"light":"dark"); this.textContent=dark?"🌙":"☀️"; drawMap();
 };
-document.getElementById("modeSeg").onclick=e=>{const b=e.target.closest("[data-mode]");if(!b)return;
-  document.querySelectorAll("#modeSeg button").forEach(x=>x.classList.toggle("on",x===b));
-  document.body.classList.toggle("normal",b.dataset.mode==="normal");};
 document.getElementById("langSeg").onclick=e=>{const b=e.target.closest("[data-lang]");if(!b)return;
   document.querySelectorAll("#langSeg button").forEach(x=>x.classList.toggle("on",x===b));
   lang=b.dataset.lang==="zh"?1:0; applyI18n();};
 document.getElementById("liveTabs").onclick=e=>{const b=e.target.closest("[data-pane]");if(!b)return;
   document.querySelectorAll("#liveTabs button").forEach(x=>x.classList.toggle("on",x===b));
   document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane===b.dataset.pane));};
-function mockRun(){
-  document.getElementById("rdot").classList.add("on");
-  document.getElementById("rtext").textContent=lang?"运行完成":"finished";
+function backendUnavailableRun(){
+  document.getElementById("rdot").classList.remove("on");
+  document.getElementById("rtext").textContent=lang?"无法连接后端":"backend unavailable";
   document.querySelectorAll("#liveTabs button").forEach(x=>x.classList.toggle("on",x.dataset.pane==="log"));
   document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane==="log"));
+  clearLog();
+  setLogStatus(lang?"无法连接后端":"backend unavailable", false);
 }
-
-/* init */
-document.body.classList.add("normal");
 
 /* ---------------- resizable rail / map panels (draggable splitters) ---------------- */
 function setupSplitters(){
@@ -871,16 +737,16 @@ function setupSplitters(){
   mk(document.querySelector(".live"),"left");
 }
 
-renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitters();
+renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
 </script>
 
 <script>
 /* ============================================================================
-   EarthMesh Studio — Tauri backend bridge (slices 1 & 2).
+   EarthMesh Studio — Tauri backend bridge.
    Active ONLY inside the Tauri webview (window.__TAURI__ present). In a plain
    browser this whole block is a no-op, so this file still opens standalone as
-   the design reference. Classic script tags share one global lexical scope, so
-   we read/override the prototype's tpl / resVal / resUnitIdx / TPL / cur /
+   the static frontend shell. Classic script tags share one global lexical scope, so
+   we read/override the frontend globals tpl / resVal / resUnitIdx / TPL / cur /
    renderStep / renderSteps here.
 
    Model: everything derives from the UI except per-layer file edits, which we
@@ -892,93 +758,79 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
   if (!(window.__TAURI__ && window.__TAURI__.core)) return;
   const invoke = window.__TAURI__.core.invoke;
 
-  // TPL card index -> intent preset id (earthmesh_project::MeshIntentPreset).
-  const TPL_INTENT = [
-    "AtmosphereTyphoonPrecip", // 0 全球大气
-    "Custom",                  // 1 全球陆面 (uniform land + landcover)
-    "CoastalOcean",            // 2 全球海洋
-    "AtmosphereTyphoonPrecip", // 3 区域大气
-    "Custom",                  // 4 区域陆面
-    "CoastalOcean",            // 5 区域海洋
-    "AtmosphereTyphoonPrecip", // 6 地形大气 (orographic; reuses the typhoon atmos preset)
-    "MeritHydroCoast",         // 7 陆海耦合 (coupled + MERIT-Hydro)
-    "AtmosphereTyphoonPrecip", // 8 海气耦合·台风 (air-sea; reuses the typhoon atmos preset)
-    "HydrologyLand",           // 9 水文陆面
-    "UrbanLand",               // 10 城市陆面
-    "SnowPermafrostLand",      // 11 积雪冻土陆面
-    "CarbonLand",              // 12 碳循环陆面
-    "RiverNetwork",            // 13 河网陆面
-    "MultiObjectiveBalanced",  // 14 多目标耦合
-  ];
-  // First TPL index per intent — for reflecting a loaded project's intent back.
-  const INTENT_TPL = {};
-  TPL_INTENT.forEach((it, i) => { if (INTENT_TPL[it] === undefined) INTENT_TPL[it] = i; });
-
-  function currentNxp() {
+  function currentResolution() {
     try {
       if (typeof resUnitIdx !== "undefined" && typeof resVal !== "undefined") {
-        if (resUnitIdx === 2) return Math.max(1, Math.round(resVal));               // NXP
-        if (resUnitIdx === 1 && resVal > 0) return Math.max(1, Math.round(360 / (resVal * 111.32))); // ° -> km -> NXP
-        if (resVal > 0) return Math.max(1, Math.round(360 / resVal));               // km -> NXP
+        if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null };
+        return { nxp: null, approxKm: resVal };
       }
     } catch (e) {}
-    return 40;
+    return { nxp: 40, approxKm: null };
+  }
+  function currentNxp() {
+    if (lastSummary && lastSummary.effective_nxp != null) return lastSummary.effective_nxp;
+    const r = currentResolution();
+    if (r.nxp != null) return r.nxp;
+    return r.approxKm > 0 ? Math.max(1, Math.round(KM_NXP_ANCHOR / r.approxKm)) : 0;
   }
   function currentIntent() {
-    try { return TPL_INTENT[tpl] || "Custom"; } catch (e) { return "Custom"; }
+    try { return (TPL[tpl] && TPL[tpl].intent) || "Custom"; } catch (e) { return "Custom"; }
   }
   function projectName() {
     const el = document.querySelector(".proj-name");
-    if (el && el.value.trim()) return el.value.trim();
+    if (el) return el.value.trim();
     return "earthmesh-project";
   }
   const zh = () => (typeof lang !== "undefined" && lang) ? true : false;
 
   // ---- live project model ----------------------------------------------------
   const layerEdits = {};   // layer id -> { path, enabled }
-  let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n}
+  let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, block }
+  let metadataEdit = { authors: [], description: "" };
+  let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
   let lastSummary = null;    // cached ProjectSummary (+ _valid/_err) for the summary panel
-  // maxPasses is a prototype global (read by step 6's renderStep); we read/write it here.
+  let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
+  // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
 
   // Refinement runs only if at least one criterion has a data file — otherwise
   // a uniform mesh (which needs no NetCDF input and always runs).
-  function anyCriterionData() {
+  function hasEnabledThresholdLayer(summary) {
     // Only THRESHOLD criteria drive refinement. The landcover (the land/sea MASK
     // source) and hydro inputs must NOT flip refinement on — doing so is what sent
-    // a data-less land/ocean run down the refine path and failed. Use the summary's
-    // per-layer roles when we have them; fall back before the first summary.
-    const layers = (lastSummary && lastSummary.layers) || null;
-    if (layers) {
-      return layers.some((l) => {
-        if (!/threshold/i.test(l.role || "")) return false;
-        const e = layerEdits[l.id];
-        const path = e ? e.path : l.path;
-        const enabled = e ? e.enabled : l.enabled;
-        return !!path && !!enabled;
-      });
-    }
-    return Object.keys(layerEdits).some((id) => layerEdits[id] && layerEdits[id].path && layerEdits[id].enabled);
+    // a data-less land/ocean run down the refine path and failed.
+    return ((summary && summary.layers) || []).some((l) =>
+      l.role_kind === "threshold" && !!l.path && !!l.enabled);
   }
 
   async function composeYaml() {
+    const resolution = currentResolution();
     let yaml = await invoke("scaffold_project",
-      { name: projectName(), intent: currentIntent(), nxp: currentNxp() });
+      { name: projectName(), intent: currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm });
+    yaml = await invoke("set_project_metadata",
+      { yaml, name: projectName(), authors: metadataEdit.authors || [], description: metadataEdit.description || "" });
     // Derive the domain from the LIVE regional flag + bbox — not a stale
     // domainEdit (template cards flip `regional` without updating domainEdit).
     if (typeof regional !== "undefined" && !regional) {
       yaml = await invoke("set_domain_global", { yaml });
     } else {
-      const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : [108, 120, 18, 26];
-      yaml = await invoke("set_domain_bbox", { yaml, w: b[0], e: b[1], s: b[2], n: b[3], seaRatio: null });
+      const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : DEFAULT_BBOX;
+      const seaRatio = domainEdit && domainEdit.kind === "bbox" ? (domainEdit.seaRatio ?? null) : null;
+      yaml = await invoke("set_domain_bbox", { yaml, w: b[0], e: b[1], s: b[2], n: b[3], seaRatio });
     }
     for (const id of Object.keys(layerEdits)) {
       const e = layerEdits[id];
       try { yaml = await invoke("set_layer_path", { yaml, id, path: e.path, enabled: e.enabled }); }
       catch (err) { /* id not in this preset's layer set — skip */ }
     }
-    yaml = await invoke("set_refinement", { yaml, enabled: anyCriterionData(), maxPasses });
+    if (baseProjectYaml) {
+      yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !!hiddenDomainShape });
+    }
+    const summary = await invoke("project_summary", { yaml });
+    const refinementEnabled = hasEnabledThresholdLayer(summary);
+    const refinementPasses = maxPasses == null ? summary.max_passes : (refinementEnabled ? Math.min(9, Math.max(1, maxPasses)) : maxPasses);
+    yaml = await invoke("set_refinement", { yaml, enabled: refinementEnabled, maxPasses: refinementPasses });
     if (qualityEdit) {
       yaml = await invoke("set_quality",
         { yaml, minAngleDeg: qualityEdit.minAngle, block: qualityEdit.block });
@@ -987,10 +839,7 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
   }
 
   const api = {
-    listIntents:  () => invoke("list_intents"),
     listCriteria: () => invoke("list_criteria"),
-    scaffold: (name, intent, nxp) => invoke("scaffold_project", { name, intent, nxp }),
-    toNamelist: (yaml) => invoke("project_to_namelist", { yaml }),
     validate:   (yaml) => invoke("validate_project", { yaml }),
     summary:    (yaml) => invoke("project_summary", { yaml }),
     pickDataFile: () => invoke("pick_data_file"),
@@ -999,11 +848,6 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     saveProject:  (yaml) => invoke("save_project", { yaml }),
     runProject:   (yaml, outdir) => invoke("run_project", { yaml, outdir: outdir || null }),
     composeYaml, layerEdits,
-    buildFromUi: async () => {
-      const yaml = await composeYaml();
-      const nml = await invoke("project_to_namelist", { yaml });
-      return { yaml, nml };
-    },
   };
   window.emProject = api;
 
@@ -1018,18 +862,41 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     console.log("[EarthMesh]", txt);
   }
 
-  // Clear the prototype's mock run stats so nothing fake shows before a real run
-  // (mock log, the Quality-pane mini-metrics, and the status-bar cell count).
-  function clearMockStats() {
-    const lb = document.getElementById("logbox"); if (lb) lb.innerHTML = "";
+  // Clear startup placeholders so no stale values show before a real run.
+  function clearStartupPlaceholders() {
+    const lb = document.getElementById("logbox"); if (lb) lb.textContent = "";
+    clearRunArtifacts();
+  }
+
+  function clearRunArtifacts() {
+    hasRun = false;
+    runInfo = null;
+    _lastQuality = null;
+    if (typeof applyMesh === "function") applyMesh(null);
     document.querySelectorAll('.live-pane[data-pane="quality"] .mini-metric b')
       .forEach((b) => { b.textContent = "—"; b.style.color = "var(--muted)"; });
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
-    const st = document.querySelector("footer.status");
-    if (st) st.querySelectorAll("b").forEach((b) => { if (/^\s*[\d,]+\s*$/.test(b.textContent)) b.textContent = "—"; });
   }
 
-  // ---- SLICE 1: live data-layer panel ---------------------------------------
+  function selectTemplate(k) {
+    const changed = k !== tpl;
+    if (changed) {
+      tpl = k;
+      regional = !TPL[tpl].global;
+      hiddenDomainShape = null;
+      for (const id of Object.keys(layerEdits)) delete layerEdits[id];
+      baseProjectYaml = null;
+      domainEdit = null;
+      qualityEdit = null;
+      maxPasses = null;
+      clearRunArtifacts();
+    }
+    cur = 1;
+    renderSteps();
+    renderStep(1);
+  }
+
+  // ---- live data-layer panel ------------------------------------------------
   // Replace the static step-3 table body with rows from the live ProjectConfig;
   // each Browse opens the native picker and writes back via set_layer_path.
   async function enhanceLayerStep() {
@@ -1041,16 +908,66 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     const tbody = table.querySelector("tbody");
     if (!tbody) return;
     const z = zh();
-    tbody.innerHTML = sum.layers.map((l) => `
-      <tr data-layer="${l.id}" data-folder="${l.wants_folder ? "1" : "0"}">
-        <td><div class="sw ${l.enabled && l.path ? "on" : ""}" title="${z ? "启用/禁用该图层" : "enable/disable layer"}" style="cursor:${l.path ? "pointer" : "default"}"></div></td>
-        <td><span class="dot" style="background:var(--accent)"></span><b>${l.id}</b>${l.wants_folder ? `<span style="color:var(--muted);font-size:11px"> · ${z ? "分块目录" : "tiled dir"}</span>` : ""}</td>
-        <td style="color:var(--muted)">${l.role}</td>
-        <td>${l.path
-          ? `<span class="path">${l.path}</span> <span class="btn-ghost em-clear" style="padding:2px 7px;cursor:pointer">✕</span>`
-          : `<span class="btn-ghost em-browse" style="padding:3px 9px;cursor:pointer">${l.wants_folder ? (z ? "📁 选择文件夹" : "📁 Browse folder") : (z ? "📂 浏览" : "📂 Browse")}</span>`}</td>
-        <td><span class="cov ${l.path ? "ok" : "no"}">${l.path ? (z ? "已选择" : "selected") : (z ? "未设置·判据禁用" : "unset · off")}</span></td>
-      </tr>`).join("");
+    tbody.textContent = "";
+    sum.layers.forEach((l) => {
+      const tr = document.createElement("tr");
+      tr.dataset.layer = l.id;
+      tr.dataset.folder = l.wants_folder ? "1" : "0";
+      tr.dataset.path = l.path || "";
+      tr.dataset.enabled = l.enabled ? "1" : "0";
+
+      const swCell = document.createElement("td");
+      const sw = document.createElement("div");
+      sw.className = "sw" + (l.enabled && l.path ? " on" : "");
+      sw.title = z ? "启用/禁用该图层" : "enable/disable layer";
+      sw.style.cursor = l.path ? "pointer" : "default";
+      swCell.appendChild(sw);
+
+      const idCell = document.createElement("td");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = "var(--accent)";
+      const id = document.createElement("b");
+      id.textContent = l.id;
+      idCell.append(dot, id);
+      if (l.wants_folder) {
+        const tag = document.createElement("span");
+        tag.style.cssText = "color:var(--muted);font-size:11px";
+        tag.textContent = " · " + (z ? "分块目录" : "tiled dir");
+        idCell.appendChild(tag);
+      }
+
+      const roleCell = document.createElement("td");
+      roleCell.style.color = "var(--muted)";
+      roleCell.textContent = l.role;
+
+      const pathCell = document.createElement("td");
+      if (l.path) {
+        const path = document.createElement("span");
+        path.className = "path";
+        path.textContent = l.path;
+        const clear = document.createElement("span");
+        clear.className = "btn-ghost em-clear";
+        clear.style.cssText = "padding:2px 7px;cursor:pointer";
+        clear.textContent = "✕";
+        pathCell.append(path, " ", clear);
+      } else {
+        const browse = document.createElement("span");
+        browse.className = "btn-ghost em-browse";
+        browse.style.cssText = "padding:3px 9px;cursor:pointer";
+        browse.textContent = l.wants_folder ? (z ? "📁 选择文件夹" : "📁 Browse folder") : (z ? "📂 浏览" : "📂 Browse");
+        pathCell.appendChild(browse);
+      }
+
+      const statusCell = document.createElement("td");
+      const cov = document.createElement("span");
+      cov.className = "cov " + (l.path ? "ok" : "no");
+      cov.textContent = l.path ? (z ? "已选择" : "selected") : (z ? "未设置·判据禁用" : "unset · off");
+      statusCell.appendChild(cov);
+
+      tr.append(swCell, idCell, roleCell, pathCell, statusCell);
+      tbody.appendChild(tr);
+    });
     tbody.querySelectorAll(".em-browse").forEach((b) => {
       b.onclick = async () => {
         const tr = b.closest("[data-layer]");
@@ -1074,10 +991,11 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     // on/off switch: enable/disable a layer that already has a file set
     tbody.querySelectorAll("tr[data-layer] .sw").forEach((sw) => {
       sw.onclick = () => {
-        const id = sw.closest("[data-layer]").dataset.layer;
-        const e = layerEdits[id];
-        if (!e || !e.path) return; // nothing to toggle without a file
-        e.enabled = !e.enabled;
+        const tr = sw.closest("[data-layer]");
+        const id = tr.dataset.layer;
+        const path = tr.dataset.path || "";
+        if (!path) return; // nothing to toggle without a file
+        layerEdits[id] = { path, enabled: tr.dataset.enabled !== "1" };
         enhanceLayerStep();
       };
     });
@@ -1096,34 +1014,53 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     return Object.values(b).every((x) => !isNaN(x)) ? b : null;
   }
   function enhanceDomainStep() {
-    // The prototype owns the Global/Regional toggle (var `regional`) and only
+    // The base UI owns the Global/Regional toggle (var `regional`) and only
     // renders the bbox inputs in regional mode; we mirror that into domainEdit.
+    if (hiddenDomainShape && domainEdit && domainEdit.kind === "hidden") return;
     if (typeof regional !== "undefined" && !regional) { domainEdit = { kind: "global" }; return; }
+    const ratio = document.getElementById("seaRatioInput");
+    const ratioText = document.getElementById("seaRatioText");
+    const readSeaRatio = () => {
+      if (!ratio) return domainEdit && domainEdit.kind === "bbox" ? domainEdit.seaRatio : null;
+      const v = parseFloat(ratio.value);
+      return isNaN(v) ? null : v / 100;
+    };
+    const paintSeaRatio = () => {
+      if (ratioText && ratio) ratioText.textContent = ratio.value + "% " + (zh() ? "海洋" : "ocean");
+    };
     const sync = () => {
       const b = readBbox();
       if (b) {
-        domainEdit = Object.assign({ kind: "bbox" }, b);
+        domainEdit = Object.assign({ kind: "bbox", seaRatio: readSeaRatio() }, b);
         domBbox = [b.w, b.e, b.s, b.n];
+        paintSeaRatio();
         if (typeof updateEstimate === "function") updateEstimate();
       }
     };
     if (domainEdit && domainEdit.kind === "bbox") {
       const ins = document.querySelectorAll("#work .grid2 input.input");
       if (ins.length >= 4) { ins[0].value = domainEdit.w; ins[1].value = domainEdit.e; ins[2].value = domainEdit.s; ins[3].value = domainEdit.n; }
+      if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
     } else {
       sync(); // initialize from the shown default inputs
     }
     document.querySelectorAll("#work .grid2 input.input").forEach((inp) => inp.addEventListener("input", sync));
+    if (ratio) ratio.addEventListener("input", sync);
+    paintSeaRatio();
   }
 
   // ---- quality (step 5) -> QualityConfig ------------------------------------
-  function enhanceQualityStep() {
+  async function enhanceQualityStep() {
     const sel = document.querySelector("#work .card select.select"); // on-violation
-    const minIn = document.querySelector("#work .expert input.input"); // min angle (first expert input)
+    const minIn = document.querySelector("#work .quality-detail input.input"); // min angle
+    if (!qualityEdit) {
+      const s = await refreshSummary();
+      if (s) qualityEdit = { minAngle: s.min_angle_deg, block: s.on_violation === "block" };
+    }
     const readQ = () => {
-      let minAngle = 25, block = false;
-      if (minIn) { const v = num(minIn); if (!isNaN(v)) minAngle = v; }
-      if (sel) block = sel.selectedIndex === 1; // 0 Warn · 1 Fail->Block · 2 Auto-repair
+      let minAngle = 0, block = false;
+      if (minIn) { const v = num(minIn); if (minIn.value.trim() && !isNaN(v)) minAngle = v; }
+      if (sel) block = sel.selectedIndex === 1; // 0 Warn · 1 Fail->Block
       return { minAngle, block };
     };
     const update = () => { qualityEdit = readQ(); };
@@ -1136,19 +1073,6 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
   }
 
   // ---- refinement (step 4) -> template's criteria ---------------------------
-  // The max refinement passes is capped by the data resolution (Min edge): each
-  // pass halves the edge, so you cannot refine finer than the source data.
-  function dataResKm() {
-    const el = document.getElementById("minEdge");
-    if (el) { const v = parseFloat(String(el.value).replace(/[^\d.]/g, "")); if (v > 0) return v; }
-    return 0.8;
-  }
-  function maxPassesCap() {
-    const base = (typeof cellKm === "function") ? cellKm() : 0, fine = dataResKm();
-    if (!(base > 0 && fine > 0 && base > fine)) return 6;
-    return Math.max(1, Math.floor(Math.log2(base / fine)));
-  }
-
   // Render the criteria the selected template uses (its threshold layers),
   // greying out any whose data layer isn't set, plus the max-passes control.
   async function enhanceRefinementStep() {
@@ -1157,49 +1081,77 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     let sum, cat;
     try { sum = await api.summary(await composeYaml()); cat = await api.listCriteria(); }
     catch (e) { logLine("✗ refinement: " + e); return; }
+    if (maxPasses == null) maxPasses = sum.max_passes;
     const byStem = {}; cat.forEach((c) => { byStem[c.stem] = c; });
-    const crits = sum.layers.filter((l) => /threshold/i.test(l.role));
+    const crits = sum.layers.filter((l) => l.role_kind === "threshold");
     const z = zh();
-    const rows = crits.map((l) => {
+    const criterionRow = (l) => {
       const c = byStem[l.id] || { label: l.id, unit: "", physical_process: "", help: "" };
       const hasData = !!l.path;
       const on = hasData && l.enabled;
-      const tog = `<div class="em-tog" style="width:38px;height:22px;border-radius:999px;flex:none;position:relative;background:${on ? "var(--accent)" : "var(--border)"};cursor:${hasData ? "pointer" : "not-allowed"}">
-          <div style="position:absolute;top:2px;left:${on ? "18px" : "2px"};width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .15s"></div></div>`;
-      const badge = hasData
-        ? `<span style="font-size:11px;padding:3px 9px;border-radius:999px;background:color-mix(in srgb,var(--pass) 18%,transparent);color:var(--pass);font-weight:600;flex:none">${z ? "数据 ✓" : "data ✓"}</span>`
-        : `<span style="font-size:11px;padding:3px 9px;border-radius:999px;background:var(--border);color:var(--muted);font-weight:600;flex:none">${z ? "缺数据·禁用" : "no data"}</span>`;
-      return `<div class="em-crit" data-crit="${l.id}" data-has="${hasData ? 1 : 0}" style="display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;margin-bottom:10px;opacity:${hasData ? 1 : 0.55}">
-        ${tog}
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:650;font-size:14px">${c.label}</div>
-          <div style="color:var(--muted);font-size:11.5px;margin-top:1px">${c.physical_process || c.help || ""}${c.unit ? " · " + c.unit : ""}</div>
-        </div>
-        ${badge}</div>`;
-    }).join("");
+      const row = document.createElement("div");
+      row.className = "em-crit";
+      row.dataset.crit = l.id;
+      row.dataset.has = hasData ? "1" : "0";
+      row.dataset.path = l.path || "";
+      row.dataset.enabled = l.enabled ? "1" : "0";
+      row.style.cssText = "display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;margin-bottom:10px;opacity:" + (hasData ? "1" : "0.55");
+      const tog = document.createElement("div");
+      tog.className = "em-tog";
+      tog.style.cssText = "width:38px;height:22px;border-radius:999px;flex:none;position:relative;background:" + (on ? "var(--accent)" : "var(--border)") + ";cursor:" + (hasData ? "pointer" : "not-allowed");
+      const knob = document.createElement("div");
+      knob.style.cssText = "position:absolute;top:2px;left:" + (on ? "18px" : "2px") + ";width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .15s";
+      tog.appendChild(knob);
+      const text = document.createElement("div");
+      text.style.cssText = "flex:1;min-width:0";
+      const label = document.createElement("div");
+      label.style.cssText = "font-weight:650;font-size:14px";
+      label.textContent = c.label;
+      const help = document.createElement("div");
+      help.style.cssText = "color:var(--muted);font-size:11.5px;margin-top:1px";
+      help.textContent = (c.physical_process || c.help || "") + (c.unit ? " · " + c.unit : "");
+      text.append(label, help);
+      const badge = document.createElement("span");
+      badge.style.cssText = "font-size:11px;padding:3px 9px;border-radius:999px;font-weight:600;flex:none;background:" + (hasData ? "color-mix(in srgb,var(--pass) 18%,transparent)" : "var(--border)") + ";color:" + (hasData ? "var(--pass)" : "var(--muted)");
+      badge.textContent = hasData ? (z ? "数据 ✓" : "data ✓") : (z ? "缺数据·禁用" : "no data");
+      row.append(tog, text, badge);
+      return row;
+    };
 
-    const nMax = maxPassesCap();
-    if (maxPasses > nMax) maxPasses = nMax;
-    if (maxPasses < 1) maxPasses = 1;
+    const nMax = 9;
+    const refinementEnabled = hasEnabledThresholdLayer(sum);
+    if (refinementEnabled) {
+      if (maxPasses > nMax) maxPasses = nMax;
+      if (maxPasses < 1) maxPasses = 1;
+    }
+    const shownPasses = Math.min(nMax, Math.max(1, maxPasses || 1));
     const fineAt = (n) => (cellKm() / Math.pow(2, n));
     const fmtKm = (v) => v.toFixed(v < 10 ? 2 : 1) + " km";
     const mp = `<div style="margin-top:6px;padding-top:14px;border-top:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
         <div><span style="font-weight:650">${z ? "最大细化次数" : "Max refinement passes"}</span>
-          <div style="color:var(--muted);font-size:11px">${z ? "每次细化边长减半；上限由数据分辨率决定" : "each pass halves the edge; capped by data resolution"}</div></div>
-        <span style="font-weight:750;font-size:16px;color:var(--accent)"><span id="mpVal">${maxPasses}</span> <span id="mpFine" style="font-size:11px;color:var(--muted)">→ ≈${fmtKm(fineAt(maxPasses))}</span></span>
+          <div style="color:var(--muted);font-size:11px">${z ? "保存到项目配置；后端校验范围 1–9" : "saved to project config; backend validates range 1–9"}</div></div>
+        <span style="font-weight:750;font-size:16px;color:var(--accent)"><span id="mpVal">${shownPasses}</span> <span id="mpFine" style="font-size:11px;color:var(--muted)">→ ≈${fmtKm(fineAt(shownPasses))}</span></span>
       </div>
-      <input type="range" id="mpRange" min="1" max="${nMax}" value="${maxPasses}" style="width:100%">
+      <input type="range" id="mpRange" min="1" max="${nMax}" value="${shownPasses}" style="width:100%">
       <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax} ≈ ${fmtKm(fineAt(nMax))}</span></div>
     </div>`;
 
     const ch = critCard.querySelector(".ch");
     while (ch && ch.nextSibling) ch.nextSibling.remove();
     if (ch) {
-      ch.insertAdjacentHTML("afterend", rows + mp);
       const active = crits.filter((l) => l.path && l.enabled).length;
-      ch.textContent = (z ? "判据随模板自动列出 · " : "criteria from the template · ")
-        + active + "/" + crits.length + (z ? " 个有数据启用" : " active");
+      ch.textContent = crits.length
+        ? (z ? "判据随模板自动列出 · " : "criteria from the template · ")
+          + active + "/" + crits.length + (z ? " 个有数据启用" : " active")
+        : (z ? "此模板没有阈值细化判据" : "no threshold criteria for this template");
+      let anchor = ch;
+      crits.forEach((l) => {
+        const row = criterionRow(l);
+        anchor.parentNode.insertBefore(row, anchor.nextSibling);
+        anchor = row;
+      });
+      if (crits.length) anchor.insertAdjacentHTML("afterend", mp);
     }
     // toggles (only for criteria that have data)
     critCard.querySelectorAll(".em-crit").forEach((row) => {
@@ -1207,8 +1159,9 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
       const tog = row.querySelector(".em-tog");
       if (tog) tog.onclick = () => {
         const id = row.dataset.crit;
-        if (!layerEdits[id]) return;
-        layerEdits[id].enabled = !layerEdits[id].enabled;
+        const path = row.dataset.path || "";
+        if (!path) return;
+        layerEdits[id] = { path, enabled: row.dataset.enabled !== "1" };
         enhanceRefinementStep();
       };
     });
@@ -1222,23 +1175,17 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
   }
 
   // ---- run (step 6) ---------------------------------------------------------
-  // The Run button now lives in step 6's footer; wire the real run onto the
-  // fresh element each time the step renders (innerHTML recreates it).
+  // The Run button lives in step 6's footer; wire the real run onto the fresh
+  // element each time the step rebuilds.
   function enhanceRunStep() {
     const b = document.getElementById("runBtn");
-    if (b) b.onclick = doRun; // replace the prototype's mockRun handler (no double-fire)
+    if (b) b.onclick = doRun;
     const ob = document.getElementById("openOutBtn");
     if (ob) ob.onclick = () => {
       if (runInfo && runInfo.outdir) invoke("open_path", { path: runInfo.outdir }).catch((e) => logLine("✗ " + e));
     };
-    document.querySelectorAll("[data-exp]").forEach((cb) => {
-      cb.onchange = () => {
-        exportSel[cb.dataset.exp] = cb.checked;
-        try { localStorage.setItem("em.exportSel", JSON.stringify(exportSel)); } catch (e) {}
-      };
-    });
-    // re-render the cached quality result when step 6 re-renders (innerHTML reset)
-    if (hasRun && _lastQuality) renderQualityCard(_lastQuality);
+    // Re-render the cached quality result when step 6 rebuilds its DOM.
+    if (runInfo && runInfo.ok && _lastQuality) renderQualityCard(_lastQuality);
   }
 
   // renderStep is a function declaration => reassignable; wrap it to enhance
@@ -1249,15 +1196,16 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     renderStep = function (i) {
       _renderStep(i);
       if (i === 0) enhanceNewProjectStep();
+      else if (i === 1) enhanceTargetOutputStep();
       else if (i === 2) enhanceDomainStep();
       else if (i === 3) enhanceLayerStep();
       else if (i === 4) enhanceRefinementStep();
       else if (i === 5) enhanceQualityStep();
-      else if (i === 6) enhanceRunStep();
+      else if (i === 6) { enhanceRunStep(); enhanceTargetOutputStep(); }
     };
   }
 
-  // ---- SLICE 2: New / Open / Save — actions live in workflow step 0 (the
+  // ---- New / Open / Save — actions live in workflow step 0 (the
   // "Project" step), not the header. See onNew/onOpen/onSave + enhanceNewProjectStep().
 
   // ---- recent projects (persisted across restarts) --------------------------
@@ -1278,35 +1226,51 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     let sum;
     try { sum = await api.summary(res.yaml); } catch (e) { logLine("✗ " + e); return; }
     projectActive = true;
+    baseProjectYaml = res.yaml;
     lastSummary = sum;
+    clearRunArtifacts();
     try { await api.validate(res.yaml); lastSummary._valid = true; lastSummary._err = null; }
     catch (e) { lastSummary._valid = false; lastSummary._err = String(e); }
     try {
       const nameEl = document.querySelector(".proj-name");
       if (nameEl) nameEl.value = sum.name;
-      if (INTENT_TPL[sum.intent] !== undefined) tpl = INTENT_TPL[sum.intent];
-      if (sum.nxp) { resUnitIdx = 2; resVal = sum.nxp; }
-      else if (sum.approx_km) { resUnitIdx = 0; resVal = sum.approx_km; }
+      metadataEdit = { authors: sum.authors || [], description: sum.description || "" };
+      const isRegional = sum.domain === "regional";
+      let matchingTpl = TPL.findIndex((t) => t.intent === sum.intent && t.global === !isRegional);
+      if (matchingTpl < 0) matchingTpl = TPL.findIndex((t) => t.intent === sum.intent);
+      if (matchingTpl >= 0) tpl = matchingTpl;
+      if (sum.nxp != null) { resUnitIdx = 1; resVal = sum.nxp; }
+      else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
       sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
       regional = !!sum.bbox;
       if (sum.bbox) domBbox = [sum.bbox[0], sum.bbox[1], sum.bbox[2], sum.bbox[3]];
       domainEdit = sum.bbox
-        ? { kind: "bbox", w: sum.bbox[0], e: sum.bbox[1], s: sum.bbox[2], n: sum.bbox[3] }
-        : { kind: "global" };
+        ? { kind: "bbox", w: sum.bbox[0], e: sum.bbox[1], s: sum.bbox[2], n: sum.bbox[3], seaRatio: sum.sea_ratio ?? null }
+        : isRegional
+          ? { kind: "hidden", shape: sum.domain_shape || "regional" }
+          : { kind: "global" };
+      hiddenDomainShape = domainEdit.kind === "hidden" ? domainEdit.shape : null;
       qualityEdit = { minAngle: sum.min_angle_deg, block: sum.on_violation === "block" };
-      if (sum.max_passes) maxPasses = sum.max_passes;
+      maxPasses = sum.max_passes;
       if (typeof renderSteps === "function") renderSteps();
       if (typeof renderStep === "function") renderStep(typeof cur !== "undefined" ? cur : 0);
     } catch (e) { /* best-effort reflect */ }
     pushRecent(res.path, sum.name);
-    logLine("✓ opened " + res.path + " — intent " + sum.intent + ", NXP " + (sum.nxp || "?"));
+    logLine("✓ opened " + res.path + " — intent " + sum.intent + ", NXP " + (sum.effective_nxp ?? sum.nxp ?? "?"));
   }
 
   async function onSave() {
     try {
-      const path = await api.saveProject(await composeYaml());
-      if (path) { pushRecent(path, projectName()); logLine("✓ saved " + path); }
+      const yaml = await composeYaml();
+      const path = await api.saveProject(yaml);
+      if (path) {
+        projectActive = true;
+        await refreshSummary();
+        pushRecent(path, projectName());
+        renderProjectSummary();
+        logLine("✓ saved " + path);
+      }
       else logLine("save cancelled");
     } catch (e) { logLine("✗ save failed: " + e); }
   }
@@ -1315,19 +1279,22 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     let res;
     try { res = await api.openProject(); } catch (e) { logLine("✗ open failed: " + e); return; }
     if (!res) { logLine("open cancelled"); return; }
-    reflectProject(res);
+    await reflectProject(res);
   }
 
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = 3; regional = true; domBbox = [108, 120, 18, 26];
-    resUnitIdx = 0; resVal = 9; maxPasses = 3;
-    hasRun = false; runInfo = null;
+    tpl = DEFAULT_TPL; regional = true; domBbox = [...DEFAULT_BBOX];
+    resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
+    clearRunArtifacts();
     for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+    baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
+    hiddenDomainShape = null;
+    metadataEdit = { authors: [], description: "" };
     const nameEl = document.querySelector(".proj-name");
-    if (nameEl) nameEl.value = zh() ? "未命名项目" : "untitled";
+    if (nameEl) nameEl.value = "earthmesh-project";
   }
 
   // Compute the summary (+ validation) for the current UI state.
@@ -1337,7 +1304,35 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
       lastSummary = await api.summary(yaml);
       try { await api.validate(yaml); lastSummary._valid = true; lastSummary._err = null; }
       catch (e) { lastSummary._valid = false; lastSummary._err = String(e); }
-    } catch (e) { lastSummary = null; }
+      return lastSummary;
+    } catch (e) { lastSummary = null; return null; }
+  }
+
+  function cellShapeLabel(cell) {
+    return String(cell || "").toLowerCase() === "tri"
+      ? (zh() ? "三角形" : "Triangular")
+      : (zh() ? "六边形" : "Hexagonal");
+  }
+
+  function paintTargetOutputs(summary) {
+    const s = summary || lastSummary;
+    if (!s) return;
+    const model = s.model_format || "—";
+    const modelIn = document.getElementById("targetModelOutput");
+    const cellIn = document.getElementById("targetCellOutput");
+    const ready = document.getElementById("readyModelOutput");
+    const refine = document.getElementById("readyRefinementOutput");
+    if (modelIn) modelIn.value = model;
+    if (cellIn) cellIn.value = cellShapeLabel(s.cell);
+    if (ready) ready.textContent = model;
+    if (refine) refine.textContent = s.refine_enabled
+      ? ((zh() ? "最多 " : "up to ") + s.max_passes + (zh() ? " 次" : " passes"))
+      : (zh() ? "关闭" : "off");
+  }
+
+  async function enhanceTargetOutputStep() {
+    const s = await refreshSummary();
+    paintTargetOutputs(s);
   }
 
   async function onNew() {
@@ -1354,7 +1349,7 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     let res;
     try { res = await invoke("read_project", { path }); }
     catch (e) { logLine("✗ open " + path + ": " + e); return; }
-    reflectProject(res);
+    await reflectProject(res);
   }
 
   // ---- New Project (step 0): output-folder picker + real recent list --------
@@ -1363,6 +1358,16 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     const nb = document.getElementById("projNew"); if (nb) nb.onclick = onNew;
     const ob2 = document.getElementById("projOpen"); if (ob2) ob2.onclick = onOpen;
     const sb2 = document.getElementById("projSave"); if (sb2) sb2.onclick = onSave;
+    const nameStep = document.getElementById("projectNameStep");
+    const nameTop = document.querySelector(".proj-name");
+    const author = document.getElementById("projectAuthor");
+    const desc = document.getElementById("projectDescription");
+    if (nameStep && nameTop) nameStep.value = nameTop.value;
+    if (author) author.value = (metadataEdit.authors || []).join(", ");
+    if (desc) desc.value = metadataEdit.description || "";
+    if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; };
+    if (author) author.oninput = () => { metadataEdit.authors = author.value.split(",").map((s) => s.trim()).filter(Boolean); };
+    if (desc) desc.oninput = () => { metadataEdit.description = desc.value; };
     // output-folder picker
     const opb = document.getElementById("outPathBrowse");
     const t0 = document.getElementById("outPathText");
@@ -1380,10 +1385,11 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     const card = cards.find((c) => /最近|Recent/.test((c.querySelector("h3") || {}).textContent || ""));
     if (!card) return;
     const z = zh();
-    card.querySelectorAll(".browse").forEach((e) => e.remove());
+    card.querySelectorAll(".browse,.recent-empty").forEach((e) => e.remove());
     const recents = loadRecents();
     if (!recents.length) {
       const empty = document.createElement("div");
+      empty.className = "recent-empty";
       empty.style.cssText = "color:var(--muted);font-size:13px;padding:4px 2px;line-height:1.6";
       empty.textContent = z ? "暂无最近项目——保存或打开一个项目后会出现在这里。" : "No recent projects yet — Save or Open one and it shows here.";
       card.appendChild(empty);
@@ -1393,7 +1399,11 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
         div.className = "browse";
         div.style.cssText = "margin-bottom:8px;cursor:pointer";
         div.title = r.path;
-        div.innerHTML = `<span class="path" style="max-width:none">📄 ${r.name || r.path}</span>`;
+        const label = document.createElement("span");
+        label.className = "path";
+        label.style.maxWidth = "none";
+        label.textContent = "📄 " + (r.name || r.path);
+        div.appendChild(label);
         div.onclick = () => openRecent(r.path);
         card.appendChild(div);
       });
@@ -1409,10 +1419,15 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     const sumEl = document.getElementById("projSummary");
     if (!sumEl) return;
     const z = zh();
-    if (!(projectActive && lastSummary)) { sumEl.innerHTML = ""; return; }
+    if (!(projectActive && lastSummary)) { sumEl.textContent = ""; return; }
     const s = lastSummary;
     const total = (s.layers || []).length;
     const on = (s.layers || []).filter((l) => l.enabled && l.path).length;
+    const domain = s.domain_shape === "bbox" && s.bbox
+      ? (z ? "区域矩形框" : "regional bbox")
+      : (s.domain_shape === "global"
+        ? (z ? "全球" : "global")
+        : ((z ? "保留隐藏区域：" : "preserved regional: ") + (s.domain_shape || s.domain || "—")));
     const gate = (s.min_angle_deg != null)
       ? (s.min_angle_deg + "° · " + (s.on_violation === "block" ? (z ? "违规即停" : "block") : (z ? "违规告警" : "warn")))
       : "—";
@@ -1420,31 +1435,38 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     sumEl.innerHTML =
       `<div class="card"><h3>${z ? "项目摘要" : "Project summary"}</h3>
          <div class="ch">${z ? "新建/打开后的项目状态" : "Status of the created/opened project"}</div>
-         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s-md);margin-top:10px">
-           <div class="metric"><div class="mv">${on}/${total}</div><div class="ml">${z ? "数据图层（启用/总）" : "Data layers (on/total)"}</div></div>
-           <div class="metric"><div class="mv" style="font-size:15px">${gate}</div><div class="ml">${z ? "质量门限（最小角）" : "Quality gate (min angle)"}</div></div>
-           <div class="metric"><div class="mv" style="font-size:15px;color:${ok ? "#22a06b" : "#e5484d"}">${ok ? (z ? "✓ 通过" : "✓ valid") : (z ? "✗ 失败" : "✗ invalid")}</div><div class="ml">${z ? "校验状态" : "Validation"}</div></div>
+         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s-md);margin-top:10px">
+           <div class="metric"><div class="mv" id="projectSummaryLayers"></div><div class="ml">${z ? "数据图层（启用/总）" : "Data layers (on/total)"}</div></div>
+           <div class="metric"><div class="mv" id="projectSummaryDomain" style="font-size:15px"></div><div class="ml">${z ? "计算域" : "Domain"}</div></div>
+           <div class="metric"><div class="mv" id="projectSummaryGate" style="font-size:15px"></div><div class="ml">${z ? "质量门限（最小角）" : "Quality gate (min angle)"}</div></div>
+           <div class="metric"><div class="mv" id="projectSummaryValidation" style="font-size:15px;color:${ok ? "#22a06b" : "#e5484d"}"></div><div class="ml">${z ? "校验状态" : "Validation"}</div></div>
          </div>
-         ${ok ? "" : `<div style="color:#e5484d;font-size:12px;margin-top:10px;white-space:pre-wrap">${(s._err || "").slice(0, 400)}</div>`}
+         ${ok ? "" : `<div id="projectSummaryError" style="color:#e5484d;font-size:12px;margin-top:10px;white-space:pre-wrap"></div>`}
        </div>`;
+    const layersEl = document.getElementById("projectSummaryLayers");
+    const domainEl = document.getElementById("projectSummaryDomain");
+    const gateEl = document.getElementById("projectSummaryGate");
+    const validEl = document.getElementById("projectSummaryValidation");
+    if (layersEl) layersEl.textContent = on + "/" + total;
+    if (domainEl) domainEl.textContent = domain;
+    if (gateEl) gateEl.textContent = gate;
+    if (validEl) validEl.textContent = ok ? (z ? "✓ 通过" : "✓ valid") : (z ? "✗ 失败" : "✗ invalid");
+    const err = document.getElementById("projectSummaryError");
+    if (err) err.textContent = (s._err || "").slice(0, 400);
   }
 
-  clearMockStats();
-  // Neutralize the prototype's mock-log renderer: applyI18n() (language switch)
-  // calls renderLog(), which would overwrite #logbox and wipe real streamed logs.
-  if (typeof renderLog === "function") renderLog = function () {};
-  // remember the output folder + export selection across sessions
+  clearStartupPlaceholders();
+  // remember the output folder across sessions
   try { const sp = localStorage.getItem("em.outputPath"); if (sp) outputPath = sp; } catch (e) {}
-  try { exportSel = JSON.parse(localStorage.getItem("em.exportSel") || "{}"); } catch (e) { exportSel = {}; }
 
-  // Startup proof + augment Run with a real lowered namelist.
+  // Startup proof that the Tauri backend and criterion catalog are reachable.
   api.listCriteria()
     .then((cs) => setLogStatus("✓ " + (zh() ? "Rust 后端已连接 — 注册了 " + cs.length + " 条细化判据" : "Rust backend connected — " + cs.length + " refinement criteria registered"), true))
     .catch((e) => setLogStatus("✗ backend error: " + e, false));
-  // Mirror the prototype's default domain (regional bbox over south china) so a
+  // Mirror the static frontend's default regional bbox so a
   // Save before visiting step 2 still reflects what's shown.
   if (typeof regional !== "undefined" && regional)
-    domainEdit = { kind: "bbox", w: 108, e: 120, s: 18, n: 26 };
+    domainEdit = { kind: "bbox", w: DEFAULT_BBOX[0], e: DEFAULT_BBOX[1], s: DEFAULT_BBOX[2], n: DEFAULT_BBOX[3] };
   if (typeof cur !== "undefined") {
     if (cur === 0) enhanceNewProjectStep();
     else if (cur === 2) enhanceDomainStep();
@@ -1459,7 +1481,7 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     window.__TAURI__.event.listen("mkgrd://log", (ev) => logLine(String(ev.payload)));
   }
 
-  // SLICE 4: Run -> compose YAML -> spawn mkgrd.x, stream logs, report status.
+  // Run -> compose YAML -> spawn the mesh engine, stream logs, report status.
   async function doRun() {
     const rtext = document.getElementById("rtext");
     const rdot = document.getElementById("rdot");
@@ -1468,24 +1490,15 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
       if (rdot) rdot.classList.toggle("on", !!done);
     };
     setStatus(zh() ? "运行中…" : "running…", false);
-    const runBtn = document.getElementById("runBtn");
-    const killBtn = document.getElementById("killBtn");
-    const setRunning = (on) => {
-      if (runBtn) {
-        runBtn.disabled = on;
-        runBtn.style.opacity = on ? "0.55" : "";
-        runBtn.style.cursor = on ? "not-allowed" : "";
-        runBtn.textContent = on ? (zh() ? "⏳ 运行中…" : "⏳ Running…") : ("▶ " + (zh() ? "运行" : "Run"));
-      }
-      if (killBtn) killBtn.style.display = on ? "inline-flex" : "none";
-    };
-    setRunning(true);
-    // show the Log pane (the relocated Run button no longer does this via mockRun)
+    setRunControls(true);
+    clearRunArtifacts();
+    // show the Log pane because the Run button now lives inside the step footer
     document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
     document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
     let yaml;
-    try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunning(false); return; }
-    logLine("\n▶ " + (zh() ? "启动 mkgrd.x（" : "starting mkgrd.x (") + currentIntent() + ", NXP=" + currentNxp() + ")");
+    try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
+    try { lastSummary = await api.summary(yaml); } catch (e) {}
+    logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", NXP=" + currentNxp() + ")");
     try {
       const r = await api.runProject(yaml, outputPath || null);
       logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
@@ -1497,22 +1510,35 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
       setStatus(zh() ? "运行失败" : "failed", true);
       hasRun = true; runInfo = { ok: false, outdir: "", code: null };
     }
-    setRunning(false);
+    setRunControls(false);
     if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") renderStep(6);
     if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile);
+    else if (runInfo && runInfo.ok) {
+      logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
+      renderMissingGridfile();
+    }
   }
 
-  let _lastQuality = null;  // cached mesh_quality, re-rendered when step 6 re-renders
+  function renderQualityNote(text) {
+    const card = document.getElementById("qualityCard");
+    if (!card) return;
+    card.textContent = "";
+    const h = document.createElement("h3"); h.textContent = zh() ? "质量指标" : "Quality metrics";
+    const note = document.createElement("div"); note.className = "ch"; note.textContent = text;
+    card.append(h, note);
+  }
+  function renderMissingGridfile() {
+    renderQualityNote(zh() ? "引擎没有在日志中报告 gridfile，无法自动解析质量报告或叠加网格。" : "The engine did not report a gridfile in the log, so quality parsing and map overlay were skipped.");
+  }
 
   // After a successful run: parse mesh quality into the step-6 card, and overlay
-  // the generated mesh on the map (hex for MPAS/CoLM, tri for FVCOM templates).
+  // the generated mesh on the map using the ProjectSummary cell shape.
   async function loadQualityAndMesh(gridfile) {
-    const card = document.getElementById("qualityCard");
-    if (card) card.innerHTML = `<h3>${zh() ? "质量指标" : "Quality metrics"}</h3><div class="ch">${zh() ? "分析中…" : "analyzing…"}</div>`;
-    const kind = (TPL_MODEL[tpl] === 1) ? "tri" : "hex";  // FVCOM=tri, else hex
+    renderQualityNote(zh() ? "分析中…" : "analyzing…");
+    const kind = (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
     invoke("mesh_quality", { gridfile, kind })
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
-      .catch((e) => { if (card) card.innerHTML = `<h3>${zh() ? "质量指标" : "Quality metrics"}</h3><div class="ch">${(zh() ? "质量分析失败：" : "quality failed: ") + e}</div>`; });
+      .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
     invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })
       .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map"); })
       .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
@@ -1547,39 +1573,96 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     const verdict = (q.verdict || "unknown").toUpperCase();
     const color = q.verdict === "pass" ? "var(--pass)" : (q.verdict === "fail" ? "#e5484d" : "var(--warn)");
     const num = (n) => (typeof n === "number" ? n.toLocaleString() : n);
-    let html = `<h3>${z ? "质量指标" : "Quality metrics"}</h3>
-      <div style="margin:6px 0"><span style="display:inline-block;padding:3px 10px;border-radius:6px;color:#fff;font-weight:800;font-size:12px;letter-spacing:.03em;background:${color}">${verdict}</span></div>
+    card.innerHTML = `<h3>${z ? "质量指标" : "Quality metrics"}</h3>
+      <div style="margin:6px 0"><span id="qualityVerdictBadge" style="display:inline-block;padding:3px 10px;border-radius:6px;color:#fff;font-weight:800;font-size:12px;letter-spacing:.03em;background:${color}"></span></div>
       <div class="grid2">
-        ${field(z ? "单元数" : "Cells", `<b style="font-size:15px">${num(q.cell_count)}</b>`)}
-        ${field(z ? "顶点数" : "Vertices", `<b style="font-size:15px">${num(q.vertex_count)}</b>`)}
-        ${field(z ? "边数" : "Edges", `<b style="font-size:15px">${num(q.edge_count)}</b>`)}
-        ${field(z ? "角度范围" : "Angle range", `<b style="font-size:15px;color:${color}">${(q.min_angle_deg||0).toFixed(1)}°–${(q.max_angle_deg||0).toFixed(1)}°</b>`)}
+        ${field(z ? "单元数" : "Cells", `<b id="qualityCells" style="font-size:15px"></b>`)}
+        ${field(z ? "顶点数" : "Vertices", `<b id="qualityVertices" style="font-size:15px"></b>`)}
+        ${field(z ? "边数" : "Edges", `<b id="qualityEdges" style="font-size:15px"></b>`)}
+        ${field(z ? "角度范围" : "Angle range", `<b id="qualityAngleRange" style="font-size:15px;color:${color}"></b>`)}
       </div>
       <div class="ch" style="margin-top:10px">${z ? "分布（μ±σ 区间 + 极值）" : "Distributions (μ±σ band + range)"}</div>
       ${statBar(z ? "边长" : "Edge length", q.edge_length_km, "km")}
       ${statBar(z ? "纵横比" : "Aspect ratio", q.aspect_ratio, "")}
       ${statBar(z ? "紧致度" : "Compactness", q.compactness, "")}
       ${statBar(z ? "单元面积" : "Cell area", q.cell_area, "")}`;
+    const text = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+    text("qualityVerdictBadge", verdict);
+    text("qualityCells", num(q.cell_count));
+    text("qualityVertices", num(q.vertex_count));
+    text("qualityEdges", num(q.edge_count));
+    text("qualityAngleRange", (q.min_angle_deg || 0).toFixed(1) + "°–" + (q.max_angle_deg || 0).toFixed(1) + "°");
     if (q.gates && q.gates.length) {
-      const chip = (g) => {
+      const title = document.createElement("div");
+      title.className = "ch";
+      title.style.marginTop = "10px";
+      title.textContent = z ? "门禁" : "Gates";
+      card.appendChild(title);
+      q.gates.forEach((g) => {
         const col = g.level === "pass" ? "var(--pass)" : (g.level === "fail" ? "#e5484d" : "var(--warn)");
         const v = Math.abs(g.value) >= 100 ? g.value.toFixed(0) : g.value.toFixed(2);
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px"><span>${g.metric}</span><span><b>${v}</b> <span style="display:inline-block;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;color:#fff;background:${col}">${(g.level||"?").toUpperCase()}</span></span></div>`;
-      };
-      html += `<div class="ch" style="margin-top:10px">${z ? "门禁" : "Gates"}</div>` + q.gates.map(chip).join("");
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px";
+        const metric = document.createElement("span");
+        metric.textContent = g.metric;
+        const result = document.createElement("span");
+        const value = document.createElement("b");
+        value.textContent = v;
+        const level = document.createElement("span");
+        level.style.cssText = "display:inline-block;padding:1px 7px;border-radius:5px;font-size:10px;font-weight:700;color:#fff;background:" + col;
+        level.textContent = (g.level || "?").toUpperCase();
+        result.append(value, " ", level);
+        row.append(metric, result);
+        card.appendChild(row);
+      });
     }
     const issues = (q.topology || []).filter((t) => t[1] > 0)
       .concat([[z ? "零面积" : "zero-area", q.zero_area], [z ? "负面积" : "negative-area", q.negative_area], [z ? "自相交" : "self-intersection", q.self_intersection], [z ? "非法多边形" : "invalid polygon", q.invalid_polygon]].filter((t) => t[1] > 0));
-    html += `<div class="ch" style="margin-top:10px">${z ? "拓扑 / 退化" : "Topology / degeneracy"}</div>`;
-    html += issues.length
-      ? issues.map((t) => `<div style="font-size:12px;color:var(--warn)">• ${t[0]}: <b>${num(t[1])}</b></div>`).join("")
-      : `<div style="font-size:12px;color:var(--pass)">✓ ${z ? "无拓扑问题" : "no issues"}</div>`;
-    if (q.max_adjacent_resolution_ratio) html += `<div style="font-size:12px;color:var(--muted)">${z ? "最大相邻分辨率比" : "max adjacent res. ratio"}: <b>${q.max_adjacent_resolution_ratio.toFixed(2)}</b></div>`;
-    let btns = "";
-    if (q.report_path) btns += `<span class="btn-ghost" id="qReportBtn" style="cursor:pointer;margin-right:8px">📄 ${z ? "质量报告" : "Report"}</span>`;
-    if (q.worst_cells_path) btns += `<span class="btn-ghost" id="qWorstBtn" style="cursor:pointer">⚠ ${z ? "最差单元" : "Worst cells"}</span>`;
-    if (btns) html += `<div style="margin-top:12px">${btns}</div>`;
-    card.innerHTML = html;
+    const issueTitle = document.createElement("div");
+    issueTitle.className = "ch";
+    issueTitle.style.marginTop = "10px";
+    issueTitle.textContent = z ? "拓扑 / 退化" : "Topology / degeneracy";
+    card.appendChild(issueTitle);
+    if (issues.length) {
+      issues.forEach((t) => {
+        const issue = document.createElement("div");
+        issue.style.cssText = "font-size:12px;color:var(--warn)";
+        issue.textContent = "• " + t[0] + ": " + num(t[1]);
+        card.appendChild(issue);
+      });
+    } else {
+      const ok = document.createElement("div");
+      ok.style.cssText = "font-size:12px;color:var(--pass)";
+      ok.textContent = "✓ " + (z ? "无拓扑问题" : "no issues");
+      card.appendChild(ok);
+    }
+    if (q.max_adjacent_resolution_ratio) {
+      const ratio = document.createElement("div");
+      ratio.style.cssText = "font-size:12px;color:var(--muted)";
+      ratio.textContent = (z ? "最大相邻分辨率比" : "max adjacent res. ratio") + ": " + q.max_adjacent_resolution_ratio.toFixed(2);
+      card.appendChild(ratio);
+    }
+    if (q.report_path || q.worst_cells_path) {
+      const btns = document.createElement("div");
+      btns.style.marginTop = "12px";
+      if (q.report_path) {
+        const report = document.createElement("span");
+        report.className = "btn-ghost";
+        report.id = "qReportBtn";
+        report.style.cssText = "cursor:pointer;margin-right:8px";
+        report.textContent = "📄 " + (z ? "质量报告" : "Report");
+        btns.appendChild(report);
+      }
+      if (q.worst_cells_path) {
+        const worst = document.createElement("span");
+        worst.className = "btn-ghost";
+        worst.id = "qWorstBtn";
+        worst.style.cursor = "pointer";
+        worst.textContent = "⚠ " + (z ? "最差单元" : "Worst cells");
+        btns.appendChild(worst);
+      }
+      card.appendChild(btns);
+    }
     const rb = document.getElementById("qReportBtn");
     if (rb && q.report_path) rb.onclick = () => invoke("open_path", { path: q.report_path }).catch((e) => logLine("✗ " + e));
     const wb = document.getElementById("qWorstBtn");
@@ -1592,7 +1675,7 @@ renderSteps(); renderStep(cur); drawMap(); renderLog(); applyI18n(); setupSplitt
     setMini(1, num(q.vertex_count));
     setMini(2, (q.min_angle_deg || 0).toFixed(1) + "°", color);
     if (q.aspect_ratio) setMini(3, q.aspect_ratio.max.toFixed(2));
-    document.querySelectorAll('.live-pane[data-pane="quality"] .badge').forEach((b) => { b.style.display = ""; b.style.background = color; b.innerHTML = "● " + verdict; });
+    document.querySelectorAll('.live-pane[data-pane="quality"] .badge').forEach((b) => { b.style.display = ""; b.style.background = color; b.textContent = "● " + verdict; });
   }
 
   // The Run button moved into step 6's footer; enhanceRunStep() wires it each

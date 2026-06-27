@@ -1,0 +1,103 @@
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use earthmesh_core::EarthmeshConfig;
+
+use super::global::run_mkgrd_gridinit_global_namelist;
+use super::landtype::landtype_gridnum_perdegree;
+use crate::*;
+
+/// From-scratch regional **clip** with no refinement.
+///
+/// A `mask_domain_global=.false.` run names a containment region
+/// (`mask_domain_type` + `mask_domain_fprefix`). The OLAM refine path only
+/// reaches the clip step when a refinement region is *also* active, but a plain
+/// regional grid should subset to its domain regardless. This generates the
+/// global base mesh ([`run_mkgrd_gridinit_global_namelist`]) and then keeps only
+/// the in-domain cells via the shared `write_regional_gridfile` writer — the
+/// exact clip the OLAM path performs, minus any spawn/refine. It works for every
+/// mesh type. The returned report's `gridfile` is rewritten to the clipped
+/// result, so existing `gridfile=` consumers (CLI print, GUI) pick up the subset
+/// mesh with no extra plumbing.
+pub fn run_mkgrd_regional_clip_base_namelist(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+) -> io::Result<MkgrdGridinitRunReport> {
+    let namelist_source = namelist_source.as_ref();
+    let workdir = workdir.as_ref();
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let region = read_olam_domain_region(&config)?; // None ⇒ global (no geometric clip)
+    let mesh_type = config.mesh_type.trim().to_string();
+    let landtype = config.landtype_file.trim().to_string();
+    let carve_landtype = matches!(mesh_type.as_str(), "landmesh" | "oceanmesh")
+        && !landtype.is_empty()
+        && landtype != "none"
+        && landtype != "/tmp"
+        && Path::new(&landtype).is_file();
+    if region.is_none() && !carve_landtype {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "base clip/carve needs a non-global mask domain (mask_domain_global=.false. + \
+             mask_domain_fprefix) or a land/ocean landcover file (landtype_file)",
+        ));
+    }
+
+    let mut gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let file_dir = PathBuf::from(config.file_dir());
+    let mode_grid = config.mode_grid.trim();
+
+    // 1) Optional geometric CLIP to the domain (regional bbox/circle/close): keep
+    // only the in-region cells. `mesh` is read into memory, so overwriting its
+    // result file with the subset is safe.
+    if let Some(region) = &region {
+        let mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
+        let raw_path = file_dir
+            .join("tmpfile")
+            .join(format!("gridfile_NXP{nxp:04}_clip_raw_{mode_grid}.nc4"));
+        if let Some(parent) = raw_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let output_path = gridinit.gridfile.output.clone();
+        let (_, clipped) = write_olam_mesh_with_optional_domain(
+            &mesh,
+            &raw_path,
+            &output_path,
+            Some(region),
+            mode_grid,
+        )?;
+        gridinit.gridfile = clipped;
+    }
+
+    // 2) Optional landcover CARVE: keep land cells (landmesh) / ocean cells
+    // (oceanmesh) by sampling each cell centre against the landtype file — the
+    // same land/sea masking the legacy egui did. Runs on the current result
+    // gridfile (post-clip when regional). Kept==0 leaves the mesh untouched.
+    if carve_landtype {
+        // Sample resolution must equal the landcover file's own grid, NOT
+        // NL%gridnum_perdegree (which need not match it).
+        let gpd = landtype_gridnum_perdegree(Path::new(&landtype))?;
+        if gpd > 0 {
+            let masked = file_dir
+                .join("result")
+                .join(format!("gridfile_NXP{nxp:04}_{mode_grid}_{mesh_type}.nc4"));
+            let kept = write_landtype_masked_gridfile(
+                &gridinit.gridfile.output,
+                &masked,
+                &landtype,
+                gpd,
+                mode_grid,
+                &mesh_type,
+            )?;
+            if kept > 0 {
+                gridinit.gridfile = unstructured_mesh_write_report_from_file(&masked)?;
+            }
+        }
+    }
+    Ok(gridinit)
+}

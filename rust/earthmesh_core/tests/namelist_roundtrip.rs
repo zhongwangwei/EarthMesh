@@ -2,7 +2,10 @@ use earthmesh_core::{
     lower_datalayers_namelist, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
     RefineConfig, ThresholdVar,
 };
-use std::path::Path;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 // 一个最小但通过 validate_like_read_nl 的 &mkgrd 块：
 // atmosmesh → output_format 必须是 MPAS/MPAS-Simple；gridnum_perdegree 必须是 120/240。
@@ -63,12 +66,17 @@ fn mkgrd_writer_escapes_single_quotes_in_string_values() {
     assert_eq!(reparsed.landtype_file, original.landtype_file);
 }
 
-fn assert_example_round_trips(relative: &str) {
+fn read_example(relative: &str) -> (PathBuf, String) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative);
     let contents =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    (path, contents)
+}
+
+fn assert_example_round_trips(relative: &str) {
+    let (path, contents) = read_example(relative);
     let original = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     let reparsed = EarthmeshConfig::from_mkgrd_namelist(&original.to_mkgrd_namelist())
@@ -139,11 +147,7 @@ fn mkrefine_writer_escapes_single_quotes_in_string_values() {
 }
 
 fn assert_example_mkrefine_round_trips(relative: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative);
-    let contents =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let (path, contents) = read_example(relative);
     // mesh_type / mode_grid come from the &mkgrd block and gate &mkrefine validation.
     let base = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .unwrap_or_else(|e| panic!("parse mkgrd {}: {e}", path.display()));
@@ -252,7 +256,10 @@ fn threshold_var_stems_match_engine_contract() {
     assert_eq!(ThresholdVar::SeaSlope.file_stem(), "sea_slope");
     assert!(ThresholdVar::Ks.is_two_layer());
     assert!(!ThresholdVar::Lai.is_two_layer());
-    assert_eq!(ThresholdVar::from_stem("typhoon"), Some(ThresholdVar::Typhoon));
+    assert_eq!(
+        ThresholdVar::from_stem("typhoon"),
+        Some(ThresholdVar::Typhoon)
+    );
     assert_eq!(ThresholdVar::from_stem("nope"), None);
 }
 
@@ -271,7 +278,10 @@ fn datalayers_lower_sets_landtype_and_refine_switches() {
 
     assert_eq!(mkgrd.landtype_file, "./in/landtype.nc");
     assert!(report.landtype_set);
-    assert!(refine.refine_cal, "any enabled threshold enables calc refine");
+    assert!(
+        refine.refine_cal,
+        "any enabled threshold enables calc refine"
+    );
     // LAI → refine_onelayer_lnd[0] & [1]; slope (idx 2/3) untouched.
     assert!(refine.refine_onelayer_lnd[0] && refine.refine_onelayer_lnd[1]);
     let fresh = RefineConfig::default();

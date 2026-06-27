@@ -1,28 +1,27 @@
 # EarthMesh Studio (Tauri shell)
 
-A cross-platform desktop GUI (Windows / macOS / Linux) that reuses the redesign
-prototype **as-is** for the frontend and a thin **Rust backend** over
-`earthmesh_project` for the logic. This replaces the egui GUI, whose
-immediate-mode styling could not match the prototype.
+A cross-platform desktop GUI (Windows / macOS / Linux) that uses the redesign
+static frontend with a thin **Rust backend** over `earthmesh_project` for the
+logic. This replaces the egui GUI, whose immediate-mode styling could not match
+the static redesign.
 
 ```
 gui-tauri/
 ├── dist/
-│   └── index.html        # frontend = the prototype (docs/gui_redesign/prototype.html)
-│                         #   + a Tauri bridge appended at the end (window.emProject)
+│   └── index.html        # static frontend + Tauri invoke bridge
 └── src-tauri/
     ├── Cargo.toml        # own workspace; deps: tauri v2 + earthmesh_project (NO hdf5)
     ├── build.rs          # tauri_build::build()
     ├── tauri.conf.json   # frontendDist=../dist, withGlobalTauri, window, bundle
     ├── capabilities/default.json
-    ├── icons/icon.png    # reused from rust/earthmesh_gui
+    ├── icons/icon.png    # bundle icon
     └── src/
         ├── main.rs       # launcher -> earthmesh_studio_lib::run()
         └── lib.rs        # #[tauri::command]s
 ```
 
-The look matches the prototype **by construction** — the prototype *is* the
-frontend. No CSS/colour porting, no immediate-mode constraints.
+The look stays close to the redesign while the Tauri bridge binds the static UI
+to real project commands. No CSS/colour porting, no immediate-mode constraints.
 
 ## Architecture
 
@@ -31,42 +30,49 @@ sets `app.withGlobalTauri: true`, so the page calls Rust over IPC through
 `window.__TAURI__.core.invoke(...)`. The Rust side stays **hdf5-free**: it only
 builds/validates the project *intent* and lowers it to a Fortran namelist.
 Actual mesh generation is delegated to the prebuilt engine: the backend lowers
-the project to a namelist and runs `mkgrd.x <mkgrd.nml>` (the CLI's positional
-input form), so the GUI process never links netcdf/hdf5.
+the project to a namelist and runs the discovered engine with `<mkgrd.nml>` as
+its positional input, so the GUI process never links netcdf/hdf5.
 
 ```
-prototype UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
-   (dist)     ◀─JSON/YAML─                          (scaffold / lower / criteria)
+static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
+  (dist)    ◀─JSON/YAML─                          (scaffold / lower / criteria)
 ```
 
 ## Backend commands (`src-tauri/src/lib.rs`)
 
 | command | args | returns |
 |---|---|---|
-| `list_intents` | – | 12 intent presets `{id,label}` |
-| `list_criteria` | – | refinement criteria `{id,label,unit,range,default,…}` |
-| `scaffold_project` | `name, intent, nxp` | project **YAML** |
-| `project_to_namelist` | `yaml` | Fortran **namelist** (engine input) |
+| `list_criteria` | – | refinement criteria `{physical_process,label,help,unit,stem}` |
+| `scaffold_project` | `name, intent, nxp?, approxKm?` | project **YAML** |
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
-| `project_summary` | `yaml` | `{name,intent,domain,nxp,bbox,min_angle_deg,on_violation,layers[]}` |
+| `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
+| `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
+| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,on_violation,refine_enabled,max_passes,layers:[{id,role_kind,role,path,enabled,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
 | `set_quality` | `yaml, minAngleDeg, block` | updated **YAML** (min angle + policy) |
+| `set_refinement` | `yaml, enabled, maxPasses` | updated **YAML** (validated pass count) |
 | `pick_data_file` | – | native file picker → path (or `null`) |
 | `pick_data_folder` | – | native folder picker → path (tiled layers) |
 | `open_project` | – | native open → `{path, yaml}` (or `null`) |
 | `save_project` | `yaml` | native save → path (or `null`) |
-| `run_project` | `yaml, outdir?` | spawn `mkgrd.x`, stream `mkgrd://log` events, return `{ok,code,outdir}` |
+| `read_project` | `path` | `{path, yaml}` for recent-project reopen |
+| `open_path` | `path` | open output/report path in the OS file browser |
+| `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile}` |
+| `kill_run` | – | terminate the running engine child if one exists |
+| `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard |
+| `mesh_cell_polygons` | `gridfile, kind?, maxCells?` | GeoJSON mesh overlay for the map |
 
 All wired to `earthmesh_project`: `ProjectConfig::scaffold` / `from_yaml` /
-`from_json` / `to_yaml` / `lower().to_namelist()` / `criterion_catalog()`. File
-dialogs use `tauri-plugin-dialog` (Rust side, `blocking_*` in `async` commands so
-they run off the UI thread); reads/writes use `std::fs`.
+`from_json` / `validate` / `to_yaml` / `lower().to_namelist()` /
+`criterion_catalog()`. File dialogs use `tauri-plugin-dialog` (Rust side,
+`blocking_*` in `async` commands so they run off the UI thread); reads/writes
+use `std::fs`.
 
 ## Run it
 
-No Node/npm needed (static frontend). From `gui-tauri/src-tauri/`:
+No Node/npm needed to run the static frontend. From `gui-tauri/src-tauri/`:
 
 ```bash
 cargo run                 # builds backend, embeds dist/, opens the window
@@ -89,16 +95,14 @@ cd gui-tauri && cargo tauri build          # package installers
 
 Once the window is open, the Run > Log pane shows
 `✓ Rust backend connected — N refinement criteria registered` on load. Open
-devtools and call the backend directly:
+devtools and use the `window.emProject` helper facade for read-only checks:
 
 ```js
-await emProject.listIntents()
-await emProject.scaffold("test", "HydrologyLand", 40)   // real YAML from Rust
-await emProject.buildFromUi()                            // {yaml, nml} for current UI
+await emProject.listCriteria()
 ```
 
-Clicking **Run** also logs the real namelist lowered from the current template +
-resolution (the prototype's mock animation still plays on top).
+Clicking **Run** logs the real namelist lowered from the current UI project
+config and streams engine stdout/stderr to the Log pane.
 
 ## Running a mesh
 
@@ -111,75 +115,44 @@ make build                                # produces <repo>/mkgrd.x
 cd gui-tauri/src-tauri && cargo run        # Run just works
 ```
 
-`resolve_mkgrd()` searches, in order: `$EARTHMESH_MKGRD` → `<repo>/mkgrd.x` →
-`rust/earthmesh_cli/target/{release,debug}/earthmesh_cli` → `target/{release,debug}/earthmesh_cli`
-→ the app's own dir → `mkgrd.x` on `PATH`. Set `EARTHMESH_MKGRD` only to override.
+`resolve_mkgrd()` searches, in order: a real `$EARTHMESH_MKGRD` file →
+`<repo>/mkgrd.x` → `rust/earthmesh_cli/target/{release,debug}/earthmesh_cli` →
+`target/{release,debug}/earthmesh_cli` → the app's own dir → `mkgrd.x` on
+`PATH`. When it finds a real file, the backend runs a refreshed temp copy
+(`earthmesh_studio_engine.x`) so source-tree C-library quirks do not affect GUI
+runs. Set `EARTHMESH_MKGRD` only to override.
 
-Outputs land in a fresh `earthmesh_run_<ts>` temp dir (reported in the Log pane);
-pass an explicit `outdir` to `run_project` to change that. The binary is only
-launched on an explicit Run click, never automatically.
+Outputs land in `<base>/<project name>/`, where `<base>` is either a fresh
+`earthmesh_run_<ts>` temp dir or the explicit `outdir` passed to `run_project`.
+Enabled threshold data layers are copied into the run's `threshold/` directory
+under the engine file stems (`slope_avg.nc`, `lai.nc`, etc.) before `mkgrd.nml`
+is written. The binary is only launched on an explicit Run click, never
+automatically.
 
-## Status
+## Current behavior
 
-**Slice 0 — shell + architecture (done):** Tauri shell, prototype reused as
-frontend, IPC proven end-to-end, Run emits a real lowered namelist.
+- Project files can be created, opened, saved, validated, summarized, and lowered
+  through the shared `earthmesh_project` model.
+- Data layers, domain, quality, refinement, target output, and run state are
+  reflected from `ProjectConfig` instead of duplicated frontend tables.
+- Runs are explicit: the backend stages the engine, writes `mkgrd.nml`, streams
+  stdout/stderr to the Log pane, supports kill, and reports the output directory.
+- Successful runs load `quality_summary.json` and a map mesh overlay when the
+  engine reports a gridfile.
 
-**Slice 1 — live data layers (done):** step 3's table is rebuilt from the live
-`ProjectConfig.data_layers`. Each row's **Browse** opens the native picker and
-writes the path back via `set_layer_path`; ✕ clears it. Tiled inputs
-(MERIT-Hydro, CaMa) are directories of tiles, so their rows open a **folder**
-picker (`pick_data_folder`) and are flagged "tiled dir". The panel reflects only
-the layers the current intent preset actually uses (no silent refinement on
-missing data) — e.g. the `Land-ocean coupled` template scaffolds `landcover` +
-`lai` + `sea_slope` (no `slope_avg`; that comes from the `MERIT-Hydro` template).
-
-**Slice 2 — open / save project.yaml (done):** header **📂 Open** / **💾 Save**
-buttons (Tauri only). Save composes the canonical YAML (template + resolution +
-layer edits) and writes it via a native dialog; Open reads + validates a
-`.yaml`/`.yml`/`.json` project and reflects it back into the UI (name, template,
-resolution, layer paths).
-
-**Slice 3 — domain + quality (done):** step 2's Global/Regional pills + W/E/S/N
-inputs bind to `DomainConfig` (`Regional{Bbox}`); step 5's *On violation* select
-and expert *Min angle ≥* bind to `QualityConfig` (`min_angle_deg` + `Warn`/`Block`,
-both of which `lower()` carries into the engine namelist). Open reflects bbox +
-quality back into the UI.
-
-**Slice 4 — run with streamed logs (done):** **Run** composes the full project
-YAML, then `run_project` lowers it to `mkgrd.nml`, writes both files, and spawns
-the mesh generator (`$EARTHMESH_MKGRD`, else `mkgrd.x` on `PATH`) as
-`mkgrd.x <mkgrd.nml>`. stdout/stderr are streamed line-by-line to the Log pane
-via `mkgrd://log` events; the status pill flips running → finished/failed and
-the result reports the output directory.
-
-Done with `std::process::Command` + the core event system — **no shell plugin, no
-sidecar bundling** — so the binary path is flexible and nothing is executed
-unless the user clicks Run. If `mkgrd.x` isn't found, the Log pane shows a clear
-"build it / set `EARTHMESH_MKGRD`" message.
-
-**Slice 5 — workflow UX (done):**
-- **Domain:** Global hides the bbox / lat-lon inputs entirely (just a "whole
-  planet" note); they appear only in Regional mode. The toggle re-renders live.
-- **Refinement:** step 4's criteria list is rebuilt from the *selected template's*
-  threshold fields (catalog-labelled), so it changes with the template — e.g.
-  atmosphere → typhoon track; land → LAI/slope; coupled → LAI + sea-slope.
-- **Data layers** were already template-driven (the panel scaffolds per intent).
-- **Run** moved out of the top-right header into the final step's footer and is
-  renamed Run (was "Finish"); it triggers the real streamed run there.
-
-**Next (iterative):** cancel a running job (kill the child via shared state);
-circle/polygon domains; the remaining per-gate thresholds (skew, area ratio,
-coupling) once `QualityConfig` carries them; optionally bundle `mkgrd.x` as a
-proper Tauri sidecar for distribution.
+Known gaps: circle domains remain preserved-but-not-editable in the GUI; polygon
+domains need project-schema support first; per-gate thresholds can be exposed
+after `QualityConfig` carries them; release bundles still need an explicit
+engine sidecar strategy and full platform icon set.
 
 ## Caveats
 
-- **Not compiled here.** This scaffold was written without a Tauri toolchain in
-  the build sandbox. Run `cargo run` (or `cargo tauri dev`) locally first; if
-  your installed Tauri v2 CLI flags a config field, adjust `tauri.conf.json` to
-  its `tauri config schema`. The dialog commands convert the picked `FilePath`
-  with `.to_string()`; if your `tauri-plugin-dialog` version rejects that, change
-  it to `.into_path().unwrap().display().to_string()` (in `src/lib.rs`).
+- **Verification here covers syntax, drift checks, and Rust command behavior.**
+  `make test-gui` uses Node to parse inline JS and fail fast on GUI/backend
+  drift (intent gallery coverage, default template/default values, command docs,
+  frontend invokes, text-safe rendering, run-state wiring, placeholders, and i18n
+  keys), then exercises the Tauri command layer.
+  Packaging still depends on the local Tauri/webview prerequisites listed above.
 - **Icons.** Only `icons/icon.png` is included (enough for `cargo run`/dev). For
   release bundles run `cargo tauri icon icons/icon.png` to generate the full
   platform icon set, then list them in `bundle.icon`.
