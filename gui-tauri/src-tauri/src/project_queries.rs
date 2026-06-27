@@ -3,7 +3,6 @@
 use crate::dto::{CriterionInfo, LayerSummary, ProjectSummary};
 use earthmesh_project::{
     criterion_catalog, DomainConfig, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
-    ViolationPolicy,
 };
 
 /// List every registered refinement criterion (self-describing GUI specs).
@@ -40,11 +39,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             ..
         } => ("regional", "circle", None, None),
     };
-    let on_violation = match cfg.quality.on_violation {
-        ViolationPolicy::Block => "block",
-        ViolationPolicy::Warn => "warn",
-    }
-    .to_string();
+    let on_violation = cfg.quality.on_violation.as_str().to_string();
     let layers = cfg
         .data_layers
         .iter()

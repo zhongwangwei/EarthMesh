@@ -1,6 +1,5 @@
 use crate::{
     km_to_nxp, DomainConfig, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
-    ViolationPolicy,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayersNamelist, EarthmeshConfig, QualityNamelist, RefineConfig,
@@ -57,10 +56,7 @@ impl ProjectConfig {
     fn quality_namelist(&self) -> QualityNamelist {
         QualityNamelist {
             min_angle_warn_deg: self.quality.min_angle_deg,
-            on_violation: match self.quality.on_violation {
-                ViolationPolicy::Block => "block".to_string(),
-                ViolationPolicy::Warn => "warn".to_string(),
-            },
+            on_violation: self.quality.on_violation.as_str().to_string(),
             ..QualityNamelist::default()
         }
     }

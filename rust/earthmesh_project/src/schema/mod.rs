@@ -209,6 +209,15 @@ pub enum ViolationPolicy {
     Block,
 }
 
+impl ViolationPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViolationPolicy::Block => "block",
+            ViolationPolicy::Warn => "warn",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExpertOverrides {
     #[serde(default)]
