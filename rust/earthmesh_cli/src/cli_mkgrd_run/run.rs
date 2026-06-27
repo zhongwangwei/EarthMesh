@@ -1,69 +1,19 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::super::cli_args::{parse_nonnegative_i32, parse_positive_usize, usage};
 use super::super::cli_mkgrd_output::{
     infer_restart_refine_initial_gridfile_arg, print_mask_restart_area_judge_report,
     print_olam_refine_report, print_top_level_dispatch_report, write_olam_restart_refine_namelist,
 };
+use super::prepare::prepare_mkgrd_namelist;
 
 pub(crate) fn run_mkgrd_or_project(
     first: String,
     mut args: impl Iterator<Item = String>,
 ) -> Result<(), String> {
-    // --project: compile a ProjectConfig (.yaml/.json) to a runnable namelist,
-    // then run it. The &datalayers block it emits is staged by the auto-lower below.
-    let first = if first == "--project" {
-        let path = args
-            .next()
-            .ok_or_else(|| usage("--project needs a project.yaml or .json path"))?;
-        let text = fs::read_to_string(&path).map_err(|e| format!("read project {path}: {e}"))?;
-        let project = if path.ends_with(".json") {
-            earthmesh_project::ProjectConfig::from_json(&text)?
-        } else {
-            earthmesh_project::ProjectConfig::from_yaml(&text)?
-        };
-        let nml_path = format!("{path}.nml");
-        fs::write(&nml_path, project.try_lower()?.to_namelist())
-            .map_err(|e| format!("write {nml_path}: {e}"))?;
-        eprintln!("earthmesh_cli: compiled project -> {nml_path}");
-        nml_path
-    } else {
-        first
-    };
-    let mut namelist = first;
-    // If the namelist declares a &datalayers block, lower it into the engine
-    // config (landtype + refine switches), stage threshold files, and run the
-    // rewritten namelist. Gated on &datalayers, so legacy namelists are untouched.
-    if let Ok(text) = fs::read_to_string(&namelist) {
-        if text.to_ascii_lowercase().contains("&datalayers") {
-            let fallback = Path::new(&namelist)
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("threshold");
-            let fallback = fallback.display().to_string();
-            let lowered =
-                earthmesh_core::lower_datalayers_namelist(&text, Some(fallback.as_str()))?;
-            if !lowered.threshold_files.is_empty() {
-                let th_dir = PathBuf::from(&lowered.threshold_dir);
-                fs::create_dir_all(&th_dir)
-                    .map_err(|e| format!("create threshold dir {}: {e}", th_dir.display()))?;
-                for (stem, src) in &lowered.threshold_files {
-                    let dst = th_dir.join(format!("{stem}.nc"));
-                    fs::copy(src, &dst)
-                        .map_err(|e| format!("stage threshold {src} -> {}: {e}", dst.display()))?;
-                }
-            }
-            for w in &lowered.warnings {
-                eprintln!("earthmesh_cli: warning: {w}");
-            }
-            let lowered_path = format!("{namelist}.lowered.nml");
-            fs::write(&lowered_path, &lowered.namelist)
-                .map_err(|e| format!("write lowered namelist {lowered_path}: {e}"))?;
-            namelist = lowered_path;
-        }
-    }
+    let namelist = prepare_mkgrd_namelist(first, &mut args)?;
     let mut max_tris = 100_000usize;
     let mut run_refine_passthrough = false;
     let mut run_refine_landtype_source = false;
