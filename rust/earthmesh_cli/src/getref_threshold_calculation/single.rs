@@ -72,8 +72,13 @@ pub fn calculate_getref_single_mesh_threshold_reports_fortran_indexed(
     let aggregate_num_vertex = match mesh_type {
         "landmesh" => land_basic_config.num_vertex,
         "oceanmesh" => ocean_config.num_vertex,
-        "atmosmesh" => atmos_config.num_vertex,
-        _ => unreachable!("validated non-LOC mesh_type"),
+        "atmos" | "atmosmesh" => atmos_config.num_vertex,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported GetRef mesh_type {other}"),
+            ));
+        }
     };
     let aggregate = aggregate_getref_threshold_reports_fortran_indexed(
         aggregate_num_vertex,

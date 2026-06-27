@@ -15,12 +15,12 @@ pub fn write_hydro_close_refinement_recipe_json(
     output_json: impl AsRef<Path>,
     options: HydroCloseRefinementRecipeOptions,
 ) -> io::Result<HydroCloseRefinementRecipeWriteReport> {
-    if options.class_refine.is_empty() {
+    let Some(max_iter_spc) = options.class_refine.values().copied().max() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "hydro close recipe requires at least one class refine mapping",
         ));
-    }
+    };
     if !options.simplify_tolerance_deg.is_finite() || options.simplify_tolerance_deg < 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -35,11 +35,6 @@ pub fn write_hydro_close_refinement_recipe_json(
             ));
         }
     }
-    let max_iter_spc = *options
-        .class_refine
-        .values()
-        .max()
-        .expect("class_refine was checked non-empty");
     let output_json = output_json.as_ref().to_path_buf();
     if let Some(parent) = output_json.parent() {
         fs::create_dir_all(parent)?;

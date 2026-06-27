@@ -150,3 +150,47 @@ fn single_mesh_wiring_uses_ocean_num_vertex_for_oceanmesh_target_aggregation() {
     );
     assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 1, 0]);
 }
+
+#[test]
+fn single_mesh_wiring_accepts_atmos_alias_for_target_aggregation() {
+    let is_in_refine_sjx = vec![0, 0, 1, 1];
+    let atmos_id = vec![vec![0, 0], vec![0, 0], vec![2, 1], vec![3, 1]];
+    let atmos_ii = one_based_i32(&[[0, 0], [1, 1], [1, 2], [2, 1]]);
+    let landtypes = vec![vec![1; 3]; 3];
+
+    let report = calculate_getref_single_mesh_threshold_reports_fortran_indexed(
+        "atmos",
+        &is_in_refine_sjx,
+        &atmos_id,
+        &atmos_ii,
+        &landtypes,
+        GetRefLandBasicConfig {
+            num_vertex: 2,
+            maxlc: 9,
+            refine_num_landtypes: false,
+            th_num_landtypes: 0,
+            refine_area_mainland: false,
+            th_area_mainland: 0.0,
+        },
+        &[],
+        &[],
+        GetRefOceanThresholdConfig {
+            num_vertex: 2,
+            maxlc: 9,
+            refine_sea_ratio: false,
+            th_sea_ratio: [0.0, 0.0],
+        },
+        &[],
+        GetRefAtmosThresholdConfig {
+            num_vertex: 1,
+            maxlc: 9,
+        },
+        &[],
+    )
+    .expect("atmos alias should calculate atmosphere GetRef report");
+
+    assert_eq!(report.mesh_type, "atmos");
+    assert!(report.atmos.is_some());
+    assert_eq!(report.aggregate.ref_colnum, 0);
+    assert_eq!(report.aggregate.ref_sjx, vec![0, 0, 0, 0]);
+}

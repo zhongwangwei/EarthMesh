@@ -40,6 +40,18 @@ fn select_area_judge_source_window_fortran_order(
     Ok(selected)
 }
 
+fn require_mask_postproc_plan<'a>(
+    plan: Option<&'a MaskPostprocDomainIoPlan>,
+    mesh_type: &str,
+) -> io::Result<&'a MaskPostprocDomainIoPlan> {
+    plan.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("mask_restart Area_judge postproc plan is unavailable for {mesh_type}"),
+        )
+    })
+}
+
 pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
     namelist_source: impl AsRef<Path>,
     workdir: impl AsRef<Path>,
@@ -173,9 +185,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
 
     let postproc = match mesh_type {
         "earthmesh" => {
-            let postproc_plan = postproc_plan
-                .as_ref()
-                .expect("earthmesh postproc plan should be present");
+            let postproc_plan = require_mask_postproc_plan(postproc_plan.as_ref(), mesh_type)?;
             let source_mesh = read_unstructured_mesh_netcdf(&postproc_plan.source_gridfile)?;
             let num_mp_step = vec![source_mesh.m_points.len()];
             MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
@@ -196,9 +206,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
             )?)
         }
         "landmesh" => {
-            let postproc_plan = postproc_plan
-                .as_ref()
-                .expect("landmesh postproc plan should be present");
+            let postproc_plan = require_mask_postproc_plan(postproc_plan.as_ref(), mesh_type)?;
             let selected_seaorland = select_area_judge_source_window_fortran_order(
                 &restart.area.seaorland.seaorland,
                 bounds,
@@ -219,9 +227,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
             )?)
         }
         "oceanmesh" => {
-            let postproc_plan = postproc_plan
-                .as_ref()
-                .expect("oceanmesh postproc plan should be present");
+            let postproc_plan = require_mask_postproc_plan(postproc_plan.as_ref(), mesh_type)?;
             MkgrdFinalDomainPostprocReport::Ocean(run_mask_postproc_ocean_domain(
                 postproc_plan,
                 MaskPostprocOceanRunOptions {
@@ -264,7 +270,12 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
                 ));
             }
         },
-        _ => unreachable!("mesh_type matched before postproc dispatch"),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("mask_restart Area_judge postproc does not support mesh_type {other}"),
+            ));
+        }
     };
 
     Ok(MkgrdRestartAreaJudgePostprocRunReport {
