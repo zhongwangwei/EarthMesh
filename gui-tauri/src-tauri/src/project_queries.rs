@@ -45,14 +45,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         .iter()
         .map(|l| LayerSummary {
             id: l.id.clone(),
-            role_kind: match l.role {
-                ProjectLayerRole::LandType => "landcover",
-                ProjectLayerRole::MeritHydro => "merit",
-                ProjectLayerRole::Cama => "cama",
-                ProjectLayerRole::SpecifiedMask => "mask",
-                ProjectLayerRole::Threshold(_) => "threshold",
-            }
-            .to_string(),
+            role_kind: l.role.role_kind().to_string(),
             role: l.role.label(),
             path: l.path.clone(),
             enabled: l.enabled,

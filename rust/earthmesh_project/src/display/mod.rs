@@ -8,7 +8,7 @@ impl ThresholdField {
 }
 
 impl ProjectLayerRole {
-    pub(crate) fn default_id(self) -> &'static str {
+    pub fn role_kind(self) -> &'static str {
         match self {
             ProjectLayerRole::LandType => "landcover",
             ProjectLayerRole::MeritHydro => "merit",

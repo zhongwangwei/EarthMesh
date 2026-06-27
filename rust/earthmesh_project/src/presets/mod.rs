@@ -173,7 +173,7 @@ impl ProjectConfig {
         let mut data_layers = Vec::new();
         for role in &d.extra_roles {
             data_layers.push(ProjectDataLayer {
-                id: role.default_id().to_string(),
+                id: role.role_kind().to_string(),
                 role: *role,
                 path: String::new(),
                 enabled: false,
