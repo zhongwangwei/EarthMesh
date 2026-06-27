@@ -138,7 +138,12 @@ pub fn parse_mkgrd_compact_source_state(contents: &str) -> io::Result<MkgrdCompa
             "is_in_domain" => is_in_domain.push(row),
             "seaorland" => seaorland.push(row),
             "landtypes_global" => landtypes_global.push(row),
-            _ => unreachable!(),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown source-state section [{other}] at line {line_number}"),
+                ));
+            }
         }
     }
 

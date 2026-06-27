@@ -96,7 +96,11 @@ pub(crate) fn run_cama_reach_export(
             println!("cama_reach_geojson={}", report.output.display());
             println!("cama_reach_features={}", report.feature_count);
         }
-        _ => unreachable!("validated CaMa reach export command"),
+        _ => {
+            return Err(usage(&format!(
+                "unknown CaMa reach export command {command}"
+            )))
+        }
     }
     Ok(())
 }

@@ -74,24 +74,20 @@ pub fn read_v3_geojson_source_summary(
     kind: V3DataSourceKind,
     path: impl AsRef<Path>,
 ) -> io::Result<V3GeoJsonSourceSummary> {
-    match kind {
-        V3DataSourceKind::Hydro | V3DataSourceKind::Coast => {}
+    let keys: &[&str] = match kind {
+        V3DataSourceKind::Hydro => &["hydro_class", "river_class", "mask_class"],
+        V3DataSourceKind::Coast => &["mask_class", "coast_class"],
         V3DataSourceKind::Landtype | V3DataSourceKind::Threshold => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "v3 GeoJSON source summaries are only defined for hydro/coast sources",
             ));
         }
-    }
+    };
     let path = path.as_ref();
     let text = fs::read_to_string(path)?;
     let root = JsonParser::new(&text).parse()?;
     let mut classes = BTreeSet::new();
-    let keys: &[&str] = match kind {
-        V3DataSourceKind::Hydro => &["hydro_class", "river_class", "mask_class"],
-        V3DataSourceKind::Coast => &["mask_class", "coast_class"],
-        V3DataSourceKind::Landtype | V3DataSourceKind::Threshold => unreachable!(),
-    };
     let features = geojson_feature_nodes(&root);
     for feature in &features {
         let Some(properties) = feature
