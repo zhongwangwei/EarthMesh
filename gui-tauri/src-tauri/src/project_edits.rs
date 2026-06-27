@@ -4,6 +4,11 @@ use earthmesh_project::{
     default_mask_sea_ratio, DomainConfig, ProjectConfig, RegionShape, ViolationPolicy,
 };
 
+fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
+    cfg.validate()?;
+    cfg.to_yaml()
+}
+
 /// Set a data layer's path + enabled flag, returning the updated YAML.
 #[tauri::command]
 pub(crate) fn set_layer_path(
@@ -20,8 +25,7 @@ pub(crate) fn set_layer_path(
         .ok_or_else(|| format!("no data layer with id '{id}'"))?;
     layer.path = path;
     layer.enabled = enabled;
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
 
 /// Set the domain to global, returning the updated YAML.
@@ -29,8 +33,7 @@ pub(crate) fn set_layer_path(
 pub(crate) fn set_domain_global(yaml: String) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.domain = DomainConfig::Global;
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
 
 /// Set the domain to a regional bounding box, returning the updated YAML.
@@ -48,8 +51,7 @@ pub(crate) fn set_domain_bbox(
         shape: RegionShape::Bbox { w, e, n, s },
         sea_ratio: Some(sea_ratio.unwrap_or_else(default_mask_sea_ratio)),
     };
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
 
 /// Set the quality gate (min angle + on-violation policy), returning the YAML.
@@ -62,8 +64,7 @@ pub(crate) fn set_quality(yaml: String, min_angle_deg: f64, block: bool) -> Resu
     } else {
         ViolationPolicy::Warn
     };
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
 
 /// Set whether refinement runs and how many passes. `enabled=false` yields a
@@ -77,6 +78,5 @@ pub(crate) fn set_refinement(
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.refinement.enabled = enabled;
     cfg.refinement.max_passes = if enabled { max_passes } else { 0 };
-    cfg.validate()?;
-    cfg.to_yaml()
+    validated_yaml(cfg)
 }
