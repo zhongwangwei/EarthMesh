@@ -2,7 +2,7 @@
 
 use crate::dto::{CriterionInfo, LayerSummary, ProjectSummary};
 use earthmesh_project::{
-    criterion_catalog, DomainConfig, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    criterion_catalog, DomainConfig, ProjectConfig, RegionShape, ResolutionSpec,
 };
 
 /// List every registered refinement criterion (self-describing GUI specs).
@@ -49,10 +49,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             role: l.role.label(),
             path: l.path.clone(),
             enabled: l.enabled,
-            wants_folder: matches!(
-                l.role,
-                ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama
-            ),
+            wants_folder: l.role.wants_folder(),
         })
         .collect();
     Ok(ProjectSummary {

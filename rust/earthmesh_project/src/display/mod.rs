@@ -18,6 +18,10 @@ impl ProjectLayerRole {
         }
     }
 
+    pub fn wants_folder(self) -> bool {
+        matches!(self, ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama)
+    }
+
     pub fn label(self) -> String {
         match self {
             ProjectLayerRole::LandType => "land type".to_string(),

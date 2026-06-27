@@ -477,6 +477,10 @@ fn layer_role_labels_are_schema_owned() {
         ProjectLayerRole::Threshold(ThresholdField::Slope).label(),
         "threshold · Slope"
     );
+    assert!(!ProjectLayerRole::LandType.wants_folder());
+    assert!(ProjectLayerRole::MeritHydro.wants_folder());
+    assert!(ProjectLayerRole::Cama.wants_folder());
+    assert!(!ProjectLayerRole::Threshold(ThresholdField::Slope).wants_folder());
 }
 
 #[test]
