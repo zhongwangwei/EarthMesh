@@ -260,7 +260,7 @@ pub(crate) async fn run_project(
             )
         })?;
     // Record the PID so `kill_run` can stop this engine run on request.
-    record_running_child(child.id());
+    record_running_child(child.id())?;
 
     let out = child.stdout.take();
     let err = child.stderr.take();
@@ -272,7 +272,9 @@ pub(crate) async fn run_project(
             for line in BufReader::new(o).lines().map_while(Result::ok) {
                 // The engine prints `gridfile=<path>` for the mesh it produced.
                 if let Some(rest) = line.strip_prefix("gridfile=") {
-                    *gf_capture.lock().unwrap() = Some(rest.trim().to_string());
+                    if let Ok(mut gridfile) = gf_capture.lock() {
+                        *gridfile = Some(rest.trim().to_string());
+                    }
                 }
                 let _ = a1.emit("mkgrd://log", line);
             }
@@ -300,7 +302,10 @@ pub(crate) async fn run_project(
                 .unwrap_or_else(|| "signal".into())
         ),
     );
-    let gridfile = gridfile_seen.lock().unwrap().clone();
+    let gridfile = gridfile_seen
+        .lock()
+        .map_err(|_| "run gridfile state lock poisoned".to_string())?
+        .clone();
     Ok(RunResult {
         ok: status.success(),
         code,
