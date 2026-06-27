@@ -10,7 +10,6 @@ pub(crate) struct Stat {
     pub(crate) max: f64,
     pub(crate) mean: f64,
     pub(crate) std: f64,
-    pub(crate) cv: f64,
 }
 
 /// One quality gate: a metric value + its pass/warn/fail level.
@@ -56,7 +55,6 @@ impl Stat {
             max: s["max"].as_f64().unwrap_or(0.0),
             mean: s["mean"].as_f64().unwrap_or(0.0),
             std: s["std"].as_f64().unwrap_or(0.0),
-            cv: s["cv"].as_f64().unwrap_or(0.0),
         }
     }
 }
