@@ -67,7 +67,8 @@ impl ProjectConfig {
 
     /// Lower the project (L1) to engine config (L3). Reuses the core lowering for
     /// data layers; the mesh algorithm is untouched.
-    pub fn lower(&self) -> LoweredProject {
+    pub fn try_lower(&self) -> Result<LoweredProject, String> {
+        self.validate()?;
         let mut mkgrd = EarthmeshConfig::default();
         let mut refine = RefineConfig::default();
 
@@ -133,11 +134,17 @@ impl ProjectConfig {
             mkgrd.openmp = t;
         }
 
-        LoweredProject {
+        Ok(LoweredProject {
             mkgrd,
             refine,
             data_layers: dl,
             quality: self.quality_namelist(),
-        }
+        })
+    }
+
+    /// Lower an already-validated project.
+    pub fn lower(&self) -> LoweredProject {
+        self.try_lower()
+            .expect("ProjectConfig::lower requires a valid project")
     }
 }

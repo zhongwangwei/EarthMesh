@@ -85,7 +85,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         domain_shape: domain_shape.to_string(),
         nxp,
         approx_km,
-        effective_nxp: cfg.lower().mkgrd.nxp,
+        effective_nxp: cfg.try_lower()?.mkgrd.nxp,
         bbox,
         sea_ratio,
         min_angle_deg: cfg.quality.min_angle_deg,

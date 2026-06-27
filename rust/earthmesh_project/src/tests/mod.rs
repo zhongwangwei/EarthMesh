@@ -276,6 +276,9 @@ fn project_validation_rejects_engine_incompatible_target_format() {
     p.target.model_format = ModelFormat::Olam;
     let err = yaml_err(&p);
     assert!(err.contains("project model_format OLAM is deprecated"));
+
+    let err = p.try_lower().expect_err("deprecated OLAM must not lower");
+    assert!(err.contains("project model_format OLAM is deprecated"));
 }
 
 #[test]
