@@ -5,16 +5,13 @@ use earthmesh_project::{
 };
 use std::{env, fs, path::Path, process};
 #[test]
-fn parses_quality_summary_fields_and_warnings() {
+fn parses_quality_summary_fields() {
     let json = r#"{
         "verdict": "warn",
         "geometry": { "cell_count": 1200, "vertex_count": 640, "edge_count": 1830, "min_angle_deg": 22.5 },
         "gates": [
             { "metric": "min_angle_deg", "value": 22.5, "level": "warn" },
             { "metric": "aspect_ratio", "value": 2.0, "level": "pass" }
-        ],
-        "topology_issues": [
-            { "issue_type": "duplicate_edge", "severity": "fail", "message": "x" }
         ]
     }"#;
     let q = quality::parse_quality_summary(json, Path::new("/no/such/dir")).unwrap();
@@ -22,16 +19,8 @@ fn parses_quality_summary_fields_and_warnings() {
     assert_eq!(q.cell_count, 1200);
     assert_eq!(q.vertex_count, 640);
     assert_eq!(q.min_angle_deg, 22.5);
-    assert!(q
-        .warnings
-        .iter()
-        .any(|w| w.contains("min_angle_deg [warn]")));
-    assert!(q
-        .warnings
-        .iter()
-        .any(|w| w.contains("topology: duplicate_edge [fail]")));
-    // pass-level gate must not show up as a warning
-    assert!(!q.warnings.iter().any(|w| w.contains("aspect_ratio")));
+    assert_eq!(q.gates.len(), 2);
+    assert_eq!(q.gates[0].level, "warn");
     assert!(q.report_path.is_none());
 }
 fn preset_yaml(name: &str, intent: MeshIntentPreset) -> String {

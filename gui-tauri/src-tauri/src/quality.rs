@@ -44,8 +44,6 @@ pub(crate) struct MeshQuality {
     /// (name, count) for each topology issue counter.
     pub(crate) topology: Vec<(String, i64)>,
     pub(crate) gates: Vec<Gate>,
-    /// Gate metrics + topology issues at warn/fail level, as "name [level]".
-    pub(crate) warnings: Vec<String>,
     pub(crate) report_path: Option<String>,
     pub(crate) worst_cells_path: Option<String>,
 }
@@ -69,26 +67,6 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
     let v: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("parse quality json: {e}"))?;
     let geom = &v["geometry"];
-    let mut warnings = Vec::new();
-    if let Some(gates) = v["gates"].as_array() {
-        for g in gates {
-            let level = g["level"].as_str().unwrap_or("");
-            if level == "warn" || level == "fail" {
-                warnings.push(format!("{} [{level}]", g["metric"].as_str().unwrap_or("?")));
-            }
-        }
-    }
-    if let Some(issues) = v["topology_issues"].as_array() {
-        for it in issues {
-            let sev = it["severity"].as_str().unwrap_or("");
-            if sev == "warn" || sev == "fail" {
-                warnings.push(format!(
-                    "topology: {} [{sev}]",
-                    it["issue_type"].as_str().unwrap_or("?")
-                ));
-            }
-        }
-    }
     let exists = |name: &str| {
         let p = dir.join(name);
         p.exists().then(|| p.to_string_lossy().into_owned())
@@ -144,7 +122,6 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
             .unwrap_or(0.0),
         topology,
         gates,
-        warnings,
         report_path: exists("quality_report.md"),
         worst_cells_path: exists("worst_cells.geojson"),
     })
