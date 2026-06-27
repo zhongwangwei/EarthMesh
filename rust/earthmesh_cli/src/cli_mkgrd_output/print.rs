@@ -11,28 +11,10 @@ pub(crate) fn print_top_level_dispatch_report(
             print_olam_refine_report(report);
         }
         earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
-            println!("mask_restart_action={:?}", report.plan.remask.action);
-            println!(
-                "mask_patch_reports={}",
-                report.workspace_mask.mask_reports.len()
-            );
-            println!(
-                "mask_patch_ndm={}",
-                report.workspace_mask.mask_counts.mask_patch_ndm[0]
-            );
+            print_mask_restart_patch_report(report);
         }
         earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => {
-            println!("mask_restart_action={:?}", report.plan.remask.action);
-            println!(
-                "mask_postproc_result_gridfile={}",
-                report.postproc.final_gridfile.output.display()
-            );
-            if let Some(obc) = &report.postproc.obc {
-                println!("mask_postproc_obc={}", obc.output.display());
-            }
-            if let Some(obcv2) = &report.postproc.obcv2 {
-                println!("mask_postproc_obcv2={}", obcv2.output.display());
-            }
+            print_mask_restart_ocean_report(report);
         }
         earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
             print_mask_restart_area_judge_report(report);
@@ -42,6 +24,36 @@ pub(crate) fn print_top_level_dispatch_report(
             println!("mask_restart_step={}", report.remask.step);
             println!("mask_restart_file_dir={}", report.remask.file_dir.display());
         }
+    }
+}
+
+pub(crate) fn print_mask_restart_patch_report(
+    report: &earthmesh_cli::MkgrdMaskRestartPatchRunReport,
+) {
+    println!("mask_restart_action={:?}", report.plan.remask.action);
+    println!(
+        "mask_patch_reports={}",
+        report.workspace_mask.mask_reports.len()
+    );
+    println!(
+        "mask_patch_ndm={}",
+        report.workspace_mask.mask_counts.mask_patch_ndm[0]
+    );
+}
+
+pub(crate) fn print_mask_restart_ocean_report(
+    report: &earthmesh_cli::MkgrdMaskRestartOceanRunReport,
+) {
+    println!("mask_restart_action={:?}", report.plan.remask.action);
+    println!(
+        "mask_postproc_result_gridfile={}",
+        report.postproc.final_gridfile.output.display()
+    );
+    if let Some(obc) = &report.postproc.obc {
+        println!("mask_postproc_obc={}", obc.output.display());
+    }
+    if let Some(obcv2) = &report.postproc.obcv2 {
+        println!("mask_postproc_obcv2={}", obcv2.output.display());
     }
 }
 
