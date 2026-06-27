@@ -1,5 +1,5 @@
 use crate::{
-    DelaunayMemory, EarthmeshConfig, GridMemory, IjTabs, LegacyMemoryShape, RefineConfig,
+    DelaunayMemory, EarthmeshConfig, GridMemory, IjTabs, MeshMemoryShape, RefineConfig,
     EARTH_RADIUS_METERS,
 };
 
@@ -62,7 +62,7 @@ pub struct MaskCounterState {
 /// Rust-owned scalar defaults that used to live as `consts_coms` module
 /// globals or top-level `mkgrd` initialization assignments.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LegacyScalarState {
+pub struct RuntimeScalarState {
     pub rinit: f32,
     pub rinit8: f64,
     pub iunit: i32,
@@ -70,7 +70,7 @@ pub struct LegacyScalarState {
     pub num_center: usize,
 }
 
-impl Default for LegacyScalarState {
+impl Default for RuntimeScalarState {
     fn default() -> Self {
         Self {
             rinit: 0.0,
@@ -81,6 +81,9 @@ impl Default for LegacyScalarState {
         }
     }
 }
+
+#[deprecated(note = "use RuntimeScalarState")]
+pub type LegacyScalarState = RuntimeScalarState;
 
 /// Rust-owned replacement for the production `consts_coms` + `mem_*` global
 /// bundle used by the legacy Fortran driver.
@@ -99,7 +102,7 @@ pub struct EarthmeshRuntimeState {
     pub delaunay: DelaunayMemory,
     pub source_grid: SourceGridState,
     pub mask_counts: MaskCounterState,
-    pub scalars: LegacyScalarState,
+    pub scalars: RuntimeScalarState,
     pub pentagon_indices: [usize; 12],
     pub step: usize,
     pub num_vertex: usize,
@@ -120,7 +123,7 @@ impl EarthmeshRuntimeState {
             delaunay: DelaunayMemory::default(),
             source_grid: SourceGridState::default(),
             mask_counts: MaskCounterState::default(),
-            scalars: LegacyScalarState::default(),
+            scalars: RuntimeScalarState::default(),
             pentagon_indices: [0; 12],
             step: 1,
             num_vertex: 0,
@@ -289,7 +292,7 @@ impl EarthmeshRuntimeState {
 
     /// Allocate all migrated `mem_grid`, `mem_ijtabs`, and `mem_delaunay`
     /// buffers from one explicit shape.
-    pub fn allocate_legacy_memories(&mut self, shape: LegacyMemoryShape) {
+    pub fn allocate_mesh_memories(&mut self, shape: MeshMemoryShape) {
         self.grid.nma = shape.nma;
         self.grid.nua = shape.nua;
         self.grid.nva = shape.nva;
@@ -305,5 +308,10 @@ impl EarthmeshRuntimeState {
         self.ijtabs = IjTabs::allocate(shape.mma, shape.mva, shape.mwa);
         self.delaunay
             .allocate_itabsd(shape.mma, shape.mua, shape.mwa);
+    }
+
+    #[deprecated(note = "use allocate_mesh_memories")]
+    pub fn allocate_legacy_memories(&mut self, shape: MeshMemoryShape) {
+        self.allocate_mesh_memories(shape);
     }
 }

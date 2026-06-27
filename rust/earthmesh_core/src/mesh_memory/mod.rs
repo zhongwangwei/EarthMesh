@@ -300,10 +300,10 @@ impl DelaunayMemory {
     }
 }
 
-/// Legacy mesh-memory allocation sizes used to replace the Fortran `mem_*`
-/// module globals with one explicit Rust-owned runtime state.
+/// Mesh-memory allocation sizes used to replace the Fortran `mem_*` module
+/// globals with one explicit Rust-owned runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct LegacyMemoryShape {
+pub struct MeshMemoryShape {
     pub nma: usize,
     pub nua: usize,
     pub nva: usize,
@@ -313,3 +313,6 @@ pub struct LegacyMemoryShape {
     pub mva: usize,
     pub mwa: usize,
 }
+
+#[deprecated(note = "use MeshMemoryShape")]
+pub type LegacyMemoryShape = MeshMemoryShape;

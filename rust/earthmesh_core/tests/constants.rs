@@ -625,7 +625,7 @@ fn delaunay_memory_copy_and_original_buffers_match_fortran_initial_state() {
 }
 
 #[test]
-fn runtime_state_wires_configs_and_legacy_memories_without_fortran_globals() {
+fn runtime_state_wires_configs_and_mesh_memories_without_fortran_globals() {
     let config = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%expnme='state_case'\n NL%nxp=42\n NL%base_dir='/tmp/earthmesh/'\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n NL%refine=.true.\n/\n",
     )
@@ -639,7 +639,7 @@ fn runtime_state_wires_configs_and_legacy_memories_without_fortran_globals() {
 
     let mut state = earthmesh_core::EarthmeshRuntimeState::new(config.clone())
         .with_refine_config(refine.clone());
-    state.allocate_legacy_memories(earthmesh_core::LegacyMemoryShape {
+    state.allocate_mesh_memories(earthmesh_core::MeshMemoryShape {
         nma: 3,
         nua: 4,
         nva: 5,
