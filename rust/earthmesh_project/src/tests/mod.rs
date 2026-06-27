@@ -279,6 +279,11 @@ fn project_validation_rejects_engine_incompatible_target_format() {
 
     let err = p.try_lower().expect_err("deprecated OLAM must not lower");
     assert!(err.contains("project model_format OLAM is deprecated"));
+
+    let err = p
+        .try_reproducibility_manifest()
+        .expect_err("deprecated OLAM must not produce a manifest");
+    assert!(err.contains("project model_format OLAM is deprecated"));
 }
 
 #[test]

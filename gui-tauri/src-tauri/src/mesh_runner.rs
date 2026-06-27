@@ -28,7 +28,7 @@ pub(crate) async fn run_project(
     // mkgrd.x takes `<mkgrd.nml>` as a positional argument (no `--project` flag),
     // so we do the lowering here rather than relying on the CLI to do it.
     let cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
-    let mut lowered = cfg.lower();
+    let mut lowered = cfg.try_lower()?;
     // Stabilize the spring smoothing. The config default (beta=1.2, relax=0.04) is
     // more aggressive than OLAM's proven-stable values and can OVER-relax: the
     // spring overshoots and folds the mesh locally, leaving overlapping/inverted

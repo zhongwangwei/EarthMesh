@@ -46,19 +46,25 @@ fn sha256_file(path: &str) -> Option<InputFingerprint> {
 impl ProjectConfig {
     /// Build a reproducibility manifest: hash the enabled data-layer inputs and
     /// snapshot the lowered namelist. Files that can't be read are skipped.
-    pub fn reproducibility_manifest(&self) -> ReproducibilityManifest {
+    pub fn try_reproducibility_manifest(&self) -> Result<ReproducibilityManifest, String> {
         let inputs = self
             .data_layers
             .iter()
             .filter(|l| l.enabled && !l.path.trim().is_empty())
             .filter_map(|l| sha256_file(&l.path))
             .collect();
-        ReproducibilityManifest {
+        Ok(ReproducibilityManifest {
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             schema_version: self.schema_version.clone(),
             project_name: self.metadata.name.clone(),
             inputs,
-            lowered_namelist: self.lower().to_namelist(),
-        }
+            lowered_namelist: self.try_lower()?.to_namelist(),
+        })
+    }
+
+    /// Build a reproducibility manifest for an already-validated project.
+    pub fn reproducibility_manifest(&self) -> ReproducibilityManifest {
+        self.try_reproducibility_manifest()
+            .expect("ProjectConfig::reproducibility_manifest requires a valid project")
     }
 }

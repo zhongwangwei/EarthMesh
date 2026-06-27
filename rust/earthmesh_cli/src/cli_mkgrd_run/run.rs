@@ -25,7 +25,7 @@ pub(crate) fn run_mkgrd_or_project(
             earthmesh_project::ProjectConfig::from_yaml(&text)?
         };
         let nml_path = format!("{path}.nml");
-        fs::write(&nml_path, project.lower().to_namelist())
+        fs::write(&nml_path, project.try_lower()?.to_namelist())
             .map_err(|e| format!("write {nml_path}: {e}"))?;
         eprintln!("earthmesh_cli: compiled project -> {nml_path}");
         nml_path
