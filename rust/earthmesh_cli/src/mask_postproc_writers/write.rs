@@ -21,7 +21,7 @@ pub fn write_patchid_netcdf(
     let nlon = patch.elmindex.len();
     let nlat = matrix_width("elmindex", &patch.elmindex)?;
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("nlon", nlon)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("nlat", nlat)
@@ -98,7 +98,7 @@ pub fn write_earthmesh_info_netcdf(
     let num_step = info.num_step_f.len();
     let num_ustr = info.refine_degree_f.len();
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num_step", num_step)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("num_ustr", num_ustr)

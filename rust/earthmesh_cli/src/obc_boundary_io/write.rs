@@ -23,7 +23,7 @@ pub fn write_obc_boundary_netcdf(
         fs::create_dir_all(parent)?;
     }
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bdy_num", bdy_num)
         .map_err(netcdf_to_io_error)?;
     write_usize_1d(&mut file, "bdy_order", "bdy_num", &orders.bdy_order)?;
@@ -67,7 +67,7 @@ pub fn write_obcv2_boundary_netcdf(
     let n_close_curve_values =
         usize_values_to_i32("n_close_curve", &connection.curves.n_close_curve[1..=num2])?;
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num1", num1)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("num2", num2)

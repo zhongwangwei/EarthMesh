@@ -17,7 +17,7 @@ pub fn read_getref_calculated_ref_sjx_netcdf(
     }
     let mut markers: Option<Vec<i32>> = None;
     for input in inputs {
-        let file = netcdf::open(input).map_err(netcdf_to_io_error)?;
+        let file = crate::open_netcdf(input).map_err(netcdf_to_io_error)?;
         let (var_name, variable) = ["ref_th_Lnd", "ref_th_Ocn", "ref_th_Atmos"]
             .into_iter()
             .find_map(|name| file.variable(name).map(|variable| (name, variable)))

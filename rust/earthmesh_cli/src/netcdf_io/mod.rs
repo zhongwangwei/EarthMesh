@@ -5,7 +5,7 @@ mod scalars;
 mod values;
 
 pub(crate) use dimensions::{first_existing_dimension_len, required_dimension_len};
-pub(crate) use error::netcdf_to_io_error;
+pub(crate) use error::{create_netcdf, netcdf_to_io_error, open_netcdf};
 pub(crate) use matrices::{
     optional_values_i32_2d, required_values_f64_any_matrix, required_values_i32_2d,
     required_values_i32_any_matrix, required_values_i32_matrix, required_values_i8_matrix,

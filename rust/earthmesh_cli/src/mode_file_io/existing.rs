@@ -9,7 +9,7 @@ pub fn copy_existing_earthmesh_mode_file(
     mode_grid: &str,
 ) -> io::Result<UnstructuredMeshWriteReport> {
     let mode_file = mode_file.as_ref();
-    let source = netcdf::open(mode_file).map_err(netcdf_to_io_error)?;
+    let source = crate::open_netcdf(mode_file).map_err(netcdf_to_io_error)?;
     let sjx_points = source
         .dimension("sjx_points")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "mode_file missing sjx_points"))?

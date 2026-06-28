@@ -21,7 +21,7 @@ pub fn write_getref_land_threshold_netcdf(
     }
 
     let sjx_points = report.ref_th_land.len() - 1;
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("sjx_points", sjx_points)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("dima", 2).map_err(netcdf_to_io_error)?;

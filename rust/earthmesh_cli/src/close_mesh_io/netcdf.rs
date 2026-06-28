@@ -28,7 +28,7 @@ fn validate_close_mesh_points(points: &[LonLatPoint]) -> io::Result<()> {
 /// does not require or read `close_refine`; it is the small close-curve schema
 /// written by `close_Mesh_Save` for refinement boundary patches.
 pub fn read_close_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Vec<LonLatPoint>> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let close_num = required_dimension_len(&file, "close_num")?;
     let two = required_dimension_len(&file, "two")?;
     if two != 2 {
@@ -76,7 +76,7 @@ pub fn write_close_mesh_netcdf(output: impl AsRef<Path>, points: &[LonLatPoint])
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("close_num", points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;

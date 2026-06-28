@@ -13,7 +13,27 @@ pub(crate) fn gridfile_dir(gridfile: &str) -> Result<PathBuf, String> {
         .unwrap_or_else(|| PathBuf::from(".")))
 }
 
-pub(crate) fn is_real_file(p: &str) -> bool {
-    let p = p.trim();
-    !p.is_empty() && !p.eq_ignore_ascii_case("none") && p != "/tmp" && Path::new(p).is_file()
+pub(crate) fn existing_file_path(path: &str, base: &Path) -> Option<PathBuf> {
+    let path = path.trim();
+    if path.is_empty() || path.eq_ignore_ascii_case("none") || path == "/tmp" {
+        return None;
+    }
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return path.is_file().then(|| clean_path(path.to_path_buf()));
+    }
+    [base.join(path), repo_root().join(path), path.to_path_buf()]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .map(clean_path)
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+fn clean_path(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
 }

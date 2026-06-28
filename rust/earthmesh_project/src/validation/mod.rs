@@ -2,7 +2,8 @@ use crate::{
     criterion_catalog, engine_mapping::DEPRECATED_OLAM_MODEL_FORMAT_ERROR, DomainConfig,
     ExpertOverrides, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat,
     ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe,
-    RegionShape, ResolutionSpec, ThresholdField,
+    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
+    SpecifiedCloseRefinement, ThresholdField,
 };
 use std::collections::HashSet;
 
@@ -110,15 +111,15 @@ impl DomainConfig {
 
 impl RegionShape {
     fn validate(&self) -> Result<(), String> {
-        match *self {
+        match self {
             RegionShape::Bbox { w, e, n, s } => {
                 if !w.is_finite() || !e.is_finite() || !n.is_finite() || !s.is_finite() {
                     return Err("bbox coordinates must be finite".to_string());
                 }
-                if !(-180.0..=180.0).contains(&w) || !(-180.0..=180.0).contains(&e) {
+                if !(-180.0..=180.0).contains(w) || !(-180.0..=180.0).contains(e) {
                     return Err("bbox longitudes must be between -180 and 180".to_string());
                 }
-                if !(-90.0..=90.0).contains(&s) || !(-90.0..=90.0).contains(&n) {
+                if !(-90.0..=90.0).contains(s) || !(-90.0..=90.0).contains(n) {
                     return Err("bbox latitudes must be between -90 and 90".to_string());
                 }
                 if w >= e {
@@ -137,14 +138,46 @@ impl RegionShape {
                 if !lon.is_finite() || !lat.is_finite() || !radius_km.is_finite() {
                     return Err("circle coordinates and radius must be finite".to_string());
                 }
-                if !(-180.0..=180.0).contains(&lon) {
+                if !(-180.0..=180.0).contains(lon) {
                     return Err("circle longitude must be between -180 and 180".to_string());
                 }
-                if !(-90.0..=90.0).contains(&lat) {
+                if !(-90.0..=90.0).contains(lat) {
                     return Err("circle latitude must be between -90 and 90".to_string());
                 }
-                if radius_km <= 0.0 {
+                if *radius_km <= 0.0 {
                     return Err("circle radius_km must be > 0".to_string());
+                }
+                Ok(())
+            }
+            RegionShape::Shapefile { path } => {
+                if path.trim().is_empty() {
+                    return Err("watershed shapefile path must not be empty".to_string());
+                }
+                let lower = path.to_ascii_lowercase();
+                if !lower.ends_with(".shp") {
+                    return Err("watershed domain path must end with .shp".to_string());
+                }
+                Ok(())
+            }
+            RegionShape::Close { path, format } => {
+                if path.trim().is_empty() {
+                    return Err("close domain path must not be empty".to_string());
+                }
+                let lower = path.to_ascii_lowercase();
+                let ok = match format {
+                    crate::CloseMaskFormat::PolygonShp => lower.ends_with(".shp"),
+                    crate::CloseMaskFormat::Nml => lower.ends_with(".nml"),
+                    crate::CloseMaskFormat::Netcdf => {
+                        lower.ends_with(".nc") || lower.ends_with(".nc4")
+                    }
+                    crate::CloseMaskFormat::LonLatText => {
+                        lower.ends_with(".txt") || lower.ends_with(".csv")
+                    }
+                };
+                if !ok {
+                    return Err(
+                        "close domain path extension does not match selected format".to_string()
+                    );
                 }
                 Ok(())
             }
@@ -184,6 +217,21 @@ impl ProjectDataLayer {
 
 impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
+        if let Some(circle) = &self.specified_circle {
+            circle.validate()?;
+        }
+        if let Some(bbox) = &self.specified_bbox {
+            bbox.validate()?;
+        }
+        if let Some(close) = &self.specified_close {
+            close.validate()?;
+        }
+        let shape_count = usize::from(self.specified_circle.is_some())
+            + usize::from(self.specified_bbox.is_some())
+            + usize::from(self.specified_close.is_some());
+        if shape_count > 1 {
+            return Err("only one specified refinement shape may be enabled".to_string());
+        }
         if !self.enabled {
             return Ok(());
         }
@@ -194,6 +242,47 @@ impl RefinementRecipe {
             return Err("refinement max_passes must be <= 9".to_string());
         }
         Ok(())
+    }
+}
+
+impl SpecifiedCircleRefinement {
+    fn validate(&self) -> Result<(), String> {
+        if !self.lon.is_finite() || !self.lat.is_finite() || !self.radius_km.is_finite() {
+            return Err("specified refinement circle values must be finite".to_string());
+        }
+        if !(-180.0..=180.0).contains(&self.lon) {
+            return Err("specified refinement longitude must be between -180 and 180".to_string());
+        }
+        if !(-90.0..=90.0).contains(&self.lat) {
+            return Err("specified refinement latitude must be between -90 and 90".to_string());
+        }
+        if self.radius_km <= 0.0 {
+            return Err("specified refinement radius_km must be > 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl SpecifiedBboxRefinement {
+    fn validate(&self) -> Result<(), String> {
+        RegionShape::Bbox {
+            w: self.w,
+            e: self.e,
+            s: self.s,
+            n: self.n,
+        }
+        .validate()
+        .map_err(|e| format!("specified refinement {e}"))
+    }
+}
+
+impl SpecifiedCloseRefinement {
+    fn validate(&self) -> Result<(), String> {
+        RegionShape::Shapefile {
+            path: self.path.clone(),
+        }
+        .validate()
+        .map_err(|e| format!("specified refinement {e}"))
     }
 }
 
@@ -208,6 +297,12 @@ impl MeshTargetConfig {
             }
             ResolutionSpec::ApproxKm(km) if km <= 0.0 => {
                 Err("target resolution ApproxKm must be > 0".to_string())
+            }
+            ResolutionSpec::ApproxDegree(degrees) if !degrees.is_finite() => {
+                Err("target resolution ApproxDegree must be finite".to_string())
+            }
+            ResolutionSpec::ApproxDegree(degrees) if degrees <= 0.0 => {
+                Err("target resolution ApproxDegree must be > 0".to_string())
             }
             _ => Ok(()),
         }?;
@@ -244,8 +339,61 @@ impl ExpertOverrides {
         if matches!(self.openmp, Some(n) if n <= 0) {
             return Err("expert openmp override must be > 0".to_string());
         }
+        if matches!(self.niter, Some(n) if n <= 0) {
+            return Err("expert niter override must be > 0".to_string());
+        }
+        if matches!(self.niter_refine, Some(n) if n <= 0) {
+            return Err("expert niter_refine override must be > 0".to_string());
+        }
+        if matches!(self.max_iter_spc, Some(n) if !(0..=9).contains(&n)) {
+            return Err("expert max_iter_spc override must be between 0 and 9".to_string());
+        }
+        if matches!(self.max_iter_cal, Some(n) if !(0..=9).contains(&n)) {
+            return Err("expert max_iter_cal override must be between 0 and 9".to_string());
+        }
+        validate_expert_i32_list(&self.halo, "expert HALO override")?;
+        validate_expert_i32_list(
+            &self.max_transition_row,
+            "expert max_transition_row override",
+        )?;
+        if let Some(set_dis_type) = &self.set_dis_type {
+            match set_dis_type.as_str() {
+                "linear" | "nonlinear1" | "nonlinear2" | "nonlinear3" => {}
+                _ => {
+                    return Err(
+                        "expert set_dis_type must be linear/nonlinear1/nonlinear2/nonlinear3"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        if matches!(self.num_rc, Some(n) if n < 0) {
+            return Err("expert num_rc override must be >= 0".to_string());
+        }
+        if matches!(self.vertex_pretect_layers, Some(n) if n <= 0) {
+            return Err("expert vertex_pretect_layers override must be > 0".to_string());
+        }
+        if matches!(self.beta, Some(v) if !v.is_finite() || v <= 0.0) {
+            return Err("expert beta override must be finite and > 0".to_string());
+        }
+        if matches!(self.relax, Some(v) if !v.is_finite() || v <= 0.0) {
+            return Err("expert relax override must be finite and > 0".to_string());
+        }
         Ok(())
     }
+}
+
+fn validate_expert_i32_list(values: &Option<Vec<i32>>, label: &str) -> Result<(), String> {
+    let Some(values) = values else {
+        return Ok(());
+    };
+    if values.is_empty() || values.len() > 10 {
+        return Err(format!("{label} must contain 1 to 10 values"));
+    }
+    if values.iter().any(|value| *value < 0) {
+        return Err(format!("{label} values must be >= 0"));
+    }
+    Ok(())
 }
 
 impl HydroCoastConfig {

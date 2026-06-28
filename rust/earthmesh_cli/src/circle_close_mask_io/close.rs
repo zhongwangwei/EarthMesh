@@ -12,7 +12,7 @@ pub fn read_close_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize
 
 pub fn read_close_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CloseMask> {
     let inputfile = inputfile.as_ref();
-    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile).map_err(netcdf_to_io_error)?;
     let close_num = required_dimension_len(&file, "close_num")?;
     let two = required_dimension_len(&file, "two")?;
     if two != 2 {
@@ -63,7 +63,7 @@ pub fn write_close_mask_netcdf(output: impl AsRef<Path>, mask: &CloseMask) -> io
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("close_num", mask.points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;

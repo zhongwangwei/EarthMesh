@@ -11,7 +11,7 @@ use crate::{first_existing_dimension_len, netcdf_to_io_error};
 /// resolution (e.g. an IGBP grid at 240/° vs a namelist default of 120), so read
 /// the file's resolution instead of asserting the two are equal.
 pub(super) fn landtype_gridnum_perdegree(landtype_file: &Path) -> io::Result<usize> {
-    let file = netcdf::open(landtype_file).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(landtype_file).map_err(netcdf_to_io_error)?;
     let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
     if lon_dim == 0 || lon_dim % 360 != 0 {
         return Err(io::Error::new(

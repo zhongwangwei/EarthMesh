@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 
 use super::unstructured_mesh_from_mask_postproc_final;
@@ -44,11 +45,12 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
         }
     };
 
-    let active_centers = is_in_domain_ustr
+    let mut active_centers = is_in_domain_ustr
         .iter()
         .take(role_points)
         .map(|&value| value == 1)
         .collect::<Vec<_>>();
+    drop_vertex_only_triangle_contacts(layout, &mut active_centers, mode_grid)?;
     let center_coordinates = lonlat_pairs_from_points(&layout.center_points);
     let vertex_coordinates = lonlat_pairs_from_points(&layout.vertex_points);
     let mut final_data = earthmesh_mesh::finalize_mask_postproc_data_fortran_indexed(
@@ -99,6 +101,149 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
     })
 }
 
+fn drop_vertex_only_triangle_contacts(
+    layout: &MaskPostprocLayout,
+    active_centers: &mut [bool],
+    mode_grid: &str,
+) -> io::Result<()> {
+    if mode_grid != "tri" {
+        return Ok(());
+    }
+    let n = active_centers
+        .len()
+        .min(layout.center_neighbors.len())
+        .min(layout.center_neighbor_counts.len());
+    let mut edge_to_centers = BTreeMap::<(usize, usize), Vec<usize>>::new();
+    let mut vertex_to_centers = BTreeMap::<usize, Vec<usize>>::new();
+    for center_id in 2..n {
+        if !active_centers[center_id] {
+            continue;
+        }
+        let count = layout.center_neighbor_counts[center_id];
+        let row = &layout.center_neighbors[center_id];
+        if count > row.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("center {center_id} neighbor count exceeds row width"),
+            ));
+        }
+        let vertices = &row[..count];
+        for &vertex_id in vertices {
+            vertex_to_centers
+                .entry(vertex_id)
+                .or_default()
+                .push(center_id);
+        }
+        for slot in 0..count {
+            let a = vertices[slot];
+            let b = vertices[(slot + 1) % count];
+            if a != b {
+                edge_to_centers
+                    .entry(if a < b { (a, b) } else { (b, a) })
+                    .or_default()
+                    .push(center_id);
+            }
+        }
+    }
+
+    let mut edge_adj = vec![Vec::<usize>::new(); n];
+    for centers in edge_to_centers.values() {
+        for (i, &a) in centers.iter().enumerate() {
+            for &b in &centers[i + 1..] {
+                if a < n && b < n {
+                    edge_adj[a].push(b);
+                    edge_adj[b].push(a);
+                }
+            }
+        }
+    }
+
+    let mut component_by_center = vec![usize::MAX; n];
+    let mut components = Vec::<Vec<usize>>::new();
+    for center_id in 2..n {
+        if !active_centers[center_id] || component_by_center[center_id] != usize::MAX {
+            continue;
+        }
+        let component_id = components.len();
+        let mut cells = Vec::new();
+        let mut queue = VecDeque::from([center_id]);
+        component_by_center[center_id] = component_id;
+        while let Some(cell) = queue.pop_front() {
+            cells.push(cell);
+            for &next in &edge_adj[cell] {
+                if active_centers[next] && component_by_center[next] == usize::MAX {
+                    component_by_center[next] = component_id;
+                    queue.push_back(next);
+                }
+            }
+        }
+        components.push(cells);
+    }
+
+    let mut component_graph = vec![BTreeSet::<usize>::new(); components.len()];
+    for centers in vertex_to_centers.values() {
+        let touching = centers
+            .iter()
+            .filter_map(|&center_id| component_by_center.get(center_id).copied())
+            .filter(|&component_id| component_id != usize::MAX)
+            .collect::<BTreeSet<_>>();
+        if touching.len() < 2 {
+            continue;
+        }
+        for &a in &touching {
+            for &b in &touching {
+                if a != b {
+                    component_graph[a].insert(b);
+                }
+            }
+        }
+    }
+
+    let mut remove_component = vec![false; components.len()];
+    let mut seen = vec![false; components.len()];
+    for start in 0..components.len() {
+        if seen[start] || component_graph[start].is_empty() {
+            continue;
+        }
+        let mut cluster = Vec::new();
+        let mut queue = VecDeque::from([start]);
+        seen[start] = true;
+        while let Some(component_id) = queue.pop_front() {
+            cluster.push(component_id);
+            for &next in &component_graph[component_id] {
+                if !seen[next] {
+                    seen[next] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        let keep = cluster
+            .iter()
+            .copied()
+            .max_by(|&a, &b| {
+                components[a]
+                    .len()
+                    .cmp(&components[b].len())
+                    .then_with(|| components[b][0].cmp(&components[a][0]))
+            })
+            .unwrap_or(start);
+        for component_id in cluster {
+            if component_id != keep {
+                remove_component[component_id] = true;
+            }
+        }
+    }
+
+    for (component_id, cells) in components.iter().enumerate() {
+        if remove_component[component_id] {
+            for &cell in cells {
+                active_centers[cell] = false;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Compose the Rust ports of the final `MOD_mask_postproc.F90:mask_postproc_*`
 /// compaction steps into the gridfile payload written by `Unstructured_Mesh_Save`.
 ///
@@ -114,6 +259,63 @@ pub fn finalize_mask_postproc_layout_to_unstructured_mesh(
         finalize_mask_postproc_layout_with_reindex_report(layout, is_in_domain_ustr, mode_grid)?
             .mesh,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LonLatPoint;
+
+    #[test]
+    fn tri_finalization_drops_vertex_only_component() {
+        let zeros = LonLatPoint { lon: 0.0, lat: 0.0 };
+        let layout = MaskPostprocLayout {
+            ustr_points: 5,
+            ustr_bounds: 8,
+            center_points: vec![
+                zeros,
+                zeros,
+                LonLatPoint { lon: 0.0, lat: 0.5 },
+                LonLatPoint { lon: 0.5, lat: 0.5 },
+                LonLatPoint {
+                    lon: -1.0,
+                    lat: 0.5,
+                },
+            ],
+            vertex_points: vec![
+                zeros,
+                zeros,
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 1.0, lat: 0.0 },
+                LonLatPoint { lon: 0.0, lat: 1.0 },
+                LonLatPoint { lon: 1.0, lat: 1.0 },
+                LonLatPoint {
+                    lon: -1.0,
+                    lat: 0.0,
+                },
+                LonLatPoint {
+                    lon: -1.0,
+                    lat: 1.0,
+                },
+            ],
+            center_neighbors: vec![
+                vec![1; 3],
+                vec![1; 3],
+                vec![2, 3, 4],
+                vec![4, 3, 5],
+                vec![2, 6, 7],
+            ],
+            vertex_neighbors: vec![vec![]; 8],
+            center_neighbor_counts: vec![0, 0, 3, 3, 3],
+            vertex_neighbor_counts: vec![0; 8],
+        };
+        let active = vec![0, 0, 1, 1, 1];
+
+        let report =
+            finalize_mask_postproc_layout_with_reindex_report(&layout, &active, "tri").unwrap();
+
+        assert_eq!(report.final_data.points_final, 3);
+    }
 }
 
 fn rebuild_final_vertex_neighbors_from_reindexed_centers(

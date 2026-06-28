@@ -20,7 +20,7 @@ pub fn write_unstructured_mesh_netcdf(
     }
 
     let dimc = unstructured_dimc(mesh);
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("sjx_points", mesh.m_points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("lbx_points", mesh.w_points.len())

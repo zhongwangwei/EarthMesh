@@ -5,9 +5,12 @@ use std::{env, fs};
 
 use earthmesh_project::{ProjectConfig, ProjectLayerRole};
 
+use crate::mesh_paths::existing_file_path;
+
 pub(crate) fn stage_threshold_layers(
     cfg: &ProjectConfig,
     threshold_dir: &Path,
+    source_base: &Path,
 ) -> Result<bool, String> {
     let mut staged_any = false;
     for layer in &cfg.data_layers {
@@ -22,8 +25,9 @@ pub(crate) fn stage_threshold_layers(
                 .map_err(|e| format!("mkdir {}: {e}", threshold_dir.display()))?;
             staged_any = true;
         }
+        let src = resolve_source_path(&layer.path, source_base);
         let dst = threshold_dir.join(format!("{}.nc", field.stem()));
-        fs::copy(&layer.path, &dst).map_err(|e| {
+        fs::copy(&src, &dst).map_err(|e| {
             format!(
                 "stage threshold layer '{}' to {}: {e}",
                 layer.id,
@@ -32,6 +36,16 @@ pub(crate) fn stage_threshold_layers(
         })?;
     }
     Ok(staged_any)
+}
+
+fn resolve_source_path(path: &str, source_base: &Path) -> PathBuf {
+    let path = Path::new(path.trim());
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        existing_file_path(path.to_string_lossy().as_ref(), source_base)
+            .unwrap_or_else(|| source_base.join(path))
+    }
 }
 
 /// Locate the mesh-generator binary, in priority order:

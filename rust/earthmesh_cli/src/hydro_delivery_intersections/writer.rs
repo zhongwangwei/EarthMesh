@@ -4,7 +4,8 @@ use std::io;
 use std::path::Path;
 
 use crate::{
-    geojson_feature_nodes, read_text_maybe_gzip, JsonNode, JsonParser, HYDRO_EARTH_RADIUS_M,
+    geojson_feature_nodes, json_escape_string, read_text_maybe_gzip, JsonNode, JsonParser,
+    HYDRO_EARTH_RADIUS_M,
 };
 
 use super::geometry::geometry_outer_rings;
@@ -87,7 +88,6 @@ pub fn write_earthmesh_intersection_geojson(
         }
     }
 
-    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
     let mut features = Vec::new();
     for cell in geojson_feature_nodes(&cells_root) {
         let cell_obj = cell.as_object();
@@ -140,7 +140,10 @@ pub fn write_earthmesh_intersection_geojson(
                     props.insert(k.clone(), json_node_to_string(v));
                 }
             }
-            props.insert("cell_id".into(), format!("\"{}\"", esc(&cell_id)));
+            props.insert(
+                "cell_id".into(),
+                format!("\"{}\"", json_escape_string(&cell_id)),
+            );
             props.insert("grid_kind".into(), "\"earthmesh_cell_preview\"".into());
             props.insert(
                 "corridor_source_geometry".into(),
@@ -148,7 +151,10 @@ pub fn write_earthmesh_intersection_geojson(
             );
             props.insert("cell_area_deg2".into(), format!("{cell_area}"));
             props.insert("intersection_area_deg2".into(), format!("{inter}"));
-            props.insert("overlap_class".into(), format!("\"{}\"", esc(class)));
+            props.insert(
+                "overlap_class".into(),
+                format!("\"{}\"", json_escape_string(class)),
+            );
             props.insert("overlap_fraction".into(), format!("{fraction}"));
             props.insert(
                 "domain_clip_applied".into(),
@@ -159,7 +165,10 @@ pub fn write_earthmesh_intersection_geojson(
                 },
             );
             if class.to_ascii_uppercase().starts_with('R') {
-                props.insert("river_class".into(), format!("\"{}\"", esc(class)));
+                props.insert(
+                    "river_class".into(),
+                    format!("\"{}\"", json_escape_string(class)),
+                );
                 props.insert("river_fraction".into(), format!("{fraction}"));
                 if let Some(sa) = source_area {
                     props.insert(
@@ -180,14 +189,17 @@ pub fn write_earthmesh_intersection_geojson(
                     }
                 }
             } else {
-                props.insert("mask_class".into(), format!("\"{}\"", esc(class)));
+                props.insert(
+                    "mask_class".into(),
+                    format!("\"{}\"", json_escape_string(class)),
+                );
                 if class == "COAST" || class.starts_with("COAST_") {
                     props.insert("coastal_fraction".into(), format!("{fraction}"));
                 }
             }
             let body = props
                 .iter()
-                .map(|(k, v)| format!("\"{}\": {}", esc(k), v))
+                .map(|(k, v)| format!("\"{}\": {}", json_escape_string(k), v))
                 .collect::<Vec<_>>()
                 .join(", ");
             features.push(format!(

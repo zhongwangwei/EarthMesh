@@ -9,7 +9,7 @@ use super::types::GetRefSpecifiedThresholdWriteReport;
 /// Read the specified-refinement marker file produced by
 /// `MOD_GetRef:GetRef(iter /= 0)` and restore the Fortran placeholder element.
 pub fn read_getref_specified_ref_sjx_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<i32>> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(input.as_ref()).map_err(netcdf_to_io_error)?;
     let variable = file.variable("IsInRfArea_sjx_specified").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -43,7 +43,7 @@ pub fn write_getref_specified_threshold_netcdf(
         fs::create_dir_all(parent)?;
     }
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("sjx_points", sjx_points)
         .map_err(netcdf_to_io_error)?;
     write_i32_1d(

@@ -53,10 +53,34 @@ pub enum DomainConfig {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RegionShape {
-    Bbox { w: f64, e: f64, n: f64, s: f64 },
-    Circle { lon: f64, lat: f64, radius_km: f64 },
+    Bbox {
+        w: f64,
+        e: f64,
+        n: f64,
+        s: f64,
+    },
+    Circle {
+        lon: f64,
+        lat: f64,
+        radius_km: f64,
+    },
+    Shapefile {
+        path: String,
+    },
+    Close {
+        path: String,
+        format: CloseMaskFormat,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CloseMaskFormat {
+    PolygonShp,
+    Nml,
+    Netcdf,
+    LonLatText,
 }
 
 // ----------------------------- target -----------------------------
@@ -120,10 +144,11 @@ pub const INTENT_PRESETS: &[MeshIntentPreset] = &[
     MeshIntentPreset::MultiObjectiveBalanced,
 ];
 
-/// Friendly km, or an explicit engine NXP. `ApproxKm` lowers through `km_to_nxp`.
+/// Friendly km/degree, or an explicit engine NXP.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ResolutionSpec {
     ApproxKm(f64),
+    ApproxDegree(f64),
     Nxp(i32),
 }
 
@@ -184,6 +209,32 @@ pub struct RefinementRecipe {
     pub enabled: bool,
     #[serde(default)]
     pub max_passes: u8,
+    #[serde(default)]
+    pub specified_circle: Option<SpecifiedCircleRefinement>,
+    #[serde(default)]
+    pub specified_bbox: Option<SpecifiedBboxRefinement>,
+    #[serde(default)]
+    pub specified_close: Option<SpecifiedCloseRefinement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpecifiedCircleRefinement {
+    pub lon: f64,
+    pub lat: f64,
+    pub radius_km: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpecifiedBboxRefinement {
+    pub w: f64,
+    pub e: f64,
+    pub s: f64,
+    pub n: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpecifiedCloseRefinement {
+    pub path: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -204,15 +255,20 @@ impl Default for QualityConfig {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViolationPolicy {
+    #[serde(alias = "warn")]
     #[default]
     Warn,
+    #[serde(alias = "block")]
     Block,
+    #[serde(alias = "auto_refine")]
+    AutoRefine,
 }
 
 impl ViolationPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             ViolationPolicy::Block => "block",
+            ViolationPolicy::AutoRefine => "auto_refine",
             ViolationPolicy::Warn => "warn",
         }
     }
@@ -224,6 +280,30 @@ pub struct ExpertOverrides {
     pub nxp: Option<i32>,
     #[serde(default)]
     pub openmp: Option<i32>,
+    #[serde(default)]
+    pub niter: Option<i32>,
+    #[serde(default)]
+    pub niter_refine: Option<i32>,
+    #[serde(default)]
+    pub max_iter_spc: Option<i32>,
+    #[serde(default)]
+    pub max_iter_cal: Option<i32>,
+    #[serde(default)]
+    pub halo: Option<Vec<i32>>,
+    #[serde(default)]
+    pub max_transition_row: Option<Vec<i32>>,
+    #[serde(default)]
+    pub set_dis_type: Option<String>,
+    #[serde(default)]
+    pub num_rc: Option<i32>,
+    #[serde(default)]
+    pub vertex_pretect_layers: Option<i32>,
+    #[serde(default)]
+    pub beta: Option<f32>,
+    #[serde(default)]
+    pub relax: Option<f32>,
+    #[serde(default)]
+    pub weak_concav_eliminate: Option<bool>,
 }
 
 /// MERIT-Hydro / CaMa river-coast config. Carried by the project
@@ -274,4 +354,8 @@ pub fn km_to_nxp(km: f64) -> i32 {
         return 1;
     }
     (360.0 / km).round().max(1.0) as i32
+}
+
+pub fn degree_to_nxp(degrees_at_equator: f64) -> i32 {
+    km_to_nxp(degrees_at_equator * 111.32)
 }

@@ -121,6 +121,7 @@ dependencies = [
  "earthmesh_quality",
  "earthmesh_refine_planner",
  "flate2",
+ "hdf5-metno-sys",
  "netcdf",
 ]
 

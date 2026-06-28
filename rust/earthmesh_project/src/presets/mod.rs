@@ -172,11 +172,16 @@ impl ProjectConfig {
         let d = intent.defaults();
         let mut data_layers = Vec::new();
         for role in &d.extra_roles {
+            let is_landtype = matches!(role, ProjectLayerRole::LandType);
             data_layers.push(ProjectDataLayer {
                 id: role.role_kind().to_string(),
                 role: *role,
-                path: String::new(),
-                enabled: false,
+                path: if is_landtype {
+                    "input/landtype_igbp_update.nc".to_string()
+                } else {
+                    String::new()
+                },
+                enabled: is_landtype,
             });
         }
         for c in &d.criteria {
@@ -205,6 +210,9 @@ impl ProjectConfig {
             refinement: RefinementRecipe {
                 enabled: !d.criteria.is_empty(),
                 max_passes: if d.criteria.is_empty() { 0 } else { 3 },
+                specified_circle: None,
+                specified_bbox: None,
+                specified_close: None,
             },
             quality: QualityConfig {
                 min_angle_deg: d.min_angle_deg,

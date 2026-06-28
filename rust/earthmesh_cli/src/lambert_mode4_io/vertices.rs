@@ -7,7 +7,7 @@ use super::LambertVertices;
 
 /// Read `xi_vert`/`eta_vert`, `lon_vert`, and `lat_vert` from a Lambert source.
 pub fn read_lambert_vertices_netcdf(inputfile: impl AsRef<Path>) -> io::Result<LambertVertices> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let xi_vert = file
         .dimension("xi_vert")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing xi_vert dimension"))?

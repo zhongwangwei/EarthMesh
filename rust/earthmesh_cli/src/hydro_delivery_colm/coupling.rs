@@ -31,6 +31,14 @@ fn coupling_prop_string(props: &BTreeMap<String, JsonNode>, key: &str) -> String
     }
 }
 
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 /// Faithful Rust port of `util/hydro_mesh/colm_coupling.py::intersections_to_coupling_rows`:
 /// read an EarthMesh cell×river intersection GeoJSON FeatureCollection and assemble CoLM
 /// coupling rows. A feature is kept only if `river_fraction >= min_fraction` and both
@@ -99,7 +107,12 @@ pub fn write_colm_coupling_csv_from_intersections(
     out.push_str(&COLM_COUPLING_FIELDS.join(","));
     out.push('\n');
     for row in &rows {
-        out.push_str(&row.join(","));
+        out.push_str(
+            &row.iter()
+                .map(|cell| csv_cell(cell))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push('\n');
     }
     if let Some(parent) = output_csv.as_ref().parent() {

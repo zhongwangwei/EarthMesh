@@ -99,8 +99,8 @@ mod colm_surface_reader;
 mod colm_template_writers;
 mod netcdf_io;
 pub(crate) use netcdf_io::{
-    first_existing_dimension_len, netcdf_to_io_error, optional_values_i32_2d,
-    required_dimension_len, required_scalar_usize_i32, required_values_f64,
+    create_netcdf, first_existing_dimension_len, netcdf_to_io_error, open_netcdf,
+    optional_values_i32_2d, required_dimension_len, required_scalar_usize_i32, required_values_f64,
     required_values_f64_any, required_values_f64_any_matrix, required_values_i32,
     required_values_i32_2d, required_values_i32_any_matrix, required_values_i32_matrix,
     required_values_i8, required_values_i8_matrix, write_f64_scalar, write_i32_scalar,

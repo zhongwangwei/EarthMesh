@@ -92,10 +92,20 @@ impl<'a> JsonParser<'a> {
     fn parse_string(&mut self) -> io::Result<String> {
         self.expect_byte(b'"')?;
         let mut output = String::new();
-        while let Some(byte) = self.next() {
+        let mut chunk_start = self.pos;
+        loop {
+            let Some(byte) = self.peek() else {
+                return Err(json_parse_error("unterminated JSON string"));
+            };
             match byte {
-                b'"' => return Ok(output),
+                b'"' => {
+                    self.push_string_chunk(&mut output, chunk_start, self.pos)?;
+                    self.pos += 1;
+                    return Ok(output);
+                }
                 b'\\' => {
+                    self.push_string_chunk(&mut output, chunk_start, self.pos)?;
+                    self.pos += 1;
                     let Some(escaped) = self.next() else {
                         return Err(json_parse_error("unterminated JSON escape"));
                     };
@@ -108,27 +118,53 @@ impl<'a> JsonParser<'a> {
                         b'n' => output.push('\n'),
                         b'r' => output.push('\r'),
                         b't' => output.push('\t'),
-                        b'u' => {
-                            if self.pos + 4 > self.text.len() {
-                                return Err(json_parse_error("short JSON unicode escape"));
-                            }
-                            let hex = std::str::from_utf8(&self.text[self.pos..self.pos + 4])
-                                .map_err(|_| json_parse_error("invalid JSON unicode escape"))?;
-                            let codepoint = u16::from_str_radix(hex, 16)
-                                .map_err(|_| json_parse_error("invalid JSON unicode escape"))?;
-                            self.pos += 4;
-                            if let Some(ch) = char::from_u32(u32::from(codepoint)) {
-                                output.push(ch);
-                            }
-                        }
+                        b'u' => output.push(self.parse_unicode_escape()?),
                         _ => return Err(json_parse_error("invalid JSON escape")),
                     }
+                    chunk_start = self.pos;
                 }
                 byte if byte < 0x20 => return Err(json_parse_error("control byte in JSON string")),
-                _ => output.push(byte as char),
+                _ => self.pos += 1,
             }
         }
-        Err(json_parse_error("unterminated JSON string"))
+    }
+
+    fn push_string_chunk(&self, output: &mut String, start: usize, end: usize) -> io::Result<()> {
+        let chunk = std::str::from_utf8(&self.text[start..end])
+            .map_err(|_| json_parse_error("invalid UTF-8 in JSON string"))?;
+        output.push_str(chunk);
+        Ok(())
+    }
+
+    fn parse_unicode_escape(&mut self) -> io::Result<char> {
+        let first = self.parse_unicode_code_unit()?;
+        let codepoint = if (0xD800..=0xDBFF).contains(&first) {
+            if self.next() != Some(b'\\') || self.next() != Some(b'u') {
+                return Err(json_parse_error("missing JSON unicode low surrogate"));
+            }
+            let second = self.parse_unicode_code_unit()?;
+            if !(0xDC00..=0xDFFF).contains(&second) {
+                return Err(json_parse_error("invalid JSON unicode low surrogate"));
+            }
+            0x10000 + (((u32::from(first) - 0xD800) << 10) | (u32::from(second) - 0xDC00))
+        } else if (0xDC00..=0xDFFF).contains(&first) {
+            return Err(json_parse_error("unexpected JSON unicode low surrogate"));
+        } else {
+            u32::from(first)
+        };
+        char::from_u32(codepoint).ok_or_else(|| json_parse_error("invalid JSON unicode escape"))
+    }
+
+    fn parse_unicode_code_unit(&mut self) -> io::Result<u16> {
+        if self.pos + 4 > self.text.len() {
+            return Err(json_parse_error("short JSON unicode escape"));
+        }
+        let hex = std::str::from_utf8(&self.text[self.pos..self.pos + 4])
+            .map_err(|_| json_parse_error("invalid JSON unicode escape"))?;
+        let code_unit = u16::from_str_radix(hex, 16)
+            .map_err(|_| json_parse_error("invalid JSON unicode escape"))?;
+        self.pos += 4;
+        Ok(code_unit)
     }
 
     fn parse_number(&mut self) -> io::Result<f64> {
@@ -204,4 +240,25 @@ impl<'a> JsonParser<'a> {
 
 fn json_parse_error(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_raw_utf8_and_unicode_surrogates() {
+        let parsed = JsonParser::new(r#"{"name":"中文","emoji":"\uD83D\uDE00"}"#)
+            .parse()
+            .expect("parse unicode");
+        let object = parsed.as_object().expect("object");
+        assert_eq!(object.get("name").and_then(JsonNode::as_str), Some("中文"));
+        assert_eq!(object.get("emoji").and_then(JsonNode::as_str), Some("😀"));
+    }
+
+    #[test]
+    fn rejects_unpaired_unicode_surrogates() {
+        assert!(JsonParser::new(r#""\uD83Dx""#).parse().is_err());
+        assert!(JsonParser::new(r#""\uDE00""#).parse().is_err());
+    }
 }

@@ -6,7 +6,7 @@ use crate::{netcdf_to_io_error, require_len, required_dimension_len, required_va
 /// Read `obc_order` from the `obc.nc4`/`obc_patch.nc4` boundary file used by
 /// `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
 pub fn read_obc_order_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<usize>> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(input.as_ref()).map_err(netcdf_to_io_error)?;
     let bdy_num = required_dimension_len(&file, "bdy_num")?;
     let values = required_values_i32(&file, "obc_order")?;
     require_len("obc_order", values.len(), bdy_num)?;

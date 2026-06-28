@@ -70,8 +70,8 @@ fn read_area_judge_threshold_2d_window_fortran_indexed(
 ) -> io::Result<AreaJudgeThreshold2D> {
     let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
     let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
-    let file =
-        netcdf::open(area_judge_threshold_path(threshold_dir, name)).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(area_judge_threshold_path(threshold_dir, name))
+        .map_err(netcdf_to_io_error)?;
     let variable = file.variable(name).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,

@@ -17,10 +17,12 @@ pub(crate) fn scaffold_project(
     intent: String,
     nxp: Option<i32>,
     approx_km: Option<f64>,
+    approx_degree: Option<f64>,
 ) -> Result<String, String> {
-    let resolution = match approx_km {
-        Some(km) => ResolutionSpec::ApproxKm(km),
-        None => ResolutionSpec::Nxp(nxp.unwrap_or(40)),
+    let resolution = match (approx_degree, approx_km) {
+        (Some(degrees), _) => ResolutionSpec::ApproxDegree(degrees),
+        (None, Some(km)) => ResolutionSpec::ApproxKm(km),
+        (None, None) => ResolutionSpec::Nxp(nxp.unwrap_or(40)),
     };
     let cfg = ProjectConfig::scaffold(
         &name,
@@ -89,18 +91,16 @@ pub(crate) fn preserve_unexposed_project_fields(
         }
     }
 
-    if preserve_domain
-        && matches!(
-            (&base.domain, &cfg.domain),
-            (
-                DomainConfig::Regional {
-                    shape: RegionShape::Circle { .. },
-                    ..
-                },
-                DomainConfig::Global,
-            )
-        )
-    {
+    let preserves_unexposed_shape = matches!(
+        &base.domain,
+        DomainConfig::Regional {
+            shape: RegionShape::Circle { .. }
+                | RegionShape::Shapefile { .. }
+                | RegionShape::Close { .. },
+            ..
+        }
+    ) && matches!(cfg.domain, DomainConfig::Global);
+    if preserve_domain && preserves_unexposed_shape {
         cfg.domain = base.domain;
     }
 

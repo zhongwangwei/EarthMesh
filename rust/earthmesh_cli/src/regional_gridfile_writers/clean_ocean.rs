@@ -23,6 +23,33 @@ pub fn write_clean_regional_ocean_fvcom(
     work_dir: &Path,
     output_2dm: &Path,
 ) -> io::Result<usize> {
+    let plan = write_clean_regional_ocean_gridfile(
+        global_gridfile,
+        close_points,
+        landtype_file,
+        nxp,
+        gridnum_perdegree,
+        mask_sea_ratio,
+        work_dir,
+    )?;
+
+    let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
+    let obc_order = match &plan.obc_output {
+        Some(p) if p.exists() => read_obc_order_netcdf(p)?,
+        _ => Vec::new(),
+    };
+    write_fvcom_2dm_from_carved(&carved, &obc_order, output_2dm)
+}
+
+pub fn write_clean_regional_ocean_gridfile(
+    global_gridfile: &Path,
+    close_points: &[LonLatPoint],
+    landtype_file: &Path,
+    nxp: usize,
+    gridnum_perdegree: usize,
+    mask_sea_ratio: f64,
+    work_dir: &Path,
+) -> io::Result<MaskPostprocDomainIoPlan> {
     let pre = read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
 
     let close_path = work_dir.join("tmpfile").join("mask_domain_close_0_001.nc4");
@@ -96,10 +123,5 @@ pub fn write_clean_regional_ocean_fvcom(
         },
     )?;
 
-    let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
-    let obc_order = match &plan.obc_output {
-        Some(p) if p.exists() => read_obc_order_netcdf(p)?,
-        _ => Vec::new(),
-    };
-    write_fvcom_2dm_from_carved(&carved, &obc_order, output_2dm)
+    Ok(plan)
 }

@@ -229,7 +229,7 @@ fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
     assert_eq!(cfg.spring_regional_type, 1);
     assert_eq!(cfg.num_rc, 0);
     assert_eq!(cfg.vertex_pretect_layers, 1);
-    assert_eq!(cfg.niter_refine, 100);
+    assert_eq!(cfg.niter_refine, 200);
     assert!(!cfg.niter_refine_specified);
     assert_eq!(cfg.th_num_landtypes, 12);
     approx_eq(cfg.th_area_mainland, 0.6, 0.0);
@@ -238,7 +238,7 @@ fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
     assert_eq!(cfg.th_onelayer_ocn, [999.0; 8]);
     assert_eq!(cfg.th_onelayer_atmos, [999.0; 2]);
     assert_eq!(cfg.th_twolayer_lnd, [[999.0; 2]; 10]);
-    assert!(!cfg.weak_concav_eliminate);
+    assert!(cfg.weak_concav_eliminate);
     assert!(!cfg.is_transition);
     assert!(!cfg.iter_d);
     assert!(!cfg.refine_spc);

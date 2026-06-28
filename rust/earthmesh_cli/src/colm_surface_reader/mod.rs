@@ -8,7 +8,7 @@ use crate::{netcdf_to_io_error, required_values_f64, required_values_i8, ColmSur
 pub fn read_colm_surface_class_points_netcdf(
     input_netcdf: impl AsRef<Path>,
 ) -> io::Result<Vec<ColmSurfaceClassPoint>> {
-    let file = netcdf::open(input_netcdf.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(input_netcdf.as_ref()).map_err(netcdf_to_io_error)?;
     let lon = required_values_f64(&file, "center_lon")?;
     let lat = required_values_f64(&file, "center_lat")?;
     let code = required_values_i8(&file, "surface_class_code")?;

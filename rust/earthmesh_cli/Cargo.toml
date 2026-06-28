@@ -13,6 +13,7 @@ earthmesh_quality = { path = "../earthmesh_quality" }
 earthmesh_refine_planner = { path = "../earthmesh_refine_planner" }
 earthmesh_project = { path = "../earthmesh_project" }
 flate2 = "1"
+hdf5-sys = { package = "hdf5-metno-sys", version = "0.11.1" }
 netcdf = { version = "0.12.0", default-features = false }
 
 [features]

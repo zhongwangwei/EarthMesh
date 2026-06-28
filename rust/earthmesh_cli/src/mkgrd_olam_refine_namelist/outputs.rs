@@ -42,6 +42,26 @@ pub(super) fn write_olam_refined_outputs(
             &format!("olam_raw_{}", config.mode_grid.trim()),
         );
         let raw_output = write_unstructured_mesh_netcdf(&raw_path, output_mesh)?;
+        if config.mesh_type.trim() == "oceanmesh" && config.mode_grid.trim() == "tri" {
+            if let Some(GridRegion::Close { points }) = domain_region {
+                let plan = write_clean_regional_ocean_gridfile(
+                    &raw_output.output,
+                    points,
+                    Path::new(&config.landtype_file),
+                    nxp,
+                    gridnum_perdegree,
+                    config.mask_sea_ratio,
+                    file_dir,
+                )?;
+                let output = unstructured_mesh_write_report_from_file(&plan.result_gridfile)?;
+                return Ok(OlamRefinedOutputReports {
+                    raw_output: Some(raw_output),
+                    landtype_masked_cells: Some(output.sjx_points.saturating_sub(2)),
+                    coupled_outputs: None,
+                    output,
+                });
+            }
+        }
         let landtype_input = if let Some(region) = domain_region {
             let domain_path = mkgrd_tmpfile_path(
                 file_dir,

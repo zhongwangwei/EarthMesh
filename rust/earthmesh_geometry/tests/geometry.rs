@@ -43,6 +43,25 @@ fn clip_convex_polygon_returns_rectangle_overlap() {
 }
 
 #[test]
+fn clip_convex_polygon_rejects_empty_or_degenerate_clip() {
+    let subject = vec![
+        Point::new(0.0, 0.0),
+        Point::new(2.0, 0.0),
+        Point::new(2.0, 2.0),
+        Point::new(0.0, 2.0),
+    ];
+    let line = vec![
+        Point::new(0.0, 0.0),
+        Point::new(1.0, 0.0),
+        Point::new(2.0, 0.0),
+    ];
+
+    assert!(clip_convex_polygon(&subject, &[]).is_empty());
+    assert!(clip_convex_polygon(&subject, &line).is_empty());
+    assert_eq!(intersection_area(&subject, &[]), 0.0);
+}
+
+#[test]
 fn intersection_area_is_zero_for_disjoint_polygons() {
     let a = vec![
         Point::new(0.0, 0.0),

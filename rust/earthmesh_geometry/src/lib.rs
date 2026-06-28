@@ -84,6 +84,13 @@ pub fn polygon_area(polygon: &[Point]) -> f64 {
 }
 
 pub fn clip_convex_polygon(subject: &[Point], clip: &[Point]) -> Vec<Point> {
+    if subject.len() < 3
+        || clip.len() < 3
+        || polygon_area(subject) == 0.0
+        || polygon_area(clip) == 0.0
+    {
+        return Vec::new();
+    }
     let mut output = subject.to_vec();
     let clip_ccw = signed_area(clip) >= 0.0;
     for (index, edge_start) in clip.iter().enumerate() {

@@ -1,9 +1,9 @@
 use earthmesh_mesh::{
     boundary_closed_curves_fortran_indexed, boundary_connection_fortran_indexed,
     classify_boundary_orders_fortran_indexed, extract_unique_vertices_fortran_indexed,
-    finalize_mask_postproc_data_fortran_indexed, reindex_final_center_vertices_fortran_indexed,
-    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_data_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    fill_vertex_only_ocean_contacts_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
+    reindex_final_center_vertices_fortran_indexed, remove_isolated_ocean_fortran_indexed,
+    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -275,6 +275,40 @@ fn narrow_waterway_widen_activates_cells_around_duplicate_boundary_neighbor() {
 
     assert_eq!(is_in_domain[9], 1);
     assert_eq!(is_in_domain[10], 1);
+}
+
+#[test]
+fn vertex_only_ocean_contact_fill_activates_separated_vertex_fans() {
+    let mut is_in_domain = vec![0, -1, 1, -1, -1, 1, -1, -1];
+    let vertex_neighbors = vec![vec![1; 6], vec![1; 6], vec![2, 3, 4, 5, 6, 7]];
+    let vertex_neighbor_counts = vec![0, 0, 6];
+
+    let activated = fill_vertex_only_ocean_contacts_fortran_indexed(
+        &mut is_in_domain,
+        &vertex_neighbors,
+        &vertex_neighbor_counts,
+    )
+    .expect("fill vertex-only contact");
+
+    assert_eq!(activated, 4);
+    assert_eq!(is_in_domain, vec![0, -1, 1, 1, 1, 1, 1, 1]);
+}
+
+#[test]
+fn vertex_only_ocean_contact_fill_leaves_contiguous_cyclic_fan() {
+    let mut is_in_domain = vec![0, -1, 1, 1, -1, -1, -1, 1];
+    let vertex_neighbors = vec![vec![1; 6], vec![1; 6], vec![2, 3, 4, 5, 6, 7]];
+    let vertex_neighbor_counts = vec![0, 0, 6];
+
+    let activated = fill_vertex_only_ocean_contacts_fortran_indexed(
+        &mut is_in_domain,
+        &vertex_neighbors,
+        &vertex_neighbor_counts,
+    )
+    .expect("contiguous cyclic fan");
+
+    assert_eq!(activated, 0);
+    assert_eq!(is_in_domain, vec![0, -1, 1, 1, -1, -1, -1, 1]);
 }
 
 #[test]

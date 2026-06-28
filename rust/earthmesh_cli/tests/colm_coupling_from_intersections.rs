@@ -2,7 +2,9 @@
 //! keep features with river_fraction >= min_fraction and non-empty cell_id + river_class,
 //! and sort rows by (cell_id, river_class). Pure parsing (no NetCDF data needed).
 
-use earthmesh_cli::colm_coupling_rows_from_intersections;
+use earthmesh_cli::{
+    colm_coupling_rows_from_intersections, write_colm_coupling_csv_from_intersections,
+};
 
 const INTERSECTIONS: &str = r#"{
   "type": "FeatureCollection",
@@ -41,4 +43,33 @@ fn min_fraction_zero_keeps_all_valid() {
 #[test]
 fn rejects_out_of_range_min_fraction() {
     assert!(colm_coupling_rows_from_intersections(INTERSECTIONS, 1.5).is_err());
+}
+
+#[test]
+fn csv_writer_escapes_commas_quotes_and_newlines() {
+    let dir = std::env::temp_dir().join(format!("em3_colm_csv_escape_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("intersections.geojson");
+    let output = dir.join("coupling.csv");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","geometry":null,"properties":{
+          "cell_id":"c,1",
+          "cell_index":1,
+          "river_class":"R\"3\nmain",
+          "river_fraction":0.6
+        }}]}"#,
+    )
+    .unwrap();
+
+    let rows = write_colm_coupling_csv_from_intersections(&input, &output, 0.0).expect("write csv");
+    assert_eq!(rows, 1);
+    let csv = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        csv.contains("\"c,1\",1,\"R\"\"3\nmain\",0.6"),
+        "escaped CSV:\n{csv}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -20,7 +20,7 @@ pub fn read_merit_hydro_window(
         ));
     }
     let tile = tile_path.as_ref().to_path_buf();
-    let file = netcdf::open(&tile).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(&tile).map_err(netcdf_to_io_error)?;
     let lon_all = required_values_f64_any(&file, "longitude")?;
     let lat_all = required_values_f64_any(&file, "latitude")?;
     let lon_indices = indices_between_inclusive(&lon_all, bbox.west, bbox.east, stride);

@@ -42,7 +42,7 @@ pub(super) fn data_read_onelayer_values_fortran_indexed(
 ) -> io::Result<Vec<Vec<f64>>> {
     let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
     let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let variable = file.variable(var_name).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,

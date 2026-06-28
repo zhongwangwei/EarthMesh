@@ -65,12 +65,27 @@ fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
     }
     let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
     let lon0 = norm(lon);
+    let normalized_lons = points
+        .iter()
+        .map(|point| norm(point.lon))
+        .collect::<Vec<_>>();
+    let min_lon = normalized_lons
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let max_lon = normalized_lons
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let crosses_dateline = max_lon - min_lon > 180.0;
     let unwrap = |x: f64| {
         let mut y = norm(x);
-        if y - lon0 > 180.0 {
-            y -= 360.0;
-        } else if y - lon0 < -180.0 {
-            y += 360.0;
+        if crosses_dateline {
+            if y - lon0 > 180.0 {
+                y -= 360.0;
+            } else if y - lon0 < -180.0 {
+                y += 360.0;
+            }
         }
         y
     };
@@ -103,4 +118,33 @@ fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
         }
     }
     inside
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_region_does_not_wrap_normal_polygon_around_query_longitude() {
+        let points = vec![
+            LonLatPoint {
+                lon: 100.0,
+                lat: 10.0,
+            },
+            LonLatPoint {
+                lon: 130.0,
+                lat: 10.0,
+            },
+            LonLatPoint {
+                lon: 130.0,
+                lat: 40.0,
+            },
+            LonLatPoint {
+                lon: 100.0,
+                lat: 40.0,
+            },
+        ];
+        assert!(point_in_close_region(&points, 115.0, 20.0));
+        assert!(!point_in_close_region(&points, -70.0, 20.0));
+    }
 }

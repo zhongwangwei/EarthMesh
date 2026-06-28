@@ -41,7 +41,7 @@ pub fn write_flat_contain_netcdf(
     let dim_a = contain.ustr_id_width;
     let dim_b = contain.ustr_ii_width;
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num_ustr", num_ustr)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("num_ii", num_ii)

@@ -12,7 +12,7 @@ use super::rows::trim_trailing_zero_connectivity;
 /// `MOD_file_preprocess.F90:Unstructured_Mesh_Save`.
 pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<UnstructuredMesh> {
     let input = input.as_ref();
-    let file = netcdf::open(input).map_err(|err| {
+    let file = crate::open_netcdf(input).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(

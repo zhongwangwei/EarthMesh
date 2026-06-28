@@ -12,7 +12,7 @@ pub fn read_circle_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usiz
 
 /// Read `MOD_file_preprocess.F90:circle_Mesh_Read` NetCDF schema.
 pub fn read_circle_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CircleMesh> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let circle_num = required_dimension_len(&file, "circle_num")?;
     let two = required_dimension_len(&file, "two")?;
     if two != 2 {
@@ -78,7 +78,7 @@ pub fn write_circle_mesh_netcdf(output: impl AsRef<Path>, mesh: &CircleMesh) -> 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("circle_num", mesh.points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;
@@ -107,7 +107,7 @@ pub fn write_circle_mesh_netcdf(output: impl AsRef<Path>, mesh: &CircleMesh) -> 
 
 pub fn read_circle_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CircleMask> {
     let inputfile = inputfile.as_ref();
-    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile).map_err(netcdf_to_io_error)?;
     let circle_num = required_dimension_len(&file, "circle_num")?;
     let two = required_dimension_len(&file, "two")?;
     if two != 2 {
@@ -175,7 +175,7 @@ pub fn write_circle_mask_netcdf(output: impl AsRef<Path>, mask: &CircleMask) -> 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("circle_num", mask.points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("two", 2).map_err(netcdf_to_io_error)?;

@@ -26,7 +26,7 @@ pub fn write_quality_global_netcdf(
     let num_lbx = quality.lbx.length.len();
     let num_qbx = quality.qbx.as_ref().map_or(0, |qbx| qbx.length.len());
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num_sjx", num_sjx)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("num_wbx", num_wbx)

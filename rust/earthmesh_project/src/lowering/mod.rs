@@ -1,5 +1,6 @@
 use crate::{
-    km_to_nxp, DomainConfig, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    degree_to_nxp, km_to_nxp, DomainConfig, ProjectConfig, ProjectLayerRole, RegionShape,
+    ResolutionSpec,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayersNamelist, EarthmeshConfig, QualityNamelist, RefineConfig,
@@ -75,6 +76,7 @@ impl ProjectConfig {
         match self.target.resolution {
             ResolutionSpec::Nxp(n) => mkgrd.nxp = n,
             ResolutionSpec::ApproxKm(km) => mkgrd.nxp = km_to_nxp(km),
+            ResolutionSpec::ApproxDegree(degrees) => mkgrd.nxp = degree_to_nxp(degrees),
         }
 
         match &self.domain {
@@ -84,6 +86,14 @@ impl ProjectConfig {
                 mkgrd.mask_domain_type = match shape {
                     RegionShape::Bbox { .. } => "bbox",
                     RegionShape::Circle { .. } => "circle",
+                    RegionShape::Shapefile { path } => {
+                        mkgrd.mask_domain_fprefix = path.clone();
+                        "shapefile"
+                    }
+                    RegionShape::Close { path, .. } => {
+                        mkgrd.mask_domain_fprefix = path.clone();
+                        "close"
+                    }
                 }
                 .to_string();
                 if let Some(ratio) = sea_ratio {
@@ -102,6 +112,18 @@ impl ProjectConfig {
         // errors ("requires refine_spc/refine_cal/native..."). That is exactly why a
         // land/ocean mesh with only landcover failed to run. Gate the recipe
         // toggle on a real refinement source so such a mesh runs uniform instead.
+        if self.refinement.specified_circle.is_some() {
+            refine.refine_spc = true;
+            refine.mask_refine_spc_type = "circle".to_string();
+        }
+        if self.refinement.specified_bbox.is_some() {
+            refine.refine_spc = true;
+            refine.mask_refine_spc_type = "bbox".to_string();
+        }
+        if self.refinement.specified_close.is_some() {
+            refine.refine_spc = true;
+            refine.mask_refine_spc_type = "close".to_string();
+        }
         mkgrd.refine = self.refinement.enabled && (refine.refine_cal || refine.refine_spc);
         if mkgrd.refine {
             let max_passes = i32::from(self.refinement.max_passes);
@@ -113,9 +135,8 @@ impl ProjectConfig {
             }
         }
 
-        // The engine runs hex meshes with Istransition=true, and then exactly one of
-        // SpringGlobal/SpringRegional may be > 0 (core validate_like_read_nl). Tri
-        // meshes keep is_transition=false (the engine then zeroes both spring types).
+        // Auto spring smoothing: keep the low-level SpringGlobal/SpringRegional pair
+        // mutually exclusive while deriving the OLAM-compatible choice from grid/domain.
         if mkgrd.mode_grid != "tri" {
             refine.is_transition = true;
             refine.spring_global_type = if mkgrd.mask_domain_global { 1 } else { 0 };
@@ -128,6 +149,43 @@ impl ProjectConfig {
         }
         if let Some(t) = self.expert.openmp {
             mkgrd.openmp = t;
+        }
+        if let Some(n) = self.expert.niter {
+            mkgrd.niter = n;
+        }
+        if let Some(n) = self.expert.niter_refine {
+            refine.niter_refine = n;
+            refine.niter_refine_specified = true;
+        }
+        if let Some(n) = self.expert.max_iter_spc {
+            refine.max_iter_spc = n;
+        }
+        if let Some(n) = self.expert.max_iter_cal {
+            refine.max_iter_cal = n;
+        }
+        if let Some(values) = &self.expert.halo {
+            apply_i32_prefix(&mut refine.halo, values);
+        }
+        if let Some(values) = &self.expert.max_transition_row {
+            apply_i32_prefix(&mut refine.max_transition_row, values);
+        }
+        if let Some(set_dis_type) = &self.expert.set_dis_type {
+            refine.set_dis_type = set_dis_type.clone();
+        }
+        if let Some(n) = self.expert.num_rc {
+            refine.num_rc = n;
+        }
+        if let Some(n) = self.expert.vertex_pretect_layers {
+            refine.vertex_pretect_layers = n;
+        }
+        if let Some(enabled) = self.expert.weak_concav_eliminate {
+            refine.weak_concav_eliminate = enabled;
+        }
+        if let Some(beta) = self.expert.beta {
+            mkgrd.beta = beta;
+        }
+        if let Some(relax) = self.expert.relax {
+            mkgrd.relax = relax;
         }
 
         Ok(LoweredProject {
@@ -142,5 +200,11 @@ impl ProjectConfig {
     pub fn lower(&self) -> LoweredProject {
         self.try_lower()
             .expect("ProjectConfig::lower requires a valid project")
+    }
+}
+
+fn apply_i32_prefix(target: &mut [i32; 10], values: &[i32]) {
+    for (slot, value) in target.iter_mut().zip(values.iter().copied()) {
+        *slot = value;
     }
 }

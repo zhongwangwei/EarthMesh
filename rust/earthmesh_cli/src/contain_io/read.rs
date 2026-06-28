@@ -13,7 +13,7 @@ use super::validation::validate_contain_mesh;
 /// `MOD_file_preprocess.F90:Contain_Save`.
 pub fn read_contain_netcdf(input: impl AsRef<Path>) -> io::Result<ContainMesh> {
     let input = input.as_ref();
-    let file = netcdf::open(input).map_err(|err| {
+    let file = crate::open_netcdf(input).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("failed to open contain mesh {}: {err}", input.display()),

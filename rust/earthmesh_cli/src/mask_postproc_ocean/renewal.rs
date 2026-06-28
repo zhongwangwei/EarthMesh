@@ -1,8 +1,8 @@
 use std::io;
 
 use earthmesh_mesh::{
-    boundary_connection_fortran_indexed, remove_isolated_ocean_fortran_indexed,
-    renew_mask_postproc_domain_triangles_fortran_indexed,
+    boundary_connection_fortran_indexed, fill_vertex_only_ocean_contacts_fortran_indexed,
+    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
     renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
     widen_narrow_waterway_fortran_indexed,
 };
@@ -91,6 +91,13 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
                     &layout.vertex_neighbor_counts,
                     &renewed.vertex_neighbor_counts_next,
                     &renewed.center_neighbor_counts_next,
+                )?;
+                restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
+
+                fill_vertex_only_ocean_contacts_fortran_indexed(
+                    &mut is_in_domain,
+                    &layout.vertex_neighbors,
+                    &layout.vertex_neighbor_counts,
                 )?;
                 restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
                 renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;

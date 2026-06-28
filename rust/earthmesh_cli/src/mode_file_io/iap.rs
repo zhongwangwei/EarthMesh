@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub fn read_iap_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<IapMeshReadPayload> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let source_triangles = required_dimension_len(&file, "sjx_points")?;
     let source_vertices = required_dimension_len(&file, "lbx_points")?;
 
@@ -81,7 +81,7 @@ pub fn convert_iap_ocean_mode_file_to_earthmesh(
     mode_grid: &str,
 ) -> io::Result<UnstructuredMeshWriteReport> {
     let mode_file = mode_file.as_ref();
-    let file = netcdf::open(mode_file).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(mode_file).map_err(netcdf_to_io_error)?;
     let source_triangles = required_dimension_len(&file, "sjx_points")?;
     let source_vertices = required_dimension_len(&file, "lbx_points")?;
     let fortran_triangles = source_triangles + 1;

@@ -156,7 +156,12 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .pill{padding:6px 13px;border:1px solid var(--border);border-radius:20px;background:var(--bg);color:var(--muted);font-weight:600;font-size:12px}
 .pill.on{background:var(--accent);border-color:var(--accent);color:#fff}
 
-/* quality detail zone */
+/* expert / quality detail zones */
+.expert{border:1.5px dashed var(--accent);border-radius:var(--r-md);padding:var(--s-lg);
+  background:color-mix(in srgb,var(--accent) 6%,transparent);margin-top:var(--s-lg)}
+.expert-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
+  color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:11px}
+body.normal .expert{display:none}
 .quality-detail{border:1.5px dashed var(--accent);border-radius:var(--r-md);padding:var(--s-lg);
   background:color-mix(in srgb,var(--accent) 6%,transparent);margin-bottom:var(--s-lg)}
 .quality-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
@@ -183,8 +188,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .live-tabs button{padding:8px 13px;border:0;background:transparent;color:var(--muted);font-weight:600;
   border-bottom:2px solid transparent;margin-bottom:-1px}
 .live-tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
-.live-body{flex:1;overflow:auto;padding:var(--s-md)}
-.live-pane{display:none}.live-pane.on{display:block}
+.live-body{flex:1;overflow:hidden;padding:var(--s-md);min-height:0}
+.live-pane{display:none;height:100%;min-height:0;overflow:auto}.live-pane.on{display:block}
+.live-pane[data-pane="log"].on{display:flex;flex-direction:column;overflow:hidden}
+.log-head{flex:none;position:sticky;top:0;z-index:4;background:var(--surface);border-bottom:1px solid var(--border);padding-bottom:7px;margin-bottom:7px}
 .mapwrap{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;background:var(--bg)}
 .map-cap{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;font-size:11.5px;color:var(--muted)}
 #mapsvg{height:280px;border-radius:8px;overflow:hidden;background:var(--bg)}
@@ -215,6 +222,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="seg" id="langSeg">
       <button class="on" data-lang="zh" data-i18n="lang.zh">中文</button>
       <button data-lang="en" data-i18n="lang.en">EN</button>
+    </div>
+    <div class="seg" id="modeSeg">
+      <button class="on" data-mode="normal" data-i18n="mode.normal">常规</button>
+      <button data-mode="expert" data-i18n="mode.expert">专家</button>
     </div>
     <button class="icon-btn" id="themeBtn" title="theme">🌙</button>
   </header>
@@ -260,19 +271,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p style="color:var(--muted);font-size:11.5px;margin-top:12px" data-i18n="q.note">Full dashboard appears in Run / Results after a run.</p>
       </div>
       <!-- LOG -->
-      <div class="live-pane" data-pane="log" style="position:relative;height:100%;min-height:0">
+      <div class="live-pane" data-pane="log">
         <!-- inner flex column: fixed header on top, scrolling log below -->
-        <div style="display:flex;flex-direction:column;height:100%;min-height:0">
-          <div style="flex:none;border-bottom:1px solid var(--border);padding-bottom:7px;margin-bottom:7px">
-            <div class="progress"><i></i></div>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
-              <span class="rdot" id="logDot" style="flex:none"></span>
-              <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
-              <span class="btn-ghost" onclick="clearLog()" title="clear log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">🗑 <span data-i18n="log.clear">Clear</span></span>
-            </div>
+        <div class="log-head">
+          <div class="progress"><i></i></div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
+            <span class="rdot" id="logDot" style="flex:none"></span>
+            <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
+            <span class="btn-ghost" onclick="clearLog()" title="clear log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">🗑 <span data-i18n="log.clear">Clear</span></span>
           </div>
-          <div class="logbox" id="logbox" style="flex:1;min-height:0;overflow:auto"></div>
         </div>
+        <div class="logbox" id="logbox" style="flex:1;min-height:0;overflow:auto"></div>
       </div>
     </div>
   </aside>
@@ -301,6 +310,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 /* ---------------- i18n ---------------- */
 const I = {
  "lang.zh":["中文","中文"],"lang.en":["EN","EN"],
+ "mode.normal":["Normal","常规"],"mode.expert":["Expert","专家"],
  "rail.workflow":["Workflow","工作流"],
  "est.cells":["Estimated cells","预计单元数"],
  "live.map":["Map","地图"],"live.quality":["Quality","质量"],"live.log":["Log","日志"],
@@ -330,6 +340,7 @@ const STEPS=[
  {t:["Run / Results","运行 / 结果"],d:["Generate + dashboard","生成 + 仪表盘"]},
 ];
 let cur=0;
+let runInProgress=false;
 
 function renderSteps(){
   const el=document.getElementById("steps");el.textContent="";
@@ -342,7 +353,7 @@ function renderSteps(){
     const desc=document.createElement("div"); desc.className="d"; desc.textContent=s.d[lang];
     copy.append(title, desc);
     d.append(num, copy);
-    d.onclick=()=>{cur=i;renderSteps();renderStep(i);};
+    d.onclick=async()=>{await go(i);};
     el.appendChild(d);
   });
 }
@@ -374,6 +385,10 @@ const TPL=[
 const DEFAULT_TPL=6; // "MERIT-Hydro coast"
 let tpl=DEFAULT_TPL;
 let regional=true; // domain mode: true=regional (bbox), false=global (no bounds)
+let domainMode="regional"; // global | regional | watershed | close
+let watershedPath="";
+let closePath="";
+let closeFormat="polygon_shp";
 var hiddenDomainShape=null; // opened regional shapes this screen preserves but cannot edit yet
 const DEFAULT_BBOX=[108,120,18,26]; // [W,E,S,N]
 const DEFAULT_SEA_RATIO_PCT=50;
@@ -382,34 +397,76 @@ let hasRun=false;   // step 6 shows the results dashboard only after a real run
 let runInfo=null;   // { ok, outdir, code, gridfile } from the last run
 let maxPasses=null; // null means use ProjectConfig summary default
 let outputPath=""; // base output folder; outputs go to <outputPath>/<project name>/
+const DEFAULT_NEST_SPRING_ITERATIONS=2000;
+
+function templateDefaultCell(){
+  const meta=((TPL[tpl]&&TPL[tpl].meta&&TPL[tpl].meta[0])||"").toLowerCase();
+  return meta.includes("tri") ? "tri" : "hex";
+}
+function defaultOlamSpringNestIterations(cell){
+  return String(cell || templateDefaultCell()).toLowerCase()==="tri" ? DEFAULT_NEST_SPRING_ITERATIONS : null;
+}
+function autoSpringStrategyLabel(cell, regionalDomain, z){
+  if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（嵌套弹性平滑）" : "Auto (nested spring smoothing)";
+  return regionalDomain ? (z ? "自动（区域平滑）" : "Auto (regional smoothing)") : (z ? "自动（全局平滑）" : "Auto (global smoothing)");
+}
+
+function selectTemplate(k){
+  const next=Number(k);
+  if(!Number.isInteger(next) || !TPL[next]){
+    console.warn("invalid template index", k);
+    return;
+  }
+  const changed=next!==tpl;
+  if(changed){
+    tpl=next;
+    domainMode=TPL[tpl].global ? "global" : "regional";
+    regional=domainMode!=="global";
+    watershedPath="";
+    closePath="";
+    closeFormat="polygon_shp";
+    hiddenDomainShape=null;
+    if(typeof window.resetTemplateDerivedState==="function") window.resetTemplateDerivedState();
+  }
+  cur = 1;
+  renderSteps();
+  renderStep(1);
+}
 
 /* ---------------- resolution control (value + ticked slider) ---------------- */
 const KM_NXP_ANCHOR=360; // mirrors earthmesh_project::km_to_nxp display estimate
+const KM_PER_DEG_EQ=111.32;
 const RES_UNITS=[
  {label:["km","km"], suffix:" km", min:1, max:60, step:0.5, def:9, ticks:[1,15,30,45,60]},
  {label:["NXP (grid points)","NXP（格点数）"], suffix:" NXP", min:8, max:400, step:1, def:40, ticks:[8,100,200,300,400]},
+ {label:["degrees at equator","赤道经纬度"], suffix:"°", min:0.005, max:1, step:0.005, def:0.081, ticks:[0.005,0.25,0.5,0.75,1]},
 ];
 let resUnitIdx=0, resVal=RES_UNITS[0].def;
 function fmtRes(){const u=RES_UNITS[resUnitIdx];return resVal+u.suffix;}
 // Cross-unit equivalents. Engine relation: nxp ≈ 360/km (km_to_nxp).
 function fmtEquiv(){
   if(!(resVal>0)) return "";
-  if(resUnitIdx===1){ const km=KM_NXP_ANCHOR/resVal; return "≈ "+km.toFixed(1)+" km"; }      // NXP -> km
-  if(resUnitIdx===0){ const km=resVal;     return "≈ "+Math.round(KM_NXP_ANCHOR/km)+" NXP · "+(km/111.32).toFixed(3)+"°"; } // km  -> NXP, °
+  if(resUnitIdx===1){ const km=KM_NXP_ANCHOR/resVal; return "≈ "+km.toFixed(1)+" km · "+(km/KM_PER_DEG_EQ).toFixed(3)+"°"; }
+  if(resUnitIdx===0){ const km=resVal; return "≈ "+Math.round(KM_NXP_ANCHOR/km)+" NXP · "+(km/KM_PER_DEG_EQ).toFixed(3)+"°"; }
+  if(resUnitIdx===2){ const km=resVal*KM_PER_DEG_EQ; return "≈ "+km.toFixed(1)+" km · "+Math.round(KM_NXP_ANCHOR/km)+" NXP"; }
   return "";
 }
 function domainLabel(){
   if(hiddenDomainShape) return lang ? "保留隐藏区域："+hiddenDomainShape : "Preserved regional: "+hiddenDomainShape;
+  if(domainMode==="watershed") return lang ? "流域" : "Watershed";
+  if(domainMode==="close") return lang ? "闭合区域" : "Close domain";
   return regional ? (lang ? "区域" : "Regional") : (lang ? "全球" : "Global");
 }
 // ---- cell-count estimate (updates live with resolution + domain) ----
 function cellKm(){
   if(!(resVal>0)) return 0;
   if(resUnitIdx===1) return KM_NXP_ANCHOR/resVal;     // NXP -> km
+  if(resUnitIdx===2) return resVal*KM_PER_DEG_EQ;     // degrees at equator -> km
   return resVal;                              // km
 }
 function estCells(){
   const km=cellKm(); if(!(km>0)) return 0;
+  if(domainMode==="watershed" || domainMode==="close") return 0;
   let area;
   if(typeof regional!=="undefined" && regional){
     const b=(typeof domBbox!=="undefined")?domBbox:DEFAULT_BBOX;
@@ -425,6 +482,7 @@ function estCells(){
 function fmtK(n){ return n>=1e6 ? (n/1e6).toFixed(2)+"M" : n>=1e3 ? Math.round(n/1e3)+"k" : ""+n; }
 function updateEstimate(){
   if(hiddenDomainShape){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
+  if(domainMode==="watershed" || domainMode==="close"){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   const est=estCells();
   const set=(id,v,prop)=>{const el=document.getElementById(id); if(el){ if(prop) el.style[prop]=v; else el.textContent=v; }};
   set("estCells","~"+fmtK(est));
@@ -499,16 +557,33 @@ function renderStep(i){
         </div>
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
           ${field(lang?"输出模型":"Output model",`<input class="input" id="targetModelOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
-          ${field(lang?"单元形状":"Cell shape",`<input class="input" id="targetCellOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
-        </div></div>`;
+          ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
+        </div></div>
+      <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 弹性调整":"EXPERT — spring adjustment"}</span>
+        <div class="grid2" id="expertFields">
+          ${field(lang?"弹性平滑策略":"Spring smoothing",`<input class="input" value="${autoSpringStrategyLabel(null, domainMode !== "global", lang)}" readonly>`,lang?"默认自动按网格阶段选择":"automatic by mesh stage")}
+          ${field("OpenMP",`<input class="input" type="number" id="expertOpenmp" min="1" placeholder="${lang?"默认":"default"}">`,lang?"线程数":"threads")}
+          ${field("niter",`<input class="input" type="number" id="expertNiter" min="1" placeholder="${lang?"默认":"default"}">`,lang?"主迭代次数":"main iterations")}
+          ${field("beta",`<input class="input" type="number" id="expertBeta" min="0.001" step="0.01" placeholder="${lang?"默认":"default"}">`,lang?"弹性权重":"spring weight")}
+          ${field("relax",`<input class="input" type="number" id="expertRelax" min="0.001" step="0.001" placeholder="${lang?"默认":"default"}">`,lang?"松弛系数":"relaxation")}
+        </div>
+      </div>`;
   }
   else if(i===2){
     const hiddenDomain = hiddenDomainShape;
-    html=head(STEPS[2].t[lang],lang?"设全球或区域；区域使用经纬度矩形框。右侧地图实时反映。":"Set global or regional; regional uses a latitude/longitude bounding box. The map on the right reflects it live.")
+    html=head(STEPS[2].t[lang],lang?"设全球、区域矩形框、流域 SHP 或闭合区域；右侧地图实时反映可编辑矩形框。":"Set global, regional bbox, watershed SHP, or close domain; the map reflects editable bbox domains live.")
     +`<div class="card"><h3>${lang?"计算域":"Domain"}</h3>
-       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(!regional && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(regional || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span></div>
+       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span><span class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域":"Watershed"}</span><span class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</span></div>
        ${hiddenDomain?`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"此项目使用当前界面尚未编辑的区域形状（":"This project uses a regional shape not edited by this screen ("}<span id="hiddenDomainShapeText"></span>${lang?"）；保存/运行会保留它。切换到「区域」会改为矩形框。":"); Save/Run preserves it. Switch to Regional to replace it with a bounding box."}</div>`
-       :regional?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
+       :domainMode==="watershed"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">SHP</span></div>
+       ${field(lang?"流域边界文件":"Watershed boundary file",`<div class="browse" id="watershedBrowse" style="cursor:pointer"><span class="path" id="watershedPathText" style="max-width:none">${watershedPath ? "📄 "+watershedPath : (lang?"📄 点击选择 .shp 文件":"📄 Choose a .shp file")}</span></div>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
+       <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"运行时会把 Polygon SHP 转成后端 close mask；不依赖 GDAL。":"At run time, Polygon SHP is converted to a backend close mask without GDAL."}</div>`
+       :domainMode==="close"?`
+       ${field(lang?"闭合区域文件":"Close boundary file",`<div class="browse" id="closeBrowse" style="cursor:pointer"><span class="path" id="closePathText" style="max-width:none">${closePath ? "📄 "+closePath : (lang?"📄 点击选择文件":"📄 Choose file")}</span></div>`)}
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
+       <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"按文件扩展名自动识别：.shp / .nml / .nc / .nc4 / .txt / .csv。":"Auto-detected from extension: .shp / .nml / .nc / .nc4 / .txt / .csv."}</div>`
+       :domainMode==="regional"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
        <div class="grid2">
          ${field(lang?"西经度 (°)":"West lon (°)",inp(DEFAULT_BBOX[0].toFixed(1)))}${field(lang?"东经度 (°)":"East lon (°)",inp(DEFAULT_BBOX[1].toFixed(1)))}
          ${field(lang?"南纬度 (°)":"South lat (°)",inp(DEFAULT_BBOX[2].toFixed(1)))}${field(lang?"北纬度 (°)":"North lat (°)",inp(DEFAULT_BBOX[3].toFixed(1)))}
@@ -526,15 +601,15 @@ function renderStep(i){
       </tbody></table></div>`;
   }
   else if(i===4){
-    html=head(STEPS[4].t[lang],lang?"查看当前模板的细化判据；每条判据连着一个数据图层。":"Review the selected template's refinement criteria; each criterion ties to a data layer.")
-    +`<div class="card"><h3>${lang?"细化判据":"Refinement criteria"}</h3><div class="ch">${lang?"正在读取项目判据…":"loading project criteria…"}</div></div>`;
+    html=head(STEPS[4].t[lang],lang?"设置指定细化与阈值细化；阈值判据连着数据图层。":"Set specified and threshold refinement; threshold criteria tie to data layers.")
+    +`<div class="card"><h3>${lang?"细化策略":"Refinement strategy"}</h3><div class="ch">${lang?"正在读取项目细化配置…":"loading refinement settings…"}</div></div>`;
   }
   else if(i===5){
     html=head(STEPS[5].t[lang],lang?"设质量门限；当前会写入最小角和违规策略。":"Set the quality gate; Studio writes the minimum angle and violation policy.")
     +`<div class="card"><h3>${lang?"违规处理":"Violation behavior"}</h3>
-      ${field(lang?"违规时":"On violation",`<select class="select"><option selected>${lang?"警告并继续":"Warn & continue"}</option><option>${lang?"直接失败":"Fail"}</option></select>`)}
+      ${field(lang?"违规时":"On violation",`<select class="select"><option selected>${lang?"警告并继续":"Warn & continue"}</option><option>${lang?"直接失败":"Fail"}</option><option>${lang?"自动尝试修复":"Auto repair attempt"}</option></select>`)}
     </div>
-    <div class="quality-detail"><span class="quality-tag">⚙ ${lang?"质量门限":"Quality gate"}</span>
+    <div class="quality-detail expert"><span class="expert-tag">⚙ ${lang?"专家 — 逐项门禁":"EXPERT — per-gate thresholds"}</span>
       ${field(lang?"最小角 ≥":"Min angle ≥",inp("25°"))}</div>`;
   }
   else{
@@ -568,13 +643,26 @@ function renderStep(i){
   // wire template + layer toggles
   w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>selectTemplate(+c.dataset.tpl));
   // domain mode pills (global hides the bbox section)
-  w.querySelectorAll(".dom-mode").forEach(p=>p.onclick=()=>{regional=p.dataset.mode==="regional";hiddenDomainShape=null;renderStep(2);});
+  w.querySelectorAll(".dom-mode").forEach(p=>p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;renderStep(2);});
   // the Run button now lives in the final step's footer
   const rb=document.getElementById("runBtn"); if(rb) rb.onclick=backendUnavailableRun;
   updateEstimate();
   drawMap(); // keep the map's domain box in sync with regional/global + template
 }
-function go(i){cur=i;renderSteps();renderStep(i);document.getElementById("work").scrollTop=0;}
+async function confirmStopForPageSwitch(){
+  if(!runInProgress) return true;
+  const ok=confirm(lang
+    ?"网格正在运行。切换页面前需要先终止当前运行，是否终止并切换？"
+    :"A mesh run is in progress. Switching pages will stop the current run. Stop and switch?");
+  if(!ok) return false;
+  return await killRun();
+}
+async function go(i){
+  if(i===cur) return true;
+  if(!await confirmStopForPageSwitch()) return false;
+  cur=i;renderSteps();renderStep(i);document.getElementById("work").scrollTop=0;
+  return true;
+}
 
 /* ---------------- map (satellite base + domain box + mesh overlay) ---------------- */
 function baseMapLayer(){
@@ -600,6 +688,7 @@ function ensureMap(elId){
 }
 function domainRect(){
   const reg=(typeof regional==="undefined")?true:regional;
+  if(typeof domainMode!=="undefined" && (domainMode==="watershed" || domainMode==="close")) return null;
   if(!reg) return null;                // global: no box
   const [w,e,s,n]=domBbox;             // domBbox is [W,E,S,N]
   return window.LEAF.rectangle([[s,w],[n,e]],
@@ -626,7 +715,20 @@ function setMeshLayer(m, geojson, doFit){
     if(doFit){ try{ m.fitBounds(layer.getBounds(),{padding:[20,20],maxZoom:9}); }catch(e){} }
   }catch(e){}
 }
+function setDomainBoundaryLayer(m, geojson, doFit){
+  if(!m) return;
+  if(m._domainBoundaryLayer){ m.removeLayer(m._domainBoundaryLayer); m._domainBoundaryLayer=null; }
+  if(!geojson) return;
+  try{
+    const layer=window.LEAF.geoJSON(geojson,{
+      style:{ color:"#facc15", weight:2.2, dashArray:"5 3", fillColor:"#facc15", fillOpacity:0.08 }
+    }).addTo(m);
+    m._domainBoundaryLayer=layer;
+    if(doFit){ try{ m.fitBounds(layer.getBounds(),{padding:[20,20],maxZoom:9}); }catch(e){} }
+  }catch(e){}
+}
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
+let _domainGeojson=null; // watershed/domain outline overlay
 function applyMesh(geojson){
   _meshGeojson=geojson;
   const m=document.getElementById("mapsvg") && document.getElementById("mapsvg")._lmap;
@@ -634,13 +736,20 @@ function applyMesh(geojson){
   const mm=document.getElementById("mapsvgModal") && document.getElementById("mapsvgModal")._lmap;
   if(mm) setMeshLayer(mm, geojson, true);
 }
+function applyDomainBoundary(geojson, doFit){
+  _domainGeojson=geojson;
+  const m=document.getElementById("mapsvg") && document.getElementById("mapsvg")._lmap;
+  if(m) setDomainBoundaryLayer(m, geojson, !!doFit);
+  const mm=document.getElementById("mapsvgModal") && document.getElementById("mapsvgModal")._lmap;
+  if(mm) setDomainBoundaryLayer(mm, geojson, !!doFit);
+}
 function drawMap(){
   const m=ensureMap("mapsvg");
-  if(m){ refreshDomain(m); setMeshLayer(m,_meshGeojson,false); setTimeout(()=>m.invalidateSize(),60); }
+  if(m){ refreshDomain(m); setDomainBoundaryLayer(m,_domainGeojson,false); setMeshLayer(m,_meshGeojson,false); setTimeout(()=>m.invalidateSize(),60); }
   const mm=document.getElementById("mapModal");
   if(mm && mm.style.display!=="none"){
     const m2=ensureMap("mapsvgModal");
-    if(m2){ refreshDomain(m2); setMeshLayer(m2,_meshGeojson,false); setTimeout(()=>m2.invalidateSize(),60); }
+    if(m2){ refreshDomain(m2); setDomainBoundaryLayer(m2,_domainGeojson,false); setMeshLayer(m2,_meshGeojson,false); setTimeout(()=>m2.invalidateSize(),60); }
   }
 }
 function openMapModal(){
@@ -648,7 +757,7 @@ function openMapModal(){
   mm.style.display="flex";
   const m2=ensureMap("mapsvgModal");
   if(m2){
-    refreshDomain(m2); setMeshLayer(m2,_meshGeojson,true); setTimeout(()=>m2.invalidateSize(),80);
+    refreshDomain(m2); setDomainBoundaryLayer(m2,_domainGeojson,true); setMeshLayer(m2,_meshGeojson,true); setTimeout(()=>m2.invalidateSize(),80);
     // Keep Leaflet in sync while the user drags the panel's resize handle.
     const panel=document.getElementById("mapModalPanel");
     if(panel && !panel._ro && window.ResizeObserver){
@@ -664,6 +773,7 @@ function setLogStatus(text, ok){
   const d=document.getElementById("logDot"); if(d) d.classList.toggle("on", ok!==false);
 }
 function setRunControls(on){
+  runInProgress=!!on;
   const runBtn=document.getElementById("runBtn"), killBtn=document.getElementById("killBtn");
   if(runBtn){
     runBtn.disabled=on;
@@ -677,12 +787,15 @@ async function killRun(){
   const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
   const lb=document.getElementById("logbox");
   const add=(s)=>{ if(lb){ const div=document.createElement("div"); div.textContent=s; lb.appendChild(div); lb.scrollTop=lb.scrollHeight; } };
-  if(!inv){ add("✗ "+(lang?"无法连接后端":"backend unavailable")); return; }
+  if(!inv){ add("✗ "+(lang?"无法连接后端":"backend unavailable")); return false; }
   try{
     const r = await inv("kill_run");
     add("■ "+(r?(lang?"已终止正在运行的引擎":"killed the running engine"):(lang?"当前没有正在运行的程序":"no running process")));
-    if(r){ setRunControls(false); const rt=document.getElementById("rtext"); if(rt) rt.textContent=lang?"已终止":"killed"; }
-  }catch(e){ add("✗ kill: "+e); }
+    if(r){ setRunControls(false); }
+    else { setRunControls(false); }
+    const rt=document.getElementById("rtext"); if(rt) rt.textContent=r?(lang?"已终止":"killed"):(lang?"未在运行":"not running");
+    return true;
+  }catch(e){ add("✗ kill: "+e); return false; }
 }
 
 /* ---------------- toggles ---------------- */
@@ -693,6 +806,15 @@ document.getElementById("themeBtn").onclick=function(){
 document.getElementById("langSeg").onclick=e=>{const b=e.target.closest("[data-lang]");if(!b)return;
   document.querySelectorAll("#langSeg button").forEach(x=>x.classList.toggle("on",x===b));
   lang=b.dataset.lang==="zh"?1:0; applyI18n();};
+let expertMode=false;
+function setExpertMode(on){
+  expertMode=!!on;
+  document.body.classList.toggle("normal",!expertMode);
+  document.body.classList.toggle("expert-mode",expertMode);
+  document.querySelectorAll("#modeSeg button").forEach(x=>x.classList.toggle("on",(x.dataset.mode==="expert")===expertMode));
+}
+setExpertMode(false);
+document.getElementById("modeSeg").onclick=e=>{const b=e.target.closest("[data-mode]");if(!b)return;setExpertMode(b.dataset.mode==="expert");};
 document.getElementById("liveTabs").onclick=e=>{const b=e.target.closest("[data-pane]");if(!b)return;
   document.querySelectorAll("#liveTabs button").forEach(x=>x.classList.toggle("on",x===b));
   document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane===b.dataset.pane));};
@@ -761,17 +883,24 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
   function currentResolution() {
     try {
       if (typeof resUnitIdx !== "undefined" && typeof resVal !== "undefined") {
-        if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null };
-        return { nxp: null, approxKm: resVal };
+        if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null, approxDegree: null };
+        if (resUnitIdx === 2) return { nxp: null, approxKm: null, approxDegree: resVal };
+        return { nxp: null, approxKm: resVal, approxDegree: null };
       }
     } catch (e) {}
-    return { nxp: 40, approxKm: null };
+    return { nxp: 40, approxKm: null, approxDegree: null };
   }
   function currentNxp() {
     if (lastSummary && lastSummary.effective_nxp != null) return lastSummary.effective_nxp;
     const r = currentResolution();
     if (r.nxp != null) return r.nxp;
+    if (r.approxDegree > 0) return Math.max(1, Math.round(KM_NXP_ANCHOR / (r.approxDegree*KM_PER_DEG_EQ)));
     return r.approxKm > 0 ? Math.max(1, Math.round(KM_NXP_ANCHOR / r.approxKm)) : 0;
+  }
+  function regionalDefaultRefineLevel(nxp) {
+    if (nxp >= 192) return 3;
+    if (nxp >= 64) return 2;
+    return 1;
   }
   function currentIntent() {
     try { return (TPL[tpl] && TPL[tpl].intent) || "Custom"; } catch (e) { return "Custom"; }
@@ -786,7 +915,10 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
   // ---- live project model ----------------------------------------------------
   const layerEdits = {};   // layer id -> { path, enabled }
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
-  let qualityEdit = null;  // null | { minAngle, block }
+  let qualityEdit = null;  // null | { minAngle, policy }
+  let cellEdit = null;     // null | "hex" | "tri"; null means template default
+let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, beta: null, relax: null, weakConcavEliminate: true };
+  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
@@ -807,13 +939,23 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
   async function composeYaml() {
     const resolution = currentResolution();
     let yaml = await invoke("scaffold_project",
-      { name: projectName(), intent: currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm });
+      { name: projectName(), intent: currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm, approxDegree: resolution.approxDegree });
     yaml = await invoke("set_project_metadata",
       { yaml, name: projectName(), authors: metadataEdit.authors || [], description: metadataEdit.description || "" });
-    // Derive the domain from the LIVE regional flag + bbox — not a stale
-    // domainEdit (template cards flip `regional` without updating domainEdit).
-    if (typeof regional !== "undefined" && !regional) {
+    // Derive the domain from the LIVE mode + controls — not a stale domainEdit
+    // (template cards flip `regional`/`domainMode` without updating domainEdit).
+    const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    if (mode === "global") {
       yaml = await invoke("set_domain_global", { yaml });
+    } else if (mode === "watershed") {
+      const path = (domainEdit && domainEdit.kind === "shapefile" ? domainEdit.path : watershedPath) || "";
+      const seaRatio = domainEdit && domainEdit.kind === "shapefile" ? (domainEdit.seaRatio ?? null) : null;
+      yaml = await invoke("set_domain_shapefile", { yaml, path, seaRatio });
+    } else if (mode === "close") {
+      const path = (domainEdit && domainEdit.kind === "close" ? domainEdit.path : closePath) || "";
+      const format = (domainEdit && domainEdit.kind === "close" ? domainEdit.format : closeFormat) || "polygon_shp";
+      const seaRatio = domainEdit && domainEdit.kind === "close" ? (domainEdit.seaRatio ?? null) : null;
+      yaml = await invoke("set_domain_close", { yaml, path, format, seaRatio });
     } else {
       const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : DEFAULT_BBOX;
       const seaRatio = domainEdit && domainEdit.kind === "bbox" ? (domainEdit.seaRatio ?? null) : null;
@@ -827,13 +969,34 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     if (baseProjectYaml) {
       yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !!hiddenDomainShape });
     }
+    if (cellEdit) {
+      yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
+    }
+    yaml = await invoke("set_expert", {
+      yaml, nxp: null, openmp: expertEdit.openmp, niter: expertEdit.niter,
+      niterRefine: expertEdit.niterRefine ?? defaultOlamSpringNestIterations(cellEdit), maxIterSpc: expertEdit.maxIterSpc, maxIterCal: expertEdit.maxIterCal,
+      halo: expertEdit.halo, maxTransitionRow: expertEdit.maxTransitionRow, setDisType: expertEdit.setDisType,
+      numRc: expertEdit.numRc, vertexPretectLayers: expertEdit.vertexPretectLayers,
+      beta: expertEdit.beta, relax: expertEdit.relax,
+      weakConcavEliminate: true
+    });
     const summary = await invoke("project_summary", { yaml });
-    const refinementEnabled = hasEnabledThresholdLayer(summary);
-    const refinementPasses = maxPasses == null ? summary.max_passes : (refinementEnabled ? Math.min(9, Math.max(1, maxPasses)) : maxPasses);
+    const thresholdRefine = hasEnabledThresholdLayer(summary);
+    const refinementEnabled = thresholdRefine || !!specifiedRefine.enabled;
+    const refinementPasses = refinementEnabled
+      ? Math.min(9, Math.max(1, maxPasses == null ? (summary.max_passes || 1) : maxPasses))
+      : 0;
     yaml = await invoke("set_refinement", { yaml, enabled: refinementEnabled, maxPasses: refinementPasses });
+    yaml = await invoke("set_specified_refinement", {
+      yaml, enabled: !!specifiedRefine.enabled,
+      kind: specifiedRefine.kind || "radius",
+      lon: specifiedRefine.lon, lat: specifiedRefine.lat, radiusKm: specifiedRefine.radiusKm,
+      w: specifiedRefine.w, e: specifiedRefine.e, s: specifiedRefine.s, n: specifiedRefine.n,
+      path: specifiedRefine.path
+    });
     if (qualityEdit) {
       yaml = await invoke("set_quality",
-        { yaml, minAngleDeg: qualityEdit.minAngle, block: qualityEdit.block });
+        { yaml, minAngleDeg: qualityEdit.minAngle, policy: qualityEdit.policy });
     }
     return yaml;
   }
@@ -842,6 +1005,14 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     listCriteria: () => invoke("list_criteria"),
     validate:   (yaml) => invoke("validate_project", { yaml }),
     summary:    (yaml) => invoke("project_summary", { yaml }),
+    setTargetCell: (yaml, cell) => invoke("set_target_cell", { yaml, cell }),
+    setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
+    setDomainClose: (yaml, path, format, seaRatio) => invoke("set_domain_close", { yaml, path, format, seaRatio }),
+    shapefileBoundary: (path) => invoke("shapefile_boundary_geojson", { path }),
+    setExpert: (yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, beta, relax, weakConcavEliminate) =>
+      invoke("set_expert", { yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, beta, relax, weakConcavEliminate }),
+    setSpecifiedRefinement: (yaml, enabled, kind, lon, lat, radiusKm, w, e, s, n, path) =>
+      invoke("set_specified_refinement", { yaml, enabled, kind, lon, lat, radiusKm, w, e, s, n, path }),
     pickDataFile: () => invoke("pick_data_file"),
     pickDataFolder: () => invoke("pick_data_folder"),
     openProject:  () => invoke("open_project"),
@@ -860,6 +1031,25 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     console.log("[EarthMesh]", txt);
   }
 
+  let watershedBoundaryPath = "";
+  async function loadWatershedBoundary(path) {
+    if (!path) {
+      watershedBoundaryPath = "";
+      if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
+      return;
+    }
+    if (path === watershedBoundaryPath && _domainGeojson) return;
+    watershedBoundaryPath = path;
+    try {
+      const geojson = await api.shapefileBoundary(path);
+      if (typeof applyDomainBoundary === "function") applyDomainBoundary(geojson, true);
+    } catch (e) {
+      watershedBoundaryPath = "";
+      if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
+      logLine("✗ watershed boundary: " + e);
+    }
+  }
+
   // Clear startup placeholders so no stale values show before a real run.
   function clearStartupPlaceholders() {
     const lb = document.getElementById("logbox"); if (lb) lb.textContent = "";
@@ -876,23 +1066,16 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
   }
 
-  function selectTemplate(k) {
-    const changed = k !== tpl;
-    if (changed) {
-      tpl = k;
-      regional = !TPL[tpl].global;
-      hiddenDomainShape = null;
+  window.resetTemplateDerivedState = function () {
       for (const id of Object.keys(layerEdits)) delete layerEdits[id];
       baseProjectYaml = null;
       domainEdit = null;
       qualityEdit = null;
+      lastSummary = null;
+      cellEdit = null;
       maxPasses = null;
       clearRunArtifacts();
-    }
-    cur = 1;
-    renderSteps();
-    renderStep(1);
-  }
+  };
 
   // ---- live data-layer panel ------------------------------------------------
   // Replace the static step-3 table body with rows from the live ProjectConfig;
@@ -1015,18 +1198,84 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     // The base UI owns the Global/Regional toggle (var `regional`) and only
     // renders the bbox inputs in regional mode; we mirror that into domainEdit.
     if (hiddenDomainShape && domainEdit && domainEdit.kind === "hidden") return;
-    if (typeof regional !== "undefined" && !regional) { domainEdit = { kind: "global" }; return; }
+    const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    if (mode === "global") { domainEdit = { kind: "global" }; loadWatershedBoundary(""); return; }
     const ratio = document.getElementById("seaRatioInput");
     const ratioText = document.getElementById("seaRatioText");
     const readSeaRatio = () => {
-      if (!ratio) return domainEdit && domainEdit.kind === "bbox" ? domainEdit.seaRatio : null;
+      if (!ratio) return (domainEdit && (domainEdit.kind === "bbox" || domainEdit.kind === "shapefile" || domainEdit.kind === "close")) ? domainEdit.seaRatio : null;
       const v = parseFloat(ratio.value);
       return isNaN(v) ? null : v / 100;
     };
     const paintSeaRatio = () => {
       if (ratioText && ratio) ratioText.textContent = ratio.value + "% " + (zh() ? "海洋" : "ocean");
     };
+    if (mode === "watershed") {
+      const browse = document.getElementById("watershedBrowse");
+      const text = document.getElementById("watershedPathText");
+      const syncShape = () => {
+        const path = (typeof watershedPath !== "undefined" ? watershedPath : "") || "";
+        if (path) domainEdit = { kind: "shapefile", path, seaRatio: readSeaRatio() };
+        if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择 .shp 文件" : "📄 Choose a .shp file");
+        paintSeaRatio();
+      };
+      if (domainEdit && domainEdit.kind === "shapefile") {
+        watershedPath = domainEdit.path || "";
+        if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
+      }
+      syncShape();
+      loadWatershedBoundary(watershedPath);
+      if (browse) browse.onclick = async () => {
+        let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
+        if (!p) return;
+        watershedPath = p;
+        domainEdit = { kind: "shapefile", path: p, seaRatio: readSeaRatio() };
+        clearRunArtifacts();
+        syncShape();
+        await loadWatershedBoundary(p);
+        await refreshSummary();
+      };
+      if (ratio) ratio.addEventListener("input", () => {
+        if (watershedPath) domainEdit = { kind: "shapefile", path: watershedPath, seaRatio: readSeaRatio() };
+        paintSeaRatio();
+      });
+      return;
+    }
+    if (mode === "close") {
+      const browse = document.getElementById("closeBrowse");
+      const text = document.getElementById("closePathText");
+      const syncClose = () => {
+        const path = (typeof closePath !== "undefined" ? closePath : "") || "";
+        if (path) closeFormat = inferCloseFormat(path);
+        if (path) domainEdit = { kind: "close", path, format: closeFormat, seaRatio: readSeaRatio() };
+        if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择文件" : "📄 Choose file");
+        paintSeaRatio();
+        loadWatershedBoundary(closeFormat === "polygon_shp" ? path : "");
+      };
+      if (domainEdit && domainEdit.kind === "close") {
+        closePath = domainEdit.path || "";
+        closeFormat = domainEdit.format || "polygon_shp";
+        if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
+      }
+      syncClose();
+      if (browse) browse.onclick = async () => {
+        let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
+        if (!p) return;
+        closePath = p;
+        closeFormat = inferCloseFormat(p);
+        domainEdit = { kind: "close", path: p, format: closeFormat, seaRatio: readSeaRatio() };
+        clearRunArtifacts();
+        syncClose();
+        await refreshSummary();
+      };
+      if (ratio) ratio.addEventListener("input", () => {
+        if (closePath) domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: readSeaRatio() };
+        paintSeaRatio();
+      });
+      return;
+    }
     const sync = () => {
+      loadWatershedBoundary("");
       const b = readBbox();
       if (b) {
         domainEdit = Object.assign({ kind: "bbox", seaRatio: readSeaRatio() }, b);
@@ -1053,20 +1302,20 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     const minIn = document.querySelector("#work .quality-detail input.input"); // min angle
     if (!qualityEdit) {
       const s = await refreshSummary();
-      if (s) qualityEdit = { minAngle: s.min_angle_deg, block: s.on_violation === "block" };
+      if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn" };
     }
     const readQ = () => {
-      let minAngle = 0, block = false;
+      let minAngle = 0, policy = "warn";
       if (minIn) { const v = num(minIn); if (minIn.value.trim() && !isNaN(v)) minAngle = v; }
-      if (sel) block = sel.selectedIndex === 1; // 0 Warn · 1 Fail->Block
-      return { minAngle, block };
+      if (sel) policy = ["warn", "block", "auto_refine"][sel.selectedIndex] || "warn";
+      return { minAngle, policy };
     };
     const update = () => { qualityEdit = readQ(); };
     if (sel) sel.addEventListener("change", update);
     if (minIn) minIn.addEventListener("input", update);
     if (qualityEdit) {
       if (minIn) minIn.value = qualityEdit.minAngle + "°";
-      if (sel) sel.selectedIndex = qualityEdit.block ? 1 : 0;
+      if (sel) sel.selectedIndex = qualityEdit.policy === "auto_refine" ? 2 : (qualityEdit.policy === "block" ? 1 : 0);
     }
   }
 
@@ -1117,39 +1366,95 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     };
 
     const nMax = 9;
-    const refinementEnabled = hasEnabledThresholdLayer(sum);
+    const regionalRefine = sum.domain === "regional";
+    const refinementEnabled = hasEnabledThresholdLayer(sum) || !!specifiedRefine.enabled;
     if (refinementEnabled) {
       if (maxPasses > nMax) maxPasses = nMax;
       if (maxPasses < 1) maxPasses = 1;
     }
     const shownPasses = Math.min(nMax, Math.max(1, maxPasses || 1));
+    const shownSpcPasses = Math.min(nMax, Math.max(1, expertEdit.maxIterSpc ?? shownPasses));
+    const shownCalPasses = Math.min(nMax, Math.max(1, expertEdit.maxIterCal ?? shownPasses));
     const fineAt = (n) => (cellKm() / Math.pow(2, n));
     const fmtKm = (v) => v.toFixed(v < 10 ? 2 : 1) + " km";
-    const mp = `<div style="margin-top:6px;padding-top:14px;border-top:1px solid var(--border)">
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
-        <div><span style="font-weight:650">${z ? "最大细化次数" : "Max refinement passes"}</span>
-          <div style="color:var(--muted);font-size:11px">${z ? "保存到项目配置；后端校验范围 1–9" : "saved to project config; backend validates range 1–9"}</div></div>
-        <span style="font-weight:750;font-size:16px;color:var(--accent)"><span id="mpVal">${shownPasses}</span> <span id="mpFine" style="font-size:11px;color:var(--muted)">→ ≈${fmtKm(fineAt(shownPasses))}</span></span>
+    const specified = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <div style="font-weight:700;margin-bottom:10px">${z ? "指定细化" : "Specified refinement"}</div>
+      <div class="grid2">
+        ${field(z?"开关":"Switch",`<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用":"Enable"}</label>`)}
+        ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合区域 SHP":"Close SHP"}</option></select>`)}
       </div>
-      <input type="range" id="mpRange" min="1" max="${nMax}" value="${shownPasses}" style="width:100%">
-      <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax} ≈ ${fmtKm(fineAt(nMax))}</span></div>
+      <div class="grid2" id="specifiedRadiusFields" style="margin-top:10px">
+        ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" min="0.001" step="1" value="${specifiedRefine.radiusKm ?? 100}">`)}
+        ${field(z?"中心经度":"Center lon",`<input class="input" type="number" id="specifiedLon" min="-180" max="180" step="0.01" value="${specifiedRefine.lon ?? 0}">`)}
+        ${field(z?"中心纬度":"Center lat",`<input class="input" type="number" id="specifiedLat" min="-90" max="90" step="0.01" value="${specifiedRefine.lat ?? 0}">`)}
+      </div>
+      <div class="grid2" id="specifiedBboxFields" style="margin-top:10px">
+        ${field(z?"西经度":"West lon",`<input class="input" type="number" id="specifiedW" min="-180" max="180" step="0.01" value="${specifiedRefine.w ?? DEFAULT_BBOX[0]}">`)}
+        ${field(z?"东经度":"East lon",`<input class="input" type="number" id="specifiedE" min="-180" max="180" step="0.01" value="${specifiedRefine.e ?? DEFAULT_BBOX[1]}">`)}
+        ${field(z?"南纬度":"South lat",`<input class="input" type="number" id="specifiedS" min="-90" max="90" step="0.01" value="${specifiedRefine.s ?? DEFAULT_BBOX[2]}">`)}
+        ${field(z?"北纬度":"North lat",`<input class="input" type="number" id="specifiedN" min="-90" max="90" step="0.01" value="${specifiedRefine.n ?? DEFAULT_BBOX[3]}">`)}
+      </div>
+      <div id="specifiedCloseFields" style="margin-top:10px">
+        ${field(z?"闭合区域文件":"Close region file",`<div class="browse" id="specifiedCloseBrowse" style="cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none">${specifiedRefine.path ? "📄 "+specifiedRefine.path : (z?"📄 点击选择 .shp 文件":"📄 Choose a .shp file")}</span></div>`)}
+      </div>
+      <div style="margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
+          <div><span style="font-weight:650">${z ? "指定细化次数" : "Specified refinement passes"}</span>
+          <div style="color:var(--muted);font-size:11px">RL%max_iter_spc</div></div>
+          <span style="font-weight:750;font-size:16px;color:var(--accent)"><span id="spcPassVal">${shownSpcPasses}</span> <span id="spcPassFine" style="font-size:11px;color:var(--muted)">→ ≈${fmtKm(fineAt(shownSpcPasses))}</span></span>
+        </div>
+        <input type="range" id="spcPassRange" min="1" max="${nMax}" value="${shownSpcPasses}" style="width:100%">
+        <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax}</span></div>
+      </div>
+    </div>`;
+    const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <span class="expert-tag">⚙ ${z ? "专家 — 底层细化控制" : "EXPERT — low-level refinement controls"}</span>
+      <div class="grid2" style="margin-top:10px">
+        ${field(z?"弹性平滑策略":"Spring smoothing",`<input class="input" value="${autoSpringStrategyLabel(cellEdit, regionalRefine, z)}" readonly>`,z?"默认自动；不暴露 SpringGlobal/SpringRegional 组合":"auto by default; SpringGlobal/SpringRegional are not exposed")}
+        ${field("RL%niter_refine",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"默认 2000":"default 2000"}">`,z?"嵌套弹性平滑迭代":"Nested spring iterations")}
+        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"过渡 halo 行数组":"transition halo rows")}
+        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"最大过渡行数组":"max transition row array")}
+        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认":"default"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"距离分布函数":"distance distribution")}
+        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="${z?"默认":"default"}">`,z?"距离分布层数":"distance control layers")}
+        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="${z?"默认 1":"default 1"}">`,z?"顶点保护层数":"vertex protect layers")}
+        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" checked disabled> <span>${z?"开启":"On"}</span></label>`,z?"弱凹消除；默认必须开启":"weak concavity elimination; required on")}
+      </div>
+    </div>`;
+
+    const active = crits.filter((l) => l.path && l.enabled).length;
+    const thresholdSummary = crits.length
+      ? (z ? "判据随模板自动列出 · " : "criteria from the template · ")
+        + active + "/" + crits.length + (z ? " 个有数据启用" : " active")
+      : (z ? "此模板没有阈值细化判据" : "no threshold criteria for this template");
+    const threshold = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px">
+        <div><div style="font-weight:700">${z ? "阈值细化" : "Threshold refinement"}</div>
+        <div style="color:var(--muted);font-size:11px;margin-top:2px">${thresholdSummary}</div></div>
+      </div>
+      <div id="thresholdRows"></div>
+      <div style="margin-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
+          <div><span style="font-weight:650">${z ? "阈值细化次数" : "Threshold refinement passes"}</span>
+          <div style="color:var(--muted);font-size:11px">RL%max_iter_cal</div></div>
+          <span style="font-weight:750;font-size:16px;color:var(--accent)"><span id="calPassVal">${shownCalPasses}</span> <span id="calPassFine" style="font-size:11px;color:var(--muted)">→ ≈${fmtKm(fineAt(shownCalPasses))}</span></span>
+        </div>
+        <input type="range" id="calPassRange" min="1" max="${nMax}" value="${shownCalPasses}" style="width:100%">
+        <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax}</span></div>
+      </div>
     </div>`;
 
     const ch = critCard.querySelector(".ch");
     while (ch && ch.nextSibling) ch.nextSibling.remove();
     if (ch) {
-      const active = crits.filter((l) => l.path && l.enabled).length;
-      ch.textContent = crits.length
-        ? (z ? "判据随模板自动列出 · " : "criteria from the template · ")
-          + active + "/" + crits.length + (z ? " 个有数据启用" : " active")
-        : (z ? "此模板没有阈值细化判据" : "no threshold criteria for this template");
-      let anchor = ch;
-      crits.forEach((l) => {
-        const row = criterionRow(l);
-        anchor.parentNode.insertBefore(row, anchor.nextSibling);
-        anchor = row;
-      });
+      ch.textContent = regionalRefine
+        ? (z ? "区域模式会自动按计算域细化；指定细化仅表示额外的用户指定范围。" : "Regional mode refines by the domain automatically; specified refinement means an extra user-defined target.")
+        : (z ? "细化策略分为指定细化和阈值细化。" : "Refinement is split into specified and threshold refinement.");
+      const anchor = ch;
+      const mp = specified + threshold + expertRefine;
       if (crits.length) anchor.insertAdjacentHTML("afterend", mp);
+      else anchor.insertAdjacentHTML("afterend", mp);
+      const rows = document.getElementById("thresholdRows");
+      if (rows) crits.forEach((l) => rows.appendChild(criterionRow(l)));
     }
     // toggles (only for criteria that have data)
     critCard.querySelectorAll(".em-crit").forEach((row) => {
@@ -1163,13 +1468,102 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
         enhanceRefinementStep();
       };
     });
-    // max passes slider
-    const mpr = document.getElementById("mpRange");
-    if (mpr) mpr.addEventListener("input", () => {
-      maxPasses = +mpr.value;
-      const v = document.getElementById("mpVal"); if (v) v.textContent = maxPasses;
-      const f = document.getElementById("mpFine"); if (f) f.textContent = "→ ≈" + fmtKm(fineAt(maxPasses));
+    const spcPass = document.getElementById("spcPassRange");
+    const calPass = document.getElementById("calPassRange");
+    const syncPasses = () => {
+      const spc = spcPass ? +spcPass.value : shownSpcPasses;
+      const cal = calPass ? +calPass.value : shownCalPasses;
+      expertEdit.maxIterSpc = spc;
+      expertEdit.maxIterCal = cal;
+      maxPasses = Math.max(spc, cal);
+      const sv = document.getElementById("spcPassVal"); if (sv) sv.textContent = spc;
+      const sf = document.getElementById("spcPassFine"); if (sf) sf.textContent = "→ ≈" + fmtKm(fineAt(spc));
+      const cv = document.getElementById("calPassVal"); if (cv) cv.textContent = cal;
+      const cf = document.getElementById("calPassFine"); if (cf) cf.textContent = "→ ≈" + fmtKm(fineAt(cal));
+      expertEdit.enabled = expertEnabled();
+      clearRunArtifacts();
+    };
+    [spcPass, calPass].forEach((el) => { if (el) el.oninput = syncPasses; });
+    const erNiter = document.getElementById("expertNiterRefine");
+    const erHalo = document.getElementById("expertHalo");
+    const erRows = document.getElementById("expertMaxTransitionRow");
+    const erSetDis = document.getElementById("expertSetDisType");
+    const erNumRc = document.getElementById("expertNumRc");
+    const erVertex = document.getElementById("expertVertexPretectLayers");
+    const erWeakConcav = document.getElementById("expertWeakConcav");
+    if (erNiter) erNiter.value = expertEdit.niterRefine ?? defaultOlamSpringNestIterations(cellEdit) ?? "";
+    if (erHalo) erHalo.value = Array.isArray(expertEdit.halo) ? expertEdit.halo.join(",") : "";
+    if (erRows) erRows.value = Array.isArray(expertEdit.maxTransitionRow) ? expertEdit.maxTransitionRow.join(",") : "";
+    if (erSetDis) erSetDis.value = expertEdit.setDisType ?? "";
+    if (erNumRc) erNumRc.value = expertEdit.numRc ?? "";
+    if (erVertex) erVertex.value = expertEdit.vertexPretectLayers ?? "";
+    if (erWeakConcav) erWeakConcav.checked = true;
+    const syncExpertRefine = () => {
+      expertEdit.niterRefine = readOptionalInt("expertNiterRefine");
+      expertEdit.halo = readOptionalIntList("expertHalo");
+      expertEdit.maxTransitionRow = readOptionalIntList("expertMaxTransitionRow");
+      expertEdit.setDisType = erSetDis && erSetDis.value ? erSetDis.value : null;
+      expertEdit.numRc = readOptionalInt("expertNumRc");
+      expertEdit.vertexPretectLayers = readOptionalInt("expertVertexPretectLayers");
+      expertEdit.weakConcavEliminate = true;
+      expertEdit.enabled = expertEnabled();
+      clearRunArtifacts();
+    };
+    [erNiter, erHalo, erRows, erSetDis, erNumRc, erVertex, erWeakConcav].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
+    const specOn = document.getElementById("specifiedRefineOn");
+    const specKind = document.getElementById("specifiedKind");
+    const specLon = document.getElementById("specifiedLon");
+    const specLat = document.getElementById("specifiedLat");
+    const specRadius = document.getElementById("specifiedRadius");
+    const specW = document.getElementById("specifiedW");
+    const specE = document.getElementById("specifiedE");
+    const specS = document.getElementById("specifiedS");
+    const specN = document.getElementById("specifiedN");
+    const specCloseBrowse = document.getElementById("specifiedCloseBrowse");
+    const specCloseText = document.getElementById("specifiedClosePathText");
+    const readNum = (el) => {
+      if (!el || !el.value.trim()) return null;
+      const n = parseFloat(el.value);
+      return Number.isFinite(n) ? n : null;
+    };
+    const paintSpecifiedKind = (kind) => {
+      const radiusFields = document.getElementById("specifiedRadiusFields");
+      const bboxFields = document.getElementById("specifiedBboxFields");
+      const closeFields = document.getElementById("specifiedCloseFields");
+      if (radiusFields) radiusFields.style.display = kind === "radius" ? "" : "none";
+      if (bboxFields) bboxFields.style.display = kind === "bbox" ? "" : "none";
+      if (closeFields) closeFields.style.display = kind === "close" ? "" : "none";
+      if (specCloseText) specCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z?"📄 点击选择 .shp 文件":"📄 Choose a .shp file");
+    };
+    const syncSpecified = () => {
+      const kind = specKind ? specKind.value : "radius";
+      specifiedRefine = {
+        enabled: !!(specOn && specOn.checked),
+        kind,
+        lon: readNum(specLon),
+        lat: readNum(specLat),
+        radiusKm: readNum(specRadius),
+        w: readNum(specW),
+        e: readNum(specE),
+        s: readNum(specS),
+        n: readNum(specN),
+        path: specifiedRefine.path || null,
+      };
+      paintSpecifiedKind(kind);
+      clearRunArtifacts();
+    };
+    [specOn, specKind, specLon, specLat, specRadius, specW, specE, specS, specN].forEach((el) => {
+      if (el) el.addEventListener("input", syncSpecified);
+      if (el) el.addEventListener("change", syncSpecified);
     });
+    if (specCloseBrowse) specCloseBrowse.onclick = async () => {
+      let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
+      if (!p) return;
+      specifiedRefine.path = p;
+      if (specKind) specKind.value = "close";
+      syncSpecified();
+    };
+    paintSpecifiedKind(specKind ? specKind.value : "radius");
   }
 
   // ---- run (step 6) ---------------------------------------------------------
@@ -1237,19 +1631,74 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
       let matchingTpl = TPL.findIndex((t) => t.intent === sum.intent && t.global === !isRegional);
       if (matchingTpl < 0) matchingTpl = TPL.findIndex((t) => t.intent === sum.intent);
       if (matchingTpl >= 0) tpl = matchingTpl;
+      cellEdit = String(sum.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
       if (sum.nxp != null) { resUnitIdx = 1; resVal = sum.nxp; }
+      else if (sum.approx_degree != null) { resUnitIdx = 2; resVal = sum.approx_degree; }
       else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
       sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
-      regional = !!sum.bbox;
-      if (sum.bbox) domBbox = [sum.bbox[0], sum.bbox[1], sum.bbox[2], sum.bbox[3]];
-      domainEdit = sum.bbox
-        ? { kind: "bbox", w: sum.bbox[0], e: sum.bbox[1], s: sum.bbox[2], n: sum.bbox[3], seaRatio: sum.sea_ratio ?? null }
-        : isRegional
-          ? { kind: "hidden", shape: sum.domain_shape || "regional" }
-          : { kind: "global" };
+      if (sum.domain_shape === "shapefile") {
+        domainMode = "watershed";
+        regional = true;
+        watershedPath = sum.watershed_path || "";
+        domainEdit = { kind: "shapefile", path: watershedPath, seaRatio: sum.sea_ratio ?? null };
+        await loadWatershedBoundary(watershedPath);
+      } else if (sum.domain_shape === "close") {
+        domainMode = "close";
+        regional = true;
+        closePath = sum.watershed_path || "";
+        closeFormat = sum.close_format || "polygon_shp";
+        domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: sum.sea_ratio ?? null };
+        await loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
+      } else if (sum.bbox) {
+        domainMode = "regional";
+        regional = true;
+        domBbox = [sum.bbox[0], sum.bbox[1], sum.bbox[2], sum.bbox[3]];
+        domainEdit = { kind: "bbox", w: sum.bbox[0], e: sum.bbox[1], s: sum.bbox[2], n: sum.bbox[3], seaRatio: sum.sea_ratio ?? null };
+        await loadWatershedBoundary("");
+      } else if (isRegional) {
+        domainMode = "regional";
+        regional = true;
+        domainEdit = { kind: "hidden", shape: sum.domain_shape || "regional" };
+        await loadWatershedBoundary("");
+      } else {
+        domainMode = "global";
+        regional = false;
+        domainEdit = { kind: "global" };
+        await loadWatershedBoundary("");
+      }
       hiddenDomainShape = domainEdit.kind === "hidden" ? domainEdit.shape : null;
-      qualityEdit = { minAngle: sum.min_angle_deg, block: sum.on_violation === "block" };
+      expertEdit = {
+        enabled: sum.expert_openmp != null || sum.expert_niter != null || sum.expert_niter_refine != null || sum.expert_max_iter_spc != null || sum.expert_max_iter_cal != null || sum.expert_halo != null || sum.expert_max_transition_row != null || sum.expert_set_dis_type != null || sum.expert_num_rc != null || sum.expert_vertex_pretect_layers != null || sum.expert_beta != null || sum.expert_relax != null,
+        nxp: null,
+        openmp: sum.expert_openmp ?? null,
+        niter: sum.expert_niter ?? null,
+        niterRefine: sum.expert_niter_refine ?? null,
+        maxIterSpc: sum.expert_max_iter_spc ?? null,
+        maxIterCal: sum.expert_max_iter_cal ?? null,
+        halo: sum.expert_halo ?? null,
+        maxTransitionRow: sum.expert_max_transition_row ?? null,
+        setDisType: sum.expert_set_dis_type ?? null,
+        numRc: sum.expert_num_rc ?? null,
+        vertexPretectLayers: sum.expert_vertex_pretect_layers ?? null,
+        beta: sum.expert_beta ?? null,
+        relax: sum.expert_relax ?? null,
+        weakConcavEliminate: true,
+      };
+      specifiedRefine = {
+        enabled: !!sum.specified_refine_enabled,
+        kind: sum.specified_refine_kind || "radius",
+        lon: sum.specified_refine_lon ?? null,
+        lat: sum.specified_refine_lat ?? null,
+        radiusKm: sum.specified_refine_radius_km ?? null,
+        w: sum.specified_refine_bbox ? sum.specified_refine_bbox[0] : null,
+        e: sum.specified_refine_bbox ? sum.specified_refine_bbox[1] : null,
+        s: sum.specified_refine_bbox ? sum.specified_refine_bbox[2] : null,
+        n: sum.specified_refine_bbox ? sum.specified_refine_bbox[3] : null,
+        path: sum.specified_refine_path ?? null,
+      };
+      if (expertEdit.enabled && typeof setExpertMode === "function") setExpertMode(true);
+      qualityEdit = { minAngle: sum.min_angle_deg, policy: sum.on_violation || "warn" };
       maxPasses = sum.max_passes;
       if (typeof renderSteps === "function") renderSteps();
       if (typeof renderStep === "function") renderStep(typeof cur !== "undefined" ? cur : 0);
@@ -1283,12 +1732,16 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = DEFAULT_TPL; regional = true; domBbox = [...DEFAULT_BBOX];
+    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "polygon_shp"; cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     clearRunArtifacts();
+    loadWatershedBoundary("");
     for (const k of Object.keys(layerEdits)) delete layerEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
+    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, beta: null, relax: null, weakConcavEliminate: true };
+    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null };
+    if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
     metadataEdit = { authors: [], description: "" };
     const nameEl = document.querySelector(".proj-name");
@@ -1321,16 +1774,98 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     const ready = document.getElementById("readyModelOutput");
     const refine = document.getElementById("readyRefinementOutput");
     if (modelIn) modelIn.value = model;
-    if (cellIn) cellIn.value = cellShapeLabel(s.cell);
+    if (cellIn) cellIn.value = String(cellEdit || s.cell || "hex").toLowerCase() === "tri" ? "tri" : "hex";
     if (ready) ready.textContent = model;
     if (refine) refine.textContent = s.refine_enabled
       ? ((zh() ? "最多 " : "up to ") + s.max_passes + (zh() ? " 次" : " passes"))
       : (zh() ? "关闭" : "off");
   }
 
+  function readOptionalInt(id) {
+    const el = document.getElementById(id);
+    if (!el || !el.value.trim()) return null;
+    const n = parseInt(el.value, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  function readOptionalFloat(id) {
+    const el = document.getElementById(id);
+    if (!el || !el.value.trim()) return null;
+    const n = parseFloat(el.value);
+    return Number.isFinite(n) ? n : null;
+  }
+  function readOptionalIntList(id) {
+    const el = document.getElementById(id);
+    if (!el || !el.value.trim()) return null;
+    const xs = el.value.split(/[\s,]+/).filter(Boolean).map((v) => parseInt(v, 10));
+    return xs.length && xs.every(Number.isFinite) ? xs : null;
+  }
+  function inferCloseFormat(path) {
+    const p = String(path || "").toLowerCase();
+    if (p.endsWith(".shp")) return "polygon_shp";
+    if (p.endsWith(".nml")) return "nml";
+    if (p.endsWith(".nc") || p.endsWith(".nc4")) return "netcdf";
+    if (p.endsWith(".txt") || p.endsWith(".csv")) return "lonlat_text";
+    return "polygon_shp";
+  }
+  function expertEnabled() {
+    return expertEdit.openmp != null || expertEdit.niter != null || expertEdit.niterRefine != null ||
+      expertEdit.maxIterSpc != null || expertEdit.maxIterCal != null || expertEdit.halo != null ||
+      expertEdit.maxTransitionRow != null || expertEdit.setDisType != null || expertEdit.numRc != null ||
+      expertEdit.vertexPretectLayers != null || expertEdit.beta != null || expertEdit.relax != null ||
+      false;
+  }
+
+  async function wireExpertTargetStep() {
+    const openmp = document.getElementById("expertOpenmp");
+    const niter = document.getElementById("expertNiter");
+    const beta = document.getElementById("expertBeta");
+    const relax = document.getElementById("expertRelax");
+    if (!openmp && !niter && !beta && !relax) return;
+    const paint = () => {
+      if (openmp) openmp.value = expertEdit.openmp ?? "";
+      if (niter) niter.value = expertEdit.niter ?? "";
+      if (beta) beta.value = expertEdit.beta ?? "";
+      if (relax) relax.value = expertEdit.relax ?? "";
+    };
+    const update = async () => {
+      expertEdit = {
+        enabled: true,
+        nxp: null,
+        openmp: readOptionalInt("expertOpenmp"),
+        niter: readOptionalInt("expertNiter"),
+        niterRefine: expertEdit.niterRefine,
+        maxIterSpc: expertEdit.maxIterSpc,
+        maxIterCal: expertEdit.maxIterCal,
+        halo: expertEdit.halo,
+        maxTransitionRow: expertEdit.maxTransitionRow,
+        setDisType: expertEdit.setDisType,
+        numRc: expertEdit.numRc,
+        vertexPretectLayers: expertEdit.vertexPretectLayers,
+        beta: readOptionalFloat("expertBeta"),
+        relax: readOptionalFloat("expertRelax"),
+        weakConcavEliminate: true,
+      };
+      expertEdit.enabled = expertEnabled();
+      clearRunArtifacts();
+      paintTargetOutputs(await refreshSummary());
+      paint();
+    };
+    paint();
+    [openmp, niter, beta, relax].forEach((el) => { if (el) el.oninput = update; });
+  }
+
   async function enhanceTargetOutputStep() {
+    const cellIn = document.getElementById("targetCellOutput");
+    if (cellIn) {
+      cellIn.onchange = async () => {
+        cellEdit = cellIn.value === "tri" ? "tri" : "hex";
+        clearRunArtifacts();
+        paintTargetOutputs(await refreshSummary());
+      };
+    }
     const s = await refreshSummary();
     paintTargetOutputs(s);
+    wireExpertTargetStep();
   }
 
   async function onNew() {
@@ -1421,13 +1956,17 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     const s = lastSummary;
     const total = (s.layers || []).length;
     const on = (s.layers || []).filter((l) => l.enabled && l.path).length;
-    const domain = s.domain_shape === "bbox" && s.bbox
+    const domain = s.domain_shape === "shapefile"
+      ? ((z ? "流域 SHP：" : "watershed SHP: ") + (s.watershed_path || "—"))
+      : s.domain_shape === "close"
+      ? ((z ? "闭合区域：" : "close domain: ") + (s.watershed_path || "—"))
+      : s.domain_shape === "bbox" && s.bbox
       ? (z ? "区域矩形框" : "regional bbox")
       : (s.domain_shape === "global"
         ? (z ? "全球" : "global")
         : ((z ? "保留隐藏区域：" : "preserved regional: ") + (s.domain_shape || s.domain || "—")));
     const gate = (s.min_angle_deg != null)
-      ? (s.min_angle_deg + "° · " + (s.on_violation === "block" ? (z ? "违规即停" : "block") : (z ? "违规告警" : "warn")))
+      ? (s.min_angle_deg + "° · " + (s.on_violation === "auto_refine" ? (z ? "自动尝试修复" : "auto_refine") : (s.on_violation === "block" ? (z ? "违规即停" : "block") : (z ? "违规告警" : "warn"))))
       : "—";
     const ok = !!s._valid;
     sumEl.innerHTML =
@@ -1467,6 +2006,7 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     domainEdit = { kind: "bbox", w: DEFAULT_BBOX[0], e: DEFAULT_BBOX[1], s: DEFAULT_BBOX[2], n: DEFAULT_BBOX[3] };
   if (typeof cur !== "undefined") {
     if (cur === 0) enhanceNewProjectStep();
+    else if (cur === 1) enhanceTargetOutputStep();
     else if (cur === 2) enhanceDomainStep();
     else if (cur === 3) enhanceLayerStep();
     else if (cur === 4) enhanceRefinementStep();
@@ -1493,16 +2033,57 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     // show the Log pane because the Run button now lives inside the step footer
     document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
     document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
-    let yaml;
-    try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
-    try { lastSummary = await api.summary(yaml); } catch (e) {}
-    logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", NXP=" + currentNxp() + ")");
+    let finalQuality = null;
+    let bestRun = null;
+    let bestQuality = null;
     try {
-      const r = await api.runProject(yaml, outputPath || null);
-      logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
-                   : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
-      setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
-      hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile };
+      for (;;) {
+        let yaml;
+        try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
+        try { lastSummary = await api.summary(yaml); } catch (e) {}
+        const autoRefine = lastSummary && lastSummary.domain === "regional" && lastSummary.on_violation === "auto_refine";
+        const requestedLevel = maxPasses == null ? regionalDefaultRefineLevel(currentNxp()) : Math.max(1, Math.min(9, maxPasses));
+        const actualLevel = requestedLevel;
+        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", NXP=" + currentNxp() + (autoRefine ? ", auto refine level=" + actualLevel : "") + ")");
+        const r = await api.runProject(yaml, outputPath || null);
+        logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
+                     : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
+        setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
+        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile };
+        if (!(r.ok && r.gridfile && autoRefine)) {
+          if (autoRefine && actualLevel < 9) {
+            if (bestRun) {
+              logLine(zh() ? "⚠ 更高细化级别运行失败，保留上一次可用结果。" : "⚠ higher refine level failed; keeping the last usable result.");
+              runInfo = bestRun;
+              finalQuality = bestQuality;
+              setStatus(zh() ? "运行完成" : "finished", true);
+              break;
+            }
+            maxPasses = actualLevel + 1;
+            logLine((zh() ? "↻ 当前级别运行失败，继续尝试细化级别 " : "↻ current level failed; retrying with refine level ") + maxPasses);
+            continue;
+          }
+          break;
+        }
+        try {
+          finalQuality = await readMeshQuality(r.gridfile);
+          bestRun = runInfo;
+          bestQuality = finalQuality;
+          _lastQuality = finalQuality;
+          const verdict = String(finalQuality.verdict || "").toLowerCase();
+          logLine("✓ " + (zh() ? "质量检查：" : "quality check: ") + (finalQuality.verdict || "unknown"));
+          if (verdict !== "fail") break;
+          if (actualLevel >= 9) {
+            logLine(zh() ? "⚠ 自动修复已到最大细化级别 9，保留最后一次结果。" : "⚠ auto repair reached max refine level 9; keeping the last result.");
+            break;
+          }
+          maxPasses = actualLevel + 1;
+          logLine((zh() ? "↻ 质量仍失败，自动提高细化级别到 " : "↻ quality still failed; retrying with refine level ") + maxPasses);
+        } catch (e) {
+          logLine((zh() ? "⚠ 自动质量检查失败：" : "⚠ auto quality check failed: ") + e);
+          break;
+        }
+      }
     } catch (e) {
       logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
       setStatus(zh() ? "运行失败" : "failed", true);
@@ -1510,7 +2091,7 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     }
     setRunControls(false);
     if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") renderStep(6);
-    if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile);
+    if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile, finalQuality);
     else if (runInfo && runInfo.ok) {
       logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
       renderMissingGridfile();
@@ -1531,10 +2112,16 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
 
   // After a successful run: parse mesh quality into the step-6 card, and overlay
   // the generated mesh on the map using the ProjectSummary cell shape.
-  async function loadQualityAndMesh(gridfile) {
+  function meshViewKind() {
+    return (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
+  }
+  function readMeshQuality(gridfile) {
+    return invoke("mesh_quality", { gridfile, kind: meshViewKind() });
+  }
+  async function loadQualityAndMesh(gridfile, knownQuality) {
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
     const kind = (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
-    invoke("mesh_quality", { gridfile, kind })
+    (knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile))
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
     invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })

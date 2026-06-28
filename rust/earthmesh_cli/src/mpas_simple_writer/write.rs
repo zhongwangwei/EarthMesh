@@ -40,7 +40,7 @@ pub fn write_mpas_simple_mesh_netcdf(
     let n_cells = mesh.x_cell.len() - 1;
     let n_vertices = mesh.x_vertex.len() - 1;
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("nCells", n_cells)
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("nVertices", n_vertices)

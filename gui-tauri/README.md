@@ -49,10 +49,15 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
 | `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,on_violation,refine_enabled,max_passes,layers:[{id,role_kind,role,path,enabled,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
+| `set_target_cell` | `yaml, cell` | updated **YAML** (`hex` or `tri`) |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
+| `set_domain_shapefile` | `yaml, path, seaRatio?` | updated **YAML** (watershed SHP domain) |
+| `set_domain_close` | `yaml, path, format, seaRatio?` | updated **YAML** (close boundary source) |
 | `set_quality` | `yaml, minAngleDeg, block` | updated **YAML** (min angle + policy) |
 | `set_refinement` | `yaml, enabled, maxPasses` | updated **YAML** (validated pass count) |
+| `set_specified_refinement` | `yaml, enabled, kind?, lon?, lat?, radiusKm?, w?, e?, s?, n?, path?` | updated **YAML** (radius, bbox, or close refinement) |
+| `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, beta?, relax?, weakConcavEliminate?` | updated **YAML** (expert overrides) |
 | `pick_data_file` | – | native file picker → path (or `null`) |
 | `pick_data_folder` | – | native folder picker → path (tiled layers) |
 | `open_project` | – | native open → `{path, yaml}` (or `null`) |
@@ -63,6 +68,7 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `kill_run` | – | terminate the running engine child if one exists |
 | `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard |
 | `mesh_cell_polygons` | `gridfile, kind?, maxCells?` | GeoJSON mesh overlay for the map |
+| `shapefile_boundary_geojson` | `path` | GeoJSON polygon outline for the map |
 
 All wired to `earthmesh_project`: `ProjectConfig::scaffold` / `from_yaml` /
 `from_json` / `validate` / `to_yaml` / `lower().to_namelist()` /

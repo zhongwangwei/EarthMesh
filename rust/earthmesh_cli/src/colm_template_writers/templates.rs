@@ -26,7 +26,7 @@ pub fn write_colm_restart_template_netcdf_from_csv(
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(&output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(&output).map_err(netcdf_to_io_error)?;
     file.add_dimension("cell", rows.len())
         .map_err(netcdf_to_io_error)?;
     file.add_attribute("kind", "earthmesh_colm_restart_template_netcdf")
@@ -111,7 +111,7 @@ pub fn write_colm_forcing_template_netcdf_from_csv(
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(&output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(&output).map_err(netcdf_to_io_error)?;
     file.add_dimension("cell", rows.len())
         .map_err(netcdf_to_io_error)?;
     file.add_attribute("kind", "earthmesh_colm_forcing_template_netcdf")

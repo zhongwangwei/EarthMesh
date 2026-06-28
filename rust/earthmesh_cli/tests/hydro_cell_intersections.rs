@@ -68,6 +68,52 @@ fn cell_river_overlap_fraction_and_coupling_chain() {
 }
 
 #[test]
+fn intersection_geojson_escapes_string_controls() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_escape_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c\"1\nx"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R\"3\nmain"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let out = dir.join("intersections.geojson");
+    let n = write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R\"3\nmain".to_string()],
+        0.0,
+        false,
+        None,
+    )
+    .expect("intersections");
+    assert_eq!(n, 1);
+    let geojson = std::fs::read_to_string(&out).unwrap();
+    assert!(geojson.contains(r#""cell_id": "c\"1\nx""#), "{geojson}");
+    assert!(
+        geojson.contains(r#""river_class": "R\"3\nmain""#),
+        "{geojson}"
+    );
+    let rows = colm_coupling_rows_from_intersections(&geojson, 0.0).expect("valid json");
+    assert_eq!(rows[0][0], "c\"1\nx");
+    assert_eq!(rows[0][2], "R\"3\nmain");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn min_fraction_filters_small_overlaps() {
     let dir = std::env::temp_dir().join(format!("em3_xsect_min_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

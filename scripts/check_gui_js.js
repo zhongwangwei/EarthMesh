@@ -382,7 +382,7 @@ log("layer toggles preserve opened project paths");
 }
 
 {
-  const body = section(html, /async function loadQualityAndMesh\(gridfile\) \{([\s\S]*?)\n  \}/, "loadQualityAndMesh body");
+  const body = section(html, /async function loadQualityAndMesh\(gridfile[^)]*\) \{([\s\S]*?)\n  \}/, "loadQualityAndMesh body");
   const note = section(html, /function renderQualityNote\(text\) \{([\s\S]*?)\n  \}/, "renderQualityNote body");
   check(
     html.includes("function renderQualityNote(text)") &&
@@ -429,8 +429,9 @@ log("layer toggles preserve opened project paths");
   const res = section(html, /function resInput\(src\)\{([\s\S]*?)\n\}/, "resInput body");
   const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   check(
-    current.includes("if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null };") &&
-      current.includes("return { nxp: null, approxKm: resVal };") &&
+    current.includes("if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null") &&
+      current.includes("return { nxp: null, approxKm: resVal") &&
+      current.includes("approxDegree") &&
       !current.includes("if (resVal > 0)") &&
       nxp.includes("lastSummary.effective_nxp != null") &&
       !nxp.includes("r.nxp ||") &&
@@ -494,13 +495,14 @@ log("layer toggles preserve opened project paths");
     "gui-tauri/src-tauri/src/project_edits.rs",
   )}`;
   check(
-    html.includes("const refinementEnabled = hasEnabledThresholdLayer(sum);") &&
-      html.includes("if (refinementEnabled) {") &&
+    html.includes("const refinementEnabled = hasEnabledThresholdLayer(sum) || !!specifiedRefine.enabled;") &&
+      !html.includes("const refinementEnabled = regionalRefine ||") &&
+      !html.includes("regionalAutoPasses") &&
       html.includes("const shownPasses") &&
       html.includes("no threshold criteria for this template") &&
       html.includes('if (crits.length) anchor.insertAdjacentHTML("afterend", mp);') &&
       html.includes(
-        "const refinementPasses = maxPasses == null ? summary.max_passes : (refinementEnabled ? Math.min(9, Math.max(1, maxPasses)) : maxPasses);",
+        "const refinementPasses = refinementEnabled",
       ) &&
       gui.includes("cfg.refinement.max_passes = if enabled { max_passes } else { 0 };") &&
       projectPresets.includes("max_passes: if d.criteria.is_empty() { 0 } else { 3 }"),

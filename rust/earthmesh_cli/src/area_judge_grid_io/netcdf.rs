@@ -21,7 +21,7 @@ pub fn write_area_judge_grid_netcdf(
         fs::create_dir_all(parent)?;
     }
 
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("nlons_select", payload.longitude.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("nlats_select", payload.latitude.len())
@@ -72,7 +72,7 @@ pub fn write_area_judge_grid_netcdf(
 }
 
 pub fn read_area_judge_grid_netcdf(input: impl AsRef<Path>) -> io::Result<AreaJudgeGridPayload> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(input.as_ref()).map_err(netcdf_to_io_error)?;
     let nlons = required_dimension_len(&file, "nlons_select")?;
     let nlats = required_dimension_len(&file, "nlats_select")?;
     let bounds = AreaJudgeSourceBounds {

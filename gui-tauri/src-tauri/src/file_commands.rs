@@ -17,7 +17,8 @@ pub(crate) async fn pick_data_file(app: AppHandle) -> Option<String> {
         .add_filter(
             "Geospatial data",
             &[
-                "nc", "nc4", "tif", "tiff", "grib", "grib2", "shp", "bin", "dat", "txt",
+                "nc", "nc4", "nml", "tif", "tiff", "grib", "grib2", "shp", "bin", "dat", "txt",
+                "csv",
             ],
         )
         .blocking_pick_file()

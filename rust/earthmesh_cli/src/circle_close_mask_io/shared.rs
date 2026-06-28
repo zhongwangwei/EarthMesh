@@ -7,7 +7,7 @@ pub(super) fn read_nonnegative_refine_netcdf(
     inputfile: impl AsRef<Path>,
     var_name: &str,
 ) -> io::Result<usize> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let variable = file.variable(var_name).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,

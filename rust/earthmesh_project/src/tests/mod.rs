@@ -42,6 +42,9 @@ fn sample() -> ProjectConfig {
         refinement: RefinementRecipe {
             enabled: true,
             max_passes: 3,
+            specified_circle: None,
+            specified_bbox: None,
+            specified_close: None,
         },
         quality: QualityConfig {
             min_angle_deg: 28.0,
@@ -50,6 +53,18 @@ fn sample() -> ProjectConfig {
         expert: ExpertOverrides {
             nxp: None,
             openmp: Some(8),
+            niter: None,
+            niter_refine: Some(120),
+            max_iter_spc: None,
+            max_iter_cal: None,
+            halo: Some(vec![4, 4, 3]),
+            max_transition_row: Some(vec![5, 4, 3]),
+            set_dis_type: Some("linear".into()),
+            num_rc: Some(1),
+            vertex_pretect_layers: Some(2),
+            beta: Some(1.1),
+            relax: Some(0.03),
+            weak_concav_eliminate: Some(true),
         },
         hydro_coast: None,
         coupling: None,
@@ -243,6 +258,10 @@ fn project_validation_rejects_invalid_resolution() {
     let err = json_err(&p);
     assert!(err.contains("target resolution ApproxKm must be > 0"));
 
+    p.target.resolution = ResolutionSpec::ApproxDegree(0.0);
+    let err = json_err(&p);
+    assert!(err.contains("target resolution ApproxDegree must be > 0"));
+
     p.target.resolution = ResolutionSpec::Nxp(40);
     p.expert.nxp = Some(0);
     let err = yaml_err(&p);
@@ -252,6 +271,31 @@ fn project_validation_rejects_invalid_resolution() {
     p.expert.openmp = Some(0);
     let err = yaml_err(&p);
     assert!(err.contains("expert openmp override must be > 0"));
+
+    p.expert.openmp = None;
+    p.expert.niter = Some(0);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert niter override must be > 0"));
+
+    p.expert.niter = None;
+    p.expert.niter_refine = Some(0);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert niter_refine override must be > 0"));
+
+    p.expert.niter_refine = None;
+    p.expert.max_iter_spc = Some(10);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert max_iter_spc override must be between 0 and 9"));
+
+    p.expert.max_iter_spc = None;
+    p.expert.beta = Some(0.0);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert beta override must be finite and > 0"));
+
+    p.expert.beta = None;
+    p.expert.relax = Some(0.0);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert relax override must be finite and > 0"));
 }
 
 #[test]
@@ -353,12 +397,22 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.mkgrd.mask_sea_ratio, 0.25);
     assert_eq!(lowered.mkgrd.experiment_name, "gba");
     assert_eq!(lowered.mkgrd.openmp, 8); // expert override
+    assert_eq!(lowered.mkgrd.beta, 1.1);
+    assert_eq!(lowered.mkgrd.relax, 0.03);
 
     // landcover → landtype_file; lai → refine switch + refine_cal
     assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
     assert!(lowered.refine.refine_onelayer_lnd[0] && lowered.refine.refine_onelayer_lnd[1]);
     assert!(lowered.refine.refine_cal);
     assert_eq!(lowered.refine.max_iter_cal, 3);
+    assert_eq!(lowered.refine.niter_refine, 120);
+    assert!(lowered.refine.niter_refine_specified);
+    assert_eq!(&lowered.refine.halo[..3], &[4, 4, 3]);
+    assert_eq!(&lowered.refine.max_transition_row[..3], &[5, 4, 3]);
+    assert_eq!(lowered.refine.set_dis_type, "linear");
+    assert_eq!(lowered.refine.num_rc, 1);
+    assert_eq!(lowered.refine.vertex_pretect_layers, 2);
+    assert!(lowered.refine.weak_concav_eliminate);
 
     // quality
     assert_eq!(lowered.quality.min_angle_warn_deg, 28.0);
@@ -496,6 +550,19 @@ fn quality_default_is_single_project_source() {
 }
 
 #[test]
+fn quality_auto_refine_policy_lowers_to_namelist() {
+    let mut p = sample();
+    p.quality.on_violation = ViolationPolicy::AutoRefine;
+
+    let lowered = p.lower();
+
+    assert_eq!(lowered.quality.on_violation, "auto_refine");
+    assert!(lowered
+        .to_namelist()
+        .contains("NL%on_violation = 'auto_refine'"));
+}
+
+#[test]
 fn scaffold_builds_lowerable_project() {
     let p = ProjectConfig::scaffold(
         "hydro_test",
@@ -505,10 +572,20 @@ fn scaffold_builds_lowerable_project() {
     );
     assert_eq!(p.target.kind, MeshDomainKind::Land);
     assert_eq!(p.target.intent, MeshIntentPreset::HydrologyLand);
-    // landcover + merit + slope entries start disabled with no path.
-    assert!(p.data_layers.iter().any(|l| l.id == "landcover"));
+    // landcover is a default relative input; other optional layers stay disabled.
+    let landcover = p
+        .data_layers
+        .iter()
+        .find(|l| l.id == "landcover")
+        .expect("landcover layer");
+    assert!(landcover.enabled);
+    assert_eq!(landcover.path, "input/landtype_igbp_update.nc");
     assert!(p.data_layers.iter().any(|l| l.id == "slope_avg"));
-    assert!(p.data_layers.iter().all(|l| !l.enabled));
+    assert!(p
+        .data_layers
+        .iter()
+        .filter(|l| l.id != "landcover")
+        .all(|l| !l.enabled));
 
     // round-trips through yaml, and lowers to engine config
     let back = yaml_round_trip(&p);
@@ -579,6 +656,9 @@ fn km_resolution_and_hydro_coupling_round_trip() {
     let back = yaml_round_trip(&p);
     assert_eq!(p, back);
     assert_eq!(p.lower().mkgrd.nxp, 40); // ApproxKm(9) → NXP 40
+
+    p.target.resolution = ResolutionSpec::ApproxDegree(9.0 / 111.32);
+    assert_eq!(p.lower().mkgrd.nxp, 40);
 }
 
 #[test]

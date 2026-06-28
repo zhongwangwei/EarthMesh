@@ -48,7 +48,7 @@ pub fn write_dists_on_edge_netcdf(
     }
 
     let num_edge = mesh.edge_points.len();
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num_edge", num_edge)
         .map_err(netcdf_to_io_error)?;
     write_f64_1d(
@@ -84,7 +84,7 @@ pub fn write_cellwidth_netcdf(
     }
 
     let num_dbx = mesh.cell_points.len();
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("num_dbx", num_dbx)
         .map_err(netcdf_to_io_error)?;
     write_f64_1d(&mut file, "lonw", "num_dbx", &lon_values(&mesh.cell_points))?;
@@ -100,7 +100,7 @@ pub fn write_cellwidth_netcdf(
 /// Read the `cellwidth_NXP####_global.nc4` schema produced by
 /// `MOD_file_preprocess.F90:cellwidth_save`.
 pub fn read_cellwidth_netcdf(input: impl AsRef<Path>) -> io::Result<Vec<f64>> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(input.as_ref()).map_err(netcdf_to_io_error)?;
     let num_dbx = required_dimension_len(&file, "num_dbx")?;
     let cellwidth = required_values_f64(&file, "cellwidth")?;
     require_len("cellwidth", cellwidth.len(), num_dbx)?;

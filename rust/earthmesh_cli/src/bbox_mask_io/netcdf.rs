@@ -10,7 +10,7 @@ use super::validation::{validate_bbox_mask, validate_bbox_mesh};
 /// Read `bbox_refine` from a bbox NetCDF source used by `bbox_mask_make`.
 pub fn read_bbox_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize> {
     let inputfile = inputfile.as_ref();
-    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile).map_err(netcdf_to_io_error)?;
     let variable = file.variable("bbox_refine").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -31,7 +31,7 @@ pub fn read_bbox_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize>
 
 /// Read `MOD_file_preprocess.F90:bbox_Mesh_Read` NetCDF schema.
 pub fn read_bbox_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMesh> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let bbox_num = required_dimension_len(&file, "bbox_num")?;
     let four = required_dimension_len(&file, "four")?;
     if four != 4 {
@@ -88,7 +88,7 @@ pub fn write_bbox_mesh_netcdf(output: impl AsRef<Path>, mesh: &BBoxMesh) -> io::
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bbox_num", mesh.points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("four", 4).map_err(netcdf_to_io_error)?;
@@ -110,7 +110,7 @@ pub fn write_bbox_mesh_netcdf(output: impl AsRef<Path>, mesh: &BBoxMesh) -> io::
 /// Read bbox mask points from the NetCDF schema produced by `bbox_mask_make`.
 pub fn read_bbox_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMask> {
     let inputfile = inputfile.as_ref();
-    let file = netcdf::open(inputfile).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile).map_err(netcdf_to_io_error)?;
     let bbox_num = required_dimension_len(&file, "bbox_num")?;
     let four = required_dimension_len(&file, "four")?;
     if four != 4 {
@@ -165,7 +165,7 @@ pub fn write_bbox_mask_netcdf(output: impl AsRef<Path>, mask: &BBoxMask) -> io::
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bbox_num", mask.points.len())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("four", 4).map_err(netcdf_to_io_error)?;

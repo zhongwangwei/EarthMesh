@@ -25,7 +25,14 @@ pub fn quality_input_from_gridfile(
             .iter()
             .filter_map(|&v| mesh_row_for_fortran_id(v, wn, w_has_two_placeholders))
             .collect();
-        if idx.len() == 3 && idx[0] != idx[1] && idx[1] != idx[2] && idx[0] != idx[2] {
+        if idx.len() == 3
+            && idx[0] != idx[1]
+            && idx[1] != idx[2]
+            && idx[0] != idx[2]
+            && idx
+                .iter()
+                .all(|&i| !(mesh.w_lon[i] == 0.0 && mesh.w_lat[i] == 0.0))
+        {
             cells.push(QualityCell {
                 vertices: idx,
                 refine_level: None,
@@ -128,7 +135,7 @@ fn derive_shared_edge_neighbors(cells: &mut [earthmesh_quality::QualityCell]) {
 /// Read the M-point (cell-centre) and W-point (vertex) lon/lat arrays plus the
 /// triangle-to-vertex connectivity from an EarthMesh gridfile.
 pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileMeshPoints> {
-    let file = netcdf::open(path.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(path.as_ref()).map_err(netcdf_to_io_error)?;
     let m_lon = required_values_f64(&file, "GLONM")?;
     let m_lat = required_values_f64(&file, "GLATM")?;
     let w_lon = required_values_f64(&file, "GLONW")?;
@@ -166,4 +173,28 @@ pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileM
         w_to_m_width,
         n_w,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tri_quality_skips_cells_with_placeholder_zero_vertex() {
+        let mesh = GridfileMeshPoints {
+            m_lon: Vec::new(),
+            m_lat: Vec::new(),
+            w_lon: vec![0.0, 0.0, 110.0, 120.0, 115.0, 0.0],
+            w_lat: vec![0.0, 0.0, 20.0, 20.0, 30.0, 0.0],
+            m_to_w: vec![2, 3, 4, 2, 4, 5],
+            w_to_m: Vec::new(),
+            w_to_m_width: 0,
+            n_w: Vec::new(),
+        };
+
+        let quality = quality_input_from_gridfile(&mesh);
+
+        assert_eq!(quality.cells.len(), 1);
+        assert_eq!(quality.cells[0].vertices, vec![2, 3, 4]);
+    }
 }

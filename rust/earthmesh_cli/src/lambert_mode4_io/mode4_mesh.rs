@@ -11,7 +11,7 @@ use super::{validate_mode4_mesh_for_area_judge, Mode4Mesh};
 
 /// Read the `MOD_file_preprocess.F90:Mode4_Mesh_Read` NetCDF schema.
 pub fn read_mode4_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Mode4Mesh> {
-    let file = netcdf::open(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
     let bound_points = required_dimension_len(&file, "bound_points")?;
     let mode_points = required_dimension_len(&file, "mode_points")?;
     let two = required_dimension_len(&file, "two")?;
@@ -110,7 +110,7 @@ pub fn write_mode4_mesh_netcdf(output: impl AsRef<Path>, mesh: &Mode4Mesh) -> io
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = netcdf::create(output).map_err(netcdf_to_io_error)?;
+    let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bound_points", mesh.bound_points())
         .map_err(netcdf_to_io_error)?;
     file.add_dimension("mode_points", mesh.mode_points())

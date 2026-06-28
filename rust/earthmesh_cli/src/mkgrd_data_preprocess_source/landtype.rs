@@ -31,7 +31,7 @@ pub fn read_landtype_data_preprocess_fortran_indexed(
 
     let axes =
         build_global_source_axes_fortran_indexed(gridnum_perdegree, nlons_source, nlats_source)?;
-    let file = netcdf::open(landtype_file.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(landtype_file.as_ref()).map_err(netcdf_to_io_error)?;
     let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
     let lat_dim = first_existing_dimension_len(&file, &["lat", "latitude"])?;
     if lon_dim != nlons_source {
@@ -116,7 +116,7 @@ pub fn sample_landtype_values_for_points_fortran_indexed(
         ));
     }
 
-    let file = netcdf::open(landtype_file.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(landtype_file.as_ref()).map_err(netcdf_to_io_error)?;
     let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
     let lat_dim = first_existing_dimension_len(&file, &["lat", "latitude"])?;
     if lon_dim != nlons_source {

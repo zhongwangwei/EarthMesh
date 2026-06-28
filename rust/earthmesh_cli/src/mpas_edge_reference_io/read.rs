@@ -21,7 +21,7 @@ pub struct MpasEdgeReference {
 /// radians to degrees, and applies the legacy single-step `lon > 180 => lon -=
 /// 360` normalization.
 pub fn read_mpas_edge_reference_netcdf(input: impl AsRef<Path>) -> io::Result<MpasEdgeReference> {
-    let file = netcdf::open(input.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(input.as_ref()).map_err(netcdf_to_io_error)?;
     let n_edges = required_dimension_len(&file, "nEdges")?;
     let two = required_dimension_len(&file, "TWO")?;
     if two != 2 {

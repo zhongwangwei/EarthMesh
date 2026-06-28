@@ -13,7 +13,7 @@ pub fn convert_mpas_mode_file_to_earthmesh(
     mode_grid: &str,
 ) -> io::Result<UnstructuredMeshWriteReport> {
     let mode_file = mode_file.as_ref();
-    let file = netcdf::open(mode_file).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(mode_file).map_err(netcdf_to_io_error)?;
     let n_vertices = required_dimension_len(&file, "nVertices")?;
     let n_cells = required_dimension_len(&file, "nCells")?;
     let max_edges = required_dimension_len(&file, "maxEdges")?;

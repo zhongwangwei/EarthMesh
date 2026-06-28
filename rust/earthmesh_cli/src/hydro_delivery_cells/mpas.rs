@@ -102,7 +102,7 @@ pub fn write_mpas_cell_polygons_geojson(
     bbox: Option<[f64; 4]>,
     max_cells: Option<usize>,
 ) -> io::Result<usize> {
-    let file = netcdf::open(mesh_netcdf.as_ref()).map_err(netcdf_to_io_error)?;
+    let file = crate::open_netcdf(mesh_netcdf.as_ref()).map_err(netcdf_to_io_error)?;
     let lon_cell = required_values_f64(&file, "lonCell")?;
     let lat_cell = required_values_f64(&file, "latCell")?;
     let lon_vertex = required_values_f64(&file, "lonVertex")?;
