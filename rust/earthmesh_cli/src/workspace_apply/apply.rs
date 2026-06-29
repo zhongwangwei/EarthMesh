@@ -79,9 +79,7 @@ pub fn apply_read_nl_workspace_plan(
         &allowed_roots,
         "namelist_save_path",
     )?;
-    if let Some(parent) = namelist_save_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&namelist_save_path)?;
     fs::copy(namelist_source, &namelist_save_path)?;
     report.copied_namelist_to = Some(namelist_save_path);
 

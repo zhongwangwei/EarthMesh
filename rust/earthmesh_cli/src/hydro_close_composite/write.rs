@@ -170,9 +170,7 @@ pub fn write_hydro_composite_close_mask_nmls(
         summary_json,
     };
     if let Some(path) = &report.summary_json {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        crate::ensure_parent_dir(path)?;
         fs::write(path, hydro_composite_close_mask_summary_json(&report))?;
     }
     Ok(report)

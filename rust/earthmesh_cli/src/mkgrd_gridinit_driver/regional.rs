@@ -60,9 +60,7 @@ pub fn run_mkgrd_regional_clip_base_namelist(
         let raw_path = file_dir
             .join("tmpfile")
             .join(format!("gridfile_NXP{nxp:04}_clip_raw_{mode_grid}.nc4"));
-        if let Some(parent) = raw_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        crate::ensure_parent_dir(&raw_path)?;
         let output_path = gridinit.gridfile.output.clone();
         let (_, clipped) = write_olam_mesh_with_optional_domain(
             &mesh,

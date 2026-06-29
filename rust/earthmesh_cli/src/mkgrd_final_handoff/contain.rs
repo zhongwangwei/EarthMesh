@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -106,9 +105,7 @@ pub fn write_data_preprocess_source_state_final_domain_contain_options<'a>(
     area_grid_file: &'a Path,
 ) -> io::Result<Option<MkgrdFinalDomainContainOptions<'a>>> {
     let payload = data_preprocess_source_state_final_domain_area_payload_fortran_indexed(state)?;
-    if let Some(parent) = area_grid_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(area_grid_file)?;
     write_area_judge_grid_netcdf(area_grid_file, &payload)?;
     data_preprocess_source_state_final_contain_options(state, mesh_type, area_grid_file)
 }

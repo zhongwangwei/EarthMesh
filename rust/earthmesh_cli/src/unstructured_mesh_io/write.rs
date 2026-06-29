@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -15,9 +14,7 @@ pub fn write_unstructured_mesh_netcdf(
 ) -> io::Result<UnstructuredMeshWriteReport> {
     validate_unstructured_mesh(mesh)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let dimc = unstructured_dimc(mesh);
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;

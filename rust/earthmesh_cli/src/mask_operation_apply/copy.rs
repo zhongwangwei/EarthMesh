@@ -95,9 +95,7 @@ where
         return Ok(None);
     }
     let output = output_fn(counts, refine_degree, file_dir.as_ref())?;
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&output)?;
     fs::copy(inputfile, &output)?;
     Ok(Some(output))
 }

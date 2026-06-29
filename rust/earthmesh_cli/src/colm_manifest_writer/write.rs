@@ -15,9 +15,7 @@ pub fn write_colm_package_delivery_manifest(
     forcing_template_netcdf: Option<&Path>,
 ) -> io::Result<PathBuf> {
     let output_manifest = output_manifest.as_ref().to_path_buf();
-    if let Some(parent) = output_manifest.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&output_manifest)?;
     let mut text = String::from("{\"kind\":\"earthmesh_colm_package_manifest\"");
     text.push_str(",\"case_name\":\"");
     text.push_str(&json_escape_string(case_name));

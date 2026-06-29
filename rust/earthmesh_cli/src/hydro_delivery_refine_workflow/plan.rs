@@ -82,9 +82,7 @@ pub fn plan_refinement_from_hydro_geojson(
         &quality,
         rp::MeshDomain::Coupled,
     );
-    if let Some(parent) = output_json.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_json.as_ref())?;
     fs::write(output_json, hydro_refine_plan_json(&report))?;
     Ok(report)
 }

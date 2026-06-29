@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -85,9 +84,7 @@ pub fn write_bbox_mesh_netcdf(output: impl AsRef<Path>, mesh: &BBoxMesh) -> io::
         )
     })?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bbox_num", mesh.points.len())
         .map_err(netcdf_to_io_error)?;
@@ -162,9 +159,7 @@ pub fn read_bbox_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMask
 /// EarthMesh mask preprocessing.
 pub fn write_bbox_mask_netcdf(output: impl AsRef<Path>, mask: &BBoxMask) -> io::Result<()> {
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bbox_num", mask.points.len())
         .map_err(netcdf_to_io_error)?;

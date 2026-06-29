@@ -14,9 +14,7 @@ pub(super) fn write_fvcom_2dm_from_carved(
     obc_order: &[usize],
     output: &Path,
 ) -> io::Result<usize> {
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let is_marker = |p: &LonLatPoint| p.lon == 0.0 && p.lat == 0.0;
     let mut new_id = vec![0usize; mesh.w_points.len() + 2];
     let mut nodes: Vec<(usize, LonLatPoint)> = Vec::new();

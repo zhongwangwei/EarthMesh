@@ -214,9 +214,7 @@ pub fn write_earthmesh_intersection_geojson(
         "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
         features.join(",\n")
     );
-    if let Some(parent) = output_geojson.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_geojson.as_ref())?;
     fs::write(output_geojson, out)?;
     Ok(features.len())
 }

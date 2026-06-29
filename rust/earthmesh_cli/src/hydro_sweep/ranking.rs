@@ -154,9 +154,7 @@ pub fn write_sweep_ranking(
         ));
     }
     s.push_str("  ]\n}\n");
-    if let Some(parent) = output_json.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_json.as_ref())?;
     fs::write(output_json, &s)?;
     Ok(recommended.unwrap_or_default())
 }

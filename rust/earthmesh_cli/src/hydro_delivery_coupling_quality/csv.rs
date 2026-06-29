@@ -64,9 +64,7 @@ pub fn write_colm_coupling_csv_from_mesh(
             lat = c.lat,
         ));
     }
-    if let Some(parent) = output_csv.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_csv.as_ref())?;
     fs::write(output_csv, out)?;
     Ok(counts)
 }

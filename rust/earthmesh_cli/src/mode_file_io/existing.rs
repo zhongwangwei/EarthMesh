@@ -25,9 +25,7 @@ pub fn copy_existing_earthmesh_mode_file(
     drop(source);
 
     let output = gridfile_output_path(file_dir, nxp, 1, mode_grid);
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&output)?;
     fs::copy(mode_file, &output)?;
     Ok(UnstructuredMeshWriteReport {
         output,

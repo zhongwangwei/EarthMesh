@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -17,9 +16,7 @@ pub fn write_getref_ocean_threshold_netcdf(
 ) -> io::Result<GetRefOceanThresholdWriteReport> {
     validate_getref_ocean_threshold_report(report)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let sjx_points = report.ref_th.len() - 1;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
@@ -71,9 +68,7 @@ pub fn write_getref_atmos_threshold_netcdf(
 ) -> io::Result<GetRefAtmosThresholdWriteReport> {
     validate_getref_atmos_threshold_report(report)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let sjx_points = report.ref_th.len() - 1;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -21,9 +20,7 @@ pub fn write_colm_coupling_netcdf_from_csv(
 ) -> io::Result<ColmCouplingNetcdfWriteReport> {
     let rows = read_colm_coupling_csv_rows(input_csv)?;
     let output = output_netcdf.as_ref().to_path_buf();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&output)?;
     let mut file = crate::create_netcdf(&output).map_err(netcdf_to_io_error)?;
     file.add_dimension("cell", rows.len())
         .map_err(netcdf_to_io_error)?;

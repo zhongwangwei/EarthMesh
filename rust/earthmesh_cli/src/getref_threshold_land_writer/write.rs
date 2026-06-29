@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -16,9 +15,7 @@ pub fn write_getref_land_threshold_netcdf(
 ) -> io::Result<GetRefLandThresholdWriteReport> {
     validate_getref_land_threshold_report(report)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let sjx_points = report.ref_th_land.len() - 1;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;

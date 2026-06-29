@@ -155,9 +155,7 @@ where
             "restart refine handoff requires at least one refine-loop step",
         )
     })?;
-    if let Some(parent) = first_step.refine_loop_input_gridfile.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&first_step.refine_loop_input_gridfile)?;
     if options.initial_gridfile != first_step.refine_loop_input_gridfile {
         fs::copy(
             options.initial_gridfile,

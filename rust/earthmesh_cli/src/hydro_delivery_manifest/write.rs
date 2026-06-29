@@ -104,8 +104,6 @@ pub fn write_hydro_delivery_manifest(
         files,
         source_files,
     );
-    if let Some(parent) = output_manifest.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_manifest.as_ref())?;
     fs::write(output_manifest, manifest)
 }

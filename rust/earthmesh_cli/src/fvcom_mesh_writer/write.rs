@@ -31,9 +31,7 @@ pub fn write_fvcom_mesh_2dm(
     validate_fvcom_mesh_2dm_connectivity(mesh)?;
 
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let mut file = fs::File::create(output)?;
     writeln!(file, "MESH2D")?;

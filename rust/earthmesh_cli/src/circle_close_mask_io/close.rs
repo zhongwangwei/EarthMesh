@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -60,9 +59,7 @@ pub fn read_close_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CloseMa
 
 pub fn write_close_mask_netcdf(output: impl AsRef<Path>, mask: &CloseMask) -> io::Result<()> {
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("close_num", mask.points.len())
         .map_err(netcdf_to_io_error)?;

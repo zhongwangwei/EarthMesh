@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -17,9 +16,7 @@ pub fn write_quality_global_netcdf(
 ) -> io::Result<GlobalQualityWriteReport> {
     validate_global_quality_mesh(quality)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let num_sjx = quality.sjx.length.len();
     let num_wbx = quality.wbx.length.len();

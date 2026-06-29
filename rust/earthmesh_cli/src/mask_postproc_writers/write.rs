@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -15,9 +14,7 @@ pub fn write_patchid_netcdf(
 ) -> io::Result<PatchIdWriteReport> {
     validate_patchid_mesh(patch)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let nlon = patch.elmindex.len();
     let nlat = matrix_width("elmindex", &patch.elmindex)?;
 
@@ -91,9 +88,7 @@ pub fn write_earthmesh_info_netcdf(
 ) -> io::Result<EarthmeshInfoWriteReport> {
     validate_earthmesh_info(info)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let num_step = info.num_step_f.len();
     let num_ustr = info.refine_degree_f.len();

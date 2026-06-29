@@ -203,9 +203,7 @@ pub fn write_complete_cell_mask_geojson(
         "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
         out_features.join(",\n")
     );
-    if let Some(parent) = output_geojson.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_geojson.as_ref())?;
     fs::write(output_geojson, out)?;
     Ok(out_features.len())
 }

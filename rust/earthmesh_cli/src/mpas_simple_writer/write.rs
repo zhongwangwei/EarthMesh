@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -33,9 +32,7 @@ pub fn write_mpas_simple_mesh_netcdf(
 ) -> io::Result<MpasSimpleMeshWriteReport> {
     validate_mpas_simple_mesh(mesh)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let n_cells = mesh.x_cell.len() - 1;
     let n_vertices = mesh.x_vertex.len() - 1;

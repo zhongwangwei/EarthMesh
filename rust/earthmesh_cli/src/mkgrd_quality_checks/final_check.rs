@@ -32,9 +32,7 @@ pub fn run_mkgrd_final_quality_check(plan: &MkgrdFinalQualityCheckIoPlan) -> io:
     let output_gridfile =
         required_final_quality_path(plan.output_gridfile.as_deref(), "output gridfile")?;
 
-    if let Some(parent) = original_gridfile.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(original_gridfile)?;
     fs::copy(&plan.input_gridfile, original_gridfile)?;
 
     let raw_mesh = read_unstructured_mesh_netcdf(&plan.input_gridfile)?;

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -73,9 +72,7 @@ pub fn read_close_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Vec<Lon
 pub fn write_close_mesh_netcdf(output: impl AsRef<Path>, points: &[LonLatPoint]) -> io::Result<()> {
     validate_close_mesh_points(points)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("close_num", points.len())
         .map_err(netcdf_to_io_error)?;

@@ -87,9 +87,7 @@ pub fn write_mpas_graph_info(
         .filter(|edge| edge[0] != 0 && edge[1] != 0)
         .count();
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = fs::File::create(output)?;
     writeln!(file, "{:10}{:10}", cells_on_cell.len() - 1, interior_edges)?;
 

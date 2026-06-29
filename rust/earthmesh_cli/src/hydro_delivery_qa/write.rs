@@ -21,9 +21,7 @@ pub fn write_hydro_mesh_qa_report(
         min_river_cells,
         min_coast_cells,
     )?;
-    if let Some(parent) = output_json.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_json.as_ref())?;
     fs::write(output_json, hydro_mesh_qa_report_json(&report))?;
     Ok(report)
 }

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -107,9 +106,7 @@ pub fn write_mode4_mesh_netcdf(output: impl AsRef<Path>, mesh: &Mode4Mesh) -> io
         ));
     }
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bound_points", mesh.bound_points())
         .map_err(netcdf_to_io_error)?;

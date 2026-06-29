@@ -196,9 +196,7 @@ pub fn write_gridfile_cell_polygons_geojson(
 ) -> io::Result<usize> {
     let mesh = read_gridfile_mesh_points(gridfile)?;
     let json = gridfile_cell_polygons_geojson(&mesh, kind, bbox, max_cells);
-    if let Some(parent) = output.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output.as_ref())?;
     fs::write(output.as_ref(), json.as_bytes())?;
     Ok(json.matches("\"type\": \"Feature\"").count())
 }

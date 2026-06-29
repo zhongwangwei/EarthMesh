@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -19,9 +18,7 @@ pub fn write_obc_boundary_netcdf(
     require_len("ibc_order", orders.ibc_order.len(), bdy_num)?;
 
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("bdy_num", bdy_num)
@@ -58,9 +55,7 @@ pub fn write_obcv2_boundary_netcdf(
     }
 
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let close_curve_values =
         flatten_close_curves_for_netcdf(&connection.curves.close_curves, num1, num2)?;

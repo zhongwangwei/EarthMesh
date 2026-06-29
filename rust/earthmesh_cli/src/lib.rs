@@ -22,6 +22,8 @@ pub use mask_source_discovery::*;
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
 mod coordinate_types;
 pub use coordinate_types::*;
+mod fs_support;
+pub(crate) use fs_support::ensure_parent_dir;
 mod json_support;
 pub(crate) use json_support::{
     geojson_feature_nodes, json_escape_string, json_node_to_f64, json_node_to_usize, json_number,

@@ -24,9 +24,7 @@ pub fn write_hydro_close_mask_specs(
     specs: &[HydroCloseMaskSpec],
 ) -> io::Result<HydroCloseMaskNmlWriteReport> {
     let output_prefix = output_prefix.as_ref().to_path_buf();
-    if let Some(parent) = output_prefix.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&output_prefix)?;
     remove_stale_close_mask_nmls(&output_prefix)?;
 
     let mut counts_by_class_degree = BTreeMap::<(String, usize), usize>::new();

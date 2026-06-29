@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -32,9 +31,7 @@ pub fn write_flat_contain_netcdf(
 ) -> io::Result<ContainWriteReport> {
     validate_flat_contain_mesh(contain)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let num_ustr = contain.num_ustr();
     let num_ii = contain.num_ii();

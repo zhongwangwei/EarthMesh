@@ -53,9 +53,7 @@ pub fn write_clean_regional_ocean_gridfile(
     let pre = read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
 
     let close_path = work_dir.join("tmpfile").join("mask_domain_close_0_001.nc4");
-    if let Some(p) = close_path.parent() {
-        fs::create_dir_all(p)?;
-    }
+    crate::ensure_parent_dir(&close_path)?;
     write_close_mask_netcdf(
         &close_path,
         &CloseMask {
@@ -88,9 +86,7 @@ pub fn write_clean_regional_ocean_gridfile(
     )?;
 
     let plan = plan_mask_postproc_domain_io(work_dir, nxp, "tri", "oceanmesh", false)?;
-    if let Some(p) = plan.source_gridfile.parent() {
-        fs::create_dir_all(p)?;
-    }
+    crate::ensure_parent_dir(&plan.source_gridfile)?;
     fs::copy(global_gridfile, &plan.source_gridfile)?;
 
     let payload = select_area_judge_grid_fortran_indexed(

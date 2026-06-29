@@ -36,9 +36,7 @@ pub fn write_hydro_close_refinement_recipe_json(
         }
     }
     let output_json = output_json.as_ref().to_path_buf();
-    if let Some(parent) = output_json.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&output_json)?;
 
     let mut close_mask_command = vec![
         "earthmesh_cli".to_string(),

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -43,9 +42,7 @@ pub fn write_dists_on_edge_netcdf(
 ) -> io::Result<DistsOnEdgeWriteReport> {
     validate_dists_on_edge_mesh(mesh)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let num_edge = mesh.edge_points.len();
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
@@ -79,9 +76,7 @@ pub fn write_cellwidth_netcdf(
 ) -> io::Result<CellwidthWriteReport> {
     validate_cellwidth_mesh(mesh)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let num_dbx = mesh.cell_points.len();
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;

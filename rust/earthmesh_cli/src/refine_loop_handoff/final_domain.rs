@@ -22,9 +22,7 @@ pub fn run_mkgrd_refine_loop_final_domain_handoff_with_domain_contain(
     contain_options: Option<MkgrdFinalDomainContainOptions<'_>>,
     postproc_options: Option<MkgrdFinalDomainPostprocOptions<'_>>,
 ) -> io::Result<MkgrdRefineLoopFinalDomainHandoffReport> {
-    if let Some(parent) = plan.final_result_gridfile.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&plan.final_result_gridfile)?;
     let copied_bytes = fs::copy(&plan.final_domain_gridfile, &plan.final_result_gridfile)?;
 
     let generated_contain = contain_options

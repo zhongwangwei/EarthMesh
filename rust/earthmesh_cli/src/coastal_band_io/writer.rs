@@ -81,9 +81,7 @@ pub fn write_coastal_band_dissolve_geojson(
          \"coastal_band_cell_count\": {}, \"corridor_source_geometry\": \"cama_elevtn_coastal_band\"}}}}\n  ]\n}}\n",
         geometry, cell_count
     );
-    if let Some(parent) = output_geojson.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_geojson.as_ref())?;
     fs::write(output_geojson, out)?;
     Ok(outers.len())
 }
@@ -135,9 +133,7 @@ pub(super) fn write_coastal_band_cells_geojson(
         "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
         features.join(",\n")
     );
-    if let Some(parent) = output_geojson.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_geojson.as_ref())?;
     fs::write(output_geojson, out)?;
     Ok(total)
 }

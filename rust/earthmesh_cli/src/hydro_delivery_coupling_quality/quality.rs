@@ -132,9 +132,7 @@ pub fn write_coupling_quality_from_gridfile(
     let neighbors: Vec<Vec<usize>> = nbset.into_iter().map(|s| s.into_iter().collect()).collect();
 
     let report = landtype_coupling_quality(&land_fraction, &neighbors);
-    if let Some(parent) = output_json.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_json.as_ref())?;
     fs::write(
         output_json,
         earthmesh_quality::coupling::to_coupling_quality_json(&report),

@@ -1,4 +1,4 @@
-use std::{fs, io, path::Path};
+use std::{io, path::Path};
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
@@ -17,9 +17,7 @@ pub fn write_area_judge_grid_netcdf(
 ) -> io::Result<()> {
     validate_area_judge_grid_payload(payload)?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
 
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("nlons_select", payload.longitude.len())

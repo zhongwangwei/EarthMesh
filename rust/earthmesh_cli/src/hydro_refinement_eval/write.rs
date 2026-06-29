@@ -35,8 +35,6 @@ pub fn write_refinement_eval_json(
         None => None,
     };
     let json = build_refinement_eval_json(&background, &river, coast.as_ref(), log.as_ref());
-    if let Some(parent) = output_json.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_json.as_ref())?;
     fs::write(output_json, json)
 }

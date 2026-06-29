@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -75,9 +74,7 @@ pub fn write_circle_mesh_netcdf(output: impl AsRef<Path>, mesh: &CircleMesh) -> 
         )
     })?;
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("circle_num", mesh.points.len())
         .map_err(netcdf_to_io_error)?;
@@ -172,9 +169,7 @@ pub fn write_circle_mask_netcdf(output: impl AsRef<Path>, mask: &CircleMask) -> 
         ));
     }
     let output = output.as_ref();
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output)?;
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
     file.add_dimension("circle_num", mask.points.len())
         .map_err(netcdf_to_io_error)?;

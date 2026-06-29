@@ -13,9 +13,7 @@ pub fn run_mkgrd_refine_loop_prologue_snapshot(
     step: &MkgrdRefineLoopStepIoPlan,
 ) -> io::Result<MkgrdRefineLoopPrologueSnapshotReport> {
     let mesh = read_unstructured_mesh_netcdf(&step.refine_loop_input_gridfile)?;
-    if let Some(parent) = step.refine_loop_original_tmpfile.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(&step.refine_loop_original_tmpfile)?;
     let copied_bytes = fs::copy(
         &step.refine_loop_input_gridfile,
         &step.refine_loop_original_tmpfile,

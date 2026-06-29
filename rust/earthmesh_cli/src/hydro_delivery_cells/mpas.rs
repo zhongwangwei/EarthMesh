@@ -124,9 +124,7 @@ pub fn write_mpas_cell_polygons_geojson(
         max_cells,
     );
     let feature_count = json.matches("\"type\": \"Feature\"").count();
-    if let Some(parent) = output_geojson.as_ref().parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::ensure_parent_dir(output_geojson.as_ref())?;
     fs::write(output_geojson, json)?;
     Ok(feature_count)
 }
