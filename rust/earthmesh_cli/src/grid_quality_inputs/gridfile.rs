@@ -31,7 +31,7 @@ pub fn quality_input_from_gridfile(
             && idx[0] != idx[2]
             && idx
                 .iter()
-                .all(|&i| !(mesh.w_lon[i] == 0.0 && mesh.w_lat[i] == 0.0))
+                .all(|&i| !(w_has_two_placeholders && mesh.w_lon[i] == 0.0 && mesh.w_lat[i] == 0.0))
         {
             cells.push(QualityCell {
                 vertices: idx,
