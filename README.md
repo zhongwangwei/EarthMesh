@@ -205,16 +205,10 @@ in `docs/fortran_to_rust_migration.md`,
 
 If you use this tool in your research, please cite:
 
-Zhang, R. (Sun Yat-Sen University), Wei, Z. (Sun Yat-Sen University,
-corr-auth), Luo, Y. (Institute of Atmospheric Physics Chinese Academy of
-Sciences), Fan, H. (Commercial Aircraft Corporation of China Ltd), Xu, Q.
-(Sun Yat-sen University), Zhang, S. (Sun Yat-sen University), Wei, N.
-(Sun Yat-Sen University), Lu, X. (Sun Yat-Sen University), Li, L.
-(Sun Yat-Sen University), Yuan, H. (Sun Yat-Sen University), Li, X.-X.
-(Sun Yat-sen University - Zhuhai Campus), Liu, S. (Sun Yat-sen University),
-Shangguan, W. (Sun Yat-sen University), and Dai, Y. (Sun Yat-Sen University),
-submitted. *EarthMesh: A Multi-Scale Unstructured Mesh Generation Tool for
-Earth System Models*. Journal of Advances in Modeling Earth Systems.
+Zhang, R., Z. Wei, Y. Luo, H. Fan, Q. Xu, S. Zhang, N. Wei, X. Lu, L. Li,
+H. Yuan, X.-X. Li, S. Liu, W. Shangguan, and Y. Dai (submitted), EarthMesh: A
+multi-scale unstructured mesh generation tool for Earth system models,
+*Journal of Advances in Modeling Earth Systems*.
 
 Fan, H., Xu, Q., Bai, F., Wei, Z., Zhang, Y., Lu, X., Wei, N., Zhang, S., Yuan,
 H., Liu, S. and Li, X., 2024. An unstructured mesh generation tool for efficient
