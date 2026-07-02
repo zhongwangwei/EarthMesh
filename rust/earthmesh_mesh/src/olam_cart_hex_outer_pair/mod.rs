@@ -15,6 +15,17 @@ pub(crate) fn order_olam_outer_w_pair_for_fill_rad3(
     {
         return Ok(ordered);
     }
+    // Neither orientation of `pair` touches `imx`: canonical ordering is
+    // impossible. Keep the input order (historical behavior) but stop being
+    // silent about it — a mis-ordered outer ring is invisible to
+    // `validate_topology` (which never inspects `iw[3..9]`) and would
+    // otherwise surface only as corrupt downstream stencils.
+    if std::env::var_os("EARTHMESH_OLAM_DEBUG").is_some() {
+        eprintln!(
+            "EARTHMESH_OLAM_DEBUG: outer W pair {pair:?} around M point {imx} \
+             could not be canonically ordered; keeping input order"
+        );
+    }
     Ok(pair)
 }
 

@@ -67,6 +67,12 @@ pub fn triangle_neighbors_from_cell_membership_fortran_indexed(
                 break;
             }
             for &candidate_triangle_id in cell_triangles.iter().take(count) {
+                // Stop as soon as all three neighbor slots are filled; checked
+                // here (not only in the outer loop) so a spurious later match
+                // on malformed input cannot overwrite an already-filled slot.
+                if neighbor_count == 3 {
+                    break;
+                }
                 if candidate_triangle_id == 0 || candidate_triangle_id == triangle_id {
                     continue;
                 }
@@ -75,8 +81,13 @@ pub fn triangle_neighbors_from_cell_membership_fortran_indexed(
                 else {
                     continue;
                 };
+                // Count distinct slot fills, not raw writes: on a valid mesh
+                // each neighbor is rediscovered via its second shared cell, and
+                // counting rewrites made the "== 3" early exit unreachable.
+                if triangle_neighbors[triangle_id][opposite_slot - 1] == 0 {
+                    neighbor_count += 1;
+                }
                 triangle_neighbors[triangle_id][opposite_slot - 1] = candidate_triangle_id;
-                neighbor_count += 1;
             }
         }
     }

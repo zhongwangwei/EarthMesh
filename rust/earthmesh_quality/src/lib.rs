@@ -11,7 +11,7 @@
 //! its own `earthmesh_quality` deliverable without churn (it already is one crate).
 
 use earthmesh_geometry::safety::{validate_polygon, GeometryQualityFlag};
-use earthmesh_geometry::{haversine_km, polygon_area, Point};
+use earthmesh_geometry::{haversine_km, polygon_area, signed_ring_area, Point};
 
 pub mod coupling;
 pub mod hydro_coast;
@@ -110,6 +110,8 @@ pub struct GeometryMetrics {
     pub compactness: Stat5,
     pub zero_area_cell_count: usize,
     pub negative_area_cell_count: usize,
+    /// Cells with a NaN/Inf vertex coordinate; excluded from all geometry stats.
+    pub non_finite_cell_count: usize,
     pub self_intersection_count: usize,
     pub invalid_polygon_count: usize,
 }
@@ -198,15 +200,44 @@ fn cell_ring(input: &QualityMeshInput, cell: &QualityCell) -> Option<Vec<Point>>
     Some(ring)
 }
 
+/// Copy of `ring` with longitudes unwrapped to within ±180° of the first
+/// vertex, so dateline-crossing cells are measured as compact polygons rather
+/// than world-spanning slivers (raw lon averaging/shoelace flips sign there).
+fn unwrap_ring_lon(ring: &[Point]) -> Vec<Point> {
+    let Some(first) = ring.first() else {
+        return Vec::new();
+    };
+    let lon0 = first.x;
+    ring.iter()
+        .map(|p| {
+            let mut lon = p.x;
+            while lon - lon0 > 180.0 {
+                lon -= 360.0;
+            }
+            while lon - lon0 < -180.0 {
+                lon += 360.0;
+            }
+            Point::new(lon, p.y)
+        })
+        .collect()
+}
+
 fn centroid(ring: &[Point]) -> Point {
     if ring.is_empty() {
         return Point::new(0.0, 0.0);
     }
-    let n = ring.len() as f64;
-    Point::new(
-        ring.iter().map(|p| p.x).sum::<f64>() / n,
-        ring.iter().map(|p| p.y).sum::<f64>() / n,
-    )
+    // Average in unwrapped-longitude space so dateline-crossing cells do not
+    // land on the wrong side of the globe, then wrap back to [-180, 180].
+    let unwrapped = unwrap_ring_lon(ring);
+    let n = unwrapped.len() as f64;
+    let mut lon = unwrapped.iter().map(|p| p.x).sum::<f64>() / n;
+    while lon > 180.0 {
+        lon -= 360.0;
+    }
+    while lon < -180.0 {
+        lon += 360.0;
+    }
+    Point::new(lon, unwrapped.iter().map(|p| p.y).sum::<f64>() / n)
 }
 
 /// (lon, lat) degrees -> unit sphere (x, y, z). Dateline/pole-safe corner geometry.
@@ -307,18 +338,44 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
                 continue;
             }
             edge_cells.entry(edge_key(a, b)).or_default().push(ci);
-            // great-circle length
-            edge_lengths.push(haversine_km(input.vertices[a], input.vertices[b]));
+            // great-circle length; skip non-finite endpoints so one bad vertex
+            // cannot poison the edge-length mean/std with NaN.
+            let (pa, pb) = (input.vertices[a], input.vertices[b]);
+            if pa.x.is_finite() && pa.y.is_finite() && pb.x.is_finite() && pb.y.is_finite() {
+                edge_lengths.push(haversine_km(pa, pb));
+            }
+        }
+
+        // neighbor index validity (kept before the geometry block: that block
+        // may `continue` on non-finite cells and must not skip this check)
+        for &n in &cell.neighbors {
+            if n >= input.cells.len() || n == ci {
+                topo.invalid_cell_index_count += 1;
+            }
         }
 
         // per-cell geometry (only when ring is resolvable)
         if let Some(ring) = cell_ring(input, cell) {
             let flags = validate_polygon(&ring);
+            if flags.contains(&GeometryQualityFlag::NonFiniteCoordinate) {
+                // NaN/Inf vertex: count it and skip all geometry stats for this
+                // cell. IEEE makes `NaN <= eps` false, so without this guard a
+                // NaN area silently lands in `areas` and turns mean/std/cv into
+                // NaN while min/max stay finite (f64::min/max skip NaN).
+                geom.non_finite_cell_count += 1;
+                continue;
+            }
             if flags.contains(&GeometryQualityFlag::SelfIntersection) {
                 geom.self_intersection_count += 1;
             }
             if flags.contains(&GeometryQualityFlag::InvalidPolygon) {
                 geom.invalid_polygon_count += 1;
+            }
+            // Winding check on the unwrapped ring (`polygon_area` is unsigned,
+            // so it can never feed this counter): CCW is the mesh convention,
+            // a clockwise ring is a catastrophic orientation error.
+            if signed_ring_area(&unwrap_ring_lon(&ring)) < -1.0e-12 {
+                geom.negative_area_cell_count += 1;
             }
             let area = polygon_area(&ring);
             if area <= 1.0e-12 {
@@ -353,12 +410,6 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
             }
         }
 
-        // neighbor index validity
-        for &n in &cell.neighbors {
-            if n >= input.cells.len() || n == ci {
-                topo.invalid_cell_index_count += 1;
-            }
-        }
     }
 
     geom.edge_count = edge_cells.len();
@@ -500,6 +551,7 @@ fn evaluate(
         ("invalid_polygon_count", geom.invalid_polygon_count),
         ("zero_area_cell_count", geom.zero_area_cell_count),
         ("negative_area_cell_count", geom.negative_area_cell_count),
+        ("non_finite_cell_count", geom.non_finite_cell_count),
     ] {
         push(
             name,
@@ -532,9 +584,11 @@ fn evaluate(
         "smallest interior angle",
     );
 
-    let aspect_level = if geom.aspect_ratio.max >= th.aspect_ratio_fail {
+    // Strict comparisons on both graded gates so a value landing exactly on a
+    // threshold stays in the less severe tier, matching the min_angle gate.
+    let aspect_level = if geom.aspect_ratio.max > th.aspect_ratio_fail {
         QualityLevel::Fail
-    } else if geom.aspect_ratio.max >= th.aspect_ratio_warn {
+    } else if geom.aspect_ratio.max > th.aspect_ratio_warn {
         QualityLevel::Warn
     } else {
         QualityLevel::Pass
@@ -609,6 +663,10 @@ fn collect_worst_cells(input: &QualityMeshInput, th: &QualityThresholds) -> Vec<
             continue;
         };
         let flags = validate_polygon(&ring);
+        if flags.contains(&GeometryQualityFlag::NonFiniteCoordinate) {
+            // A NaN/Inf ring has no drawable centroid/ring for the GeoJSON layer.
+            continue;
+        }
         let (metric, value, level) = if flags.contains(&GeometryQualityFlag::SelfIntersection) {
             ("self_intersection".to_string(), 1.0, QualityLevel::Fail)
         } else if flags.contains(&GeometryQualityFlag::ZeroAreaCell) {
@@ -773,6 +831,58 @@ mod tests {
         let r = compute(&m, &QualityThresholds::default());
         assert!(r.topology.neighbor_reciprocity_failure_count >= 1);
         assert_eq!(r.verdict, QualityLevel::Fail);
+    }
+
+    #[test]
+    fn clockwise_cell_counts_negative_area_and_fails() {
+        let mut m = two_square_mesh();
+        // Reverse cell 0's ring: CCW -> CW winding.
+        m.cells[0].vertices = vec![3, 2, 1, 0];
+        let r = compute(&m, &QualityThresholds::default());
+        assert_eq!(r.geometry.negative_area_cell_count, 1);
+        assert_eq!(r.verdict, QualityLevel::Fail);
+    }
+
+    #[test]
+    fn ccw_dateline_cell_is_not_negative_area() {
+        // CCW quad straddling the antimeridian; raw-longitude shoelace would
+        // wrongly report it as clockwise/negative without lon unwrapping.
+        let m = QualityMeshInput {
+            vertices: vec![
+                Point::new(179.0, 0.0),
+                Point::new(-179.0, 0.0),
+                Point::new(-179.0, 1.0),
+                Point::new(179.0, 1.0),
+            ],
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2, 3],
+                refine_level: Some(0),
+                neighbors: vec![],
+            }],
+        };
+        let r = compute(&m, &QualityThresholds::default());
+        assert_eq!(r.geometry.negative_area_cell_count, 0);
+        // Centroid of the worst-cells layer must sit near the dateline, not lon~0.
+        let c = centroid(&[
+            Point::new(179.0, 0.0),
+            Point::new(-179.0, 0.0),
+            Point::new(-179.0, 1.0),
+            Point::new(179.0, 1.0),
+        ]);
+        assert!(c.x.abs() > 179.0, "centroid lon {} should hug ±180", c.x);
+    }
+
+    #[test]
+    fn non_finite_vertex_is_counted_and_does_not_poison_stats() {
+        let mut m = two_square_mesh();
+        m.vertices[0] = Point::new(f64::NAN, 0.0);
+        let r = compute(&m, &QualityThresholds::default());
+        assert_eq!(r.geometry.non_finite_cell_count, 1);
+        assert_eq!(r.verdict, QualityLevel::Fail);
+        // Cell 1 is untouched; its stats must stay finite.
+        assert!(r.geometry.cell_area.mean.is_finite());
+        assert!(r.geometry.cell_area.std.is_finite());
+        assert!(r.geometry.edge_length_km.mean.is_finite());
     }
 
     #[test]

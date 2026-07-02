@@ -327,7 +327,9 @@ fn boundary_closed_curves_preserve_fortran_walk_order_and_longest_metadata() {
         .expect("closed curves");
 
     assert_eq!(curves.num_closed_curve, 2);
-    assert_eq!(curves.num_bdy_long, [5, 1, 2]);
+    // Corrected two-slot tracking: curve 1 (3 raw points, +1 legacy offset)
+    // is the true second-longest; the legacy logic reported 1 here.
+    assert_eq!(curves.num_bdy_long, [5, 4, 2]);
     assert_eq!(curves.close_curves[1], vec![10, 11, 12]);
     assert_eq!(curves.close_curves[2], vec![20, 21, 22, 23]);
     assert_eq!(curves.n_close_curve, vec![0, 3, 4]);

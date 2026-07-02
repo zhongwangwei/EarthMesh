@@ -30,7 +30,10 @@ pub(crate) fn push_boundary_neighbor(
 /// Fortran convention that useful records start at index `1`/`2` depending on
 /// the source array.  `num_bdy_long[0..2]` preserves the legacy final `+1` on
 /// longest/second-longest lengths because downstream allocation expects the
-/// extra placeholder space.
+/// extra placeholder space.  Slot `1` (second-longest) deliberately deviates
+/// from the legacy Fortran, whose tracking logic was wrong (no demotion of the
+/// old longest, curve 1 excluded); the Fortran reference has been fixed the
+/// same way.
 pub fn boundary_closed_curves_fortran_indexed(
     boundary_order: &[usize],
     boundary_neighbors: &[Vec<usize>],
@@ -119,11 +122,17 @@ pub fn boundary_closed_curves_fortran_indexed(
         close_curves.push(boundary_queue);
         n_close_curve.push(num_points);
 
+        // Two-slot max tracking. The legacy Fortran had three flaws here, fixed
+        // identically on the Fortran side: it never demoted the previous
+        // longest into slot 1, it permanently excluded curve 1 from the
+        // second-longest slot, and it excluded curves tying the longest
+        // length. Slot 1 has no production consumer, so this cannot change any
+        // mesh output.
         if num_points > num_bdy_long[0] {
+            num_bdy_long[1] = num_bdy_long[0];
             num_bdy_long[0] = num_points;
             num_bdy_long[2] = curve_id;
-        }
-        if curve_id != 1 && num_points > num_bdy_long[1] && num_points < num_bdy_long[0] {
+        } else if num_points > num_bdy_long[1] {
             num_bdy_long[1] = num_points;
         }
     }

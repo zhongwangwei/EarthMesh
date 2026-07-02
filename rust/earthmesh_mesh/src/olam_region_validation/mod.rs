@@ -142,7 +142,18 @@ impl OlamRefinementRegion {
                     validate_olam_method_c_radius("corridor radius", radius)?;
                 }
             }
-            Self::Bbox { .. } | Self::Polygon { .. } => self.validate()?,
+            Self::Bbox { .. } | Self::Polygon { .. } => {
+                // `contains_cartesian_xy`/`close_to_cartesian_xy` have no
+                // bbox/polygon implementation (they return `false`), so
+                // accepting these variants here would silently refine a small
+                // wrong patch around the anchor point instead of the requested
+                // region. Reject loudly until Cartesian containment exists.
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bbox/polygon refinement regions are not supported in \
+                     Cartesian-XY (mdomain >= 2) mode; use circle or corridor",
+                ));
+            }
         }
         Ok(())
     }

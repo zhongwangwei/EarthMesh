@@ -68,6 +68,8 @@ pub fn springjustment_global_core_fortran_indexed(
             input.triangles_on_cell,
             input.n_edges_on_cell,
             &edge_output.edges_on_vertex,
+            &triangle_points_for_order,
+            &cell_points_for_order,
         )
         .and_then(|ordered| {
             standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)

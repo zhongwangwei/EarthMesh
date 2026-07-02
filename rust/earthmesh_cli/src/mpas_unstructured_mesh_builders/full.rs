@@ -88,6 +88,8 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
             &vertices_on_cell,
             &n_edges_on_cell,
             &edge_output.edges_on_vertex,
+            &vertices,
+            &cells,
         )
         .and_then(|ordered| {
             standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, &n_edges_on_cell)

@@ -188,6 +188,31 @@ fn olam_native_cartesian_region_validation_allows_fortran_mdomain_ge_two_coordin
 }
 
 #[test]
+fn olam_cartesian_region_validation_rejects_bbox_and_polygon() {
+    // `contains_cartesian_xy` has no bbox/polygon implementation, so Cartesian
+    // validation must reject these variants instead of letting a spawn pass
+    // silently refine a wrong single-anchor patch.
+    let bbox = OlamRefinementRegion::Bbox {
+        west_degrees: 10.0,
+        east_degrees: 20.0,
+        south_degrees: 30.0,
+        north_degrees: 40.0,
+        level: 1,
+    };
+    let polygon = OlamRefinementRegion::Polygon {
+        points: vec![
+            LonLatDegrees::new(10.0, 30.0),
+            LonLatDegrees::new(20.0, 30.0),
+            LonLatDegrees::new(20.0, 40.0),
+        ],
+        level: 1,
+    };
+    assert!(bbox.validate().is_ok(), "bbox stays valid in lon/lat mode");
+    assert!(bbox.validate_cartesian_xy().is_err());
+    assert!(polygon.validate_cartesian_xy().is_err());
+}
+
+#[test]
 fn olam_native_cartesian_start_uses_imcent_not_global_pentagon_like_fortran() {
     let mesh = OlamDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base OLAM mesh");
     let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");

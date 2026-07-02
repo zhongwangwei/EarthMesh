@@ -37,7 +37,21 @@ pub fn spring_global_iteration_fortran_indexed(
         let cells = cells_on_edge[edge_id];
         let cell1 = *cell_points.get(cells[0])?;
         let cell2 = *cell_points.get(cells[1])?;
-        edge_distances[edge_id] = magnitude(vector_between(cell1, cell2));
+        // The Fortran reference (OLAM spring_dynamics_globe, mirrored by
+        // MOD_grid_preprocess) computes `dx(iu) = real(xem8(im2) - xem8(im1))`
+        // -- default-real truncated components -- and derives the single
+        // `dist(iu)` array from them, which then serves BOTH the "self" and
+        // "neighbor" roles of every edge in the twocosphi formula. Truncate
+        // identically here so this array matches the self-distance computed in
+        // `spring_edge_adjustment_fortran` for the same edge; a full-f64
+        // distance made the two roles of one edge disagree at sub-meter scale
+        // on Earth-radius coordinates.
+        let edge_vector = CartesianPoint::new(
+            (cell2.x - cell1.x) as f32 as f64,
+            (cell2.y - cell1.y) as f32 as f64,
+            (cell2.z - cell1.z) as f32 as f64,
+        );
+        edge_distances[edge_id] = magnitude(edge_vector);
     }
 
     let mut edge_displacements = vec![CartesianPoint::new(0.0, 0.0, 0.0); cells_on_edge.len()];

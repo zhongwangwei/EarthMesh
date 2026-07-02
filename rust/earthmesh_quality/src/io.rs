@@ -92,6 +92,10 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         g.negative_area_cell_count
     ));
     s.push_str(&format!(
+        "    \"non_finite_cell_count\": {},\n",
+        g.non_finite_cell_count
+    ));
+    s.push_str(&format!(
         "    \"self_intersection_count\": {},\n",
         g.self_intersection_count
     ));

@@ -73,7 +73,11 @@ pub fn get_sort_new_fortran_indexed(
 
         while sorted.len() < num_inter {
             let mut found = false;
-            for j in 1..num_inter {
+            // Scan every slot (these are 0-based local arrays, matching the
+            // degree loop above). Starting at 1 previously excluded slot 0
+            // from the walk; the disconnected-fallback happened to compensate
+            // on well-formed chains/cycles, but only by accident.
+            for j in 0..num_inter {
                 if used[j] {
                     continue;
                 }

@@ -15,7 +15,21 @@ impl OlamDelaunayMesh {
         for im in 2..=self.nmd {
             let neighbors = self.m_neighbors[im];
             let metadata = self.m_metadata[im];
-            let stored_m_neighbors = [1usize; 7];
+            // Derive the M-to-M neighbor ids from the incident U edges (other
+            // endpoint of each edge). Previously this column was a hardcoded
+            // `[1; 7]` placeholder, which defeated the "compare full table
+            // contents" purpose stated above; unused slots keep the Fortran
+            // dummy `1`.
+            let mut stored_m_neighbors = [1usize; 7];
+            for (slot, &iu) in neighbors.iu.iter().enumerate() {
+                if slot >= stored_m_neighbors.len() {
+                    break;
+                }
+                if iu > 1 && iu <= self.nud {
+                    stored_m_neighbors[slot] =
+                        fortran_other_endpoint_by_first(self.u_edges[iu], im);
+                }
+            }
             dump.push_str(&format!(
                 "M {im} npoly={} mrlm={} mrlm_orig={} ngr={}",
                 neighbors.npoly, metadata.mrlm, metadata.mrlm_orig, metadata.ngr

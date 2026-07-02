@@ -313,6 +313,11 @@ impl OlamDelaunayMesh {
             boundary_rows: Vec::new(),
         };
         mesh.apply_olam_perimeter_mrows(child_level, max_mrows)?;
+        // Defense in depth: this function performs the densest parent->child
+        // index remapping in the crate; validate the emitted topology like
+        // `olam_spring`/`olam_nest_spring` validate theirs, so an in-range but
+        // wrong id cannot silently escape to callers.
+        mesh.validate_topology()?;
         Ok(mesh)
     }
 }
