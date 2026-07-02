@@ -13,3 +13,16 @@ members = [
     "rust/earthmesh_cli",
     "rust/earthmesh_project",
 ]
+
+# Release tuning for the numeric mesh pipeline. Thin LTO + single codegen unit
+# lets cross-crate hot loops (refine kernels, spring dynamics, geometry) inline
+# and vectorize across the workspace; panic=abort drops unwinding tables (no
+# catch_unwind anywhere in the workspace; cargo ignores this for test builds).
+# Swap to lto = "fat" for a slightly faster binary at much slower build times.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+# Line-table debug info so flamegraphs/backtraces have symbols. No runtime
+# cost; only larger binaries and slightly longer builds.
+debug = 1

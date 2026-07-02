@@ -58,7 +58,26 @@ impl OlamDelaunayMesh {
                     )
                 })?;
         let dist00 = dist00_override.unwrap_or(olam_fortran_global_dist00(1.0, radius, nxp));
+        // Loop-invariant masks/targets + reusable buffers, hoisted out of the
+        // per-iteration hot path (bit-identical; see OlamNestSpringScratch).
+        let mut scratch = OlamNestSpringScratch::new(
+            self,
+            &topology,
+            &movable_m_points,
+            dist00,
+            project_to_radius,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to prepare OLAM nest spring buffers",
+            )
+        })?;
+        // Double buffering: unmovable/dummy slots are never written by the
+        // iteration, so both buffers keep their initial positions there
+        // forever, exactly like the historical clone-per-iteration version.
         let mut m_points = self.m_points.clone();
+        let mut next_m_points = self.m_points.clone();
 
         for iteration in 1..=niter {
             if (iteration == 1 || iteration == niter || iteration % 100 == 0)
@@ -69,13 +88,12 @@ impl OlamDelaunayMesh {
                     "OLAM nest spring was cancelled",
                 ));
             }
-            m_points = olam_nest_spring_iteration(
+            olam_nest_spring_iteration_into(
                 &m_points,
-                self,
                 &topology,
                 &movable_m_points,
-                dist00,
-                project_to_radius,
+                &mut scratch,
+                &mut next_m_points,
             )
             .ok_or_else(|| {
                 io::Error::new(
@@ -83,6 +101,7 @@ impl OlamDelaunayMesh {
                     "failed to run OLAM nest spring iteration",
                 )
             })?;
+            std::mem::swap(&mut m_points, &mut next_m_points);
         }
 
         for point in m_points.iter_mut().skip(2) {

@@ -107,7 +107,16 @@ impl OlamDelaunayMesh {
                     )
                 })?;
         let dist00 = dist00_override.unwrap_or(olam_fortran_global_dist00(beta, radius, nxp));
+        // Double buffering: pentagon/dummy slots are never written by the
+        // iteration, so both buffers keep their initial positions there
+        // forever, exactly like the historical clone-per-iteration version.
         let mut m_points = self.m_points.clone();
+        let mut next_m_points = self.m_points.clone();
+        let mut scratch = OlamGlobalSpringScratch::new(
+            m_points.len(),
+            topology.edge_m_points.len(),
+            &self.impent,
+        );
 
         for iteration in 1..=niter {
             if (iteration == 1 || iteration == niter || iteration % 20 == 0)
@@ -118,16 +127,17 @@ impl OlamDelaunayMesh {
                     "OLAM global spring was cancelled",
                 ));
             }
-            m_points = olam_global_spring_iteration(
+            olam_global_spring_iteration_into(
                 &m_points,
                 &topology,
-                &self.impent,
+                &mut scratch,
                 dist00,
                 if project_to_radius {
                     Some(radius)
                 } else {
                     None
                 },
+                &mut next_m_points,
             )
             .ok_or_else(|| {
                 io::Error::new(
@@ -135,6 +145,7 @@ impl OlamDelaunayMesh {
                     "failed to run OLAM global spring iteration",
                 )
             })?;
+            std::mem::swap(&mut m_points, &mut next_m_points);
         }
 
         for point in m_points.iter_mut().skip(2) {

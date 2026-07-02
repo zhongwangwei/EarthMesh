@@ -306,9 +306,13 @@ mod olam_nest_spring;
 mod olam_spring_iteration;
 #[cfg(test)]
 pub(crate) use olam_nest_spring_iteration::olam_nest_mrow_distance_multiplier;
-pub(crate) use olam_nest_spring_iteration::olam_nest_spring_iteration;
+pub(crate) use olam_nest_spring_iteration::{
+    olam_nest_spring_iteration_into, OlamNestSpringScratch,
+};
 mod olam_nest_spring_iteration;
-pub(crate) use olam_spring_iteration::olam_global_spring_iteration;
+pub(crate) use olam_spring_iteration::{
+    olam_global_spring_iteration_into, OlamGlobalSpringScratch,
+};
 pub(crate) use olam_table_helpers::{
     fill_missing_endpoint, fortran_other_endpoint_by_first, method_c_split_outer_edges,
     other_edge_face, set_first_two,

@@ -1,22 +1,76 @@
 use super::*;
 
-pub(crate) fn olam_global_spring_iteration(
+/// Reusable buffers + loop-invariant pentagon mask for
+/// [`olam_global_spring_iteration_into`].
+///
+/// The spring driver runs thousands of Jacobi iterations; allocating these
+/// once per spring call instead of once per iteration removes the dominant
+/// `alloc_zeroed`/`memcpy` traffic the profiler attributed to the spring pass.
+pub(crate) struct OlamGlobalSpringScratch {
+    is_pentagon: Vec<bool>,
+    edge_vectors: Vec<CartesianPoint>,
+    edge_distances: Vec<f64>,
+    edge_displacements: Vec<CartesianPoint>,
+}
+
+impl OlamGlobalSpringScratch {
+    pub(crate) fn new(point_count: usize, edge_count: usize, impent: &[usize; 12]) -> Self {
+        // Bitmask replaces the former `impent.contains(&im)` linear scan in the
+        // per-point hot loop. An out-of-range pentagon id could never match an
+        // in-range `im`, exactly like `contains`, so it is simply skipped here.
+        let mut is_pentagon = vec![false; point_count];
+        for &im in impent {
+            if im < point_count {
+                is_pentagon[im] = true;
+            }
+        }
+        Self {
+            is_pentagon,
+            edge_vectors: vec![CartesianPoint::new(0.0, 0.0, 0.0); edge_count],
+            edge_distances: vec![0.0_f64; edge_count],
+            edge_displacements: vec![CartesianPoint::new(0.0, 0.0, 0.0); edge_count],
+        }
+    }
+}
+
+/// One OLAM global-spring Jacobi iteration, writing into `updated_m_points`.
+///
+/// Bit-identical to the historical per-iteration-allocating version: every
+/// edge slot `2..` is fully rewritten here before it is read, slots `0..2`
+/// keep their zero placeholders from scratch creation, and pentagon/dummy
+/// point slots are never written (the driver keeps both point buffers
+/// initialized to the input positions, which those slots retain forever).
+pub(crate) fn olam_global_spring_iteration_into(
     m_points: &[CartesianPoint],
     topology: &IcosahedronSpringTopology,
-    impent: &[usize; 12],
+    scratch: &mut OlamGlobalSpringScratch,
     dist00: f64,
     radius: Option<f64>,
-) -> Option<Vec<CartesianPoint>> {
+    updated_m_points: &mut [CartesianPoint],
+) -> Option<()> {
+    // Destructure once: routing every hot-loop slice access through
+    // `scratch.field` projections degraded inlining/alias analysis (profiles
+    // showed `SliceIndex::get` surfacing as a real call); independent local
+    // bindings restore the codegen of the former stack-local buffers.
+    let OlamGlobalSpringScratch {
+        is_pentagon,
+        edge_vectors,
+        edge_distances,
+        edge_displacements,
+    } = scratch;
     if topology.m_npoly.len() != m_points.len()
         || topology.m_u_edges.len() != m_points.len()
         || topology.directions.len() != m_points.len()
         || topology.edge_neighbor_u.len() != topology.edge_m_points.len()
+        || is_pentagon.len() != m_points.len()
+        || edge_vectors.len() != topology.edge_m_points.len()
+        || edge_distances.len() != topology.edge_m_points.len()
+        || edge_displacements.len() != topology.edge_m_points.len()
+        || updated_m_points.len() != m_points.len()
     {
         return None;
     }
 
-    let mut edge_vectors = vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
-    let mut edge_distances = vec![0.0_f64; topology.edge_m_points.len()];
     for edge_id in 2..topology.edge_m_points.len() {
         let [im1, im2] = topology.edge_m_points[edge_id];
         let point1 = *m_points.get(im1)?;
@@ -32,8 +86,6 @@ pub(crate) fn olam_global_spring_iteration(
         edge_distances[edge_id] = distance as f64;
     }
 
-    let mut edge_displacements =
-        vec![CartesianPoint::new(0.0, 0.0, 0.0); topology.edge_m_points.len()];
     let dist00_f32 = dist00 as f32;
     for edge_id in 2..topology.edge_m_points.len() {
         let [iu1, iu2, iu3, iu4] = topology.edge_neighbor_u[edge_id];
@@ -62,9 +114,8 @@ pub(crate) fn olam_global_spring_iteration(
         );
     }
 
-    let mut updated_m_points = m_points.to_vec();
     for im in 2..m_points.len() {
-        if impent.contains(&im) {
+        if is_pentagon[im] {
             continue;
         }
 
@@ -72,7 +123,9 @@ pub(crate) fn olam_global_spring_iteration(
         if npoly > 7 {
             return None;
         }
-        let mut point = updated_m_points[im];
+        // Reading the input buffer is identical to the historical read of the
+        // freshly cloned output slot (they held the same value at this point).
+        let mut point = m_points[im];
         for j in 0..npoly {
             let edge_id = topology.m_u_edges[im][j];
             let displacement = *edge_displacements.get(edge_id)?;
@@ -98,5 +151,5 @@ pub(crate) fn olam_global_spring_iteration(
         }
     }
 
-    Some(updated_m_points)
+    Some(())
 }

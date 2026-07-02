@@ -25,3 +25,7 @@ run_manifest.json
 
 # Local smoke/demo run outputs
 test/**/output/
+
+# Profiling artifacts (scripts/perf_probe.sh)
+cargo-flamegraph.trace/
+docs/perf/
