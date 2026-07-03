@@ -478,7 +478,7 @@ impl HField {
             .values
             .iter()
             .map(|&h| {
-                if !(h > 0.0) || h >= h_base_m {
+                if !h.is_finite() || h <= 0.0 || h >= h_base_m {
                     0u8
                 } else {
                     let raw = ((h_base_m / h).log2() - 1e-9).ceil();
@@ -497,7 +497,7 @@ impl HField {
     /// Level at a sampled point (bilinear h, then quantized).
     pub fn level_at(&self, lon_deg: f64, lat_deg: f64, h_base_m: f64, max_level: u8) -> u8 {
         let h = self.sample(lon_deg, lat_deg);
-        if !(h > 0.0) || h >= h_base_m {
+        if !h.is_finite() || h <= 0.0 || h >= h_base_m {
             return 0;
         }
         let raw = ((h_base_m / h).log2() - 1e-9).ceil();

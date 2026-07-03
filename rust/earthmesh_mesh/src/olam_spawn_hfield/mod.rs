@@ -171,7 +171,7 @@ impl OlamDelaunayMesh {
 
         let mut mesh = self.clone();
         let mut spring_passes = 0usize;
-        let mut next_grid_number = self
+        let first_grid_number = self
             .w_faces
             .iter()
             .skip(2)
@@ -182,14 +182,13 @@ impl OlamDelaunayMesh {
             .max(1)
             + 1;
 
-        for pass in 1..=max_level {
+        for (grid_number, pass) in (first_grid_number..).zip(1..=max_level) {
             let selected_faces = mesh.selected_faces_from_target_levels(target_level, pass)?;
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
                 // The field demands nothing at this depth; deeper level sets
                 // are subsets, so descending further cannot select anything.
                 break;
             }
-            let grid_number = next_grid_number;
             match mesh.spawn_nest_pass_with_max_mrows(&selected_faces, grid_number, max_mrows, true)
             {
                 Ok(refined) => mesh = refined,
@@ -209,7 +208,6 @@ impl OlamDelaunayMesh {
                     }
                 },
             }
-            next_grid_number += 1;
 
             if let Some((nxp, niter)) = spring {
                 if niter > 0 {

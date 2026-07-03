@@ -72,7 +72,7 @@ mod tests {
     use super::*;
 
     fn quantized_level(h_base: f64, h: f64, max_level: u8) -> u8 {
-        if !(h > 0.0) || h >= h_base {
+        if !h.is_finite() || h <= 0.0 || h >= h_base {
             return 0;
         }
         let raw = ((h_base / h).log2() - 1e-9).ceil();
