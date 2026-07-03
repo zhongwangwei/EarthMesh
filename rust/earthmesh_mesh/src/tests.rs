@@ -1,5 +1,7 @@
 use super::*;
 
+mod olam_hfield_spawn;
+mod olam_hfield_spring;
 mod olam_method_c_boundary_repair;
 mod olam_method_c_child_w_geometry;
 mod olam_method_c_entrypoints;

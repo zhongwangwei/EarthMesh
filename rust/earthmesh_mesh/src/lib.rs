@@ -98,6 +98,8 @@ mod get_sort_new;
 pub use get_sort_new::*;
 mod refine_array_length;
 pub use refine_array_length::*;
+mod refine_hfield_marks;
+pub use refine_hfield_marks::*;
 mod refine_iter;
 pub use refine_iter::*;
 mod refine_iter_helpers;
@@ -271,6 +273,7 @@ mod olam_selection_march;
 mod olam_selection_start;
 mod olam_selection_topology;
 mod olam_spawn;
+mod olam_spawn_hfield;
 mod olam_spawn_internal;
 mod olam_spawn_pass;
 mod olam_spawn_retry;
@@ -299,6 +302,7 @@ pub(crate) use olam_region_corridor::{
     olam_corridor_radius_at_segment, olam_open_corridor_contains_cartesian,
 };
 mod olam_spring;
+pub use olam_nest_spring::olam_edge_target_lengths_from_field;
 #[cfg(test)]
 pub(crate) use olam_nest_spring::olam_nest_movable_m_points;
 pub(crate) use olam_spring::active_mesh_radius;

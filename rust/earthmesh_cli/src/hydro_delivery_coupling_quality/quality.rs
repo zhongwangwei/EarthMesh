@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -138,4 +139,125 @@ pub fn write_coupling_quality_from_gridfile(
         earthmesh_quality::coupling::to_coupling_quality_json(&report),
     )?;
     Ok(report)
+}
+
+pub fn write_landtype_cell_mask_geojson(
+    cell_geojson: impl AsRef<Path>,
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    output_geojson: impl AsRef<Path>,
+) -> io::Result<usize> {
+    let lt = read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
+    if lt.lon_i.len() < 3 || lt.lat_i.len() < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "land-type axes too short to derive sampling step",
+        ));
+    }
+    let (nlon, nlat) = (lt.nlons_source, lt.nlats_source);
+    let lon0 = lt.lon_i[1];
+    let lat0 = lt.lat_i[1];
+    let dlon = lt.lon_i[2] - lt.lon_i[1];
+    let dlat = lt.lat_i[2] - lt.lat_i[1];
+    let sample_land = |lon: f64, lat: f64| -> bool {
+        let li = (((lon - lon0) / dlon).round() as i64).rem_euclid(nlon as i64);
+        let lj = (((lat - lat0) / dlat).round() as i64).clamp(0, nlat as i64 - 1);
+        matches!(
+            classify_area_judge_landtype_fortran_indexed(
+                lt.landtypes_global[(li + 1) as usize][(lj + 1) as usize]
+            ),
+            AreaJudgeLandtypeClass::Land
+        )
+    };
+
+    let root = JsonParser::new(&read_text_maybe_gzip(cell_geojson.as_ref())?).parse()?;
+    let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut out_features = Vec::new();
+    for feature in geojson_feature_nodes(&root) {
+        let obj = feature.as_object();
+        let Some(geom) = obj.and_then(|o| o.get("geometry")) else {
+            continue;
+        };
+        let props = obj
+            .and_then(|o| o.get("properties"))
+            .and_then(JsonNode::as_object);
+        let mut samples = Vec::new();
+        if let Some(p) = props {
+            if let (Some(lon), Some(lat)) = (
+                p.get("center_lon").and_then(JsonNode::as_f64),
+                p.get("center_lat").and_then(JsonNode::as_f64),
+            ) {
+                samples.push((lon, lat));
+            }
+        }
+        for ring in geometry_outer_rings(geom) {
+            for p in ring {
+                if p.x.is_finite() && p.y.is_finite() {
+                    samples.push((p.x, p.y));
+                }
+            }
+        }
+        if samples.is_empty() {
+            continue;
+        }
+        let land = samples
+            .iter()
+            .filter(|&&(lon, lat)| sample_land(lon, lat))
+            .count();
+        let land_fraction = land as f64 / samples.len() as f64;
+        let ocean_fraction = 1.0 - land_fraction;
+        let surface_class = if land_fraction >= ocean_fraction {
+            "LAND"
+        } else {
+            "OCEAN"
+        };
+        let mask_class = if land_fraction > 0.0 && ocean_fraction > 0.0 {
+            "COAST"
+        } else {
+            surface_class
+        };
+
+        let mut out_props: BTreeMap<String, String> = BTreeMap::new();
+        if let Some(p) = props {
+            for (k, v) in p {
+                out_props.insert(k.clone(), json_node_to_string(v));
+            }
+        }
+        out_props.insert(
+            "surface_class".into(),
+            format!("\"{}\"", esc(surface_class)),
+        );
+        out_props.insert("mask_class".into(), format!("\"{}\"", esc(mask_class)));
+        out_props.insert(
+            "hydro_mask_class".into(),
+            format!("\"{}\"", esc(mask_class)),
+        );
+        out_props.insert("land_fraction".into(), format!("{land_fraction}"));
+        out_props.insert("ocean_fraction".into(), format!("{ocean_fraction}"));
+        out_props.insert(
+            "coastal_fraction".into(),
+            format!("{}", land_fraction.min(ocean_fraction)),
+        );
+        out_props.insert("has_coast".into(), (mask_class == "COAST").to_string());
+        out_props.insert("mask_source".into(), "\"landtype_fraction\"".to_string());
+
+        let body = out_props
+            .iter()
+            .map(|(k, v)| format!("\"{}\": {}", esc(k), v))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out_features.push(format!(
+            "    {{\"type\": \"Feature\", \"geometry\": {}, \"properties\": {{{}}}}}",
+            json_node_to_string(geom),
+            body
+        ));
+    }
+
+    let out = format!(
+        "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
+        out_features.join(",\n")
+    );
+    crate::ensure_parent_dir(output_geojson.as_ref())?;
+    fs::write(output_geojson, out)?;
+    Ok(out_features.len())
 }

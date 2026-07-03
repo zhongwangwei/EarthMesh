@@ -10,9 +10,9 @@ use super::{
     AREA_JUDGE_OCEAN_ONELAYER_NAMES,
 };
 use crate::{
-    netcdf_to_io_error, require_len, AreaJudgeThreshold2D, AreaJudgeThreshold2Layer,
-    ThresholdReadAtmosConfig, ThresholdReadAtmosReport, ThresholdReadLndConfig,
-    ThresholdReadLndReport, ThresholdReadOcnConfig, ThresholdReadOcnReport,
+    AreaJudgeThreshold2D, AreaJudgeThreshold2Layer, ThresholdReadAtmosConfig,
+    ThresholdReadAtmosReport, ThresholdReadLndConfig, ThresholdReadLndReport,
+    ThresholdReadOcnConfig, ThresholdReadOcnReport,
 };
 
 /// Read land thresholds like `MOD_data_preprocess.F90:Threshold_Read_Lnd`.
@@ -68,44 +68,11 @@ fn read_area_judge_threshold_2d_window_fortran_indexed(
     name: &str,
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<AreaJudgeThreshold2D> {
-    let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
-    let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
-    let file = crate::open_netcdf(area_judge_threshold_path(threshold_dir, name))
-        .map_err(netcdf_to_io_error)?;
-    let variable = file.variable(name).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("missing {name} variable"),
-        )
-    })?;
-    let start_lon = bounds.minlon_source.checked_sub(1).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "minlon_source must be one-based",
-        )
-    })?;
-    let start_lat = bounds.maxlat_source.checked_sub(1).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "maxlat_source must be one-based",
-        )
-    })?;
-    let values = variable
-        .get_values::<f64, _>((
-            start_lon..start_lon + nlons_select,
-            start_lat..start_lat + nlats_select,
-        ))
-        .map_err(netcdf_to_io_error)?;
-    let expected = nlons_select * nlats_select;
-    require_len(name, values.len(), expected)?;
-
-    let mut selected = vec![vec![0.0; nlats_select + 1]; nlons_select + 1];
-    for lon_offset in 0..nlons_select {
-        for lat_offset in 0..nlats_select {
-            selected[lon_offset + 1][lat_offset + 1] =
-                values[lon_offset * nlats_select + lat_offset];
-        }
-    }
+    let selected = data_read_onelayer_values_fortran_indexed(
+        area_judge_threshold_path(threshold_dir, name),
+        name,
+        bounds,
+    )?;
     Ok(AreaJudgeThreshold2D {
         name: name.to_string(),
         values: selected,

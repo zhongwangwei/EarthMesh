@@ -4,7 +4,24 @@
 //! straddle the boundary (MixedCoast), couple to ocean neighbours, and disconnected
 //! cells surface as orphans.
 
-use earthmesh_cli::landtype_coupling_quality;
+use earthmesh_cli::{landtype_coupling_quality, write_landtype_cell_mask_geojson};
+
+fn write_landtype_file_with_points(path: &std::path::Path, land_points: &[(usize, usize)]) {
+    let (nlons, nlats) = (360, 180);
+    let mut file = netcdf::create(path).expect("create landtype file");
+    file.add_dimension("longitude", nlons)
+        .expect("longitude dim");
+    file.add_dimension("latitude", nlats).expect("latitude dim");
+    let mut values = vec![0_i8; nlons * nlats];
+    let idx = |lon: usize, lat: usize| lon * nlats + lat;
+    for &(lon, lat) in land_points {
+        values[idx(lon, lat)] = 1;
+    }
+    let mut var = file
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .expect("landtype var");
+    var.put_values(&values, (.., ..)).expect("write landtype");
+}
 
 #[test]
 fn synthetic_coastline_classifies_mixed_coast_and_couples_to_ocean() {
@@ -75,4 +92,31 @@ fn island_land_cell_surrounded_by_ocean_stays_land_without_orphan() {
     assert_eq!(r.orphan_ocean_cells, 0);
     // pure cells, no coast overlap, mass conserved -> Pass
     assert_eq!(r.verdict.as_str(), "pass");
+}
+
+#[test]
+fn landtype_cell_mask_marks_fractional_cell_as_coast() {
+    let dir = std::env::temp_dir().join(format!("em3_landtype_cell_mask_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let landtype = dir.join("landtype.nc");
+    write_landtype_file_with_points(&landtype, &[(1, 0)]);
+    let cells = dir.join("cells.geojson");
+    std::fs::write(
+        &cells,
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1","center_lon":-178.5,"center_lat":89.5},
+         "geometry":{"type":"Polygon","coordinates":[[[-178.5,89.5],[-177.5,89.5],[-176.5,89.5],[-178.5,89.5]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let out = dir.join("mask.geojson");
+    let count = write_landtype_cell_mask_geojson(&cells, &landtype, 1, &out).expect("cell mask");
+    assert_eq!(count, 1);
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(json.contains("\"mask_class\": \"COAST\""), "{json}");
+    assert!(json.contains("\"land_fraction\""), "{json}");
+    assert!(json.contains("\"ocean_fraction\""), "{json}");
+    let _ = std::fs::remove_dir_all(dir);
 }

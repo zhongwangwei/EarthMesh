@@ -117,7 +117,9 @@ pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
         // which is geometrically arbitrary.
         let Some(&cell_center) = cell_points.get(cell_id) else {
             if debug {
-                eprintln!("EARTHMESH_MPAS_DEBUG: cell {cell_id} missing cell point for orientation");
+                eprintln!(
+                    "EARTHMESH_MPAS_DEBUG: cell {cell_id} missing cell point for orientation"
+                );
             }
             return None;
         };

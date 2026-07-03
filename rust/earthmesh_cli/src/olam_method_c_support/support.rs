@@ -9,7 +9,7 @@ pub(crate) fn olam_method_c_spring_iterations(
     refine: &RefineConfig,
     is_atmosmesh: bool,
 ) -> io::Result<usize> {
-    if refine.spring_global_type != 1 {
+    if refine.spring_global_type != 1 && refine.spring_regional_type <= 0 {
         return Ok(0);
     }
     if refine.niter_refine_specified {

@@ -375,6 +375,10 @@ pub(crate) use olam_direct_refine_support::*;
 mod mkgrd_gridinit_driver;
 pub use mkgrd_gridinit_driver::*;
 
+mod hfield_refine;
+pub use hfield_refine::{
+    build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
+};
 mod mkgrd_refine_namelist;
 pub use mkgrd_refine_namelist::*;
 mod mkgrd_olam_refine_namelist;

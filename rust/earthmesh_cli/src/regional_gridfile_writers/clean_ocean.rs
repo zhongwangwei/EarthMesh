@@ -38,7 +38,8 @@ pub fn write_clean_regional_ocean_fvcom(
         Some(p) if p.exists() => read_obc_order_netcdf(p)?,
         _ => Vec::new(),
     };
-    write_fvcom_2dm_from_carved(&carved, &obc_order, output_2dm)
+    let report = write_fvcom_2dm_from_carved(&carved, &obc_order, output_2dm)?;
+    Ok(report.triangles)
 }
 
 pub fn write_clean_regional_ocean_gridfile(

@@ -22,7 +22,7 @@ pub(crate) fn scaffold_project(
     let resolution = match (approx_degree, approx_km) {
         (Some(degrees), _) => ResolutionSpec::ApproxDegree(degrees),
         (None, Some(km)) => ResolutionSpec::ApproxKm(km),
-        (None, None) => ResolutionSpec::Nxp(nxp.unwrap_or(40)),
+        (None, None) => ResolutionSpec::Nxp(nxp.unwrap_or(80)),
     };
     let cfg = ProjectConfig::scaffold(
         &name,

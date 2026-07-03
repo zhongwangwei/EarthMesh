@@ -51,6 +51,33 @@ pub fn run_mkgrd_regional_clip_base_namelist(
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
     let file_dir = PathBuf::from(config.file_dir());
     let mode_grid = config.mode_grid.trim();
+    if let Some(close_points) =
+        clean_regional_ocean_close_points(region.as_ref(), &mesh_type, mode_grid, carve_landtype)
+    {
+        let gpd = landtype_gridnum_perdegree(Path::new(&landtype))?;
+        let plan = write_clean_regional_ocean_gridfile(
+            &gridinit.gridfile.output,
+            close_points,
+            Path::new(&landtype),
+            nxp,
+            gpd,
+            config.mask_sea_ratio,
+            &file_dir,
+        )?;
+        let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
+        let obc_order = match &plan.obc_output {
+            Some(path) if path.exists() => read_obc_order_netcdf(path)?,
+            _ => Vec::new(),
+        };
+        let fvcom_2dm = write_fvcom_2dm_from_carved(
+            &carved,
+            &obc_order,
+            &fvcom_mesh_2dm_output_path(&file_dir),
+        )?;
+        gridinit.gridfile = unstructured_mesh_write_report_from_file(&plan.result_gridfile)?;
+        gridinit.fvcom_2dm = Some(fvcom_2dm);
+        return Ok(gridinit);
+    }
 
     // 1) Optional geometric CLIP to the domain (regional bbox/circle/close): keep
     // only the in-region cells. `mesh` is read into memory, so overwriting its
@@ -98,4 +125,43 @@ pub fn run_mkgrd_regional_clip_base_namelist(
         }
     }
     Ok(gridinit)
+}
+
+fn clean_regional_ocean_close_points<'a>(
+    region: Option<&'a GridRegion>,
+    mesh_type: &str,
+    mode_grid: &str,
+    carve_landtype: bool,
+) -> Option<&'a [LonLatPoint]> {
+    if !carve_landtype || mesh_type != "oceanmesh" || mode_grid != "tri" {
+        return None;
+    }
+    match region {
+        Some(GridRegion::Close { points }) => Some(points),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_ocean_path_only_handles_tri_close_ocean_with_landtype() {
+        let region = GridRegion::Close {
+            points: vec![LonLatPoint { lon: 0.0, lat: 0.0 }],
+        };
+        assert!(
+            clean_regional_ocean_close_points(Some(&region), "oceanmesh", "tri", true).is_some()
+        );
+        assert!(
+            clean_regional_ocean_close_points(Some(&region), "oceanmesh", "hex", true).is_none()
+        );
+        assert!(
+            clean_regional_ocean_close_points(Some(&region), "landmesh", "tri", true).is_none()
+        );
+        assert!(
+            clean_regional_ocean_close_points(Some(&region), "oceanmesh", "tri", false).is_none()
+        );
+    }
 }

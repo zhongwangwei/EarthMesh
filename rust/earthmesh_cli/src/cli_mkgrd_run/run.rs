@@ -382,6 +382,9 @@ pub(crate) fn run_mkgrd_or_project(
     match report {
         earthmesh_cli::MkgrdTopLevelDispatchRunReport::Gridinit(report) => {
             println!("gridfile={}", report.gridfile.output.display());
+            if let Some(fvcom_2dm) = &report.fvcom_2dm {
+                println!("fvcom_2dm={}", fvcom_2dm.output.display());
+            }
             println!("sjx_points={}", report.gridfile.sjx_points);
             println!("lbx_points={}", report.gridfile.lbx_points);
         }

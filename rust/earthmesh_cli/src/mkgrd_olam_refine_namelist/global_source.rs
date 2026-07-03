@@ -36,6 +36,7 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
     let native_surface_global_expansion = !is_atmosmesh && native_sfcgrid_res_factor > 1;
     let native_olam_regions_requested =
         olam_native_refinement_requested(&contents, config.mesh_type.trim())?;
+    let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
     if !config.refine && !native_surface_global_expansion && !native_olam_regions_requested {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -335,6 +336,34 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
             )
         };
         (mesh, atmosphere_spring_passes + surface_spring_passes)
+    } else if let (Some(hfield), false) = (hfield_options.as_ref(), native_cartesian_xy) {
+        // H-field mode: compose the same specified regions into a
+        // gradient-limited cell-width field and let quantized target levels
+        // drive Method-C ("split between levels" with legality by
+        // construction). Spherical runs only; Cartesian-XY keeps the
+        // geometric region path.
+        let base_m = hfield.base_m.unwrap_or_else(|| {
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64)
+        });
+        let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
+        let field = crate::hfield_refine::build_hfield_from_regions(
+            &regions,
+            base_m,
+            hfield.g,
+            hfield.nlon,
+            hfield.nlat,
+        )?;
+        mesh.spawn_nest_from_target_levels_with_spring(
+            |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
+            field_max_level,
+            if is_atmosmesh {
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
+            } else {
+                OlamDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+            },
+            nxp,
+            spring_nest_iterations,
+        )?
     } else if spring_nest_iterations > 0 {
         if native_cartesian_xy {
             mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(

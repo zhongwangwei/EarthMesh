@@ -13,6 +13,31 @@ pub(crate) fn olam_nest_mrow_distance_multiplier(mrow1: isize, mrow2: isize) -> 
     }
 }
 
+/// `moveu` (edge has a movable endpoint) and `compu` (edge participates in a
+/// movable edge's twocosphi stencil) masks shared by both scratch builders.
+fn build_nest_move_masks(
+    topology: &IcosahedronSpringTopology,
+    movable_m_points: &[bool],
+) -> Option<(Vec<bool>, Vec<bool>)> {
+    if topology.edge_neighbor_u.len() != topology.edge_m_points.len() {
+        return None;
+    }
+    let edge_count = topology.edge_m_points.len();
+    let mut moveu = vec![false; edge_count];
+    let mut compu = vec![false; edge_count];
+    for edge_id in 2..edge_count {
+        let [im1, im2] = topology.edge_m_points[edge_id];
+        moveu[edge_id] = movable_m_points[im1] || movable_m_points[im2];
+        let [iu1, _, iu3, _] = topology.edge_neighbor_u[edge_id];
+        let [iu1_im1, iu1_im2] = *topology.edge_m_points.get(iu1)?;
+        let im3 = if iu1_im1 == im1 { iu1_im2 } else { iu1_im1 };
+        let [iu3_im1, iu3_im2] = *topology.edge_m_points.get(iu3)?;
+        let im4 = if iu3_im1 == im1 { iu3_im2 } else { iu3_im1 };
+        compu[edge_id] = moveu[edge_id] || movable_m_points[im3] || movable_m_points[im4];
+    }
+    Some((moveu, compu))
+}
+
 /// Reusable buffers + loop-invariant lookups for
 /// [`olam_nest_spring_iteration_into`].
 ///
@@ -24,15 +49,15 @@ pub(crate) fn olam_nest_mrow_distance_multiplier(mrow1: isize, mrow2: isize) -> 
 /// (`target_level_base * angle_ratio`, then `*= mrow multiplier`) preserves the
 /// original multiplication order exactly.
 pub(crate) struct OlamNestSpringScratch {
-    moveu: Vec<bool>,
-    compu: Vec<bool>,
-    target_level_base: Vec<f32>,
-    target_mrow_multiplier: Vec<f32>,
-    min_area_squared: f32,
-    radius: Option<f64>,
-    edge_vectors: Vec<CartesianPoint>,
-    edge_distances: Vec<f64>,
-    edge_displacements: Vec<CartesianPoint>,
+    pub(crate) moveu: Vec<bool>,
+    pub(crate) compu: Vec<bool>,
+    pub(crate) target_level_base: Vec<f32>,
+    pub(crate) target_mrow_multiplier: Vec<f32>,
+    pub(crate) min_area_squared: f32,
+    pub(crate) radius: Option<f64>,
+    pub(crate) edge_vectors: Vec<CartesianPoint>,
+    pub(crate) edge_distances: Vec<f64>,
+    pub(crate) edge_displacements: Vec<CartesianPoint>,
 }
 
 impl OlamNestSpringScratch {
@@ -43,23 +68,8 @@ impl OlamNestSpringScratch {
         dist00: f64,
         project_to_radius: bool,
     ) -> Option<Self> {
-        if topology.edge_neighbor_u.len() != topology.edge_m_points.len() {
-            return None;
-        }
+        let (moveu, compu) = build_nest_move_masks(topology, movable_m_points)?;
         let edge_count = topology.edge_m_points.len();
-
-        let mut moveu = vec![false; edge_count];
-        let mut compu = vec![false; edge_count];
-        for edge_id in 2..edge_count {
-            let [im1, im2] = topology.edge_m_points[edge_id];
-            moveu[edge_id] = movable_m_points[im1] || movable_m_points[im2];
-            let [iu1, _, iu3, _] = topology.edge_neighbor_u[edge_id];
-            let [iu1_im1, iu1_im2] = *topology.edge_m_points.get(iu1)?;
-            let im3 = if iu1_im1 == im1 { iu1_im2 } else { iu1_im1 };
-            let [iu3_im1, iu3_im2] = *topology.edge_m_points.get(iu3)?;
-            let im4 = if iu3_im1 == im1 { iu3_im2 } else { iu3_im1 };
-            compu[edge_id] = moveu[edge_id] || movable_m_points[im3] || movable_m_points[im4];
-        }
 
         let max_mrlu = (2..edge_count)
             .filter_map(|edge_id| {
@@ -89,6 +99,82 @@ impl OlamNestSpringScratch {
             let face2 = *mesh.w_faces.get(edge.iw[1])?;
             target_mrow_multiplier[edge_id] =
                 olam_nest_mrow_distance_multiplier(face1.mrow, face2.mrow) as f32;
+        }
+
+        let radius = if project_to_radius {
+            Some(active_mesh_radius(mesh).ok()?)
+        } else {
+            None
+        };
+
+        Some(Self {
+            moveu,
+            compu,
+            target_level_base,
+            target_mrow_multiplier,
+            min_area_squared,
+            radius,
+            edge_vectors: vec![CartesianPoint::new(0.0, 0.0, 0.0); edge_count],
+            edge_distances: vec![0.0_f64; edge_count],
+            edge_displacements: vec![CartesianPoint::new(0.0, 0.0, 0.0); edge_count],
+        })
+    }
+
+    /// H-field variant: per-edge target lengths (meters, Fortran-indexed by U
+    /// id, slots `0..2` unused) are supplied directly, e.g. sampled from an
+    /// `earthmesh_hfield` cell-width field at edge midpoints. The mrow
+    /// multiplier is identity because a gradient-limited field already encodes
+    /// the transition shaping continuously; the anti-degeneracy area floor
+    /// uses the minimum target over movable edges, mirroring the legacy
+    /// `dist00 / 2^(max_mrlu - 1)` finest-level spacing.
+    ///
+    /// Parity scope (deliberate, documented): with targets built as
+    /// `dist00 / 2^(mrlu - 1)` the target base reproduces the legacy value
+    /// bitwise (power-of-two scaling commutes exactly with f32 rounding) on
+    /// every edge whose legacy mrow multiplier is `1.0`. On mrow-shaped
+    /// transition edges the legacy path applies the multiplier as a separate
+    /// f32 multiply after the angle ratio, so folding it into the field
+    /// changes rounding order by ULPs -- near-identical, not bit-identical.
+    pub(crate) fn with_edge_target_lengths(
+        mesh: &OlamDelaunayMesh,
+        topology: &IcosahedronSpringTopology,
+        movable_m_points: &[bool],
+        edge_targets_m: &[f64],
+        project_to_radius: bool,
+    ) -> Option<Self> {
+        let (moveu, compu) = build_nest_move_masks(topology, movable_m_points)?;
+        let edge_count = topology.edge_m_points.len();
+        if edge_targets_m.len() < edge_count {
+            return None;
+        }
+
+        let mut dmin = f32::INFINITY;
+        for edge_id in 2..edge_count {
+            if moveu[edge_id] {
+                let target = edge_targets_m[edge_id];
+                if !target.is_finite() || target <= 0.0 {
+                    return None;
+                }
+                let target_f32 = target as f32;
+                if target_f32 < dmin {
+                    dmin = target_f32;
+                }
+            }
+        }
+        if !dmin.is_finite() {
+            // No movable edges: the driver returns early in that case, but keep
+            // the floor well-defined.
+            dmin = 1.0;
+        }
+        let min_area_squared = 0.1875_f32 * dmin.powi(4);
+
+        let mut target_level_base = vec![0.0_f32; edge_count];
+        let target_mrow_multiplier = vec![1.0_f32; edge_count];
+        for edge_id in 2..edge_count {
+            if !moveu[edge_id] {
+                continue;
+            }
+            target_level_base[edge_id] = (edge_targets_m[edge_id] as f32) / 1.2;
         }
 
         let radius = if project_to_radius {

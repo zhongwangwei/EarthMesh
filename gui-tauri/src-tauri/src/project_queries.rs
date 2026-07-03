@@ -73,6 +73,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
     let specified_circle = cfg.refinement.specified_circle.as_ref();
     let specified_bbox = cfg.refinement.specified_bbox.as_ref();
     let specified_close = cfg.refinement.specified_close.as_ref();
+    let hfield_effective = cfg.refinement.hfield.clone().unwrap_or_default();
     let layers = cfg
         .data_layers
         .iter()
@@ -122,6 +123,10 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         specified_refine_radius_km: specified_circle.map(|c| c.radius_km),
         specified_refine_bbox: specified_bbox.map(|b| [b.w, b.e, b.s, b.n]),
         specified_refine_path: specified_close.map(|c| c.path.clone()),
+        hfield_enabled: hfield_effective.enabled,
+        hfield_g: Some(hfield_effective.g),
+        hfield_max_level: Some(hfield_effective.max_level),
+        hfield_base_m: hfield_effective.base_m,
         expert_nxp: cfg.expert.nxp,
         expert_openmp: cfg.expert.openmp,
         expert_niter: cfg.expert.niter,
@@ -133,6 +138,8 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         expert_set_dis_type: cfg.expert.set_dis_type.clone(),
         expert_num_rc: cfg.expert.num_rc,
         expert_vertex_pretect_layers: cfg.expert.vertex_pretect_layers,
+        expert_spring_global_type: cfg.expert.spring_global_type,
+        expert_spring_regional_type: cfg.expert.spring_regional_type,
         expert_beta: cfg.expert.beta,
         expert_relax: cfg.expert.relax,
         expert_weak_concav_eliminate: cfg.expert.weak_concav_eliminate,

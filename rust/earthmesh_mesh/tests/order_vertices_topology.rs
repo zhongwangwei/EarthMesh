@@ -32,8 +32,7 @@ fn topology_order_restores_cycle_when_last_two_vertices_are_swapped() {
     let vertices_on_cell = vec![vec![], vec![], vec![10, 20, 30, 40, 60, 50, 1]];
     let n_edges_on_cell = vec![0, 0, 6];
     // Geometry agrees with the walk direction 10 -> 20 -> ... -> 60 (CCW).
-    let (vertex_points, cell_points) =
-        hexagon_points([0.0, 60.0, 120.0, 180.0, 240.0, 300.0]);
+    let (vertex_points, cell_points) = hexagon_points([0.0, 60.0, 120.0, 180.0, 240.0, 300.0]);
 
     let ordered = order_vertices_on_cell_by_shared_edges_fortran_indexed(
         &vertices_on_cell,
@@ -55,8 +54,7 @@ fn topology_order_reverses_clockwise_walk_to_ccw() {
     // Mirror the geometry: the ID-ordered walk 10 -> 20 -> ... -> 60 is now
     // clockwise seen from outside, so the orderer must flip it (keeping the
     // deterministic min-id start vertex in slot 0).
-    let (vertex_points, cell_points) =
-        hexagon_points([0.0, -60.0, -120.0, -180.0, -240.0, -300.0]);
+    let (vertex_points, cell_points) = hexagon_points([0.0, -60.0, -120.0, -180.0, -240.0, -300.0]);
 
     let ordered = order_vertices_on_cell_by_shared_edges_fortran_indexed(
         &vertices_on_cell,

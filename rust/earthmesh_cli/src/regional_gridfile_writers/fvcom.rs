@@ -9,12 +9,13 @@ use crate::*;
 /// are renumbered 1-based; triangles touching a placeholder/marker are dropped;
 /// the open boundary (`obc_order`, in carved-id space) is re-mapped and written
 /// as NS records so the `.2dm` carries its open-boundary specification.
-pub(super) fn write_fvcom_2dm_from_carved(
+pub(crate) fn write_fvcom_2dm_from_carved(
     mesh: &UnstructuredMesh,
     obc_order: &[usize],
     output: &Path,
-) -> io::Result<usize> {
+) -> io::Result<FvcomMesh2dmWriteReport> {
     crate::ensure_parent_dir(output)?;
+    validate_unstructured_mesh(mesh)?;
     let is_marker = |p: &LonLatPoint| p.lon == 0.0 && p.lat == 0.0;
     let mut new_id = vec![0usize; mesh.w_points.len() + 2];
     let mut nodes: Vec<(usize, LonLatPoint)> = Vec::new();
@@ -60,9 +61,20 @@ pub(super) fn write_fvcom_2dm_from_carved(
                 }
             })
             .collect();
-        write_fvcom_ns_records(&mut file, &remapped)?;
+        let boundary_segments = write_fvcom_ns_records(&mut file, &remapped)?;
+        return Ok(FvcomMesh2dmWriteReport {
+            output: output.to_path_buf(),
+            triangles: elements,
+            nodes: nodes.len(),
+            boundary_segments,
+        });
     }
-    Ok(elements)
+    Ok(FvcomMesh2dmWriteReport {
+        output: output.to_path_buf(),
+        triangles: elements,
+        nodes: nodes.len(),
+        boundary_segments: 0,
+    })
 }
 
 /// Write the standard FVCOM `.2dm` mesh straight from a base gridfile, in pure

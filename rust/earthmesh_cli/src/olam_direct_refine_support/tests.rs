@@ -39,9 +39,26 @@ fn olam_method_c_respects_explicit_niter_refine_for_fast_or_custom_runs() {
 }
 
 #[test]
-fn olam_method_c_skips_spring_when_global_spring_is_disabled() {
+fn olam_method_c_accepts_regional_spring_type() {
     let refine = RefineConfig {
         spring_global_type: 0,
+        spring_regional_type: 1,
+        niter_refine: 2,
+        niter_refine_specified: true,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        olam_method_c_spring_iterations(&refine, false).expect("regional spring iterations"),
+        2
+    );
+}
+
+#[test]
+fn olam_method_c_skips_spring_when_no_spring_type_is_enabled() {
+    let refine = RefineConfig {
+        spring_global_type: 0,
+        spring_regional_type: 0,
         niter_refine_specified: false,
         ..Default::default()
     };

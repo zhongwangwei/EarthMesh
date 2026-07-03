@@ -67,3 +67,83 @@ fn complete_mask_assigns_surface_and_river_priority() {
     assert!(json.contains("\"is_hydro_masked\": false")); // c2
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn complete_mask_keeps_coast_primary_when_river_crosses_it() {
+    let dir = std::env::temp_dir().join(format!("em3_complete_coast_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("bg.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1","mask_class":"COAST","surface_class":"LAND","land_fraction":0.5,"ocean_fraction":0.5},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("river.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1","river_class":"R3","river_fraction":0.5},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let out = dir.join("complete.geojson");
+    write_complete_cell_mask_geojson(
+        dir.join("bg.geojson"),
+        &out,
+        Some(&dir.join("river.geojson")),
+        None,
+        None,
+    )
+    .expect("complete mask");
+
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(json.contains("\"mask_class\": \"COAST\""), "{json}");
+    assert!(json.contains("\"river_class\": \"R3\""), "{json}");
+    assert!(!json.contains("\"mask_class\": \"R3\""), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn complete_mask_keeps_low_fraction_river_as_overlay_only() {
+    let dir = std::env::temp_dir().join(format!("em3_complete_low_river_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("bg.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1","mask_class":"LAND","surface_class":"LAND"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("river.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1","river_class":"R3","river_fraction":0.001},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let out = dir.join("complete.geojson");
+    write_complete_cell_mask_geojson(
+        dir.join("bg.geojson"),
+        &out,
+        Some(&dir.join("river.geojson")),
+        None,
+        None,
+    )
+    .expect("complete mask");
+
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(json.contains("\"mask_class\": \"LAND\""), "{json}");
+    assert!(json.contains("\"river_class\": \"R3\""), "{json}");
+    assert!(!json.contains("\"mask_class\": \"R3\""), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

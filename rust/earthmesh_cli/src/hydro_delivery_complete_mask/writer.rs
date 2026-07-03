@@ -12,10 +12,8 @@ use super::classification::{
     cell_feature_mask_class, cell_mask_priority, index_best_by_cell, surface_class_from_coast,
 };
 
-/// Faithful port of `cell_mask_merge.py::write_complete_cell_mask_geojson`: every
-/// background cell annotated with surface_class (max-area LAND/OCEAN overlay) and the
-/// dominant mask_class (R3>R2>COAST>LAND/OCEAN/BACKGROUND), merging sparse river/coast
-/// overlay properties. Uses `intersection_area` (no shapely).
+/// Merge sparse river/coast overlays into final cells. COAST remains the
+/// primary surface class; river properties are still copied onto those cells.
 pub fn write_complete_cell_mask_geojson(
     background_geojson: impl AsRef<Path>,
     output_geojson: impl AsRef<Path>,
@@ -79,7 +77,16 @@ pub fn write_complete_cell_mask_geojson(
         };
         let cell_rings = geometry_outer_rings(geom);
 
-        let mut surface_class = "BACKGROUND".to_string();
+        let base_surface_class = base_props
+            .and_then(|p| p.get("surface_class"))
+            .and_then(JsonNode::as_str)
+            .unwrap_or("");
+        let mut surface_class = if base_surface_class == "LAND" || base_surface_class == "OCEAN" {
+            base_surface_class.to_string()
+        } else {
+            "BACKGROUND".to_string()
+        };
+        let mut surface_from_overlay = false;
         if !surface_polys.is_empty() && !cell_rings.is_empty() {
             let mut best_area = 0.0;
             for (class, rings) in &surface_polys {
@@ -92,22 +99,30 @@ pub fn write_complete_cell_mask_geojson(
                 if area > best_area {
                     best_area = area;
                     surface_class = class.clone();
+                    surface_from_overlay = true;
                 }
             }
         }
 
         let river = river_by_cell.get(&cell_id).copied();
         let coast = coast_by_cell.get(&cell_id).copied();
-        let base_class = if surface_class == "LAND" || surface_class == "OCEAN" {
+        let base_mask_class = base_props
+            .and_then(|p| p.get("mask_class"))
+            .and_then(JsonNode::as_str)
+            .unwrap_or("");
+        let base_class = if base_mask_class == "COAST" {
+            "COAST".to_string()
+        } else if surface_class == "LAND" || surface_class == "OCEAN" {
             surface_class.clone()
         } else {
             "BACKGROUND".to_string()
         };
+        let coast_primary = base_class == "COAST" || coast.is_some();
         let mut candidates: Vec<String> = vec![base_class];
         if coast.is_some() {
             candidates.push("COAST".into());
         }
-        if let Some(r) = river {
+        if let Some(r) = river.filter(|_| !coast_primary) {
             candidates.push(cell_feature_mask_class(
                 r.as_object()
                     .and_then(|o| o.get("properties"))
@@ -147,7 +162,9 @@ pub fn write_complete_cell_mask_geojson(
                 "surface_class".into(),
                 format!("\"{}\"", surface_class_final),
             );
-            sources.push("surface");
+            if surface_from_overlay {
+                sources.push("surface");
+            }
         }
         for (name, overlay) in [("coast", coast), ("river", river)] {
             let Some(ov) = overlay else { continue };

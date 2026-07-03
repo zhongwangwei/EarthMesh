@@ -104,6 +104,8 @@ pub(crate) fn usage(message: &str) -> String {
         "{prefix}usage: earthmesh_cli --cama-reach-jsonl <map_dir> <output.jsonl> --bbox W S E N --target-dx-km KM [--uparea-to-km2 SCALE] [--no-yrev]
        earthmesh_cli --cama-reach-geojson <map_dir> <output.geojson> --bbox W S E N --target-dx-km KM [--uparea-to-km2 SCALE] [--no-yrev]
        earthmesh_cli --merit-hydro-geojson <merit_root> <output_dir> --bbox W S E N [--stride N] [--r2-width-m M] [--r3-width-m M] [--r2-upa-km2 KM2] [--r3-upa-km2 KM2] [--skip-surface-mask]
+       earthmesh_cli --landtype-cell-mask <cells.geojson> <landtype.nc> <out.geojson> [--gridnum-perdegree N]
+       earthmesh_cli --hydro-complete-cell-mask <background.geojson> <out.geojson> [--river-geojson PATH] [--coast-geojson PATH] [--surface-geojson PATH]
        earthmesh_cli --hydro-close-recipe <input.geojson> <output_prefix> <recipe.json> [--class-refine CLASS=DEGREE ...] [--buffer-deg-by-refine-degree DEGREE=BUFFER ...] [--simplify-tolerance-deg DEG] [--example-namelist FILE]
        earthmesh_cli --hydro-close-mask-nmls <input.geojson> <output_prefix> [--class-refine CLASS=DEGREE ...] [--max-rings-per-class N] [--max-rings-by-class CLASS=COUNT ...] [--max-masks-per-refine-degree N | --no-max-masks-per-refine-degree] [--min-ring-separation-deg DEG] [--buffer-deg-by-refine-degree DEGREE=BUFFER ...] [--simplify-tolerance-deg DEG] [--dissolve-overlapping-envelopes] [--non-cumulative-refine]
        earthmesh_cli --hydro-composite-close-mask-nmls <recipe.json> <output_prefix> [--summary-json PATH]

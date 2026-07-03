@@ -10,8 +10,8 @@ use super::cli_hydro_workflow::{
     run_coastal_band_geojson, run_colm_coupling_from_intersections, run_coupling_quality_from_mesh,
     run_gridfile_cell_polygons, run_hydro_cell_intersections, run_hydro_complete_cell_mask,
     run_hydro_delivery_manifest, run_hydro_mesh_qa, run_hydro_refinement_eval,
-    run_hydro_sweep_rank, run_hydro_sweep_recipes, run_hydro_workflow, run_mpas_cell_polygons,
-    run_plan_refinement_from_hydro,
+    run_hydro_sweep_rank, run_hydro_sweep_recipes, run_hydro_workflow, run_landtype_cell_mask,
+    run_mpas_cell_polygons, run_plan_refinement_from_hydro,
 };
 use super::cli_mkgrd_run::run_mkgrd_or_project;
 use super::cli_quality::run_mesh_quality;
@@ -75,6 +75,9 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
     }
     if first == "--gridfile-cell-polygons" {
         return run_gridfile_cell_polygons(args);
+    }
+    if first == "--landtype-cell-mask" {
+        return run_landtype_cell_mask(args);
     }
     if first == "--coupling-quality-from-mesh" {
         return run_coupling_quality_from_mesh(args);

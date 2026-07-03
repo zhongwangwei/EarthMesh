@@ -40,6 +40,25 @@ fn data_preprocess_onelayer_and_twolayer_read_fortran_windows() {
 }
 
 #[test]
+fn data_preprocess_onelayer_reads_lat_lon_source_data_order() {
+    let root = temp_root("earthmesh_cli_data_preprocess_threshold_lat_lon");
+    write_2d_lat_lon_file(&root.join("lai.nc"), "lai", &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let bounds = AreaJudgeSourceBounds {
+        minlon_source: 2,
+        maxlon_source: 3,
+        maxlat_source: 1,
+        minlat_source: 2,
+    };
+
+    let one = data_read_onelayer_fortran_indexed(root.join("lai.nc"), "lai", bounds)
+        .expect("read lat-lon onelayer window");
+    assert_eq!(one.values[1][1], 2.0);
+    assert_eq!(one.values[2][2], 6.0);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
     let root = temp_root("earthmesh_cli_data_preprocess_threshold_groups");
     write_2d_file(&root.join("lai.nc"), "lai", &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -102,6 +121,18 @@ fn write_2d_file(path: &std::path::Path, var: &str, values: &[f64]) {
     variable
         .put_values(values, (.., ..))
         .expect("write 2d values");
+}
+
+fn write_2d_lat_lon_file(path: &std::path::Path, var: &str, values: &[f64]) {
+    let mut file = netcdf::create(path).expect("create lat-lon threshold file");
+    file.add_dimension("latitude", 2).expect("latitude dim");
+    file.add_dimension("longitude", 3).expect("longitude dim");
+    let mut variable = file
+        .add_variable::<f64>(var, &["latitude", "longitude"])
+        .expect("add lat-lon var");
+    variable
+        .put_values(values, (.., ..))
+        .expect("write lat-lon values");
 }
 
 fn write_2layer_file(path: &std::path::Path, stem: &str, layer1: &[f64], layer2: &[f64]) {

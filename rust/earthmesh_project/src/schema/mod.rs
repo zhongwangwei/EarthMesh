@@ -1,7 +1,9 @@
-use earthmesh_core::EarthmeshConfig;
+use earthmesh_core::{EarthmeshConfig, EARTH_RADIUS_METERS};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_MIN_ANGLE_DEG: f64 = 25.0;
+pub const OLAM_SPRING_NXP1_KM: f64 =
+    std::f64::consts::PI * 2.0 * (EARTH_RADIUS_METERS / 1000.0) / 5.0;
 
 pub fn default_mask_sea_ratio() -> f64 {
     EarthmeshConfig::default().mask_sea_ratio
@@ -215,6 +217,39 @@ pub struct RefinementRecipe {
     pub specified_bbox: Option<SpecifiedBboxRefinement>,
     #[serde(default)]
     pub specified_close: Option<SpecifiedCloseRefinement>,
+    /// Default refinement backend: compose regions into a gradient-limited
+    /// cell-width field and drive Method-C from quantized target levels
+    /// (emits the `&hfield` namelist group).
+    #[serde(default)]
+    pub hfield: Option<HfieldRefinementRecipe>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HfieldRefinementRecipe {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_hfield_g")]
+    pub g: f64,
+    /// 0 = follow the run's max refinement level.
+    #[serde(default)]
+    pub max_level: u8,
+    #[serde(default)]
+    pub base_m: Option<f64>,
+}
+
+impl Default for HfieldRefinementRecipe {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            g: default_hfield_g(),
+            max_level: 0,
+            base_m: None,
+        }
+    }
+}
+
+fn default_hfield_g() -> f64 {
+    0.2
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -299,6 +334,10 @@ pub struct ExpertOverrides {
     #[serde(default)]
     pub vertex_pretect_layers: Option<i32>,
     #[serde(default)]
+    pub spring_global_type: Option<i32>,
+    #[serde(default)]
+    pub spring_regional_type: Option<i32>,
+    #[serde(default)]
     pub beta: Option<f32>,
     #[serde(default)]
     pub relax: Option<f32>,
@@ -346,14 +385,19 @@ pub enum FractionMethod {
     ConservativeOverlay,
 }
 
-/// Rough km->NXP estimate. The engine defines no exact formula, so this is
-/// anchored on the GUI defaults (about 9 km <-> NXP 40, i.e. NXP*km about 360)
-/// and should be calibrated per mesh family. `ApproxKm` in [`ResolutionSpec`] uses it.
+/// Approximate OLAM global NXP from the spring target spacing `2*pi*R/(5*NXP)`.
 pub fn km_to_nxp(km: f64) -> i32 {
     if km <= 0.0 {
         return 1;
     }
-    (360.0 / km).round().max(1.0) as i32
+    (OLAM_SPRING_NXP1_KM / km).round().max(1.0) as i32
+}
+
+pub fn nxp_to_km(nxp: i32) -> f64 {
+    if nxp <= 0 {
+        return OLAM_SPRING_NXP1_KM;
+    }
+    OLAM_SPRING_NXP1_KM / f64::from(nxp)
 }
 
 pub fn degree_to_nxp(degrees_at_equator: f64) -> i32 {

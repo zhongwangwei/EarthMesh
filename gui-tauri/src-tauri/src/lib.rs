@@ -41,6 +41,7 @@ pub fn run() {
             preserve_unexposed_project_fields,
             project_summary,
             set_layer_path,
+            autofill_data_layers_from_folder,
             set_target_cell,
             set_domain_global,
             set_domain_bbox,
@@ -49,6 +50,7 @@ pub fn run() {
             set_quality,
             set_refinement,
             set_specified_refinement,
+            set_hfield_refinement,
             set_expert,
             pick_data_file,
             pick_data_folder,
@@ -60,6 +62,7 @@ pub fn run() {
             kill_run,
             mesh_quality,
             mesh_cell_polygons,
+            mesh_merit_cells,
             shapefile_boundary_geojson
         ])
         .run(tauri::generate_context!())

@@ -409,7 +409,6 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
                 }
             }
         }
-
     }
 
     geom.edge_count = edge_cells.len();

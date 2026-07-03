@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 
 use earthmesh_mesh::classify_boundary_orders_fortran_indexed;
@@ -181,6 +182,7 @@ pub fn run_mask_postproc_ocean_domain(
             &finalization.vertex_reindex.vertex_mapping,
             &renewal.is_in_domain_ustr,
         )?;
+        let orders = split_disconnected_obc_segments(orders, &finalization.mesh);
         let obc_output = plan.obc_output.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -199,4 +201,92 @@ pub fn run_mask_postproc_ocean_domain(
         obc,
         obcv2,
     })
+}
+
+fn split_disconnected_obc_segments(
+    orders: earthmesh_mesh::BoundaryOrders,
+    mesh: &UnstructuredMesh,
+) -> earthmesh_mesh::BoundaryOrders {
+    let edges = mesh_triangle_edges(mesh);
+    let mut bdy_order = Vec::with_capacity(orders.bdy_order.len());
+    let mut obc_order = Vec::with_capacity(orders.obc_order.len());
+    let mut ibc_order = Vec::with_capacity(orders.ibc_order.len());
+
+    for idx in 0..orders.obc_order.len() {
+        if let (Some(&prev), cur) = (obc_order.last(), orders.obc_order[idx]) {
+            if prev != 1 && cur != 1 && !edges.contains(&edge_key(prev, cur)) {
+                bdy_order.push(1);
+                obc_order.push(1);
+                ibc_order.push(1);
+            }
+        }
+        bdy_order.push(orders.bdy_order[idx]);
+        obc_order.push(orders.obc_order[idx]);
+        ibc_order.push(orders.ibc_order[idx]);
+    }
+
+    earthmesh_mesh::BoundaryOrders {
+        bdy_order,
+        obc_order,
+        ibc_order,
+        rotation_start: orders.rotation_start,
+    }
+}
+
+fn mesh_triangle_edges(mesh: &UnstructuredMesh) -> HashSet<(usize, usize)> {
+    let mut edges = HashSet::new();
+    for vertices in mesh.m_to_w.iter().skip(1) {
+        let Ok(a) = usize::try_from(vertices[0]) else {
+            continue;
+        };
+        let Ok(b) = usize::try_from(vertices[1]) else {
+            continue;
+        };
+        let Ok(c) = usize::try_from(vertices[2]) else {
+            continue;
+        };
+        if a <= 1 || b <= 1 || c <= 1 {
+            continue;
+        }
+        edges.insert(edge_key(a, b));
+        edges.insert(edge_key(b, c));
+        edges.insert(edge_key(c, a));
+    }
+    edges
+}
+
+fn edge_key(a: usize, b: usize) -> (usize, usize) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_disconnected_obc_segments_inserts_separator_between_non_edges() {
+        let mesh = UnstructuredMesh {
+            m_points: Vec::new(),
+            w_points: Vec::new(),
+            m_to_w: vec![[1, 1, 1], [10, 11, 20], [12, 13, 21]],
+            w_to_m: Vec::new(),
+            n_w_to_m: Vec::new(),
+        };
+        let orders = earthmesh_mesh::BoundaryOrders {
+            bdy_order: vec![1, 10, 11, 12, 13],
+            obc_order: vec![1, 10, 11, 12, 13],
+            ibc_order: vec![1; 5],
+            rotation_start: None,
+        };
+
+        let split = split_disconnected_obc_segments(orders, &mesh);
+
+        assert_eq!(split.obc_order, vec![1, 10, 11, 1, 12, 13]);
+        assert_eq!(split.bdy_order.len(), split.obc_order.len());
+        assert_eq!(split.ibc_order.len(), split.obc_order.len());
+    }
 }

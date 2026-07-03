@@ -7,6 +7,7 @@ resolver = "2"
 members = [
     "rust/earthmesh_core",
     "rust/earthmesh_geometry",
+    "rust/earthmesh_hfield",
     "rust/earthmesh_mesh",
     "rust/earthmesh_quality",
     "rust/earthmesh_refine_planner",

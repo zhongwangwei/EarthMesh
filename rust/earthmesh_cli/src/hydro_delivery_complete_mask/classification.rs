@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{geojson_feature_nodes, JsonNode};
 
+const RIVER_PRIMARY_MIN_FRACTION: f64 = 0.005;
+
 pub(super) fn cell_mask_priority(class: &str) -> i32 {
     match class {
         "R3" => 30,
@@ -15,7 +17,13 @@ pub(super) fn cell_feature_mask_class(props: Option<&BTreeMap<String, JsonNode>>
     let get = |k: &str| props.and_then(|m| m.get(k)).and_then(JsonNode::as_str);
     if let Some(rc) = get("river_class") {
         if rc == "R2" || rc == "R3" {
-            return rc.to_string();
+            let fraction = props
+                .and_then(|m| m.get("river_fraction"))
+                .and_then(JsonNode::as_f64)
+                .unwrap_or(1.0);
+            if fraction >= RIVER_PRIMARY_MIN_FRACTION {
+                return rc.to_string();
+            }
         }
     }
     if get("mask_class") == Some("COAST") {

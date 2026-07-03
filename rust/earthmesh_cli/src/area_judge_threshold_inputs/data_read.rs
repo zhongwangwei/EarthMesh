@@ -61,20 +61,50 @@ pub(super) fn data_read_onelayer_values_fortran_indexed(
             "maxlat_source must be one-based",
         )
     })?;
-    let values = variable
-        .get_values::<f64, _>((
-            start_lon..start_lon + nlons_select,
-            start_lat..start_lat + nlats_select,
-        ))
-        .map_err(netcdf_to_io_error)?;
+    let dims: Vec<String> = variable
+        .dimensions()
+        .iter()
+        .map(|d| d.name().to_ascii_lowercase())
+        .collect();
+    let lat_lon = matches!(
+        dims.as_slice(),
+        [lat, lon, ..] if is_lat_dim(lat) && is_lon_dim(lon)
+    );
+    let values = if lat_lon {
+        variable
+            .get_values::<f64, _>((
+                start_lat..start_lat + nlats_select,
+                start_lon..start_lon + nlons_select,
+            ))
+            .map_err(netcdf_to_io_error)?
+    } else {
+        variable
+            .get_values::<f64, _>((
+                start_lon..start_lon + nlons_select,
+                start_lat..start_lat + nlats_select,
+            ))
+            .map_err(netcdf_to_io_error)?
+    };
     require_len(var_name, values.len(), nlons_select * nlats_select)?;
 
     let mut selected = vec![vec![0.0; nlats_select + 1]; nlons_select + 1];
     for lon_offset in 0..nlons_select {
         for lat_offset in 0..nlats_select {
-            selected[lon_offset + 1][lat_offset + 1] =
-                values[lon_offset * nlats_select + lat_offset];
+            let index = if lat_lon {
+                lat_offset * nlons_select + lon_offset
+            } else {
+                lon_offset * nlats_select + lat_offset
+            };
+            selected[lon_offset + 1][lat_offset + 1] = values[index];
         }
     }
     Ok(selected)
+}
+
+fn is_lon_dim(name: &str) -> bool {
+    name.contains("lon")
+}
+
+fn is_lat_dim(name: &str) -> bool {
+    name.contains("lat")
 }

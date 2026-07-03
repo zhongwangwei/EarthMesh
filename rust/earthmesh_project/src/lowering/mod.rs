@@ -1,6 +1,6 @@
 use crate::{
-    degree_to_nxp, km_to_nxp, DomainConfig, ProjectConfig, ProjectLayerRole, RegionShape,
-    ResolutionSpec,
+    criterion_catalog, degree_to_nxp, km_to_nxp, DomainConfig, HfieldRefinementRecipe,
+    ProjectConfig, ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayersNamelist, EarthmeshConfig, QualityNamelist, RefineConfig,
@@ -13,6 +13,8 @@ pub struct LoweredProject {
     pub refine: RefineConfig,
     pub data_layers: DataLayersNamelist,
     pub quality: QualityNamelist,
+    /// Emitted as a standalone `&hfield` group when enabled.
+    pub hfield: Option<HfieldRefinementRecipe>,
 }
 
 impl LoweredProject {
@@ -27,10 +29,25 @@ impl LoweredProject {
         } else {
             String::new()
         };
+        let hfield = match &self.hfield {
+            Some(recipe) if recipe.enabled && self.mkgrd.refine => {
+                let base_line = recipe
+                    .base_m
+                    .filter(|base| base.is_finite() && *base > 0.0)
+                    .map(|base| format!("   NL%hfield_base_m = {base}\n"))
+                    .unwrap_or_default();
+                format!(
+                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n{}/\n\n",
+                    recipe.g, recipe.max_level, base_line
+                )
+            }
+            _ => String::new(),
+        };
         format!(
-            "{}\n{}{}\n{}",
+            "{}\n{}{}{}\n{}",
             self.mkgrd.to_mkgrd_namelist(),
             mkrefine,
+            hfield,
             self.quality.to_quality_namelist(),
             self.data_layers.to_datalayers_namelist()
         )
@@ -105,6 +122,7 @@ impl ProjectConfig {
         // Data layers drive landtype_file + refine switches (core lowering).
         let dl = self.data_layers_namelist();
         dl.lower_into(&mut mkgrd, &mut refine);
+        apply_threshold_defaults(&mut refine, &self.data_layers);
         // Refinement actually runs only when a threshold (refine_cal) or
         // specified-mask (refine_spc) layer supplies data. Landcover/hydro layers
         // set inputs but DON'T drive refinement - turning `refine` on for them
@@ -178,6 +196,17 @@ impl ProjectConfig {
         if let Some(n) = self.expert.vertex_pretect_layers {
             refine.vertex_pretect_layers = n;
         }
+        if self.expert.spring_global_type.is_some() || self.expert.spring_regional_type.is_some() {
+            refine.is_transition = true;
+            refine.spring_global_type = self
+                .expert
+                .spring_global_type
+                .unwrap_or(refine.spring_global_type);
+            refine.spring_regional_type = self
+                .expert
+                .spring_regional_type
+                .unwrap_or(refine.spring_regional_type);
+        }
         if let Some(enabled) = self.expert.weak_concav_eliminate {
             refine.weak_concav_eliminate = enabled;
         }
@@ -188,9 +217,20 @@ impl ProjectConfig {
             mkgrd.relax = relax;
         }
 
+        let hfield = if mkgrd.refine {
+            match &self.refinement.hfield {
+                Some(recipe) if recipe.enabled => Some(recipe.clone()),
+                Some(_) => None,
+                None => Some(HfieldRefinementRecipe::default()),
+            }
+        } else {
+            None
+        };
+
         Ok(LoweredProject {
             mkgrd,
             refine,
+            hfield,
             data_layers: dl,
             quality: self.quality_namelist(),
         })
@@ -206,5 +246,55 @@ impl ProjectConfig {
 fn apply_i32_prefix(target: &mut [i32; 10], values: &[i32]) {
     for (slot, value) in target.iter_mut().zip(values.iter().copied()) {
         *slot = value;
+    }
+}
+
+fn apply_threshold_defaults(refine: &mut RefineConfig, layers: &[ProjectDataLayer]) {
+    for layer in layers {
+        let ProjectLayerRole::Threshold(field) = layer.role else {
+            continue;
+        };
+        if !layer.enabled || layer.path.trim().is_empty() {
+            continue;
+        }
+        let Some(value) = criterion_catalog()
+            .iter()
+            .find(|criterion| criterion.field == field)
+            .map(|criterion| criterion.gui.default)
+        else {
+            continue;
+        };
+        match field {
+            ThresholdField::Lai => set_pair(&mut refine.th_onelayer_lnd, 0, value),
+            ThresholdField::Slope => set_pair(&mut refine.th_onelayer_lnd, 2, value),
+            ThresholdField::Ks => set_layer_pair(&mut refine.th_twolayer_lnd, 0, value),
+            ThresholdField::KSolids => set_layer_pair(&mut refine.th_twolayer_lnd, 2, value),
+            ThresholdField::Tkdry => set_layer_pair(&mut refine.th_twolayer_lnd, 4, value),
+            ThresholdField::Tksatf => set_layer_pair(&mut refine.th_twolayer_lnd, 6, value),
+            ThresholdField::Tksatu => set_layer_pair(&mut refine.th_twolayer_lnd, 8, value),
+            ThresholdField::Sst => set_pair(&mut refine.th_onelayer_ocn, 0, value),
+            ThresholdField::Ssh => set_pair(&mut refine.th_onelayer_ocn, 2, value),
+            ThresholdField::Eke => set_pair(&mut refine.th_onelayer_ocn, 4, value),
+            ThresholdField::SeaSlope => set_pair(&mut refine.th_onelayer_ocn, 6, value),
+            ThresholdField::Typhoon => set_pair(&mut refine.th_onelayer_atmos, 0, value),
+        }
+    }
+}
+
+fn set_pair<const N: usize>(values: &mut [f64; N], start: usize, value: f64) {
+    if let Some(slot) = values.get_mut(start) {
+        *slot = value;
+    }
+    if let Some(slot) = values.get_mut(start + 1) {
+        *slot = value;
+    }
+}
+
+fn set_layer_pair(values: &mut [[f64; 2]; 10], start: usize, value: f64) {
+    if let Some(slot) = values.get_mut(start) {
+        *slot = [value; 2];
+    }
+    if let Some(slot) = values.get_mut(start + 1) {
+        *slot = [value; 2];
     }
 }

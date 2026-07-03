@@ -197,6 +197,10 @@ body.normal .expert{display:none}
 #mapsvg{height:280px;border-radius:8px;overflow:hidden;background:var(--bg)}
 #mapsvgModal{flex:1;min-height:300px;border-radius:8px;overflow:hidden;background:var(--bg)}
 .leaflet-container{font:inherit;background:var(--bg)}
+.cz-legend{padding:7px 9px;background:var(--elevated);border:1px solid var(--border);
+  border-radius:var(--r-sm);box-shadow:var(--shadow);color:var(--text);font-size:11px;line-height:1.4}
+.cz-legend .row{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.cz-legend i{width:16px;height:10px;border-radius:2px;display:inline-block}
 .logbox{font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
 .mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
 .mini-metric b{font-weight:700}
@@ -369,7 +373,10 @@ const TPL=[
  {intent:"Custom",global:false,nm:["Regional land","区域陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🗺️",c:"var(--land)",tags:[["landcover","地表覆盖"],["regional","区域"]]},
  {intent:"CoastalOcean",global:false,nm:["Regional ocean","区域海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"⚓",c:"var(--ocean)",tags:[["sea slope","海底坡度"],["regional","区域"]]},
  // Row 3 — coupled / specialised
- {intent:"MeritHydroCoast",global:false,nm:["MERIT-Hydro coast","MERIT-Hydro 海岸"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🔗",c:"var(--estuary)",tags:[["MERIT-Hydro","MERIT-Hydro"],["slope","坡度"]]},
+ {intent:"MeritHydroCoast",global:false,nm:["Coastal zone","海岸带"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🔗",c:"var(--coast)",tags:[["land / coast / ocean","陆地 / 海岸带 / 海洋"],["sea-land ratio","海陆比"]]},
+ {intent:"CoastalOcean",global:false,nm:["O1 ChinaSea LR","O1 中国海低分辨率"],meta:["ocean · FVCOM · tri · NXP80","海洋 · FVCOM · 三角 · NXP80"],ic:"O1",c:"var(--ocean)",tags:[["V2 close","V2 闭合区域"],["uniform","均匀"]],nxp:80,domainMode:"close",closePath:"input/Ocean/Ocean_ChinaSea_boundary.nml",closeFormat:"nml"},
+ {intent:"CoastalOcean",global:false,nm:["O2 ChinaSea HR","O2 中国海高分辨率"],meta:["ocean · FVCOM · tri · NXP768","海洋 · FVCOM · 三角 · NXP768"],ic:"O2",c:"var(--ocean)",tags:[["V2 close","V2 闭合区域"],["high-res","高分辨率"]],nxp:768,domainMode:"close",closePath:"input/Ocean/Ocean_ChinaSea_boundary.nml",closeFormat:"nml"},
+ {intent:"CoastalOcean",global:false,nm:["O3 ChinaSea VR","O3 中国海变分辨率"],meta:["ocean · FVCOM · tri · NXP192","海洋 · FVCOM · 三角 · NXP192"],ic:"O3",c:"var(--ocean)",tags:[["specified refine","指定细化"],["V2","V2"]],nxp:192,domainMode:"close",closePath:"input/Ocean/Ocean_ChinaSea_boundary.nml",closeFormat:"nml",maxPasses:2,specifiedClosePath:"input/Ocean/refine_spc_close01.nml"},
  // Row 4 — land applications
  {intent:"HydrologyLand",global:false,nm:["Hydrology land","水文陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🏞️",c:"var(--river)",tags:[["slope","坡度"],["MERIT-Hydro","MERIT-Hydro"]]},
  {intent:"UrbanLand",global:false,nm:["Urban land","城市陆面"],meta:["land · CoLM · hex","陆面 · CoLM · 六边形"],ic:"🏙️",c:"var(--urban)",tags:[["LAI","LAI"],["landcover","地表覆盖"]]},
@@ -382,7 +389,7 @@ const TPL=[
  {intent:"Estuary",global:false,nm:["Estuary ocean","河口海洋"],meta:["ocean · FVCOM · tri","海洋 · FVCOM · 三角"],ic:"〰",c:"var(--estuary)",tags:[["CaMa","CaMa"],["sea slope","海底坡度"]]},
  {intent:"LandOceanCoupled",global:false,nm:["Land-ocean coupled","陆海耦合"],meta:["coupled · CoLM · hex","耦合 · CoLM · 六边形"],ic:"🔀",c:"var(--estuary)",tags:[["LAI","LAI"],["sea slope","海底坡度"]]},
 ];
-const DEFAULT_TPL=6; // "MERIT-Hydro coast"
+const DEFAULT_TPL=6; // "Coastal zone"
 let tpl=DEFAULT_TPL;
 let regional=true; // domain mode: true=regional (bbox), false=global (no bounds)
 let domainMode="regional"; // global | regional | watershed | close
@@ -398,6 +405,15 @@ let runInfo=null;   // { ok, outdir, code, gridfile } from the last run
 let maxPasses=null; // null means use ProjectConfig summary default
 let outputPath=""; // base output folder; outputs go to <outputPath>/<project name>/
 const DEFAULT_NEST_SPRING_ITERATIONS=2000;
+const DEFAULT_REFINEMENT_NITER=200;
+const DEFAULT_OPENMP=16;
+const DEFAULT_NITER=5000;
+const DEFAULT_BETA=1.2;
+const DEFAULT_RELAX=0.04;
+const METHOD_C_MIN_BASE_NXP=10;
+const METHOD_C_MAX_REFINEMENT_LEVEL=5;
+const MERIT_SURFACE_PREVIEW_STRIDE=50;
+var expertEdit = { springStrategy: null }; // fallback for static renderStep before Tauri bridge state exists
 
 function templateDefaultCell(){
   const meta=((TPL[tpl]&&TPL[tpl].meta&&TPL[tpl].meta[0])||"").toLowerCase();
@@ -406,9 +422,33 @@ function templateDefaultCell(){
 function defaultOlamSpringNestIterations(cell){
   return String(cell || templateDefaultCell()).toLowerCase()==="tri" ? DEFAULT_NEST_SPRING_ITERATIONS : null;
 }
+function defaultRefineNiter(cell){
+  return defaultOlamSpringNestIterations(cell) ?? DEFAULT_REFINEMENT_NITER;
+}
 function autoSpringStrategyLabel(cell, regionalDomain, z){
   if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（嵌套弹性平滑）" : "Auto (nested spring smoothing)";
-  return regionalDomain ? (z ? "自动（区域平滑）" : "Auto (regional smoothing)") : (z ? "自动（全局平滑）" : "Auto (global smoothing)");
+  return regionalDomain ? (z ? "自动（区域平滑）" : "Auto (regional smoothing)") : (z ? "自动（全局平滑）" : "Auto (global smoothing)" );
+}
+function springStrategyOptions(selected,z){
+  const opts=[
+    ["", z?"自动（按网格/区域）":"Auto (mesh/domain)"],
+    ["global", z?"全局弹性 SpringGlobal=1":"Global spring (SpringGlobal=1)"],
+    ["regional1", z?"区域弹性 SpringRegional=1":"Regional spring (SpringRegional=1)"],
+    ["regional2", z?"区域弹性 SpringRegional=2":"Regional spring (SpringRegional=2)"],
+  ];
+  return opts.map(([v,label])=>`<option value="${v}" ${String(selected||"")===v?"selected":""}>${label}</option>`).join("");
+}
+function springTypesFor(strategy){
+  if(strategy==="global") return {springGlobalType:1,springRegionalType:0};
+  if(strategy==="regional1") return {springGlobalType:0,springRegionalType:1};
+  if(strategy==="regional2") return {springGlobalType:0,springRegionalType:2};
+  return {springGlobalType:null,springRegionalType:null};
+}
+function springStrategyFromTypes(globalType,regionalType){
+  if(globalType===1 && regionalType===0) return "global";
+  if(globalType===0 && regionalType===1) return "regional1";
+  if(globalType===0 && regionalType===2) return "regional2";
+  return null;
 }
 
 function selectTemplate(k){
@@ -434,21 +474,23 @@ function selectTemplate(k){
 }
 
 /* ---------------- resolution control (value + ticked slider) ---------------- */
-const KM_NXP_ANCHOR=360; // mirrors earthmesh_project::km_to_nxp display estimate
+const OLAM_SPRING_NXP1_KM=8006.322488295298; // 2*pi*R/5, mirrors earthmesh_project::km_to_nxp
 const KM_PER_DEG_EQ=111.32;
 const RES_UNITS=[
- {label:["km","km"], suffix:" km", min:1, max:60, step:0.5, def:9, ticks:[1,15,30,45,60]},
- {label:["NXP (grid points)","NXP（格点数）"], suffix:" NXP", min:8, max:400, step:1, def:40, ticks:[8,100,200,300,400]},
+ {label:["km","km"], suffix:" km", min:1, max:500, step:0.5, def:100, ticks:[1,25,100,250,500]},
+ {label:["NXP (grid points)","NXP（格点数）"], suffix:" NXP", min:8, max:8000, step:1, def:80, ticks:[8,80,192,768,8000]},
  {label:["degrees at equator","赤道经纬度"], suffix:"°", min:0.005, max:1, step:0.005, def:0.081, ticks:[0.005,0.25,0.5,0.75,1]},
 ];
 let resUnitIdx=0, resVal=RES_UNITS[0].def;
 function fmtRes(){const u=RES_UNITS[resUnitIdx];return resVal+u.suffix;}
-// Cross-unit equivalents. Engine relation: nxp ≈ 360/km (km_to_nxp).
+function kmToNxp(km){ return km>0 ? Math.max(1, Math.round(OLAM_SPRING_NXP1_KM/km)) : 0; }
+function nxpToKm(nxp){ return nxp>0 ? OLAM_SPRING_NXP1_KM/nxp : OLAM_SPRING_NXP1_KM; }
+// Cross-unit equivalents. Engine relation mirrors earthmesh_project::km_to_nxp.
 function fmtEquiv(){
   if(!(resVal>0)) return "";
-  if(resUnitIdx===1){ const km=KM_NXP_ANCHOR/resVal; return "≈ "+km.toFixed(1)+" km · "+(km/KM_PER_DEG_EQ).toFixed(3)+"°"; }
-  if(resUnitIdx===0){ const km=resVal; return "≈ "+Math.round(KM_NXP_ANCHOR/km)+" NXP · "+(km/KM_PER_DEG_EQ).toFixed(3)+"°"; }
-  if(resUnitIdx===2){ const km=resVal*KM_PER_DEG_EQ; return "≈ "+km.toFixed(1)+" km · "+Math.round(KM_NXP_ANCHOR/km)+" NXP"; }
+  if(resUnitIdx===1){ const km=nxpToKm(resVal); return "≈ "+km.toFixed(1)+" km · "+(km/KM_PER_DEG_EQ).toFixed(3)+"°"; }
+  if(resUnitIdx===0){ const km=resVal; return "≈ "+kmToNxp(km)+" NXP · "+(km/KM_PER_DEG_EQ).toFixed(3)+"°"; }
+  if(resUnitIdx===2){ const km=resVal*KM_PER_DEG_EQ; return "≈ "+km.toFixed(1)+" km · "+kmToNxp(km)+" NXP"; }
   return "";
 }
 function domainLabel(){
@@ -460,7 +502,7 @@ function domainLabel(){
 // ---- cell-count estimate (updates live with resolution + domain) ----
 function cellKm(){
   if(!(resVal>0)) return 0;
-  if(resUnitIdx===1) return KM_NXP_ANCHOR/resVal;     // NXP -> km
+  if(resUnitIdx===1) return nxpToKm(resVal);          // NXP -> km
   if(resUnitIdx===2) return resVal*KM_PER_DEG_EQ;     // degrees at equator -> km
   return resVal;                              // km
 }
@@ -561,11 +603,11 @@ function renderStep(i){
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 弹性调整":"EXPERT — spring adjustment"}</span>
         <div class="grid2" id="expertFields">
-          ${field(lang?"弹性平滑策略":"Spring smoothing",`<input class="input" value="${autoSpringStrategyLabel(null, domainMode !== "global", lang)}" readonly>`,lang?"默认自动按网格阶段选择":"automatic by mesh stage")}
-          ${field("OpenMP",`<input class="input" type="number" id="expertOpenmp" min="1" placeholder="${lang?"默认":"default"}">`,lang?"线程数":"threads")}
-          ${field("niter",`<input class="input" type="number" id="expertNiter" min="1" placeholder="${lang?"默认":"default"}">`,lang?"主迭代次数":"main iterations")}
-          ${field("beta",`<input class="input" type="number" id="expertBeta" min="0.001" step="0.01" placeholder="${lang?"默认":"default"}">`,lang?"弹性权重":"spring weight")}
-          ${field("relax",`<input class="input" type="number" id="expertRelax" min="0.001" step="0.001" placeholder="${lang?"默认":"default"}">`,lang?"松弛系数":"relaxation")}
+          ${field(lang?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,lang)}</select>`,autoSpringStrategyLabel(null, domainMode !== "global", lang))}
+          ${field("OpenMP",`<input class="input" type="number" id="expertOpenmp" min="1" placeholder="${DEFAULT_OPENMP}">`,lang?"默认 16 线程":"default 16 threads")}
+          ${field("niter",`<input class="input" type="number" id="expertNiter" min="1" placeholder="${DEFAULT_NITER}">`,lang?"默认 5000":"default 5000")}
+          ${field("beta",`<input class="input" type="number" id="expertBeta" min="0.001" step="0.01" placeholder="${DEFAULT_BETA}">`,lang?"默认 1.2":"default 1.2")}
+          ${field("relax",`<input class="input" type="number" id="expertRelax" min="0.001" step="0.001" placeholder="${DEFAULT_RELAX}">`,lang?"默认 0.04":"default 0.04")}
         </div>
       </div>`;
   }
@@ -594,7 +636,7 @@ function renderStep(i){
   }
   else if(i===3){
     html=head(STEPS[3].t[lang],lang?"统一管理输入数据图层。每行来自当前 ProjectConfig；缺失的数据会让对应判据自动灰显。":"One place for input layers. Rows come from the current ProjectConfig; missing data greys out its criterion.")
-    +`<div class="card"><h3>${lang?"数据图层管理器":"Data layer manager"}</h3><div class="ch">${lang?"正在读取项目图层…":"loading project layers…"}</div>
+    +`<div class="card"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><h3>${lang?"数据图层管理器":"Data layer manager"}</h3><button class="btn-ghost" id="autoLayerFolder" style="padding:4px 9px">${lang?"从文件夹匹配":"Match folder"}</button></div><div class="ch">${lang?"正在读取项目图层…":"loading project layers…"}</div>
       <table class="layers"><thead><tr>
         <th></th><th>${lang?"图层":"Layer"}</th><th>${lang?"用于判据":"Used by"}</th><th>${lang?"路径":"Path"}</th><th>${lang?"覆盖":"Coverage"}</th></tr></thead><tbody>
         <tr><td colspan="5" style="color:var(--muted);padding:12px">${lang?"正在从当前项目配置读取图层。":"Loading layers from the current project config."}</td></tr>
@@ -705,12 +747,105 @@ function refreshDomain(m){
     if(m._domainKey!==key){ m._domainKey=key; try{ m.fitBounds(r.getBounds(),{padding:[20,20],maxZoom:8}); }catch(e){} }
   }
 }
+function cssVarColor(name,fallback){
+  try{
+    const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }catch(e){ return fallback; }
+}
+function coastalZonePreviewGeojson(){
+  return _coastalGeojson;
+}
+function coastalZoneStyle(f){
+  const z=f && f.properties && f.properties.zone;
+  const color=z==="r3" ? "#c0266b"
+    : z==="r2" ? "#7c3aed"
+    : z==="land" ? cssVarColor("--land","#78aa5a")
+    : z==="ocean" ? cssVarColor("--ocean","#3c78c8")
+    : cssVarColor("--coast","#dc963c");
+  return {color,weight:0.8,fillColor:color,fillOpacity:z==="coast"?0.30:0.20};
+}
+function meshFeatureIsCoast(p){
+  const surface=String(p.surface_class||p.surface_class_code||p.zone||"").toLowerCase();
+  const mask=String(p.mask_class||p.hydro_mask_class||p.coast_class||"").toLowerCase();
+  const coastCode=String(p.coast_class_code||"").toLowerCase();
+  const coastFraction=Number(p.coastal_fraction||p.coast_fraction||0);
+  return !!p.has_coast || surface==="3" || mask.includes("coast") || /^[123]$/.test(coastCode) || coastFraction>0;
+}
+function meshFeatureStyle(f){
+  const p=(f&&f.properties)||{};
+  const surface=String(p.surface_class||p.surface_class_code||p.zone||"").toLowerCase();
+  const mask=String(p.mask_class||p.hydro_mask_class||p.coast_class||"").toLowerCase();
+  const primary=mask.toUpperCase();
+  const river=String(p.river_class||p.overlap_class||mask||"").toUpperCase();
+  const riverColor=river==="R3" ? "#c0266b" : river==="R2" ? "#7c3aed" : "";
+  const riverOutline=!!riverColor && primary!==river;
+  const coastFraction=Number(p.coastal_fraction||p.coast_fraction||0);
+  if(primary==="R3") return {color:"#c0266b",weight:1.4,fillColor:"#c0266b",fillOpacity:0.40};
+  if(primary==="R2") return {color:"#7c3aed",weight:1.2,fillColor:"#7c3aed",fillOpacity:0.32};
+  const hasCoast=meshFeatureIsCoast(p);
+  if(hasCoast){
+    const color=cssVarColor("--coast","#dc963c");
+    const style={color:riverOutline?riverColor:color,weight:riverOutline?1.6:1.5,fillColor:color,fillOpacity:Math.min(0.48,0.18+coastFraction*0.7)};
+    if(riverOutline) style.dashArray="3 2";
+    return style;
+  }
+  if(surface.includes("ocean") || surface==="2" || mask==="ocean"){
+    const color=cssVarColor("--ocean","#3c78c8");
+    const style={color:riverOutline?riverColor:color,weight:riverOutline?1.2:0.8,fillColor:color,fillOpacity:0.12};
+    if(riverOutline) style.dashArray="3 2";
+    return style;
+  }
+  if(surface.includes("land") || surface==="1" || mask==="land"){
+    const color=cssVarColor("--land","#78aa5a");
+    const style={color:riverOutline?riverColor:color,weight:riverOutline?1.2:0.8,fillColor:color,fillOpacity:0.12};
+    if(riverOutline) style.dashArray="3 2";
+    return style;
+  }
+  return {color:"#22d3ee",weight:0.9,fillOpacity:0.05};
+}
+function meshFeatureLabel(p){
+  const primary=p.mask_class||p.surface_class||p.label||"";
+  const river=p.river_class ? ` + ${p.river_class}` : "";
+  const frac=Number(p.river_fraction||0);
+  return `${primary}${river}${frac?` (${(frac*100).toFixed(1)}%)`:""}`;
+}
+function bringCoastToFront(layer){
+  try{ layer.eachLayer((l)=>{ if(l&&l.bringToFront&&meshFeatureIsCoast((l.feature&&l.feature.properties)||{})) l.bringToFront(); }); }catch(e){}
+}
+function setCoastalZoneLayer(m, geojson){
+  if(!m) return;
+  if(m._zoneLayer){ m.removeLayer(m._zoneLayer); m._zoneLayer=null; }
+  if(m._zoneLegend){ try{ m.removeControl(m._zoneLegend); }catch(e){} m._zoneLegend=null; }
+  if(!geojson || !geojson.features || !geojson.features.length) return;
+  try{
+    const layer=window.LEAF.geoJSON(geojson,{
+      style:meshFeatureStyle,
+      onEachFeature:(feature,l)=>{ const label=meshFeatureLabel(feature.properties||{}); if(label.trim()) l.bindTooltip(label,{sticky:true}); }
+    }).addTo(m);
+    bringCoastToFront(layer);
+    m._zoneLayer=layer;
+    const ctl=window.LEAF.control({position:"bottomleft"});
+    ctl.onAdd=function(){
+      const div=window.LEAF.DomUtil.create("div","cz-legend");
+      const rows=lang
+        ? [["r3","R3: 宽≥300m/上游≥5万km²"],["r2","R2: 宽≥50m/上游≥5000km²"],["coast","海岸带"],["land","陆地"],["ocean","海洋"]]
+        : [["r3","R3: width≥300m/upstream≥50k km²"],["r2","R2: width≥50m/upstream≥5k km²"],["coast","Coastal zone"],["land","Land"],["ocean","Ocean"]];
+      div.innerHTML=rows.map(([k,label])=>`<div class="row"><i style="background:${coastalZoneStyle({properties:{zone:k}}).fillColor}"></i><span>${label}</span></div>`).join("")
+        + `<div class="row"><i style="background:transparent;border:1.5px dashed #c0266b"></i><span>${lang?"虚线：该格有河道交集":"Dashed: river intersects cell"}</span></div>`;
+      return div;
+    };
+    ctl.addTo(m);
+    m._zoneLegend=ctl;
+  }catch(e){}
+}
 function setMeshLayer(m, geojson, doFit){
   if(!m) return;
   if(m._meshLayer){ m.removeLayer(m._meshLayer); m._meshLayer=null; }
   if(!geojson) return;
   try{
-    const layer=window.LEAF.geoJSON(geojson,{ style:{ color:"#22d3ee", weight:0.9, fillOpacity:0.05 } }).addTo(m);
+    const layer=window.LEAF.geoJSON(geojson,{ style:meshFeatureStyle }).addTo(m);
+    bringCoastToFront(layer);
     m._meshLayer=layer;
     if(doFit){ try{ m.fitBounds(layer.getBounds(),{padding:[20,20],maxZoom:9}); }catch(e){} }
   }catch(e){}
@@ -729,6 +864,7 @@ function setDomainBoundaryLayer(m, geojson, doFit){
 }
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
 let _domainGeojson=null; // watershed/domain outline overlay
+let _coastalGeojson=null; // real MERIT-Hydro land/coast/ocean overlay
 function applyMesh(geojson){
   _meshGeojson=geojson;
   const m=document.getElementById("mapsvg") && document.getElementById("mapsvg")._lmap;
@@ -745,11 +881,12 @@ function applyDomainBoundary(geojson, doFit){
 }
 function drawMap(){
   const m=ensureMap("mapsvg");
-  if(m){ refreshDomain(m); setDomainBoundaryLayer(m,_domainGeojson,false); setMeshLayer(m,_meshGeojson,false); setTimeout(()=>m.invalidateSize(),60); }
+  const zone=coastalZonePreviewGeojson();
+  if(m){ refreshDomain(m); setDomainBoundaryLayer(m,_domainGeojson,false); setMeshLayer(m,_meshGeojson,false); setCoastalZoneLayer(m,zone); setTimeout(()=>m.invalidateSize(),60); }
   const mm=document.getElementById("mapModal");
   if(mm && mm.style.display!=="none"){
     const m2=ensureMap("mapsvgModal");
-    if(m2){ refreshDomain(m2); setDomainBoundaryLayer(m2,_domainGeojson,false); setMeshLayer(m2,_meshGeojson,false); setTimeout(()=>m2.invalidateSize(),60); }
+    if(m2){ refreshDomain(m2); setDomainBoundaryLayer(m2,_domainGeojson,false); setMeshLayer(m2,_meshGeojson,false); setCoastalZoneLayer(m2,zone); setTimeout(()=>m2.invalidateSize(),60); }
   }
 }
 function openMapModal(){
@@ -757,7 +894,7 @@ function openMapModal(){
   mm.style.display="flex";
   const m2=ensureMap("mapsvgModal");
   if(m2){
-    refreshDomain(m2); setDomainBoundaryLayer(m2,_domainGeojson,true); setMeshLayer(m2,_meshGeojson,true); setTimeout(()=>m2.invalidateSize(),80);
+    refreshDomain(m2); setDomainBoundaryLayer(m2,_domainGeojson,true); setMeshLayer(m2,_meshGeojson,true); setCoastalZoneLayer(m2,coastalZonePreviewGeojson()); setTimeout(()=>m2.invalidateSize(),80);
     // Keep Leaflet in sync while the user drags the panel's resize handle.
     const panel=document.getElementById("mapModalPanel");
     if(panel && !panel._ro && window.ResizeObserver){
@@ -894,13 +1031,28 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
     if (lastSummary && lastSummary.effective_nxp != null) return lastSummary.effective_nxp;
     const r = currentResolution();
     if (r.nxp != null) return r.nxp;
-    if (r.approxDegree > 0) return Math.max(1, Math.round(KM_NXP_ANCHOR / (r.approxDegree*KM_PER_DEG_EQ)));
-    return r.approxKm > 0 ? Math.max(1, Math.round(KM_NXP_ANCHOR / r.approxKm)) : 0;
+    if (r.approxDegree > 0) return kmToNxp(r.approxDegree*KM_PER_DEG_EQ);
+    return r.approxKm > 0 ? kmToNxp(r.approxKm) : 0;
+  }
+  function currentResolutionLabel() {
+    const r = currentResolution();
+    if (r.nxp != null) return "NXP=" + r.nxp + " (≈" + nxpToKm(r.nxp).toFixed(1) + " km)";
+    if (r.approxDegree != null) {
+      const km = r.approxDegree * KM_PER_DEG_EQ;
+      return r.approxDegree + "° (≈" + km.toFixed(1) + " km, NXP≈" + kmToNxp(km) + ")";
+    }
+    if (r.approxKm != null) return r.approxKm + " km (NXP≈" + kmToNxp(r.approxKm) + ")";
+    return "NXP=" + currentNxp();
   }
   function regionalDefaultRefineLevel(nxp) {
     if (nxp >= 192) return 3;
     if (nxp >= 64) return 2;
     return 1;
+  }
+  function regionalMethodCLevelCap(nxp) {
+    let cap = 1;
+    while (cap < METHOD_C_MAX_REFINEMENT_LEVEL && METHOD_C_MIN_BASE_NXP * Math.pow(2, cap + 1) <= nxp) cap++;
+    return cap;
   }
   function currentIntent() {
     try { return (TPL[tpl] && TPL[tpl].intent) || "Custom"; } catch (e) { return "Custom"; }
@@ -917,8 +1069,8 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy }
   let cellEdit = null;     // null | "hex" | "tri"; null means template default
-let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, beta: null, relax: null, weakConcavEliminate: true };
-  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null };
+let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
+  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
@@ -972,19 +1124,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (cellEdit) {
       yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
     }
+    const spring = springTypesFor(expertEdit.springStrategy);
+    const legacyBackend = specifiedRefine.hfieldEnabled === false;
     yaml = await invoke("set_expert", {
       yaml, nxp: null, openmp: expertEdit.openmp, niter: expertEdit.niter,
       niterRefine: expertEdit.niterRefine ?? defaultOlamSpringNestIterations(cellEdit), maxIterSpc: expertEdit.maxIterSpc, maxIterCal: expertEdit.maxIterCal,
-      halo: expertEdit.halo, maxTransitionRow: expertEdit.maxTransitionRow, setDisType: expertEdit.setDisType,
-      numRc: expertEdit.numRc, vertexPretectLayers: expertEdit.vertexPretectLayers,
+      halo: legacyBackend ? expertEdit.halo : null,
+      maxTransitionRow: legacyBackend ? expertEdit.maxTransitionRow : null,
+      setDisType: legacyBackend ? expertEdit.setDisType : null,
+      numRc: legacyBackend ? expertEdit.numRc : null,
+      vertexPretectLayers: legacyBackend ? expertEdit.vertexPretectLayers : null,
+      springGlobalType: spring.springGlobalType, springRegionalType: spring.springRegionalType,
       beta: expertEdit.beta, relax: expertEdit.relax,
-      weakConcavEliminate: true
+      weakConcavEliminate: legacyBackend ? true : null
     });
     const summary = await invoke("project_summary", { yaml });
     const thresholdRefine = hasEnabledThresholdLayer(summary);
     const refinementEnabled = thresholdRefine || !!specifiedRefine.enabled;
+    const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : 9;
     const refinementPasses = refinementEnabled
-      ? Math.min(9, Math.max(1, maxPasses == null ? (summary.max_passes || 1) : maxPasses))
+      ? Math.min(maxRefinePasses, Math.max(1, maxPasses == null ? (summary.max_passes || 1) : maxPasses))
       : 0;
     yaml = await invoke("set_refinement", { yaml, enabled: refinementEnabled, maxPasses: refinementPasses });
     yaml = await invoke("set_specified_refinement", {
@@ -993,6 +1152,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       lon: specifiedRefine.lon, lat: specifiedRefine.lat, radiusKm: specifiedRefine.radiusKm,
       w: specifiedRefine.w, e: specifiedRefine.e, s: specifiedRefine.s, n: specifiedRefine.n,
       path: specifiedRefine.path
+    });
+    yaml = await invoke("set_hfield_refinement", {
+      yaml, enabled: specifiedRefine.hfieldEnabled !== false,
+      g: specifiedRefine.hfieldG ?? null,
+      maxLevel: specifiedRefine.hfieldMaxLevel ?? null,
+      baseM: specifiedRefine.hfieldBaseM ?? null
     });
     if (qualityEdit) {
       yaml = await invoke("set_quality",
@@ -1009,16 +1174,28 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
     setDomainClose: (yaml, path, format, seaRatio) => invoke("set_domain_close", { yaml, path, format, seaRatio }),
     shapefileBoundary: (path) => invoke("shapefile_boundary_geojson", { path }),
-    setExpert: (yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, beta, relax, weakConcavEliminate) =>
-      invoke("set_expert", { yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, beta, relax, weakConcavEliminate }),
+    setExpert: (yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, springGlobalType, springRegionalType, beta, relax, weakConcavEliminate) =>
+      invoke("set_expert", { yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, springGlobalType, springRegionalType, beta, relax, weakConcavEliminate }),
     setSpecifiedRefinement: (yaml, enabled, kind, lon, lat, radiusKm, w, e, s, n, path) =>
       invoke("set_specified_refinement", { yaml, enabled, kind, lon, lat, radiusKm, w, e, s, n, path }),
     pickDataFile: () => invoke("pick_data_file"),
     pickDataFolder: () => invoke("pick_data_folder"),
+    autofillLayers: (yaml, folder) => invoke("autofill_data_layers_from_folder", { yaml, folder }),
     openProject:  () => invoke("open_project"),
     saveProject:  (yaml) => invoke("save_project", { yaml }),
     runProject:   (yaml, outdir) => invoke("run_project", { yaml, outdir: outdir || null }),
   };
+
+  function clearCoastalOverlay() {
+    if (typeof _coastalGeojson !== "undefined") _coastalGeojson = null;
+    if (typeof drawMap === "function") drawMap();
+  }
+  function meshMeritLayer(summary) {
+    return summary && (summary.layers || []).find((l) => l.role_kind === "merit" && l.enabled && l.path);
+  }
+  function meshLandcoverLayer(summary) {
+    return summary && (summary.layers || []).find((l) => l.role_kind === "landcover" && l.enabled && l.path);
+  }
 
   function logLine(txt) {
     const box = document.getElementById("logbox") || document.querySelector('.live-pane[data-pane="log"]');
@@ -1061,6 +1238,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     runInfo = null;
     _lastQuality = null;
     if (typeof applyMesh === "function") applyMesh(null);
+    if (typeof _coastalGeojson !== "undefined") _coastalGeojson = null;
     document.querySelectorAll('.live-pane[data-pane="quality"] .mini-metric b')
       .forEach((b) => { b.textContent = "—"; b.style.color = "var(--muted)"; });
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
@@ -1074,6 +1252,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       lastSummary = null;
       cellEdit = null;
       maxPasses = null;
+      const t = (typeof TPL !== "undefined" && TPL[tpl]) ? TPL[tpl] : {};
+      if (t.nxp) { resUnitIdx = 1; resVal = t.nxp; }
+      if (t.domainMode) {
+        domainMode = t.domainMode;
+        regional = domainMode !== "global";
+      }
+      if (t.closePath) {
+        closePath = t.closePath;
+        closeFormat = t.closeFormat || inferCloseFormat(t.closePath);
+        domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: null };
+      }
+      if (t.maxPasses) maxPasses = t.maxPasses;
+      if (t.specifiedClosePath) {
+        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: t.specifiedClosePath };
+      } else {
+        specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+      }
+      if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       clearRunArtifacts();
   };
 
@@ -1086,6 +1282,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     let sum;
     try { sum = await api.summary(await composeYaml()); }
     catch (e) { logLine("✗ layers: " + e); return; }
+    clearCoastalOverlay();
     const tbody = table.querySelector("tbody");
     if (!tbody) return;
     const z = zh();
@@ -1180,6 +1377,22 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         enhanceLayerStep();
       };
     });
+    const auto = document.getElementById("autoLayerFolder");
+    if (auto) auto.onclick = async () => {
+      let folder;
+      try { folder = await api.pickDataFolder(); }
+      catch (e) { logLine("✗ " + e); return; }
+      if (!folder) return;
+      let yaml, next;
+      try {
+        yaml = await api.autofillLayers(await composeYaml(), folder);
+        next = await api.summary(yaml);
+      } catch (e) { logLine("✗ " + e); return; }
+      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
+      logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
+      enhanceLayerStep();
+    };
     const card = table.closest(".card");
     const ch = card && card.querySelector(".ch");
     if (ch) ch.textContent = (z ? "实时映射 ProjectConfig.data_layers · " : "live ProjectConfig.data_layers · ")
@@ -1282,6 +1495,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         domBbox = [b.w, b.e, b.s, b.n];
         paintSeaRatio();
         if (typeof updateEstimate === "function") updateEstimate();
+        if (typeof drawMap === "function") drawMap();
+        if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       }
     };
     if (domainEdit && domainEdit.kind === "bbox") {
@@ -1365,8 +1580,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       return row;
     };
 
-    const nMax = 9;
     const regionalRefine = sum.domain === "regional";
+    const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : 9;
     const refinementEnabled = hasEnabledThresholdLayer(sum) || !!specifiedRefine.enabled;
     if (refinementEnabled) {
       if (maxPasses > nMax) maxPasses = nMax;
@@ -1407,17 +1622,32 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax}</span></div>
       </div>
     </div>`;
-    const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${z ? "专家 — 底层细化控制" : "EXPERT — low-level refinement controls"}</span>
+    const backend = specifiedRefine.hfieldEnabled === false ? "legacy" : "hfield";
+    const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <span class="expert-tag">⚙ ${z ? "专家 — 细化方案" : "EXPERT — refinement backend"}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"弹性平滑策略":"Spring smoothing",`<input class="input" value="${autoSpringStrategyLabel(cellEdit, regionalRefine, z)}" readonly>`,z?"默认自动；不暴露 SpringGlobal/SpringRegional 组合":"auto by default; SpringGlobal/SpringRegional are not exposed")}
-        ${field("RL%niter_refine",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"默认 2000":"default 2000"}">`,z?"嵌套弹性平滑迭代":"Nested spring iterations")}
-        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"过渡 halo 行数组":"transition halo rows")}
-        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"最大过渡行数组":"max transition row array")}
-        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认":"default"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"距离分布函数":"distance distribution")}
-        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="${z?"默认":"default"}">`,z?"距离分布层数":"distance control layers")}
-        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="${z?"默认 1":"default 1"}">`,z?"顶点保护层数":"vertex protect layers")}
-        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" checked disabled> <span>${z?"开启":"On"}</span></label>`,z?"弱凹消除；默认必须开启":"weak concavity elimination; required on")}
+        ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场（默认）":"H-field (default)"}</option><option value="legacy" ${backend==="legacy"?"selected":""}>${z?"legacy 硬掩膜":"legacy hard-mask"}</option></select>`,z?"默认 H 场；legacy 只为复现实验":"default H-field; legacy only for parity")}
+      </div>
+      <div id="hfieldOptions" class="grid2" style="margin-top:10px;${backend==="hfield"?"":"display:none"}">
+        ${field(z?"梯度上限 g":"Gradation g",`<input class="input" type="number" id="hfieldG" min="0.01" max="1" step="0.01" value="${specifiedRefine.hfieldG ?? 0.2}">`,z?"默认 0.2；邻胞尺寸比 ≤ 1+g":"default 0.2; neighbor ratio ≤ 1+g")}
+        ${field(z?"最大级":"Max level",`<input class="input" type="number" id="hfieldMaxLevel" min="0" max="5" step="1" value="${specifiedRefine.hfieldMaxLevel ?? 0}">`,z?"0 = 自动；上限 5":"0 = auto; max 5")}
+        ${field(z?"基准尺寸 m":"Base size m",`<input class="input" type="number" id="hfieldBaseM" min="0" step="1000" placeholder="${Math.round(nxpToKm(currentNxp())*1000)}" value="${specifiedRefine.hfieldBaseM ?? ""}">`,z?"空=自动，按 2πR/(5·NXP)":"blank=auto from 2πR/(5·NXP)")}
+      </div>
+      <div id="legacyOptions" class="grid2" style="margin-top:10px;${backend==="legacy"?"":"display:none"}">
+        <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"legacy 使用旧的指定/阈值硬掩膜，不写 &hfield。以下参数只属于 legacy。":"Legacy uses old specified/threshold hard masks and does not emit &hfield. The controls below are legacy-only."}</div>
+        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"legacy 默认 4,4,3":"legacy default 4,4,3")}
+        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"legacy 默认 4,4,3":"legacy default 4,4,3")}
+        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"legacy 距离分布函数":"legacy distance distribution")}
+        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"legacy 默认 0":"legacy default 0")}
+        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"legacy 默认 1":"legacy default 1")}
+        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" checked disabled> <span>${z?"开启":"On"}</span></label>`,z?"legacy 默认开启；必须开启":"legacy default on; required")}
+      </div>
+    </div>`;
+    const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <span class="expert-tag">⚙ ${z ? "专家 — 通用平滑控制" : "EXPERT — common smoothing controls"}</span>
+      <div class="grid2" style="margin-top:10px">
+        ${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
+        ${field("RL%niter_refine",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${defaultRefineNiter(cellEdit)}">`,z?`默认 ${defaultRefineNiter(cellEdit)}`:`default ${defaultRefineNiter(cellEdit)}`)}
       </div>
     </div>`;
 
@@ -1447,14 +1677,30 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     while (ch && ch.nextSibling) ch.nextSibling.remove();
     if (ch) {
       ch.textContent = regionalRefine
-        ? (z ? "区域模式会自动按计算域细化；指定细化仅表示额外的用户指定范围。" : "Regional mode refines by the domain automatically; specified refinement means an extra user-defined target.")
+        ? (z ? "区域 bbox 默认使用内缩矩形局部细化，指定圆形可覆盖；非 bbox 区域从域轮廓派生细化。指定 bbox 在区域模式中会被忽略。" : "Regional bbox defaults to inset bbox refinement and specified circles override it; non-bbox regions derive refinement from the domain outline. Specified bboxes are ignored in regional mode.")
         : (z ? "细化策略分为指定细化和阈值细化。" : "Refinement is split into specified and threshold refinement.");
       const anchor = ch;
-      const mp = specified + threshold + expertRefine;
+      const mp = specified + hfieldBlock + threshold + expertRefine;
       if (crits.length) anchor.insertAdjacentHTML("afterend", mp);
       else anchor.insertAdjacentHTML("afterend", mp);
       const rows = document.getElementById("thresholdRows");
       if (rows) crits.forEach((l) => rows.appendChild(criterionRow(l)));
+      const backendSel = document.getElementById("refineBackend");
+      const syncBackend = () => {
+        if (backendSel) specifiedRefine.hfieldEnabled = backendSel.value !== "legacy";
+        const showH = specifiedRefine.hfieldEnabled !== false;
+        const hf = document.getElementById("hfieldOptions"); if (hf) hf.style.display = showH ? "" : "none";
+        const lg = document.getElementById("legacyOptions"); if (lg) lg.style.display = showH ? "none" : "";
+        expertEdit.enabled = expertEnabled();
+        clearRunArtifacts();
+      };
+      if (backendSel) backendSel.onchange = syncBackend;
+      const hfG = document.getElementById("hfieldG");
+      if (hfG) hfG.addEventListener("input", () => { const v = parseFloat(hfG.value); specifiedRefine.hfieldG = Number.isFinite(v) ? v : null; });
+      const hfMax = document.getElementById("hfieldMaxLevel");
+      if (hfMax) hfMax.addEventListener("input", () => { const v = parseInt(hfMax.value, 10); specifiedRefine.hfieldMaxLevel = Number.isFinite(v) ? v : null; });
+      const hfBase = document.getElementById("hfieldBaseM");
+      if (hfBase) hfBase.addEventListener("input", () => { const v = parseFloat(hfBase.value); specifiedRefine.hfieldBaseM = Number.isFinite(v) && v > 0 ? v : null; });
     }
     // toggles (only for criteria that have data)
     critCard.querySelectorAll(".em-crit").forEach((row) => {
@@ -1490,13 +1736,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const erSetDis = document.getElementById("expertSetDisType");
     const erNumRc = document.getElementById("expertNumRc");
     const erVertex = document.getElementById("expertVertexPretectLayers");
+    const erSpring = document.getElementById("expertRefineSpringStrategy");
     const erWeakConcav = document.getElementById("expertWeakConcav");
-    if (erNiter) erNiter.value = expertEdit.niterRefine ?? defaultOlamSpringNestIterations(cellEdit) ?? "";
+    if (erNiter) erNiter.value = expertEdit.niterRefine ?? "";
     if (erHalo) erHalo.value = Array.isArray(expertEdit.halo) ? expertEdit.halo.join(",") : "";
     if (erRows) erRows.value = Array.isArray(expertEdit.maxTransitionRow) ? expertEdit.maxTransitionRow.join(",") : "";
     if (erSetDis) erSetDis.value = expertEdit.setDisType ?? "";
     if (erNumRc) erNumRc.value = expertEdit.numRc ?? "";
     if (erVertex) erVertex.value = expertEdit.vertexPretectLayers ?? "";
+    if (erSpring) erSpring.value = expertEdit.springStrategy ?? "";
     if (erWeakConcav) erWeakConcav.checked = true;
     const syncExpertRefine = () => {
       expertEdit.niterRefine = readOptionalInt("expertNiterRefine");
@@ -1505,11 +1753,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       expertEdit.setDisType = erSetDis && erSetDis.value ? erSetDis.value : null;
       expertEdit.numRc = readOptionalInt("expertNumRc");
       expertEdit.vertexPretectLayers = readOptionalInt("expertVertexPretectLayers");
+      expertEdit.springStrategy = erSpring && erSpring.value ? erSpring.value : null;
       expertEdit.weakConcavEliminate = true;
       expertEdit.enabled = expertEnabled();
       clearRunArtifacts();
     };
-    [erNiter, erHalo, erRows, erSetDis, erNumRc, erVertex, erWeakConcav].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
+    [erNiter, erHalo, erRows, erSetDis, erNumRc, erVertex, erSpring, erWeakConcav].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
     const specOn = document.getElementById("specifiedRefineOn");
     const specKind = document.getElementById("specifiedKind");
     const specLon = document.getElementById("specifiedLon");
@@ -1669,7 +1918,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
       hiddenDomainShape = domainEdit.kind === "hidden" ? domainEdit.shape : null;
       expertEdit = {
-        enabled: sum.expert_openmp != null || sum.expert_niter != null || sum.expert_niter_refine != null || sum.expert_max_iter_spc != null || sum.expert_max_iter_cal != null || sum.expert_halo != null || sum.expert_max_transition_row != null || sum.expert_set_dis_type != null || sum.expert_num_rc != null || sum.expert_vertex_pretect_layers != null || sum.expert_beta != null || sum.expert_relax != null,
+        enabled: sum.expert_openmp != null || sum.expert_niter != null || sum.expert_niter_refine != null || sum.expert_max_iter_spc != null || sum.expert_max_iter_cal != null || sum.expert_halo != null || sum.expert_max_transition_row != null || sum.expert_set_dis_type != null || sum.expert_num_rc != null || sum.expert_vertex_pretect_layers != null || sum.expert_spring_global_type != null || sum.expert_spring_regional_type != null || sum.expert_beta != null || sum.expert_relax != null,
         nxp: null,
         openmp: sum.expert_openmp ?? null,
         niter: sum.expert_niter ?? null,
@@ -1681,6 +1930,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         setDisType: sum.expert_set_dis_type ?? null,
         numRc: sum.expert_num_rc ?? null,
         vertexPretectLayers: sum.expert_vertex_pretect_layers ?? null,
+        springStrategy: springStrategyFromTypes(sum.expert_spring_global_type, sum.expert_spring_regional_type),
         beta: sum.expert_beta ?? null,
         relax: sum.expert_relax ?? null,
         weakConcavEliminate: true,
@@ -1696,8 +1946,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         s: sum.specified_refine_bbox ? sum.specified_refine_bbox[2] : null,
         n: sum.specified_refine_bbox ? sum.specified_refine_bbox[3] : null,
         path: sum.specified_refine_path ?? null,
+        hfieldEnabled: sum.hfield_enabled !== false,
+        hfieldG: sum.hfield_g ?? null,
+        hfieldMaxLevel: sum.hfield_max_level ?? null,
+        hfieldBaseM: sum.hfield_base_m ?? null,
       };
-      if (expertEdit.enabled && typeof setExpertMode === "function") setExpertMode(true);
+      if ((expertEdit.enabled || specifiedRefine.hfieldEnabled === false) && typeof setExpertMode === "function") setExpertMode(true);
       qualityEdit = { minAngle: sum.min_angle_deg, policy: sum.on_violation || "warn" };
       maxPasses = sum.max_passes;
       if (typeof renderSteps === "function") renderSteps();
@@ -1734,13 +1988,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function resetProject() {
     tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "polygon_shp"; cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
+    if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();
     loadWatershedBoundary("");
     for (const k of Object.keys(layerEdits)) delete layerEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
-    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, beta: null, relax: null, weakConcavEliminate: true };
-    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null };
+    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
+    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
     metadataEdit = { authors: [], description: "" };
@@ -1808,24 +2063,28 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return "polygon_shp";
   }
   function expertEnabled() {
+    const legacyBackend = specifiedRefine.hfieldEnabled === false;
     return expertEdit.openmp != null || expertEdit.niter != null || expertEdit.niterRefine != null ||
-      expertEdit.maxIterSpc != null || expertEdit.maxIterCal != null || expertEdit.halo != null ||
-      expertEdit.maxTransitionRow != null || expertEdit.setDisType != null || expertEdit.numRc != null ||
-      expertEdit.vertexPretectLayers != null || expertEdit.beta != null || expertEdit.relax != null ||
-      false;
+      expertEdit.maxIterSpc != null || expertEdit.maxIterCal != null ||
+      (legacyBackend && (expertEdit.halo != null || expertEdit.maxTransitionRow != null ||
+        expertEdit.setDisType != null || expertEdit.numRc != null ||
+        expertEdit.vertexPretectLayers != null || legacyBackend)) ||
+      expertEdit.springStrategy != null || expertEdit.beta != null || expertEdit.relax != null;
   }
 
   async function wireExpertTargetStep() {
+    const spring = document.getElementById("expertSpringStrategy");
     const openmp = document.getElementById("expertOpenmp");
     const niter = document.getElementById("expertNiter");
     const beta = document.getElementById("expertBeta");
     const relax = document.getElementById("expertRelax");
-    if (!openmp && !niter && !beta && !relax) return;
+    if (!spring && !openmp && !niter && !beta && !relax) return;
     const paint = () => {
-      if (openmp) openmp.value = expertEdit.openmp ?? "";
-      if (niter) niter.value = expertEdit.niter ?? "";
-      if (beta) beta.value = expertEdit.beta ?? "";
-      if (relax) relax.value = expertEdit.relax ?? "";
+      if (spring) spring.value = expertEdit.springStrategy ?? "";
+      if (openmp) openmp.value = expertEdit.openmp ?? DEFAULT_OPENMP;
+      if (niter) niter.value = expertEdit.niter ?? DEFAULT_NITER;
+      if (beta) beta.value = expertEdit.beta ?? DEFAULT_BETA;
+      if (relax) relax.value = expertEdit.relax ?? DEFAULT_RELAX;
     };
     const update = async () => {
       expertEdit = {
@@ -1841,6 +2100,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         setDisType: expertEdit.setDisType,
         numRc: expertEdit.numRc,
         vertexPretectLayers: expertEdit.vertexPretectLayers,
+        springStrategy: spring && spring.value ? spring.value : null,
         beta: readOptionalFloat("expertBeta"),
         relax: readOptionalFloat("expertRelax"),
         weakConcavEliminate: true,
@@ -1851,7 +2111,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       paint();
     };
     paint();
-    [openmp, niter, beta, relax].forEach((el) => { if (el) el.oninput = update; });
+    [spring, openmp, niter, beta, relax].forEach((el) => { if (el) el.oninput = update; if (el) el.onchange = update; });
   }
 
   async function enhanceTargetOutputStep() {
@@ -2042,16 +2302,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
         try { lastSummary = await api.summary(yaml); } catch (e) {}
         const autoRefine = lastSummary && lastSummary.domain === "regional" && lastSummary.on_violation === "auto_refine";
-        const requestedLevel = maxPasses == null ? regionalDefaultRefineLevel(currentNxp()) : Math.max(1, Math.min(9, maxPasses));
+        const maxAutoLevel = regionalMethodCLevelCap(currentNxp());
+        const requestedLevel = maxPasses == null ? regionalDefaultRefineLevel(currentNxp()) : Math.max(1, Math.min(maxAutoLevel, maxPasses));
         const actualLevel = requestedLevel;
-        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", NXP=" + currentNxp() + (autoRefine ? ", auto refine level=" + actualLevel : "") + ")");
+        if (autoRefine && maxPasses != null && maxPasses > actualLevel) maxPasses = actualLevel;
+        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + (autoRefine ? ", auto refine level=" + actualLevel : "") + ")");
         const r = await api.runProject(yaml, outputPath || null);
         logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
                      : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
         setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
         hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile };
         if (!(r.ok && r.gridfile && autoRefine)) {
-          if (autoRefine && actualLevel < 9) {
+          if (autoRefine && actualLevel < maxAutoLevel) {
             if (bestRun) {
               logLine(zh() ? "⚠ 更高细化级别运行失败，保留上一次可用结果。" : "⚠ higher refine level failed; keeping the last usable result.");
               runInfo = bestRun;
@@ -2073,8 +2335,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
           const verdict = String(finalQuality.verdict || "").toLowerCase();
           logLine("✓ " + (zh() ? "质量检查：" : "quality check: ") + (finalQuality.verdict || "unknown"));
           if (verdict !== "fail") break;
-          if (actualLevel >= 9) {
-            logLine(zh() ? "⚠ 自动修复已到最大细化级别 9，保留最后一次结果。" : "⚠ auto repair reached max refine level 9; keeping the last result.");
+          if (actualLevel >= maxAutoLevel) {
+            logLine((zh() ? "⚠ 自动修复已到最大细化级别 " : "⚠ auto repair reached max refine level ") + maxAutoLevel + (zh() ? "，保留最后一次结果。" : "; keeping the last result."));
             break;
           }
           maxPasses = actualLevel + 1;
@@ -2118,6 +2380,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function readMeshQuality(gridfile) {
     return invoke("mesh_quality", { gridfile, kind: meshViewKind() });
   }
+  function loadMeshMeritCells(gridfile, kind) {
+    const summary = lastSummary;
+    const merit = meshMeritLayer(summary);
+    const landcover = meshLandcoverLayer(summary);
+    const b = summary && summary.bbox;
+    if (currentIntent() !== "MeritHydroCoast" || !merit || !b) { clearCoastalOverlay(); return; }
+    invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null })
+      .then((txt) => {
+        _coastalGeojson = JSON.parse(txt);
+        if (typeof drawMap === "function") drawMap();
+        logLine(zh() ? "✓ 最终网格已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
+      })
+      .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
+  }
   async function loadQualityAndMesh(gridfile, knownQuality) {
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
     const kind = (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
@@ -2125,7 +2401,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
     invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })
-      .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map"); })
+      .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map"); loadMeshMeritCells(gridfile, kind); })
       .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
   }
 

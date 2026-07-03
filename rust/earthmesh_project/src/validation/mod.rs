@@ -1,9 +1,9 @@
 use crate::{
     criterion_catalog, engine_mapping::DEPRECATED_OLAM_MODEL_FORMAT_ERROR, DomainConfig,
-    ExpertOverrides, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat,
-    ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe,
-    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCloseRefinement, ThresholdField,
+    ExpertOverrides, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig,
+    ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig,
+    RefinementRecipe, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
+    SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
 };
 use std::collections::HashSet;
 
@@ -226,6 +226,9 @@ impl RefinementRecipe {
         if let Some(close) = &self.specified_close {
             close.validate()?;
         }
+        if let Some(hfield) = &self.hfield {
+            hfield.validate()?;
+        }
         let shape_count = usize::from(self.specified_circle.is_some())
             + usize::from(self.specified_bbox.is_some())
             + usize::from(self.specified_close.is_some());
@@ -240,6 +243,24 @@ impl RefinementRecipe {
         }
         if self.max_passes > 9 {
             return Err("refinement max_passes must be <= 9".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl HfieldRefinementRecipe {
+    fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !self.g.is_finite() || self.g <= 0.0 {
+            return Err("h-field gradation g must be positive".to_string());
+        }
+        if self.max_level > 5 {
+            return Err("h-field max_level must be in 0..=5".to_string());
+        }
+        if matches!(self.base_m, Some(base) if !base.is_finite() || base <= 0.0) {
+            return Err("h-field base_m must be positive when set".to_string());
         }
         Ok(())
     }
@@ -372,6 +393,18 @@ impl ExpertOverrides {
         }
         if matches!(self.vertex_pretect_layers, Some(n) if n <= 0) {
             return Err("expert vertex_pretect_layers override must be > 0".to_string());
+        }
+        if matches!(self.spring_global_type, Some(n) if !(0..=1).contains(&n)) {
+            return Err("expert spring_global_type override must be 0 or 1".to_string());
+        }
+        if matches!(self.spring_regional_type, Some(n) if !(0..=2).contains(&n)) {
+            return Err("expert spring_regional_type override must be 0, 1, or 2".to_string());
+        }
+        if self.spring_global_type.unwrap_or(0) > 0 && self.spring_regional_type.unwrap_or(0) > 0 {
+            return Err(
+                "only one of expert spring_global_type and spring_regional_type can be > 0"
+                    .to_string(),
+            );
         }
         if matches!(self.beta, Some(v) if !v.is_finite() || v <= 0.0) {
             return Err("expert beta override must be finite and > 0".to_string());

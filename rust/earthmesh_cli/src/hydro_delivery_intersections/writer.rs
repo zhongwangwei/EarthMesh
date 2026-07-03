@@ -41,6 +41,27 @@ pub fn write_earthmesh_intersection_geojson(
     use earthmesh_geometry::{
         clip_convex_polygon, polygon_area, polygon_intersection_pieces, polygon_union_area, Point,
     };
+    let ring_bounds = |ring: &[Point]| -> (f64, f64, f64, f64) {
+        ring.iter().fold(
+            (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), p| {
+                (
+                    min_x.min(p.x),
+                    max_x.max(p.x),
+                    min_y.min(p.y),
+                    max_y.max(p.y),
+                )
+            },
+        )
+    };
+    let bounds_overlap = |a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)| -> bool {
+        a.0 <= b.1 && a.1 >= b.0 && a.2 <= b.3 && a.3 >= b.2
+    };
     let domain_polys: Option<Vec<Vec<Point>>> = domain.map(|polys| {
         polys
             .iter()
@@ -59,7 +80,8 @@ pub fn write_earthmesh_intersection_geojson(
     let included: std::collections::BTreeSet<&str> =
         include_classes.iter().map(|s| s.as_str()).collect();
 
-    let mut class_rings: BTreeMap<String, Vec<Vec<earthmesh_geometry::Point>>> = BTreeMap::new();
+    let mut class_rings: BTreeMap<String, Vec<(Vec<Point>, (f64, f64, f64, f64))>> =
+        BTreeMap::new();
     for feature in geojson_feature_nodes(&corridors_root) {
         let obj = feature.as_object();
         let class = feature_river_class(
@@ -78,11 +100,21 @@ pub fn write_earthmesh_intersection_geojson(
                     Some(dpolys) => {
                         for dpoly in dpolys {
                             for piece in polygon_intersection_pieces(&ring, dpoly) {
-                                class_rings.entry(class.clone()).or_default().push(piece);
+                                let bounds = ring_bounds(&piece);
+                                class_rings
+                                    .entry(class.clone())
+                                    .or_default()
+                                    .push((piece, bounds));
                             }
                         }
                     }
-                    None => class_rings.entry(class.clone()).or_default().push(ring),
+                    None => {
+                        let bounds = ring_bounds(&ring);
+                        class_rings
+                            .entry(class.clone())
+                            .or_default()
+                            .push((ring, bounds));
+                    }
                 }
             }
         }
@@ -98,6 +130,22 @@ pub fn write_earthmesh_intersection_geojson(
         if cell_rings.is_empty() {
             continue;
         }
+        let cell_bounds = cell_rings.iter().map(|r| ring_bounds(r)).fold(
+            (
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), b| {
+                (
+                    min_x.min(b.0),
+                    max_x.max(b.1),
+                    min_y.min(b.2),
+                    max_y.max(b.3),
+                )
+            },
+        );
         let cell_area: f64 = cell_rings.iter().map(|r| polygon_area(r)).sum();
         if cell_area <= 0.0 {
             continue;
@@ -119,7 +167,10 @@ pub fn write_earthmesh_intersection_geojson(
         for (class, rings) in &class_rings {
             let mut clipped: Vec<Vec<earthmesh_geometry::Point>> = Vec::new();
             for cr in &cell_rings {
-                for corridor in rings {
+                for (corridor, corridor_bounds) in rings {
+                    if !bounds_overlap(cell_bounds, *corridor_bounds) {
+                        continue;
+                    }
                     let piece = clip_convex_polygon(corridor, cr);
                     if piece.len() >= 3 {
                         clipped.push(piece);

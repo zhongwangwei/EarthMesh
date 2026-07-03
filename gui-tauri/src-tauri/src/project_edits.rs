@@ -1,10 +1,11 @@
 //! Project YAML edit command handlers.
 
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseMaskFormat, DomainConfig, MeshCellKind, ProjectConfig,
-    RegionShape, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
-    ViolationPolicy,
+    default_mask_sea_ratio, CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, MeshCellKind,
+    ProjectConfig, ProjectLayerRole, RegionShape, SpecifiedBboxRefinement,
+    SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField, ViolationPolicy,
 };
+use std::path::{Path, PathBuf};
 
 fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
     cfg.validate()?;
@@ -28,6 +29,74 @@ pub(crate) fn set_layer_path(
     layer.path = path;
     layer.enabled = enabled;
     validated_yaml(cfg)
+}
+
+#[tauri::command]
+pub(crate) fn autofill_data_layers_from_folder(
+    yaml: String,
+    folder: String,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let files = nc_files(Path::new(&folder))?;
+    for layer in &mut cfg.data_layers {
+        let matched = match layer.role {
+            ProjectLayerRole::LandType => find_by_stems(
+                &files,
+                &["landtype_igbp_update", "landtype_usgs_update", "landtype"],
+            ),
+            ProjectLayerRole::Threshold(field) => find_by_stems(&files, threshold_stems(field)),
+            _ => None,
+        };
+        if let Some(path) = matched {
+            layer.path = path.to_string_lossy().into_owned();
+            layer.enabled = true;
+        }
+    }
+    validated_yaml(cfg)
+}
+
+fn nc_files(folder: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(folder).map_err(|e| format!("read {}: {e}", folder.display()))? {
+        let path = entry
+            .map_err(|e| format!("read {}: {e}", folder.display()))?
+            .path();
+        if path
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "nc" | "nc4"))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn find_by_stems(files: &[PathBuf], stems: &[&str]) -> Option<PathBuf> {
+    stems.iter().find_map(|stem| {
+        files.iter().find_map(|path| {
+            let found = path.file_stem()?.to_str()?.to_ascii_lowercase();
+            (found == *stem || found.starts_with(&format!("{stem}_"))).then(|| path.clone())
+        })
+    })
+}
+
+fn threshold_stems(field: ThresholdField) -> &'static [&'static str] {
+    match field {
+        ThresholdField::Lai => &["lai", "lai_bnu"],
+        ThresholdField::Slope => &["slope_avg"],
+        ThresholdField::Ks => &["k_s"],
+        ThresholdField::KSolids => &["k_solids"],
+        ThresholdField::Tkdry => &["tkdry"],
+        ThresholdField::Tksatf => &["tksatf"],
+        ThresholdField::Tksatu => &["tksatu"],
+        ThresholdField::Sst => &["sst"],
+        ThresholdField::Ssh => &["ssh"],
+        ThresholdField::Eke => &["eke"],
+        ThresholdField::SeaSlope => &["sea_slope"],
+        ThresholdField::Typhoon => &["typhoon"],
+    }
 }
 
 /// Set the target cell shape, returning the updated YAML.
@@ -184,6 +253,42 @@ pub(crate) fn set_specified_refinement(
     validated_yaml(cfg)
 }
 
+/// Toggle h-field refinement (continuous cell-width field driving Method-C).
+/// `enabled=false` stores an explicit legacy hard-mask override; absent hfield
+/// recipes default to h-field during lowering.
+#[tauri::command]
+pub(crate) fn set_hfield_refinement(
+    yaml: String,
+    enabled: bool,
+    g: Option<f64>,
+    max_level: Option<u8>,
+    base_m: Option<f64>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.refinement.hfield = if enabled {
+        let g = g.unwrap_or(0.2);
+        if !g.is_finite() || g <= 0.0 {
+            return Err("h-field gradation g must be positive".to_string());
+        }
+        let max_level = max_level.unwrap_or(0);
+        if max_level > 5 {
+            return Err("h-field max_level must be in 0..=5 (0 = auto)".to_string());
+        }
+        Some(HfieldRefinementRecipe {
+            enabled: true,
+            g,
+            max_level,
+            base_m: base_m.filter(|base| base.is_finite() && *base > 0.0),
+        })
+    } else {
+        Some(HfieldRefinementRecipe {
+            enabled: false,
+            ..HfieldRefinementRecipe::default()
+        })
+    };
+    validated_yaml(cfg)
+}
+
 /// Set expert overrides. Nulls clear the override and keep template/default values.
 #[tauri::command]
 pub(crate) fn set_expert(
@@ -199,6 +304,8 @@ pub(crate) fn set_expert(
     set_dis_type: Option<String>,
     num_rc: Option<i32>,
     vertex_pretect_layers: Option<i32>,
+    spring_global_type: Option<i32>,
+    spring_regional_type: Option<i32>,
     beta: Option<f32>,
     relax: Option<f32>,
     weak_concav_eliminate: Option<bool>,
@@ -215,6 +322,8 @@ pub(crate) fn set_expert(
     cfg.expert.set_dis_type = set_dis_type;
     cfg.expert.num_rc = num_rc;
     cfg.expert.vertex_pretect_layers = vertex_pretect_layers;
+    cfg.expert.spring_global_type = spring_global_type;
+    cfg.expert.spring_regional_type = spring_regional_type;
     cfg.expert.beta = beta;
     cfg.expert.relax = relax;
     cfg.expert.weak_concav_eliminate = weak_concav_eliminate;

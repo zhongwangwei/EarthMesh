@@ -116,6 +116,7 @@ version = "0.1.0"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
+ "earthmesh_hfield",
  "earthmesh_mesh",
  "earthmesh_project",
  "earthmesh_quality",
@@ -132,6 +133,13 @@ version = "0.1.0"
 [[package]]
 name = "earthmesh_geometry"
 version = "0.1.0"
+
+[[package]]
+name = "earthmesh_hfield"
+version = "0.1.0"
+dependencies = [
+ "earthmesh_mesh",
+]
 
 [[package]]
 name = "earthmesh_mesh"

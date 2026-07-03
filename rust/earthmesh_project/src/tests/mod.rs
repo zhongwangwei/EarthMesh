@@ -45,6 +45,7 @@ fn sample() -> ProjectConfig {
             specified_circle: None,
             specified_bbox: None,
             specified_close: None,
+            hfield: None,
         },
         quality: QualityConfig {
             min_angle_deg: 28.0,
@@ -62,6 +63,8 @@ fn sample() -> ProjectConfig {
             set_dis_type: Some("linear".into()),
             num_rc: Some(1),
             vertex_pretect_layers: Some(2),
+            spring_global_type: Some(0),
+            spring_regional_type: Some(1),
             beta: Some(1.1),
             relax: Some(0.03),
             weak_concav_eliminate: Some(true),
@@ -403,6 +406,8 @@ fn lower_maps_to_engine_config() {
     // landcover → landtype_file; lai → refine switch + refine_cal
     assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
     assert!(lowered.refine.refine_onelayer_lnd[0] && lowered.refine.refine_onelayer_lnd[1]);
+    assert_eq!(lowered.refine.th_onelayer_lnd[0], 1.0);
+    assert_eq!(lowered.refine.th_onelayer_lnd[1], 1.0);
     assert!(lowered.refine.refine_cal);
     assert_eq!(lowered.refine.max_iter_cal, 3);
     assert_eq!(lowered.refine.niter_refine, 120);
@@ -412,6 +417,8 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.refine.set_dis_type, "linear");
     assert_eq!(lowered.refine.num_rc, 1);
     assert_eq!(lowered.refine.vertex_pretect_layers, 2);
+    assert_eq!(lowered.refine.spring_global_type, 0);
+    assert_eq!(lowered.refine.spring_regional_type, 1);
     assert!(lowered.refine.weak_concav_eliminate);
 
     // quality
@@ -422,8 +429,22 @@ fn lower_maps_to_engine_config() {
     let nml = lowered.to_namelist();
     assert!(nml.contains("&mkgrd"));
     assert!(nml.contains("&mkrefine"));
+    assert!(nml.contains("&hfield"));
     assert!(nml.contains("&quality"));
     assert!(nml.contains("&datalayers"));
+}
+
+#[test]
+fn hfield_is_default_unless_explicit_legacy() {
+    let mut p = sample();
+    p.refinement.hfield = None;
+    assert!(p.lower().to_namelist().contains("&hfield"));
+
+    p.refinement.hfield = Some(HfieldRefinementRecipe {
+        enabled: false,
+        ..HfieldRefinementRecipe::default()
+    });
+    assert!(!p.lower().to_namelist().contains("&hfield"));
 }
 
 #[test]
@@ -635,12 +656,13 @@ fn criterion_lookup_and_domain_filter() {
 
 #[test]
 fn km_resolution_and_hydro_coupling_round_trip() {
-    assert_eq!(km_to_nxp(9.0), 40); // anchored on the GUI default
+    assert_eq!(km_to_nxp(100.0), 80);
+    assert!((nxp_to_km(72) - 111.20).abs() < 0.01);
     assert_eq!(km_to_nxp(0.0), 1); // guard
-    assert!(km_to_nxp(60.0) >= 1 && km_to_nxp(60.0) < 40);
+    assert!(km_to_nxp(500.0) >= 1 && km_to_nxp(500.0) < 80);
 
     let mut p = sample();
-    p.target.resolution = ResolutionSpec::ApproxKm(9.0);
+    p.target.resolution = ResolutionSpec::ApproxKm(100.0);
     p.hydro_coast = Some(HydroCoastConfig {
         merit_root: "/data/merit".into(),
         cama_root: Some("/data/cama".into()),
@@ -655,10 +677,10 @@ fn km_resolution_and_hydro_coupling_round_trip() {
 
     let back = yaml_round_trip(&p);
     assert_eq!(p, back);
-    assert_eq!(p.lower().mkgrd.nxp, 40); // ApproxKm(9) → NXP 40
+    assert_eq!(p.lower().mkgrd.nxp, 80);
 
-    p.target.resolution = ResolutionSpec::ApproxDegree(9.0 / 111.32);
-    assert_eq!(p.lower().mkgrd.nxp, 40);
+    p.target.resolution = ResolutionSpec::ApproxDegree(100.0 / 111.32);
+    assert_eq!(p.lower().mkgrd.nxp, 80);
 }
 
 #[test]

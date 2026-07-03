@@ -135,5 +135,6 @@ pub fn run_mkgrd_gridinit_global_namelist(
         runtime_state,
         workspace_mask,
         gridfile,
+        fvcom_2dm: None,
     })
 }

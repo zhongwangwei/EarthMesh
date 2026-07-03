@@ -90,14 +90,14 @@ fn project_summary_reports_approx_km_resolution() {
         "km_test".to_string(),
         "HydrologyLand".to_string(),
         None,
-        Some(9.0),
+        Some(100.0),
         None,
     )
     .expect("scaffold project");
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.nxp, None);
-    assert_eq!(summary.approx_km, Some(9.0));
-    assert_eq!(summary.effective_nxp, 40);
+    assert_eq!(summary.approx_km, Some(100.0));
+    assert_eq!(summary.effective_nxp, 80);
 }
 
 #[test]
@@ -107,14 +107,29 @@ fn project_summary_reports_approx_degree_resolution() {
         "HydrologyLand".to_string(),
         None,
         None,
-        Some(9.0 / 111.32),
+        Some(100.0 / 111.32),
     )
     .expect("scaffold project");
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.nxp, None);
     assert_eq!(summary.approx_km, None);
-    assert_eq!(summary.approx_degree, Some(9.0 / 111.32));
-    assert_eq!(summary.effective_nxp, 40);
+    assert_eq!(summary.approx_degree, Some(100.0 / 111.32));
+    assert_eq!(summary.effective_nxp, 80);
+}
+
+#[test]
+fn scaffold_project_defaults_to_olam_100km_nxp() {
+    let yaml = scaffold_project(
+        "default_resolution".to_string(),
+        "HydrologyLand".to_string(),
+        None,
+        None,
+        None,
+    )
+    .expect("scaffold project");
+    let summary = project_summary(yaml).expect("summary");
+    assert_eq!(summary.nxp, Some(80));
+    assert_eq!(summary.effective_nxp, 80);
 }
 
 #[test]
@@ -179,6 +194,75 @@ fn set_domain_close_reports_mask_source() {
         Some("input/Ocean/Ocean_ChinaSea_boundary.nml".to_string())
     );
     assert_eq!(summary.sea_ratio, Some(0.3));
+}
+
+#[test]
+fn close_domain_masks_resolve_repo_relative_input_paths() {
+    let root = env::temp_dir().join(format!("earthmesh_close_domain_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("mkdir temp");
+
+    let (domain_prefix, refine_prefix) = mesh_runner::write_close_domain_masks(
+        "input/Ocean/Ocean_ChinaSea_boundary.nml",
+        CloseMaskFormat::Nml,
+        &root,
+        2,
+        48,
+    )
+    .expect("write close masks")
+    .expect("nml close should write masks");
+
+    assert!(root.join("domain_close_001.nml").is_file());
+    assert!(root.join("refine_close_001_001.nml").is_file());
+    assert_eq!(domain_prefix, root.join("domain_close"));
+    assert_eq!(refine_prefix, root.join("refine_close"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn regional_close_domain_only_ignores_stale_refine_passes_when_refine_disabled() {
+    let root = env::temp_dir().join(format!("earthmesh_close_domain_only_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("mkdir temp");
+
+    let mut cfg = ProjectConfig::from_yaml(&preset_yaml(
+        "close_no_refine",
+        MeshIntentPreset::CoastalOcean,
+    ))
+    .expect("project");
+    cfg.domain = DomainConfig::Regional {
+        shape: RegionShape::Close {
+            path: "input/Ocean/Ocean_ChinaSea_boundary.nml".to_string(),
+            format: CloseMaskFormat::Nml,
+        },
+        sea_ratio: None,
+    };
+    cfg.refinement.enabled = false;
+    cfg.refinement.max_passes = 3;
+    let mut lowered = cfg.try_lower().expect("lower");
+    let domain_prefix = mesh_runner::write_close_domain_only_masks(
+        "input/Ocean/Ocean_ChinaSea_boundary.nml",
+        CloseMaskFormat::Nml,
+        &root,
+    )
+    .expect("write close domain mask")
+    .expect("nml close should write masks");
+    mesh_runner::configure_regional_close_domain_only(&mut lowered, &domain_prefix);
+
+    assert!(!lowered.mkgrd.refine);
+    assert!(!lowered.refine.refine_spc);
+    assert!(!lowered.refine.refine_cal);
+    assert_eq!(lowered.refine.max_iter_spc, 0);
+    assert_eq!(lowered.mkgrd.mask_domain_type, "close");
+    assert_eq!(
+        lowered.mkgrd.mask_domain_fprefix,
+        root.join("domain_close").to_string_lossy()
+    );
+    let domain = fs::read_to_string(root.join("domain_close_001.nml")).expect("domain mask");
+    assert!(domain.contains("close_refine = 0"));
+    assert!(!root.join("refine_close_001_001.nml").exists());
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -345,6 +429,28 @@ fn regional_method_c_project_plan_uses_user_refine_passes() {
 }
 
 #[test]
+fn regional_method_c_project_plan_caps_user_passes_to_supported_target() {
+    let mut cfg =
+        ProjectConfig::from_yaml(&hydrology_yaml("regional_refine_cap")).expect("project");
+    cfg.refinement.enabled = true;
+    cfg.refinement.max_passes = 9;
+    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
+        lon: 113.0,
+        lat: 22.0,
+        radius_km: 100.0,
+    });
+
+    assert_eq!(
+        mesh_runner::regional_method_c_project_plan(40, &cfg),
+        (10, 2)
+    );
+    assert_eq!(
+        mesh_runner::regional_method_c_project_plan(768, &cfg),
+        (24, 5)
+    );
+}
+
+#[test]
 fn regional_method_c_project_plan_ignores_disabled_refine_passes() {
     let mut cfg = ProjectConfig::from_yaml(&hydrology_yaml("regional_auto_plan")).expect("project");
     cfg.refinement.enabled = false;
@@ -354,6 +460,54 @@ fn regional_method_c_project_plan_ignores_disabled_refine_passes() {
         mesh_runner::regional_method_c_project_plan(320, &cfg),
         (40, 3)
     );
+}
+
+#[test]
+fn regional_method_c_project_plan_uses_expert_spc_passes_without_recipe_refine() {
+    let mut cfg =
+        ProjectConfig::from_yaml(&hydrology_yaml("regional_expert_refine")).expect("project");
+    cfg.refinement.enabled = false;
+    cfg.refinement.max_passes = 0;
+    cfg.expert.max_iter_spc = Some(2);
+
+    assert_eq!(
+        mesh_runner::regional_method_c_project_plan(40, &cfg),
+        (10, 2)
+    );
+}
+
+#[test]
+fn regional_method_c_project_plan_preserves_target_nxp_with_requested_level() {
+    let mut cfg =
+        ProjectConfig::from_yaml(&hydrology_yaml("regional_target_nxp")).expect("project");
+    cfg.refinement.enabled = true;
+    cfg.refinement.max_passes = 2;
+    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
+        lon: 114.0,
+        lat: 22.0,
+        radius_km: 400.0,
+    });
+
+    let (base_nxp, level) = mesh_runner::regional_method_c_project_plan(40, &cfg);
+    assert_eq!((base_nxp, level), (10, 2));
+    assert_eq!(base_nxp * (1_i32 << level), 40);
+}
+
+#[test]
+fn regional_bbox_method_c_plan_uses_requested_nxp_as_base_resolution() {
+    let mut cfg =
+        ProjectConfig::from_yaml(&hydrology_yaml("regional_bbox_base_nxp")).expect("project");
+    cfg.refinement.enabled = true;
+    cfg.refinement.max_passes = 2;
+    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
+        lon: 114.0,
+        lat: 22.0,
+        radius_km: 400.0,
+    });
+
+    let (base_nxp, level) = mesh_runner::regional_bbox_method_c_project_plan(40, &cfg);
+    assert_eq!((base_nxp, level), (40, 2));
+    assert_eq!(base_nxp * (1_i32 << level), 160);
 }
 
 #[test]
@@ -465,8 +619,8 @@ fn v2_ocean_o1_o2_o3_fixtures_pin_smooth_method_c_defaults() {
     assert_eq!(lowered.refine.halo[2], 3);
     assert_eq!(lowered.refine.max_transition_row[1], 3);
     assert_eq!(lowered.refine.max_transition_row[2], 3);
-    assert_eq!(lowered.refine.spring_global_type, 1);
-    assert_eq!(lowered.refine.spring_regional_type, 0);
+    assert_eq!(lowered.refine.spring_global_type, 0);
+    assert_eq!(lowered.refine.spring_regional_type, 1);
     assert_eq!(lowered.refine.niter_refine, 2000);
 
     let mut o3 = ocean_close("v2_o3_chinasea_vr", 192);
@@ -492,6 +646,116 @@ fn regional_method_c_project_plan_auto_refine_does_not_double_count_gui_loop() {
         mesh_runner::regional_method_c_project_plan(320, &cfg),
         (40, 3)
     );
+}
+
+#[test]
+fn regional_bbox_circle_mask_family_writes_domain_and_local_refine_masks() {
+    let root = env::temp_dir().join(format!("earthmesh_bbox_circle_family_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create root");
+
+    let (lon, lat, radius_km) = (114.0_f64, 22.0_f64, 400.32_f64);
+    assert_eq!(lon, 114.0);
+    assert_eq!(lat, 22.0);
+    assert!((radius_km - 400.32).abs() < 0.001);
+
+    let (domain_prefix, refine_prefix) = mesh_runner::write_regional_bbox_circle_mask_family(
+        108.0,
+        120.0,
+        26.0,
+        18.0,
+        lon,
+        lat,
+        radius_km,
+        &root,
+        "domain_bbox",
+        "refine_circle",
+        2,
+    )
+    .expect("write bbox/circle mask family");
+
+    assert_eq!(domain_prefix, root.join("domain_bbox"));
+    assert_eq!(refine_prefix, root.join("refine_circle"));
+    let domain = fs::read_to_string(root.join("domain_bbox_001.nml")).expect("domain mask");
+    let refine = fs::read_to_string(root.join("refine_circle_001.nml")).expect("refine mask");
+    assert!(domain.contains("bbox_refine = 0"));
+    assert!(refine.contains("circle_refine = 2"));
+    assert!(domain.contains("108.0000000000 120.0000000000 26.0000000000 18.0000000000"));
+    assert!(refine.contains("114.0000000000 22.0000000000 400.3200000000"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn regional_bbox_inset_mask_family_writes_rectangular_default_refine_mask() {
+    let root = env::temp_dir().join(format!("earthmesh_bbox_inset_family_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create root");
+
+    let (rw, re, rn, rs) = mesh_runner::default_regional_bbox_refine_bbox(80.0, 140.0, 26.0, -26.0);
+    assert_eq!((rw, re, rn, rs), (85.0, 135.0, 21.0, -21.0));
+
+    let (domain_prefix, refine_prefix) = mesh_runner::write_regional_bbox_inset_mask_family(
+        80.0,
+        140.0,
+        26.0,
+        -26.0,
+        rw,
+        re,
+        rn,
+        rs,
+        &root,
+        "domain_bbox",
+        "refine_bbox",
+        3,
+    )
+    .expect("write bbox/inset mask family");
+
+    assert_eq!(domain_prefix, root.join("domain_bbox"));
+    assert_eq!(refine_prefix, root.join("refine_bbox"));
+    let domain = fs::read_to_string(root.join("domain_bbox_001.nml")).expect("domain mask");
+    let refine = fs::read_to_string(root.join("refine_bbox_001.nml")).expect("refine mask");
+    assert!(domain.contains("bbox_refine = 0"));
+    assert!(refine.contains("bbox_refine = 3"));
+    assert!(refine.contains("85.0000000000 135.0000000000 21.0000000000 -21.0000000000"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn regional_bbox_domain_only_ignores_stale_refine_passes_when_refine_disabled() {
+    let root = env::temp_dir().join(format!("earthmesh_bbox_domain_only_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create root");
+
+    let mut cfg =
+        ProjectConfig::from_yaml(&hydrology_yaml("regional_bbox_no_refine")).expect("project");
+    cfg.refinement.enabled = false;
+    cfg.refinement.max_passes = 3;
+    let mut lowered = cfg.try_lower().expect("lower");
+    mesh_runner::configure_regional_bbox_domain_only(
+        &mut lowered,
+        80.0,
+        140.0,
+        26.0,
+        -26.0,
+        &root,
+        "domain_bbox",
+    )
+    .expect("write domain-only bbox");
+
+    assert!(!lowered.mkgrd.refine);
+    assert!(!lowered.refine.refine_spc);
+    assert!(!lowered.refine.refine_cal);
+    assert_eq!(lowered.mkgrd.mask_domain_type, "bbox");
+    assert_eq!(
+        lowered.mkgrd.mask_domain_fprefix,
+        root.join("domain_bbox").to_string_lossy()
+    );
+    let domain = fs::read_to_string(root.join("domain_bbox_001.nml")).expect("domain mask");
+    assert!(domain.contains("bbox_refine = 0"));
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -523,10 +787,31 @@ fn regional_method_c_fast_path_sets_domain_and_refine_mask() {
     assert!(lowered.refine.weak_concav_eliminate);
     assert_eq!(lowered.refine.spring_global_type, 0);
     assert_eq!(lowered.refine.spring_regional_type, 1);
+    assert_eq!(lowered.refine.niter_refine, 2000);
+    assert!(lowered.refine.niter_refine_specified);
 }
 
 #[test]
-fn regional_method_c_fast_path_uses_global_spring_for_tri_meshes() {
+fn regional_method_c_fast_path_can_use_separate_refine_mask_type() {
+    let cfg = ProjectConfig::from_yaml(&hydrology_yaml("fast_region_circle")).expect("project");
+    let mut lowered = cfg.try_lower().expect("lower");
+    mesh_runner::enable_regional_method_c_fast_path_with_refine_type(
+        &mut lowered,
+        "bbox",
+        "circle",
+        Path::new("/tmp/domain_bbox"),
+        Path::new("/tmp/refine_circle"),
+        20,
+        2,
+    );
+    assert_eq!(lowered.mkgrd.mask_domain_type, "bbox");
+    assert_eq!(lowered.mkgrd.mask_domain_fprefix, "/tmp/domain_bbox");
+    assert_eq!(lowered.refine.mask_refine_spc_type, "circle");
+    assert_eq!(lowered.refine.mask_refine_spc_fprefix, "/tmp/refine_circle");
+}
+
+#[test]
+fn regional_method_c_fast_path_uses_regional_spring_for_tri_meshes() {
     let cfg = ProjectConfig::from_yaml(&preset_yaml("fast_ocean", MeshIntentPreset::CoastalOcean))
         .expect("project");
     let mut lowered = cfg.try_lower().expect("lower");
@@ -544,8 +829,8 @@ fn regional_method_c_fast_path_uses_global_spring_for_tri_meshes() {
     assert_eq!(lowered.refine.max_transition_row[1], 3);
     assert_eq!(lowered.refine.niter_refine, 2000);
     assert!(lowered.refine.niter_refine_specified);
-    assert_eq!(lowered.refine.spring_global_type, 1);
-    assert_eq!(lowered.refine.spring_regional_type, 0);
+    assert_eq!(lowered.refine.spring_global_type, 0);
+    assert_eq!(lowered.refine.spring_regional_type, 1);
 }
 
 #[test]
@@ -677,6 +962,8 @@ fn set_expert_updates_custom_overrides() {
         Some("linear".to_string()),
         Some(1),
         Some(2),
+        Some(0),
+        Some(1),
         Some(1.1),
         Some(0.03),
         Some(true),
@@ -694,6 +981,8 @@ fn set_expert_updates_custom_overrides() {
     assert_eq!(summary.expert_set_dis_type, Some("linear".to_string()));
     assert_eq!(summary.expert_num_rc, Some(1));
     assert_eq!(summary.expert_vertex_pretect_layers, Some(2));
+    assert_eq!(summary.expert_spring_global_type, Some(0));
+    assert_eq!(summary.expert_spring_regional_type, Some(1));
     assert_eq!(summary.expert_beta, Some(1.1));
     assert_eq!(summary.expert_relax, Some(0.03));
     assert_eq!(summary.expert_weak_concav_eliminate, Some(true));
@@ -702,6 +991,8 @@ fn set_expert_updates_custom_overrides() {
         None,
         None,
         Some(0),
+        None,
+        None,
         None,
         None,
         None,
@@ -794,6 +1085,19 @@ fn set_specified_refinement_accepts_bbox_region() {
         None,
     )
     .is_err());
+}
+
+#[test]
+fn hfield_defaults_on_and_legacy_can_disable_it() {
+    let yaml = hydrology_yaml("hfield_default");
+    let summary = project_summary(yaml.clone()).expect("summary");
+    assert!(summary.hfield_enabled);
+
+    let yaml = set_hfield_refinement(yaml, false, None, None, None).expect("legacy hfield off");
+    let summary = project_summary(yaml.clone()).expect("summary");
+    assert!(!summary.hfield_enabled);
+    let lowered = ProjectConfig::from_yaml(&yaml).expect("yaml").lower();
+    assert!(!lowered.to_namelist().contains("&hfield"));
 }
 
 #[test]
@@ -950,6 +1254,48 @@ fn set_layer_path_rejects_enabled_empty_path() {
         .expect("disabled empty path is allowed");
     assert!(yaml.contains("enabled: false"));
 }
+
+#[test]
+fn autofill_data_layers_from_folder_matches_v2_source_data_names() {
+    let root = env::temp_dir().join(format!("earthmesh_studio_source_data_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("temp root");
+    fs::write(root.join("landtype_usgs_update.nc"), b"land").expect("landtype");
+    fs::write(root.join("LAI_BNU_161.nc"), b"lai").expect("lai");
+    fs::write(root.join("k_s.nc"), b"ks").expect("ks");
+
+    let yaml = preset_yaml("source_data", MeshIntentPreset::CarbonLand);
+    let yaml = autofill_data_layers_from_folder(yaml, root.to_string_lossy().into_owned())
+        .expect("autofill source_data");
+    let cfg = ProjectConfig::from_yaml(&yaml).expect("parse yaml");
+
+    let land = cfg
+        .data_layers
+        .iter()
+        .find(|layer| matches!(layer.role, ProjectLayerRole::LandType))
+        .expect("land layer");
+    assert!(land.enabled);
+    assert!(land.path.ends_with("landtype_usgs_update.nc"));
+
+    let lai = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "lai")
+        .expect("lai layer");
+    assert!(lai.enabled);
+    assert!(lai.path.ends_with("LAI_BNU_161.nc"));
+
+    let ks = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "k_s")
+        .expect("k_s layer");
+    assert!(ks.enabled);
+    assert!(ks.path.ends_with("k_s.nc"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn stage_threshold_layers_uses_engine_stems() {
     let root = env::temp_dir().join(format!(
@@ -1049,6 +1395,24 @@ fn set_refinement_allows_zero_passes_when_disabled() {
     assert!(!summary.refine_enabled);
     assert_eq!(summary.max_passes, 0);
 }
+
+#[test]
+fn mesh_merit_cells_rejects_invalid_bbox_before_io() {
+    let err = mesh_outputs::mesh_merit_cells(
+        "/no/grid.nc".to_string(),
+        "hex".to_string(),
+        "/no/merit".to_string(),
+        120.0,
+        108.0,
+        18.0,
+        26.0,
+        Some(1),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("invalid MERIT-Hydro mesh bbox"));
+}
+
 #[test]
 fn list_criteria_reports_frontend_fields() {
     let criteria = list_criteria();

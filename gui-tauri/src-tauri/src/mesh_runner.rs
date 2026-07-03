@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 use earthmesh_project::{
-    CloseMaskFormat, DomainConfig, LoweredProject, MeshCellKind, MeshDomainKind, ProjectConfig,
-    ProjectLayerRole, RegionShape,
+    nxp_to_km, CloseMaskFormat, DomainConfig, LoweredProject, MeshCellKind, MeshDomainKind,
+    ProjectConfig, ProjectLayerRole, RegionShape,
 };
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -21,6 +21,8 @@ use crate::mesh_paths::existing_file_path;
 use crate::mesh_process::{clear_running_child, record_running_child};
 
 const SHAPEFILE_MASK_SIMPLIFY_TOLERANCE_DEG: f64 = 0.002;
+const METHOD_C_MIN_BASE_NXP: i32 = 10;
+const METHOD_C_MAX_REFINEMENT_LEVEL: usize = 5;
 
 /// Parse project YAML, lower to engine namelist, run mkgrd.x and parse emitted
 /// outputs.
@@ -109,39 +111,131 @@ pub(crate) async fn run_project(
         );
     }
 
-    // Regional bbox domain: the engine reads the region from a `.nml` mask file
-    // (mask_domain_type='bbox' -> parse_bbox_mask_nml: `bbox_num`/`bbox_refine`
-    // then rows of `west east north south`). Generate it from the project's bbox
-    // so a regional run needs no external mask file and no netcdf in the GUI.
+    let mut regional_specified_refine_used = false;
+
+    // Regional bbox domain: keep bbox as the clip domain, but use a circle for
+    // the local refinement target because Method-C expands circle parent halos
+    // internally; bbox-in-bbox refinement crosses parent-boundary checks.
     if let DomainConfig::Regional {
         shape: RegionShape::Bbox { w, e, n, s },
         ..
     } = &cfg.domain
     {
-        let target_nxp = lowered.mkgrd.nxp;
-        let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
-        let mask_nml = run_dir.join("domain_bbox.nml");
-        let body = format!("bbox_num = 1\nbbox_refine = {refine_level}\n{w} {e} {n} {s}\n");
-        match fs::write(&mask_nml, body) {
-            Ok(()) => {
-                let prefix = run_dir.join("domain_bbox");
-                enable_regional_method_c_fast_path(
-                    &mut lowered,
-                    "bbox",
-                    &prefix,
-                    &prefix,
-                    base_nxp,
+        if !cfg.refinement.enabled {
+            match configure_regional_bbox_domain_only(
+                &mut lowered,
+                *w,
+                *e,
+                *n,
+                *s,
+                &run_dir,
+                "domain_bbox",
+            ) {
+                Ok(_) => {
+                    let _ = app.emit(
+                        "mkgrd://log",
+                        format!(
+                            "✓ regional bbox domain mask (W {w}, E {e}, N {n}, S {s}) — local refinement disabled"
+                        ),
+                    );
+                }
+                Err(err) => {
+                    let _ = app.emit(
+                        "mkgrd://log",
+                        format!("⚠ could not write bbox domain mask: {err}"),
+                    );
+                }
+            }
+        } else {
+            let target_nxp = lowered.mkgrd.nxp;
+            let (base_nxp, refine_level) = regional_bbox_method_c_project_plan(target_nxp, &cfg);
+            let local_nxp = base_nxp.saturating_mul(1_i32 << refine_level);
+            let base_spacing_km = nxp_to_km(base_nxp);
+            let local_spacing_km = base_spacing_km / (1_i32 << refine_level) as f64;
+            let mask_family = if let Some(circle) = &cfg.refinement.specified_circle {
+                regional_specified_refine_used = true;
+                write_regional_bbox_circle_mask_family(
+                    *w,
+                    *e,
+                    *n,
+                    *s,
+                    circle.lon,
+                    circle.lat,
+                    circle.radius_km,
+                    &run_dir,
+                    "domain_bbox",
+                    "refine_circle",
                     refine_level,
-                );
-                let _ = app.emit(
+                )
+                .map(|(domain_prefix, refine_prefix)| {
+                    (
+                        domain_prefix,
+                        "circle",
+                        refine_prefix,
+                        format!(
+                            "note: specified circle refine target lon {}, lat {}, radius {:.1} km",
+                            circle.lon, circle.lat, circle.radius_km
+                        ),
+                    )
+                })
+            } else {
+                let (rw, re, rn, rs) = default_regional_bbox_refine_bbox(*w, *e, *n, *s);
+                write_regional_bbox_inset_mask_family(
+                *w,
+                *e,
+                *n,
+                *s,
+                rw,
+                re,
+                rn,
+                rs,
+                &run_dir,
+                "domain_bbox",
+                "refine_bbox",
+                refine_level,
+            )
+            .map(|(domain_prefix, refine_prefix)| {
+                (
+                    domain_prefix,
+                    "bbox",
+                    refine_prefix,
+                    format!(
+                        "note: default bbox refine target W {rw:.3}, E {re:.3}, N {rn:.3}, S {rs:.3}"
+                    ),
+                )
+            })
+            };
+            match mask_family {
+                Ok((domain_prefix, refine_type, refine_prefix, refine_note)) => {
+                    enable_regional_method_c_fast_path_with_refine_type(
+                        &mut lowered,
+                        "bbox",
+                        refine_type,
+                        &domain_prefix,
+                        &refine_prefix,
+                        base_nxp,
+                        refine_level,
+                    );
+                    let _ = app.emit(
                     "mkgrd://log",
                     format!(
-                        "✓ regional bbox Method-C fast path (W {w}, E {e}, N {n}, S {s}) — base NXP {base_nxp}, local refine level {refine_level}, target NXP {target_nxp}"
+                        "✓ regional bbox Method-C fast path (W {w}, E {e}, N {n}, S {s}) — base NXP {base_nxp}, local refine level {refine_level}, local NXP {local_nxp}"
                     ),
                 );
-            }
-            Err(err) => {
-                let _ = app.emit("mkgrd://log", format!("⚠ could not write bbox mask: {err}"));
+                    let _ = app.emit(
+                    "mkgrd://log",
+                    format!(
+                        "note: Method-C writes NL%NXP/gridfile_NXP as the base grid ({base_nxp}, ≈{base_spacing_km:.1} km); local refined grid is NXP {local_nxp} (≈{local_spacing_km:.1} km)"
+                    ),
+                );
+                    let _ = app.emit("mkgrd://log", refine_note);
+                }
+                Err(err) => {
+                    let _ = app.emit(
+                        "mkgrd://log",
+                        format!("⚠ could not write bbox masks: {err}"),
+                    );
+                }
             }
         }
     }
@@ -151,39 +245,25 @@ pub(crate) async fn run_project(
         ..
     } = &cfg.domain
     {
-        let target_nxp = lowered.mkgrd.nxp;
-        let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
-        let (domain_prefix, refine_prefix) =
-            write_shapefile_close_masks(path, &run_dir, refine_level, base_nxp)
+        if !cfg.refinement.enabled {
+            let domain_prefix = write_shapefile_close_domain_mask(path, &run_dir, "domain_shp")
                 .map_err(|e| format!("convert watershed shp to close mask: {e}"))?;
-        enable_regional_method_c_fast_path(
-            &mut lowered,
-            "close",
-            &domain_prefix,
-            &refine_prefix,
-            base_nxp,
-            refine_level,
-        );
-        let _ = app.emit(
-            "mkgrd://log",
-            format!(
-                "✓ watershed SHP Method-C fast path prefix {} — base NXP {base_nxp}, local refine level {refine_level}, target NXP {target_nxp}",
-                refine_prefix.display(),
-            ),
-        );
-    }
-
-    if let DomainConfig::Regional {
-        shape: RegionShape::Close { path, format },
-        ..
-    } = &cfg.domain
-    {
-        let target_nxp = lowered.mkgrd.nxp;
-        let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
-        if let Some((domain_prefix, refine_prefix)) =
-            write_close_domain_masks(path, *format, &run_dir, refine_level, base_nxp)
-                .map_err(|e| format!("prepare close domain mask: {e}"))?
-        {
+            configure_regional_close_domain_only(&mut lowered, &domain_prefix);
+            let _ = app.emit(
+                "mkgrd://log",
+                format!(
+                    "✓ watershed SHP close domain mask prefix {} — local refinement disabled",
+                    domain_prefix.display()
+                ),
+            );
+        } else {
+            let target_nxp = lowered.mkgrd.nxp;
+            let target_spacing_km = nxp_to_km(target_nxp);
+            let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
+            let base_spacing_km = nxp_to_km(base_nxp);
+            let (domain_prefix, refine_prefix) =
+                write_shapefile_close_masks(path, &run_dir, refine_level, base_nxp)
+                    .map_err(|e| format!("convert watershed shp to close mask: {e}"))?;
             enable_regional_method_c_fast_path(
                 &mut lowered,
                 "close",
@@ -195,17 +275,82 @@ pub(crate) async fn run_project(
             let _ = app.emit(
                 "mkgrd://log",
                 format!(
-                    "✓ close domain Method-C fast path prefix {} — base NXP {base_nxp}, local refine level {refine_level}, target NXP {target_nxp}",
+                    "✓ watershed SHP Method-C fast path prefix {} — base NXP {base_nxp}, local refine level {refine_level}, target NXP {target_nxp}",
                     refine_prefix.display(),
                 ),
             );
-        } else {
-            lowered.mkgrd.mask_domain_type = "close".to_string();
-            lowered.mkgrd.mask_domain_fprefix = path.clone();
             let _ = app.emit(
                 "mkgrd://log",
-                "note: close NetCDF domain is passed directly to the engine; GUI does not inspect NetCDF/HDF5.".to_string(),
+                format!(
+                    "note: Method-C writes NL%NXP/gridfile_NXP as the base grid ({base_nxp}, ≈{base_spacing_km:.1} km); local target grid is NXP {target_nxp} (≈{target_spacing_km:.1} km)"
+                ),
             );
+        }
+    }
+
+    if let DomainConfig::Regional {
+        shape: RegionShape::Close { path, format },
+        ..
+    } = &cfg.domain
+    {
+        if !cfg.refinement.enabled {
+            if let Some(domain_prefix) = write_close_domain_only_masks(path, *format, &run_dir)
+                .map_err(|e| format!("prepare close domain mask: {e}"))?
+            {
+                configure_regional_close_domain_only(&mut lowered, &domain_prefix);
+                let _ = app.emit(
+                    "mkgrd://log",
+                    format!(
+                        "✓ close domain mask prefix {} — local refinement disabled",
+                        domain_prefix.display()
+                    ),
+                );
+            } else {
+                lowered.mkgrd.mask_domain_type = "close".to_string();
+                lowered.mkgrd.mask_domain_fprefix = path.clone();
+                let _ = app.emit(
+                    "mkgrd://log",
+                    "note: close NetCDF domain is passed directly to the engine; local refinement disabled.".to_string(),
+                );
+            }
+        } else {
+            let target_nxp = lowered.mkgrd.nxp;
+            let target_spacing_km = nxp_to_km(target_nxp);
+            let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
+            let base_spacing_km = nxp_to_km(base_nxp);
+            if let Some((domain_prefix, refine_prefix)) =
+                write_close_domain_masks(path, *format, &run_dir, refine_level, base_nxp)
+                    .map_err(|e| format!("prepare close domain mask: {e}"))?
+            {
+                enable_regional_method_c_fast_path(
+                    &mut lowered,
+                    "close",
+                    &domain_prefix,
+                    &refine_prefix,
+                    base_nxp,
+                    refine_level,
+                );
+                let _ = app.emit(
+                    "mkgrd://log",
+                    format!(
+                        "✓ close domain Method-C fast path prefix {} — base NXP {base_nxp}, local refine level {refine_level}, target NXP {target_nxp}",
+                        refine_prefix.display(),
+                    ),
+                );
+                let _ = app.emit(
+                    "mkgrd://log",
+                    format!(
+                        "note: Method-C writes NL%NXP/gridfile_NXP as the base grid ({base_nxp}, ≈{base_spacing_km:.1} km); local target grid is NXP {target_nxp} (≈{target_spacing_km:.1} km)"
+                    ),
+                );
+            } else {
+                lowered.mkgrd.mask_domain_type = "close".to_string();
+                lowered.mkgrd.mask_domain_fprefix = path.clone();
+                let _ = app.emit(
+                    "mkgrd://log",
+                    "note: close NetCDF domain is passed directly to the engine; GUI does not inspect NetCDF/HDF5.".to_string(),
+                );
+            }
         }
     }
 
@@ -233,11 +378,19 @@ pub(crate) async fn run_project(
             lowered.refine.mask_refine_spc_fprefix = prefix.to_string_lossy().into_owned();
             let refine_level = lowered.refine.max_iter_spc.max(1) as usize;
             set_refine_transition_rows(&mut lowered, refine_level);
-        } else {
-            let _ = app.emit(
-                "mkgrd://log",
-                "note: regional Method-C uses the domain mask as the specified-refine mask; separate specified-refine shapes are ignored in regional mode.".to_string(),
-            );
+        } else if !regional_specified_refine_used {
+            let note = if matches!(
+                cfg.domain,
+                DomainConfig::Regional {
+                    shape: RegionShape::Bbox { .. },
+                    ..
+                }
+            ) {
+                "note: regional bbox Method-C uses an inset bbox refine target by default; specified circles override it, while specified bbox/close shapes are ignored in regional mode."
+            } else {
+                "note: regional Method-C derives nested refine masks from the domain; separate specified-refine shapes are ignored in regional mode."
+            };
+            let _ = app.emit("mkgrd://log", note.to_string());
         }
     }
 
@@ -417,6 +570,30 @@ pub(crate) fn write_shapefile_close_masks(
     )
 }
 
+pub(crate) fn write_shapefile_close_domain_mask(
+    shp: impl AsRef<Path>,
+    run_dir: impl AsRef<Path>,
+    domain_stem: &str,
+) -> std::io::Result<PathBuf> {
+    let rings = read_shapefile_polygon_rings(shp.as_ref())?;
+    write_close_domain_mask(&rings, run_dir, domain_stem)
+}
+
+pub(crate) fn write_close_domain_only_masks(
+    path: &str,
+    format: CloseMaskFormat,
+    run_dir: &Path,
+) -> std::io::Result<Option<PathBuf>> {
+    let resolved = existing_file_path(path, run_dir).unwrap_or_else(|| PathBuf::from(path));
+    let rings = match format {
+        CloseMaskFormat::PolygonShp => read_shapefile_polygon_rings(&resolved)?,
+        CloseMaskFormat::Nml => vec![read_close_mask_nml_points(&resolved)?],
+        CloseMaskFormat::LonLatText => vec![read_lonlat_text_points(&resolved)?],
+        CloseMaskFormat::Netcdf => return Ok(None),
+    };
+    write_close_domain_mask(&rings, run_dir, "domain_close").map(Some)
+}
+
 pub(crate) fn write_close_domain_masks(
     path: &str,
     format: CloseMaskFormat,
@@ -424,10 +601,11 @@ pub(crate) fn write_close_domain_masks(
     refine_degree: usize,
     base_nxp: i32,
 ) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
+    let resolved = existing_file_path(path, run_dir).unwrap_or_else(|| PathBuf::from(path));
     let rings = match format {
-        CloseMaskFormat::PolygonShp => read_shapefile_polygon_rings(Path::new(path))?,
-        CloseMaskFormat::Nml => vec![read_close_mask_nml_points(Path::new(path))?],
-        CloseMaskFormat::LonLatText => vec![read_lonlat_text_points(Path::new(path))?],
+        CloseMaskFormat::PolygonShp => read_shapefile_polygon_rings(&resolved)?,
+        CloseMaskFormat::Nml => vec![read_close_mask_nml_points(&resolved)?],
+        CloseMaskFormat::LonLatText => vec![read_lonlat_text_points(&resolved)?],
         CloseMaskFormat::Netcdf => return Ok(None),
     };
     write_close_mask_family(
@@ -439,6 +617,22 @@ pub(crate) fn write_close_domain_masks(
         base_nxp,
     )
     .map(Some)
+}
+
+fn write_close_domain_mask(
+    rings: &[Vec<(f64, f64)>],
+    run_dir: impl AsRef<Path>,
+    domain_stem: &str,
+) -> std::io::Result<PathBuf> {
+    let domain_prefix = run_dir.as_ref().join(domain_stem);
+    for (index, ring) in rings.iter().enumerate() {
+        let ring = simplify_shapefile_mask_ring(ring);
+        let path = run_dir
+            .as_ref()
+            .join(format!("{domain_stem}_{:03}.nml", index + 1));
+        write_close_mask_nml(&path, &ring, 0)?;
+    }
+    Ok(domain_prefix)
 }
 
 fn write_close_mask_family(
@@ -476,6 +670,129 @@ fn write_close_mask_family(
         write_close_mask_nml(&path, &ring, refine_degree)?;
     }
     Ok((domain_prefix, refine_prefix))
+}
+
+pub(crate) fn write_regional_bbox_circle_mask_family(
+    w: f64,
+    e: f64,
+    n: f64,
+    s: f64,
+    circle_lon: f64,
+    circle_lat: f64,
+    circle_radius_km: f64,
+    run_dir: impl AsRef<Path>,
+    domain_stem: &str,
+    refine_stem: &str,
+    refine_degree: usize,
+) -> std::io::Result<(PathBuf, PathBuf)> {
+    let domain_prefix = run_dir.as_ref().join(domain_stem);
+    let refine_prefix = run_dir.as_ref().join(refine_stem);
+    write_bbox_mask_nml(
+        &run_dir.as_ref().join(format!("{domain_stem}_001.nml")),
+        w,
+        e,
+        n,
+        s,
+        0,
+    )?;
+    write_circle_mask_nml(
+        &run_dir.as_ref().join(format!("{refine_stem}_001.nml")),
+        circle_lon,
+        circle_lat,
+        circle_radius_km,
+        refine_degree,
+    )?;
+    Ok((domain_prefix, refine_prefix))
+}
+
+pub(crate) fn write_regional_bbox_inset_mask_family(
+    w: f64,
+    e: f64,
+    n: f64,
+    s: f64,
+    refine_w: f64,
+    refine_e: f64,
+    refine_n: f64,
+    refine_s: f64,
+    run_dir: impl AsRef<Path>,
+    domain_stem: &str,
+    refine_stem: &str,
+    refine_degree: usize,
+) -> std::io::Result<(PathBuf, PathBuf)> {
+    let domain_prefix = run_dir.as_ref().join(domain_stem);
+    let refine_prefix = run_dir.as_ref().join(refine_stem);
+    write_bbox_mask_nml(
+        &run_dir.as_ref().join(format!("{domain_stem}_001.nml")),
+        w,
+        e,
+        n,
+        s,
+        0,
+    )?;
+    write_bbox_mask_nml(
+        &run_dir.as_ref().join(format!("{refine_stem}_001.nml")),
+        refine_w,
+        refine_e,
+        refine_n,
+        refine_s,
+        refine_degree,
+    )?;
+    Ok((domain_prefix, refine_prefix))
+}
+
+pub(crate) fn configure_regional_bbox_domain_only(
+    lowered: &mut LoweredProject,
+    w: f64,
+    e: f64,
+    n: f64,
+    s: f64,
+    run_dir: impl AsRef<Path>,
+    domain_stem: &str,
+) -> std::io::Result<PathBuf> {
+    let domain_prefix = run_dir.as_ref().join(domain_stem);
+    write_bbox_mask_nml(
+        &run_dir.as_ref().join(format!("{domain_stem}_001.nml")),
+        w,
+        e,
+        n,
+        s,
+        0,
+    )?;
+    lowered.mkgrd.refine = false;
+    lowered.mkgrd.mask_domain_type = "bbox".to_string();
+    lowered.mkgrd.mask_domain_fprefix = domain_prefix.to_string_lossy().into_owned();
+    lowered.refine.refine_spc = false;
+    lowered.refine.refine_cal = false;
+    Ok(domain_prefix)
+}
+
+pub(crate) fn configure_regional_close_domain_only(
+    lowered: &mut LoweredProject,
+    domain_prefix: &Path,
+) {
+    lowered.mkgrd.refine = false;
+    lowered.mkgrd.mask_domain_global = false;
+    lowered.mkgrd.mask_domain_type = "close".to_string();
+    lowered.mkgrd.mask_domain_fprefix = domain_prefix.to_string_lossy().into_owned();
+    lowered.refine.refine_spc = false;
+    lowered.refine.refine_cal = false;
+    lowered.refine.max_iter_spc = 0;
+    lowered.refine.max_iter_cal = 0;
+}
+
+pub(crate) fn default_regional_bbox_refine_bbox(
+    w: f64,
+    e: f64,
+    n: f64,
+    s: f64,
+) -> (f64, f64, f64, f64) {
+    let lon_pad = ((e - w).abs() * 0.12).clamp(0.25, 5.0);
+    let lat_pad = ((n - s).abs() * 0.12).clamp(0.25, 5.0);
+    let refine_w = (w + lon_pad).min((w + e) * 0.5);
+    let refine_e = (e - lon_pad).max((w + e) * 0.5);
+    let refine_n = (n - lat_pad).max((n + s) * 0.5);
+    let refine_s = (s + lat_pad).min((n + s) * 0.5);
+    (refine_w, refine_e, refine_n, refine_s)
 }
 
 fn read_close_mask_nml_points(path: &Path) -> std::io::Result<Vec<(f64, f64)>> {
@@ -570,6 +887,35 @@ fn parent_halo_meters(level: usize, refine_degree: usize, base_nxp: i32) -> f64 
         .sum()
 }
 
+fn write_bbox_mask_nml(
+    path: &Path,
+    w: f64,
+    e: f64,
+    n: f64,
+    s: f64,
+    refine_degree: usize,
+) -> std::io::Result<()> {
+    fs::write(
+        path,
+        format!("bbox_num = 1\nbbox_refine = {refine_degree}\n{w:.10} {e:.10} {n:.10} {s:.10}\n"),
+    )
+}
+
+fn write_circle_mask_nml(
+    path: &Path,
+    lon: f64,
+    lat: f64,
+    radius_km: f64,
+    refine_degree: usize,
+) -> std::io::Result<()> {
+    fs::write(
+        path,
+        format!(
+            "circle_num = 1\ncircle_refine = {refine_degree}\n{lon:.10} {lat:.10} {radius_km:.10}\n"
+        ),
+    )
+}
+
 fn write_close_mask_nml(
     path: &Path,
     ring: &[(f64, f64)],
@@ -595,13 +941,7 @@ fn write_specified_refinement_mask(
     if let Some(circle) = &refinement.specified_circle {
         let prefix = run_dir.join("specified_circle");
         let path = run_dir.join("specified_circle_001.nml");
-        fs::write(
-            path,
-            format!(
-                "circle_num = 1\ncircle_refine = {level}\n{} {} {}\n",
-                circle.lon, circle.lat, circle.radius_km
-            ),
-        )?;
+        write_circle_mask_nml(&path, circle.lon, circle.lat, circle.radius_km, level_usize)?;
         return Ok(("circle", prefix));
     }
     if let Some(bbox) = &refinement.specified_bbox {
@@ -808,15 +1148,40 @@ pub(crate) fn regional_method_c_project_plan(target_nxp: i32, cfg: &ProjectConfi
     } else {
         regional_method_c_plan(target_nxp).1
     };
-    let mut level = if active_refine_source && cfg.refinement.max_passes > 0 {
+    let explicit_spc_level = cfg
+        .expert
+        .max_iter_spc
+        .and_then(|level| usize::try_from(level).ok())
+        .filter(|level| *level > 0);
+    let mut level = if let Some(level) = explicit_spc_level {
+        level
+    } else if active_refine_source && cfg.refinement.max_passes > 0 {
         usize::from(cfg.refinement.max_passes)
     } else {
         default_level
     };
-    level = level.clamp(1, 9);
+    level = level.clamp(1, regional_method_c_level_cap(target_nxp));
     let divisor = 1_i32 << level;
-    let base_nxp = ((target_nxp + divisor - 1) / divisor).max(6);
+    let base_nxp = ((target_nxp + divisor - 1) / divisor).max(METHOD_C_MIN_BASE_NXP);
     (base_nxp, level)
+}
+
+pub(crate) fn regional_bbox_method_c_project_plan(
+    target_nxp: i32,
+    cfg: &ProjectConfig,
+) -> (i32, usize) {
+    let (_, level) = regional_method_c_project_plan(target_nxp, cfg);
+    (target_nxp.max(METHOD_C_MIN_BASE_NXP), level)
+}
+
+fn regional_method_c_level_cap(target_nxp: i32) -> usize {
+    let mut cap = 1;
+    while cap < METHOD_C_MAX_REFINEMENT_LEVEL
+        && METHOD_C_MIN_BASE_NXP * (1_i32 << (cap + 1)) <= target_nxp
+    {
+        cap += 1;
+    }
+    cap
 }
 
 fn project_has_method_c_refine_source(cfg: &ProjectConfig) -> bool {
@@ -850,9 +1215,29 @@ pub(crate) fn enable_regional_method_c_fast_path(
     base_nxp: i32,
     refine_level: usize,
 ) {
+    enable_regional_method_c_fast_path_with_refine_type(
+        lowered,
+        mask_type,
+        mask_type,
+        domain_prefix,
+        refine_prefix,
+        base_nxp,
+        refine_level,
+    );
+}
+
+pub(crate) fn enable_regional_method_c_fast_path_with_refine_type(
+    lowered: &mut LoweredProject,
+    domain_mask_type: &str,
+    refine_mask_type: &str,
+    domain_prefix: &Path,
+    refine_prefix: &Path,
+    base_nxp: i32,
+    refine_level: usize,
+) {
     lowered.mkgrd.nxp = base_nxp;
     lowered.mkgrd.mask_domain_global = false;
-    lowered.mkgrd.mask_domain_type = mask_type.to_string();
+    lowered.mkgrd.mask_domain_type = domain_mask_type.to_string();
     lowered.mkgrd.mask_domain_fprefix = domain_prefix.to_string_lossy().into_owned();
     lowered.mkgrd.mask_restart = false;
     lowered.mkgrd.refine = true;
@@ -861,20 +1246,15 @@ pub(crate) fn enable_regional_method_c_fast_path(
     lowered.refine.max_iter_spc = refine_level as i32;
     lowered.refine.max_iter_cal = 0;
     set_refine_transition_rows(lowered, refine_level);
-    lowered.refine.mask_refine_spc_type = mask_type.to_string();
+    lowered.refine.mask_refine_spc_type = refine_mask_type.to_string();
     lowered.refine.mask_refine_spc_fprefix = refine_prefix.to_string_lossy().into_owned();
     lowered.refine.is_transition = true;
     lowered.refine.weak_concav_eliminate = true;
-    if lowered.mkgrd.mesh_type == "oceanmesh" && lowered.mkgrd.mode_grid == "tri" {
-        lowered.refine.spring_global_type = 1;
-        lowered.refine.spring_regional_type = 0;
-        if !lowered.refine.niter_refine_specified {
-            lowered.refine.niter_refine = 2000;
-            lowered.refine.niter_refine_specified = true;
-        }
-    } else {
-        lowered.refine.spring_global_type = 0;
-        lowered.refine.spring_regional_type = 1;
+    lowered.refine.spring_global_type = 0;
+    lowered.refine.spring_regional_type = 1;
+    if !lowered.refine.niter_refine_specified {
+        lowered.refine.niter_refine = 2000;
+        lowered.refine.niter_refine_specified = true;
     }
 }
 

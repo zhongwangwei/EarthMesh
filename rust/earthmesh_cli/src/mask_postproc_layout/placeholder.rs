@@ -18,10 +18,6 @@ fn has_leading_mask_postproc_placeholder(layout: &MaskPostprocLayout) -> bool {
         && is_zero_point(&layout.center_points[1])
         && is_zero_point(&layout.vertex_points[0])
         && is_zero_point(&layout.vertex_points[1])
-        && layout
-            .center_neighbor_counts
-            .get(0..=1)
-            .is_some_and(|counts| counts.iter().all(|&count| count == 0))
 }
 
 pub(super) fn add_leading_mask_postproc_placeholder(
@@ -50,4 +46,36 @@ pub(super) fn add_leading_mask_postproc_placeholder(
     layout.center_neighbor_counts.insert(0, 0);
     layout.vertex_neighbor_counts.insert(0, 0);
     layout
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_existing_two_placeholder_rows_even_when_tri_counts_are_fixed_width() {
+        let layout = MaskPostprocLayout {
+            ustr_points: 3,
+            ustr_bounds: 3,
+            center_points: vec![
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 1.0, lat: 1.0 },
+            ],
+            vertex_points: vec![
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 2.0, lat: 2.0 },
+            ],
+            center_neighbors: vec![vec![1; 3], vec![1; 3], vec![2, 2, 2]],
+            vertex_neighbors: vec![vec![1; 7]; 3],
+            center_neighbor_counts: vec![3, 3, 3],
+            vertex_neighbor_counts: vec![0, 0, 1],
+        };
+
+        let normalized = ensure_leading_mask_postproc_placeholder(layout);
+
+        assert_eq!(normalized.ustr_points, 3);
+        assert_eq!(normalized.ustr_bounds, 3);
+    }
 }

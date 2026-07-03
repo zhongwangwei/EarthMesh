@@ -123,6 +123,55 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
     Ok(())
 }
 
+/// `--landtype-cell-mask <cells.geojson> <landtype.nc> <out.geojson>
+/// [--gridnum-perdegree N]`: annotate final EarthMesh cells with land/ocean fractions
+/// sampled from the landtype grid. Mixed land/ocean cells become COAST.
+pub(crate) fn run_landtype_cell_mask(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let rest = args.collect::<Vec<_>>();
+    let mut positional: Vec<PathBuf> = Vec::new();
+    let mut gridnum_perdegree: Option<usize> = None;
+    let mut i = 0usize;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--gridnum-perdegree" => {
+                i += 1;
+                gridnum_perdegree = Some(
+                    rest.get(i)
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| usage("--gridnum-perdegree requires an integer"))?,
+                );
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown --landtype-cell-mask option: {other}"
+                )));
+            }
+            other => positional.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if positional.len() != 3 {
+        return Err(usage(
+            "--landtype-cell-mask needs <cells.geojson> <landtype.nc> <out.geojson>",
+        ));
+    }
+    let gridnum_perdegree = match gridnum_perdegree {
+        Some(value) => value,
+        None => earthmesh_cli::landtype_gridnum_perdegree(&positional[1])
+            .map_err(|err| format!("landtype cell mask: {err}"))?,
+    };
+    let count = earthmesh_cli::write_landtype_cell_mask_geojson(
+        &positional[0],
+        &positional[1],
+        gridnum_perdegree,
+        &positional[2],
+    )
+    .map_err(|err| format!("landtype cell mask: {err}"))?;
+    println!("landtype_cell_mask_features={count}");
+    println!("landtype_cell_mask_output={}", positional[2].display());
+    Ok(())
+}
+
 /// `--coastal-band-geojson <map_dir> <out.geojson> --bbox W S E N
 /// [--radius-cells N] [--no-dissolve] [--no-yrev] [--undef U]`:
 /// CaMa elevtn -> land mask -> coastal band -> GeoJSON (port of coastal_band.py end-to-end).

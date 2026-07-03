@@ -65,7 +65,7 @@ impl MeshIntentPreset {
             MeshIntentPreset::CoastalOcean => "Ocean · Coastal",
             MeshIntentPreset::Estuary => "Ocean · Estuary",
             MeshIntentPreset::RiverNetwork => "Land · River network",
-            MeshIntentPreset::MeritHydroCoast => "Coast · MERIT-Hydro",
+            MeshIntentPreset::MeritHydroCoast => "Coastal zone · MERIT-Hydro",
             MeshIntentPreset::LandOceanCoupled => "Coupled · Land–Ocean",
             MeshIntentPreset::AtmosphereMpas => "Atmosphere · MPAS",
             MeshIntentPreset::MultiObjectiveBalanced => "Multi-objective balanced",
@@ -213,6 +213,7 @@ impl ProjectConfig {
                 specified_circle: None,
                 specified_bbox: None,
                 specified_close: None,
+                hfield: (!d.criteria.is_empty()).then(Default::default),
             },
             quality: QualityConfig {
                 min_angle_deg: d.min_angle_deg,
