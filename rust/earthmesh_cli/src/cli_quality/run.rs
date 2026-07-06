@@ -3,14 +3,15 @@ use std::path::PathBuf;
 
 use super::super::cli_args::usage;
 
-/// `--mesh-quality <gridfile.nc4> [out_dir] [quality.nml]`: read a gridfile, build
-/// the quality input from its triangle (M->W) view, and write quality_summary.json
-/// /.csv, worst_cells.geojson and quality_report.md. The optional third arg is a
-/// namelist whose `&quality` block configures the gate thresholds and the
-/// on-violation policy; with `on_violation = 'block'` a Fail verdict exits non-zero
-/// (CI gate). Absent ⇒ default thresholds, warn-only (unchanged legacy behavior).
+/// `--mesh-quality <gridfile.nc4> [out_dir] [quality.nml] [--kind tri|hex]`:
+/// read a gridfile, build the selected cell-view quality input, and write
+/// quality_summary.json /.csv, worst_cells.geojson and quality_report.md. The
+/// optional third arg is a namelist whose `&quality` block configures the gate
+/// thresholds and the on-violation policy; with `on_violation = 'block'` a Fail
+/// verdict exits non-zero (CI gate). Absent ⇒ default thresholds, warn-only
+/// (unchanged legacy behavior).
 pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(), String> {
-    // Optional `--kind hex|tri` selects the cell view: hex/atmos (MPAS) meshes are
+    // Optional `--kind tri|hex` selects the cell view: hex/atmos (MPAS) meshes are
     // measured as their W-cell hexagons (≈120° angles); tri/FVCOM meshes as the M
     // triangles. Default tri for backward compatibility. The rest stays positional:
     // <gridfile> [out_dir] [quality.nml].
@@ -21,7 +22,9 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
         if a == "--kind" {
             kind = args
                 .next()
-                .ok_or_else(|| usage("--kind needs a value (hex|tri)"))?;
+                .ok_or_else(|| usage("--kind needs a value (tri|hex)"))?;
+        } else if a.starts_with('-') {
+            return Err(usage(&format!("unknown --mesh-quality option `{a}`")));
         } else {
             positional.push(a);
         }
@@ -31,6 +34,9 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
             .first()
             .ok_or_else(|| usage("--mesh-quality needs a gridfile path"))?,
     );
+    if positional.len() > 3 {
+        return Err(usage("--mesh-quality accepts at most 3 positional args"));
+    }
     let out_dir = positional.get(1).map(PathBuf::from).unwrap_or_else(|| {
         gridfile
             .parent()
@@ -38,10 +44,11 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
             .unwrap_or_else(|| PathBuf::from("."))
     });
     let quality_cfg_path = positional.get(2).map(PathBuf::from);
+    let kind = parse_quality_kind(&kind)?;
 
     let mesh = earthmesh_cli::read_gridfile_mesh_points(&gridfile)
         .map_err(|e| format!("read gridfile {}: {e}", gridfile.display()))?;
-    let input = if kind.trim() == "hex" {
+    let input = if kind == "hex" {
         earthmesh_cli::quality_input_from_gridfile_hex(&mesh)
     } else {
         earthmesh_cli::quality_input_from_gridfile(&mesh)
@@ -61,14 +68,26 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
         ),
     };
 
-    let report = earthmesh_quality::compute(&input, &thresholds);
+    let mut report = earthmesh_quality::compute(&input, &thresholds);
+    report.mesh_name = gridfile.display().to_string();
+    report.cell_view = kind.to_string();
     let written = earthmesh_quality::io::write_all(&report, &out_dir)
         .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
+    println!("mesh_quality_kind={kind}");
     println!("mesh_quality_verdict={}", report.verdict.as_str());
     println!("mesh_quality_cells={}", report.geometry.cell_count);
     println!(
         "mesh_quality_min_angle_deg={}",
         report.geometry.min_angle_deg
+    );
+    println!(
+        "mesh_quality_cell_sides=tri:{} quad:{} pent:{} hex:{} hept:{} other:{}",
+        report.topology.triangle_cell_count,
+        report.topology.quadrilateral_cell_count,
+        report.topology.pentagon_cell_count,
+        report.topology.hexagon_cell_count,
+        report.topology.heptagon_cell_count,
+        report.topology.other_polygon_cell_count
     );
     for path in &written {
         println!("mesh_quality_output={}", path.display());
@@ -81,6 +100,16 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
         ));
     }
     Ok(())
+}
+
+fn parse_quality_kind(kind: &str) -> Result<&'static str, String> {
+    match kind.trim() {
+        "tri" => Ok("tri"),
+        "hex" => Ok("hex"),
+        other => Err(usage(&format!(
+            "--kind must be `tri` or `hex`, got `{other}`"
+        ))),
+    }
 }
 
 /// Map a parsed `&quality` namelist block to `earthmesh_quality::QualityThresholds`

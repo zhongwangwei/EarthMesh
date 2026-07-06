@@ -50,6 +50,7 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str("{\n");
     s.push_str("  \"kind\": \"earthmesh_mesh_quality\",\n");
     s.push_str(&format!("  \"mesh_name\": \"{}\",\n", esc(&r.mesh_name)));
+    s.push_str(&format!("  \"cell_view\": \"{}\",\n", esc(&r.cell_view)));
     s.push_str(&format!(
         "  \"tool_version\": \"{}\",\n",
         esc(&r.tool_version)
@@ -333,6 +334,7 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             gate.level.as_str()
         ));
     }
+    s.push_str(&format!("summary,cell_view,,{}\n", r.cell_view));
     s.push_str(&format!("summary,verdict,,{}\n", r.verdict.as_str()));
     s
 }
@@ -380,10 +382,11 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         "# Mesh Quality Report — {}\n\n",
         r.verdict.as_str().to_uppercase()
     ));
-    s.push_str(&format!(
-        "- mesh: `{}`\n- tool: earthmesh_quality {}\n\n",
-        r.mesh_name, r.tool_version
-    ));
+    s.push_str(&format!("- mesh: `{}`\n", r.mesh_name));
+    if !r.cell_view.is_empty() {
+        s.push_str(&format!("- cell view: `{}`\n", r.cell_view));
+    }
+    s.push_str(&format!("- tool: earthmesh_quality {}\n\n", r.tool_version));
     s.push_str("## Geometry\n\n");
     s.push_str(&format!(
         "- cells: {} · vertices: {} · edges: {}\n",
@@ -426,6 +429,7 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         t.heptagon_cell_count,
         t.other_polygon_cell_count
     ));
+    s.push_str("- cell-side counts are informational; quality gates are listed below\n");
     s.push_str(&format!(
         "- isolated refined: {} · max adjacent res ratio: {:.2} · transition warnings: {}\n\n",
         t.isolated_refined_cell_count,

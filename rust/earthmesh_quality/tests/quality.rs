@@ -32,10 +32,12 @@ fn two_square_mesh() -> QualityMeshInput {
 
 #[test]
 fn quality_json_output_has_required_fields() {
-    let r = compute(&two_square_mesh(), &QualityThresholds::default());
+    let mut r = compute(&two_square_mesh(), &QualityThresholds::default());
+    r.cell_view = "hex".to_string();
     let json = io::to_summary_json(&r);
     for needle in [
         "earthmesh_mesh_quality",
+        "\"cell_view\": \"hex\"",
         "\"verdict\": \"pass\"",
         "\"cell_count\": 2",
         "\"edge_count\": 7",
@@ -54,11 +56,13 @@ fn quality_json_output_has_required_fields() {
 
 #[test]
 fn quality_csv_output_has_rows_and_verdict() {
-    let r = compute(&two_square_mesh(), &QualityThresholds::default());
+    let mut r = compute(&two_square_mesh(), &QualityThresholds::default());
+    r.cell_view = "tri".to_string();
     let csv = io::to_summary_csv(&r);
     assert!(csv.starts_with("category,metric,value,level\n"));
     assert!(csv.contains("geometry,cell_count,2"));
     assert!(csv.contains("topology,quadrilateral_cell_count,2"));
+    assert!(csv.contains("summary,cell_view,,tri"));
     assert!(csv.contains("summary,verdict,,pass"));
 }
 
@@ -135,7 +139,8 @@ fn worst_cells_geojson_output_for_bad_mesh() {
 
 #[test]
 fn write_all_produces_four_artifacts() {
-    let r = compute(&two_square_mesh(), &QualityThresholds::default());
+    let mut r = compute(&two_square_mesh(), &QualityThresholds::default());
+    r.cell_view = "tri".to_string();
     let dir = std::env::temp_dir().join(format!("em3_quality_test_{}", std::process::id()));
     let written = io::write_all(&r, &dir).expect("write_all");
     assert_eq!(written.len(), 4);
@@ -151,6 +156,14 @@ fn write_all_produces_four_artifacts() {
     }
     let md = std::fs::read_to_string(dir.join("quality_report.md")).unwrap();
     assert!(md.contains("Mesh Quality Report"));
+    assert!(md.contains("- cell view: `tri`"));
+    assert!(md.contains("cell-side counts are informational"));
     assert!(md.contains("Verdict: PASS"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn report_md_omits_empty_cell_view() {
+    let r = compute(&two_square_mesh(), &QualityThresholds::default());
+    assert!(!io::to_report_md(&r).contains("- cell view: ``"));
 }

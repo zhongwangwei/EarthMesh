@@ -654,7 +654,7 @@ fn write_close_mask_family(
     }
     if refine_degree > 1 {
         for level in 1..refine_degree {
-            let bbox = expanded_parent_bbox_ring(&rings, level, refine_degree, base_nxp);
+            let bbox = expanded_parent_bbox_ring(rings, level, refine_degree, base_nxp);
             let path = run_dir
                 .as_ref()
                 .join(format!("{refine_stem}_{level:03}_001.nml"));
@@ -672,6 +672,7 @@ fn write_close_mask_family(
     Ok((domain_prefix, refine_prefix))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_regional_bbox_circle_mask_family(
     w: f64,
     e: f64,
@@ -705,6 +706,7 @@ pub(crate) fn write_regional_bbox_circle_mask_family(
     Ok((domain_prefix, refine_prefix))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_regional_bbox_inset_mask_family(
     w: f64,
     e: f64,

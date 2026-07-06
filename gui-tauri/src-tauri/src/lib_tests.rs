@@ -9,6 +9,7 @@ use std::{env, fs, path::Path, process};
 fn parses_quality_summary_fields() {
     let json = r#"{
         "verdict": "warn",
+        "cell_view": "hex",
         "geometry": { "cell_count": 1200, "vertex_count": 640, "edge_count": 1830, "min_angle_deg": 22.5 },
         "topology": {
             "triangle_cell_count": 1200,
@@ -23,6 +24,7 @@ fn parses_quality_summary_fields() {
     }"#;
     let q = quality::parse_quality_summary(json, Path::new("/no/such/dir")).unwrap();
     assert_eq!(q.verdict, "warn");
+    assert_eq!(q.cell_view, "hex");
     assert_eq!(q.cell_count, 1200);
     assert_eq!(q.vertex_count, 640);
     assert_eq!(q.min_angle_deg, 22.5);
@@ -32,6 +34,25 @@ fn parses_quality_summary_fields() {
     assert!(q.cell_sides.contains(&("pentagon".to_string(), 2)));
     assert!(q.cell_sides.contains(&("hexagon".to_string(), 1188)));
     assert!(q.report_path.is_none());
+}
+
+#[test]
+fn mesh_kind_rejects_invalid_values() {
+    assert_eq!(mesh_outputs::checked_mesh_kind(None).unwrap(), "hex");
+    assert_eq!(mesh_outputs::checked_mesh_kind(Some("tri")).unwrap(), "tri");
+    assert_eq!(mesh_outputs::checked_mesh_kind(Some("hex")).unwrap(), "hex");
+    assert!(mesh_outputs::checked_mesh_kind(Some("")).is_err());
+    assert!(mesh_outputs::checked_mesh_kind(Some("square"))
+        .unwrap_err()
+        .contains("mesh kind must be tri or hex"));
+    match mesh_quality("missing.nc".to_string(), Some("square".to_string())) {
+        Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
+        Ok(_) => panic!("invalid mesh_quality kind should fail"),
+    }
+    match mesh_cell_polygons("missing.nc".to_string(), "square".to_string(), None) {
+        Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
+        Ok(_) => panic!("invalid mesh_cell_polygons kind should fail"),
+    }
 }
 fn preset_yaml(name: &str, intent: MeshIntentPreset) -> String {
     scaffold_project(
@@ -951,8 +972,13 @@ fn set_target_cell_updates_project_cell_shape() {
     let yaml = set_target_cell(yaml, "tri".to_string()).expect("set cell");
     let summary = project_summary(yaml.clone()).expect("summary");
     assert_eq!(summary.cell, "tri");
+    assert_eq!(summary.quality_mode, "tri-strict");
+    let yaml = set_target_cell(yaml, "hex".to_string()).expect("set hex cell");
+    let summary = project_summary(yaml.clone()).expect("summary");
+    assert_eq!(summary.cell, "hex");
+    assert_eq!(summary.quality_mode, "hex-cgrid");
     let cfg = ProjectConfig::from_yaml(&yaml).expect("yaml");
-    assert_eq!(cfg.target.cell, earthmesh_project::MeshCellKind::Tri);
+    assert_eq!(cfg.target.cell, earthmesh_project::MeshCellKind::Hex);
     assert!(set_target_cell(yaml, "square".to_string()).is_err());
 }
 

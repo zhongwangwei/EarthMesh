@@ -2478,6 +2478,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z ? "顶点数" : "Vertices", `<b id="qualityVertices" style="font-size:15px"></b>`)}
         ${field(z ? "边数" : "Edges", `<b id="qualityEdges" style="font-size:15px"></b>`)}
         ${field(z ? "角度范围" : "Angle range", `<b id="qualityAngleRange" style="font-size:15px;color:${color}"></b>`)}
+        ${q.cell_view ? field(z ? "报告视角" : "Cell view", `<b id="qualityCellView" style="font-size:15px"></b>`) : ""}
       </div>
       <div class="ch" style="margin-top:10px">${z ? "分布（μ±σ 区间 + 极值）" : "Distributions (μ±σ band + range)"}</div>
       ${statBar(z ? "边长" : "Edge length", q.edge_length_km, "km")}
@@ -2490,6 +2491,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     text("qualityVertices", num(q.vertex_count));
     text("qualityEdges", num(q.edge_count));
     text("qualityAngleRange", (q.min_angle_deg || 0).toFixed(1) + "°–" + (q.max_angle_deg || 0).toFixed(1) + "°");
+    text("qualityCellView", q.cell_view || "");
     const cellSides = (q.cell_sides || []).filter((t) => t[1] > 0);
     if (cellSides.length) {
       const sideTitle = document.createElement("div");

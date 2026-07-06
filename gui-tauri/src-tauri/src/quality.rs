@@ -24,6 +24,7 @@ pub(crate) struct Gate {
 #[derive(Serialize)]
 pub(crate) struct MeshQuality {
     pub(crate) verdict: String,
+    pub(crate) cell_view: String,
     pub(crate) cell_count: i64,
     pub(crate) vertex_count: i64,
     pub(crate) edge_count: i64,
@@ -112,6 +113,7 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
     .collect::<Vec<_>>();
     Ok(MeshQuality {
         verdict: v["verdict"].as_str().unwrap_or("unknown").to_string(),
+        cell_view: v["cell_view"].as_str().unwrap_or("").to_string(),
         cell_count: geom["cell_count"].as_i64().unwrap_or(0),
         vertex_count: geom["vertex_count"].as_i64().unwrap_or(0),
         edge_count: geom["edge_count"].as_i64().unwrap_or(0),

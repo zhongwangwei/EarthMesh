@@ -6,6 +6,8 @@ const fs = require("fs");
 const read = (path) => fs.readFileSync(path, "utf8");
 const html = read("gui-tauri/dist/index.html");
 const readme = read("gui-tauri/README.md");
+const rootReadme = read("README.md");
+const makefile = read("Makefile");
 const guiLib = read("gui-tauri/src-tauri/src/lib.rs");
 const projectLib = read("rust/earthmesh_project/src/lib.rs");
 const projectPresets = read("rust/earthmesh_project/src/presets/mod.rs");
@@ -399,9 +401,49 @@ log("layer toggles preserve opened project paths");
 }
 
 {
+  const body = section(html, /function paintTargetOutputs\(summary\) \{([\s\S]*?)\n  \}/, "paintTargetOutputs body");
+  const qualityBody = section(html, /function readMeshQuality\(gridfile\) \{([\s\S]*?)\n  \}/, "readMeshQuality body");
+  check(
+    html.includes('id="targetQualityModeOutput"') &&
+      html.includes('id="readyQualityModeOutput"') &&
+      body.includes('const mode = s.quality_mode || (cell === "tri" ? "tri-strict" : "hex-cgrid");') &&
+      body.includes('modeIn.textContent = mode;') &&
+      body.includes('readyMode.textContent = mode;') &&
+      html.includes('function meshViewKind()') &&
+      qualityBody.includes('invoke("mesh_quality", { gridfile, kind: meshViewKind() });'),
+    "quality mode must render tri-strict/hex-cgrid labels",
+  );
+  log("quality mode labels render from project summary");
+}
+
+check(
+  readme.includes("report `cell_view`") &&
+    readme.includes("`tri-strict` for triangle targets") &&
+    readme.includes("`hex-cgrid` for hex targets"),
+  "GUI README must document quality view selection",
+);
+log("GUI README documents quality view selection");
+
+check(
+  rootReadme.includes("make check-mesh-quality-views") &&
+    makefile.includes("check-mesh-quality-views:") &&
+    makefile.includes('CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh') &&
+    fs.existsSync("cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4") &&
+    read("scripts/check_mesh_quality_views.sh").includes("cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4") &&
+    read("scripts/check_mesh_quality_views.sh").includes('CARGO=${CARGO:-cargo}') &&
+    read("scripts/check_mesh_quality_views.sh").includes('"$CARGO" run --quiet'),
+  "mesh quality view smoke target must be documented and wired",
+);
+log("mesh quality view smoke target is documented and wired");
+
+{
   const body = section(html, /function renderQualityCard\(q\) \{([\s\S]*?)\n  \}/, "renderQualityCard body");
   check(
     body.includes("metric.textContent = g.metric;") &&
+      body.includes("q.cell_view ? field") &&
+      body.includes('text("qualityCellView", q.cell_view || "");') &&
+      body.includes("const cellSides = (q.cell_sides || []).filter((t) => t[1] > 0);") &&
+      body.includes('sideTitle.textContent = z ? "单元边数（观测）" : "Cell sides (observed)";') &&
       body.includes('issue.textContent = "\u2022 " + t[0] + ": " + num(t[1]);') &&
       body.includes('b.textContent = "\u25cf " + verdict;') &&
       !body.includes("q.gates.map(chip).join") &&

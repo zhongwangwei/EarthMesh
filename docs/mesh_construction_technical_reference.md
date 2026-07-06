@@ -191,6 +191,10 @@ h 场模式（M4）以 `level_at(质心经纬) ≥ pass` 替换几何包含，�
 
 几何：平面 shoelace 面积（负绕向经经度展开后判定并 Fail）、haversine 边长、3D 弦角内角（acos 前 clamp[−1,1]）、aspect = 最长/最短边（大圆）、compactness = 4πA/P²；NaN 顶点单独计数并整体隔离出统计。拓扑：索引越界、非流形边（>2 面共享）、孤儿胞、邻接互惠、χ 校验（全球 2/区域盘 1）。门控分级 Pass/Warn/Fail，阈值默认 min_angle 5/20°、aspect 4/10（严格比较口径统一）。
 
+质量报告记录 `cell_view`（`tri` 或 `hex`）以区分三角主单元视角和六边形/C-grid 视角；边数分布（三/四/五/六/七/其他边胞）作为报告观测项输出，是否合格由门禁和拓扑问题表判定。
+
+EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、拓扑诊断和质量门禁分开表达；EarthMesh 因此按 `tri-strict`/`hex-cgrid` 选择验收视角，而不是把边数分布混作失败条件。
+
 验收层级：**compat 模式** = 整数拓扑逐位对拍（对 Fortran 参考）；**fast/h 场模式** = validate_topology + 质量报告 + 行为断言（本仓库 M1–M4 测试即范本）。
 
 ---

@@ -188,6 +188,9 @@ impl Default for QualityThresholds {
 #[derive(Clone, Debug)]
 pub struct MeshQualityReport {
     pub mesh_name: String,
+    /// Which cell view was measured (`tri`, `hex`, or empty when the caller does
+    /// not provide that context).
+    pub cell_view: String,
     pub tool_version: String,
     pub geometry: GeometryMetrics,
     pub topology: TopologyMetrics,
@@ -517,6 +520,7 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
 
     MeshQualityReport {
         mesh_name: String::new(),
+        cell_view: String::new(),
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
         geometry: geom,
         topology: topo,

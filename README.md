@@ -186,6 +186,15 @@ Typical mesh runs write under the configured case directory:
 
 Quality runs write `quality_summary.json`, `quality_summary.csv`,
 `worst_cells.geojson`, and `quality_report.md` to the requested output directory.
+Polygon side-count rows in those reports are observational; quality decisions come
+from the reported gates and topology issues.
+Use `--mesh-quality ... --kind tri|hex` to select the cell view; the report records
+the selected view in `cell_view`. If omitted, the CLI keeps the legacy `tri`
+view.
+The CLI also prints `mesh_quality_cell_sides=...` as the same observational
+summary.
+Run `make check-mesh-quality-views` to smoke-test both `tri` and `hex` report
+views against the quickstart fixture.
 
 ## Migration Notes
 

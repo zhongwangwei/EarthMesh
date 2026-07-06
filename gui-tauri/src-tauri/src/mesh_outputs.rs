@@ -13,6 +13,14 @@ use crate::quality::{parse_quality_summary, MeshQuality};
 const MERIT_SURFACE_PREVIEW_STRIDE: u32 = 50;
 const MERIT_RIVER_CELL_MIN_FRACTION: f64 = 0.001;
 
+pub(crate) fn checked_mesh_kind(kind: Option<&str>) -> Result<&'static str, String> {
+    match kind.map(str::trim) {
+        None | Some("hex") => Ok("hex"),
+        Some("tri") => Ok("tri"),
+        Some(other) => Err(format!("mesh kind must be tri or hex, got {other:?}")),
+    }
+}
+
 fn resolve_layer_file(path: Option<&str>, gridfile_dir: &Path) -> Option<PathBuf> {
     let path = path?.trim();
     if path.is_empty() || path.eq_ignore_ascii_case("none") {
@@ -30,19 +38,15 @@ fn resolve_layer_file(path: Option<&str>, gridfile_dir: &Path) -> Option<PathBuf
     None
 }
 
-/// Run `mkgrd.x --mesh-quality <gridfile> <dir>` and parse the resulting
-/// `quality_summary.json` for the Quality dashboard.
+/// Run `mkgrd.x --mesh-quality <gridfile> <dir> --kind <tri|hex>` and parse the
+/// resulting `quality_summary.json` for the Quality dashboard.
 #[tauri::command]
 pub(crate) fn mesh_quality(gridfile: String, kind: Option<String>) -> Result<MeshQuality, String> {
+    let kind = checked_mesh_kind(kind.as_deref())?;
     let dir = gridfile_dir(&gridfile)?;
     // Measure hexagon cells for hex/atmos (MPAS) meshes, triangles for FVCOM —
     // matching the cell view the map renders, so the reported angles are the real
     // cell angles (≈120° for hexagons), not the dual triangles (≈60°).
-    let kind = if kind.as_deref() == Some("tri") {
-        "tri"
-    } else {
-        "hex"
-    };
     let bin = resolve_mkgrd();
     let out = Command::new(&bin)
         .arg("--mesh-quality")
@@ -72,9 +76,9 @@ pub(crate) fn mesh_cell_polygons(
     kind: String,
     max_cells: Option<u32>,
 ) -> Result<String, String> {
+    let kind = checked_mesh_kind(Some(&kind))?;
     let dir = gridfile_dir(&gridfile)?;
     let out_geojson = dir.join("mesh_cells.geojson");
-    let kind = if kind == "tri" { "tri" } else { "hex" };
     let bin = resolve_mkgrd();
     let mut cmd = Command::new(&bin);
     cmd.arg("--gridfile-cell-polygons")
@@ -99,6 +103,7 @@ pub(crate) fn mesh_cell_polygons(
 
 /// Classify final mesh cells against real MERIT-Hydro river/coast/surface masks.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mesh_merit_cells(
     gridfile: String,
     kind: String,
@@ -110,7 +115,7 @@ pub(crate) fn mesh_merit_cells(
     stride: Option<u32>,
     landtype_file: Option<String>,
 ) -> Result<String, String> {
-    if ![w, e, s, n].iter().all(|v| v.is_finite()) || !(e > w && n > s) {
+    if !([w, e, s, n].iter().all(|v| v.is_finite()) && e > w && n > s) {
         return Err("invalid MERIT-Hydro mesh bbox".to_string());
     }
     if !Path::new(&merit_root).is_dir() {

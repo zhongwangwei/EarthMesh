@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build clean test test-fast test-gui check-gui-js test-slow test-full fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
+.PHONY: all build clean test test-fast test-gui check-gui-js check-mesh-quality-views test-slow test-full fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
 
 all: build
 
@@ -71,6 +71,10 @@ test-fast:
 
 check-gui-js:
 	node scripts/check_gui_js.js
+
+check-mesh-quality-views:
+	CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh
+
 test-gui: check-gui-js
 	$(CARGO) test --manifest-path gui-tauri/src-tauri/Cargo.toml --all-targets
 

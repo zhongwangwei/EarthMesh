@@ -234,6 +234,7 @@ pub(crate) fn set_refinement(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_specified_refinement(
     yaml: String,
     enabled: bool,
@@ -313,6 +314,7 @@ pub(crate) fn set_hfield_refinement(
 
 /// Set expert overrides. Nulls clear the override and keep template/default values.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_expert(
     yaml: String,
     nxp: Option<i32>,

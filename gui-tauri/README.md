@@ -69,8 +69,8 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `open_path` | `path` | open output/report path in the OS file browser |
 | `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile}` |
 | `kill_run` | – | terminate the running engine child if one exists |
-| `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard |
-| `mesh_cell_polygons` | `gridfile, kind?, maxCells?` | GeoJSON mesh overlay for the map |
+| `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard; `kind` is `tri` or `hex` and maps to report `cell_view` (omitted defaults to `hex`) |
+| `mesh_cell_polygons` | `gridfile, kind, maxCells?` | GeoJSON mesh overlay for the map |
 | `mesh_merit_cells` | `gridfile, kind, meritRoot, w, e, s, n, stride?, landtypeFile?` | final mesh cells with MERIT-Hydro R2/R3 plus land-cover land/ocean/coast fractions; land-cover resolution is inferred from the file |
 | `shapefile_boundary_geojson` | `path` | GeoJSON polygon outline for the map |
 
@@ -143,7 +143,10 @@ automatically.
 - Runs are explicit: the backend stages the engine, writes `mkgrd.nml`, streams
   stdout/stderr to the Log pane, supports kill, and reports the output directory.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the
-  engine reports a gridfile.
+  engine reports a gridfile; quality uses `tri-strict` for triangle targets and
+  `hex-cgrid` for hex targets.
+- The quality dashboard treats polygon side counts as observed cell makeup, not
+  topology failures; failures come from gates and topology issues.
 
 Known gaps: circle domains remain preserved-but-not-editable in the GUI; polygon
 domains need project-schema support first; release bundles still need an explicit
