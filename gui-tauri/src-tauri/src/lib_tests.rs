@@ -53,6 +53,20 @@ fn mesh_kind_rejects_invalid_values() {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_cell_polygons kind should fail"),
     }
+    match mesh_outputs::mesh_merit_cells(
+        "missing.nc".to_string(),
+        "square".to_string(),
+        "missing-merit".to_string(),
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        None,
+        None,
+    ) {
+        Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
+        Ok(_) => panic!("invalid mesh_merit_cells kind should fail"),
+    }
 }
 fn preset_yaml(name: &str, intent: MeshIntentPreset) -> String {
     scaffold_project(

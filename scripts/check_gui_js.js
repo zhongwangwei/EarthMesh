@@ -428,10 +428,11 @@ check(
   rootReadme.includes("make check-mesh-quality-views") &&
     makefile.includes("check-mesh-quality-views:") &&
     makefile.includes('CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh') &&
-    fs.existsSync("cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4") &&
-    read("scripts/check_mesh_quality_views.sh").includes("cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4") &&
+    fs.existsSync("rust/earthmesh_cli/tests/mesh_quality_views.rs") &&
+    rootReadme.includes("generated temporary gridfile") &&
+    read("scripts/check_mesh_quality_views.sh").includes("--test mesh_quality_views") &&
     read("scripts/check_mesh_quality_views.sh").includes('CARGO=${CARGO:-cargo}') &&
-    read("scripts/check_mesh_quality_views.sh").includes('"$CARGO" run --quiet'),
+    read("rust/earthmesh_cli/tests/mesh_quality_views.rs").includes("CARGO_BIN_EXE_earthmesh_cli"),
   "mesh quality view smoke target must be documented and wired",
 );
 log("mesh quality view smoke target is documented and wired");

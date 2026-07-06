@@ -194,7 +194,7 @@ view.
 The CLI also prints `mesh_quality_cell_sides=...` as the same observational
 summary.
 Run `make check-mesh-quality-views` to smoke-test both `tri` and `hex` report
-views against the quickstart fixture.
+views against a generated temporary gridfile.
 
 ## Migration Notes
 

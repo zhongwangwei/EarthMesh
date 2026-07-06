@@ -118,6 +118,7 @@ pub(crate) fn mesh_merit_cells(
     if !([w, e, s, n].iter().all(|v| v.is_finite()) && e > w && n > s) {
         return Err("invalid MERIT-Hydro mesh bbox".to_string());
     }
+    let kind = checked_mesh_kind(Some(&kind))?;
     if !Path::new(&merit_root).is_dir() {
         return Err(format!("MERIT-Hydro directory not found: {merit_root}"));
     }
@@ -132,7 +133,6 @@ pub(crate) fn mesh_merit_cells(
     let river_cells = out_dir.join("river_cell_intersections.geojson");
     let coast_cells = out_dir.join("coast_cell_intersections.geojson");
     let classified = out_dir.join("mesh_cells_merit.geojson");
-    let kind = if kind == "tri" { "tri" } else { "hex" };
     let bin = resolve_mkgrd();
     let landtype_file = resolve_layer_file(landtype_file.as_deref(), &dir);
 
