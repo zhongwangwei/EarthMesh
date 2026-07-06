@@ -126,6 +126,12 @@ pub struct TopologyMetrics {
     pub orphan_cell_count: usize,
     pub neighbor_reciprocity_failure_count: usize,
     pub abnormal_polygon_edge_count: usize,
+    pub triangle_cell_count: usize,
+    pub quadrilateral_cell_count: usize,
+    pub pentagon_cell_count: usize,
+    pub hexagon_cell_count: usize,
+    pub heptagon_cell_count: usize,
+    pub other_polygon_cell_count: usize,
     pub isolated_refined_cell_count: usize,
     pub max_adjacent_resolution_ratio: f64,
     pub transition_continuity_warning_count: usize,
@@ -318,6 +324,15 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
         };
         if unique_idx.len() < 3 {
             topo.abnormal_polygon_edge_count += 1;
+        } else {
+            match unique_idx.len() {
+                3 => topo.triangle_cell_count += 1,
+                4 => topo.quadrilateral_cell_count += 1,
+                5 => topo.pentagon_cell_count += 1,
+                6 => topo.hexagon_cell_count += 1,
+                7 => topo.heptagon_cell_count += 1,
+                _ => topo.other_polygon_cell_count += 1,
+            }
         }
         for &i in &cell.vertices {
             if i >= nv {
@@ -760,6 +775,7 @@ mod tests {
         assert_eq!(r.topology.duplicate_edge_count, 0);
         assert_eq!(r.topology.orphan_cell_count, 0);
         assert_eq!(r.topology.neighbor_reciprocity_failure_count, 0);
+        assert_eq!(r.topology.quadrilateral_cell_count, 2);
         // 3D chord corner angle of a 1°×1° equatorial square is ~90° (not exactly,
         // since the chord vectors live on the sphere) — sane, not a planar artifact.
         assert!((r.geometry.min_angle_deg - 90.0).abs() < 1.0);

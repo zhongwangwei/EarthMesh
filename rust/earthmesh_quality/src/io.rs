@@ -134,6 +134,30 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         t.abnormal_polygon_edge_count
     ));
     s.push_str(&format!(
+        "    \"triangle_cell_count\": {},\n",
+        t.triangle_cell_count
+    ));
+    s.push_str(&format!(
+        "    \"quadrilateral_cell_count\": {},\n",
+        t.quadrilateral_cell_count
+    ));
+    s.push_str(&format!(
+        "    \"pentagon_cell_count\": {},\n",
+        t.pentagon_cell_count
+    ));
+    s.push_str(&format!(
+        "    \"hexagon_cell_count\": {},\n",
+        t.hexagon_cell_count
+    ));
+    s.push_str(&format!(
+        "    \"heptagon_cell_count\": {},\n",
+        t.heptagon_cell_count
+    ));
+    s.push_str(&format!(
+        "    \"other_polygon_cell_count\": {},\n",
+        t.other_polygon_cell_count
+    ));
+    s.push_str(&format!(
         "    \"isolated_refined_cell_count\": {},\n",
         t.isolated_refined_cell_count
     ));
@@ -254,6 +278,36 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
         ),
         (
             "topology",
+            "triangle_cell_count",
+            t.triangle_cell_count as f64,
+        ),
+        (
+            "topology",
+            "quadrilateral_cell_count",
+            t.quadrilateral_cell_count as f64,
+        ),
+        (
+            "topology",
+            "pentagon_cell_count",
+            t.pentagon_cell_count as f64,
+        ),
+        (
+            "topology",
+            "hexagon_cell_count",
+            t.hexagon_cell_count as f64,
+        ),
+        (
+            "topology",
+            "heptagon_cell_count",
+            t.heptagon_cell_count as f64,
+        ),
+        (
+            "topology",
+            "other_polygon_cell_count",
+            t.other_polygon_cell_count as f64,
+        ),
+        (
+            "topology",
             "isolated_refined_cell_count",
             t.isolated_refined_cell_count as f64,
         ),
@@ -362,6 +416,15 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "- orphan cells: {} · neighbor-reciprocity fails: {} · abnormal polygons: {}\n",
         t.orphan_cell_count, t.neighbor_reciprocity_failure_count, t.abnormal_polygon_edge_count
+    ));
+    s.push_str(&format!(
+        "- cell sides: triangles {} · quads {} · pentagons {} · hexagons {} · heptagons {} · other {}\n",
+        t.triangle_cell_count,
+        t.quadrilateral_cell_count,
+        t.pentagon_cell_count,
+        t.hexagon_cell_count,
+        t.heptagon_cell_count,
+        t.other_polygon_cell_count
     ));
     s.push_str(&format!(
         "- isolated refined: {} · max adjacent res ratio: {:.2} · transition warnings: {}\n\n",

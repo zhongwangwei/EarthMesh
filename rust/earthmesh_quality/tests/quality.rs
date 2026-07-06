@@ -44,6 +44,8 @@ fn quality_json_output_has_required_fields() {
         "\"min_angle_deg\"",
         "\"duplicate_edge_count\": 0",
         "\"neighbor_reciprocity_failure_count\": 0",
+        "\"quadrilateral_cell_count\": 2",
+        "\"hexagon_cell_count\": 0",
         "\"gates\"",
     ] {
         assert!(json.contains(needle), "JSON missing `{needle}`:\n{json}");
@@ -56,7 +58,54 @@ fn quality_csv_output_has_rows_and_verdict() {
     let csv = io::to_summary_csv(&r);
     assert!(csv.starts_with("category,metric,value,level\n"));
     assert!(csv.contains("geometry,cell_count,2"));
+    assert!(csv.contains("topology,quadrilateral_cell_count,2"));
     assert!(csv.contains("summary,verdict,,pass"));
+}
+
+fn regular_cell(
+    vertices: &mut Vec<Point>,
+    sides: usize,
+    center_x: f64,
+    center_y: f64,
+) -> QualityCell {
+    let start = vertices.len();
+    let radius = 0.1;
+    for k in 0..sides {
+        let a = 2.0 * std::f64::consts::PI * k as f64 / sides as f64;
+        vertices.push(Point::new(
+            center_x + radius * a.cos(),
+            center_y + radius * a.sin(),
+        ));
+    }
+    QualityCell {
+        vertices: (start..start + sides).collect(),
+        refine_level: Some(0),
+        neighbors: vec![],
+    }
+}
+
+#[test]
+fn quality_reports_cell_side_counts() {
+    let mut vertices = Vec::new();
+    let cells = vec![
+        regular_cell(&mut vertices, 3, 0.0, 0.0),
+        regular_cell(&mut vertices, 4, 1.0, 0.0),
+        regular_cell(&mut vertices, 5, 2.0, 0.0),
+        regular_cell(&mut vertices, 6, 3.0, 0.0),
+        regular_cell(&mut vertices, 7, 4.0, 0.0),
+        regular_cell(&mut vertices, 8, 5.0, 0.0),
+    ];
+    let r = compute(
+        &QualityMeshInput { vertices, cells },
+        &QualityThresholds::default(),
+    );
+
+    assert_eq!(r.topology.triangle_cell_count, 1);
+    assert_eq!(r.topology.quadrilateral_cell_count, 1);
+    assert_eq!(r.topology.pentagon_cell_count, 1);
+    assert_eq!(r.topology.hexagon_cell_count, 1);
+    assert_eq!(r.topology.heptagon_cell_count, 1);
+    assert_eq!(r.topology.other_polygon_cell_count, 1);
 }
 
 #[test]
