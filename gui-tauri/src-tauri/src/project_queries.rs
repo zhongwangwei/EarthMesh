@@ -72,6 +72,13 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             *sea_ratio,
         ),
     };
+    let cell = cfg.target.cell.engine_str().to_string();
+    let quality_mode = if cell == "tri" {
+        "tri-strict"
+    } else {
+        "hex-cgrid"
+    }
+    .to_string();
     let on_violation = cfg.quality.on_violation.as_str().to_string();
     let specified_circle = cfg.refinement.specified_circle.as_ref();
     let specified_bbox = cfg.refinement.specified_bbox.as_ref();
@@ -95,7 +102,8 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         authors: cfg.metadata.authors.clone(),
         description: cfg.metadata.description.clone(),
         intent: cfg.target.intent.id().to_string(),
-        cell: cfg.target.cell.engine_str().to_string(),
+        cell,
+        quality_mode,
         model_format: cfg.target.model_format.try_engine_str()?.to_string(),
         domain: domain.to_string(),
         domain_shape: domain_shape.to_string(),

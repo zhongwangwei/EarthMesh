@@ -10,6 +10,12 @@ fn parses_quality_summary_fields() {
     let json = r#"{
         "verdict": "warn",
         "geometry": { "cell_count": 1200, "vertex_count": 640, "edge_count": 1830, "min_angle_deg": 22.5 },
+        "topology": {
+            "triangle_cell_count": 1200,
+            "pentagon_cell_count": 2,
+            "hexagon_cell_count": 1188,
+            "heptagon_cell_count": 3
+        },
         "gates": [
             { "metric": "min_angle_deg", "value": 22.5, "level": "warn" },
             { "metric": "aspect_ratio", "value": 2.0, "level": "pass" }
@@ -22,6 +28,9 @@ fn parses_quality_summary_fields() {
     assert_eq!(q.min_angle_deg, 22.5);
     assert_eq!(q.gates.len(), 2);
     assert_eq!(q.gates[0].level, "warn");
+    assert!(q.cell_sides.contains(&("triangle".to_string(), 1200)));
+    assert!(q.cell_sides.contains(&("pentagon".to_string(), 2)));
+    assert!(q.cell_sides.contains(&("hexagon".to_string(), 1188)));
     assert!(q.report_path.is_none());
 }
 fn preset_yaml(name: &str, intent: MeshIntentPreset) -> String {
@@ -137,6 +146,7 @@ fn project_summary_reports_target_cell_and_model_format() {
     let yaml = preset_yaml("ocean_test", MeshIntentPreset::CoastalOcean);
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.cell, "tri");
+    assert_eq!(summary.quality_mode, "tri-strict");
     assert_eq!(summary.model_format, "FVCOM");
     let landcover = summary
         .layers

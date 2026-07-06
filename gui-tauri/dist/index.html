@@ -600,6 +600,7 @@ function renderStep(i){
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
           ${field(lang?"输出模型":"Output model",`<input class="input" id="targetModelOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
+          ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">—</b>`,lang?"随单元形状自动标注":"label follows cell shape")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 弹性调整":"EXPERT — spring adjustment"}</span>
         <div class="grid2" id="expertFields">
@@ -661,6 +662,7 @@ function renderStep(i){
         <div class="ch">${lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run."}</div>
         <div class="grid2" style="margin-top:8px">
           ${field(lang?"输出模型":"Output model",`<b id="readyModelOutput" style="font-size:15px">—</b>`)}
+          ${field(lang?"质量模式":"Quality mode",`<b id="readyQualityModeOutput" style="font-size:15px">—</b>`)}
           ${field(lang?"分辨率":"Resolution",`<b style="font-size:15px">${fmtRes()}</b> <span style="color:var(--muted);font-size:12px">${fmtEquiv()}</span>`)}
           ${field(lang?"计算域":"Domain",`<b id="readyDomainOutput" style="font-size:15px">—</b>`)}
           ${field(lang?"细化":"Refinement",`<b id="readyRefinementOutput" style="font-size:15px">—</b>`)}
@@ -2053,13 +2055,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const s = summary || lastSummary;
     if (!s) return;
     const model = s.model_format || "—";
+    const cell = String(cellEdit || s.cell || "hex").toLowerCase() === "tri" ? "tri" : "hex";
+    const mode = s.quality_mode || (cell === "tri" ? "tri-strict" : "hex-cgrid");
     const modelIn = document.getElementById("targetModelOutput");
     const cellIn = document.getElementById("targetCellOutput");
+    const modeIn = document.getElementById("targetQualityModeOutput");
     const ready = document.getElementById("readyModelOutput");
+    const readyMode = document.getElementById("readyQualityModeOutput");
     const refine = document.getElementById("readyRefinementOutput");
     if (modelIn) modelIn.value = model;
-    if (cellIn) cellIn.value = String(cellEdit || s.cell || "hex").toLowerCase() === "tri" ? "tri" : "hex";
+    if (cellIn) cellIn.value = cell;
+    if (modeIn) modeIn.textContent = mode;
     if (ready) ready.textContent = model;
+    if (readyMode) readyMode.textContent = mode;
     if (refine) refine.textContent = s.refine_enabled
       ? ((zh() ? "最多 " : "up to ") + s.max_passes + (zh() ? " 次" : " passes"))
       : (zh() ? "关闭" : "off");
@@ -2482,6 +2490,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     text("qualityVertices", num(q.vertex_count));
     text("qualityEdges", num(q.edge_count));
     text("qualityAngleRange", (q.min_angle_deg || 0).toFixed(1) + "°–" + (q.max_angle_deg || 0).toFixed(1) + "°");
+    const cellSides = (q.cell_sides || []).filter((t) => t[1] > 0);
+    if (cellSides.length) {
+      const sideTitle = document.createElement("div");
+      sideTitle.className = "ch";
+      sideTitle.style.marginTop = "10px";
+      sideTitle.textContent = z ? "单元边数（观测）" : "Cell sides (observed)";
+      card.appendChild(sideTitle);
+      const sideLabels = { triangle: z ? "三角形" : "triangles", quadrilateral: z ? "四边形" : "quadrilaterals", pentagon: z ? "五边形" : "pentagons", hexagon: z ? "六边形" : "hexagons", heptagon: z ? "七边形" : "heptagons", other: z ? "其他" : "other" };
+      cellSides.forEach((t) => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;justify-content:space-between;padding:3px 2px;font-size:12px;color:var(--muted)";
+        const name = document.createElement("span");
+        name.textContent = sideLabels[t[0]] || t[0];
+        const count = document.createElement("b");
+        count.textContent = num(t[1]);
+        row.append(name, count);
+        card.appendChild(row);
+      });
+    }
     if (q.gates && q.gates.length) {
       const title = document.createElement("div");
       title.className = "ch";

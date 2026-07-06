@@ -40,6 +40,8 @@ pub(crate) struct MeshQuality {
     pub(crate) self_intersection: i64,
     pub(crate) invalid_polygon: i64,
     pub(crate) max_adjacent_resolution_ratio: f64,
+    /// (name, count) for polygon side counts; informational, not a defect list.
+    pub(crate) cell_sides: Vec<(String, i64)>,
     /// (name, count) for each topology issue counter.
     pub(crate) topology: Vec<(String, i64)>,
     pub(crate) gates: Vec<Gate>,
@@ -81,6 +83,19 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
                 .collect()
         })
         .unwrap_or_default();
+    let topology_json = &v["topology"];
+    let count = |k: &str| topology_json[k].as_i64().unwrap_or(0);
+    let cell_sides = [
+        ("triangle", count("triangle_cell_count")),
+        ("quadrilateral", count("quadrilateral_cell_count")),
+        ("pentagon", count("pentagon_cell_count")),
+        ("hexagon", count("hexagon_cell_count")),
+        ("heptagon", count("heptagon_cell_count")),
+        ("other", count("other_polygon_cell_count")),
+    ]
+    .into_iter()
+    .map(|(name, count)| (name.to_string(), count))
+    .collect::<Vec<_>>();
     let topology = [
         "duplicate_edge_count",
         "dangling_edge_count",
@@ -93,12 +108,7 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
         "invalid_cell_index_count",
     ]
     .iter()
-    .map(|k| {
-        (
-            k.trim_end_matches("_count").to_string(),
-            v["topology"][*k].as_i64().unwrap_or(0),
-        )
-    })
+    .map(|k| (k.trim_end_matches("_count").to_string(), count(k)))
     .collect::<Vec<_>>();
     Ok(MeshQuality {
         verdict: v["verdict"].as_str().unwrap_or("unknown").to_string(),
@@ -115,9 +125,10 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
         negative_area: geom["negative_area_cell_count"].as_i64().unwrap_or(0),
         self_intersection: geom["self_intersection_count"].as_i64().unwrap_or(0),
         invalid_polygon: geom["invalid_polygon_count"].as_i64().unwrap_or(0),
-        max_adjacent_resolution_ratio: v["topology"]["max_adjacent_resolution_ratio"]
+        max_adjacent_resolution_ratio: topology_json["max_adjacent_resolution_ratio"]
             .as_f64()
             .unwrap_or(0.0),
+        cell_sides,
         topology,
         gates,
         report_path: exists("quality_report.md"),

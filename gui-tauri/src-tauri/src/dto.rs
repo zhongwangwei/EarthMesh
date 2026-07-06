@@ -44,6 +44,7 @@ pub(crate) struct ProjectSummary {
     pub(crate) description: String,
     pub(crate) intent: String,
     pub(crate) cell: String,
+    pub(crate) quality_mode: String,
     pub(crate) model_format: String,
     pub(crate) domain: String,
     pub(crate) domain_shape: String,
