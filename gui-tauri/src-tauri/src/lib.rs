@@ -41,6 +41,7 @@ pub fn run() {
             preserve_unexposed_project_fields,
             project_summary,
             set_layer_path,
+            set_threshold_value,
             autofill_data_layers_from_folder,
             set_target_cell,
             set_domain_global,

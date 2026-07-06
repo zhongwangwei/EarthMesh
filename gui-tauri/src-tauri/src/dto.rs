@@ -7,6 +7,9 @@ pub(crate) struct CriterionInfo {
     pub(crate) label: String,
     pub(crate) help: String,
     pub(crate) unit: String,
+    pub(crate) range_min: f64,
+    pub(crate) range_max: f64,
+    pub(crate) default_value: f64,
     /// Engine file stem (= the scaffolded layer id) so the UI can match a
     /// template's threshold layers back to their criterion metadata.
     pub(crate) stem: String,
@@ -27,6 +30,7 @@ pub(crate) struct LayerSummary {
     pub(crate) role: String,
     pub(crate) path: String,
     pub(crate) enabled: bool,
+    pub(crate) threshold_value: Option<f64>,
     /// True for tiled inputs (MERIT-Hydro, CaMa) that are directories of tiles,
     /// so the UI offers a folder picker instead of a file picker.
     pub(crate) wants_folder: bool,

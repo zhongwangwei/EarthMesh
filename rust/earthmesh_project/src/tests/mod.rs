@@ -31,12 +31,14 @@ fn sample() -> ProjectConfig {
                 role: ProjectLayerRole::LandType,
                 path: "./in/landtype.nc".into(),
                 enabled: true,
+                threshold_value: None,
             },
             ProjectDataLayer {
                 id: "lai".into(),
                 role: ProjectLayerRole::Threshold(ThresholdField::Lai),
                 path: "./th/lai.nc".into(),
                 enabled: true,
+                threshold_value: None,
             },
         ],
         refinement: RefinementRecipe {
@@ -239,12 +241,23 @@ fn project_validation_rejects_invalid_data_layers() {
     assert!(err.contains("data layer id 'lc' is duplicated"));
 
     let mut p = sample();
+    p.data_layers[0].threshold_value = Some(1.0);
+    let err = yaml_err(&p);
+    assert!(err.contains("has a threshold value but is not a threshold layer"));
+
+    let mut p = sample();
+    p.data_layers[1].threshold_value = Some(f64::NAN);
+    let err = yaml_err(&p);
+    assert!(err.contains("threshold value must be finite"));
+
+    let mut p = sample();
     p.target.kind = MeshDomainKind::Land;
     p.data_layers.push(ProjectDataLayer {
         id: "sea_slope".into(),
         role: ProjectLayerRole::Threshold(ThresholdField::SeaSlope),
         path: "./in/sea_slope.nc".into(),
         enabled: true,
+        threshold_value: None,
     });
     let err = yaml_err(&p);
     assert!(err.contains("threshold layer 'sea_slope' is not applicable to Land targets"));
@@ -435,6 +448,26 @@ fn lower_maps_to_engine_config() {
 }
 
 #[test]
+fn threshold_value_override_lowers_to_engine_arrays() {
+    let mut p = sample();
+    p.data_layers[1].threshold_value = Some(4.5);
+    p.data_layers.push(ProjectDataLayer {
+        id: "dem".into(),
+        role: ProjectLayerRole::Threshold(ThresholdField::Dem),
+        path: "./th/dem.nc".into(),
+        enabled: true,
+        threshold_value: Some(123.0),
+    });
+
+    let lowered = p.lower();
+
+    assert_eq!(lowered.refine.th_onelayer_lnd[0], 4.5);
+    assert_eq!(lowered.refine.th_onelayer_lnd[1], 4.5);
+    assert_eq!(lowered.refine.th_onelayer_lnd[4], 123.0);
+    assert_eq!(lowered.refine.th_onelayer_lnd[5], 123.0);
+}
+
+#[test]
 fn hfield_is_default_unless_explicit_legacy() {
     let mut p = sample();
     p.refinement.hfield = None;
@@ -483,6 +516,10 @@ fn preset_defaults_pick_sensible_criteria() {
     let h = MeshIntentPreset::HydrologyLand.defaults();
     assert_eq!(h.kind, MeshDomainKind::Land);
     assert!(h.criteria.contains(&ThresholdField::Slope));
+    assert!(h.criteria.contains(&ThresholdField::Dem));
+    assert!(h.criteria.contains(&ThresholdField::SlopeMax));
+    assert!(h.criteria.contains(&ThresholdField::KSolids));
+    assert!(h.criteria.contains(&ThresholdField::Tksatu));
     assert!(h.extra_roles.contains(&ProjectLayerRole::MeritHydro));
 
     let a = MeshIntentPreset::AtmosphereMpas.defaults();
@@ -602,6 +639,10 @@ fn scaffold_builds_lowerable_project() {
     assert!(landcover.enabled);
     assert_eq!(landcover.path, "input/landtype_igbp_update.nc");
     assert!(p.data_layers.iter().any(|l| l.id == "slope_avg"));
+    assert!(p.data_layers.iter().any(|l| l.id == "dem"));
+    assert!(p.data_layers.iter().any(|l| l.id == "slope_max"));
+    assert!(p.data_layers.iter().any(|l| l.id == "k_solids"));
+    assert!(p.data_layers.iter().any(|l| l.id == "tksatu"));
     assert!(p
         .data_layers
         .iter()
@@ -629,13 +670,23 @@ fn criterion_catalog_is_unique_and_self_describing() {
     let mut ids: Vec<&str> = cat.iter().map(|c| c.id).collect();
     ids.sort_unstable();
     ids.dedup();
-    assert_eq!(ids.len(), 11, "criterion ids are unique");
+    assert_eq!(ids.len(), 13, "criterion ids are unique");
 }
 
 #[test]
 fn criterion_lookup_and_domain_filter() {
     let slope = criterion_by_id("slope").expect("slope criterion");
     assert_eq!(slope.field, ThresholdField::Slope);
+    assert_eq!(
+        criterion_by_id("dem").expect("dem criterion").field,
+        ThresholdField::Dem
+    );
+    assert_eq!(
+        criterion_by_id("slope_max")
+            .expect("slope_max criterion")
+            .field,
+        ThresholdField::SlopeMax
+    );
     assert!(criterion_by_id("nope").is_none());
 
     let ocean = criteria_for_domain(MeshDomainKind::Ocean);

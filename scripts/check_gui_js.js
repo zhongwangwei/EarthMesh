@@ -67,10 +67,13 @@ log(`parsed ${scripts.length} inline scripts`);
       dto.includes("label: String") &&
       dto.includes("help: String") &&
       dto.includes("unit: String") &&
+      dto.includes("range_min: f64") &&
+      dto.includes("range_max: f64") &&
+      dto.includes("default_value: f64") &&
       dto.includes("stem: String") &&
       !dto.includes("display_name: String") &&
       !dto.includes("applicable: Vec<String>") &&
-      readme.includes("{physical_process,label,help,unit,stem}"),
+      readme.includes("{physical_process,label,help,unit,range_min,range_max,default_value,stem}"),
     "list_criteria DTO/README drift",
   );
   log("list_criteria DTO shape documented");
@@ -142,7 +145,7 @@ log("static output placeholders are neutral");
 }
 
 check(
-  readme.includes("layers:[{id,role_kind,role,path,enabled,wants_folder}]"),
+  readme.includes("layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]"),
   "project_summary README must document layer role_kind/wants_folder",
 );
 log("project_summary layer shape documented");

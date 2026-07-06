@@ -28,7 +28,7 @@ pub struct RefineConfig {
     pub th_num_landtypes: i32,
     pub th_area_mainland: f64,
     pub th_sea_ratio: [f64; 2],
-    pub th_onelayer_lnd: [f64; 4],
+    pub th_onelayer_lnd: [f64; 8],
     pub th_onelayer_ocn: [f64; 8],
     pub th_onelayer_atmos: [f64; 2],
     pub th_twolayer_lnd: [[f64; 2]; 10],
@@ -40,7 +40,7 @@ pub struct RefineConfig {
     pub refine_num_landtypes: bool,
     pub refine_area_mainland: bool,
     pub refine_sea_ratio: bool,
-    pub refine_onelayer_lnd: [bool; 4],
+    pub refine_onelayer_lnd: [bool; 8],
     pub refine_onelayer_ocn: [bool; 8],
     pub refine_onelayer_atmos: [bool; 2],
     pub refine_twolayer_lnd: [bool; 10],
@@ -72,7 +72,7 @@ impl Default for RefineConfig {
             th_num_landtypes: 12,
             th_area_mainland: 0.6,
             th_sea_ratio: [0.5; 2],
-            th_onelayer_lnd: [999.0; 4],
+            th_onelayer_lnd: [999.0; 8],
             th_onelayer_ocn: [999.0; 8],
             th_onelayer_atmos: [999.0; 2],
             th_twolayer_lnd: [[999.0; 2]; 10],
@@ -84,7 +84,7 @@ impl Default for RefineConfig {
             refine_num_landtypes: false,
             refine_area_mainland: false,
             refine_sea_ratio: false,
-            refine_onelayer_lnd: [false; 4],
+            refine_onelayer_lnd: [false; 8],
             refine_onelayer_ocn: [false; 8],
             refine_onelayer_atmos: [false; 2],
             refine_twolayer_lnd: [false; 10],
@@ -176,6 +176,14 @@ impl RefineConfig {
                 "refine_slope_s" => {
                     config.refine_onelayer_lnd[3] = parse_fortran_bool(field, value)?
                 }
+                "refine_dem_m" => config.refine_onelayer_lnd[4] = parse_fortran_bool(field, value)?,
+                "refine_dem_s" => config.refine_onelayer_lnd[5] = parse_fortran_bool(field, value)?,
+                "refine_slope_max_m" => {
+                    config.refine_onelayer_lnd[6] = parse_fortran_bool(field, value)?
+                }
+                "refine_slope_max_s" => {
+                    config.refine_onelayer_lnd[7] = parse_fortran_bool(field, value)?
+                }
                 "refine_k_s_m" => config.refine_twolayer_lnd[0] = parse_fortran_bool(field, value)?,
                 "refine_k_s_s" => config.refine_twolayer_lnd[1] = parse_fortran_bool(field, value)?,
                 "refine_k_solids_m" => {
@@ -226,6 +234,10 @@ impl RefineConfig {
                 "th_lai_s" => config.th_onelayer_lnd[1] = parse_f64(field, value)?,
                 "th_slope_m" => config.th_onelayer_lnd[2] = parse_f64(field, value)?,
                 "th_slope_s" => config.th_onelayer_lnd[3] = parse_f64(field, value)?,
+                "th_dem_m" => config.th_onelayer_lnd[4] = parse_f64(field, value)?,
+                "th_dem_s" => config.th_onelayer_lnd[5] = parse_f64(field, value)?,
+                "th_slope_max_m" => config.th_onelayer_lnd[6] = parse_f64(field, value)?,
+                "th_slope_max_s" => config.th_onelayer_lnd[7] = parse_f64(field, value)?,
                 "th_k_s_m" => {
                     config.th_twolayer_lnd[0] =
                         parse_f64_array(field, value, config.th_twolayer_lnd[0])?

@@ -1158,6 +1158,7 @@ fn preserve_unexposed_project_fields_keeps_hidden_opened_config() {
         role: ProjectLayerRole::Threshold(earthmesh_project::ThresholdField::Lai),
         path: String::new(),
         enabled: false,
+        threshold_value: None,
     });
     let edited = ProjectConfig::scaffold(
         "edited",
@@ -1263,6 +1264,13 @@ fn autofill_data_layers_from_folder_matches_v2_source_data_names() {
     fs::write(root.join("landtype_usgs_update.nc"), b"land").expect("landtype");
     fs::write(root.join("LAI_BNU_161.nc"), b"lai").expect("lai");
     fs::write(root.join("k_s.nc"), b"ks").expect("ks");
+    fs::write(root.join("k_solids.nc"), b"k_solids").expect("k_solids");
+    fs::write(root.join("tkdry.nc"), b"tkdry").expect("tkdry");
+    fs::write(root.join("tksatf.nc"), b"tksatf").expect("tksatf");
+    fs::write(root.join("tksatu.nc"), b"tksatu").expect("tksatu");
+    fs::write(root.join("slope_avg.nc"), b"slope").expect("slope");
+    fs::write(root.join("dem.nc"), b"dem").expect("dem");
+    fs::write(root.join("slope_max.nc"), b"slope_max").expect("slope_max");
 
     let yaml = preset_yaml("source_data", MeshIntentPreset::CarbonLand);
     let yaml = autofill_data_layers_from_folder(yaml, root.to_string_lossy().into_owned())
@@ -1292,8 +1300,45 @@ fn autofill_data_layers_from_folder_matches_v2_source_data_names() {
         .expect("k_s layer");
     assert!(ks.enabled);
     assert!(ks.path.ends_with("k_s.nc"));
+    for id in [
+        "k_solids",
+        "tkdry",
+        "tksatf",
+        "tksatu",
+        "slope_avg",
+        "dem",
+        "slope_max",
+    ] {
+        let layer = cfg
+            .data_layers
+            .iter()
+            .find(|layer| layer.id == id)
+            .unwrap_or_else(|| panic!("{id} layer"));
+        assert!(layer.enabled, "{id} should be enabled");
+        assert!(
+            layer.path.ends_with(&format!("{id}.nc")),
+            "{id}: {}",
+            layer.path
+        );
+    }
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn set_threshold_value_updates_threshold_layer() {
+    let yaml = hydrology_yaml("threshold_value");
+    let yaml =
+        set_threshold_value(yaml, "slope_avg".to_string(), Some(7.5)).expect("set threshold");
+    let cfg = ProjectConfig::from_yaml(&yaml).expect("parse yaml");
+    let slope = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "slope_avg")
+        .expect("slope layer");
+    assert_eq!(slope.threshold_value, Some(7.5));
+    let err = set_threshold_value(yaml, "landcover".to_string(), Some(1.0)).unwrap_err();
+    assert!(err.contains("is not a threshold layer"));
 }
 
 #[test]
@@ -1315,7 +1360,7 @@ fn stage_threshold_layers_uses_engine_stems() {
     let layer = cfg
         .data_layers
         .iter_mut()
-        .find(|layer| matches!(layer.role, ProjectLayerRole::Threshold(_)))
+        .find(|layer| layer.id == "slope_avg")
         .expect("threshold layer");
     layer.path = src.to_string_lossy().into_owned();
     layer.enabled = true;
@@ -1347,7 +1392,7 @@ fn stage_threshold_layers_resolves_project_relative_sources() {
     let layer = cfg
         .data_layers
         .iter_mut()
-        .find(|layer| matches!(layer.role, ProjectLayerRole::Threshold(_)))
+        .find(|layer| layer.id == "slope_avg")
         .expect("threshold layer");
     layer.path = "input/terrain_slope_source.nc".to_string();
     layer.enabled = true;
@@ -1422,5 +1467,12 @@ fn list_criteria_reports_frontend_fields() {
         .expect("slope");
     assert_eq!(slope.label, "Slope");
     assert_eq!(slope.unit, "deg");
+    assert_eq!(slope.default_value, 5.0);
+    assert_eq!(slope.range_min, 0.0);
+    assert_eq!(slope.range_max, 45.0);
     assert_eq!(slope.physical_process, "orographic / runoff routing");
+    let dem = criteria.iter().find(|c| c.stem == "dem").expect("dem");
+    assert_eq!(dem.label, "DEM");
+    assert_eq!(dem.unit, "m");
+    assert_eq!(dem.default_value, 500.0);
 }

@@ -68,6 +68,11 @@ fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
         &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
     );
     write_2d_file(
+        &root.join("dem.nc"),
+        "topo",
+        &[40.0, 41.0, 42.0, 43.0, 44.0, 45.0],
+    );
+    write_2d_file(
         &root.join("sst.nc"),
         "sst",
         &[13.0, 14.0, 15.0, 16.0, 17.0, 18.0],
@@ -87,7 +92,7 @@ fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
 
     let lnd = threshold_read_lnd_fortran_indexed(ThresholdReadLndConfig {
         threshold_dir: &root,
-        refine_onelayer_lnd: &[true, false, false, false],
+        refine_onelayer_lnd: &[true, false, false, false, true, false, false, false],
         refine_twolayer_lnd: &[
             false, true, false, false, false, false, false, false, false, false,
         ],
@@ -96,6 +101,8 @@ fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
     .expect("read land thresholds");
     assert!(lnd.onelayer[0].is_some());
     assert!(lnd.onelayer[1].is_none());
+    assert_eq!(lnd.onelayer[2].as_ref().unwrap().name, "dem");
+    assert_eq!(lnd.onelayer[2].as_ref().unwrap().values[1][1], 40.0);
     assert!(lnd.twolayer[0].is_some());
     assert!(lnd.twolayer[1].is_none());
 

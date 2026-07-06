@@ -15,6 +15,9 @@ pub(crate) fn list_criteria() -> Vec<CriterionInfo> {
             label: c.gui.label.to_string(),
             help: c.gui.help.to_string(),
             unit: c.gui.unit.to_string(),
+            range_min: c.gui.range.0,
+            range_max: c.gui.range.1,
+            default_value: c.gui.default,
             stem: c.field.stem().to_string(),
         })
         .collect()
@@ -83,6 +86,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             role: l.role.label(),
             path: l.path.clone(),
             enabled: l.enabled,
+            threshold_value: l.threshold_value,
             wants_folder: l.role.wants_folder(),
         })
         .collect();

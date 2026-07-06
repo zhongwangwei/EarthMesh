@@ -42,13 +42,15 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 
 | command | args | returns |
 |---|---|---|
-| `list_criteria` | – | refinement criteria `{physical_process,label,help,unit,stem}` |
+| `list_criteria` | – | refinement criteria `{physical_process,label,help,unit,range_min,range_max,default_value,stem}` |
 | `scaffold_project` | `name, intent, nxp?, approxKm?` | project **YAML** |
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
 | `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
-| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,on_violation,refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,wants_folder}]}` |
+| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,on_violation,refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
+| `set_threshold_value` | `yaml, id, value?` | updated **YAML** (per-criterion threshold; null uses default) |
+| `autofill_data_layers_from_folder` | `yaml, folder` | updated **YAML** with matching NetCDF layer paths |
 | `set_target_cell` | `yaml, cell` | updated **YAML** (`hex` or `tri`) |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
@@ -144,8 +146,7 @@ automatically.
   engine reports a gridfile.
 
 Known gaps: circle domains remain preserved-but-not-editable in the GUI; polygon
-domains need project-schema support first; per-gate thresholds can be exposed
-after `QualityConfig` carries them; release bundles still need an explicit
+domains need project-schema support first; release bundles still need an explicit
 engine sidecar strategy and full platform icon set.
 
 ## Caveats

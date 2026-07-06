@@ -1066,6 +1066,7 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
 
   // ---- live project model ----------------------------------------------------
   const layerEdits = {};   // layer id -> { path, enabled }
+  const thresholdEdits = {}; // threshold layer id -> number|null (null = catalog default)
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy }
   let cellEdit = null;     // null | "hex" | "tri"; null means template default
@@ -1116,6 +1117,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     for (const id of Object.keys(layerEdits)) {
       const e = layerEdits[id];
       try { yaml = await invoke("set_layer_path", { yaml, id, path: e.path, enabled: e.enabled }); }
+      catch (err) { /* id not in this preset's layer set — skip */ }
+    }
+    for (const id of Object.keys(thresholdEdits)) {
+      try { yaml = await invoke("set_threshold_value", { yaml, id, value: thresholdEdits[id] }); }
       catch (err) { /* id not in this preset's layer set — skip */ }
     }
     if (baseProjectYaml) {
@@ -1246,6 +1251,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   window.resetTemplateDerivedState = function () {
       for (const id of Object.keys(layerEdits)) delete layerEdits[id];
+      for (const id of Object.keys(thresholdEdits)) delete thresholdEdits[id];
       baseProjectYaml = null;
       domainEdit = null;
       qualityEdit = null;
@@ -1389,7 +1395,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         next = await api.summary(yaml);
       } catch (e) { logLine("✗ " + e); return; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+      for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
       (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
+      (next.layers || []).forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
       logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
       enhanceLayerStep();
     };
@@ -1548,9 +1556,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const crits = sum.layers.filter((l) => l.role_kind === "threshold");
     const z = zh();
     const criterionRow = (l) => {
-      const c = byStem[l.id] || { label: l.id, unit: "", physical_process: "", help: "" };
+      const c = byStem[l.id] || { label: l.id, unit: "", physical_process: "", help: "", default_value: null, range_min: null, range_max: null };
       const hasData = !!l.path;
       const on = hasData && l.enabled;
+      const thValue = thresholdEdits[l.id] ?? l.threshold_value ?? c.default_value;
       const row = document.createElement("div");
       row.className = "em-crit";
       row.dataset.crit = l.id;
@@ -1576,7 +1585,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const badge = document.createElement("span");
       badge.style.cssText = "font-size:11px;padding:3px 9px;border-radius:999px;font-weight:600;flex:none;background:" + (hasData ? "color-mix(in srgb,var(--pass) 18%,transparent)" : "var(--border)") + ";color:" + (hasData ? "var(--pass)" : "var(--muted)");
       badge.textContent = hasData ? (z ? "数据 ✓" : "data ✓") : (z ? "缺数据·禁用" : "no data");
-      row.append(tog, text, badge);
+      const th = document.createElement("input");
+      th.className = "input em-threshold";
+      th.type = "number";
+      th.step = "any";
+      th.style.cssText = "width:96px;flex:none";
+      th.disabled = !hasData;
+      if (Number.isFinite(c.range_min)) th.min = c.range_min;
+      if (Number.isFinite(c.range_max)) th.max = c.range_max;
+      if (thValue != null) th.value = thValue;
+      th.title = z ? "判据阈值；留空使用默认值" : "criterion threshold; blank uses default";
+      row.append(tog, text, th, badge);
       return row;
     };
 
@@ -1712,6 +1731,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         if (!path) return;
         layerEdits[id] = { path, enabled: row.dataset.enabled !== "1" };
         enhanceRefinementStep();
+      };
+      const th = row.querySelector(".em-threshold");
+      if (th) th.oninput = () => {
+        const raw = th.value.trim();
+        const v = raw === "" ? null : parseFloat(raw);
+        thresholdEdits[row.dataset.crit] = Number.isFinite(v) ? v : null;
+        clearRunArtifacts();
       };
     });
     const spcPass = document.getElementById("spcPassRange");
@@ -1885,7 +1911,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       else if (sum.approx_degree != null) { resUnitIdx = 2; resVal = sum.approx_degree; }
       else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+      for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
       sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
+      sum.layers.forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
       if (sum.domain_shape === "shapefile") {
         domainMode = "watershed";
         regional = true;
@@ -1992,6 +2020,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     clearRunArtifacts();
     loadWatershedBoundary("");
     for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+    for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };

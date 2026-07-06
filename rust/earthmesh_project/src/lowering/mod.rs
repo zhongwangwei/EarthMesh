@@ -122,7 +122,7 @@ impl ProjectConfig {
         // Data layers drive landtype_file + refine switches (core lowering).
         let dl = self.data_layers_namelist();
         dl.lower_into(&mut mkgrd, &mut refine);
-        apply_threshold_defaults(&mut refine, &self.data_layers);
+        apply_threshold_values(&mut refine, &self.data_layers);
         // Refinement actually runs only when a threshold (refine_cal) or
         // specified-mask (refine_spc) layer supplies data. Landcover/hydro layers
         // set inputs but DON'T drive refinement - turning `refine` on for them
@@ -249,7 +249,7 @@ fn apply_i32_prefix(target: &mut [i32; 10], values: &[i32]) {
     }
 }
 
-fn apply_threshold_defaults(refine: &mut RefineConfig, layers: &[ProjectDataLayer]) {
+fn apply_threshold_values(refine: &mut RefineConfig, layers: &[ProjectDataLayer]) {
     for layer in layers {
         let ProjectLayerRole::Threshold(field) = layer.role else {
             continue;
@@ -260,13 +260,15 @@ fn apply_threshold_defaults(refine: &mut RefineConfig, layers: &[ProjectDataLaye
         let Some(value) = criterion_catalog()
             .iter()
             .find(|criterion| criterion.field == field)
-            .map(|criterion| criterion.gui.default)
+            .map(|criterion| layer.threshold_value.unwrap_or(criterion.gui.default))
         else {
             continue;
         };
         match field {
             ThresholdField::Lai => set_pair(&mut refine.th_onelayer_lnd, 0, value),
             ThresholdField::Slope => set_pair(&mut refine.th_onelayer_lnd, 2, value),
+            ThresholdField::Dem => set_pair(&mut refine.th_onelayer_lnd, 4, value),
+            ThresholdField::SlopeMax => set_pair(&mut refine.th_onelayer_lnd, 6, value),
             ThresholdField::Ks => set_layer_pair(&mut refine.th_twolayer_lnd, 0, value),
             ThresholdField::KSolids => set_layer_pair(&mut refine.th_twolayer_lnd, 2, value),
             ThresholdField::Tkdry => set_layer_pair(&mut refine.th_twolayer_lnd, 4, value),

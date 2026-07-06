@@ -31,6 +31,26 @@ pub(crate) fn set_layer_path(
     validated_yaml(cfg)
 }
 
+/// Set or clear a threshold criterion's numeric trigger value.
+#[tauri::command]
+pub(crate) fn set_threshold_value(
+    yaml: String,
+    id: String,
+    value: Option<f64>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let layer = cfg
+        .data_layers
+        .iter_mut()
+        .find(|layer| layer.id == id)
+        .ok_or_else(|| format!("no data layer with id '{id}'"))?;
+    if !matches!(layer.role, ProjectLayerRole::Threshold(_)) {
+        return Err(format!("data layer '{id}' is not a threshold layer"));
+    }
+    layer.threshold_value = value;
+    validated_yaml(cfg)
+}
+
 #[tauri::command]
 pub(crate) fn autofill_data_layers_from_folder(
     yaml: String,
@@ -86,6 +106,8 @@ fn threshold_stems(field: ThresholdField) -> &'static [&'static str] {
     match field {
         ThresholdField::Lai => &["lai", "lai_bnu"],
         ThresholdField::Slope => &["slope_avg"],
+        ThresholdField::Dem => &["dem", "topo"],
+        ThresholdField::SlopeMax => &["slope_max"],
         ThresholdField::Ks => &["k_s"],
         ThresholdField::KSolids => &["k_solids"],
         ThresholdField::Tkdry => &["tkdry"],

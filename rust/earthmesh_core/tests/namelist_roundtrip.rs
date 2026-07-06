@@ -252,10 +252,18 @@ fn datalayers_absent_block_is_empty() {
 fn threshold_var_stems_match_engine_contract() {
     // Stems must equal the engine's AREA_JUDGE_*_NAMES (cli/lib.rs:20724-26).
     assert_eq!(ThresholdVar::Slope.file_stem(), "slope_avg");
+    assert_eq!(ThresholdVar::Dem.file_stem(), "dem");
+    assert_eq!(ThresholdVar::SlopeMax.file_stem(), "slope_max");
     assert_eq!(ThresholdVar::Ks.file_stem(), "k_s");
     assert_eq!(ThresholdVar::SeaSlope.file_stem(), "sea_slope");
     assert!(ThresholdVar::Ks.is_two_layer());
+    assert!(!ThresholdVar::Dem.is_two_layer());
     assert!(!ThresholdVar::Lai.is_two_layer());
+    assert_eq!(ThresholdVar::from_stem("dem"), Some(ThresholdVar::Dem));
+    assert_eq!(
+        ThresholdVar::from_stem("slope_max"),
+        Some(ThresholdVar::SlopeMax)
+    );
     assert_eq!(
         ThresholdVar::from_stem("typhoon"),
         Some(ThresholdVar::Typhoon)
@@ -269,6 +277,7 @@ fn datalayers_lower_sets_landtype_and_refine_switches() {
         "&datalayers\n\
          NL%layer = 'lc|landtype|./in/landtype.nc|landtype|T|T'\n\
          NL%layer = 'lai|threshold:lai|./th/lai.nc||T|F'\n\
+         NL%layer = 'dem|threshold:dem|./th/dem.nc||T|F'\n\
          NL%layer = 'ss|threshold:sea_slope|./th/sea_slope.nc||T|F'\n\
          /\n",
     );
@@ -289,6 +298,8 @@ fn datalayers_lower_sets_landtype_and_refine_switches() {
         refine.refine_onelayer_lnd[2], fresh.refine_onelayer_lnd[2],
         "slope switch must be untouched"
     );
+    // dem → refine_onelayer_lnd[4] & [5].
+    assert!(refine.refine_onelayer_lnd[4] && refine.refine_onelayer_lnd[5]);
     // sea_slope → refine_onelayer_ocn[6] & [7].
     assert!(refine.refine_onelayer_ocn[6] && refine.refine_onelayer_ocn[7]);
     assert!(report.warnings.is_empty(), "matching stems => no warnings");

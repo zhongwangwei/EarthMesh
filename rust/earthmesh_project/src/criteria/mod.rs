@@ -32,6 +32,7 @@ impl CriterionSpec {
             role: ProjectLayerRole::Threshold(self.field),
             path: path.into(),
             enabled,
+            threshold_value: None,
         }
     }
 }
@@ -65,6 +66,32 @@ const CATALOG: &[CriterionSpec] = &[
             unit: "deg",
             range: (0.0, 45.0),
             default: 5.0,
+        },
+    },
+    CriterionSpec {
+        id: "dem",
+        physical_process: "terrain elevation",
+        field: ThresholdField::Dem,
+        applicable: LAND,
+        gui: CriterionGuiSpec {
+            label: "DEM",
+            help: "Refine where terrain elevation variability exceeds the threshold",
+            unit: "m",
+            range: (0.0, 9000.0),
+            default: 500.0,
+        },
+    },
+    CriterionSpec {
+        id: "slope_max",
+        physical_process: "orographic / steep terrain",
+        field: ThresholdField::SlopeMax,
+        applicable: LAND,
+        gui: CriterionGuiSpec {
+            label: "Max slope",
+            help: "Refine where maximum terrain slope exceeds the threshold",
+            unit: "deg",
+            range: (0.0, 90.0),
+            default: 15.0,
         },
     },
     CriterionSpec {

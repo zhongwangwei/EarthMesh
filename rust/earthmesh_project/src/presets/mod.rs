@@ -6,6 +6,17 @@ use crate::{
 };
 
 pub const DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID: &str = "AtmosphereTyphoonPrecip";
+const LAND_SOURCE_THRESHOLDS: [ThresholdField; 9] = [
+    ThresholdField::Lai,
+    ThresholdField::Slope,
+    ThresholdField::Dem,
+    ThresholdField::SlopeMax,
+    ThresholdField::Ks,
+    ThresholdField::KSolids,
+    ThresholdField::Tkdry,
+    ThresholdField::Tksatf,
+    ThresholdField::Tksatu,
+];
 
 /// Suggested scaffold defaults for a [`MeshIntentPreset`] - the GUI "pick a
 /// template" flow. Threshold `criteria` become disabled data-layer entries the
@@ -92,20 +103,30 @@ impl MeshIntentPreset {
                 Land,
                 Hex,
                 CoLM,
-                vec![T::Slope],
+                LAND_SOURCE_THRESHOLDS.to_vec(),
                 vec![R::LandType, R::MeritHydro],
             ),
-            MeshIntentPreset::CarbonLand => {
-                (Land, Hex, CoLM, vec![T::Lai, T::Ks], vec![R::LandType])
-            }
+            MeshIntentPreset::CarbonLand => (
+                Land,
+                Hex,
+                CoLM,
+                LAND_SOURCE_THRESHOLDS.to_vec(),
+                vec![R::LandType],
+            ),
             MeshIntentPreset::SnowPermafrostLand => (
                 Land,
                 Hex,
                 CoLM,
-                vec![T::Slope, T::Tkdry, T::Tksatf],
+                LAND_SOURCE_THRESHOLDS.to_vec(),
                 vec![R::LandType],
             ),
-            MeshIntentPreset::UrbanLand => (Land, Hex, CoLM, vec![T::Lai], vec![R::LandType]),
+            MeshIntentPreset::UrbanLand => (
+                Land,
+                Hex,
+                CoLM,
+                LAND_SOURCE_THRESHOLDS.to_vec(),
+                vec![R::LandType],
+            ),
             // Ocean meshes carve to ocean-only cells from the SAME landcover the
             // land meshes use (sea/land classification), so they need a LandType
             // layer too - otherwise there is nothing to mask the land away with.
@@ -123,31 +144,31 @@ impl MeshIntentPreset {
                 Land,
                 Hex,
                 CoLM,
-                vec![T::Slope],
+                LAND_SOURCE_THRESHOLDS.to_vec(),
                 vec![R::LandType, R::MeritHydro],
             ),
-            MeshIntentPreset::MeritHydroCoast => (
-                Coupled,
-                Hex,
-                CoLM,
-                vec![T::Slope],
-                vec![R::LandType, R::MeritHydro],
-            ),
-            MeshIntentPreset::LandOceanCoupled => (
-                Coupled,
-                Hex,
-                CoLM,
-                vec![T::Lai, T::SeaSlope],
-                vec![R::LandType],
-            ),
+            MeshIntentPreset::MeritHydroCoast => {
+                let mut criteria = LAND_SOURCE_THRESHOLDS.to_vec();
+                criteria.push(T::SeaSlope);
+                (
+                    Coupled,
+                    Hex,
+                    CoLM,
+                    criteria,
+                    vec![R::LandType, R::MeritHydro],
+                )
+            }
+            MeshIntentPreset::LandOceanCoupled => {
+                let mut criteria = LAND_SOURCE_THRESHOLDS.to_vec();
+                criteria.push(T::SeaSlope);
+                (Coupled, Hex, CoLM, criteria, vec![R::LandType])
+            }
             MeshIntentPreset::AtmosphereMpas => (Atmosphere, Hex, Mpas, vec![], vec![]),
-            MeshIntentPreset::MultiObjectiveBalanced => (
-                Coupled,
-                Hex,
-                CoLM,
-                vec![T::Lai, T::Slope, T::SeaSlope],
-                vec![R::LandType],
-            ),
+            MeshIntentPreset::MultiObjectiveBalanced => {
+                let mut criteria = LAND_SOURCE_THRESHOLDS.to_vec();
+                criteria.push(T::SeaSlope);
+                (Coupled, Hex, CoLM, criteria, vec![R::LandType])
+            }
         };
         PresetDefaults {
             kind,
@@ -182,6 +203,7 @@ impl ProjectConfig {
                     String::new()
                 },
                 enabled: is_landtype,
+                threshold_value: None,
             });
         }
         for c in &d.criteria {
@@ -190,6 +212,7 @@ impl ProjectConfig {
                 role: ProjectLayerRole::Threshold(*c),
                 path: String::new(),
                 enabled: false,
+                threshold_value: None,
             });
         }
         ProjectConfig {

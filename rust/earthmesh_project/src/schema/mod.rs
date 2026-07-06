@@ -174,6 +174,10 @@ pub struct ProjectDataLayer {
     pub path: String,
     #[serde(default)]
     pub enabled: bool,
+    /// Optional per-criterion threshold. When absent, the criterion catalog
+    /// default is used during lowering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_value: Option<f64>,
 }
 
 /// Serde-friendly mirror of [`earthmesh_core::DataLayerRole`].
@@ -191,6 +195,8 @@ pub enum ProjectLayerRole {
 pub enum ThresholdField {
     Lai,
     Slope,
+    Dem,
+    SlopeMax,
     Ks,
     KSolids,
     Tkdry,

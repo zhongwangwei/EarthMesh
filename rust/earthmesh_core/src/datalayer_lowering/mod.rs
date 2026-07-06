@@ -19,6 +19,8 @@ impl ThresholdVar {
         match self {
             ThresholdVar::Lai => (RefineSwitchArray::OneLayerLnd, 0),
             ThresholdVar::Slope => (RefineSwitchArray::OneLayerLnd, 2),
+            ThresholdVar::Dem => (RefineSwitchArray::OneLayerLnd, 4),
+            ThresholdVar::SlopeMax => (RefineSwitchArray::OneLayerLnd, 6),
             ThresholdVar::Ks => (RefineSwitchArray::TwoLayerLnd, 0),
             ThresholdVar::KSolids => (RefineSwitchArray::TwoLayerLnd, 2),
             ThresholdVar::Tkdry => (RefineSwitchArray::TwoLayerLnd, 4),

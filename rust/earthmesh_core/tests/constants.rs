@@ -234,7 +234,7 @@ fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
     assert_eq!(cfg.th_num_landtypes, 12);
     approx_eq(cfg.th_area_mainland, 0.6, 0.0);
     assert_eq!(cfg.th_sea_ratio, [0.5, 0.5]);
-    assert_eq!(cfg.th_onelayer_lnd, [999.0; 4]);
+    assert_eq!(cfg.th_onelayer_lnd, [999.0; 8]);
     assert_eq!(cfg.th_onelayer_ocn, [999.0; 8]);
     assert_eq!(cfg.th_onelayer_atmos, [999.0; 2]);
     assert_eq!(cfg.th_twolayer_lnd, [[999.0; 2]; 10]);
@@ -246,7 +246,7 @@ fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
     assert!(!cfg.refine_num_landtypes);
     assert!(!cfg.refine_area_mainland);
     assert!(!cfg.refine_sea_ratio);
-    assert_eq!(cfg.refine_onelayer_lnd, [false; 4]);
+    assert_eq!(cfg.refine_onelayer_lnd, [false; 8]);
     assert_eq!(cfg.refine_onelayer_ocn, [false; 8]);
     assert_eq!(cfg.refine_onelayer_atmos, [false; 2]);
     assert_eq!(cfg.refine_twolayer_lnd, [false; 10]);
@@ -386,9 +386,13 @@ fn refine_config_parses_threshold_switches_and_values_for_locmesh() {
   RL%mask_refine_cal_fprefix = '/tmp/refine_cal'
   RL%refine_num_landtypes = .true.
   RL%refine_lai_m = .true.
+  RL%refine_dem_s = .true.
+  RL%refine_slope_max_m = .true.
   RL%refine_k_s_m = .true.
   RL%th_num_landtypes = 9
   RL%th_lai_m = 0.25
+  RL%th_dem_s = 250.0
+  RL%th_slope_max_m = 12.5
   RL%th_k_s_m = 1.1, 2.2
   RL%refine_sea_ratio = .true.
   RL%refine_sst_m = .true.
@@ -413,6 +417,10 @@ fn refine_config_parses_threshold_switches_and_values_for_locmesh() {
     assert_eq!(parsed.th_num_landtypes, 9);
     assert!(parsed.refine_onelayer_lnd[0]);
     approx_eq(parsed.th_onelayer_lnd[0], 0.25, 0.0);
+    assert!(parsed.refine_onelayer_lnd[5]);
+    approx_eq(parsed.th_onelayer_lnd[5], 250.0, 0.0);
+    assert!(parsed.refine_onelayer_lnd[6]);
+    approx_eq(parsed.th_onelayer_lnd[6], 12.5, 0.0);
     assert!(parsed.refine_twolayer_lnd[0]);
     assert_eq!(parsed.th_twolayer_lnd[0], [1.1, 2.2]);
     assert!(parsed.refine_sea_ratio);

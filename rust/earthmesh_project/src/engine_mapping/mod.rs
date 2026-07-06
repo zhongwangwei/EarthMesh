@@ -48,6 +48,8 @@ impl ThresholdField {
         match self {
             ThresholdField::Lai => ThresholdVar::Lai,
             ThresholdField::Slope => ThresholdVar::Slope,
+            ThresholdField::Dem => ThresholdVar::Dem,
+            ThresholdField::SlopeMax => ThresholdVar::SlopeMax,
             ThresholdField::Ks => ThresholdVar::Ks,
             ThresholdField::KSolids => ThresholdVar::KSolids,
             ThresholdField::Tkdry => ThresholdVar::Tkdry,

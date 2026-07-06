@@ -211,6 +211,18 @@ impl ProjectDataLayer {
                 self.id
             ));
         }
+        if self.threshold_value.is_some() && !matches!(self.role, ProjectLayerRole::Threshold(_)) {
+            return Err(format!(
+                "data layer '{}' has a threshold value but is not a threshold layer",
+                self.id
+            ));
+        }
+        if matches!(self.threshold_value, Some(value) if !value.is_finite()) {
+            return Err(format!(
+                "data layer '{}' threshold value must be finite",
+                self.id
+            ));
+        }
         Ok(())
     }
 }

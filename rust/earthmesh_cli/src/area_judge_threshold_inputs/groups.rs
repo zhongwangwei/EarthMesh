@@ -5,7 +5,7 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 
 use super::{
     area_judge_refine_flag_pair_enabled, data_read::data_read_onelayer_values_fortran_indexed,
-    paths::area_judge_threshold_path, AREA_JUDGE_ATMOS_ONELAYER_NAMES,
+    paths::area_judge_threshold_path, AreaJudge2DThresholdName, AREA_JUDGE_ATMOS_ONELAYER_NAMES,
     AREA_JUDGE_LAND_ONELAYER_NAMES, AREA_JUDGE_LAND_TWOLAYER_NAMES,
     AREA_JUDGE_OCEAN_ONELAYER_NAMES,
 };
@@ -65,16 +65,16 @@ pub fn threshold_read_atmos_fortran_indexed(
 
 fn read_area_judge_threshold_2d_window_fortran_indexed(
     threshold_dir: &Path,
-    name: &str,
+    name: AreaJudge2DThresholdName,
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<AreaJudgeThreshold2D> {
     let selected = data_read_onelayer_values_fortran_indexed(
-        area_judge_threshold_path(threshold_dir, name),
-        name,
+        area_judge_threshold_path(threshold_dir, name.file_stem),
+        name.var_name,
         bounds,
     )?;
     Ok(AreaJudgeThreshold2D {
-        name: name.to_string(),
+        name: name.output_name.to_string(),
         values: selected,
     })
 }
@@ -117,7 +117,7 @@ fn read_area_judge_threshold_2d_variable_window_fortran_indexed(
 
 pub(super) fn read_area_judge_threshold_2d_group_fortran_indexed(
     threshold_dir: &Path,
-    names: &[&str],
+    names: &[AreaJudge2DThresholdName],
     flags: &[bool],
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<Vec<Option<AreaJudgeThreshold2D>>> {
@@ -126,7 +126,7 @@ pub(super) fn read_area_judge_threshold_2d_group_fortran_indexed(
         .enumerate()
         .map(|(idx, name)| {
             if area_judge_refine_flag_pair_enabled(flags, idx) {
-                read_area_judge_threshold_2d_window_fortran_indexed(threshold_dir, name, bounds)
+                read_area_judge_threshold_2d_window_fortran_indexed(threshold_dir, *name, bounds)
                     .map(Some)
             } else {
                 Ok(None)

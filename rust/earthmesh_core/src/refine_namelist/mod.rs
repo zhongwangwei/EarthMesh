@@ -114,26 +114,23 @@ impl RefineConfig {
             "  RL%th_area_mainland = {}\n",
             self.th_area_mainland
         ));
-        out.push_str(&format!(
-            "  RL%refine_lai_m = {}\n",
-            flag(self.refine_onelayer_lnd[0])
-        ));
-        out.push_str(&format!("  RL%th_lai_m = {}\n", self.th_onelayer_lnd[0]));
-        out.push_str(&format!(
-            "  RL%refine_lai_s = {}\n",
-            flag(self.refine_onelayer_lnd[1])
-        ));
-        out.push_str(&format!("  RL%th_lai_s = {}\n", self.th_onelayer_lnd[1]));
-        out.push_str(&format!(
-            "  RL%refine_slope_m = {}\n",
-            flag(self.refine_onelayer_lnd[2])
-        ));
-        out.push_str(&format!("  RL%th_slope_m = {}\n", self.th_onelayer_lnd[2]));
-        out.push_str(&format!(
-            "  RL%refine_slope_s = {}\n",
-            flag(self.refine_onelayer_lnd[3])
-        ));
-        out.push_str(&format!("  RL%th_slope_s = {}\n", self.th_onelayer_lnd[3]));
+        let land_one = [
+            ("lai_m", 0usize),
+            ("lai_s", 1),
+            ("slope_m", 2),
+            ("slope_s", 3),
+            ("dem_m", 4),
+            ("dem_s", 5),
+            ("slope_max_m", 6),
+            ("slope_max_s", 7),
+        ];
+        for (name, idx) in land_one {
+            out.push_str(&format!(
+                "  RL%refine_{name} = {}\n",
+                flag(self.refine_onelayer_lnd[idx])
+            ));
+            out.push_str(&format!("  RL%th_{name} = {}\n", self.th_onelayer_lnd[idx]));
+        }
 
         // land two-layer soil criteria (each threshold is a [f64; 2] pair)
         let two = [

@@ -7,6 +7,8 @@ use crate::{fortran_quote, parse_fortran_string, strip_fortran_comment};
 pub enum ThresholdVar {
     Lai,
     Slope,
+    Dem,
+    SlopeMax,
     Ks,
     KSolids,
     Tkdry,
@@ -20,11 +22,13 @@ pub enum ThresholdVar {
 }
 
 impl ThresholdVar {
-    /// Engine file stem / NetCDF base var name (`lai`, `slope_avg`, `k_s`, ...).
+    /// Engine file stem (`dem.nc` still carries source var `topo`).
     pub fn file_stem(self) -> &'static str {
         match self {
             ThresholdVar::Lai => "lai",
             ThresholdVar::Slope => "slope_avg",
+            ThresholdVar::Dem => "dem",
+            ThresholdVar::SlopeMax => "slope_max",
             ThresholdVar::Ks => "k_s",
             ThresholdVar::KSolids => "k_solids",
             ThresholdVar::Tkdry => "tkdry",
@@ -54,6 +58,8 @@ impl ThresholdVar {
         Some(match s {
             "lai" => ThresholdVar::Lai,
             "slope_avg" => ThresholdVar::Slope,
+            "dem" => ThresholdVar::Dem,
+            "slope_max" => ThresholdVar::SlopeMax,
             "k_s" => ThresholdVar::Ks,
             "k_solids" => ThresholdVar::KSolids,
             "tkdry" => ThresholdVar::Tkdry,
