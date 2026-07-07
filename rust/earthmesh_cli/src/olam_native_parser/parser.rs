@@ -11,13 +11,12 @@ pub(crate) fn olam_namelist_assignments(
     contents: &str,
     section: &str,
 ) -> io::Result<Vec<OlamNamelistAssignment>> {
-    let section_header = format!("&{}", section.to_ascii_lowercase());
     let mut assignments = Vec::new();
     let mut in_section = false;
     for line in contents.lines() {
         let uncommented = line.split('!').next().unwrap_or("").trim();
         let lower = uncommented.to_ascii_lowercase();
-        if lower.starts_with(&section_header) {
+        if namelist_line_starts_section(&lower, section) {
             in_section = true;
             continue;
         }
@@ -40,6 +39,24 @@ pub(crate) fn olam_namelist_assignments(
         });
     }
     Ok(assignments)
+}
+
+pub(crate) fn olam_namelist_has_section(contents: &str, section: &str) -> bool {
+    contents.lines().any(|line| {
+        let uncommented = line.split('!').next().unwrap_or("").trim();
+        namelist_line_starts_section(&uncommented.to_ascii_lowercase(), section)
+    })
+}
+
+fn namelist_line_starts_section(line: &str, section: &str) -> bool {
+    let section_header = format!("&{}", section.to_ascii_lowercase());
+    if !line.starts_with(&section_header) {
+        return false;
+    }
+    line[section_header.len()..]
+        .chars()
+        .next()
+        .is_none_or(|ch| ch.is_whitespace() || ch == '/')
 }
 
 pub(crate) fn parse_olam_native_lhs(lhs: &str) -> io::Result<Option<(String, Vec<usize>)>> {
@@ -140,4 +157,16 @@ pub(crate) fn parse_olam_native_f64(field: &str, value: &str) -> io::Result<f64>
                 format!("invalid OLAM native real {field}={value}: {err}"),
             )
         })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn namelist_section_match_is_token_exact() {
+        assert!(olam_namelist_has_section("&mkgrd\n/", "mkgrd"));
+        assert!(olam_namelist_has_section("&mkgrd /\n", "mkgrd"));
+        assert!(!olam_namelist_has_section("&mkgrd_extra\n/", "mkgrd"));
+        assert!(!olam_namelist_has_section("&hfield_debug\n/", "hfield"));
+    }
 }

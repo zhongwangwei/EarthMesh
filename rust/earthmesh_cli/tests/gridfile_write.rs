@@ -418,3 +418,154 @@ fn unstructured_mesh_reader_round_trips_legacy_gridfile_schema() {
     assert_eq!(read_back, mesh);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn gridfile_writer_round_trips_optional_refine_level_metadata_for_quality() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_gridfile_levels_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let output = root.join("gridfile.nc4");
+    let mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: 10.0,
+                lat: -1.0,
+            },
+        ],
+        w_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint {
+                lon: 20.0,
+                lat: 2.0,
+            },
+            earthmesh_cli::LonLatPoint {
+                lon: 30.0,
+                lat: 3.0,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [1, 2, 3]],
+        w_to_m: vec![vec![1, 1, 1, 1, 1, 1, 1], vec![1, 2, 1], vec![2, 1, 1]],
+        n_w_to_m: vec![1, 3, 3],
+    };
+    let m_levels = [0, 2];
+    let w_levels = [0, 1, 2];
+
+    earthmesh_cli::write_unstructured_mesh_netcdf_with_refine_levels(
+        &output,
+        &mesh,
+        Some(&m_levels),
+        Some(&w_levels),
+    )
+    .expect("write mesh");
+    let read_back = earthmesh_cli::read_gridfile_mesh_points(&output).expect("read quality mesh");
+
+    assert_eq!(read_back.m_refine_level, m_levels.to_vec());
+    assert_eq!(read_back.w_refine_level, w_levels.to_vec());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn regional_clip_preserves_refine_levels_after_inserted_placeholder() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_regional_levels_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let input = root.join("global.nc4");
+    let output = root.join("regional.nc4");
+    let mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.2 },
+        ],
+        w_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint { lon: 0.1, lat: 0.1 },
+            earthmesh_cli::LonLatPoint { lon: 0.3, lat: 0.1 },
+            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.3 },
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+        n_w_to_m: vec![1, 1, 1, 1],
+    };
+
+    earthmesh_cli::write_unstructured_mesh_netcdf_with_refine_levels(
+        &input,
+        &mesh,
+        Some(&[0, 5]),
+        Some(&[0, 7, 8, 9]),
+    )
+    .expect("write input");
+    let kept = earthmesh_cli::write_regional_gridfile(
+        &input,
+        &output,
+        &earthmesh_cli::GridRegion::Bbox {
+            west: -1.0,
+            east: 1.0,
+            north: 1.0,
+            south: -1.0,
+        },
+        "tri",
+    )
+    .expect("regional clip");
+
+    assert_eq!(kept, 1);
+    let clipped = earthmesh_cli::read_gridfile_mesh_points(&output).expect("read clipped");
+    assert_eq!(clipped.m_refine_level, vec![0, 0, 5]);
+    assert_eq!(clipped.w_refine_level, vec![0, 0, 7, 8, 9]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn regional_clip_rejects_mismatched_explicit_refine_levels() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_regional_bad_levels_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let input = root.join("global.nc4");
+    let output = root.join("regional.nc4");
+    let mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.2 },
+        ],
+        w_points: vec![
+            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::LonLatPoint { lon: 0.1, lat: 0.1 },
+            earthmesh_cli::LonLatPoint { lon: 0.3, lat: 0.1 },
+            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.3 },
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+        n_w_to_m: vec![1, 1, 1, 1],
+    };
+
+    earthmesh_cli::write_unstructured_mesh_netcdf(&input, &mesh).expect("write input");
+    let err = earthmesh_cli::write_regional_gridfile_with_refine_levels(
+        &input,
+        &output,
+        &earthmesh_cli::GridRegion::Bbox {
+            west: -1.0,
+            east: 1.0,
+            north: 1.0,
+            south: -1.0,
+        },
+        "tri",
+        Some(&[0, 1, 2, 3]),
+        Some(&[0, 1, 2, 3]),
+    )
+    .expect_err("bad metadata lengths must fail");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("earthmesh_m_refine_level"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

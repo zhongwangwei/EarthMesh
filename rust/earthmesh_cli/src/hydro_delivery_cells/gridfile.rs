@@ -42,6 +42,9 @@ pub fn gridfile_cell_polygons_geojson(
         GridfileCellKind::Tri => {
             let wn = mesh.w_lon.len();
             for (ci, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+                if m_has_two_placeholders && ci < 2 {
+                    continue;
+                }
                 let idx: Vec<usize> = tri
                     .iter()
                     .filter_map(|&v| mesh_row_for_fortran_id(v, wn, w_has_two_placeholders))
@@ -63,9 +66,6 @@ pub fn gridfile_cell_polygons_geojson(
                     .iter()
                     .map(|&i| (norm_lon(mesh.w_lon[i]), mesh.w_lat[i]))
                     .collect();
-                if (clon == 0.0 && clat == 0.0) || ring.iter().any(|&(x, y)| x == 0.0 && y == 0.0) {
-                    continue;
-                }
                 if preview_cell_too_large(&ring, clon, clat, 30.0) {
                     continue;
                 }
@@ -95,6 +95,9 @@ pub fn gridfile_cell_polygons_geojson(
             if use_inverse {
                 incident = vec![Vec::new(); wn];
                 for mi in 0..tris {
+                    if m_has_two_placeholders && mi < 2 {
+                        continue;
+                    }
                     for k in 0..3 {
                         let w1 = mesh.m_to_w[mi * 3 + k];
                         if let Some(w_row) = mesh_row_for_fortran_id(w1, wn, w_has_two_placeholders)
@@ -107,21 +110,21 @@ pub fn gridfile_cell_polygons_geojson(
             let width = mesh.w_to_m_width;
             if use_inverse || width > 0 {
                 for wi in 0..wn {
+                    if w_has_two_placeholders && wi < 2 {
+                        continue;
+                    }
                     let clon = norm_lon(mesh.w_lon[wi]);
                     let clat = mesh.w_lat[wi];
-                    if !in_bbox(clon, clat) || (clon == 0.0 && clat == 0.0) {
+                    if !in_bbox(clon, clat) {
                         continue;
                     }
                     let mut corners: Vec<(f64, f64)> = Vec::new();
                     if use_inverse {
                         for &mi in &incident[wi] {
-                            if mi >= mn {
+                            if mi >= mn || (m_has_two_placeholders && mi < 2) {
                                 continue;
                             }
                             let (x, y) = (norm_lon(mesh.m_lon[mi]), mesh.m_lat[mi]);
-                            if x == 0.0 && y == 0.0 {
-                                continue;
-                            }
                             corners.push((x, y));
                         }
                     } else {
@@ -133,9 +136,6 @@ pub fn gridfile_cell_polygons_geojson(
                                 mesh_row_for_fortran_id(mid, mn, m_has_two_placeholders)
                             {
                                 let (x, y) = (norm_lon(mesh.m_lon[m_row]), mesh.m_lat[m_row]);
-                                if x == 0.0 && y == 0.0 {
-                                    continue;
-                                }
                                 corners.push((x, y));
                             }
                         }

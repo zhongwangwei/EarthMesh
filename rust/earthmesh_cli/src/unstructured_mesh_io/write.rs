@@ -12,7 +12,26 @@ pub fn write_unstructured_mesh_netcdf(
     output: impl AsRef<Path>,
     mesh: &UnstructuredMesh,
 ) -> io::Result<UnstructuredMeshWriteReport> {
+    write_unstructured_mesh_netcdf_with_refine_levels(output, mesh, None, None)
+}
+
+pub fn write_unstructured_mesh_netcdf_with_refine_levels(
+    output: impl AsRef<Path>,
+    mesh: &UnstructuredMesh,
+    m_refine_level: Option<&[i32]>,
+    w_refine_level: Option<&[i32]>,
+) -> io::Result<UnstructuredMeshWriteReport> {
     validate_unstructured_mesh(mesh)?;
+    validate_refine_level_len(
+        "earthmesh_m_refine_level",
+        m_refine_level,
+        mesh.m_points.len(),
+    )?;
+    validate_refine_level_len(
+        "earthmesh_w_refine_level",
+        w_refine_level,
+        mesh.w_points.len(),
+    )?;
     let output = output.as_ref();
     crate::ensure_parent_dir(output)?;
 
@@ -75,6 +94,18 @@ pub fn write_unstructured_mesh_netcdf(
         var.put_values(&mesh.n_w_to_m, ..)
             .map_err(netcdf_to_io_error)?;
     }
+    if let Some(levels) = m_refine_level {
+        let mut var = file
+            .add_variable::<i32>("earthmesh_m_refine_level", &["sjx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(levels, ..).map_err(netcdf_to_io_error)?;
+    }
+    if let Some(levels) = w_refine_level {
+        let mut var = file
+            .add_variable::<i32>("earthmesh_w_refine_level", &["lbx_points"])
+            .map_err(netcdf_to_io_error)?;
+        var.put_values(levels, ..).map_err(netcdf_to_io_error)?;
+    }
 
     Ok(UnstructuredMeshWriteReport {
         output: output.to_path_buf(),
@@ -82,4 +113,21 @@ pub fn write_unstructured_mesh_netcdf(
         lbx_points: mesh.w_points.len(),
         dimc,
     })
+}
+
+fn validate_refine_level_len(
+    name: &str,
+    levels: Option<&[i32]>,
+    expected: usize,
+) -> io::Result<()> {
+    let Some(levels) = levels else {
+        return Ok(());
+    };
+    if levels.len() == expected {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{name} length {} must equal {expected}", levels.len()),
+    ))
 }

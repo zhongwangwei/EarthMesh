@@ -15,6 +15,7 @@ pub(crate) fn read_olam_circle_refinement_regions(
     max_level: usize,
     nxp: usize,
     regions: &mut Vec<OlamRefinementRegion>,
+    apply_parent_halos: bool,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_circle_mask_nml(source, max_level)?,
@@ -44,14 +45,18 @@ pub(crate) fn read_olam_circle_refinement_regions(
         .iter()
         .map(|radius_km| radius_km * 1_000.0)
         .collect::<Vec<_>>();
-    push_olam_circle_or_corridor_region_with_parent_halos(
-        regions,
-        points,
-        radius_meters,
-        mask.refine_degree,
-        refine,
-        nxp,
-    )?;
+    if apply_parent_halos {
+        push_olam_circle_or_corridor_region_with_parent_halos(
+            regions,
+            points,
+            radius_meters,
+            mask.refine_degree,
+            refine,
+            nxp,
+        )?;
+    } else {
+        push_olam_circle_or_corridor_region(regions, points, radius_meters, mask.refine_degree);
+    }
     Ok(())
 }
 

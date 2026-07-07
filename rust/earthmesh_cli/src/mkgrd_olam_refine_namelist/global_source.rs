@@ -10,7 +10,7 @@ use earthmesh_mesh::{
     OlamDelaunayMesh,
 };
 
-use super::outputs::write_olam_refined_outputs;
+use super::outputs::{write_olam_refined_outputs, OlamRefineLevelSlices};
 use crate::*;
 
 /// Execute global specified refinement directly through the OLAM
@@ -165,6 +165,7 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
     );
     let olam_nxp = usize::try_from(config.nxp)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let use_hfield_regions = hfield_options.is_some() && !native_cartesian_xy;
 
     let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
     let mut regions = native_regions;
@@ -173,6 +174,7 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
             &refine,
             max_spc_level,
             olam_nxp,
+            !use_hfield_regions,
         )?);
     }
     if refine.refine_cal {
@@ -433,6 +435,8 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
     let file_dir = PathBuf::from(config.file_dir());
     let domain_region = read_olam_domain_region(&config)?;
     let output_mesh = gridfile_mesh_from_fortran_indexed_state(&state.grid, &state.tabs)?;
+    let m_refine_levels = olam_m_refine_levels_zero_based(&state)?;
+    let w_refine_levels = olam_w_refine_levels_zero_based(&state)?;
     let outputs = write_olam_refined_outputs(
         &contents,
         &config,
@@ -442,6 +446,10 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
         max_level,
         &output_mesh,
         domain_region.as_ref(),
+        Some(OlamRefineLevelSlices {
+            m: &m_refine_levels,
+            w: &w_refine_levels,
+        }),
     )?;
 
     let mut runtime_state =
@@ -469,4 +477,87 @@ pub fn run_mkgrd_olam_specified_refine_global_source_namelist(
         output: outputs.output,
         runtime_state,
     })
+}
+
+fn olam_m_refine_levels_zero_based(
+    state: &earthmesh_mesh::VoronoiGridState,
+) -> io::Result<Vec<i32>> {
+    if state.tabs.m.len() <= state.grid.nma {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OLAM M refinement levels missing from itab_m",
+        ));
+    }
+    (1..=state.grid.nma)
+        .map(|im| olam_level_to_zero_based(state.tabs.m[im].mrlm, "M", im))
+        .collect::<io::Result<Vec<_>>>()
+}
+
+fn olam_w_refine_levels_zero_based(
+    state: &earthmesh_mesh::VoronoiGridState,
+) -> io::Result<Vec<i32>> {
+    if state.tabs.w.len() <= state.grid.nwa {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OLAM W refinement levels missing from itab_w",
+        ));
+    }
+    (1..=state.grid.nwa)
+        .map(|iw| olam_level_to_zero_based(state.tabs.w[iw].mrlw, "W", iw))
+        .collect::<io::Result<Vec<_>>>()
+}
+
+fn olam_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Result<i32> {
+    if level <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OLAM {role} refinement level at row {index} must be one-based and positive, got {level}"),
+        ));
+    }
+    Ok(level - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use earthmesh_core::{GridMemory, IjTabs, ItabM, ItabW};
+
+    fn minimal_state(mrlm: i32, mrlw: i32) -> earthmesh_mesh::VoronoiGridState {
+        earthmesh_mesh::VoronoiGridState {
+            grid: GridMemory {
+                nma: 1,
+                nwa: 1,
+                ..GridMemory::default()
+            },
+            tabs: IjTabs {
+                m: vec![
+                    ItabM::default(),
+                    ItabM {
+                        mrlm,
+                        ..ItabM::default()
+                    },
+                ],
+                v: Vec::new(),
+                w: vec![
+                    ItabW::default(),
+                    ItabW {
+                        mrlw,
+                        ..ItabW::default()
+                    },
+                ],
+            },
+            impent: [0; 12],
+        }
+    }
+
+    #[test]
+    fn olam_refine_level_export_rejects_non_positive_one_based_levels() {
+        let bad_m = minimal_state(0, 1);
+        let err = olam_m_refine_levels_zero_based(&bad_m).expect_err("zero OLAM M level must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let bad_w = minimal_state(1, 0);
+        let err = olam_w_refine_levels_zero_based(&bad_w).expect_err("zero OLAM W level must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
 }

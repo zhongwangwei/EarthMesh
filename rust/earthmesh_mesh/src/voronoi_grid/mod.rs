@@ -103,10 +103,14 @@ fn voronoi_grid_from_olam_delaunay_mesh_with_projection(
     let mut tabs = IjTabs::allocate(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
     for iw in 2..=grid.nwa {
         let neighbor = &mesh.m_neighbors[iw];
+        let metadata = mesh.m_metadata[iw];
         tabs.w[iw] = ItabW {
             iwp: iw as i32,
             iwglobe: iw as i32,
             npoly: neighbor.npoly as i32,
+            mrlw: metadata.mrlm as i32,
+            mrlw_orig: metadata.mrlm_orig as i32,
+            ngr: metadata.ngr as i32,
             im: neighbor.iw.map(|value| value as i32),
             iv: neighbor.iu.map(|value| value as i32),
             ..ItabW::default()

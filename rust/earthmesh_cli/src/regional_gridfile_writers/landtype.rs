@@ -1,6 +1,7 @@
 use std::io;
 use std::path::Path;
 
+use super::levels::{final_refine_levels_for_mask_postproc, refine_levels_from_gridfile};
 use crate::*;
 
 /// Carve a gridfile to land-only or ocean-only cells from a land-type NetCDF.
@@ -18,6 +19,29 @@ pub fn write_landtype_masked_gridfile(
     mode_grid: &str,
     mesh_type: &str,
 ) -> io::Result<usize> {
+    write_landtype_masked_gridfile_with_refine_levels(
+        input_gridfile,
+        output_gridfile,
+        landtype_file,
+        gridnum_perdegree,
+        mode_grid,
+        mesh_type,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn write_landtype_masked_gridfile_with_refine_levels(
+    input_gridfile: impl AsRef<Path>,
+    output_gridfile: impl AsRef<Path>,
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    mode_grid: &str,
+    mesh_type: &str,
+    m_refine_level: Option<&[i32]>,
+    w_refine_level: Option<&[i32]>,
+) -> io::Result<usize> {
     let keep_land = match mesh_type.trim() {
         "landmesh" => true,
         "oceanmesh" => false,
@@ -28,6 +52,7 @@ pub fn write_landtype_masked_gridfile(
             ));
         }
     };
+    let input_gridfile = input_gridfile.as_ref();
     let mesh = read_unstructured_mesh_netcdf(input_gridfile)?;
     let raw_layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
     let layout = ensure_leading_mask_postproc_placeholder(raw_layout);
@@ -63,6 +88,30 @@ pub fn write_landtype_masked_gridfile(
     }
     let report =
         finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
-    write_unstructured_mesh_netcdf(output_gridfile, &report.mesh)?;
+    let source_levels = if m_refine_level.is_none() || w_refine_level.is_none() {
+        Some(refine_levels_from_gridfile(input_gridfile)?)
+    } else {
+        None
+    };
+    let source_m_levels = m_refine_level
+        .or_else(|| source_levels.as_ref().map(|levels| levels.m.as_slice()))
+        .unwrap_or(&[]);
+    let source_w_levels = w_refine_level
+        .or_else(|| source_levels.as_ref().map(|levels| levels.w.as_slice()))
+        .unwrap_or(&[]);
+    let final_levels = final_refine_levels_for_mask_postproc(
+        mode_grid,
+        &report,
+        &is_in_domain,
+        layout.ustr_points,
+        source_m_levels,
+        source_w_levels,
+    )?;
+    write_unstructured_mesh_netcdf_with_refine_levels(
+        output_gridfile,
+        &report.mesh,
+        final_levels.m.as_deref(),
+        final_levels.w.as_deref(),
+    )?;
     Ok(kept)
 }

@@ -14,9 +14,11 @@ fn cell_neighbors_are_derived_from_shared_edges() {
         w_lon: vec![0.0, 1.0, 0.5, 0.5, 10.0, 11.0, 10.5],
         w_lat: vec![0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0],
         m_to_w: vec![1, 2, 3, 1, 2, 4, 5, 6, 7],
+        m_refine_level: vec![],
         w_to_m: vec![],
         w_to_m_width: 0,
         n_w: vec![],
+        w_refine_level: vec![],
     };
 
     let input = quality_input_from_gridfile(&mesh);

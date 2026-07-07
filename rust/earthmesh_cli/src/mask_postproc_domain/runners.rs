@@ -148,7 +148,20 @@ pub fn run_mask_postproc_ocean_domain(
         &renewal.is_in_domain_ustr,
         &plan.mode_grid,
     )?;
-    let final_gridfile = write_unstructured_mesh_netcdf(&plan.result_gridfile, &finalization.mesh)?;
+    let final_levels =
+        crate::regional_gridfile_writers::final_refine_levels_from_gridfile_for_mask_postproc(
+            &plan.mode_grid,
+            &plan.source_gridfile,
+            &finalization,
+            &renewal.is_in_domain_ustr,
+            inputs.layout.ustr_points,
+        )?;
+    let final_gridfile = write_unstructured_mesh_netcdf_with_refine_levels(
+        &plan.result_gridfile,
+        &finalization.mesh,
+        final_levels.m.as_deref(),
+        final_levels.w.as_deref(),
+    )?;
 
     let mut boundary_orders = None;
     let mut obc = None;

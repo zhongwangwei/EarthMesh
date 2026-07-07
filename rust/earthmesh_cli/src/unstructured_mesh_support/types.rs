@@ -49,11 +49,15 @@ pub struct GridfileMeshPoints {
     pub w_lon: Vec<f64>,
     pub w_lat: Vec<f64>,
     pub m_to_w: Vec<i32>,
+    /// Optional EarthMesh extension: zero-based refinement level per M cell.
+    pub m_refine_level: Vec<i32>,
     /// Flattened `itab_w%im`: the M-points around each W cell.
     pub w_to_m: Vec<i32>,
     pub w_to_m_width: usize,
     /// `n_ngrwm`: how many of each W cell's `w_to_m` entries are valid.
     pub n_w: Vec<i32>,
+    /// Optional EarthMesh extension: zero-based refinement level per W cell.
+    pub w_refine_level: Vec<i32>,
 }
 
 /// Which connectivity view to render from a gridfile: `Tri` builds one triangle per

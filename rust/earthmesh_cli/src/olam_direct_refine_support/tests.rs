@@ -202,7 +202,7 @@ fn olam_specified_multipoint_circle_reader_uses_fortran_corridor_with_parent_hal
         ..Default::default()
     };
     let mut regions = Vec::new();
-    read_olam_circle_refinement_regions(&source, &refine, 2, 16, &mut regions)
+    read_olam_circle_refinement_regions(&source, &refine, 2, 16, &mut regions, true)
         .expect("read specified circle refinement regions");
 
     assert_eq!(regions.len(), 2);
@@ -230,6 +230,46 @@ fn olam_specified_multipoint_circle_reader_uses_fortran_corridor_with_parent_hal
     assert_eq!(*level, 2);
     assert_eq!(points.len(), 2);
     assert_eq!(radius_meters, &vec![500_000.0, 500_000.0]);
+
+    let _ = fs::remove_file(source);
+}
+
+#[test]
+fn hfield_circle_reader_ignores_legacy_parent_halo() {
+    let source = std::env::temp_dir().join(format!(
+        "earthmesh_cli_hfield_circle_spc_{}_{}.nml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(
+        &source,
+        "circle_num = 1\ncircle_refine = 2\n115.0 25.0 500.0\n",
+    )
+    .expect("write circle mask source");
+
+    let refine = RefineConfig {
+        halo: [0, 4, 0, 0, 0, 0, 0, 0, 0, 0],
+        max_transition_row: [0, 4, 0, 0, 0, 0, 0, 0, 0, 0],
+        ..Default::default()
+    };
+    let mut regions = Vec::new();
+    read_olam_circle_refinement_regions(&source, &refine, 2, 16, &mut regions, false)
+        .expect("read h-field circle refinement regions");
+
+    assert_eq!(regions.len(), 1);
+    let OlamRefinementRegion::Circle {
+        radius_meters,
+        level,
+        ..
+    } = regions[0]
+    else {
+        panic!("h-field should use the raw target circle without parent halo");
+    };
+    assert_eq!(level, 2);
+    assert_eq!(radius_meters, 500_000.0);
 
     let _ = fs::remove_file(source);
 }

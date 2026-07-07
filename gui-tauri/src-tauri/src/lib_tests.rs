@@ -335,6 +335,25 @@ fn shapefile_polygon_converts_to_close_mask_nml() {
 }
 
 #[test]
+fn hfield_close_mask_family_skips_legacy_parent_masks() {
+    let root = env::temp_dir().join(format!("earthmesh_studio_hfield_shp_{}", process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create root");
+    let shp = root.join("watershed.shp");
+    write_test_polygon_shp(&shp, &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+
+    let (_domain_prefix, refine_prefix) =
+        mesh_runner::write_shapefile_close_masks_with_parent_masks(&shp, &root, 2, 30, false)
+            .expect("convert shp for hfield");
+
+    assert_eq!(refine_prefix, root.join("refine_shp"));
+    assert!(!root.join("refine_shp_001_001.nml").exists());
+    assert!(root.join("refine_shp_002_001.nml").is_file());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn lonlat_text_converts_to_close_domain_masks() {
     let root = env::temp_dir().join(format!("earthmesh_studio_close_txt_{}", process::id()));
     let _ = fs::remove_dir_all(&root);

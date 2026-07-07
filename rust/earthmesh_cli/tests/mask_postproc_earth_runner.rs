@@ -60,8 +60,13 @@ fn earth_runner_reads_inputs_and_writes_patchtype_info_and_final_gridfile() {
 
     let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 9, "tri", "earthmesh", false)
         .expect("earth plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(&plan.source_gridfile, &sample_source_mesh())
-        .expect("write source mesh");
+    earthmesh_cli::write_unstructured_mesh_netcdf_with_refine_levels(
+        &plan.source_gridfile,
+        &sample_source_mesh(),
+        Some(&[0, 11, 12, 13]),
+        Some(&[0, 21, 22, 23, 24, 25]),
+    )
+    .expect("write source mesh");
     let contain = earthmesh_cli::ContainMesh {
         ustr_id: vec![vec![0, 0, 0], vec![0, 0, 0], vec![2, 1, 2], vec![1, 3, 1]],
         ustr_ii: vec![vec![10, 20, 1], vec![11, 20, 0], vec![10, 21, 1]],
@@ -115,6 +120,10 @@ fn earth_runner_reads_inputs_and_writes_patchtype_info_and_final_gridfile() {
     let final_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&report.final_gridfile.output)
         .expect("read final gridfile");
     assert_eq!(final_mesh.m_to_w[2], [2, 3, 4]);
+    let final_points = earthmesh_cli::read_gridfile_mesh_points(&report.final_gridfile.output)
+        .expect("read final points");
+    assert_eq!(final_points.m_refine_level, vec![0, 11, 12]);
+    assert_eq!(final_points.w_refine_level, vec![0, 21, 22, 24, 25]);
 
     let _ = fs::remove_dir_all(&root);
 }

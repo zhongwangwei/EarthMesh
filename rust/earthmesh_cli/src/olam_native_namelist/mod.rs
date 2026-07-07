@@ -6,8 +6,8 @@ mod scalars;
 mod validation;
 
 pub(crate) use crate::olam_native_parser::{
-    parse_olam_native_bool, parse_olam_native_f64, parse_olam_native_i32, parse_olam_native_string,
-    parse_olam_native_usize,
+    olam_namelist_has_section, parse_olam_native_bool, parse_olam_native_f64,
+    parse_olam_native_i32, parse_olam_native_string, parse_olam_native_usize,
 };
 pub(crate) use controls::read_olam_native_refine_controls;
 pub(crate) use query::{

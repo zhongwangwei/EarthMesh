@@ -4,8 +4,9 @@ use std::path::Path;
 use earthmesh_mesh::{olam_gridinit_factorization_fortran, LonLatDegrees, OlamDelaunayMesh};
 
 use crate::{
-    read_unstructured_mesh_netcdf, unstructured_dimc, write_regional_gridfile,
-    write_unstructured_mesh_netcdf, GridRegion, UnstructuredMesh, UnstructuredMeshWriteReport,
+    read_unstructured_mesh_netcdf, unstructured_dimc, write_regional_gridfile_with_refine_levels,
+    write_unstructured_mesh_netcdf_with_refine_levels, GridRegion, UnstructuredMesh,
+    UnstructuredMeshWriteReport,
 };
 
 pub(crate) fn olam_delaunay_mesh_from_unstructured_gridfile(
@@ -118,11 +119,47 @@ pub(crate) fn write_olam_mesh_with_optional_domain(
     Option<UnstructuredMeshWriteReport>,
     UnstructuredMeshWriteReport,
 )> {
+    write_olam_mesh_with_optional_domain_and_refine_levels(
+        mesh,
+        raw_output_path,
+        output_path,
+        domain_region,
+        mode_grid,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_olam_mesh_with_optional_domain_and_refine_levels(
+    mesh: &UnstructuredMesh,
+    raw_output_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    domain_region: Option<&GridRegion>,
+    mode_grid: &str,
+    m_refine_level: Option<&[i32]>,
+    w_refine_level: Option<&[i32]>,
+) -> io::Result<(
+    Option<UnstructuredMeshWriteReport>,
+    UnstructuredMeshWriteReport,
+)> {
     let output_path = output_path.as_ref();
     match domain_region {
         Some(region) => {
-            let raw_output = write_unstructured_mesh_netcdf(raw_output_path, mesh)?;
-            let kept = write_regional_gridfile(&raw_output.output, output_path, region, mode_grid)?;
+            let raw_output = write_unstructured_mesh_netcdf_with_refine_levels(
+                raw_output_path,
+                mesh,
+                m_refine_level,
+                w_refine_level,
+            )?;
+            let kept = write_regional_gridfile_with_refine_levels(
+                &raw_output.output,
+                output_path,
+                region,
+                mode_grid,
+                m_refine_level,
+                w_refine_level,
+            )?;
             if kept == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -133,7 +170,12 @@ pub(crate) fn write_olam_mesh_with_optional_domain(
             Ok((Some(raw_output), output))
         }
         None => {
-            let output = write_unstructured_mesh_netcdf(output_path, mesh)?;
+            let output = write_unstructured_mesh_netcdf_with_refine_levels(
+                output_path,
+                mesh,
+                m_refine_level,
+                w_refine_level,
+            )?;
             Ok((None, output))
         }
     }

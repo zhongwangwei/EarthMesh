@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::*;
 
 use super::fvcom::write_fvcom_2dm_from_carved;
+use super::levels::{final_refine_levels_for_mask_postproc, refine_levels_from_gridfile};
 
 /// Carve a CLEAN regional ocean (FVCOM) mesh from a global gridfile + a close
 /// polygon + a landtype NetCDF - in pure Rust, WITHOUT the refine pipeline and
@@ -112,13 +113,30 @@ pub fn write_clean_regional_ocean_gridfile(
         num_vertex: 0,
     })?;
 
-    run_mask_postproc_ocean_domain(
+    let report = run_mask_postproc_ocean_domain(
         &plan,
         MaskPostprocOceanRunOptions {
             mask_sea_ratio,
             num_vertex: 0,
         },
     )?;
+    let source_levels = refine_levels_from_gridfile(&plan.source_gridfile)?;
+    let final_levels = final_refine_levels_for_mask_postproc(
+        "tri",
+        &report.finalization,
+        &report.renewal.is_in_domain_ustr,
+        report.renewal.is_in_domain_ustr.len(),
+        &source_levels.m,
+        &source_levels.w,
+    )?;
+    if final_levels.m.is_some() || final_levels.w.is_some() {
+        write_unstructured_mesh_netcdf_with_refine_levels(
+            &plan.result_gridfile,
+            &report.finalization.mesh,
+            final_levels.m.as_deref(),
+            final_levels.w.as_deref(),
+        )?;
+    }
 
     Ok(plan)
 }

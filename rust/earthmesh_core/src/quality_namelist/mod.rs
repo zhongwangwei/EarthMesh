@@ -10,8 +10,10 @@ use crate::{fortran_quote, parse_f64, parse_fortran_string, parse_i32, strip_for
 pub struct QualityNamelist {
     pub min_angle_warn_deg: f64,
     pub min_angle_fail_deg: f64,
+    pub angle_deviation_warn_deg: f64,
     pub aspect_ratio_warn: f64,
     pub aspect_ratio_fail: f64,
+    pub cell_edge_cv_warn: f64,
     pub area_cv_warn: f64,
     pub max_adjacent_resolution_ratio_warn: f64,
     pub worst_cells_limit: i32,
@@ -25,8 +27,10 @@ impl Default for QualityNamelist {
         Self {
             min_angle_warn_deg: 20.0,
             min_angle_fail_deg: 5.0,
+            angle_deviation_warn_deg: 35.0,
             aspect_ratio_warn: 4.0,
             aspect_ratio_fail: 10.0,
+            cell_edge_cv_warn: 0.35,
             area_cv_warn: 1.5,
             max_adjacent_resolution_ratio_warn: 2.0,
             worst_cells_limit: 50,
@@ -71,8 +75,12 @@ impl QualityNamelist {
             match field.to_ascii_lowercase().as_str() {
                 "min_angle_warn_deg" => config.min_angle_warn_deg = parse_f64(field, value)?,
                 "min_angle_fail_deg" => config.min_angle_fail_deg = parse_f64(field, value)?,
+                "angle_deviation_warn_deg" => {
+                    config.angle_deviation_warn_deg = parse_f64(field, value)?
+                }
                 "aspect_ratio_warn" => config.aspect_ratio_warn = parse_f64(field, value)?,
                 "aspect_ratio_fail" => config.aspect_ratio_fail = parse_f64(field, value)?,
+                "cell_edge_cv_warn" => config.cell_edge_cv_warn = parse_f64(field, value)?,
                 "area_cv_warn" => config.area_cv_warn = parse_f64(field, value)?,
                 "max_adjacent_resolution_ratio_warn" => {
                     config.max_adjacent_resolution_ratio_warn = parse_f64(field, value)?
@@ -100,12 +108,20 @@ impl QualityNamelist {
             self.min_angle_fail_deg
         ));
         out.push_str(&format!(
+            "  NL%angle_deviation_warn_deg = {}\n",
+            self.angle_deviation_warn_deg
+        ));
+        out.push_str(&format!(
             "  NL%aspect_ratio_warn = {}\n",
             self.aspect_ratio_warn
         ));
         out.push_str(&format!(
             "  NL%aspect_ratio_fail = {}\n",
             self.aspect_ratio_fail
+        ));
+        out.push_str(&format!(
+            "  NL%cell_edge_cv_warn = {}\n",
+            self.cell_edge_cv_warn
         ));
         out.push_str(&format!("  NL%area_cv_warn = {}\n", self.area_cv_warn));
         out.push_str(&format!(

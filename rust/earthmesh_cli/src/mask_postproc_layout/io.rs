@@ -1,12 +1,13 @@
 use std::io;
 
 use super::{
-    finalize_mask_postproc_layout_to_unstructured_mesh, mask_postproc_layout_from_unstructured_mesh,
+    finalize_mask_postproc_layout_with_reindex_report, mask_postproc_layout_from_unstructured_mesh,
 };
 use crate::{
-    read_contain_netcdf, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
-    MaskPostprocDomainInputs, MaskPostprocDomainIoPlan, MaskPostprocLayout,
-    UnstructuredMeshWriteReport,
+    read_contain_netcdf, read_unstructured_mesh_netcdf,
+    regional_gridfile_writers::final_refine_levels_from_gridfile_for_mask_postproc,
+    write_unstructured_mesh_netcdf_with_refine_levels, MaskPostprocDomainInputs,
+    MaskPostprocDomainIoPlan, MaskPostprocLayout, UnstructuredMeshWriteReport,
 };
 
 /// Compose final mask-postprocess grid construction with the legacy NetCDF
@@ -16,12 +17,24 @@ pub fn write_mask_postproc_final_gridfile(
     layout: &MaskPostprocLayout,
     is_in_domain_ustr: &[i32],
 ) -> io::Result<UnstructuredMeshWriteReport> {
-    let mesh = finalize_mask_postproc_layout_to_unstructured_mesh(
+    let report = finalize_mask_postproc_layout_with_reindex_report(
         layout,
         is_in_domain_ustr,
         &plan.mode_grid,
     )?;
-    write_unstructured_mesh_netcdf(&plan.result_gridfile, &mesh)
+    let final_levels = final_refine_levels_from_gridfile_for_mask_postproc(
+        &plan.mode_grid,
+        &plan.source_gridfile,
+        &report,
+        is_in_domain_ustr,
+        layout.ustr_points,
+    )?;
+    write_unstructured_mesh_netcdf_with_refine_levels(
+        &plan.result_gridfile,
+        &report.mesh,
+        final_levels.m.as_deref(),
+        final_levels.w.as_deref(),
+    )
 }
 
 /// Load the two NetCDF inputs common to `mask_postproc_Earth`,

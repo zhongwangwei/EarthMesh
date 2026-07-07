@@ -12,6 +12,11 @@ pub(super) struct OlamRefinedOutputReports {
     pub output: UnstructuredMeshWriteReport,
 }
 
+pub(super) struct OlamRefineLevelSlices<'a> {
+    pub m: &'a [i32],
+    pub w: &'a [i32],
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_olam_refined_outputs(
     namelist_contents: &str,
@@ -22,6 +27,7 @@ pub(super) fn write_olam_refined_outputs(
     max_level: usize,
     output_mesh: &UnstructuredMesh,
     domain_region: Option<&GridRegion>,
+    refine_levels: Option<OlamRefineLevelSlices<'_>>,
 ) -> io::Result<OlamRefinedOutputReports> {
     let output_path = file_dir.join("result").join(format!(
         "gridfile_NXP{nxp:04}_{}.nc4",
@@ -41,7 +47,12 @@ pub(super) fn write_olam_refined_outputs(
             max_level,
             &format!("olam_raw_{}", config.mode_grid.trim()),
         );
-        let raw_output = write_unstructured_mesh_netcdf(&raw_path, output_mesh)?;
+        let raw_output = write_unstructured_mesh_netcdf_with_refine_levels(
+            &raw_path,
+            output_mesh,
+            refine_levels.as_ref().map(|levels| levels.m),
+            refine_levels.as_ref().map(|levels| levels.w),
+        )?;
         if config.mesh_type.trim() == "oceanmesh" && config.mode_grid.trim() == "tri" {
             if let Some(GridRegion::Close { points }) = domain_region {
                 let plan = write_clean_regional_ocean_gridfile(
@@ -69,11 +80,13 @@ pub(super) fn write_olam_refined_outputs(
                 max_level,
                 &format!("olam_domain_{}", config.mode_grid.trim()),
             );
-            let kept = write_regional_gridfile(
+            let kept = write_regional_gridfile_with_refine_levels(
                 &raw_output.output,
                 &domain_path,
                 region,
                 config.mode_grid.trim(),
+                refine_levels.as_ref().map(|levels| levels.m),
+                refine_levels.as_ref().map(|levels| levels.w),
             )?;
             if kept == 0 {
                 return Err(io::Error::new(
@@ -85,13 +98,15 @@ pub(super) fn write_olam_refined_outputs(
         } else {
             raw_output.output.clone()
         };
-        let kept = write_landtype_masked_gridfile(
+        let kept = write_landtype_masked_gridfile_with_refine_levels(
             &landtype_input,
             &output_path,
             &config.landtype_file,
             gridnum_perdegree,
             config.mode_grid.trim(),
             config.mesh_type.trim(),
+            None,
+            None,
         )?;
         let masked_mesh = read_unstructured_mesh_netcdf(&output_path)?;
         let output = UnstructuredMeshWriteReport {
@@ -116,12 +131,14 @@ pub(super) fn write_olam_refined_outputs(
             max_level,
             &format!("olam_raw_{}", config.mode_grid.trim()),
         );
-        let (raw_output, output) = write_olam_mesh_with_optional_domain(
+        let (raw_output, output) = write_olam_mesh_with_optional_domain_and_refine_levels(
             output_mesh,
             &raw_path,
             &output_path,
             domain_region,
             config.mode_grid.trim(),
+            refine_levels.as_ref().map(|levels| levels.m),
+            refine_levels.as_ref().map(|levels| levels.w),
         )?;
         let land_output_path = file_dir.join("result").join(format!(
             "gridfile_NXP{nxp:04}_{}_landmesh.nc4",
@@ -131,21 +148,25 @@ pub(super) fn write_olam_refined_outputs(
             "gridfile_NXP{nxp:04}_{}_oceanmesh.nc4",
             config.mode_grid.trim()
         ));
-        let land_kept = write_landtype_masked_gridfile(
+        let land_kept = write_landtype_masked_gridfile_with_refine_levels(
             &output.output,
             &land_output_path,
             &config.landtype_file,
             gridnum_perdegree,
             config.mode_grid.trim(),
             "landmesh",
+            None,
+            None,
         )?;
-        let ocean_kept = write_landtype_masked_gridfile(
+        let ocean_kept = write_landtype_masked_gridfile_with_refine_levels(
             &output.output,
             &ocean_output_path,
             &config.landtype_file,
             gridnum_perdegree,
             config.mode_grid.trim(),
             "oceanmesh",
+            None,
+            None,
         )?;
         let land_mesh = read_unstructured_mesh_netcdf(&land_output_path)?;
         let ocean_mesh = read_unstructured_mesh_netcdf(&ocean_output_path)?;
@@ -213,12 +234,14 @@ pub(super) fn write_olam_refined_outputs(
             max_level,
             &format!("olam_raw_{}", config.mode_grid.trim()),
         );
-        let (raw_output, output) = write_olam_mesh_with_optional_domain(
+        let (raw_output, output) = write_olam_mesh_with_optional_domain_and_refine_levels(
             output_mesh,
             &raw_path,
             &output_path,
             domain_region,
             config.mode_grid.trim(),
+            refine_levels.as_ref().map(|levels| levels.m),
+            refine_levels.as_ref().map(|levels| levels.w),
         )?;
         (raw_output, None, None, output)
     };

@@ -1,7 +1,7 @@
 //! EarthMesh gridfile (GLONM/GLONW + itab connectivity) -> cell-polygon GeoJSON.
 //! Covers the triangle (m_to_w) and hexagon (w_to_m) views; coords are degrees.
-//! OLAM gridfiles pad the first index/indices with a (0,0) dummy "sentinel" point;
-//! cells touching it must be dropped (else the mesh spikes to the Gulf of Guinea).
+//! Some gridfiles pad leading rows with (0,0) placeholders; placeholders are
+//! skipped by row identity, not by treating every real (0,0) coordinate as dummy.
 
 use earthmesh_cli::{gridfile_cell_polygons_geojson, GridfileCellKind, GridfileMeshPoints};
 
@@ -12,9 +12,11 @@ fn empty_mesh() -> GridfileMeshPoints {
         w_lon: vec![],
         w_lat: vec![],
         m_to_w: vec![],
+        m_refine_level: vec![],
         w_to_m: vec![],
         w_to_m_width: 0,
         n_w: vec![],
+        w_refine_level: vec![],
     }
 }
 
@@ -53,20 +55,39 @@ fn tri_skips_degenerate_sentinel_triangles() {
 }
 
 #[test]
-fn tri_drops_triangles_touching_the_0_0_sentinel() {
-    // W1 is the (0,0) dummy. A triangle that references it must be dropped, not drawn
-    // as a spike to (0,0); a triangle clear of it survives.
+fn tri_skips_two_placeholder_rows_by_row_identity() {
+    // Rows 0/1 are dummy placeholders. Fortran id 1 maps to a placeholder and
+    // must be ignored; the real triangle using ids 2..4 survives.
     let mut mesh = empty_mesh();
-    mesh.w_lon = vec![0.0, 100.0, 101.0, 101.0]; // W1 = (0,0) sentinel
-    mesh.w_lat = vec![0.0, 20.0, 20.0, 21.0];
+    mesh.w_lon = vec![0.0, 0.0, 100.0, 101.0, 101.0];
+    mesh.w_lat = vec![0.0, 0.0, 20.0, 20.0, 21.0];
     mesh.m_lon = vec![67.0, 100.67];
     mesh.m_lat = vec![13.0, 20.33];
-    mesh.m_to_w = vec![1, 2, 3, 2, 3, 4]; // A touches sentinel W1, B is clean
+    mesh.m_to_w = vec![1, 2, 3, 2, 3, 4];
 
     let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None);
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
     assert!(!json.contains("[0, 0]"), "sentinel corner leaked:\n{json}");
+}
+
+#[test]
+fn tri_keeps_valid_zero_zero_vertex_by_row_identity() {
+    // The real W row 2 is at (0,0); only rows 0/1 are placeholders.
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![0.0, 0.0, 0.0, 1.0, 0.0];
+    mesh.w_lat = vec![0.0, 0.0, 0.0, 0.0, 1.0];
+    mesh.m_lon = vec![0.33];
+    mesh.m_lat = vec![0.33];
+    mesh.m_to_w = vec![2, 3, 4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(
+        json.contains("[0, 0]"),
+        "real origin vertex was dropped:\n{json}"
+    );
 }
 
 #[test]
@@ -111,14 +132,14 @@ fn hex_view_emits_polygon_from_w_to_m_corners() {
 }
 
 #[test]
-fn hex_drops_0_0_sentinel_corners() {
-    // M1 is the (0,0) dummy; the W cell's corner ring includes it and must drop it.
+fn hex_skips_two_placeholder_corners_by_row_identity() {
+    // Rows 0/1 are dummy placeholders. Fortran id 1 is ignored; ids 2..5 are real.
     let mut mesh = empty_mesh();
     mesh.w_lon = vec![10.5];
     mesh.w_lat = vec![20.5];
-    mesh.m_lon = vec![0.0, 10.0, 11.0, 11.0, 10.0]; // M1 = (0,0) sentinel
-    mesh.m_lat = vec![0.0, 20.0, 20.0, 21.0, 21.0];
-    mesh.w_to_m = vec![1, 2, 3, 4, 5]; // references the sentinel M1
+    mesh.m_lon = vec![0.0, 0.0, 10.0, 11.0, 11.0, 10.0];
+    mesh.m_lat = vec![0.0, 0.0, 20.0, 20.0, 21.0, 21.0];
+    mesh.w_to_m = vec![1, 2, 3, 4, 5];
     mesh.w_to_m_width = 5;
     mesh.n_w = vec![5];
 
@@ -126,6 +147,29 @@ fn hex_drops_0_0_sentinel_corners() {
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
     assert!(!json.contains("[0, 0]"), "sentinel corner leaked:\n{json}");
+}
+
+#[test]
+fn hex_keeps_valid_zero_zero_center_and_corner_by_row_identity() {
+    // W row 2 and M row 2 are real origin points; rows 0/1 are placeholders.
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![0.0, 0.0, 0.0];
+    mesh.w_lat = vec![0.0, 0.0, 0.0];
+    mesh.m_lon = vec![0.0, 0.0, 0.0, 1.0, 1.0, 0.0];
+    mesh.m_lat = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+    mesh.w_to_m = vec![0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 4, 5];
+    mesh.w_to_m_width = 4;
+    mesh.n_w = vec![0, 0, 4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"cell_index\": 2"), "{json}");
+    assert!(json.contains("\"center_lon\": 0"), "{json}");
+    assert!(
+        json.contains("[0, 0]"),
+        "real origin corner was dropped:\n{json}"
+    );
 }
 
 #[test]

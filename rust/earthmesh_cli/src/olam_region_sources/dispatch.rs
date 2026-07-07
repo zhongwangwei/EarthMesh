@@ -19,14 +19,20 @@ pub(crate) fn read_olam_specified_refinement_regions(
     refine: &RefineConfig,
     max_level: usize,
     nxp: usize,
+    apply_parent_halos: bool,
 ) -> io::Result<Vec<OlamRefinementRegion>> {
     let discovery = discover_mask_sources(&refine.mask_refine_spc_fprefix)?;
     let mut regions = Vec::new();
     for source in discovery.files {
         match refine.mask_refine_spc_type.trim() {
-            "circle" => {
-                read_olam_circle_refinement_regions(&source, refine, max_level, nxp, &mut regions)?
-            }
+            "circle" => read_olam_circle_refinement_regions(
+                &source,
+                refine,
+                max_level,
+                nxp,
+                &mut regions,
+                apply_parent_halos,
+            )?,
             "bbox" => read_olam_bbox_refinement_regions(&source, max_level, &mut regions)?,
             "close" => read_olam_close_refinement_regions(&source, max_level, &mut regions)?,
             other => {

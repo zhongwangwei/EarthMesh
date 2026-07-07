@@ -55,11 +55,16 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     };
 
     // Optional &quality block → thresholds + policy; absent ⇒ defaults + warn.
-    let (thresholds, on_violation) = match &quality_cfg_path {
+    let quality_cfg_text = match &quality_cfg_path {
+        Some(p) => Some(
+            fs::read_to_string(p)
+                .map_err(|e| format!("read quality config {}: {e}", p.display()))?,
+        ),
+        None => None,
+    };
+    let (thresholds, on_violation) = match &quality_cfg_text {
         Some(p) => {
-            let text = fs::read_to_string(p)
-                .map_err(|e| format!("read quality config {}: {e}", p.display()))?;
-            let q = earthmesh_core::QualityNamelist::from_quality_namelist(&text)?;
+            let q = earthmesh_core::QualityNamelist::from_quality_namelist(p)?;
             (quality_thresholds_from_namelist(&q), q.on_violation)
         }
         None => (
@@ -71,6 +76,19 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     let mut report = earthmesh_quality::compute(&input, &thresholds);
     report.mesh_name = gridfile.display().to_string();
     report.cell_view = kind.to_string();
+    if let Some(text) = &quality_cfg_text {
+        let attached = earthmesh_cli::attach_hfield_diagnostics_from_namelist(
+            &mut report,
+            &input,
+            &mesh,
+            kind,
+            text,
+        )
+        .map_err(|e| format!("attach h-field diagnostics: {e}"))?;
+        if attached {
+            println!("mesh_quality_hfield=1");
+        }
+    }
     let written = earthmesh_quality::io::write_all(&report, &out_dir)
         .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
     println!("mesh_quality_kind={kind}");
@@ -79,6 +97,22 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     println!(
         "mesh_quality_min_angle_deg={}",
         report.geometry.min_angle_deg
+    );
+    println!(
+        "mesh_quality_edge_cv_max={}",
+        report.geometry.cell_edge_length_cv.max
+    );
+    println!(
+        "mesh_quality_angle_deviation_deg_max={}",
+        report.geometry.angle_deviation_deg.max
+    );
+    println!(
+        "mesh_quality_triangle_eta_min={}",
+        report.geometry.triangle_eta.min
+    );
+    println!(
+        "mesh_quality_triangle_nsr_min={}",
+        report.geometry.triangle_nsr.min
     );
     println!(
         "mesh_quality_cell_sides=tri:{} quad:{} pent:{} hex:{} hept:{} other:{}",
@@ -120,8 +154,10 @@ fn quality_thresholds_from_namelist(
     earthmesh_quality::QualityThresholds {
         min_angle_warn_deg: q.min_angle_warn_deg,
         min_angle_fail_deg: q.min_angle_fail_deg,
+        angle_deviation_warn_deg: q.angle_deviation_warn_deg,
         aspect_ratio_warn: q.aspect_ratio_warn,
         aspect_ratio_fail: q.aspect_ratio_fail,
+        cell_edge_cv_warn: q.cell_edge_cv_warn,
         area_cv_warn: q.area_cv_warn,
         max_adjacent_resolution_ratio_warn: q.max_adjacent_resolution_ratio_warn,
         worst_cells_limit: q.worst_cells_limit.max(0) as usize,

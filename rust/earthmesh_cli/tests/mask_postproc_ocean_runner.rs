@@ -65,9 +65,11 @@ fn ocean_runner_reads_inputs_writes_final_gridfile_and_tri_boundaries() {
 
     let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 9, "tri", "oceanmesh", false)
         .expect("ocean plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    earthmesh_cli::write_unstructured_mesh_netcdf_with_refine_levels(
         &plan.source_gridfile,
         &sample_ocean_source_mesh(),
+        Some(&[0, 1, 2, 3, 4, 5, 6, 7]),
+        Some(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]),
     )
     .expect("write source mesh");
     let contain = earthmesh_cli::ContainMesh {
@@ -113,6 +115,12 @@ fn ocean_runner_reads_inputs_writes_final_gridfile_and_tri_boundaries() {
         .expect("read final gridfile");
     assert_eq!(final_mesh.m_to_w[2], [6, 7, 2]);
     assert_eq!(final_mesh.m_to_w[5], [9, 6, 5]);
+    let final_points = earthmesh_cli::read_gridfile_mesh_points(&report.final_gridfile.output)
+        .expect("read final points");
+    assert_eq!(final_points.m_refine_level.len(), final_mesh.m_points.len());
+    assert_eq!(final_points.w_refine_level.len(), final_mesh.w_points.len());
+    assert!(final_points.m_refine_level.contains(&5));
+    assert!(final_points.w_refine_level.contains(&13));
 
     let obc_file = netcdf::open(report.obc.unwrap().output).expect("open obc");
     assert_eq!(read_i32(&obc_file, "bdy_order"), vec![1, 6, 7, 8, 9]);

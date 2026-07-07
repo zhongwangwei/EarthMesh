@@ -5,7 +5,10 @@
 use std::io;
 use std::path::Path;
 
-use crate::{GeometryMetrics, MeshQualityReport, Stat5, TopologyMetrics};
+use crate::{
+    GeometryMetrics, HfieldDiagnostics, LevelCount, MeshQualityReport, RefineLevelQualitySummary,
+    Stat5, TopologyMetrics,
+};
 
 fn esc(v: &str) -> String {
     let mut out = String::with_capacity(v.len() + 2);
@@ -42,6 +45,105 @@ fn stat_json(s: &Stat5) -> String {
     )
 }
 
+fn refine_level_label(level: Option<u32>) -> String {
+    level
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "unassigned".to_string())
+}
+
+fn refine_level_json(level: Option<u32>) -> String {
+    level
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn refine_group_json(g: &RefineLevelQualitySummary) -> String {
+    format!(
+        "{{\"refine_level\":{},\"cell_count\":{},\"cell_area\":{},\"cell_edge_length_cv\":{},\"angle_deviation_deg\":{},\"triangle_eta\":{},\"triangle_nsr\":{}}}",
+        refine_level_json(g.refine_level),
+        g.cell_count,
+        stat_json(&g.cell_area),
+        stat_json(&g.cell_edge_length_cv),
+        stat_json(&g.angle_deviation_deg),
+        stat_json(&g.triangle_eta),
+        stat_json(&g.triangle_nsr)
+    )
+}
+
+fn opt_f64_json(v: Option<f64>) -> String {
+    v.map(num).unwrap_or_else(|| "null".to_string())
+}
+
+fn opt_u32_json(v: Option<u32>) -> String {
+    v.map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn level_counts_json(counts: &[LevelCount]) -> String {
+    let mut s = String::from("[");
+    for (i, item) in counts.iter().enumerate() {
+        let comma = if i + 1 < counts.len() { "," } else { "" };
+        s.push_str(&format!(
+            "{{\"level\":{},\"count\":{}}}{}",
+            item.level, item.count, comma
+        ));
+    }
+    s.push(']');
+    s
+}
+
+fn hfield_json(h: &HfieldDiagnostics) -> String {
+    format!(
+        "{{\"enabled\":{},\"g\":{},\"max_level\":{},\"base_m\":{},\"cell_count\":{},\
+         \"target_level_distribution\":{},\"actual_refine_level_distribution\":{},\
+         \"missing_target_level_count\":{},\"extra_target_level_count\":{},\
+         \"missing_actual_refine_level_count\":{},\"target_actual_mismatch_count\":{},\
+         \"target_above_actual_count\":{},\"actual_above_target_count\":{},\
+         \"max_target_actual_delta\":{},\"max_adjacent_target_level_jump\":{},\
+         \"target_level_jump_gt_one_count\":{},\"max_adjacent_actual_level_jump\":{},\
+         \"actual_level_jump_gt_one_count\":{}}}",
+        if h.config.enabled { "true" } else { "false" },
+        opt_f64_json(h.config.g),
+        opt_u32_json(h.config.max_level),
+        opt_f64_json(h.config.base_m),
+        h.cell_count,
+        level_counts_json(&h.target_level_distribution),
+        level_counts_json(&h.actual_refine_level_distribution),
+        h.missing_target_level_count,
+        h.extra_target_level_count,
+        h.missing_actual_refine_level_count,
+        h.target_actual_mismatch_count,
+        h.target_above_actual_count,
+        h.actual_above_target_count,
+        h.max_target_actual_delta,
+        h.max_adjacent_target_level_jump,
+        h.target_level_jump_gt_one_count,
+        h.max_adjacent_actual_level_jump,
+        h.actual_level_jump_gt_one_count
+    )
+}
+
+fn level_counts_label(counts: &[LevelCount]) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts
+        .iter()
+        .map(|item| format!("{}: {}", item.level, item.count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn opt_num_label(v: Option<f64>) -> String {
+    v.map(|value| format!("{value}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn opt_u32_label(v: Option<u32>) -> String {
+    v.map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
 /// `quality_summary.json` content.
 pub fn to_summary_json(r: &MeshQualityReport) -> String {
     let g: &GeometryMetrics = &r.geometry;
@@ -65,8 +167,16 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         stat_json(&g.cell_area)
     ));
     s.push_str(&format!(
+        "    \"cell_area_ratio\": {},\n",
+        num(g.cell_area_ratio)
+    ));
+    s.push_str(&format!(
         "    \"edge_length_km\": {},\n",
         stat_json(&g.edge_length_km)
+    ));
+    s.push_str(&format!(
+        "    \"cell_edge_length_cv\": {},\n",
+        stat_json(&g.cell_edge_length_cv)
     ));
     s.push_str(&format!(
         "    \"min_angle_deg\": {},\n",
@@ -75,6 +185,18 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "    \"max_angle_deg\": {},\n",
         num(g.max_angle_deg)
+    ));
+    s.push_str(&format!(
+        "    \"angle_deviation_deg\": {},\n",
+        stat_json(&g.angle_deviation_deg)
+    ));
+    s.push_str(&format!(
+        "    \"triangle_eta\": {},\n",
+        stat_json(&g.triangle_eta)
+    ));
+    s.push_str(&format!(
+        "    \"triangle_nsr\": {},\n",
+        stat_json(&g.triangle_nsr)
     ));
     s.push_str(&format!(
         "    \"aspect_ratio\": {},\n",
@@ -121,6 +243,18 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "    \"dangling_edge_count\": {},\n",
         t.dangling_edge_count
+    ));
+    s.push_str(&format!(
+        "    \"boundary_edge_count\": {},\n",
+        t.boundary_edge_count
+    ));
+    s.push_str(&format!(
+        "    \"misoriented_shared_edge_count\": {},\n",
+        t.misoriented_shared_edge_count
+    ));
+    s.push_str(&format!(
+        "    \"neighbor_degree_mismatch_count\": {},\n",
+        t.neighbor_degree_mismatch_count
     ));
     s.push_str(&format!(
         "    \"orphan_cell_count\": {},\n",
@@ -171,6 +305,21 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         t.transition_continuity_warning_count
     ));
     s.push_str("  },\n");
+    s.push_str("  \"refine_level_groups\": [\n");
+    for (i, group) in r.refine_level_groups.iter().enumerate() {
+        let comma = if i + 1 < r.refine_level_groups.len() {
+            ","
+        } else {
+            ""
+        };
+        s.push_str(&format!("    {}{}\n", refine_group_json(group), comma));
+    }
+    s.push_str("  ],\n");
+    if let Some(hfield) = &r.hfield {
+        s.push_str(&format!("  \"hfield\": {},\n", hfield_json(hfield)));
+    } else {
+        s.push_str("  \"hfield\": null,\n");
+    }
     s.push_str("  \"gates\": [\n");
     for (i, gate) in r.gates.iter().enumerate() {
         let comma = if i + 1 < r.gates.len() { "," } else { "" };
@@ -225,10 +374,23 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
         ("geometry", "edge_count", g.edge_count as f64),
         ("geometry", "cell_area_mean", g.cell_area.mean),
         ("geometry", "cell_area_cv", g.cell_area.cv),
+        ("geometry", "cell_area_ratio", g.cell_area_ratio),
         ("geometry", "edge_length_km_min", g.edge_length_km.min),
         ("geometry", "edge_length_km_mean", g.edge_length_km.mean),
+        (
+            "geometry",
+            "cell_edge_length_cv_max",
+            g.cell_edge_length_cv.max,
+        ),
         ("geometry", "min_angle_deg", g.min_angle_deg),
         ("geometry", "max_angle_deg", g.max_angle_deg),
+        (
+            "geometry",
+            "angle_deviation_deg_max",
+            g.angle_deviation_deg.max,
+        ),
+        ("geometry", "triangle_eta_min", g.triangle_eta.min),
+        ("geometry", "triangle_nsr_min", g.triangle_nsr.min),
         ("geometry", "aspect_ratio_max", g.aspect_ratio.max),
         ("geometry", "compactness_min", g.compactness.min),
         (
@@ -265,6 +427,21 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             "topology",
             "dangling_edge_count",
             t.dangling_edge_count as f64,
+        ),
+        (
+            "topology",
+            "boundary_edge_count",
+            t.boundary_edge_count as f64,
+        ),
+        (
+            "topology",
+            "misoriented_shared_edge_count",
+            t.misoriented_shared_edge_count as f64,
+        ),
+        (
+            "topology",
+            "neighbor_degree_mismatch_count",
+            t.neighbor_degree_mismatch_count as f64,
         ),
         ("topology", "orphan_cell_count", t.orphan_cell_count as f64),
         (
@@ -334,6 +511,92 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             gate.level.as_str()
         ));
     }
+    for group in &r.refine_level_groups {
+        let level = refine_level_label(group.refine_level);
+        for (metric, value) in [
+            ("cell_count", group.cell_count as f64),
+            ("cell_area_cv", group.cell_area.cv),
+            ("cell_edge_length_cv_max", group.cell_edge_length_cv.max),
+            ("angle_deviation_deg_max", group.angle_deviation_deg.max),
+            ("triangle_eta_min", group.triangle_eta.min),
+            ("triangle_nsr_min", group.triangle_nsr.min),
+        ] {
+            s.push_str(&format!("refine_level,{level}:{metric},{},\n", num(value)));
+        }
+    }
+    if let Some(hfield) = &r.hfield {
+        s.push_str(&format!(
+            "hfield,enabled,{},\n",
+            if hfield.config.enabled { 1 } else { 0 }
+        ));
+        s.push_str(&format!("hfield,g,{},\n", opt_f64_json(hfield.config.g)));
+        s.push_str(&format!(
+            "hfield,max_level,{},\n",
+            opt_u32_json(hfield.config.max_level)
+        ));
+        s.push_str(&format!(
+            "hfield,base_m,{},\n",
+            opt_f64_json(hfield.config.base_m)
+        ));
+        s.push_str(&format!("hfield,cell_count,{},\n", hfield.cell_count));
+        for item in &hfield.target_level_distribution {
+            s.push_str(&format!(
+                "hfield,target_level_{}_count,{},\n",
+                item.level, item.count
+            ));
+        }
+        for item in &hfield.actual_refine_level_distribution {
+            s.push_str(&format!(
+                "hfield,actual_refine_level_{}_count,{},\n",
+                item.level, item.count
+            ));
+        }
+        for (metric, value) in [
+            (
+                "missing_target_level_count",
+                hfield.missing_target_level_count,
+            ),
+            ("extra_target_level_count", hfield.extra_target_level_count),
+            (
+                "missing_actual_refine_level_count",
+                hfield.missing_actual_refine_level_count,
+            ),
+            (
+                "target_actual_mismatch_count",
+                hfield.target_actual_mismatch_count,
+            ),
+            (
+                "target_above_actual_count",
+                hfield.target_above_actual_count,
+            ),
+            (
+                "actual_above_target_count",
+                hfield.actual_above_target_count,
+            ),
+            (
+                "max_target_actual_delta",
+                hfield.max_target_actual_delta as usize,
+            ),
+            (
+                "max_adjacent_target_level_jump",
+                hfield.max_adjacent_target_level_jump as usize,
+            ),
+            (
+                "target_level_jump_gt_one_count",
+                hfield.target_level_jump_gt_one_count,
+            ),
+            (
+                "max_adjacent_actual_level_jump",
+                hfield.max_adjacent_actual_level_jump as usize,
+            ),
+            (
+                "actual_level_jump_gt_one_count",
+                hfield.actual_level_jump_gt_one_count,
+            ),
+        ] {
+            s.push_str(&format!("hfield,{metric},{value},\n"));
+        }
+    }
     s.push_str(&format!("summary,cell_view,,{}\n", r.cell_view));
     s.push_str(&format!("summary,verdict,,{}\n", r.verdict.as_str()));
     s
@@ -393,32 +656,47 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         g.cell_count, g.vertex_count, g.edge_count
     ));
     s.push_str(&format!(
-        "- cell area (planar deg²): mean {:.4e}, CV {:.3}\n",
-        g.cell_area.mean, g.cell_area.cv
+        "- cell area (planar deg²): mean {:.4e}, CV {:.3}, max/min {:.2}\n",
+        g.cell_area.mean, g.cell_area.cv, g.cell_area_ratio
     ));
     s.push_str(&format!(
-        "- edge length (km): min {:.3}, mean {:.3}\n",
-        g.edge_length_km.min, g.edge_length_km.mean
+        "- edge length (km): min {:.3}, mean {:.3}; max per-cell edge CV {:.3}\n",
+        g.edge_length_km.min, g.edge_length_km.mean, g.cell_edge_length_cv.max
     ));
     s.push_str(&format!(
-        "- min angle: {:.2}° · max angle: {:.2}° · max aspect: {:.2} · min compactness: {:.3}\n",
-        g.min_angle_deg, g.max_angle_deg, g.aspect_ratio.max, g.compactness.min
+        "- min angle: {:.2}° · max angle: {:.2}° · max angle deviation: {:.2}° · max aspect: {:.2} · min compactness: {:.3}\n",
+        g.min_angle_deg,
+        g.max_angle_deg,
+        g.angle_deviation_deg.max,
+        g.aspect_ratio.max,
+        g.compactness.min
     ));
+    if g.triangle_eta.max > 0.0 || g.triangle_nsr.max > 0.0 {
+        s.push_str(&format!(
+            "- triangle quality: eta min {:.3} · NSR min {:.3}\n",
+            g.triangle_eta.min, g.triangle_nsr.min
+        ));
+    }
     s.push_str(&format!(
         "- zero-area: {} · self-intersect: {} · invalid: {}\n\n",
         g.zero_area_cell_count, g.self_intersection_count, g.invalid_polygon_count
     ));
     s.push_str("## Topology\n\n");
     s.push_str(&format!(
-        "- invalid vertex idx: {} · invalid cell idx: {} · duplicate edges: {} · dangling edges: {}\n",
+        "- invalid vertex idx: {} · invalid cell idx: {} · duplicate edges: {} · dangling edges: {} · boundary edges: {}\n",
         t.invalid_vertex_index_count,
         t.invalid_cell_index_count,
         t.duplicate_edge_count,
-        t.dangling_edge_count
+        t.dangling_edge_count,
+        t.boundary_edge_count
     ));
     s.push_str(&format!(
-        "- orphan cells: {} · neighbor-reciprocity fails: {} · abnormal polygons: {}\n",
-        t.orphan_cell_count, t.neighbor_reciprocity_failure_count, t.abnormal_polygon_edge_count
+        "- orphan cells: {} · neighbor-reciprocity fails: {} · neighbor-degree mismatch: {} · misoriented shared edges: {} · abnormal polygons: {}\n",
+        t.orphan_cell_count,
+        t.neighbor_reciprocity_failure_count,
+        t.neighbor_degree_mismatch_count,
+        t.misoriented_shared_edge_count,
+        t.abnormal_polygon_edge_count
     ));
     s.push_str(&format!(
         "- cell sides: triangles {} · quads {} · pentagons {} · hexagons {} · heptagons {} · other {}\n",
@@ -443,6 +721,63 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
             gate.metric,
             num(gate.value),
             gate.level.as_str()
+        ));
+    }
+    if !r.refine_level_groups.is_empty() {
+        s.push_str(
+            "\n## Refine-level groups\n\n| Level | Cells | Area CV | Edge CV max | Angle dev max | Tri eta min | Tri NSR min |\n",
+        );
+        s.push_str("|-------|-------|---------|-------------|---------------|-------------|-------------|\n");
+        for group in &r.refine_level_groups {
+            s.push_str(&format!(
+                "| {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |\n",
+                refine_level_label(group.refine_level),
+                group.cell_count,
+                group.cell_area.cv,
+                group.cell_edge_length_cv.max,
+                group.angle_deviation_deg.max,
+                group.triangle_eta.min,
+                group.triangle_nsr.min
+            ));
+        }
+    }
+    if let Some(hfield) = &r.hfield {
+        s.push_str("\n## H-field diagnostics\n\n");
+        s.push_str(&format!(
+            "- effective config: enabled {} · g {} · max_level {} · base_m {}\n",
+            hfield.config.enabled,
+            opt_num_label(hfield.config.g),
+            opt_u32_label(hfield.config.max_level),
+            opt_num_label(hfield.config.base_m)
+        ));
+        s.push_str(&format!(
+            "- target level distribution: {}\n",
+            level_counts_label(&hfield.target_level_distribution)
+        ));
+        s.push_str(&format!(
+            "- actual refine level distribution: {}\n",
+            level_counts_label(&hfield.actual_refine_level_distribution)
+        ));
+        s.push_str(&format!(
+            "- target/actual mismatch: {} (target>actual {}, actual>target {}, max delta {})\n",
+            hfield.target_actual_mismatch_count,
+            hfield.target_above_actual_count,
+            hfield.actual_above_target_count,
+            hfield.max_target_actual_delta
+        ));
+        s.push_str(&format!(
+            "- missing target: {} · extra target: {} · missing actual refine level: {}\n",
+            hfield.missing_target_level_count,
+            hfield.extra_target_level_count,
+            hfield.missing_actual_refine_level_count
+        ));
+        s.push_str(&format!(
+            "- adjacent target level jump max: {} · >1 count: {}\n",
+            hfield.max_adjacent_target_level_jump, hfield.target_level_jump_gt_one_count
+        ));
+        s.push_str(&format!(
+            "- adjacent actual level jump max: {} · >1 count: {}\n",
+            hfield.max_adjacent_actual_level_jump, hfield.actual_level_jump_gt_one_count
         ));
     }
     if !r.topology_issues.is_empty() {

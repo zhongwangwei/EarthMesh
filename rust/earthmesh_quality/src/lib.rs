@@ -103,9 +103,18 @@ pub struct GeometryMetrics {
     pub vertex_count: usize,
     pub edge_count: usize,
     pub cell_area: Stat5,
+    pub cell_area_ratio: f64,
     pub edge_length_km: Stat5,
+    /// Per-cell edge-length CV; catches skew that a global edge statistic hides.
+    pub cell_edge_length_cv: Stat5,
     pub min_angle_deg: f64,
     pub max_angle_deg: f64,
+    /// Per-cell max absolute deviation from the regular n-gon interior angle.
+    pub angle_deviation_deg: Stat5,
+    /// Triangle-only Field eta quality: 1.0 is equilateral, lower is worse.
+    pub triangle_eta: Stat5,
+    /// Triangle-only normalized shape/radius ratio: 1.0 is equilateral.
+    pub triangle_nsr: Stat5,
     pub aspect_ratio: Stat5,
     pub compactness: Stat5,
     pub zero_area_cell_count: usize,
@@ -123,6 +132,12 @@ pub struct TopologyMetrics {
     pub invalid_cell_index_count: usize,
     pub duplicate_edge_count: usize,
     pub dangling_edge_count: usize,
+    /// Edges with exactly one incident cell; informational for regional meshes.
+    pub boundary_edge_count: usize,
+    /// Shared edges traversed in the same direction by both incident cells.
+    pub misoriented_shared_edge_count: usize,
+    /// Closed cells whose declared neighbors do not match edge-derived neighbors.
+    pub neighbor_degree_mismatch_count: usize,
     pub orphan_cell_count: usize,
     pub neighbor_reciprocity_failure_count: usize,
     pub abnormal_polygon_edge_count: usize,
@@ -146,6 +161,54 @@ pub struct GateResult {
     pub detail: String,
 }
 
+/// Quality summary for cells sharing the same refinement level.
+#[derive(Clone, Debug, Default)]
+pub struct RefineLevelQualitySummary {
+    pub refine_level: Option<u32>,
+    pub cell_count: usize,
+    pub cell_area: Stat5,
+    pub cell_edge_length_cv: Stat5,
+    pub angle_deviation_deg: Stat5,
+    pub triangle_eta: Stat5,
+    pub triangle_nsr: Stat5,
+}
+
+/// Count of cells assigned to one h-field/refinement level.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LevelCount {
+    pub level: u32,
+    pub count: usize,
+}
+
+/// Effective h-field controls recorded with a quality report.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HfieldConfigDiagnostics {
+    pub enabled: bool,
+    pub g: Option<f64>,
+    pub max_level: Option<u32>,
+    pub base_m: Option<f64>,
+}
+
+/// Optional diagnostics for h-field driven refinement.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HfieldDiagnostics {
+    pub config: HfieldConfigDiagnostics,
+    pub cell_count: usize,
+    pub target_level_distribution: Vec<LevelCount>,
+    pub actual_refine_level_distribution: Vec<LevelCount>,
+    pub missing_target_level_count: usize,
+    pub extra_target_level_count: usize,
+    pub missing_actual_refine_level_count: usize,
+    pub target_actual_mismatch_count: usize,
+    pub target_above_actual_count: usize,
+    pub actual_above_target_count: usize,
+    pub max_target_actual_delta: u32,
+    pub max_adjacent_target_level_jump: u32,
+    pub target_level_jump_gt_one_count: usize,
+    pub max_adjacent_actual_level_jump: u32,
+    pub actual_level_jump_gt_one_count: usize,
+}
+
 /// A worst-offending cell for the GeoJSON layer.
 #[derive(Clone, Debug)]
 pub struct WorstCell {
@@ -162,8 +225,10 @@ pub struct WorstCell {
 pub struct QualityThresholds {
     pub min_angle_warn_deg: f64,
     pub min_angle_fail_deg: f64,
+    pub angle_deviation_warn_deg: f64,
     pub aspect_ratio_warn: f64,
     pub aspect_ratio_fail: f64,
+    pub cell_edge_cv_warn: f64,
     pub area_cv_warn: f64,
     pub max_adjacent_resolution_ratio_warn: f64,
     pub worst_cells_limit: usize,
@@ -175,8 +240,10 @@ impl Default for QualityThresholds {
         Self {
             min_angle_warn_deg: 20.0,
             min_angle_fail_deg: 5.0,
+            angle_deviation_warn_deg: 35.0,
             aspect_ratio_warn: 4.0,
             aspect_ratio_fail: 10.0,
+            cell_edge_cv_warn: 0.35,
             area_cv_warn: 1.5,
             max_adjacent_resolution_ratio_warn: 2.0,
             worst_cells_limit: 50,
@@ -194,6 +261,11 @@ pub struct MeshQualityReport {
     pub tool_version: String,
     pub geometry: GeometryMetrics,
     pub topology: TopologyMetrics,
+    /// Per-refinement-level quality rollup; `None` means the input carried no level.
+    pub refine_level_groups: Vec<RefineLevelQualitySummary>,
+    /// Optional h-field target-vs-actual diagnostics, attached by callers that
+    /// have sampled target levels for the measured cell view.
+    pub hfield: Option<HfieldDiagnostics>,
     pub gates: Vec<GateResult>,
     pub worst_cells: Vec<WorstCell>,
     /// Structured topology problems from [`topology::MeshTopologyValidator`].
@@ -294,6 +366,41 @@ fn edge_key(a: usize, b: usize) -> (usize, usize) {
     }
 }
 
+fn triangle_quality(area: f64, lens: &[f64]) -> Option<(f64, f64)> {
+    if lens.len() != 3 || area <= 0.0 || lens.iter().any(|v| *v <= 0.0) {
+        return None;
+    }
+    let (a, b, c) = (lens[0], lens[1], lens[2]);
+    let eta = 4.0 * 3.0_f64.sqrt() * area / lens.iter().map(|v| v * v).sum::<f64>();
+    let inradius = 2.0 * area / (a + b + c);
+    let circumradius = 0.25 * a * b * c / area;
+    (circumradius > 0.0).then_some((eta, 2.0 * inradius / circumradius))
+}
+
+#[derive(Default)]
+struct RefineLevelAccumulator {
+    cell_count: usize,
+    areas: Vec<f64>,
+    edge_cvs: Vec<f64>,
+    angle_deviations: Vec<f64>,
+    triangle_etas: Vec<f64>,
+    triangle_nsrs: Vec<f64>,
+}
+
+impl RefineLevelAccumulator {
+    fn finish(self, refine_level: Option<u32>) -> RefineLevelQualitySummary {
+        RefineLevelQualitySummary {
+            refine_level,
+            cell_count: self.cell_count,
+            cell_area: Stat5::from_slice(&self.areas),
+            cell_edge_length_cv: Stat5::from_slice(&self.edge_cvs),
+            angle_deviation_deg: Stat5::from_slice(&self.angle_deviations),
+            triangle_eta: Stat5::from_slice(&self.triangle_etas),
+            triangle_nsr: Stat5::from_slice(&self.triangle_nsrs),
+        }
+    }
+}
+
 /// Compute the full quality report for `input` under `thresholds`.
 pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> MeshQualityReport {
     let mut geom = GeometryMetrics {
@@ -305,6 +412,10 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
 
     let mut areas = Vec::new();
     let mut edge_lengths = Vec::new();
+    let mut cell_edge_cvs = Vec::new();
+    let mut angle_deviations = Vec::new();
+    let mut triangle_etas = Vec::new();
+    let mut triangle_nsrs = Vec::new();
     let mut aspects = Vec::new();
     let mut compactnesses = Vec::new();
     let mut min_angle = f64::INFINITY;
@@ -312,10 +423,18 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
 
     // edge -> count of incident cells; track degenerate / invalid edges.
     use std::collections::BTreeMap;
+    type EdgeKey = (usize, usize);
+    type DirectedEdgeUse = (usize, usize, usize);
     let mut edge_cells: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+    let mut edge_orientations: BTreeMap<EdgeKey, Vec<DirectedEdgeUse>> = BTreeMap::new();
+    let mut refine_groups: BTreeMap<Option<u32>, RefineLevelAccumulator> = BTreeMap::new();
     let nv = input.vertices.len();
 
     for (ci, cell) in input.cells.iter().enumerate() {
+        refine_groups
+            .entry(cell.refine_level)
+            .or_default()
+            .cell_count += 1;
         let unique_idx: Vec<usize> = {
             let mut seen = Vec::new();
             for &i in &cell.vertices {
@@ -355,7 +474,9 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
                 topo.dangling_edge_count += 1;
                 continue;
             }
-            edge_cells.entry(edge_key(a, b)).or_default().push(ci);
+            let key = edge_key(a, b);
+            edge_cells.entry(key).or_default().push(ci);
+            edge_orientations.entry(key).or_default().push((ci, a, b));
             // great-circle length; skip non-finite endpoints so one bad vertex
             // cannot poison the edge-length mean/std with NaN.
             let (pa, pb) = (input.vertices[a], input.vertices[b]);
@@ -400,28 +521,53 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
                 geom.zero_area_cell_count += 1;
             } else {
                 areas.push(area);
+                let group = refine_groups.entry(cell.refine_level).or_default();
+                group.areas.push(area);
                 // aspect ratio = longest/shortest edge in great-circle km (the ratio is
                 // unit-free and, unlike planar lon/lat lengths, dateline/pole-safe).
                 let mut km_lens = Vec::new();
                 let mut planar_lens = Vec::new();
+                let planar_ring = unwrap_ring_lon(&ring);
                 for k in 0..ring.len() {
                     let p = ring[k];
                     let q = ring[(k + 1) % ring.len()];
                     km_lens.push(haversine_km(p, q));
-                    planar_lens.push(((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt());
+                    let pp = planar_ring[k];
+                    let qq = planar_ring[(k + 1) % planar_ring.len()];
+                    planar_lens.push(((pp.x - qq.x).powi(2) + (pp.y - qq.y).powi(2)).sqrt());
                 }
                 let emin = km_lens.iter().cloned().fold(f64::INFINITY, f64::min);
                 let emax = km_lens.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                 if emin > 0.0 {
                     aspects.push(emax / emin);
                 }
+                let edge_cv = Stat5::from_slice(&km_lens).cv;
+                cell_edge_cvs.push(edge_cv);
+                group.edge_cvs.push(edge_cv);
                 // compactness = 4*pi*A / P^2 (planar area + planar perimeter for
                 // dimensional consistency; report-only, not gated).
                 let perim: f64 = planar_lens.iter().sum();
                 if perim > 0.0 {
                     compactnesses.push(4.0 * std::f64::consts::PI * area / (perim * perim));
                 }
-                for ang in interior_angles_deg(&ring) {
+                if let Some((eta, nsr)) = triangle_quality(polygon_area(&planar_ring), &planar_lens)
+                {
+                    triangle_etas.push(eta);
+                    triangle_nsrs.push(nsr);
+                    group.triangle_etas.push(eta);
+                    group.triangle_nsrs.push(nsr);
+                }
+                let angles = interior_angles_deg(&ring);
+                if !angles.is_empty() {
+                    let ideal = (ring.len() as f64 - 2.0) * 180.0 / ring.len() as f64;
+                    let angle_deviation = angles
+                        .iter()
+                        .map(|ang| (ang - ideal).abs())
+                        .fold(0.0, f64::max);
+                    angle_deviations.push(angle_deviation);
+                    group.angle_deviations.push(angle_deviation);
+                }
+                for ang in angles {
                     min_angle = min_angle.min(ang);
                     max_angle = max_angle.max(ang);
                 }
@@ -431,7 +577,16 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
 
     geom.edge_count = edge_cells.len();
     geom.cell_area = Stat5::from_slice(&areas);
+    geom.cell_area_ratio = if geom.cell_area.min > 0.0 {
+        geom.cell_area.max / geom.cell_area.min
+    } else {
+        0.0
+    };
     geom.edge_length_km = Stat5::from_slice(&edge_lengths);
+    geom.cell_edge_length_cv = Stat5::from_slice(&cell_edge_cvs);
+    geom.angle_deviation_deg = Stat5::from_slice(&angle_deviations);
+    geom.triangle_eta = Stat5::from_slice(&triangle_etas);
+    geom.triangle_nsr = Stat5::from_slice(&triangle_nsrs);
     geom.aspect_ratio = Stat5::from_slice(&aspects);
     geom.compactness = Stat5::from_slice(&compactnesses);
     geom.min_angle_deg = if min_angle.is_finite() {
@@ -447,6 +602,11 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
 
     // non-manifold edges (shared by > 2 cells)
     topo.duplicate_edge_count = edge_cells.values().filter(|c| c.len() > 2).count();
+    topo.boundary_edge_count = edge_cells.values().filter(|c| c.len() == 1).count();
+    topo.misoriented_shared_edge_count = edge_orientations
+        .values()
+        .filter(|occ| occ.len() == 2 && occ[0].1 == occ[1].1 && occ[0].2 == occ[1].2)
+        .count();
 
     // orphan cells: share no edge with any other cell
     for (ci, cell) in input.cells.iter().enumerate() {
@@ -467,6 +627,57 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
         }
         if !shares && m >= 3 {
             topo.orphan_cell_count += 1;
+        }
+    }
+
+    // Closed-cell adjacency sanity: if every valid edge has exactly one opposite
+    // cell, the declared neighbor set should match the edge-derived one. Boundary
+    // cells are intentionally skipped because regional/filter meshes are valid.
+    for (ci, cell) in input.cells.iter().enumerate() {
+        let m = cell.vertices.len();
+        if m < 3 {
+            continue;
+        }
+        let mut derived_neighbors = Vec::new();
+        let mut closed = true;
+        for k in 0..m {
+            let a = cell.vertices[k];
+            let b = cell.vertices[(k + 1) % m];
+            if a >= nv || b >= nv || a == b {
+                closed = false;
+                break;
+            }
+            let Some(cells) = edge_cells.get(&edge_key(a, b)) else {
+                closed = false;
+                break;
+            };
+            if cells.len() != 2 {
+                closed = false;
+                break;
+            }
+            if let Some(&other) = cells.iter().find(|&&other| other != ci) {
+                if !derived_neighbors.contains(&other) {
+                    derived_neighbors.push(other);
+                }
+            } else {
+                closed = false;
+                break;
+            }
+        }
+        if !closed {
+            continue;
+        }
+        derived_neighbors.sort_unstable();
+        let mut declared_neighbors: Vec<usize> = cell
+            .neighbors
+            .iter()
+            .copied()
+            .filter(|&nb| nb < input.cells.len() && nb != ci)
+            .collect();
+        declared_neighbors.sort_unstable();
+        declared_neighbors.dedup();
+        if declared_neighbors != derived_neighbors {
+            topo.neighbor_degree_mismatch_count += 1;
         }
     }
 
@@ -507,6 +718,10 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
     }
 
     let (gates, worst_cells, gate_verdict) = evaluate(input, &geom, &topo, thresholds);
+    let refine_level_groups = refine_groups
+        .into_iter()
+        .map(|(level, acc)| acc.finish(level))
+        .collect();
 
     // Run the detailed topology validator and fold its worst severity into the
     // verdict (catastrophic connectivity = Fail; transition degradation = Warn).
@@ -524,11 +739,170 @@ pub fn compute(input: &QualityMeshInput, thresholds: &QualityThresholds) -> Mesh
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
         geometry: geom,
         topology: topo,
+        refine_level_groups,
+        hfield: None,
         gates,
         worst_cells,
         topology_issues,
         verdict,
     }
+}
+
+fn level_counts_from_map(map: std::collections::BTreeMap<u32, usize>) -> Vec<LevelCount> {
+    map.into_iter()
+        .map(|(level, count)| LevelCount { level, count })
+        .collect()
+}
+
+/// Compute h-field diagnostics from per-cell target levels plus actual
+/// refinement levels carried by [`QualityCell::refine_level`].
+///
+/// `target_levels[i]` is interpreted as the h-field target for `input.cells[i]`.
+/// Extra targets are reported and ignored; missing target/actual values are
+/// counted separately and included in the mismatch total when only one side is
+/// present.
+pub fn compute_hfield_diagnostics(
+    input: &QualityMeshInput,
+    target_levels: &[u32],
+    config: HfieldConfigDiagnostics,
+) -> HfieldDiagnostics {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let cell_count = input.cells.len();
+    let mut target_hist = BTreeMap::<u32, usize>::new();
+    let mut actual_hist = BTreeMap::<u32, usize>::new();
+
+    for &level in target_levels.iter().take(cell_count) {
+        *target_hist.entry(level).or_default() += 1;
+    }
+    for cell in &input.cells {
+        if let Some(level) = cell.refine_level {
+            *actual_hist.entry(level).or_default() += 1;
+        }
+    }
+
+    let missing_target_level_count = cell_count.saturating_sub(target_levels.len());
+    let extra_target_level_count = target_levels.len().saturating_sub(cell_count);
+    let missing_actual_refine_level_count = input
+        .cells
+        .iter()
+        .filter(|cell| cell.refine_level.is_none())
+        .count();
+
+    let mut target_actual_mismatch_count = 0usize;
+    let mut target_above_actual_count = 0usize;
+    let mut actual_above_target_count = 0usize;
+    let mut max_target_actual_delta = 0u32;
+
+    for (ci, cell) in input.cells.iter().enumerate() {
+        match (target_levels.get(ci).copied(), cell.refine_level) {
+            (Some(target), Some(actual)) => {
+                if target != actual {
+                    target_actual_mismatch_count += 1;
+                    if target > actual {
+                        target_above_actual_count += 1;
+                    } else {
+                        actual_above_target_count += 1;
+                    }
+                    max_target_actual_delta = max_target_actual_delta.max(target.abs_diff(actual));
+                }
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                target_actual_mismatch_count += 1;
+            }
+            (None, None) => {}
+        }
+    }
+
+    let mut pairs = BTreeSet::<(usize, usize)>::new();
+    for (ci, cell) in input.cells.iter().enumerate() {
+        for &nb in &cell.neighbors {
+            if nb < cell_count && nb != ci {
+                pairs.insert((ci.min(nb), ci.max(nb)));
+            }
+        }
+    }
+
+    let mut max_adjacent_target_level_jump = 0u32;
+    let mut target_level_jump_gt_one_count = 0usize;
+    let mut max_adjacent_actual_level_jump = 0u32;
+    let mut actual_level_jump_gt_one_count = 0usize;
+    for (a, b) in pairs {
+        if let (Some(la), Some(lb)) = (target_levels.get(a), target_levels.get(b)) {
+            let diff = la.abs_diff(*lb);
+            max_adjacent_target_level_jump = max_adjacent_target_level_jump.max(diff);
+            if diff > 1 {
+                target_level_jump_gt_one_count += 1;
+            }
+        }
+        if let (Some(la), Some(lb)) = (input.cells[a].refine_level, input.cells[b].refine_level) {
+            let diff = la.abs_diff(lb);
+            max_adjacent_actual_level_jump = max_adjacent_actual_level_jump.max(diff);
+            if diff > 1 {
+                actual_level_jump_gt_one_count += 1;
+            }
+        }
+    }
+
+    HfieldDiagnostics {
+        config,
+        cell_count,
+        target_level_distribution: level_counts_from_map(target_hist),
+        actual_refine_level_distribution: level_counts_from_map(actual_hist),
+        missing_target_level_count,
+        extra_target_level_count,
+        missing_actual_refine_level_count,
+        target_actual_mismatch_count,
+        target_above_actual_count,
+        actual_above_target_count,
+        max_target_actual_delta,
+        max_adjacent_target_level_jump,
+        target_level_jump_gt_one_count,
+        max_adjacent_actual_level_jump,
+        actual_level_jump_gt_one_count,
+    }
+}
+
+/// Attach h-field diagnostics to a report and add non-failing warning gates for
+/// mismatches or level jumps. The base geometry/topology verdict is preserved
+/// unless one of these h-field diagnostics raises the report to `Warn`.
+pub fn attach_hfield_diagnostics(
+    report: &mut MeshQualityReport,
+    input: &QualityMeshInput,
+    target_levels: &[u32],
+    config: HfieldConfigDiagnostics,
+) {
+    let diagnostics = compute_hfield_diagnostics(input, target_levels, config);
+    let mut add_gate = |metric: &str, value: usize, detail: &str| {
+        let level = if value > 0 {
+            QualityLevel::Warn
+        } else {
+            QualityLevel::Pass
+        };
+        report.gates.push(GateResult {
+            metric: metric.to_string(),
+            value: value as f64,
+            level,
+            detail: detail.to_string(),
+        });
+        report.verdict = report.verdict.worse(level);
+    };
+    add_gate(
+        "hfield_target_actual_mismatch_count",
+        diagnostics.target_actual_mismatch_count,
+        "h-field target level differs from actual refinement level",
+    );
+    add_gate(
+        "hfield_target_level_jump_gt_one_count",
+        diagnostics.target_level_jump_gt_one_count,
+        "adjacent h-field target level jump > 1",
+    );
+    add_gate(
+        "hfield_actual_level_jump_gt_one_count",
+        diagnostics.actual_level_jump_gt_one_count,
+        "adjacent actual refinement level jump > 1",
+    );
+    report.hfield = Some(diagnostics);
 }
 
 fn evaluate(
@@ -556,6 +930,14 @@ fn evaluate(
         ("invalid_cell_index_count", topo.invalid_cell_index_count),
         ("duplicate_edge_count", topo.duplicate_edge_count),
         ("dangling_edge_count", topo.dangling_edge_count),
+        (
+            "misoriented_shared_edge_count",
+            topo.misoriented_shared_edge_count,
+        ),
+        (
+            "neighbor_degree_mismatch_count",
+            topo.neighbor_degree_mismatch_count,
+        ),
         ("orphan_cell_count", topo.orphan_cell_count),
         (
             "neighbor_reciprocity_failure_count",
@@ -618,6 +1000,30 @@ fn evaluate(
         "max cell aspect ratio",
     );
 
+    let edge_cv_level = if geom.cell_edge_length_cv.max > th.cell_edge_cv_warn {
+        QualityLevel::Warn
+    } else {
+        QualityLevel::Pass
+    };
+    push(
+        "cell_edge_length_cv_max",
+        geom.cell_edge_length_cv.max,
+        edge_cv_level,
+        "max per-cell edge-length coefficient of variation",
+    );
+
+    let angle_dev_level = if geom.angle_deviation_deg.max > th.angle_deviation_warn_deg {
+        QualityLevel::Warn
+    } else {
+        QualityLevel::Pass
+    };
+    push(
+        "angle_deviation_deg_max",
+        geom.angle_deviation_deg.max,
+        angle_dev_level,
+        "max deviation from regular n-gon angle",
+    );
+
     let cv_level = if geom.cell_area.cv >= th.area_cv_warn {
         QualityLevel::Warn
     } else {
@@ -628,6 +1034,12 @@ fn evaluate(
         geom.cell_area.cv,
         cv_level,
         "cell area coefficient of variation",
+    );
+    push(
+        "cell_area_ratio",
+        geom.cell_area_ratio,
+        QualityLevel::Pass,
+        "max/min positive cell area",
     );
 
     let res_level = if topo.max_adjacent_resolution_ratio > th.max_adjacent_resolution_ratio_warn {

@@ -261,9 +261,14 @@ pub(crate) async fn run_project(
             let target_spacing_km = nxp_to_km(target_nxp);
             let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
             let base_spacing_km = nxp_to_km(base_nxp);
-            let (domain_prefix, refine_prefix) =
-                write_shapefile_close_masks(path, &run_dir, refine_level, base_nxp)
-                    .map_err(|e| format!("convert watershed shp to close mask: {e}"))?;
+            let (domain_prefix, refine_prefix) = write_shapefile_close_masks_with_parent_masks(
+                path,
+                &run_dir,
+                refine_level,
+                base_nxp,
+                !hfield_enabled(&lowered),
+            )
+            .map_err(|e| format!("convert watershed shp to close mask: {e}"))?;
             enable_regional_method_c_fast_path(
                 &mut lowered,
                 "close",
@@ -319,8 +324,15 @@ pub(crate) async fn run_project(
             let (base_nxp, refine_level) = regional_method_c_project_plan(target_nxp, &cfg);
             let base_spacing_km = nxp_to_km(base_nxp);
             if let Some((domain_prefix, refine_prefix)) =
-                write_close_domain_masks(path, *format, &run_dir, refine_level, base_nxp)
-                    .map_err(|e| format!("prepare close domain mask: {e}"))?
+                write_close_domain_masks_with_parent_masks(
+                    path,
+                    *format,
+                    &run_dir,
+                    refine_level,
+                    base_nxp,
+                    !hfield_enabled(&lowered),
+                )
+                .map_err(|e| format!("prepare close domain mask: {e}"))?
             {
                 enable_regional_method_c_fast_path(
                     &mut lowered,
@@ -553,11 +565,26 @@ pub(crate) async fn run_project(
     })
 }
 
+fn hfield_enabled(lowered: &LoweredProject) -> bool {
+    matches!(&lowered.hfield, Some(hfield) if hfield.enabled)
+}
+
+#[cfg(test)]
 pub(crate) fn write_shapefile_close_masks(
     shp: impl AsRef<Path>,
     run_dir: impl AsRef<Path>,
     refine_degree: usize,
     base_nxp: i32,
+) -> std::io::Result<(PathBuf, PathBuf)> {
+    write_shapefile_close_masks_with_parent_masks(shp, run_dir, refine_degree, base_nxp, true)
+}
+
+pub(crate) fn write_shapefile_close_masks_with_parent_masks(
+    shp: impl AsRef<Path>,
+    run_dir: impl AsRef<Path>,
+    refine_degree: usize,
+    base_nxp: i32,
+    include_parent_masks: bool,
 ) -> std::io::Result<(PathBuf, PathBuf)> {
     let rings = read_shapefile_polygon_rings(shp.as_ref())?;
     write_close_mask_family(
@@ -567,6 +594,7 @@ pub(crate) fn write_shapefile_close_masks(
         "refine_shp",
         refine_degree,
         base_nxp,
+        include_parent_masks,
     )
 }
 
@@ -594,12 +622,24 @@ pub(crate) fn write_close_domain_only_masks(
     write_close_domain_mask(&rings, run_dir, "domain_close").map(Some)
 }
 
+#[cfg(test)]
 pub(crate) fn write_close_domain_masks(
     path: &str,
     format: CloseMaskFormat,
     run_dir: &Path,
     refine_degree: usize,
     base_nxp: i32,
+) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
+    write_close_domain_masks_with_parent_masks(path, format, run_dir, refine_degree, base_nxp, true)
+}
+
+pub(crate) fn write_close_domain_masks_with_parent_masks(
+    path: &str,
+    format: CloseMaskFormat,
+    run_dir: &Path,
+    refine_degree: usize,
+    base_nxp: i32,
+    include_parent_masks: bool,
 ) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
     let resolved = existing_file_path(path, run_dir).unwrap_or_else(|| PathBuf::from(path));
     let rings = match format {
@@ -615,6 +655,7 @@ pub(crate) fn write_close_domain_masks(
         "refine_close",
         refine_degree,
         base_nxp,
+        include_parent_masks,
     )
     .map(Some)
 }
@@ -642,6 +683,7 @@ fn write_close_mask_family(
     refine_stem: &str,
     refine_degree: usize,
     base_nxp: i32,
+    include_parent_masks: bool,
 ) -> std::io::Result<(PathBuf, PathBuf)> {
     let domain_prefix = run_dir.as_ref().join(domain_stem);
     let refine_prefix = run_dir.as_ref().join(refine_stem);
@@ -652,7 +694,7 @@ fn write_close_mask_family(
             .join(format!("{domain_stem}_{:03}.nml", index + 1));
         write_close_mask_nml(&path, &ring, refine_degree)?;
     }
-    if refine_degree > 1 {
+    if include_parent_masks && refine_degree > 1 {
         for level in 1..refine_degree {
             let bbox = expanded_parent_bbox_ring(rings, level, refine_degree, base_nxp);
             let path = run_dir

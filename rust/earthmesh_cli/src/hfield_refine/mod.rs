@@ -15,7 +15,7 @@ use std::io;
 use earthmesh_hfield::{HField, HRegion};
 use earthmesh_mesh::OlamRefinementRegion;
 
-use crate::olam_native_parser::olam_namelist_assignments;
+use crate::olam_native_parser::{olam_namelist_assignments, olam_namelist_has_section};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HfieldRefineOptions {
@@ -71,7 +71,7 @@ fn parse_hfield_bool(field: &str, value: &str) -> io::Result<bool> {
 /// Read the `&hfield` group. Absent group or `hfield_on = .false.` yields
 /// `Ok(None)` (feature off).
 pub fn read_hfield_refine_options(contents: &str) -> io::Result<Option<HfieldRefineOptions>> {
-    if !contents.to_ascii_lowercase().contains("&hfield") {
+    if !olam_namelist_has_section(contents, "hfield") {
         return Ok(None);
     }
     let mut enabled = true;

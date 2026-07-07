@@ -37,6 +37,8 @@ pub enum TopologyIssueType {
     CellVertexIncidence,
     DuplicateEdge,
     DanglingEdge,
+    MisorientedSharedEdge,
+    NeighborDegreeMismatch,
     OrphanCell,
     NonreciprocalNeighbor,
     AbnormalPolygonEdgeCount,
@@ -52,6 +54,8 @@ impl TopologyIssueType {
             TopologyIssueType::CellVertexIncidence => "cell_vertex_incidence",
             TopologyIssueType::DuplicateEdge => "duplicate_edge",
             TopologyIssueType::DanglingEdge => "dangling_edge",
+            TopologyIssueType::MisorientedSharedEdge => "misoriented_shared_edge",
+            TopologyIssueType::NeighborDegreeMismatch => "neighbor_degree_mismatch",
             TopologyIssueType::OrphanCell => "orphan_cell",
             TopologyIssueType::NonreciprocalNeighbor => "nonreciprocal_neighbor",
             TopologyIssueType::AbnormalPolygonEdgeCount => "abnormal_polygon_edge_count",
@@ -232,6 +236,119 @@ impl<'a> MeshTopologyValidator<'a> {
                             cells.len()
                         ),
                         "split / rebuild the non-manifold edge",
+                    ),
+                );
+            }
+        }
+        issues
+    }
+
+    pub fn validate_shared_edge_orientation(&self) -> Vec<TopologyIssue> {
+        type EdgeKey = (usize, usize);
+        type DirectedEdgeUse = (usize, usize, usize);
+        let mut edge_orientations: BTreeMap<EdgeKey, Vec<DirectedEdgeUse>> = BTreeMap::new();
+        for (ci, cell) in self.mesh.cells.iter().enumerate() {
+            let m = cell.vertices.len();
+            for k in 0..m {
+                let a = cell.vertices[k];
+                let b = cell.vertices[(k + 1) % m];
+                if a < self.nv() && b < self.nv() && a != b {
+                    edge_orientations
+                        .entry(edge_key(a, b))
+                        .or_default()
+                        .push((ci, a, b));
+                }
+            }
+        }
+        let mut issues = Vec::new();
+        for (edge, occ) in edge_orientations {
+            if occ.len() == 2 && occ[0].1 == occ[1].1 && occ[0].2 == occ[1].2 {
+                push_capped(
+                    &mut issues,
+                    0,
+                    TopologyIssue::new(
+                        TopologyIssueType::MisorientedSharedEdge,
+                        Some(occ[0].0),
+                        Some(edge),
+                        None,
+                        format!(
+                            "edge {edge:?} has the same direction in cells {} and {}",
+                            occ[0].0, occ[1].0
+                        ),
+                        "rewind one incident cell so shared edges are opposite",
+                    ),
+                );
+            }
+        }
+        issues
+    }
+
+    pub fn validate_closed_cell_neighbors(&self) -> Vec<TopologyIssue> {
+        let mut edge_cells: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+        for (ci, cell) in self.mesh.cells.iter().enumerate() {
+            let m = cell.vertices.len();
+            for k in 0..m {
+                let a = cell.vertices[k];
+                let b = cell.vertices[(k + 1) % m];
+                if a < self.nv() && b < self.nv() && a != b {
+                    edge_cells.entry(edge_key(a, b)).or_default().push(ci);
+                }
+            }
+        }
+
+        let mut issues = Vec::new();
+        for (ci, cell) in self.mesh.cells.iter().enumerate() {
+            let m = cell.vertices.len();
+            if m < 3 {
+                continue;
+            }
+            let mut derived = Vec::new();
+            let mut closed = true;
+            for k in 0..m {
+                let a = cell.vertices[k];
+                let b = cell.vertices[(k + 1) % m];
+                let Some(cells) = edge_cells.get(&edge_key(a, b)) else {
+                    closed = false;
+                    break;
+                };
+                if cells.len() != 2 {
+                    closed = false;
+                    break;
+                }
+                if let Some(&other) = cells.iter().find(|&&other| other != ci) {
+                    if !derived.contains(&other) {
+                        derived.push(other);
+                    }
+                } else {
+                    closed = false;
+                    break;
+                }
+            }
+            if !closed {
+                continue;
+            }
+            derived.sort_unstable();
+            let mut declared: Vec<usize> = cell
+                .neighbors
+                .iter()
+                .copied()
+                .filter(|&nb| nb < self.nc() && nb != ci)
+                .collect();
+            declared.sort_unstable();
+            declared.dedup();
+            if declared != derived {
+                push_capped(
+                    &mut issues,
+                    0,
+                    TopologyIssue::new(
+                        TopologyIssueType::NeighborDegreeMismatch,
+                        Some(ci),
+                        None,
+                        None,
+                        format!(
+                            "cell {ci} declares neighbors {declared:?} but edge topology gives {derived:?}"
+                        ),
+                        "derive neighbors from shared edges or fix the stale neighbor list",
                     ),
                 );
             }
@@ -430,6 +547,8 @@ impl<'a> MeshTopologyValidator<'a> {
         all.extend(self.validate_indices());
         all.extend(self.validate_dangling_edges());
         all.extend(self.validate_duplicate_edges());
+        all.extend(self.validate_shared_edge_orientation());
+        all.extend(self.validate_closed_cell_neighbors());
         all.extend(self.validate_neighbors());
         all.extend(self.validate_cell_vertex_incidence());
         all.extend(self.validate_polygon_edge_counts());

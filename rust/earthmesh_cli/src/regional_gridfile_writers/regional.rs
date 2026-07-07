@@ -1,6 +1,7 @@
 use std::io;
 use std::path::Path;
 
+use super::levels::{final_refine_levels_for_mask_postproc, refine_levels_from_gridfile};
 use crate::*;
 
 /// Carve a global gridfile down to `region` and write the regional gridfile, in
@@ -15,6 +16,25 @@ pub fn write_regional_gridfile(
     region: &GridRegion,
     mode_grid: &str,
 ) -> io::Result<usize> {
+    write_regional_gridfile_with_refine_levels(
+        global_gridfile,
+        regional_gridfile,
+        region,
+        mode_grid,
+        None,
+        None,
+    )
+}
+
+pub fn write_regional_gridfile_with_refine_levels(
+    global_gridfile: impl AsRef<Path>,
+    regional_gridfile: impl AsRef<Path>,
+    region: &GridRegion,
+    mode_grid: &str,
+    m_refine_level: Option<&[i32]>,
+    w_refine_level: Option<&[i32]>,
+) -> io::Result<usize> {
+    let global_gridfile = global_gridfile.as_ref();
     let mesh = read_unstructured_mesh_netcdf(global_gridfile)?;
     let raw_layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
     let layout = ensure_leading_mask_postproc_placeholder(raw_layout);
@@ -34,7 +54,31 @@ pub fn write_regional_gridfile(
     }
     let report =
         finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
-    write_unstructured_mesh_netcdf(regional_gridfile, &report.mesh)?;
+    let source_levels = if m_refine_level.is_none() || w_refine_level.is_none() {
+        Some(refine_levels_from_gridfile(global_gridfile)?)
+    } else {
+        None
+    };
+    let source_m_levels = m_refine_level
+        .or_else(|| source_levels.as_ref().map(|levels| levels.m.as_slice()))
+        .unwrap_or(&[]);
+    let source_w_levels = w_refine_level
+        .or_else(|| source_levels.as_ref().map(|levels| levels.w.as_slice()))
+        .unwrap_or(&[]);
+    let final_levels = final_refine_levels_for_mask_postproc(
+        mode_grid,
+        &report,
+        &is_in_domain,
+        layout.ustr_points,
+        source_m_levels,
+        source_w_levels,
+    )?;
+    write_unstructured_mesh_netcdf_with_refine_levels(
+        regional_gridfile,
+        &report.mesh,
+        final_levels.m.as_deref(),
+        final_levels.w.as_deref(),
+    )?;
     Ok(kept)
 }
 

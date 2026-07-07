@@ -178,8 +178,10 @@ const SAMPLE_QUALITY: &str = "\
 &quality
   NL%min_angle_warn_deg = 25
   NL%min_angle_fail_deg = 5
+  NL%angle_deviation_warn_deg = 30
   NL%aspect_ratio_warn = 3.5
   NL%aspect_ratio_fail = 10
+  NL%cell_edge_cv_warn = 0.3
   NL%area_cv_warn = 1.2
   NL%max_adjacent_resolution_ratio_warn = 1.8
   NL%worst_cells_limit = 100
@@ -196,6 +198,8 @@ fn quality_namelist_round_trips_through_writer() {
     assert_eq!(original, reparsed, "parse → write → parse must be identity");
     assert_eq!(original.on_violation, "block");
     assert_eq!(original.min_angle_warn_deg, 25.0);
+    assert_eq!(original.angle_deviation_warn_deg, 30.0);
+    assert_eq!(original.cell_edge_cv_warn, 0.3);
     assert_eq!(original.worst_cells_limit, 100);
 }
 
@@ -207,7 +211,9 @@ fn quality_namelist_absent_block_yields_defaults() {
     assert_eq!(parsed, QualityNamelist::default());
     assert_eq!(parsed.min_angle_warn_deg, 20.0);
     assert_eq!(parsed.min_angle_fail_deg, 5.0);
+    assert_eq!(parsed.angle_deviation_warn_deg, 35.0);
     assert_eq!(parsed.aspect_ratio_warn, 4.0);
+    assert_eq!(parsed.cell_edge_cv_warn, 0.35);
     assert_eq!(parsed.worst_cells_limit, 50);
     assert_eq!(parsed.on_violation, "warn");
 }
