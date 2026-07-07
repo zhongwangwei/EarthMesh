@@ -52,6 +52,27 @@ fn write_mask_postproc_final_gridfile_uses_plan_result_path_and_legacy_schema() 
         vertex_neighbor_counts: vec![0, 0, 1, 0, 2, 2],
     };
     let is_in_domain = vec![0, 0, 1, -1];
+    let source_mesh = earthmesh_cli::UnstructuredMesh {
+        m_points: layout.center_points.clone(),
+        w_points: layout.vertex_points.clone(),
+        m_to_w: layout
+            .center_neighbors
+            .iter()
+            .map(|row| [row[0] as i32, row[1] as i32, row[2] as i32])
+            .collect(),
+        w_to_m: layout
+            .vertex_neighbors
+            .iter()
+            .map(|row| row.iter().map(|&id| id as i32).collect())
+            .collect(),
+        n_w_to_m: layout
+            .vertex_neighbor_counts
+            .iter()
+            .map(|&count| count as i32)
+            .collect(),
+    };
+    earthmesh_cli::write_unstructured_mesh_netcdf(&plan.source_gridfile, &source_mesh)
+        .expect("write source gridfile");
 
     let report = earthmesh_cli::write_mask_postproc_final_gridfile(&plan, &layout, &is_in_domain)
         .expect("write final mask_postproc gridfile");
