@@ -508,6 +508,9 @@ fn olam_w_refine_levels_zero_based(
 }
 
 fn olam_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Result<i32> {
+    if index == 1 && level <= 0 {
+        return Ok(0);
+    }
     if level <= 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -525,12 +528,13 @@ mod tests {
     fn minimal_state(mrlm: i32, mrlw: i32) -> earthmesh_mesh::VoronoiGridState {
         earthmesh_mesh::VoronoiGridState {
             grid: GridMemory {
-                nma: 1,
-                nwa: 1,
+                nma: 2,
+                nwa: 2,
                 ..GridMemory::default()
             },
             tabs: IjTabs {
                 m: vec![
+                    ItabM::default(),
                     ItabM::default(),
                     ItabM {
                         mrlm,
@@ -539,6 +543,7 @@ mod tests {
                 ],
                 v: Vec::new(),
                 w: vec![
+                    ItabW::default(),
                     ItabW::default(),
                     ItabW {
                         mrlw,
