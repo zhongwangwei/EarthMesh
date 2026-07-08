@@ -43,6 +43,7 @@ pub(crate) struct ProjectSummary {
     pub(crate) authors: Vec<String>,
     pub(crate) description: String,
     pub(crate) intent: String,
+    pub(crate) target_kind: String,
     pub(crate) cell: String,
     pub(crate) quality_mode: String,
     pub(crate) model_format: String,

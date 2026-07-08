@@ -856,6 +856,29 @@ fn regional_method_c_fast_path_sets_domain_and_refine_mask() {
 }
 
 #[test]
+fn engine_namelist_omits_datalayers_after_gui_lowering() {
+    let cfg = ProjectConfig::from_yaml(&hydrology_yaml("fast_region_engine_nml")).expect("project");
+    let mut lowered = cfg.try_lower().expect("lower");
+    mesh_runner::enable_regional_method_c_fast_path(
+        &mut lowered,
+        "bbox",
+        Path::new("/tmp/domain_bbox"),
+        Path::new("/tmp/refine_bbox"),
+        30,
+        2,
+    );
+
+    let provenance = lowered.to_namelist();
+    assert!(provenance.contains("&datalayers"));
+    assert!(provenance.contains("threshold:"));
+
+    let engine = mesh_runner::engine_namelist(&lowered);
+    assert!(!engine.contains("&datalayers"));
+    assert!(engine.contains("RL%refine_cal = .FALSE."));
+    assert!(engine.contains("RL%max_iter_cal = 0"));
+}
+
+#[test]
 fn regional_method_c_fast_path_can_use_separate_refine_mask_type() {
     let cfg = ProjectConfig::from_yaml(&hydrology_yaml("fast_region_circle")).expect("project");
     let mut lowered = cfg.try_lower().expect("lower");
@@ -1399,6 +1422,8 @@ fn set_threshold_value_updates_threshold_layer() {
     let yaml = hydrology_yaml("threshold_value");
     let yaml =
         set_threshold_value(yaml, "slope_avg".to_string(), Some(7.5)).expect("set threshold");
+    let yaml =
+        set_threshold_value(yaml, "landcover".to_string(), Some(8.0)).expect("set landcover");
     let cfg = ProjectConfig::from_yaml(&yaml).expect("parse yaml");
     let slope = cfg
         .data_layers
@@ -1406,8 +1431,14 @@ fn set_threshold_value_updates_threshold_layer() {
         .find(|layer| layer.id == "slope_avg")
         .expect("slope layer");
     assert_eq!(slope.threshold_value, Some(7.5));
-    let err = set_threshold_value(yaml, "landcover".to_string(), Some(1.0)).unwrap_err();
-    assert!(err.contains("is not a threshold layer"));
+    let landcover = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "landcover")
+        .expect("landcover layer");
+    assert_eq!(landcover.threshold_value, Some(8.0));
+    let err = set_threshold_value(yaml, "merit".to_string(), Some(1.0)).unwrap_err();
+    assert!(err.contains("is not a refinement layer"));
 }
 
 #[test]

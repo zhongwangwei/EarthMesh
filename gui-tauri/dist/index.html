@@ -1081,14 +1081,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
   // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
 
-  // Refinement runs only if at least one criterion has a data file — otherwise
-  // a uniform mesh (which needs no NetCDF input and always runs).
+  function landcoverCanRefine(summary) {
+    return ["land", "coupled", "earth"].includes(String(summary && summary.target_kind || "").toLowerCase());
+  }
+  // Refinement runs only if a real refinement source has a data file.
   function hasEnabledThresholdLayer(summary) {
-    // Only THRESHOLD criteria drive refinement. The landcover (the land/sea MASK
-    // source) and hydro inputs must NOT flip refinement on — doing so is what sent
-    // a data-less land/ocean run down the refine path and failed.
     return ((summary && summary.layers) || []).some((l) =>
-      l.role_kind === "threshold" && !!l.path && !!l.enabled);
+      (l.role_kind === "threshold" || (l.role_kind === "landcover" && landcoverCanRefine(summary))) && !!l.path && !!l.enabled);
   }
 
   async function composeYaml() {
@@ -1398,7 +1397,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       } catch (e) { logLine("✗ " + e); return; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
       for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
-      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
+      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: true }; });
       (next.layers || []).forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
       logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
       enhanceLayerStep();
@@ -1555,10 +1554,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     catch (e) { logLine("✗ refinement: " + e); return; }
     if (maxPasses == null) maxPasses = sum.max_passes;
     const byStem = {}; cat.forEach((c) => { byStem[c.stem] = c; });
-    const crits = sum.layers.filter((l) => l.role_kind === "threshold");
+    const crits = sum.layers.filter((l) => l.role_kind === "threshold" || (l.role_kind === "landcover" && landcoverCanRefine(sum)));
     const z = zh();
     const criterionRow = (l) => {
-      const c = byStem[l.id] || { label: l.id, unit: "", physical_process: "", help: "", default_value: null, range_min: null, range_max: null };
+      const c = byStem[l.id] || (l.role_kind === "landcover"
+        ? { label: zh() ? "土地利用种类" : "Landcover classes", unit: zh() ? "类" : "classes", physical_process: zh() ? "土地利用异质性" : "landcover heterogeneity", help: "", default_value: 12, range_min: 1, range_max: 32 }
+        : { label: l.id, unit: "", physical_process: "", help: "", default_value: null, range_min: null, range_max: null });
       const hasData = !!l.path;
       const on = hasData && l.enabled;
       const thValue = thresholdEdits[l.id] ?? l.threshold_value ?? c.default_value;
@@ -1914,7 +1915,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
       for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
-      sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
+      sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: true }; });
       sum.layers.forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
       if (sum.domain_shape === "shapefile") {
         domainMode = "watershed";

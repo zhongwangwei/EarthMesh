@@ -241,14 +241,25 @@ fn project_validation_rejects_invalid_data_layers() {
     assert!(err.contains("data layer id 'lc' is duplicated"));
 
     let mut p = sample();
-    p.data_layers[0].threshold_value = Some(1.0);
+    p.data_layers.push(ProjectDataLayer {
+        id: "merit".into(),
+        role: ProjectLayerRole::MeritHydro,
+        path: "./merit".into(),
+        enabled: true,
+        threshold_value: Some(1.0),
+    });
     let err = yaml_err(&p);
-    assert!(err.contains("has a threshold value but is not a threshold layer"));
+    assert!(err.contains("has a threshold value but is not a refinement layer"));
 
     let mut p = sample();
     p.data_layers[1].threshold_value = Some(f64::NAN);
     let err = yaml_err(&p);
     assert!(err.contains("threshold value must be finite"));
+
+    let mut p = sample();
+    p.data_layers[0].threshold_value = Some(0.0);
+    let err = yaml_err(&p);
+    assert!(err.contains("landcover class threshold must be > 0"));
 
     let mut p = sample();
     p.target.kind = MeshDomainKind::Land;
@@ -416,8 +427,10 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.mkgrd.beta, 1.1);
     assert_eq!(lowered.mkgrd.relax, 0.03);
 
-    // landcover → landtype_file; lai → refine switch + refine_cal
+    // landcover → landtype_file + landtype-count refine; lai → refine switch + refine_cal
     assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
+    assert!(lowered.refine.refine_num_landtypes);
+    assert_eq!(lowered.refine.th_num_landtypes, 12);
     assert!(lowered.refine.refine_onelayer_lnd[0] && lowered.refine.refine_onelayer_lnd[1]);
     assert_eq!(lowered.refine.th_onelayer_lnd[0], 1.0);
     assert_eq!(lowered.refine.th_onelayer_lnd[1], 1.0);
@@ -450,6 +463,7 @@ fn lower_maps_to_engine_config() {
 #[test]
 fn threshold_value_override_lowers_to_engine_arrays() {
     let mut p = sample();
+    p.data_layers[0].threshold_value = Some(8.0);
     p.data_layers[1].threshold_value = Some(4.5);
     p.data_layers.push(ProjectDataLayer {
         id: "dem".into(),
@@ -461,6 +475,7 @@ fn threshold_value_override_lowers_to_engine_arrays() {
 
     let lowered = p.lower();
 
+    assert_eq!(lowered.refine.th_num_landtypes, 8);
     assert_eq!(lowered.refine.th_onelayer_lnd[0], 4.5);
     assert_eq!(lowered.refine.th_onelayer_lnd[1], 4.5);
     assert_eq!(lowered.refine.th_onelayer_lnd[4], 123.0);
@@ -653,6 +668,16 @@ fn scaffold_builds_lowerable_project() {
     let back = yaml_round_trip(&p);
     assert_eq!(p, back);
     assert_eq!(p.lower().mkgrd.mesh_type, "landmesh");
+
+    let ocean = ProjectConfig::scaffold(
+        "ocean_test",
+        MeshIntentPreset::CoastalOcean,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(40),
+    );
+    let lowered = ocean.lower();
+    assert!(!lowered.refine.refine_num_landtypes);
+    assert!(!lowered.mkgrd.refine);
 }
 
 #[test]

@@ -2,7 +2,8 @@
 
 use crate::dto::{CriterionInfo, LayerSummary, ProjectSummary};
 use earthmesh_project::{
-    criterion_catalog, CloseMaskFormat, DomainConfig, ProjectConfig, RegionShape, ResolutionSpec,
+    criterion_catalog, CloseMaskFormat, DomainConfig, MeshDomainKind, ProjectConfig, RegionShape,
+    ResolutionSpec,
 };
 
 /// List every registered refinement criterion (self-describing GUI specs).
@@ -102,6 +103,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         authors: cfg.metadata.authors.clone(),
         description: cfg.metadata.description.clone(),
         intent: cfg.target.intent.id().to_string(),
+        target_kind: target_kind_id(cfg.target.kind).to_string(),
         cell,
         quality_mode,
         model_format: cfg.target.model_format.try_engine_str()?.to_string(),
@@ -157,6 +159,16 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         expert_weak_concav_eliminate: cfg.expert.weak_concav_eliminate,
         layers,
     })
+}
+
+fn target_kind_id(kind: MeshDomainKind) -> &'static str {
+    match kind {
+        MeshDomainKind::Land => "land",
+        MeshDomainKind::Ocean => "ocean",
+        MeshDomainKind::Atmosphere => "atmosphere",
+        MeshDomainKind::Coupled => "coupled",
+        MeshDomainKind::Earth => "earth",
+    }
 }
 
 fn close_format_id(format: CloseMaskFormat) -> &'static str {

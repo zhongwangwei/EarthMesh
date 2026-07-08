@@ -122,14 +122,10 @@ impl ProjectConfig {
         // Data layers drive landtype_file + refine switches (core lowering).
         let dl = self.data_layers_namelist();
         dl.lower_into(&mut mkgrd, &mut refine);
-        apply_threshold_values(&mut refine, &self.data_layers);
-        // Refinement actually runs only when a threshold (refine_cal) or
-        // specified-mask (refine_spc) layer supplies data. Landcover/hydro layers
-        // set inputs but DON'T drive refinement - turning `refine` on for them
-        // sends a data-less run down the OLAM specified-refine path, which then
-        // errors ("requires refine_spc/refine_cal/native..."). That is exactly why a
-        // land/ocean mesh with only landcover failed to run. Gate the recipe
-        // toggle on a real refinement source so such a mesh runs uniform instead.
+        apply_threshold_values(&mut refine, self.target.kind, &self.data_layers);
+        // Refinement runs only when a real source supplies data: thresholds,
+        // landcover class-count refinement for land/coupled/earth targets, or a
+        // specified mask. Hydro folders still do not drive mkgrd refinement.
         if self.refinement.specified_circle.is_some() {
             refine.refine_spc = true;
             refine.mask_refine_spc_type = "circle".to_string();
@@ -249,14 +245,34 @@ fn apply_i32_prefix(target: &mut [i32; 10], values: &[i32]) {
     }
 }
 
-fn apply_threshold_values(refine: &mut RefineConfig, layers: &[ProjectDataLayer]) {
+fn apply_threshold_values(
+    refine: &mut RefineConfig,
+    kind: crate::MeshDomainKind,
+    layers: &[ProjectDataLayer],
+) {
     for layer in layers {
-        let ProjectLayerRole::Threshold(field) = layer.role else {
-            continue;
-        };
         if !layer.enabled || layer.path.trim().is_empty() {
             continue;
         }
+        if matches!(layer.role, ProjectLayerRole::LandType)
+            && matches!(
+                kind,
+                crate::MeshDomainKind::Land
+                    | crate::MeshDomainKind::Coupled
+                    | crate::MeshDomainKind::Earth
+            )
+        {
+            refine.refine_num_landtypes = true;
+            refine.refine_cal = true;
+            refine.th_num_landtypes = layer
+                .threshold_value
+                .map(|value| value.round() as i32)
+                .unwrap_or(12);
+            continue;
+        }
+        let ProjectLayerRole::Threshold(field) = layer.role else {
+            continue;
+        };
         let Some(value) = criterion_catalog()
             .iter()
             .find(|criterion| criterion.field == field)

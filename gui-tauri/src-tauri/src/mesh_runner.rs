@@ -406,7 +406,7 @@ pub(crate) async fn run_project(
         }
     }
 
-    let namelist = lowered.to_namelist();
+    let namelist = engine_namelist(&lowered);
     // project.yaml (provenance) + mkgrd.nml (engine input) both live in run_dir.
     let yaml_path = run_dir.join("project.yaml");
     fs::write(&yaml_path, yaml.as_bytes())
@@ -567,6 +567,18 @@ pub(crate) async fn run_project(
 
 fn hfield_enabled(lowered: &LoweredProject) -> bool {
     matches!(&lowered.hfield, Some(hfield) if hfield.enabled)
+}
+
+pub(crate) fn engine_namelist(lowered: &LoweredProject) -> String {
+    let nml = lowered.to_namelist();
+    // GUI already lowered + staged data layers. Keeping this provenance block in
+    // the engine input makes the CLI lower it again, which can re-enable
+    // calculated refinement after Method-C intentionally disabled it.
+    if let Some((engine, _datalayers)) = nml.split_once("\n&datalayers\n") {
+        format!("{engine}\n")
+    } else {
+        nml
+    }
 }
 
 #[cfg(test)]

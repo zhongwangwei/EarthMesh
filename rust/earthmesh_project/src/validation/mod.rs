@@ -211,15 +211,28 @@ impl ProjectDataLayer {
                 self.id
             ));
         }
-        if self.threshold_value.is_some() && !matches!(self.role, ProjectLayerRole::Threshold(_)) {
+        if self.threshold_value.is_some()
+            && !matches!(
+                self.role,
+                ProjectLayerRole::Threshold(_) | ProjectLayerRole::LandType
+            )
+        {
             return Err(format!(
-                "data layer '{}' has a threshold value but is not a threshold layer",
+                "data layer '{}' has a threshold value but is not a refinement layer",
                 self.id
             ));
         }
         if matches!(self.threshold_value, Some(value) if !value.is_finite()) {
             return Err(format!(
                 "data layer '{}' threshold value must be finite",
+                self.id
+            ));
+        }
+        if matches!(self.role, ProjectLayerRole::LandType)
+            && matches!(self.threshold_value, Some(value) if value <= 0.0)
+        {
+            return Err(format!(
+                "data layer '{}' landcover class threshold must be > 0",
                 self.id
             ));
         }

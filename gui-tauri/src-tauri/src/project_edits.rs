@@ -44,8 +44,11 @@ pub(crate) fn set_threshold_value(
         .iter_mut()
         .find(|layer| layer.id == id)
         .ok_or_else(|| format!("no data layer with id '{id}'"))?;
-    if !matches!(layer.role, ProjectLayerRole::Threshold(_)) {
-        return Err(format!("data layer '{id}' is not a threshold layer"));
+    if !matches!(
+        layer.role,
+        ProjectLayerRole::Threshold(_) | ProjectLayerRole::LandType
+    ) {
+        return Err(format!("data layer '{id}' is not a refinement layer"));
     }
     layer.threshold_value = value;
     validated_yaml(cfg)
