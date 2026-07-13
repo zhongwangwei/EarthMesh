@@ -2,10 +2,10 @@ use super::*;
 
 /// Port of `MOD_mask_postproc.F90:IsInDmArea_ustr_Renew_v2`.
 ///
-/// For vertices with exactly two missing neighboring triangles, the legacy code
+/// For vertices with exactly two missing neighboring triangles, the compatibility code
 /// checks opposite slots (`j` and `j+3`) and refills both when both are
 /// currently outside the active domain.
-pub fn renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
+pub fn renew_mask_postproc_opposite_domain_triangles_one_based(
     is_in_domain: &mut [i32],
     vertex_neighbors: &[Vec<usize>],
     vertex_neighbor_counts: &[usize],
@@ -15,7 +15,7 @@ pub fn renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
     if is_in_domain.len() < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "is_in_domain must preserve at least the Fortran placeholder slots",
+            "is_in_domain must preserve at least the Canonical placeholder slots",
         ));
     }
     if vertex_neighbor_counts.len() < vertex_neighbors.len()
@@ -23,7 +23,7 @@ pub fn renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "vertex neighbor table and count arrays must have matching Fortran-indexed lengths",
+            "vertex neighbor table and count arrays must have matching Canonical-indexed lengths",
         ));
     }
 
@@ -56,7 +56,7 @@ pub fn renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "vertex {vertex_id} references centers {left_center_id}/{right_center_id}, outside 0..={ustr_points}"
+                        "vertex {vertex_id} canonicals centers {left_center_id}/{right_center_id}, outside 0..={ustr_points}"
                     ),
                 ));
             }

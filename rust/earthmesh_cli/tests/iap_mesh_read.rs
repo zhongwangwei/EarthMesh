@@ -1,7 +1,7 @@
 use std::fs;
 
 #[test]
-fn iap_mesh_reader_preserves_fortran_placeholder_and_degree_conversion() {
+fn iap_mesh_reader_preserves_canonical_placeholder_and_degree_conversion() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_iap_mesh_read_{}",
         std::process::id()
@@ -11,7 +11,7 @@ fn iap_mesh_reader_preserves_fortran_placeholder_and_degree_conversion() {
     let input = root.join("iap.nc4");
     write_iap_fixture(&input);
 
-    let payload = earthmesh_cli::read_iap_mesh_netcdf(&input).expect("read iap mesh");
+    let payload = earthmesh_cli::mode_file_io::read_iap_mesh_netcdf(&input).expect("read iap mesh");
 
     assert_eq!(payload.w_points.len(), 4);
     assert_eq!(payload.w_points[0].lon, 0.0);
@@ -36,7 +36,7 @@ fn iap_mesh_reader_preserves_fortran_placeholder_and_degree_conversion() {
 }
 
 fn write_iap_fixture(path: &std::path::Path) {
-    let mut file = netcdf::create(path).expect("create fixture");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create fixture");
     file.add_dimension("sjx_points", 2).expect("sjx dim");
     file.add_dimension("lbx_points", 3).expect("lbx dim");
     file.add_dimension("dimb", 3).expect("dimb dim");

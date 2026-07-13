@@ -1,17 +1,20 @@
+use crate::merge_area_judge_source_bounds;
+use crate::read_circle_mask_netcdf;
+use crate::require_len;
+use crate::validate_circle_mask;
+use crate::AreaJudgeAreaSourceReport;
 use std::io;
 use std::path::Path;
 
 use earthmesh_geometry::{is_point_in_circle_km, Point as AreaJudgePoint};
 use earthmesh_mesh::{
-    area_judge_minmax_range_make_fortran_indexed, area_judge_source_find_fortran_indexed,
-    AreaJudgeAxis,
+    area_judge_minmax_range_make_one_based, area_judge_source_find_one_based, AreaJudgeAxis,
 };
 
-use super::bounds::area_judge_circle_scan_bounds_fortran;
-use crate::*;
+use super::bounds::area_judge_circle_scan_bounds_canonical;
 
 /// Build the circle `IsInArea_grid` source mask used by domain/refine/patch paths.
-pub fn build_area_judge_circle_area_source_fortran_indexed(
+pub fn build_area_judge_circle_area_source_one_based(
     inputfile: impl AsRef<Path>,
     lon_vertex: &[f64],
     lat_vertex: &[f64],
@@ -34,8 +37,8 @@ pub fn build_area_judge_circle_area_source_fortran_indexed(
 
     for (&center, &radius_km) in mask.points.iter().zip(mask.radius_km.iter()) {
         let (edgew_temp, edgee_temp, edgen_temp, edges_temp) =
-            area_judge_circle_scan_bounds_fortran(center, radius_km)?;
-        let bounds = area_judge_minmax_range_make_fortran_indexed(
+            area_judge_circle_scan_bounds_canonical(center, radius_km)?;
+        let bounds = area_judge_minmax_range_make_one_based(
             edgew_temp,
             edgee_temp,
             edgen_temp,
@@ -54,7 +57,7 @@ pub fn build_area_judge_circle_area_source_fortran_indexed(
                 ),
             )
         })?;
-        let minlon_source = area_judge_source_find_fortran_indexed(
+        let minlon_source = area_judge_source_find_one_based(
             edgew_temp,
             lon_vertex,
             AreaJudgeAxis::Longitude,
@@ -67,7 +70,7 @@ pub fn build_area_judge_circle_area_source_fortran_indexed(
                 "missing circle min longitude source",
             )
         })?;
-        let maxlon_source = area_judge_source_find_fortran_indexed(
+        let maxlon_source = area_judge_source_find_one_based(
             edgee_temp,
             lon_vertex,
             AreaJudgeAxis::Longitude,
@@ -80,7 +83,7 @@ pub fn build_area_judge_circle_area_source_fortran_indexed(
                 "missing circle max longitude source",
             )
         })?;
-        let maxlat_source = area_judge_source_find_fortran_indexed(
+        let maxlat_source = area_judge_source_find_one_based(
             edgen_temp,
             lat_vertex,
             AreaJudgeAxis::Latitude,
@@ -93,7 +96,7 @@ pub fn build_area_judge_circle_area_source_fortran_indexed(
                 "missing circle max latitude source",
             )
         })?;
-        let minlat_source = area_judge_source_find_fortran_indexed(
+        let minlat_source = area_judge_source_find_one_based(
             edges_temp,
             lat_vertex,
             AreaJudgeAxis::Latitude,

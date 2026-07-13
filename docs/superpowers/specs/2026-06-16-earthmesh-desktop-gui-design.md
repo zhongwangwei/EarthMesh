@@ -5,12 +5,17 @@
 - 范围：本规格详细定义 **MVP（阶段 P0 + P1）**，并附 P2–P5 路线图。
 - 目标平台：Windows / macOS / Linux
 
+> **Rebase notice (2026-07-09):** this proposal predates removal of the
+> generic `refine_loop_*` executor stack. References below to those functions
+> describe the original proposal and must be mapped to the current Method-C direct
+> runner before implementation.
+
 ---
 
 ## 1. 目标与非目标
 
 ### 1.1 目标
-把现有的 EarthMesh（Rust 网格生成引擎，CLI `mkgrd.x` + Fortran 风格 `.nml` 配置）做成一个**可双击安装的跨平台桌面软件**，满足：
+把现有的 EarthMesh（Rust 网格生成引擎，CLI `mkgrd.x` + engine `.nml` 配置）做成一个**可双击安装的跨平台桌面软件**，满足：
 
 1. **全部 Rust**：GUI 与引擎同栈，无 JS/web 前端。
 2. **所有选项可在界面直接输入**：92 个 namelist 选项全部以合适控件暴露，带联动校验。
@@ -37,7 +42,7 @@
 
 ## 2. 背景：现有代码现状（已核实）
 
-- 引擎已从 Fortran 完整迁移到 Rust，分 4 个 crate：
+- 引擎已从 reference implementation 完整迁移到 Rust，分 4 个 crate：
   `earthmesh_cli (lib+bin)` → `earthmesh_mesh` → `earthmesh_geometry` → `earthmesh_core`。
 - CLI `main.rs` 是薄壳：仅解析 argv + `println!` 打印最终报告；**全部引擎逻辑在 `earthmesh_cli` 库 crate**（`pub fn`，返回结构化 `…RunReport`）。
 - 配置：两个 namelist 段 `&mkgrd`(`NL%`) 与 `&mkrefine`(`RL%`)，解析成 `EarthmeshConfig`（`earthmesh_core/src/lib.rs:700`）与 `RefineConfig`（`:1092`）。解析器：`EarthmeshConfig::from_mkgrd_namelist`（`:805`）、`RefineConfig::from_mkrefine_namelist`、校验 `validate_like_read_nl`（`:944` / `:1369`）。
@@ -73,7 +78,7 @@ netcdf (features=["static"])  → netCDF-c 4.9.3 + HDF5 2.0 + zlib ┘
 2. **接受 config 的入口**：把 `run_mkgrd_top_level_namelist_with_default_restart_refine_handoff`（`lib.rs:14484`）在 `fs::read_to_string` + `from_mkgrd_namelist` 之后的主体抽出为 `..._with_config(config, contents, …, sink)`；原路径函数变成读文件后转调新函数的薄壳。GUI 把编辑器里的 `.nml` 文本 + 已解析 config 传进去，避免临时文件。
 3. **两处循环钩子**：
    - 细化步循环 `run_mkgrd_refine_loop_execution_with_final_domain_contain`，`lib.rs:13200` 的 `for step in &plan.steps` 顶部：`sink.report("refine", k, plan.steps.len())` + `if sink.cancelled() { return Err(Cancelled) }`。
-   - spring 迭代 `gridinit_voronoi_state_fortran` 的 `for iteration in 1..=niter`，`earthmesh_mesh/src/lib.rs:1358` 顶部：复用已有 `diagnostic_every` 节奏 `sink.report("spring", iteration, niter)` + 查 `cancelled()`。
+   - spring 迭代 `gridinit_voronoi_state_reference` 的 `for iteration in 1..=niter`，`earthmesh_mesh/src/lib.rs:1358` 顶部：复用已有 `diagnostic_every` 节奏 `sink.report("spring", iteration, niter)` + 查 `cancelled()`。
 4. 取消语义：协作式。两次检查之间无法中断；若用户在长块中途取消，GUI 可弃用该线程结果（无共享状态，安全）。
 
 > MVP 兜底：即使 P0 未完成，GUI 也可今天就用现有"路径版"入口在 worker 线程跑（已确认线程安全），只是没有进度与中途取消。P0 让其升级为有 `iter N/5000` 进度 + 可取消。

@@ -1,6 +1,6 @@
 use crate::{
-    fortran_quote, parse_f32, parse_f64, parse_fortran_bool, parse_fortran_string, parse_i32,
-    strip_fortran_comment,
+    canonical_quote, parse_canonical_bool, parse_canonical_string, parse_f32, parse_f64, parse_i32,
+    strip_canonical_comment,
 };
 
 /// Typed equivalent of `consts_coms:oname_vars` defaults.
@@ -24,6 +24,9 @@ pub struct EarthmeshConfig {
     pub isolated_ocean: bool,
     pub mask_restart: bool,
     pub mask_domain_type: String,
+    /// Optional close-boundary preprocessing carried as a compact engine spec.
+    /// `polyline` preserves compatibility behavior and is omitted by the writer.
+    pub mask_domain_close_boundary: String,
     pub landtype_file: String,
     pub mask_domain_fprefix: String,
     pub mask_domain_global: bool,
@@ -31,6 +34,10 @@ pub struct EarthmeshConfig {
     pub mask_patch_type: String,
     pub mask_patch_fprefix: String,
     pub output_format: String,
+    pub coupling_fraction_method: String,
+    pub coupling_identify_coastline: bool,
+    pub coupling_identify_river_mouth: bool,
+    pub coupling_cama_root: String,
 }
 
 impl Default for EarthmeshConfig {
@@ -54,6 +61,7 @@ impl Default for EarthmeshConfig {
             isolated_ocean: false,
             mask_restart: false,
             mask_domain_type: "/tmp".to_string(),
+            mask_domain_close_boundary: "polyline".to_string(),
             landtype_file: "/tmp".to_string(),
             mask_domain_fprefix: "/tmp".to_string(),
             mask_domain_global: true,
@@ -61,6 +69,10 @@ impl Default for EarthmeshConfig {
             mask_patch_type: "/tmp".to_string(),
             mask_patch_fprefix: "/tmp".to_string(),
             output_format: "/tmp".to_string(),
+            coupling_fraction_method: "point_sample".to_string(),
+            coupling_identify_coastline: false,
+            coupling_identify_river_mouth: false,
+            coupling_cama_root: String::new(),
         }
     }
 }
@@ -76,18 +88,20 @@ impl EarthmeshConfig {
         )
     }
 
-    /// Parse the Fortran `/mkgrd/ NL` namelist shape consumed by
+    /// Parse the Canonical `/mkgrd/ NL` namelist shape consumed by
     /// `mkgrd.F90:read_nl` into the typed Rust configuration.
     ///
     /// This is intentionally non-destructive: it mirrors assignment parsing and
     /// validation, but does not create/remove the working directories that the
-    /// Fortran driver manages after `read_nl`.
+    /// Canonical driver manages after `read_nl`.
     pub fn from_mkgrd_namelist(input: &str) -> Result<Self, String> {
         let mut config = Self::default();
         let mut in_mkgrd = false;
 
         for raw_line in input.lines() {
-            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            let line = strip_canonical_comment(raw_line)
+                .trim()
+                .trim_end_matches(',');
             if line.is_empty() {
                 continue;
             }
@@ -112,35 +126,48 @@ impl EarthmeshConfig {
             let value = right.trim().trim_end_matches(',');
 
             match field.to_ascii_lowercase().as_str() {
-                "expnme" => config.experiment_name = parse_fortran_string(value),
-                "runtype" => config.runtype = parse_fortran_string(value),
+                "expnme" => config.experiment_name = parse_canonical_string(value),
+                "runtype" => config.runtype = parse_canonical_string(value),
                 "nxp" => config.nxp = parse_i32(field, value)?,
-                "base_dir" => config.base_dir = parse_fortran_string(value),
-                "mesh_type" => config.mesh_type = parse_fortran_string(value),
-                "mode_grid" => config.mode_grid = parse_fortran_string(value),
+                "base_dir" => config.base_dir = parse_canonical_string(value),
+                "mesh_type" => config.mesh_type = parse_canonical_string(value),
+                "mode_grid" => config.mode_grid = parse_canonical_string(value),
                 "mode_file_description" => {
-                    config.mode_file_description = parse_fortran_string(value)
+                    config.mode_file_description = parse_canonical_string(value)
                 }
-                "mode_file" => config.mode_file = parse_fortran_string(value),
-                "refine" => config.refine = parse_fortran_bool(field, value)?,
+                "mode_file" => config.mode_file = parse_canonical_string(value),
+                "refine" => config.refine = parse_canonical_bool(field, value)?,
                 "openmp" => config.openmp = parse_i32(field, value)?,
                 "niter" => config.niter = parse_i32(field, value)?,
                 "gridnum_perdegree" => config.gridnum_perdegree = parse_i32(field, value)?,
                 "mask_sea_ratio" => config.mask_sea_ratio = parse_f64(field, value)?,
                 "beta" => config.beta = parse_f32(field, value)?,
                 "relax" => config.relax = parse_f32(field, value)?,
-                "isolated_ocean" => config.isolated_ocean = parse_fortran_bool(field, value)?,
-                "mask_restart" => config.mask_restart = parse_fortran_bool(field, value)?,
-                "mask_domain_type" => config.mask_domain_type = parse_fortran_string(value),
-                "landtype_file" => config.landtype_file = parse_fortran_string(value),
-                "mask_domain_fprefix" => config.mask_domain_fprefix = parse_fortran_string(value),
-                "mask_domain_global" => {
-                    config.mask_domain_global = parse_fortran_bool(field, value)?
+                "isolated_ocean" => config.isolated_ocean = parse_canonical_bool(field, value)?,
+                "mask_restart" => config.mask_restart = parse_canonical_bool(field, value)?,
+                "mask_domain_type" => config.mask_domain_type = parse_canonical_string(value),
+                "mask_domain_close_boundary" => {
+                    config.mask_domain_close_boundary = parse_canonical_string(value)
                 }
-                "mask_patch_on" => config.mask_patch_on = parse_fortran_bool(field, value)?,
-                "mask_patch_type" => config.mask_patch_type = parse_fortran_string(value),
-                "mask_patch_fprefix" => config.mask_patch_fprefix = parse_fortran_string(value),
-                "output_format" => config.output_format = parse_fortran_string(value),
+                "landtype_file" => config.landtype_file = parse_canonical_string(value),
+                "mask_domain_fprefix" => config.mask_domain_fprefix = parse_canonical_string(value),
+                "mask_domain_global" => {
+                    config.mask_domain_global = parse_canonical_bool(field, value)?
+                }
+                "mask_patch_on" => config.mask_patch_on = parse_canonical_bool(field, value)?,
+                "mask_patch_type" => config.mask_patch_type = parse_canonical_string(value),
+                "mask_patch_fprefix" => config.mask_patch_fprefix = parse_canonical_string(value),
+                "output_format" => config.output_format = parse_canonical_string(value),
+                "coupling_fraction_method" => {
+                    config.coupling_fraction_method = parse_canonical_string(value)
+                }
+                "coupling_identify_coastline" => {
+                    config.coupling_identify_coastline = parse_canonical_bool(field, value)?
+                }
+                "coupling_identify_river_mouth" => {
+                    config.coupling_identify_river_mouth = parse_canonical_bool(field, value)?
+                }
+                "coupling_cama_root" => config.coupling_cama_root = parse_canonical_string(value),
                 _ => {}
             }
         }
@@ -161,7 +188,7 @@ impl EarthmeshConfig {
             }
         }
         fn q(value: &str) -> String {
-            fortran_quote(value)
+            canonical_quote(value)
         }
 
         let mut out = String::new();
@@ -198,6 +225,12 @@ impl EarthmeshConfig {
             "  NL%mask_domain_type = {}\n",
             q(&self.mask_domain_type)
         ));
+        if self.mask_domain_close_boundary.trim() != "polyline" {
+            out.push_str(&format!(
+                "  NL%mask_domain_close_boundary = {}\n",
+                q(&self.mask_domain_close_boundary)
+            ));
+        }
         out.push_str(&format!(
             "  NL%mask_domain_fprefix = {}\n",
             q(&self.mask_domain_fprefix)
@@ -227,6 +260,26 @@ impl EarthmeshConfig {
             "  NL%output_format = {}\n",
             q(&self.output_format)
         ));
+        if self.mesh_type.trim() == "LOCmesh" {
+            out.push_str(&format!(
+                "  NL%coupling_fraction_method = {}\n",
+                q(&self.coupling_fraction_method)
+            ));
+            out.push_str(&format!(
+                "  NL%coupling_identify_coastline = {}\n",
+                flag(self.coupling_identify_coastline)
+            ));
+            out.push_str(&format!(
+                "  NL%coupling_identify_river_mouth = {}\n",
+                flag(self.coupling_identify_river_mouth)
+            ));
+            if !self.coupling_cama_root.trim().is_empty() {
+                out.push_str(&format!(
+                    "  NL%coupling_cama_root = {}\n",
+                    q(&self.coupling_cama_root)
+                ));
+            }
+        }
         out.push_str("/\n");
         out
     }

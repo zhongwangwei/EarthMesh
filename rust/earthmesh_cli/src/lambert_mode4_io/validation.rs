@@ -40,7 +40,7 @@ pub(crate) fn validate_mode4_mesh_for_area_judge(mesh: &Mode4Mesh) -> io::Result
             if bound_index < 1 || bound_index as usize > mesh.bound_points() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("mode4 cell {cell_index} references out-of-range vertex {bound_index}"),
+                    format!("mode4 cell {cell_index} canonicals out-of-range vertex {bound_index}"),
                 ));
             }
         }

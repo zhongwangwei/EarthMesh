@@ -1,14 +1,13 @@
+use crate::AreaJudgePatchSourceReport;
 use std::io;
 use std::path::Path;
 
-use earthmesh_mesh::area_judge_apply_mask_patch_fortran_indexed;
+use earthmesh_mesh::area_judge_apply_mask_patch_one_based;
 
-use crate::*;
-
-use super::build_area_judge_lambert_area_source_fortran_indexed;
+use super::build_area_judge_lambert_area_source_one_based;
 
 /// Build the Lambert/mode4 `IsInPaArea_grid` patch mask and apply it to `seaorland`.
-pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
+pub fn apply_area_judge_lambert_patch_source_one_based(
     inputfile: impl AsRef<Path>,
     seaorland: &mut [Vec<i32>],
     lon_vertex: &[f64],
@@ -19,7 +18,7 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgePatchSourceReport> {
-    let source = build_area_judge_lambert_area_source_fortran_indexed(
+    let source = build_area_judge_lambert_area_source_one_based(
         inputfile,
         lon_vertex,
         lat_vertex,
@@ -36,13 +35,13 @@ pub fn apply_area_judge_lambert_patch_source_fortran_indexed(
         )
     })?;
     let report =
-        area_judge_apply_mask_patch_fortran_indexed(seaorland, &source.is_in_area, source.bounds)
+        area_judge_apply_mask_patch_one_based(seaorland, &source.is_in_area, source.bounds)
             .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seaorland or lambert patch mask does not cover selected source bounds",
-            )
-        })?;
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "seaorland or lambert patch mask does not cover selected source bounds",
+                )
+            })?;
 
     Ok(AreaJudgePatchSourceReport {
         bounds: source.bounds,

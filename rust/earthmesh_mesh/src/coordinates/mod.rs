@@ -49,7 +49,7 @@ impl LonLatDegrees {
 
 /// Port of `MOD_grid_preprocess:lonlat2xyz` for a single unit-sphere point.
 ///
-/// The Fortran routine intentionally returns unit vectors; callers multiply by
+/// The Canonical routine intentionally returns unit vectors; callers multiply by
 /// `erad8` when Earth-radius-scaled coordinates are required.
 pub fn lonlat_degrees_to_unit_xyz(lonlat: LonLatDegrees) -> CartesianPoint {
     let lon_rad = deg_to_rad(lonlat.lon_degrees);

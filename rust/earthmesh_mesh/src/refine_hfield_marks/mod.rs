@@ -23,7 +23,7 @@ use crate::LonLatDegrees;
 ///
 /// Rows `0..=num_vertex` are placeholders/vertex rows and are never marked,
 /// matching the sibling `refine_iter*` kernels.
-pub fn refine_marks_from_target_levels_fortran_indexed<F: Fn(f64, f64) -> u8>(
+pub fn refine_marks_from_target_levels_one_based<F: Fn(f64, f64) -> u8>(
     num_vertex: usize,
     triangle_points: &[LonLatDegrees],
     mrl_new: &[i32],
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn marks_only_unrefined_triangles_at_or_above_round() {
-        // Fortran layout: rows 0..=num_vertex are placeholders, triangles after.
+        // Canonical layout: rows 0..=num_vertex are placeholders, triangles after.
         let num_vertex = 2usize;
         let points = vec![
             LonLatDegrees::new(0.0, 0.0),   // row 0 placeholder
@@ -112,28 +112,24 @@ mod tests {
             quantized_level(h_base, h, 8)
         };
 
-        let round1 = refine_marks_from_target_levels_fortran_indexed(
-            num_vertex, &points, &mrl_new, 1, field,
-        )
-        .expect("round 1 marks");
+        let round1 =
+            refine_marks_from_target_levels_one_based(num_vertex, &points, &mrl_new, 1, field)
+                .expect("round 1 marks");
         assert_eq!(round1, vec![0, 0, 0, 1, 1, 0, 0]);
 
-        let round2 = refine_marks_from_target_levels_fortran_indexed(
-            num_vertex, &points, &mrl_new, 2, field,
-        )
-        .expect("round 2 marks");
+        let round2 =
+            refine_marks_from_target_levels_one_based(num_vertex, &points, &mrl_new, 2, field)
+                .expect("round 2 marks");
         assert_eq!(round2, vec![0, 0, 0, 1, 0, 0, 0]);
 
-        let round3 = refine_marks_from_target_levels_fortran_indexed(
-            num_vertex, &points, &mrl_new, 3, field,
-        )
-        .expect("round 3 marks");
+        let round3 =
+            refine_marks_from_target_levels_one_based(num_vertex, &points, &mrl_new, 3, field)
+                .expect("round 3 marks");
         assert_eq!(round3, vec![0, 0, 0, 1, 0, 0, 0]);
 
-        let round4 = refine_marks_from_target_levels_fortran_indexed(
-            num_vertex, &points, &mrl_new, 4, field,
-        )
-        .expect("round 4 marks");
+        let round4 =
+            refine_marks_from_target_levels_one_based(num_vertex, &points, &mrl_new, 4, field)
+                .expect("round 4 marks");
         assert_eq!(round4, vec![0, 0, 0, 0, 0, 0, 0]);
     }
 
@@ -153,7 +149,7 @@ mod tests {
         };
         let mut previous: Option<Vec<i32>> = None;
         for round in 1..=6u8 {
-            let marks = refine_marks_from_target_levels_fortran_indexed(
+            let marks = refine_marks_from_target_levels_one_based(
                 num_vertex, &points, &mrl_new, round, field,
             )
             .expect("marks");
@@ -174,17 +170,14 @@ mod tests {
         let points = vec![LonLatDegrees::new(0.0, 0.0); 4];
         let mrl_new = vec![1_i32; 4];
         assert!(
-            refine_marks_from_target_levels_fortran_indexed(0, &points, &mrl_new, 0, |_, _| 1)
-                .is_err()
+            refine_marks_from_target_levels_one_based(0, &points, &mrl_new, 0, |_, _| 1).is_err()
         );
         let short = vec![1_i32; 3];
         assert!(
-            refine_marks_from_target_levels_fortran_indexed(0, &points, &short, 1, |_, _| 1)
-                .is_err()
+            refine_marks_from_target_levels_one_based(0, &points, &short, 1, |_, _| 1).is_err()
         );
         assert!(
-            refine_marks_from_target_levels_fortran_indexed(9, &points, &mrl_new, 1, |_, _| 1)
-                .is_err()
+            refine_marks_from_target_levels_one_based(9, &points, &mrl_new, 1, |_, _| 1).is_err()
         );
     }
 }

@@ -1,9 +1,6 @@
 mod full;
-mod legacy;
+mod placeholder_rows;
 mod simple;
 
-pub use full::build_mpas_mesh_from_unstructured_fortran_indexed;
-pub(crate) use legacy::{
-    normalize_unstructured_mesh_legacy_placeholders, restore_unstructured_mesh_shape,
-};
-pub use simple::build_mpas_simple_mesh_from_unstructured_fortran_indexed;
+pub use full::build_mpas_mesh_from_unstructured_one_based;
+pub use simple::build_mpas_simple_mesh_from_unstructured_one_based;

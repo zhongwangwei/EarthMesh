@@ -18,6 +18,37 @@ pub fn coastal_band_cells(
     include_land_side: bool,
     include_ocean_side: bool,
 ) -> io::Result<Vec<Vec<bool>>> {
+    coastal_band_cells_with_x_wrap(
+        land_mask,
+        radius_cells,
+        include_land_side,
+        include_ocean_side,
+        false,
+    )
+}
+
+pub(super) fn coastal_band_cells_periodic_x(
+    land_mask: &[Vec<bool>],
+    radius_cells: i64,
+    include_land_side: bool,
+    include_ocean_side: bool,
+) -> io::Result<Vec<Vec<bool>>> {
+    coastal_band_cells_with_x_wrap(
+        land_mask,
+        radius_cells,
+        include_land_side,
+        include_ocean_side,
+        true,
+    )
+}
+
+fn coastal_band_cells_with_x_wrap(
+    land_mask: &[Vec<bool>],
+    radius_cells: i64,
+    include_land_side: bool,
+    include_ocean_side: bool,
+    wrap_x: bool,
+) -> io::Result<Vec<Vec<bool>>> {
     if radius_cells < 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -44,10 +75,9 @@ pub fn coastal_band_cells(
                 continue;
             }
             let (y0, y1) = (y.saturating_sub(r), (y + r + 1).min(height));
-            let (x0, x1) = (x.saturating_sub(r), (x + r + 1).min(width));
             let mut found_opposite = false;
             'scan: for yy in y0..y1 {
-                for xx in x0..x1 {
+                for xx in x_range(width, x, r, wrap_x) {
                     if xx == x && yy == y {
                         continue;
                     }
@@ -61,4 +91,15 @@ pub fn coastal_band_cells(
         }
     }
     Ok(band)
+}
+
+fn x_range(width: usize, x: usize, radius: usize, wrap_x: bool) -> Vec<usize> {
+    if wrap_x {
+        return (-(radius as isize)..=(radius as isize))
+            .map(|dx| (x as isize + dx).rem_euclid(width as isize) as usize)
+            .collect();
+    }
+    let x0 = x.saturating_sub(radius);
+    let x1 = (x + radius + 1).min(width);
+    (x0..x1).collect()
 }

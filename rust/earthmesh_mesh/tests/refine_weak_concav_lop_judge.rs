@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_weak_concav_lop_judge_fortran_indexed;
+use earthmesh_mesh::refine_weak_concav_lop_judge_one_based;
 
 #[test]
 fn weak_concav_lop_judge_builds_pair_only_segments() {
@@ -18,7 +18,7 @@ fn weak_concav_lop_judge_builds_pair_only_segments() {
     let mut n_ref_temp = vec![0; 3];
     let mut num_ref = 0;
 
-    refine_weak_concav_lop_judge_fortran_indexed(
+    refine_weak_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         0,
@@ -66,7 +66,7 @@ fn weak_concav_lop_judge_builds_intersegment_and_internal_pairs() {
     let mut n_ref_temp = vec![0; 4];
     let mut num_ref = 0;
 
-    refine_weak_concav_lop_judge_fortran_indexed(
+    refine_weak_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         2,
@@ -108,7 +108,7 @@ fn weak_concav_lop_judge_clears_empty_odd_segment_pair_after_intersegment_pair()
     let mut n_ref_temp = vec![0; 4];
     let mut num_ref = 0;
 
-    refine_weak_concav_lop_judge_fortran_indexed(
+    refine_weak_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         2,

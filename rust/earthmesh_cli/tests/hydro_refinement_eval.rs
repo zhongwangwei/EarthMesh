@@ -1,7 +1,9 @@
 //! Rust port of util/hydro_mesh/refinement_eval.py: background-cell + river/coast
 //! overlap summaries and mkgrd log parsing. Pure JSON/text (no NetCDF data).
 
-use earthmesh_cli::{parse_refinement_log, write_refinement_eval_json};
+use earthmesh_cli::{
+    hydro_refinement_eval::parse_refinement_log, hydro_refinement_eval::write_refinement_eval_json,
+};
 
 #[test]
 fn summarizes_background_and_river_intersections() {

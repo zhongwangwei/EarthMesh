@@ -37,8 +37,21 @@ impl CriterionSpec {
     }
 }
 
-const LAND: &[MeshDomainKind] = &[MeshDomainKind::Land, MeshDomainKind::Coupled];
-const OCEAN: &[MeshDomainKind] = &[MeshDomainKind::Ocean, MeshDomainKind::Coupled];
+const LAND: &[MeshDomainKind] = &[
+    MeshDomainKind::Land,
+    MeshDomainKind::Coupled,
+    MeshDomainKind::Earth,
+];
+const OCEAN: &[MeshDomainKind] = &[
+    MeshDomainKind::Ocean,
+    MeshDomainKind::Coupled,
+    MeshDomainKind::Earth,
+];
+const ATMOS: &[MeshDomainKind] = &[
+    MeshDomainKind::Atmosphere,
+    MeshDomainKind::Coupled,
+    MeshDomainKind::Earth,
+];
 
 /// The registered refinement criteria (one per engine threshold field).
 const CATALOG: &[CriterionSpec] = &[
@@ -209,6 +222,19 @@ const CATALOG: &[CriterionSpec] = &[
             unit: "deg",
             range: (0.0, 30.0),
             default: 3.0,
+        },
+    },
+    CriterionSpec {
+        id: "typhoon",
+        physical_process: "atmospheric cyclone / precipitation forcing",
+        field: ThresholdField::Typhoon,
+        applicable: ATMOS,
+        gui: CriterionGuiSpec {
+            label: "Typhoon",
+            help: "Refine where typhoon forcing exceeds the threshold",
+            unit: "index",
+            range: (0.0, 1.0),
+            default: 0.5,
         },
     },
 ];

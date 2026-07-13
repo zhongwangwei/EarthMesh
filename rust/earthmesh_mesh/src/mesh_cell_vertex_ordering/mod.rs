@@ -2,10 +2,10 @@ use super::*;
 
 /// Port of `MOD_grid_preprocess:orderVerticesOnCell`.
 ///
-/// Preserves the Fortran selection-sort approach: for each fixed vertex slot,
+/// Preserves the Canonical selection-sort approach: for each fixed vertex slot,
 /// choose the remaining vertex with positive `cross(vec1, vec2) . normal` and
-/// the smallest angle to the current reference vector.
-pub fn order_vertices_on_cell_fortran_indexed(
+/// the smallest angle to the current canonical vector.
+pub fn order_vertices_on_cell_one_based(
     cell_points: &[CartesianPoint],
     vertex_points: &[CartesianPoint],
     vertices_on_cell: &[Vec<usize>],

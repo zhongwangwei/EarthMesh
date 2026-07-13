@@ -1,16 +1,18 @@
+use crate::build_area_judge_restart_one_based;
+use crate::run_area_judge_refine_one_based;
+use crate::AreaJudgeRestartGridsRunConfig;
+use crate::AreaJudgeRestartGridsRunReport;
 use std::io;
-
-use crate::*;
 
 use super::writer::write_area_judge_selected_grid_report;
 
 /// Compose the restart `Area_judge` branch, activate iter-zero calculated
 /// refine when available, and write selected grid payloads for restart-style
 /// downstream consumers.
-pub fn run_area_judge_restart_grids_fortran_indexed(
+pub fn run_area_judge_restart_grids_one_based(
     config: AreaJudgeRestartGridsRunConfig<'_>,
 ) -> io::Result<AreaJudgeRestartGridsRunReport> {
-    let area = build_area_judge_restart_fortran_indexed(
+    let area = build_area_judge_restart_one_based(
         config.file_dir,
         config.restart_input,
         config.mask_patch,
@@ -43,7 +45,7 @@ pub fn run_area_judge_restart_grids_fortran_indexed(
         area.calculated_refine
             .as_ref()
             .map(|calculated| {
-                run_area_judge_refine_fortran_indexed(
+                run_area_judge_refine_one_based(
                     config.file_dir,
                     0,
                     Some((&calculated.is_in_area, calculated.bounds)),

@@ -5,6 +5,24 @@ small channels are aggregated or represented as 1D river edges, medium channels 
 1D edges plus refinement buffers, and major rivers/estuaries/coastal wetlands become
 2D river-corridor candidates.
 
+> **Current Rust Project path (2026-07):** the historical prototype evidence
+> below is retained for provenance, but its “remaining production step” notes no
+> longer describe the canonical implementation. Project hydro now reads real
+> MERIT NetCDF bbox hyperslabs at native stride 1, preserves coast adjacency
+> across window/tile seams, consumes real CaMa binary reaches as linked geodesic
+> corridors, intersects them with canonical EarthMesh cells in cell-local
+> Lambert azimuthal equal-area coordinates, applies the resulting plan through
+> HField/Method-C using the exact measured production gridfile as the parent
+> (never a regenerated nominal-NXP grid), and recomputes coupling plus quality
+> on the final gridfile.
+> `scripts/run_real_hydro_e2e.sh` is a real-asset bounded closed-loop test by
+> default. It asserts a real CaMa estuary survives into the production CoLM
+> rows and requires both final mesh and landtype-coupling quality to pass;
+> enable `EARTHMESH_REAL_KEEP_PRODUCTION_NITER=1` for source-spring parameter
+> parity. Level-3-or-deeper runs use one quality-gated physical retry at
+> `hfield_g=0.1` only when the normal result violates the unchanged edge-CV
+> gate; the closed-loop manifest records whether that retry occurred.
+
 ## Data needed now
 
 To move from the current tested CSV classifier to real CaMa-Flood ingestion, provide
@@ -463,12 +481,12 @@ Observed output:
 - Metadata markers: `domain_clip_applied=True` and
   `area_normalization=unit_sphere_area_to_m2`.
 
-This step gives CoLM2024 a more realistic metadata shape: each EarthMesh cell can now
-carry a river class, overlap fraction, normalized cell area, and estimated river area.
-The remaining blocker is scientific input quality, not software plumbing: the
-placeholder bbox domain should be replaced with a coastline/domain mask and the
-planar lon/lat overlap fraction should be replaced or validated with a true geodesic
-intersection method before production use.
+At this historical prototype step, CoLM2024 gained a more realistic metadata
+shape: each EarthMesh cell could carry a river class, overlap fraction,
+normalized cell area, and estimated river area. Its remaining blocker was the
+placeholder bbox plus planar overlap. The current Rust Project path described at
+the top of this document has replaced that preview with the exact Project domain
+and cell-local equal-area spherical-edge overlay.
 
 ## Verified CoLM-style coupling table preview
 
@@ -583,7 +601,7 @@ close_refine = 1
 
 Use these files from an EarthMesh namelist like:
 
-```fortran
+```text
 RL%refine_spc              = .TRUE.
 RL%max_iter_spc            = 2
 RL%mask_refine_spc_type    = 'close'
@@ -643,7 +661,7 @@ the current Yangtze-delta smoke case it writes `137` `.nml` files:
 
 The successful R3 degree-3 EarthMesh smoke run used:
 
-```fortran
+```text
 RL%refine_spc              = .TRUE.
 RL%max_iter_spc            = 3
 RL%mask_refine_spc_type    = 'close'
@@ -1159,7 +1177,7 @@ python3 -m util.hydro_mesh.refinement_package \
 The delivery manifest keeps the raw input under `source_files.surface_geojson` and
 records the derived cell-keyed product under `files.complete_cell_mask_geojson`.
 The CoLM package coupling export prefers `files.complete_cell_mask_geojson`, falling
-back to legacy `source_files.surface_geojson` only for older packages.  It normalizes
+back to earlier `source_files.surface_geojson` only for older packages.  It normalizes
 `COAST_LAND` to `LAND` and `COAST_OCEAN` to `OCEAN`, while keeping coast overlap as
 separate `has_coast/coast_class` fields.
 
@@ -1503,7 +1521,7 @@ The first China-region MERIT package reuses the existing N160 background cell la
 covering China mainland, Taiwan, and surrounding seas.  The background layer has
 `19737` EarthMesh cells and bbox approximately `72.69E-136.39E`, `2.74N-54.22N`;
 the source refinement domain was bbox `73 3 136 54`.  Use the `nowce` smoke log for
-package metadata because the non-`nowce` and tiled China logs hit a Fortran runtime
+package metadata because the non-`nowce` and tiled China logs hit a engine runtime
 index error during refinement cleanup.
 
 ```bash
@@ -1678,7 +1696,7 @@ Rejected trial runs are also informative:
   refinement degree, giving priority to higher target refinement such as R3 over
   nearby R2.
 
-The Fortran side now also handles several large-domain edge cases that the China
+The engine side now also handles several large-domain edge cases that the China
 MERIT candidate exposed: sparse weak-concav accounting, missing child adjacency as
 a warning instead of an abort, dynamic final `ngrwm_f` adjacency capacity, and an
 endpoint-start fallback in `GetSortNew` for open local adjacency walks.  These are

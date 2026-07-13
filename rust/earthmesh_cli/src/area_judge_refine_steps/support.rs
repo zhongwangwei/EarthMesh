@@ -1,6 +1,6 @@
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-pub(super) fn count_area_judge_selected_cells_fortran_indexed(
+pub(super) fn count_area_judge_selected_cells_one_based(
     grid: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
 ) -> usize {

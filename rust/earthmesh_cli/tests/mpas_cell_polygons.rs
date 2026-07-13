@@ -1,7 +1,7 @@
 //! Rust port of util/hydro_mesh/earthmesh_intersection.py::read_mpas_cell_polygons:
 //! MPAS/EarthMesh cell arrays (radians, 1-based verticesOnCell) -> cell-polygon GeoJSON.
 
-use earthmesh_cli::mpas_cell_polygons_geojson;
+use earthmesh_cli::hydro_delivery_cells::mpas_cell_polygons_geojson;
 
 #[test]
 fn one_square_cell_to_polygon_ring() {
@@ -27,7 +27,7 @@ fn one_square_cell_to_polygon_ring() {
         None,
     );
     assert!(json.contains("\"cell_id\": \"1\""));
-    assert!(json.contains("\"cell_index\": 0"));
+    assert!(json.contains("\"cell_index\": 1"));
     assert!(json.contains("\"center_lon\": 100.5"));
     assert!(json.contains("\"grid_kind\": \"earthmesh_cell\""));
     // ring corners in degrees
@@ -77,8 +77,8 @@ fn bbox_filters_cells_by_center() {
         None,
     );
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
-    assert!(json.contains("\"cell_index\": 0"));
-    assert!(!json.contains("\"cell_index\": 1"));
+    assert!(json.contains("\"cell_index\": 1"));
+    assert!(!json.contains("\"cell_index\": 2"));
 }
 
 #[test]

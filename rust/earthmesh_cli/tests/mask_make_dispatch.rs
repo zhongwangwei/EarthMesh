@@ -21,11 +21,11 @@ fn apply_mask_operation_dispatches_bbox_sources_and_validates_refine_count() {
     )
     .expect("write bbox nml");
     let nc = source_dir.join("bbox_02.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &nc,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 2,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -10.0,
                 east: 10.0,
                 north: 5.0,
@@ -35,8 +35,8 @@ fn apply_mask_operation_dispatches_bbox_sources_and_validates_refine_count() {
     )
     .expect("write bbox nc source");
 
-    let mut counts = earthmesh_cli::MaskCountState::default();
-    let report = earthmesh_cli::apply_mask_operation(
+    let mut counts = earthmesh_cli::mask_counts::MaskCountState::default();
+    let report = earthmesh_cli::mask_operation_apply::apply_mask_operation(
         &MaskOperation::new(
             "mask_refine",
             "bbox",
@@ -58,10 +58,11 @@ fn apply_mask_operation_dispatches_bbox_sources_and_validates_refine_count() {
     assert!(report.outputs.iter().all(|path| path.exists()));
     assert_eq!(counts.mask_refine_ndm[2], 1);
     assert_eq!(counts.mask_refine_ndm[3], 1);
-    earthmesh_cli::validate_mask_refine_reaches_max_iter_spc(&counts, 3)
+    earthmesh_cli::mask_operation_apply::validate_mask_refine_reaches_max_iter_spc(&counts, 3)
         .expect("max_iter_spc refine exists");
-    let err = earthmesh_cli::validate_mask_refine_reaches_max_iter_spc(&counts, 1)
-        .expect_err("missing max_iter_spc refine should fail like read_nl");
+    let err =
+        earthmesh_cli::mask_operation_apply::validate_mask_refine_reaches_max_iter_spc(&counts, 1)
+            .expect_err("missing max_iter_spc refine should fail like read_nl");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
     let _ = fs::remove_dir_all(&root);
@@ -75,9 +76,9 @@ fn apply_mask_operation_errors_for_missing_sources_and_unsupported_types() {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("sources")).expect("create sources");
-    let mut counts = earthmesh_cli::MaskCountState::default();
+    let mut counts = earthmesh_cli::mask_counts::MaskCountState::default();
 
-    let missing = earthmesh_cli::apply_mask_operation(
+    let missing = earthmesh_cli::mask_operation_apply::apply_mask_operation(
         &MaskOperation::new(
             "mask_domain",
             "bbox",
@@ -87,7 +88,7 @@ fn apply_mask_operation_errors_for_missing_sources_and_unsupported_types() {
         1,
         &mut counts,
     )
-    .expect_err("empty prefix should match Fortran fexists stop");
+    .expect_err("empty prefix should match Canonical fexists stop");
     assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
 
     fs::write(
@@ -95,7 +96,7 @@ fn apply_mask_operation_errors_for_missing_sources_and_unsupported_types() {
         "bbox_num = 0\nbbox_refine = 0\n",
     )
     .expect("write matching file");
-    let unsupported = earthmesh_cli::apply_mask_operation(
+    let unsupported = earthmesh_cli::mask_operation_apply::apply_mask_operation(
         &MaskOperation::new(
             "mask_domain",
             "unknown",

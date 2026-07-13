@@ -14,9 +14,9 @@ pub(crate) fn run_merit_hydro_geojson(
         args.next()
             .ok_or_else(|| usage("--merit-hydro-geojson requires an output directory"))?,
     );
-    let mut bbox: Option<earthmesh_cli::MeritLonLatBbox> = None;
+    let mut bbox: Option<earthmesh_cli::merit_tile_selection::MeritLonLatBbox> = None;
     let mut stride = 1_usize;
-    let mut thresholds = earthmesh_cli::MeritMaskThresholds::default();
+    let mut thresholds = earthmesh_cli::merit_hydro_io::MeritMaskThresholds::default();
     let mut include_surface_masks = true;
 
     while let Some(arg) = args.next() {
@@ -34,7 +34,7 @@ pub(crate) fn run_merit_hydro_geojson(
                     "--bbox north",
                     &next_required_arg(&mut args, "--bbox north")?,
                 )?;
-                bbox = Some(earthmesh_cli::MeritLonLatBbox {
+                bbox = Some(earthmesh_cli::merit_tile_selection::MeritLonLatBbox {
                     west,
                     east,
                     south,
@@ -70,8 +70,9 @@ pub(crate) fn run_merit_hydro_geojson(
     }
 
     let bbox = bbox.ok_or_else(|| usage("--merit-hydro-geojson requires --bbox W S E N"))?;
-    let tile_paths = earthmesh_cli::select_merit_hydro_tiles(&merit_root, bbox)
-        .map_err(|err| err.to_string())?;
+    let tile_paths =
+        earthmesh_cli::merit_tile_selection::select_merit_hydro_tiles(&merit_root, bbox)
+            .map_err(|err| err.to_string())?;
     if tile_paths.is_empty() {
         return Err(format!(
             "no MERIT-Hydro tiles in {} intersect bbox",
@@ -81,11 +82,11 @@ pub(crate) fn run_merit_hydro_geojson(
     let mut windows = Vec::with_capacity(tile_paths.len());
     for tile in &tile_paths {
         windows.push(
-            earthmesh_cli::read_merit_hydro_window(tile, bbox, stride)
+            earthmesh_cli::merit_hydro_io::read_merit_hydro_window(tile, bbox, stride)
                 .map_err(|err| err.to_string())?,
         );
     }
-    let report = earthmesh_cli::write_merit_hydro_mask_geojson_layers(
+    let report = earthmesh_cli::merit_hydro_io::write_merit_hydro_mask_geojson_layers(
         &windows,
         thresholds,
         &output_dir,

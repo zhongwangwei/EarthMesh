@@ -2,13 +2,13 @@ use super::*;
 
 /// Port of `MOD_mask_postproc.F90:IsInDmArea_ustr_Renew`.
 ///
-/// `is_in_domain` mirrors the global Fortran `IsInDmArea_ustr` array: `1` is
-/// active/ocean, negative values are inactive/land, and slot `1` is the legacy
+/// `is_in_domain` mirrors the global Canonical `IsInDmArea_ustr` array: `1` is
+/// active/ocean, negative values are inactive/land, and slot `1` is the compatibility
 /// placeholder.  The routine first removes triangles whose three vertices are
-/// all solid-boundary vertices (`n_ustr_ngr == 6`), then applies the legacy
+/// all solid-boundary vertices (`n_ustr_ngr == 6`), then applies the compatibility
 /// one-missing-triangle refill rule and updates `points_new` with the same
-/// per-vertex increments/decrements as the Fortran code.
-pub fn renew_mask_postproc_domain_triangles_fortran_indexed(
+/// per-vertex increments/decrements as the Canonical code.
+pub fn renew_mask_postproc_domain_triangles_one_based(
     is_in_domain: &mut [i32],
     vertex_neighbors: &[Vec<usize>],
     vertex_neighbors_new: &[Vec<usize>],
@@ -19,7 +19,7 @@ pub fn renew_mask_postproc_domain_triangles_fortran_indexed(
     if is_in_domain.len() < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "is_in_domain must preserve at least the Fortran placeholder slots",
+            "is_in_domain must preserve at least the Canonical placeholder slots",
         ));
     }
     if vertex_neighbor_counts.len() < vertex_neighbors.len()
@@ -28,7 +28,7 @@ pub fn renew_mask_postproc_domain_triangles_fortran_indexed(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "vertex neighbor tables and count arrays must have matching Fortran-indexed lengths",
+            "vertex neighbor tables and count arrays must have matching Canonical-indexed lengths",
         ));
     }
 
@@ -55,7 +55,7 @@ pub fn renew_mask_postproc_domain_triangles_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "vertex {vertex_id} references center {center_id}, outside 0..={ustr_points}"
+                        "vertex {vertex_id} canonicals center {center_id}, outside 0..={ustr_points}"
                     ),
                 ));
             }
@@ -92,7 +92,7 @@ pub fn renew_mask_postproc_domain_triangles_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "vertex {vertex_id} references center {center_id}, outside 0..={ustr_points}"
+                        "vertex {vertex_id} canonicals center {center_id}, outside 0..={ustr_points}"
                     ),
                 ));
             }

@@ -29,13 +29,13 @@ fn area_judge_ray_segment_intersection_lon(
 /// Pure Rust source-cell fill for the closed-curve branch in
 /// `MOD_Area_judge:IsInArea_close_Calculation`.
 ///
-/// The helper mirrors the Fortran row scan after `minmax_range_make`: for each
+/// The helper mirrors the Canonical row scan after `minmax_range_make`: for each
 /// source latitude row between the polygon north/south bounds, intersect a
 /// left-to-right ray with every polygon segment, sort the intersection
 /// longitudes, then mark cells between odd/even intersection pairs.  When
 /// `restore_dateline_shift` is true, filled longitude indices are remapped with
-/// the same half-world shift that Fortran applies after `CheckCrossing`.
-pub fn area_judge_closed_curve_fill_fortran_indexed(
+/// the same half-world shift that Canonical applies after `CheckCrossing`.
+pub fn area_judge_closed_curve_fill_one_based(
     close_points: &[LonLatDegrees],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
@@ -56,14 +56,14 @@ pub fn area_judge_closed_curve_fill_fortran_indexed(
         .iter()
         .map(|point| point.lat_degrees)
         .fold(f64::INFINITY, f64::min);
-    let maxlat_source = area_judge_source_find_fortran_indexed(
+    let maxlat_source = area_judge_source_find_one_based(
         edgen_temp,
         lat_vertex,
         AreaJudgeAxis::Latitude,
         gridnum_perdegree,
         nlats_source,
     )?;
-    let minlat_source = area_judge_source_find_fortran_indexed(
+    let minlat_source = area_judge_source_find_one_based(
         edges_temp,
         lat_vertex,
         AreaJudgeAxis::Latitude,
@@ -100,14 +100,14 @@ pub fn area_judge_closed_curve_fill_fortran_indexed(
         intersections.sort_by(f64::total_cmp);
 
         for pair in intersections.chunks_exact(2) {
-            let minlon_source = area_judge_source_find_fortran_indexed(
+            let minlon_source = area_judge_source_find_one_based(
                 pair[0],
                 lon_vertex,
                 AreaJudgeAxis::Longitude,
                 gridnum_perdegree,
                 nlons_source,
             )?;
-            let maxlon_source = area_judge_source_find_fortran_indexed(
+            let maxlon_source = area_judge_source_find_one_based(
                 pair[1],
                 lon_vertex,
                 AreaJudgeAxis::Longitude,

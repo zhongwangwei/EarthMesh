@@ -9,7 +9,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 fn write_landtype_file(path: &std::path::Path, nlons: usize, nlats: usize) {
-    let mut file = netcdf::create(path).expect("create landtype file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create landtype file");
     file.add_dimension("longitude", nlons)
         .expect("longitude dim");
     file.add_dimension("latitude", nlats).expect("latitude dim");
@@ -27,7 +27,7 @@ fn write_landtype_file(path: &std::path::Path, nlons: usize, nlats: usize) {
 
 fn write_landtype_file_with_points(path: &std::path::Path, land_points: &[(usize, usize)]) {
     let (nlons, nlats) = (360, 180);
-    let mut file = netcdf::create(path).expect("create landtype file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create landtype file");
     file.add_dimension("longitude", nlons)
         .expect("longitude dim");
     file.add_dimension("latitude", nlats).expect("latitude dim");
@@ -43,7 +43,7 @@ fn write_landtype_file_with_points(path: &std::path::Path, land_points: &[(usize
 }
 
 fn write_landtype_lat_lon_file(path: &std::path::Path, nlons: usize, nlats: usize) {
-    let mut file = netcdf::create(path).expect("create lat-lon landtype file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create lat-lon landtype file");
     file.add_dimension("latitude", nlats).expect("latitude dim");
     file.add_dimension("longitude", nlons)
         .expect("longitude dim");
@@ -60,37 +60,46 @@ fn write_landtype_lat_lon_file(path: &std::path::Path, nlons: usize, nlats: usiz
         .expect("write lat-lon landtype");
 }
 
+fn declare_sparse_landtype_file(path: &std::path::Path, nlons: usize, nlats: usize) {
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create sparse landtype file");
+    file.add_dimension("longitude", nlons)
+        .expect("longitude dim");
+    file.add_dimension("latitude", nlats).expect("latitude dim");
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .expect("landtype var");
+}
+
 fn write_three_cell_tri_gridfile(path: &std::path::Path) {
-    let mesh = earthmesh_cli::UnstructuredMesh {
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -178.5,
                 lat: 89.5,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -177.5,
                 lat: 89.5,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.5,
                 lat: 89.5,
             },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 0.0,
                 lat: -88.5,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 10.0,
                 lat: -88.5,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 20.0,
                 lat: -88.5,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 30.0,
                 lat: -88.5,
             },
@@ -99,70 +108,71 @@ fn write_three_cell_tri_gridfile(path: &std::path::Path) {
         w_to_m: vec![vec![1], vec![1, 2, 3], vec![1, 2, 3], vec![1, 2, 3]],
         n_w_to_m: vec![1, 3, 3, 3],
     };
-    earthmesh_cli::write_unstructured_mesh_netcdf(path, &mesh).expect("write gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(path, &mesh)
+        .expect("write gridfile");
 }
 
 fn write_two_cell_hex_gridfile(path: &std::path::Path) {
-    let mut m_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }];
+    let mut m_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }];
     m_points.extend([
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -179.0,
             lat: 89.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.5,
             lat: 89.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
             lat: 89.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
             lat: 90.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.5,
             lat: 90.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -179.0,
             lat: 90.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
             lat: 89.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.5,
             lat: 89.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.0,
             lat: 89.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.0,
             lat: 90.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.5,
             lat: 90.0,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
             lat: 90.0,
         },
     ]);
-    let mesh = earthmesh_cli::UnstructuredMesh {
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points,
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -178.5,
                 lat: 89.5,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -177.5,
                 lat: 89.5,
             },
@@ -175,7 +185,8 @@ fn write_two_cell_hex_gridfile(path: &std::path::Path) {
         ],
         n_w_to_m: vec![0, 6, 6],
     };
-    earthmesh_cli::write_unstructured_mesh_netcdf(path, &mesh).expect("write hex gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(path, &mesh)
+        .expect("write hex gridfile");
 }
 
 #[test]
@@ -188,7 +199,7 @@ fn landtype_masked_gridfile_keeps_land_or_ocean_cells_and_reindexes() {
     write_landtype_file_with_points(&landtype_file, &[(1, 0), (3, 0)]);
     write_three_cell_tri_gridfile(&input);
 
-    let land_count = earthmesh_cli::write_landtype_masked_gridfile(
+    let land_count = earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
         &input,
         &land_output,
         &landtype_file,
@@ -197,7 +208,7 @@ fn landtype_masked_gridfile_keeps_land_or_ocean_cells_and_reindexes() {
         "landmesh",
     )
     .expect("write land-only gridfile");
-    let ocean_count = earthmesh_cli::write_landtype_masked_gridfile(
+    let ocean_count = earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
         &input,
         &ocean_output,
         &landtype_file,
@@ -209,12 +220,16 @@ fn landtype_masked_gridfile_keeps_land_or_ocean_cells_and_reindexes() {
 
     assert_eq!(land_count, 2);
     assert_eq!(ocean_count, 1);
-    let land_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&land_output)
-        .expect("read land masked gridfile");
-    let ocean_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&ocean_output)
-        .expect("read ocean masked gridfile");
-    let land_topology = earthmesh_cli::check_unstructured_mesh_topology(&land_mesh);
-    let ocean_topology = earthmesh_cli::check_unstructured_mesh_topology(&ocean_mesh);
+    let land_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&land_output)
+            .expect("read land masked gridfile");
+    let ocean_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&ocean_output)
+            .expect("read ocean masked gridfile");
+    let land_topology =
+        earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(&land_mesh);
+    let ocean_topology =
+        earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(&ocean_mesh);
     assert!(land_mesh.m_points.len() >= land_count);
     assert!(ocean_mesh.m_points.len() >= ocean_count);
     assert!(
@@ -250,7 +265,7 @@ fn landtype_masked_hex_gridfile_preserves_cell_corner_geometry_after_reindex() {
     write_landtype_file_with_points(&landtype_file, &[(1, 0), (2, 0)]);
     write_two_cell_hex_gridfile(&input);
 
-    let land_count = earthmesh_cli::write_landtype_masked_gridfile(
+    let land_count = earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
         &input,
         &output,
         &landtype_file,
@@ -260,8 +275,8 @@ fn landtype_masked_hex_gridfile_preserves_cell_corner_geometry_after_reindex() {
     )
     .expect("write hex land-only gridfile");
 
-    let land_mesh =
-        earthmesh_cli::read_unstructured_mesh_netcdf(&output).expect("read hex land gridfile");
+    let land_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&output)
+        .expect("read hex land gridfile");
     let first_cell = land_mesh
         .w_points
         .iter()
@@ -294,7 +309,7 @@ fn regional_carve_after_ocean_hex_mask_does_not_reapply_placeholder_shift() {
     write_landtype_file_with_points(&landtype_file, &[(1, 0)]);
     write_two_cell_hex_gridfile(&input);
 
-    earthmesh_cli::write_landtype_masked_gridfile(
+    earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
         &input,
         &ocean_output,
         &landtype_file,
@@ -303,18 +318,23 @@ fn regional_carve_after_ocean_hex_mask_does_not_reapply_placeholder_shift() {
         "oceanmesh",
     )
     .expect("write hex ocean-only gridfile");
-    let region = earthmesh_cli::GridRegion::Bbox {
+    let region = earthmesh_cli::coordinate_types::GridRegion::Bbox {
         west: -178.0,
         east: -177.0,
         north: 90.0,
         south: 89.0,
     };
-    let kept =
-        earthmesh_cli::write_regional_gridfile(&ocean_output, &regional_output, &region, "hex")
-            .expect("write regional ocean gridfile");
+    let kept = earthmesh_cli::regional_gridfile_writers::write_regional_gridfile(
+        &ocean_output,
+        &regional_output,
+        &region,
+        "hex",
+    )
+    .expect("write regional ocean gridfile");
 
-    let regional_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&regional_output)
-        .expect("read regional ocean gridfile");
+    let regional_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&regional_output)
+            .expect("read regional ocean gridfile");
     let ocean_cell = regional_mesh
         .w_points
         .iter()
@@ -347,7 +367,7 @@ fn regional_carve_after_land_hex_mask_does_not_reapply_placeholder_shift() {
     write_landtype_file_with_points(&landtype_file, &[(1, 0)]);
     write_two_cell_hex_gridfile(&input);
 
-    earthmesh_cli::write_landtype_masked_gridfile(
+    earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
         &input,
         &land_output,
         &landtype_file,
@@ -356,18 +376,23 @@ fn regional_carve_after_land_hex_mask_does_not_reapply_placeholder_shift() {
         "landmesh",
     )
     .expect("write hex land-only gridfile");
-    let region = earthmesh_cli::GridRegion::Bbox {
+    let region = earthmesh_cli::coordinate_types::GridRegion::Bbox {
         west: -179.0,
         east: -178.0,
         north: 90.0,
         south: 89.0,
     };
-    let kept =
-        earthmesh_cli::write_regional_gridfile(&land_output, &regional_output, &region, "hex")
-            .expect("write regional land gridfile");
+    let kept = earthmesh_cli::regional_gridfile_writers::write_regional_gridfile(
+        &land_output,
+        &regional_output,
+        &region,
+        "hex",
+    )
+    .expect("write regional land gridfile");
 
-    let regional_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&regional_output)
-        .expect("read regional land gridfile");
+    let regional_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&regional_output)
+            .expect("read regional land gridfile");
     let land_cell = regional_mesh
         .w_points
         .iter()
@@ -398,26 +423,34 @@ fn landtype_point_sampler_reads_requested_points_in_both_dimension_orders() {
     write_landtype_file(&lon_lat_file, 360, 180);
     write_landtype_lat_lon_file(&lat_lon_file, 360, 180);
     let points = [
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.5,
             lat: 89.5,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.5,
             lat: 88.5,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: 179.5,
             lat: -89.5,
         },
     ];
 
     let lon_lat_values =
-        earthmesh_cli::sample_landtype_values_for_points_fortran_indexed(&lon_lat_file, 1, &points)
-            .expect("sample longitude-latitude landtype");
+        earthmesh_cli::mkgrd_data_preprocess_source::sample_landtype_values_for_points_one_based(
+            &lon_lat_file,
+            1,
+            &points,
+        )
+        .expect("sample longitude-latitude landtype");
     let lat_lon_values =
-        earthmesh_cli::sample_landtype_values_for_points_fortran_indexed(&lat_lon_file, 1, &points)
-            .expect("sample latitude-longitude landtype");
+        earthmesh_cli::mkgrd_data_preprocess_source::sample_landtype_values_for_points_one_based(
+            &lat_lon_file,
+            1,
+            &points,
+        )
+        .expect("sample latitude-longitude landtype");
 
     assert_eq!(lon_lat_values, vec![2, 7, 4]);
     assert_eq!(lat_lon_values, lon_lat_values);
@@ -431,21 +464,21 @@ fn landtype_surface_class_sampler_returns_preview_codes_without_coupling_file() 
     let landtype_file = root.join("landtype.nc");
     write_landtype_file_with_points(&landtype_file, &[(1, 0), (3, 0)]);
     let points = [
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.5,
             lat: 89.5,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.5,
             lat: 89.5,
         },
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -176.5,
             lat: 89.5,
         },
     ];
 
-    let codes = earthmesh_cli::sample_landtype_surface_class_codes_for_points_fortran_indexed(
+    let codes = earthmesh_cli::mkgrd_data_preprocess_source::sample_landtype_surface_class_codes_for_points_one_based(
         &landtype_file,
         1,
         &points,
@@ -463,16 +496,19 @@ fn data_preprocess_v3_source_descriptors_cover_landtype_threshold_hydro_and_coas
     let landtype_file = root.join("landtype.nc");
     write_landtype_file(&landtype_file, 360, 180);
 
-    let landtype = earthmesh_cli::build_v3_data_source_descriptor(
-        earthmesh_cli::V3DataSourceKind::Landtype,
+    let landtype = earthmesh_cli::v3_data_source_io::build_v3_data_source_descriptor(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Landtype,
         &landtype_file,
     )
     .expect("landtype source descriptor");
-    assert_eq!(landtype.kind, earthmesh_cli::V3DataSourceKind::Landtype);
+    assert_eq!(
+        landtype.kind,
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Landtype
+    );
     assert_eq!(landtype.semantic_layers, vec!["landtype"]);
 
-    let hydro = earthmesh_cli::build_v3_data_source_descriptor(
-        earthmesh_cli::V3DataSourceKind::Hydro,
+    let hydro = earthmesh_cli::v3_data_source_io::build_v3_data_source_descriptor(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Hydro,
         root.join("MERIT_Hydro"),
     )
     .expect("hydro source descriptor");
@@ -481,8 +517,8 @@ fn data_preprocess_v3_source_descriptors_cover_landtype_threshold_hydro_and_coas
         vec!["river_r2", "river_r3", "estuary"]
     );
 
-    let coast = earthmesh_cli::build_v3_data_source_descriptor(
-        earthmesh_cli::V3DataSourceKind::Coast,
+    let coast = earthmesh_cli::v3_data_source_io::build_v3_data_source_descriptor(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Coast,
         root.join("coast"),
     )
     .expect("coast source descriptor");
@@ -491,22 +527,26 @@ fn data_preprocess_v3_source_descriptors_cover_landtype_threshold_hydro_and_coas
         vec!["coast_land", "coast_ocean", "shoreline"]
     );
 
-    let threshold = earthmesh_cli::build_v3_data_source_descriptor(
-        earthmesh_cli::V3DataSourceKind::Threshold,
+    let threshold = earthmesh_cli::v3_data_source_io::build_v3_data_source_descriptor(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Threshold,
         root.join("thresholds"),
     )
     .expect("threshold source descriptor");
     assert_eq!(threshold.semantic_layers, vec!["threshold_fields"]);
 
-    let report = earthmesh_cli::read_landtype_data_preprocess_fortran_indexed(&landtype_file, 1)
+    let report =
+        earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_data_preprocess_one_based(
+            &landtype_file,
+            1,
+        )
         .expect("read landtype preprocess data");
     assert_eq!(
         report.source.kind,
-        earthmesh_cli::V3DataSourceKind::Landtype
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Landtype
     );
     assert_eq!(report.source.path, landtype_file);
 
-    let source_state = earthmesh_cli::build_mkgrd_data_preprocess_source_state_fortran_indexed(
+    let source_state = earthmesh_cli::mkgrd_data_preprocess_source::build_mkgrd_data_preprocess_source_state_one_based(
         &root,
         &landtype_file,
         1,
@@ -522,7 +562,7 @@ fn data_preprocess_v3_source_descriptors_cover_landtype_threshold_hydro_and_coas
     assert_eq!(source_state.sources.len(), 1);
     assert_eq!(
         source_state.sources[0].kind,
-        earthmesh_cli::V3DataSourceKind::Landtype
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Landtype
     );
     assert_eq!(source_state.sources[0].path, landtype_file);
 
@@ -542,7 +582,7 @@ fn data_preprocess_source_state_can_be_built_from_mkgrd_config_with_grid_overrid
     .expect("parse mkgrd config");
 
     let source_state =
-        earthmesh_cli::build_mkgrd_data_preprocess_source_state_from_config_fortran_indexed(
+        earthmesh_cli::mkgrd_data_preprocess_source::build_mkgrd_data_preprocess_source_state_from_config_one_based(
             &root,
             &config,
             Some(1),
@@ -567,7 +607,11 @@ fn data_preprocess_reads_real_landtype_latitude_longitude_variable_order() {
     let landtype_file = root.join("landtype_lat_lon.nc");
     write_landtype_lat_lon_file(&landtype_file, 360, 180);
 
-    let report = earthmesh_cli::read_landtype_data_preprocess_fortran_indexed(&landtype_file, 1)
+    let report =
+        earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_data_preprocess_one_based(
+            &landtype_file,
+            1,
+        )
         .expect("read latitude-longitude landtype preprocess data");
 
     assert_eq!(report.nlons_source, 360);
@@ -582,12 +626,16 @@ fn data_preprocess_reads_real_landtype_latitude_longitude_variable_order() {
 }
 
 #[test]
-fn data_preprocess_reads_landtype_file_axes_and_maxlc_like_fortran() {
+fn data_preprocess_reads_landtype_file_axes_and_maxlc_like_canonical() {
     let root = temp_root("data_preprocess_landtype");
     let landtype_file = root.join("landtype.nc");
     write_landtype_file(&landtype_file, 360, 180);
 
-    let report = earthmesh_cli::read_landtype_data_preprocess_fortran_indexed(&landtype_file, 1)
+    let report =
+        earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_data_preprocess_one_based(
+            &landtype_file,
+            1,
+        )
         .expect("read landtype preprocess data");
 
     assert_eq!(report.nlons_source, 360);
@@ -604,13 +652,88 @@ fn data_preprocess_reads_landtype_file_axes_and_maxlc_like_fortran() {
     assert_eq!(report.lat_vertex[1], 90.0);
     assert_eq!(report.lat_vertex[181], -90.0);
 
-    let source_grid = report.refine_prepare_source_grid(11);
-    assert_eq!(source_grid.gridnum_perdegree, 1);
-    assert_eq!(source_grid.nlons_source, 360);
-    assert_eq!(source_grid.nlats_source, 180);
-    assert_eq!(source_grid.first_triangle_id, 11);
-    assert_eq!(source_grid.lon_i[1], report.lon_i[1]);
-    assert_eq!(source_grid.lat_vertex[181], -90.0);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn landtype_bbox_window_matches_dense_reader_for_both_dimension_orders() {
+    let root = temp_root("landtype_bbox_window_orders");
+    let lon_lat_file = root.join("landtype_lon_lat.nc");
+    let lat_lon_file = root.join("landtype_lat_lon.nc");
+    write_landtype_file(&lon_lat_file, 360, 180);
+    write_landtype_lat_lon_file(&lat_lon_file, 360, 180);
+    let bounds = earthmesh_mesh::AreaJudgeSourceBounds {
+        minlon_source: 1,
+        maxlon_source: 4,
+        maxlat_source: 1,
+        minlat_source: 3,
+    };
+
+    for path in [&lon_lat_file, &lat_lon_file] {
+        let dense =
+            earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_data_preprocess_one_based(
+                path, 1,
+            )
+            .expect("read dense fixture");
+        let window =
+            earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_bbox_window_one_based(
+                path, 1, bounds,
+            )
+            .expect("read landtype window");
+
+        assert_eq!(window.nlons, 4);
+        assert_eq!(window.nlats, 3);
+        assert_eq!(window.values.len(), 12);
+        for lon_index in bounds.minlon_source..=bounds.maxlon_source {
+            for lat_index in bounds.maxlat_source..=bounds.minlat_source {
+                assert_eq!(
+                    window.value_at_global(lon_index, lat_index),
+                    Some(dense.landtypes_global[lon_index][lat_index] as i8),
+                    "mismatch at ({lon_index},{lat_index}) for {}",
+                    path.display()
+                );
+            }
+        }
+        assert_eq!(window.value_at_global(5, 1), None);
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn production_resolution_landtype_uses_sparse_window_and_rejects_dense_compatibility_read() {
+    let root = temp_root("landtype_sparse_production_window");
+    let landtype_file = root.join("landtype_30gpd.nc");
+    declare_sparse_landtype_file(&landtype_file, 10_800, 5_400);
+    let bounds = earthmesh_mesh::AreaJudgeSourceBounds {
+        minlon_source: 4_000,
+        maxlon_source: 4_015,
+        maxlat_source: 2_000,
+        minlat_source: 2_015,
+    };
+
+    let window = earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_bbox_window_one_based(
+        &landtype_file,
+        30,
+        bounds,
+    )
+    .expect("read sparse production-resolution window");
+    assert_eq!(window.nlons, 16);
+    assert_eq!(window.nlats, 16);
+    assert_eq!(window.values.len(), 256);
+
+    let err = earthmesh_cli::mkgrd_data_preprocess_source::read_landtype_data_preprocess_one_based(
+        &landtype_file,
+        30,
+    )
+    .expect_err("dense production-resolution read must be rejected before allocation");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(err
+        .to_string()
+        .contains("dense landtype compatibility reader"));
+    assert!(err
+        .to_string()
+        .contains("read_landtype_bbox_window_one_based"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -633,7 +756,7 @@ fn data_preprocess_area_judge_source_builds_seaorland_from_landtype_file() {
         minlat_source: 2,
     };
 
-    let report = earthmesh_cli::read_data_preprocess_area_judge_source_fortran_indexed(
+    let report = earthmesh_cli::mkgrd_data_preprocess_source::read_data_preprocess_area_judge_source_one_based(
         &landtype_file,
         1,
         &is_in_domain,
@@ -662,7 +785,7 @@ fn data_preprocess_area_judge_base_state_reads_landtype_file_before_domain_seaor
     let landtype_file = root.join("landtype.nc");
     write_landtype_file(&landtype_file, 360, 180);
 
-    let report = earthmesh_cli::read_data_preprocess_area_judge_base_state_fortran_indexed(
+    let report = earthmesh_cli::mkgrd_data_preprocess_source::read_data_preprocess_area_judge_base_state_one_based(
         &root,
         &landtype_file,
         1,

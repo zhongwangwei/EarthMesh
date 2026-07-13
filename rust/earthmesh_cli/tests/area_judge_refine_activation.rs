@@ -1,4 +1,4 @@
-use earthmesh_cli::activate_area_judge_calculated_refine_fortran_indexed;
+use earthmesh_cli::area_judge_refine_steps::activate_area_judge_calculated_refine_one_based;
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 #[test]
@@ -13,7 +13,7 @@ fn refine_activation_iter_zero_copies_calculated_grid_and_bounds() {
         minlat_source: 3,
     };
 
-    let report = activate_area_judge_calculated_refine_fortran_indexed(&calculated, bounds)
+    let report = activate_area_judge_calculated_refine_one_based(&calculated, bounds)
         .expect("activate calculated refine");
 
     assert_eq!(report.bounds, bounds);
@@ -29,7 +29,7 @@ fn refine_activation_iter_zero_copies_calculated_grid_and_bounds() {
 fn refine_activation_rejects_invalid_bounds_like_area_judge_refine() {
     let calculated = vec![vec![0; 5]; 5];
 
-    let err = activate_area_judge_calculated_refine_fortran_indexed(
+    let err = activate_area_judge_calculated_refine_one_based(
         &calculated,
         AreaJudgeSourceBounds {
             minlon_source: 4,

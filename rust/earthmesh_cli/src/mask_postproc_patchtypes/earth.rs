@@ -10,9 +10,9 @@ use crate::{
 /// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Earth`
 /// `patchtypes_make` loop.
 ///
-/// Rust row `0` corresponds to Fortran row `1`; output `patchtypes_select`
+/// Rust row `0` corresponds to Canonical row `1`; output `patchtypes_select`
 /// is row-major by selected longitude index, then selected latitude index.
-pub fn build_earth_patchtypes_fortran_indexed(
+pub fn build_earth_patchtypes_one_based(
     contain: &ContainMesh,
     mask_sea_ratio: f64,
     minlon_dm_area: i32,
@@ -30,12 +30,12 @@ pub fn build_earth_patchtypes_fortran_indexed(
         ));
     }
     if dim_b < 3 {
-        let active_cell_references_pixels = contain
+        let active_cell_canonicals_pixels = contain
             .ustr_id
             .iter()
             .zip(contain.is_in_area_ustr.iter())
             .any(|(row, &active)| active == 1 && row.first().copied().unwrap_or(0) != 0);
-        if contain.ustr_ii.is_empty() && !active_cell_references_pixels {
+        if contain.ustr_ii.is_empty() && !active_cell_canonicals_pixels {
             let seaorland_ustr = vec![0_i32; contain.ustr_id.len()];
             let patchtypes_select = vec![vec![0_i32; nlats_dm_select]; nlons_dm_select];
             return Ok(EarthPatchtypes {
@@ -56,8 +56,8 @@ pub fn build_earth_patchtypes_fortran_indexed(
     let mut sum_land_ustr = 0usize;
     let mut sum_sea_ustr = 0usize;
 
-    for fortran_cell_id in 2..=contain.ustr_id.len() {
-        let cell_idx = fortran_cell_id - 1;
+    for canonical_cell_id in 2..=contain.ustr_id.len() {
+        let cell_idx = canonical_cell_id - 1;
         if contain.is_in_area_ustr[cell_idx] != 1 {
             continue;
         }
@@ -73,22 +73,22 @@ pub fn build_earth_patchtypes_fortran_indexed(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "cell {fortran_cell_id} references pixel id {last_pixel_id}, outside 1..={}",
+                    "cell {canonical_cell_id} canonicals pixel id {last_pixel_id}, outside 1..={}",
                     contain.ustr_ii.len()
                 ),
             ));
         }
 
         let mut land_pixels = 0_i32;
-        for fortran_pixel_id in first_pixel_id..=last_pixel_id {
-            land_pixels += contain.ustr_ii[fortran_pixel_id - 1][2];
+        for canonical_pixel_id in first_pixel_id..=last_pixel_id {
+            land_pixels += contain.ustr_ii[canonical_pixel_id - 1][2];
         }
 
         if f64::from(land_pixels) / pixel_count as f64 > mask_sea_ratio {
             seaorland_ustr[cell_idx] = 1;
             sum_land_ustr += 1;
-            for fortran_pixel_id in first_pixel_id..=last_pixel_id {
-                let pixel = &contain.ustr_ii[fortran_pixel_id - 1];
+            for canonical_pixel_id in first_pixel_id..=last_pixel_id {
+                let pixel = &contain.ustr_ii[canonical_pixel_id - 1];
                 if pixel[2] == 0 {
                     continue;
                 }
@@ -101,10 +101,10 @@ pub fn build_earth_patchtypes_fortran_indexed(
                     nlats_dm_select,
                 )?;
                 patchtypes_select[lon_idx][lat_idx] =
-                    i32::try_from(fortran_cell_id).map_err(|_| {
+                    i32::try_from(canonical_cell_id).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            format!("cell id {fortran_cell_id} does not fit i32"),
+                            format!("cell id {canonical_cell_id} does not fit i32"),
                         )
                     })?;
             }
@@ -124,7 +124,7 @@ pub fn build_earth_patchtypes_fortran_indexed(
 
 /// Build the `earthmesh_info.nc4` payload from the final
 /// `MOD_mask_postproc.F90:mask_postproc_Earth` role/refinement loop.
-pub fn build_earthmesh_info_fortran_indexed(
+pub fn build_earthmesh_info_one_based(
     mode_grid: &str,
     num_mp_step: &[usize],
     sjx_points: usize,
@@ -240,7 +240,7 @@ pub fn build_earthmesh_info_fortran_indexed(
     })
 }
 
-/// Compose the Earth branch role/refinement payload with the legacy
+/// Compose the Earth branch role/refinement payload with the compatibility
 /// `result/earthmesh_info.nc4` output path.
 pub fn write_mask_postproc_earth_info_netcdf(
     plan: &MaskPostprocDomainIoPlan,
@@ -259,7 +259,7 @@ pub fn write_mask_postproc_earth_info_netcdf(
             ),
         ));
     }
-    let info = build_earthmesh_info_fortran_indexed(
+    let info = build_earthmesh_info_one_based(
         &plan.mode_grid,
         num_mp_step,
         sjx_points,

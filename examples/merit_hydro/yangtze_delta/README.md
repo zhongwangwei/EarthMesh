@@ -25,4 +25,4 @@ Source data expected under `${EARTHMESH_DATA}`:
 Runnable comparison namelist:
 
 - `${EARTHMESH_DATA}/Atmos_hex_NXP112_hydro_close_yangtze_r3d3_cst20_smoke.nml`
-- Fortran comparison result dir: `${EARTHMESH_DATA}/cases/ATMOS_hydro_N112_r3d3_cst20/result`
+- Example result dir: `${EARTHMESH_DATA}/cases/ATMOS_hydro_N112_r3d3_cst20/result`

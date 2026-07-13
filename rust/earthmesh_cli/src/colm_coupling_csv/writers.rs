@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::netcdf_to_io_error;
+use crate::{colm_coupling_csv::COLM_F64_FILL_VALUE, netcdf_to_io_error};
 
 pub(crate) fn write_colm_i32_var(
     file: &mut netcdf::FileMut,
@@ -37,5 +37,7 @@ pub(crate) fn write_colm_f64_var(
         var.put_attribute("units", units)
             .map_err(netcdf_to_io_error)?;
     }
+    var.put_attribute("_FillValue", COLM_F64_FILL_VALUE)
+        .map_err(netcdf_to_io_error)?;
     var.put_values(values, ..).map_err(netcdf_to_io_error)
 }

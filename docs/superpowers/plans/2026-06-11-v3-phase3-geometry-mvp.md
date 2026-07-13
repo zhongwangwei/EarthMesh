@@ -682,7 +682,7 @@ Tested: python3 -m pytest tests/test_v3_geometry.py tests/test_v3_geometry_backe
 
 ## Self-Review
 
-- Spec coverage: This plan implements Phase 3 from `docs/v3_architecture_design.md`: mask-cell intersection, priority/fraction merge, and Rust/Python parity contract groundwork.
+- Spec coverage: This plan implements Phase 3: mask-cell intersection, priority/fraction merge, and Rust/Python parity contract groundwork.
 - Scope control: It does not introduce PyO3, maturin, Cargo, or a Rust crate yet; it first locks the interface a future Rust backend must match.
 - Shape compatibility: Tests cover TRI, HEX, and POLYGON cells through `CanonicalCell`.
 - CoLM future reserve: Overlay results expose class fractions and QA counters that can feed CoLM2024/CoLM20XX coupling products.

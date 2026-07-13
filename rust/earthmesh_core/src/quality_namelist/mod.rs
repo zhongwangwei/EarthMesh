@@ -1,4 +1,6 @@
-use crate::{fortran_quote, parse_f64, parse_fortran_string, parse_i32, strip_fortran_comment};
+use crate::{
+    canonical_quote, parse_canonical_string, parse_f64, parse_i32, strip_canonical_comment,
+};
 
 /// Quality-gate thresholds + on-violation policy, carried in an optional
 /// `&quality` namelist block. **Purely additive**: the existing `&mkgrd` /
@@ -17,6 +19,7 @@ pub struct QualityNamelist {
     pub area_cv_warn: f64,
     pub max_adjacent_resolution_ratio_warn: f64,
     pub worst_cells_limit: i32,
+    pub repair_batch_limit: i32,
     /// "warn" (report only) or "block" (a Fail verdict aborts the run).
     pub on_violation: String,
 }
@@ -34,6 +37,7 @@ impl Default for QualityNamelist {
             area_cv_warn: 1.5,
             max_adjacent_resolution_ratio_warn: 2.0,
             worst_cells_limit: 50,
+            repair_batch_limit: 1,
             on_violation: String::from("warn"),
         }
     }
@@ -48,7 +52,9 @@ impl QualityNamelist {
         let mut in_block = false;
 
         for raw_line in input.lines() {
-            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            let line = strip_canonical_comment(raw_line)
+                .trim()
+                .trim_end_matches(',');
             if line.is_empty() {
                 continue;
             }
@@ -86,7 +92,8 @@ impl QualityNamelist {
                     config.max_adjacent_resolution_ratio_warn = parse_f64(field, value)?
                 }
                 "worst_cells_limit" => config.worst_cells_limit = parse_i32(field, value)?,
-                "on_violation" => config.on_violation = parse_fortran_string(value),
+                "repair_batch_limit" => config.repair_batch_limit = parse_i32(field, value)?,
+                "on_violation" => config.on_violation = parse_canonical_string(value),
                 _ => {}
             }
         }
@@ -133,8 +140,12 @@ impl QualityNamelist {
             self.worst_cells_limit
         ));
         out.push_str(&format!(
+            "  NL%repair_batch_limit = {}\n",
+            self.repair_batch_limit
+        ));
+        out.push_str(&format!(
             "  NL%on_violation = {}\n",
-            fortran_quote(&self.on_violation)
+            canonical_quote(&self.on_violation)
         ));
         out.push_str("/\n");
         out

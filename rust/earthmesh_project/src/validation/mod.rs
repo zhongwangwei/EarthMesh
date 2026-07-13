@@ -1,9 +1,9 @@
 use crate::{
-    criterion_catalog, engine_mapping::DEPRECATED_OLAM_MODEL_FORMAT_ERROR, DomainConfig,
-    ExpertOverrides, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig,
-    ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig,
-    RefinementRecipe, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
-    SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
+    criterion_catalog, CoupledMeshConfig, DomainConfig, ExpertOverrides, HfieldRefinementRecipe,
+    HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat, ProjectConfig,
+    ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe, RegionShape,
+    ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
+    ThresholdField, ViolationPolicy, PROJECT_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 
@@ -27,8 +27,11 @@ impl ProjectConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version.trim().is_empty() {
-            return Err("project schema_version must not be empty".to_string());
+        if self.schema_version != PROJECT_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported project schema_version {:?}; expected {PROJECT_SCHEMA_VERSION}",
+                self.schema_version
+            ));
         }
         if self.metadata.name.trim().is_empty() {
             return Err("project metadata.name must not be empty".to_string());
@@ -40,10 +43,23 @@ impl ProjectConfig {
         self.target.validate()?;
         self.validate_data_layers()?;
         self.refinement.validate()?;
+        self.validate_refinement_sources()?;
         self.quality.validate()?;
+        if self.quality.on_violation == ViolationPolicy::AutoRefine {
+            if !matches!(self.domain, DomainConfig::Regional { .. }) {
+                return Err("quality auto_refine requires a regional domain".to_string());
+            }
+            if !self.refinement.enabled {
+                return Err("quality auto_refine requires refinement.enabled = true".to_string());
+            }
+        }
         self.expert.validate()?;
         if let Some(hydro_coast) = &self.hydro_coast {
             hydro_coast.validate()?;
+            self.hydro_execution_plan()?;
+        }
+        if let Some(coupling) = &self.coupling {
+            coupling.validate(self)?;
         }
         Ok(())
     }
@@ -65,6 +81,36 @@ impl ProjectConfig {
             }
         }
         Ok(())
+    }
+
+    fn validate_refinement_sources(&self) -> Result<(), String> {
+        if !self.refinement.enabled {
+            return Ok(());
+        }
+        let has_specified_shape = self.refinement.specified_circle.is_some()
+            || self.refinement.specified_bbox.is_some()
+            || self.refinement.specified_close.is_some();
+        let has_layer_source = self.data_layers.iter().any(|layer| {
+            if !layer.enabled {
+                return false;
+            }
+            match layer.role {
+                ProjectLayerRole::LandType => matches!(
+                    self.target.kind,
+                    MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth
+                ),
+                ProjectLayerRole::Threshold(_) => true,
+                ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
+            }
+        });
+        if has_specified_shape || has_layer_source {
+            Ok(())
+        } else {
+            Err(
+                "refinement is enabled but no refinement source is enabled (add a threshold or specified bbox/circle/close source, or disable refinement)"
+                    .to_string(),
+            )
+        }
     }
 
     fn validate_threshold_layer(
@@ -122,8 +168,8 @@ impl RegionShape {
                 if !(-90.0..=90.0).contains(s) || !(-90.0..=90.0).contains(n) {
                     return Err("bbox latitudes must be between -90 and 90".to_string());
                 }
-                if w >= e {
-                    return Err("bbox west must be < east".to_string());
+                if w == e {
+                    return Err("bbox west and east must differ".to_string());
                 }
                 if n <= s {
                     return Err("bbox south must be < north".to_string());
@@ -147,6 +193,12 @@ impl RegionShape {
                 if *radius_km <= 0.0 {
                     return Err("circle radius_km must be > 0".to_string());
                 }
+                const MAX_MINOR_CIRCLE_RADIUS_KM: f64 = std::f64::consts::FRAC_PI_2 * 6_371.008_8;
+                if *radius_km > MAX_MINOR_CIRCLE_RADIUS_KM {
+                    return Err(format!(
+                        "circle radius_km must be <= {MAX_MINOR_CIRCLE_RADIUS_KM:.3} for minor-hemisphere domains"
+                    ));
+                }
                 Ok(())
             }
             RegionShape::Shapefile { path } => {
@@ -159,25 +211,28 @@ impl RegionShape {
                 }
                 Ok(())
             }
-            RegionShape::Close { path, format } => {
+            RegionShape::Close {
+                path,
+                format,
+                boundary,
+            } => {
+                boundary.validate()?;
                 if path.trim().is_empty() {
                     return Err("close domain path must not be empty".to_string());
                 }
                 let lower = path.to_ascii_lowercase();
                 let ok = match format {
-                    crate::CloseMaskFormat::PolygonShp => lower.ends_with(".shp"),
                     crate::CloseMaskFormat::Nml => lower.ends_with(".nml"),
                     crate::CloseMaskFormat::Netcdf => {
                         lower.ends_with(".nc") || lower.ends_with(".nc4")
                     }
+                    crate::CloseMaskFormat::PolygonShp => lower.ends_with(".shp"),
                     crate::CloseMaskFormat::LonLatText => {
                         lower.ends_with(".txt") || lower.ends_with(".csv")
                     }
                 };
                 if !ok {
-                    return Err(
-                        "close domain path extension does not match selected format".to_string()
-                    );
+                    return Err("close domain path extension does not match its format".to_string());
                 }
                 Ok(())
             }
@@ -192,6 +247,12 @@ impl QualityConfig {
         }
         if self.min_angle_deg <= 0.0 {
             return Err("quality min_angle_deg must be > 0".to_string());
+        }
+        if self.auto_refine_batch_cells == 0 {
+            return Err("quality auto_refine_batch_cells must be > 0".to_string());
+        }
+        if self.auto_refine_batch_cells > i32::MAX as usize {
+            return Err("quality auto_refine_batch_cells exceeds the engine limit".to_string());
         }
         Ok(())
     }
@@ -287,6 +348,18 @@ impl HfieldRefinementRecipe {
         if matches!(self.base_m, Some(base) if !base.is_finite() || base <= 0.0) {
             return Err("h-field base_m must be positive when set".to_string());
         }
+        match (self.origin_lon, self.origin_lat) {
+            (None, None) => {}
+            (Some(lon), Some(lat))
+                if lon.is_finite()
+                    && lat.is_finite()
+                    && (-180.0..=180.0).contains(&lon)
+                    && (-90.0..=90.0).contains(&lat) => {}
+            (Some(_), Some(_)) => {
+                return Err("h-field origin must be valid WGS84 lon/lat".to_string())
+            }
+            _ => return Err("h-field origin_lon and origin_lat must be set together".to_string()),
+        }
         Ok(())
     }
 }
@@ -324,11 +397,23 @@ impl SpecifiedBboxRefinement {
 
 impl SpecifiedCloseRefinement {
     fn validate(&self) -> Result<(), String> {
-        RegionShape::Shapefile {
-            path: self.path.clone(),
+        self.boundary.validate()?;
+        let path = self.path.trim();
+        if path.is_empty() {
+            return Err("specified refinement close path must not be empty".to_string());
         }
-        .validate()
-        .map_err(|e| format!("specified refinement {e}"))
+        let lower = path.to_ascii_lowercase();
+        if [".shp", ".nml", ".nc", ".nc4", ".txt", ".csv"]
+            .iter()
+            .any(|extension| lower.ends_with(extension))
+        {
+            Ok(())
+        } else {
+            Err(
+                "specified refinement close path must end with .shp, .nml, .nc, .nc4, .txt, or .csv"
+                    .to_string(),
+            )
+        }
     }
 }
 
@@ -352,9 +437,6 @@ impl MeshTargetConfig {
             }
             _ => Ok(()),
         }?;
-        if self.model_format == ModelFormat::Olam {
-            return Err(DEPRECATED_OLAM_MODEL_FORMAT_ERROR.to_string());
-        }
         match (self.kind, self.model_format) {
             (
                 MeshDomainKind::Land | MeshDomainKind::Earth | MeshDomainKind::Coupled,
@@ -470,6 +552,44 @@ impl HydroCoastConfig {
         }
         if self.r3_width_m < self.r2_width_m {
             return Err("hydro_coast r3_width_m must be >= r2_width_m".to_string());
+        }
+        if self.merit_stride != 1 {
+            return Err(
+                "hydro_coast merit_stride must be 1 for physical coast adjacency and production coupling"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl CoupledMeshConfig {
+    fn validate(&self, project: &ProjectConfig) -> Result<(), String> {
+        if matches!(&self.cama_root, Some(path) if path.trim().is_empty()) {
+            return Err("coupling cama_root must not be empty when set".to_string());
+        }
+        if project.target.kind != MeshDomainKind::Coupled {
+            return Err("coupling config requires the coupled target kind".to_string());
+        }
+        if !project.data_layers.iter().any(|layer| {
+            layer.enabled
+                && !layer.path.trim().is_empty()
+                && layer.role == ProjectLayerRole::LandType
+        }) {
+            return Err(
+                "coupling config requires an enabled landtype layer for LOCmesh point sampling"
+                    .to_string(),
+            );
+        }
+        if self.identify_river_mouth
+            && !matches!(
+                self.cama_root.as_deref(),
+                Some(path) if !path.trim().is_empty()
+            )
+        {
+            return Err(
+                "coupling river-mouth identification requires coupling.cama_root".to_string(),
+            );
         }
         Ok(())
     }

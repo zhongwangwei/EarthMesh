@@ -17,9 +17,9 @@ fn find_index_in_prefix(index: usize, indices: &[usize], n_indices: usize) -> Op
 /// Port of `MOD_grid_preprocess:set_weightsOnEdge`.
 ///
 /// The routine computes MPAS-compatible edge stencils and reconstruction
-/// weights for Fortran-indexed mesh arrays. Weight rows are stored compactly per
+/// weights for Canonical-indexed mesh arrays. Weight rows are stored compactly per
 /// edge rather than in a fixed `maxEdges2 x num_edge` matrix.
-pub fn set_weights_on_edge_fortran_indexed(
+pub fn set_weights_on_edge_one_based(
     area_cell: &[f64],
     angle_edge: &[f64],
     dc_edge: &[f64],

@@ -9,6 +9,8 @@ mod cli_hydro_export;
 mod cli_hydro_workflow;
 mod cli_mkgrd_output;
 mod cli_mkgrd_run;
+mod cli_project_hydro;
+mod cli_project_quality;
 mod cli_quality;
 mod cli_runtime;
 

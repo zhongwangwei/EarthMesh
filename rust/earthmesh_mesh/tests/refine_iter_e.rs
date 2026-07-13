@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_iter_e_judge_fortran_indexed;
+use earthmesh_mesh::refine_iter_e_judge_one_based;
 
 fn base_mrl_new() -> Vec<i32> {
     vec![0, 1, 1, 4, 4, 1, 1, 1, 4, 4, 1, 1, 1, 1]
@@ -33,7 +33,7 @@ fn iter_e_marks_previous_triangle_when_first_opposite_cell_also_has_convex_pair(
     let mrl_new = base_mrl_new();
     let ref_lbx = vec![0, 0, 1, 1, 0];
 
-    let ref_sjx = refine_iter_e_judge_fortran_indexed(
+    let ref_sjx = refine_iter_e_judge_one_based(
         1,
         4,
         &cells_on_triangle,
@@ -78,7 +78,7 @@ fn iter_e_marks_after_pair_when_second_opposite_cell_has_convex_pair() {
     let mrl_new = base_mrl_new();
     let ref_lbx = vec![0, 0, 1, 0, 1, 0];
 
-    let ref_sjx = refine_iter_e_judge_fortran_indexed(
+    let ref_sjx = refine_iter_e_judge_one_based(
         1,
         5,
         &cells_on_triangle,
@@ -101,7 +101,7 @@ fn iter_e_rejects_triangle_ids_missing_from_cells_on_triangle() {
     let mrl_new = vec![0, 1, 1, 4, 4, 1, 1, 1];
     let ref_lbx = vec![0, 0, 1];
 
-    let err = refine_iter_e_judge_fortran_indexed(
+    let err = refine_iter_e_judge_one_based(
         1,
         2,
         &cells_on_triangle,

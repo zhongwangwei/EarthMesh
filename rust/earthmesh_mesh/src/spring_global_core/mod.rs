@@ -3,12 +3,12 @@ use super::*;
 /// Pure Rust adapter for the in-memory calculation sequence inside
 /// `MOD_grid_preprocess:Springjustment_global`.
 ///
-/// This deliberately excludes NetCDF/file side effects. It wires the migrated
-/// kernels in the same order as the Fortran workflow: triangle neighbors,
+/// This deliberately excludes NetCDF/file side effects. It wires the current
+/// kernels in the same order as the Canonical workflow: triangle neighbors,
 /// edge/connectivity construction, edge-neighbor topology, global spring
 /// dynamics, cell lon/lat refresh, triangle centroid/circumcenter refresh, and
 /// final MPAS-style vertex-array ordering.
-pub fn springjustment_global_core_fortran_indexed(
+pub fn springjustment_global_core_one_based(
     input: SpringjustmentGlobalCoreInput<'_>,
 ) -> Option<SpringjustmentGlobalCoreOutput> {
     if input.triangle_lonlat.len() != input.cells_on_triangle.len()
@@ -19,7 +19,7 @@ pub fn springjustment_global_core_fortran_indexed(
         return None;
     }
 
-    let triangle_neighbors = match triangle_neighbors_from_cell_membership_fortran_indexed(
+    let triangle_neighbors = match triangle_neighbors_from_cell_membership_one_based(
         input.cells_on_triangle,
         input.triangles_on_cell,
         input.n_edges_on_cell,
@@ -30,7 +30,7 @@ pub fn springjustment_global_core_fortran_indexed(
             return None;
         }
     };
-    let edge_output = match get_edge_production_fortran_indexed(
+    let edge_output = match get_edge_production_one_based(
         &triangle_neighbors,
         input.cells_on_triangle,
         input.triangle_lonlat,
@@ -54,17 +54,17 @@ pub fn springjustment_global_core_fortran_indexed(
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let geometric_order = order_vertices_on_cell_fortran_indexed(
+    let geometric_order = order_vertices_on_cell_one_based(
         &cell_points_for_order,
         &triangle_points_for_order,
         input.triangles_on_cell,
         input.n_edges_on_cell,
     )
     .and_then(|ordered| {
-        standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)
+        standardize_vertices_on_cell_rotation_one_based(&ordered, input.n_edges_on_cell)
     });
     let topological_order = || {
-        order_vertices_on_cell_by_shared_edges_fortran_indexed(
+        order_vertices_on_cell_by_shared_edges_one_based(
             input.triangles_on_cell,
             input.n_edges_on_cell,
             &edge_output.edges_on_vertex,
@@ -72,10 +72,10 @@ pub fn springjustment_global_core_fortran_indexed(
             &cell_points_for_order,
         )
         .and_then(|ordered| {
-            standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, input.n_edges_on_cell)
+            standardize_vertices_on_cell_rotation_one_based(&ordered, input.n_edges_on_cell)
         })
     };
-    let cell_connectivity = match connect_on_cell_fortran_indexed(
+    let cell_connectivity = match connect_on_cell_one_based(
         input.n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
@@ -83,7 +83,7 @@ pub fn springjustment_global_core_fortran_indexed(
     )
     .or_else(|| {
         geometric_order.as_ref().and_then(|ordered| {
-            connect_on_cell_fortran_indexed(
+            connect_on_cell_one_based(
                 input.n_edges_on_cell,
                 &edge_output.cells_on_edge,
                 &edge_output.edges_on_vertex,
@@ -93,7 +93,7 @@ pub fn springjustment_global_core_fortran_indexed(
     })
     .or_else(|| {
         topological_order().and_then(|ordered| {
-            connect_on_cell_fortran_indexed(
+            connect_on_cell_one_based(
                 input.n_edges_on_cell,
                 &edge_output.cells_on_edge,
                 &edge_output.edges_on_vertex,
@@ -107,7 +107,7 @@ pub fn springjustment_global_core_fortran_indexed(
             return None;
         }
     };
-    let edges_on_edge_tri = match edges_on_edge_tri_fortran_indexed(
+    let edges_on_edge_tri = match edges_on_edge_tri_one_based(
         &edge_output.vertices_on_edge,
         &edge_output.edges_on_vertex,
     ) {
@@ -117,24 +117,23 @@ pub fn springjustment_global_core_fortran_indexed(
             return None;
         }
     };
-    let distance_output =
-        match set_dists_on_edge_global_fortran_indexed(SetDistsOnEdgeGlobalInput {
-            base_dists_on_edge: input.base_dists_on_edge,
-            base_cellwidth: input.base_cellwidth,
-            num_rc: input.distance_num_rc,
-            spacing: input.distance_spacing,
-            triangles_on_cell: input.triangles_on_cell,
-            cells_on_triangle: Some(input.cells_on_triangle),
-            edges_on_vertex: &edge_output.edges_on_vertex,
-            cells_on_edge: &edge_output.cells_on_edge,
-            steps: input.distance_steps,
-        }) {
-            Some(value) => value,
-            None => {
-                spring_global_debug("set_dists_on_edge_global failed");
-                return None;
-            }
-        };
+    let distance_output = match set_dists_on_edge_global_one_based(SetDistsOnEdgeGlobalInput {
+        base_dists_on_edge: input.base_dists_on_edge,
+        base_cellwidth: input.base_cellwidth,
+        num_rc: input.distance_num_rc,
+        spacing: input.distance_spacing,
+        triangles_on_cell: input.triangles_on_cell,
+        cells_on_triangle: Some(input.cells_on_triangle),
+        edges_on_vertex: &edge_output.edges_on_vertex,
+        cells_on_edge: &edge_output.cells_on_edge,
+        steps: input.distance_steps,
+    }) {
+        Some(value) => value,
+        None => {
+            spring_global_debug("set_dists_on_edge_global failed");
+            return None;
+        }
+    };
     let dists_on_edge = distance_output.dists_on_edge;
     let cellwidth = distance_output.cellwidth;
 
@@ -151,7 +150,7 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let spring_output = match spring_dynamics_global_fortran_indexed(
+    let spring_output = match spring_dynamics_global_one_based(
         &cell_points,
         input.n_edges_on_cell,
         &cell_connectivity.edges_on_cell,
@@ -175,16 +174,14 @@ pub fn springjustment_global_core_fortran_indexed(
         .copied()
         .map(xyz_to_lonlat_degrees)
         .collect::<Vec<_>>();
-    let centroid_lonlat = match centroid_spherical_mesh_fortran_indexed(
-        &updated_cell_lonlat,
-        input.cells_on_triangle,
-    ) {
-        Some(value) => value,
-        None => {
-            spring_global_debug("centroid_spherical_mesh failed");
-            return None;
-        }
-    };
+    let centroid_lonlat =
+        match centroid_spherical_mesh_one_based(&updated_cell_lonlat, input.cells_on_triangle) {
+            Some(value) => value,
+            None => {
+                spring_global_debug("centroid_spherical_mesh failed");
+                return None;
+            }
+        };
     let centroid_cartesian = centroid_lonlat
         .iter()
         .copied()
@@ -197,7 +194,7 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let circumcenters = match circumcenter_spherical_mesh_fortran_indexed(
+    let circumcenters = match circumcenter_spherical_mesh_one_based(
         &centroid_cartesian,
         &spring_output.updated_cell_points,
         input.cells_on_triangle,
@@ -238,7 +235,7 @@ pub fn springjustment_global_core_fortran_indexed(
             )
         })
         .collect::<Vec<_>>();
-    let final_ordered = match order_vertex_arrays_fortran_indexed(
+    let final_ordered = match order_vertex_arrays_one_based(
         &updated_triangle_points,
         &edge_points_cartesian,
         &edge_output.edges_on_vertex,

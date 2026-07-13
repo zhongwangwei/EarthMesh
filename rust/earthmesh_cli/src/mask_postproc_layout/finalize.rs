@@ -51,7 +51,7 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
         .collect::<Vec<_>>();
     let center_coordinates = lonlat_pairs_from_points(&layout.center_points);
     let vertex_coordinates = lonlat_pairs_from_points(&layout.vertex_points);
-    let mut final_data = earthmesh_mesh::finalize_mask_postproc_data_fortran_indexed(
+    let mut final_data = earthmesh_mesh::finalize_mask_postproc_data_one_based(
         mode_grid,
         &active_centers,
         &center_coordinates[..role_points],
@@ -61,7 +61,7 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
         layout.ustr_bounds.saturating_sub(1),
     )?;
 
-    let unique_vertices = earthmesh_mesh::extract_unique_vertices_fortran_indexed(
+    let unique_vertices = earthmesh_mesh::extract_unique_vertices_one_based(
         &final_data.center_neighbors_final,
         &final_data.center_neighbor_counts_final,
         layout.ustr_bounds.saturating_sub(1),
@@ -83,12 +83,11 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
         };
         final_data.vertex_coordinates_final[final_vertex_id] = coordinates;
     }
-    final_data.center_neighbors_final =
-        earthmesh_mesh::reindex_final_center_vertices_fortran_indexed(
-            &final_data.center_neighbors_final,
-            &final_data.center_neighbor_counts_final,
-            &vertex_reindex.vertex_mapping,
-        )?;
+    final_data.center_neighbors_final = earthmesh_mesh::reindex_final_center_vertices_one_based(
+        &final_data.center_neighbors_final,
+        &final_data.center_neighbor_counts_final,
+        &vertex_reindex.vertex_mapping,
+    )?;
     rebuild_final_vertex_neighbors_from_reindexed_centers(&mut final_data)?;
 
     let mesh = unstructured_mesh_from_mask_postproc_final(&final_data, mode_grid)?;
@@ -157,7 +156,7 @@ fn rebuild_final_vertex_neighbors_from_reindexed_centers(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "final center {center_id} references vertex {vertex_id}, outside bounds_final {}",
+                        "final center {center_id} canonicals vertex {vertex_id}, outside bounds_final {}",
                         final_data.bounds_final
                     ),
                 ));

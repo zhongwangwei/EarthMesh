@@ -1,9 +1,10 @@
 use earthmesh_cli::{
-    getcontain_is_in_area_ustr_fortran_indexed, GetContainAreaBounds, LonLatPoint,
+    coordinate_types::LonLatPoint, getcontain_geometry::getcontain_is_in_area_ustr_one_based,
+    getcontain_types::GetContainAreaBounds,
 };
 
 #[test]
-fn getcontain_area_selection_matches_fortran_vertex_corner_and_skip_rules() {
+fn getcontain_area_selection_matches_canonical_vertex_corner_and_skip_rules() {
     let bounds = GetContainAreaBounds {
         west: 0.0,
         east: 10.0,
@@ -81,21 +82,16 @@ fn getcontain_area_selection_matches_fortran_vertex_corner_and_skip_rules() {
     ];
     let n_edges = vec![0, 3, 3, 4, 4, 3];
 
-    let selected = getcontain_is_in_area_ustr_fortran_indexed(
-        bounds,
-        &vertices,
-        &cell_to_vertices,
-        &n_edges,
-        1,
-    )
-    .expect("calculate getcontain area mask");
+    let selected =
+        getcontain_is_in_area_ustr_one_based(bounds, &vertices, &cell_to_vertices, &n_edges, 1)
+            .expect("calculate getcontain area mask");
 
     assert_eq!(selected, vec![0, 0, 1, 1, 0, 0]);
 }
 
 #[test]
-fn getcontain_area_selection_rejects_missing_vertex_references() {
-    let err = getcontain_is_in_area_ustr_fortran_indexed(
+fn getcontain_area_selection_rejects_missing_vertex_canonicals() {
+    let err = getcontain_is_in_area_ustr_one_based(
         GetContainAreaBounds {
             west: 0.0,
             east: 1.0,
@@ -112,12 +108,12 @@ fn getcontain_area_selection_rejects_missing_vertex_references() {
     )
     .expect_err("invalid vertex id must be rejected");
 
-    assert!(err.to_string().contains("references missing vertex 2"));
+    assert!(err.to_string().contains("canonicals missing vertex 2"));
 }
 
 #[test]
-fn getcontain_area_selection_rejects_zero_vertex_references_in_active_cells() {
-    let err = getcontain_is_in_area_ustr_fortran_indexed(
+fn getcontain_area_selection_rejects_zero_vertex_canonicals_in_active_cells() {
+    let err = getcontain_is_in_area_ustr_one_based(
         GetContainAreaBounds {
             west: 0.0,
             east: 1.0,
@@ -134,5 +130,5 @@ fn getcontain_area_selection_rejects_zero_vertex_references_in_active_cells() {
     )
     .expect_err("active one-based vertex id zero must be rejected");
 
-    assert!(err.to_string().contains("references missing vertex 0"));
+    assert!(err.to_string().contains("canonicals missing vertex 0"));
 }

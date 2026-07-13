@@ -19,7 +19,7 @@ pub struct GetContainRefineFileRunConfig<'a> {
     pub num_vertex: usize,
 }
 
-/// Explicit runtime counter handoff that Fortran stored in
+/// Explicit runtime counter handoff that Canonical stored in
 /// `consts_coms:num_mp_step`, `num_wp_step`, and `num_vertex` during
 /// `MOD_GetContain.F90:Get_Contain(iter)`.
 #[derive(Debug, Clone, PartialEq, Eq)]

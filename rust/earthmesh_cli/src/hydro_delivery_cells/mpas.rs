@@ -70,7 +70,10 @@ pub fn mpas_cell_polygons_geojson(
         let mut props = format!(
             "\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
              \"center_lon\": {}, \"center_lat\": {}",
-            cell_id, ci, clon, clat
+            cell_id,
+            ci + 1,
+            clon,
+            clat
         );
         if let Some(area) = area_cell {
             if let Some(a) = area.get(ci) {

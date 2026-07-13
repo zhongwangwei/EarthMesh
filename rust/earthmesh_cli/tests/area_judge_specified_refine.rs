@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    build_area_judge_specified_refine_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_refine_steps::build_area_judge_specified_refine_one_based,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -70,7 +71,7 @@ fn specified_refine_builds_iter_specific_mask_refine_sources_inside_domain() {
         },
     );
 
-    let report = build_area_judge_specified_refine_fortran_indexed(
+    let report = build_area_judge_specified_refine_one_based(
         &root,
         2,
         "bbox",
@@ -115,7 +116,7 @@ fn specified_refine_rejects_iter_zero_activation_branch() {
         },
     );
 
-    let err = build_area_judge_specified_refine_fortran_indexed(
+    let err = build_area_judge_specified_refine_one_based(
         &root,
         0,
         "bbox",
@@ -166,7 +167,7 @@ fn specified_refine_rejects_sources_outside_domain() {
         },
     );
 
-    let err = build_area_judge_specified_refine_fortran_indexed(
+    let err = build_area_judge_specified_refine_one_based(
         &root,
         1,
         "bbox",

@@ -1,5 +1,5 @@
 use crate::{
-    criterion_catalog, degree_to_nxp, km_to_nxp, DomainConfig, HfieldRefinementRecipe,
+    criterion_catalog, degree_to_nxp, km_to_nxp, DomainConfig, GeometryIr, HfieldRefinementRecipe,
     ProjectConfig, ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
 };
 use earthmesh_core::{
@@ -36,9 +36,15 @@ impl LoweredProject {
                     .filter(|base| base.is_finite() && *base > 0.0)
                     .map(|base| format!("   NL%hfield_base_m = {base}\n"))
                     .unwrap_or_default();
+                let origin_lines = match (recipe.origin_lon, recipe.origin_lat) {
+                    (Some(lon), Some(lat)) => format!(
+                        "   NL%hfield_origin_lon = {lon}\n   NL%hfield_origin_lat = {lat}\n"
+                    ),
+                    _ => String::new(),
+                };
                 format!(
-                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n{}/\n\n",
-                    recipe.g, recipe.max_level, base_line
+                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n{}{}/\n\n",
+                    recipe.g, recipe.max_level, base_line, origin_lines
                 )
             }
             _ => String::new(),
@@ -74,6 +80,7 @@ impl ProjectConfig {
     fn quality_namelist(&self) -> QualityNamelist {
         QualityNamelist {
             min_angle_warn_deg: self.quality.min_angle_deg,
+            repair_batch_limit: self.quality.auto_refine_batch_cells as i32,
             on_violation: self.quality.on_violation.as_str().to_string(),
             ..QualityNamelist::default()
         }
@@ -87,9 +94,23 @@ impl ProjectConfig {
         let mut refine = RefineConfig::default();
 
         mkgrd.experiment_name = self.metadata.name.clone();
+        // Core defaults mirror unset Fortran namelist sentinels. A compiled
+        // Project must instead be directly runnable from its working directory.
+        mkgrd.base_dir = "./".to_string();
+        mkgrd.mode_file = "none".to_string();
+        mkgrd.mode_file_description = "none".to_string();
+        mkgrd.landtype_file = "none".to_string();
+        mkgrd.mask_patch_type = "none".to_string();
+        mkgrd.mask_patch_fprefix = "none".to_string();
         mkgrd.mesh_type = self.target.kind.engine_str().to_string();
         mkgrd.mode_grid = self.target.cell.engine_str().to_string();
-        mkgrd.output_format = self.target.model_format.try_engine_str()?.to_string();
+        mkgrd.output_format = self.target.model_format.engine_str().to_string();
+        if let Some(coupling) = &self.coupling {
+            mkgrd.coupling_fraction_method = coupling.fraction_method.engine_str().to_string();
+            mkgrd.coupling_identify_coastline = coupling.identify_coastline;
+            mkgrd.coupling_identify_river_mouth = coupling.identify_river_mouth;
+            mkgrd.coupling_cama_root = coupling.cama_root.clone().unwrap_or_default();
+        }
         match self.target.resolution {
             ResolutionSpec::Nxp(n) => mkgrd.nxp = n,
             ResolutionSpec::ApproxKm(km) => mkgrd.nxp = km_to_nxp(km),
@@ -101,14 +122,27 @@ impl ProjectConfig {
             DomainConfig::Regional { shape, sea_ratio } => {
                 mkgrd.mask_domain_global = false;
                 mkgrd.mask_domain_type = match shape {
-                    RegionShape::Bbox { .. } => "bbox",
-                    RegionShape::Circle { .. } => "circle",
+                    RegionShape::Bbox { w, e, n, s } => {
+                        mkgrd.mask_domain_fprefix = bbox_geometry(*w, *e, *s, *n)?;
+                        "bbox"
+                    }
+                    RegionShape::Circle {
+                        lon,
+                        lat,
+                        radius_km,
+                    } => {
+                        mkgrd.mask_domain_fprefix = circle_geometry(*lon, *lat, *radius_km)?;
+                        "circle"
+                    }
                     RegionShape::Shapefile { path } => {
                         mkgrd.mask_domain_fprefix = path.clone();
-                        "shapefile"
+                        mkgrd.mask_domain_close_boundary =
+                            crate::CloseBoundaryMode::Polyline.to_engine_spec();
+                        "close"
                     }
-                    RegionShape::Close { path, .. } => {
+                    RegionShape::Close { path, boundary, .. } => {
                         mkgrd.mask_domain_fprefix = path.clone();
+                        mkgrd.mask_domain_close_boundary = boundary.to_engine_spec();
                         "close"
                     }
                 }
@@ -126,17 +160,22 @@ impl ProjectConfig {
         // Refinement runs only when a real source supplies data: thresholds,
         // landcover class-count refinement for land/coupled/earth targets, or a
         // specified mask. Hydro folders still do not drive mkgrd refinement.
-        if self.refinement.specified_circle.is_some() {
+        if let Some(circle) = &self.refinement.specified_circle {
             refine.refine_spc = true;
             refine.mask_refine_spc_type = "circle".to_string();
+            refine.mask_refine_spc_fprefix =
+                circle_geometry(circle.lon, circle.lat, circle.radius_km)?;
         }
-        if self.refinement.specified_bbox.is_some() {
+        if let Some(bbox) = &self.refinement.specified_bbox {
             refine.refine_spc = true;
             refine.mask_refine_spc_type = "bbox".to_string();
+            refine.mask_refine_spc_fprefix = bbox_geometry(bbox.w, bbox.e, bbox.s, bbox.n)?;
         }
-        if self.refinement.specified_close.is_some() {
+        if let Some(close) = &self.refinement.specified_close {
             refine.refine_spc = true;
             refine.mask_refine_spc_type = "close".to_string();
+            refine.mask_refine_spc_fprefix = close.path.clone();
+            refine.mask_refine_spc_close_boundary = close.boundary.to_engine_spec();
         }
         mkgrd.refine = self.refinement.enabled && (refine.refine_cal || refine.refine_spc);
         if mkgrd.refine {
@@ -150,7 +189,7 @@ impl ProjectConfig {
         }
 
         // Auto spring smoothing: keep the low-level SpringGlobal/SpringRegional pair
-        // mutually exclusive while deriving the OLAM-compatible choice from grid/domain.
+        // mutually exclusive while deriving the Method-C-compatible choice from grid/domain.
         if mkgrd.mode_grid != "tri" {
             refine.is_transition = true;
             refine.spring_global_type = if mkgrd.mask_domain_global { 1 } else { 0 };
@@ -315,4 +354,12 @@ fn set_layer_pair(values: &mut [[f64; 2]; 10], start: usize, value: f64) {
     if let Some(slot) = values.get_mut(start + 1) {
         *slot = [value; 2];
     }
+}
+
+fn bbox_geometry(w: f64, e: f64, s: f64, n: f64) -> Result<String, String> {
+    GeometryIr::bbox(w, e, s, n).to_inline_mask_source()
+}
+
+fn circle_geometry(lon: f64, lat: f64, radius_km: f64) -> Result<String, String> {
+    GeometryIr::circle(lon, lat, radius_km).to_inline_mask_source()
 }

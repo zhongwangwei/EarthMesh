@@ -1,12 +1,22 @@
+use crate::infer_mask_restart_ocean_num_vertex_from_config;
+use crate::maybe_infer_mask_restart_non_ocean_num_vertex_from_config;
+use crate::plan_mkgrd_mask_restart_namelist;
+use crate::refine_pipeline_refine_dispatch_requested;
+use crate::run_mkgrd_gridinit_global_namelist;
+use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
+use crate::run_mkgrd_mask_restart_ocean_namelist;
+use crate::run_mkgrd_mask_restart_patch_namelist;
+use crate::run_refine_pipeline_namelist;
+use crate::MaskPostprocOceanRunOptions;
+use crate::MaskRestartAction;
+use crate::MkgrdTopLevelDispatchRunReport;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use earthmesh_core::EarthmeshConfig;
 
-use crate::*;
-
-/// Run the migrated top-level `mkgrd.x` namelist dispatcher for option-free branches.
+/// Run the current top-level `mkgrd.x` namelist dispatcher for option-free branches.
 ///
 /// This is the Rust replacement for the first branch decision in `mkgrd.F90`:
 /// mask-restart namelists must not fall through to the normal gridinit path.
@@ -78,14 +88,9 @@ pub fn run_mkgrd_top_level_namelist(
         return Ok(MkgrdTopLevelDispatchRunReport::MaskRestartPlan(plan));
     }
 
-    if olam_direct_refine_dispatch_requested(&contents, &config)? {
-        return run_mkgrd_olam_specified_refine_global_source_namelist(
-            namelist_source,
-            workdir,
-            max_tris,
-            None,
-        )
-        .map(MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource);
+    if refine_pipeline_refine_dispatch_requested(&contents, &config)? {
+        return run_refine_pipeline_namelist(namelist_source, workdir, max_tris, None)
+            .map(MkgrdTopLevelDispatchRunReport::RefinePipeline);
     }
 
     run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)

@@ -1,8 +1,8 @@
 /// Port of `MOD_grid_preprocess:IsNgrmm`.
 ///
-/// Returns the one-based Fortran code for the vertex in `a` opposite the shared
+/// Returns the one-based Canonical code for the vertex in `a` opposite the shared
 /// edge with `b`: `1`, `2`, or `3`. Non-neighbor triangles return `None`
-/// instead of Fortran's `0` sentinel.
+/// instead of Canonical's `0` sentinel.
 pub fn is_ngrmm(a: [usize; 3], b: [usize; 3]) -> Option<usize> {
     if b.contains(&a[0]) {
         if b.contains(&a[1]) {
@@ -22,7 +22,7 @@ pub fn is_ngrmm(a: [usize; 3], b: [usize; 3]) -> Option<usize> {
 /// Port of the `GetEdge` `cellsOnEdge(:, k)` mapping after `IsNgrmm`.
 ///
 /// The two shared polygon-cell ids are selected from `a` according to the
-/// Fortran opposite-vertex code and sorted ascending before return.
+/// Canonical opposite-vertex code and sorted ascending before return.
 pub fn cells_on_edge_from_neighbor_cells(a: [usize; 3], b: [usize; 3]) -> Option<[usize; 2]> {
     let mut cells = match is_ngrmm(a, b)? {
         1 => [a[1], a[2]],
@@ -40,9 +40,9 @@ pub fn cells_on_edge_from_neighbor_cells(a: [usize; 3], b: [usize; 3]) -> Option
 ///
 /// Builds triangle-neighbor slots from triangle-to-cell membership
 /// (`cells_on_triangle`) and the inverse cell-to-triangle membership
-/// (`triangles_on_cell`). Slots preserve the Fortran `IsNgrmm` meaning:
+/// (`triangles_on_cell`). Slots preserve the Canonical `IsNgrmm` meaning:
 /// neighbor slot `0`, `1`, or `2` is opposite the corresponding triangle cell.
-pub fn triangle_neighbors_from_cell_membership_fortran_indexed(
+pub fn triangle_neighbors_from_cell_membership_one_based(
     cells_on_triangle: &[[usize; 3]],
     triangles_on_cell: &[Vec<usize>],
     triangle_counts_on_cell: &[usize],

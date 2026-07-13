@@ -5,11 +5,17 @@ fn mask_postproc_patchtype_writer_uses_plan_path_and_coordinate_builder() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "earthmesh", false)
-        .expect("earth plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        7,
+        "tri",
+        "earthmesh",
+        false,
+    )
+    .expect("earth plan");
     let output = plan.patchtype_output.clone().expect("patchtype output");
 
-    let report = earthmesh_cli::write_mask_postproc_patchtype_netcdf(
+    let report = earthmesh_cli::mask_postproc_patchtypes::write_mask_postproc_patchtype_netcdf(
         &plan,
         vec![vec![2, 0], vec![3, 4]],
         1,
@@ -44,10 +50,16 @@ fn mask_postproc_patchtype_writer_accepts_full_domain_north_latitude_start() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "earthmesh", false)
-        .expect("earth plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        7,
+        "tri",
+        "earthmesh",
+        false,
+    )
+    .expect("earth plan");
 
-    let report = earthmesh_cli::write_mask_postproc_patchtype_netcdf(
+    let report = earthmesh_cli::mask_postproc_patchtypes::write_mask_postproc_patchtype_netcdf(
         &plan,
         vec![vec![2, 0], vec![3, 4]],
         1,
@@ -70,10 +82,16 @@ fn mask_postproc_patchtype_writer_accepts_full_domain_north_latitude_start() {
 #[test]
 fn mask_postproc_patchtype_writer_rejects_plans_without_patchtype_output() {
     let root = std::env::temp_dir().join("earthmesh_cli_no_patchtype_plan");
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "oceanmesh", false)
-        .expect("ocean plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        7,
+        "tri",
+        "oceanmesh",
+        false,
+    )
+    .expect("ocean plan");
 
-    let err = earthmesh_cli::write_mask_postproc_patchtype_netcdf(
+    let err = earthmesh_cli::mask_postproc_patchtypes::write_mask_postproc_patchtype_netcdf(
         &plan,
         vec![vec![0]],
         0,

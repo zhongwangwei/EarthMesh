@@ -2,27 +2,28 @@
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 use earthmesh_project::{
-    nxp_to_km, CloseMaskFormat, DomainConfig, LoweredProject, MeshCellKind, MeshDomainKind,
-    ProjectConfig, ProjectLayerRole, RegionShape,
+    nxp_to_km, read_close_mask_nml_points, read_lonlat_text_points, read_shapefile_polygon_rings,
+    write_close_mask_nml, CloseMaskFormat, DomainConfig, LoweredProject, MeshCellKind,
+    MeshDomainKind, ProjectConfig, ProjectLayerRole, RegionShape,
 };
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
+use crate::auto_refine::scan_auto_refine_decisions;
 use crate::dto::RunResult;
 use crate::engine::{resolve_mkgrd, stage_threshold_layers};
 use crate::mesh_paths::existing_file_path;
 use crate::mesh_process::{clear_running_child, record_running_child};
 
 const SHAPEFILE_MASK_SIMPLIFY_TOLERANCE_DEG: f64 = 0.002;
-const METHOD_C_MIN_BASE_NXP: i32 = 10;
-const METHOD_C_MAX_REFINEMENT_LEVEL: usize = 5;
+const METHOD_C_MIN_BASE_NXP: i32 = earthmesh_project::METHOD_C_MIN_BASE_NXP;
 
 /// Parse project YAML, lower to engine namelist, run mkgrd.x and parse emitted
 /// outputs.
@@ -32,62 +33,215 @@ pub(crate) async fn run_project(
     yaml: String,
     outdir: Option<String>,
 ) -> Result<RunResult, String> {
-    // Validate, then lower to the Fortran namelist the engine actually reads:
-    // mkgrd.x takes `<mkgrd.nml>` as a positional argument (no `--project` flag),
-    // so we do the lowering here rather than relying on the CLI to do it.
+    let mut cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
+    absolutize_gui_project_inputs(&mut cfg)?;
+    if uses_standard_project_cli(&cfg) {
+        return run_auto_refine_project_cli(app, cfg, outdir).await;
+    }
+    let attempt = run_project_attempt(app.clone(), cfg.to_yaml()?, outdir).await?;
+    finish_project_run(&app, &cfg, attempt)
+}
+
+pub(crate) fn absolutize_gui_project_inputs(cfg: &mut ProjectConfig) -> Result<(), String> {
+    let cwd = env::current_dir().map_err(|err| format!("resolve GUI working directory: {err}"))?;
+    for layer in &mut cfg.data_layers {
+        absolutize_input_path(&mut layer.path, &cwd);
+    }
+    if let DomainConfig::Regional { shape, .. } = &mut cfg.domain {
+        match shape {
+            RegionShape::Shapefile { path } | RegionShape::Close { path, .. } => {
+                absolutize_input_path(path, &cwd);
+            }
+            RegionShape::Bbox { .. } | RegionShape::Circle { .. } => {}
+        }
+    }
+    if let Some(close) = cfg.refinement.specified_close.as_mut() {
+        absolutize_input_path(&mut close.path, &cwd);
+    }
+    absolutize_hydro_inputs(cfg, &cwd);
+    if let Some(cama_root) = cfg
+        .coupling
+        .as_mut()
+        .and_then(|coupling| coupling.cama_root.as_mut())
+    {
+        absolutize_input_path(cama_root, &cwd);
+    }
+    Ok(())
+}
+
+fn absolutize_hydro_inputs(cfg: &mut ProjectConfig, cwd: &Path) {
+    let Some(hydro) = cfg.hydro_coast.as_mut() else {
+        return;
+    };
+    absolutize_input_path(&mut hydro.merit_root, cwd);
+    if let Some(cama_root) = hydro.cama_root.as_mut() {
+        absolutize_input_path(cama_root, cwd);
+    }
+}
+
+fn absolutize_input_path(path: &mut String, cwd: &Path) {
+    let configured = PathBuf::from(path.trim());
+    if !configured.is_absolute() {
+        *path = cwd.join(configured).to_string_lossy().into_owned();
+    }
+}
+
+pub(crate) fn uses_standard_project_cli(cfg: &ProjectConfig) -> bool {
+    cfg.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
+}
+
+async fn run_auto_refine_project_cli(
+    app: AppHandle,
+    cfg: ProjectConfig,
+    outdir: Option<String>,
+) -> Result<RunResult, String> {
+    let run_dir = project_run_dir(&cfg, outdir)?;
+    let project_path = run_dir.join("project.yaml");
+    fs::write(&project_path, cfg.to_yaml()?.as_bytes())
+        .map_err(|err| format!("write {}: {err}", project_path.display()))?;
+
+    let bin = resolve_mkgrd()?;
+    let _ = app.emit(
+        "mkgrd://log",
+        "AutoRefine uses the shared CLI local-repair loop with strict candidate rollback."
+            .to_string(),
+    );
+    let _ = app.emit(
+        "mkgrd://log",
+        format!("$ {bin} --project {}", project_path.display()),
+    );
+    let child = Command::new(&bin)
+        .arg("--project")
+        .arg(&project_path)
+        .current_dir(&run_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            format!(
+                "could not start '{bin} --project': {err}. Build mkgrd.x and put it on PATH, or set EARTHMESH_MKGRD to its full path."
+            )
+        })?;
+    let (ok, code, gridfile) = capture_mesh_child(&app, child)?;
+    let scan = scan_auto_refine_decisions(&run_dir);
+    for warning in &scan.warnings {
+        let _ = app.emit("mkgrd://log", format!("⚠ AutoRefine audit: {warning}"));
+    }
+    Ok(RunResult {
+        ok,
+        code,
+        outdir: run_dir.to_string_lossy().into_owned(),
+        gridfile,
+        auto_refine_decisions: scan.decisions,
+    })
+}
+
+fn finish_project_run(
+    app: &AppHandle,
+    cfg: &ProjectConfig,
+    mut attempt: RunResult,
+) -> Result<RunResult, String> {
+    if !attempt.ok || cfg.hydro_coast.is_none() {
+        return Ok(attempt);
+    }
+    let gridfile_raw = attempt
+        .gridfile
+        .as_deref()
+        .ok_or_else(|| "Project hydro stage requires the engine to report gridfile".to_string())?;
+    let run_dir = PathBuf::from(&attempt.outdir);
+    let gridfile =
+        existing_file_path(gridfile_raw, &run_dir).unwrap_or_else(|| run_dir.join(gridfile_raw));
+    let project_path = run_dir.join("project.yaml");
+    let source_namelist = run_dir.join("mkgrd.nml");
+    let hydro_dir = earthmesh_project::project_hydro_output_dir(&gridfile);
+    let bin = resolve_mkgrd()?;
+    let _ = app.emit(
+        "mkgrd://log",
+        format!(
+            "$ {bin} --project-hydro-postprocess {} {} {} {}",
+            project_path.display(),
+            gridfile.display(),
+            hydro_dir.display(),
+            source_namelist.display()
+        ),
+    );
+    let mut child = Command::new(&bin)
+        .arg("--project-hydro-postprocess")
+        .arg(&project_path)
+        .arg(&gridfile)
+        .arg(&hydro_dir)
+        .arg(&source_namelist)
+        .current_dir(&run_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("start Project hydro stage with {bin}: {err}"))?;
+    if let Err(err) = record_running_child(child.id()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(err);
+    }
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let final_gridfile_seen = Arc::new(Mutex::new(None::<String>));
+    let final_gridfile_capture = final_gridfile_seen.clone();
+    let stdout_app = app.clone();
+    let stdout_thread = thread::spawn(move || {
+        if let Some(stdout) = stdout {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(path) = line.strip_prefix("project_hydro_final_gridfile=") {
+                    if let Ok(mut final_gridfile) = final_gridfile_capture.lock() {
+                        *final_gridfile = Some(path.trim().to_string());
+                    }
+                }
+                let _ = stdout_app.emit("mkgrd://log", line);
+            }
+        }
+    });
+    let stderr_app = app.clone();
+    let stderr_thread = thread::spawn(move || {
+        if let Some(stderr) = stderr {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let _ = stderr_app.emit("mkgrd://log", format!("[hydro stderr] {line}"));
+            }
+        }
+    });
+    let wait_result = child.wait();
+    clear_running_child();
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+    let status = wait_result.map_err(|err| format!("wait for Project hydro stage: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "Project hydro stage failed with {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        ));
+    }
+    if let Some(final_gridfile) = final_gridfile_seen
+        .lock()
+        .map_err(|_| "hydro final gridfile state lock poisoned".to_string())?
+        .clone()
+    {
+        attempt.gridfile = Some(final_gridfile);
+    }
+    enforce_final_quality_policy(cfg, attempt.gridfile.as_deref(), &project_path)?;
+    Ok(attempt)
+}
+
+async fn run_project_attempt(
+    app: AppHandle,
+    yaml: String,
+    outdir: Option<String>,
+) -> Result<RunResult, String> {
+    // Validate and use the shared project lowering. The GUI still stages regional
+    // mask inputs in its selected run directory, but it must not invent different
+    // global engine defaults from the CLI `--project` path.
     let cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
     let mut lowered = cfg.try_lower()?;
-    // Stabilize the spring smoothing. The config default (beta=1.2, relax=0.04) is
-    // more aggressive than OLAM's proven-stable values and can OVER-relax: the
-    // spring overshoots and folds the mesh locally, leaving overlapping/inverted
-    // triangles that render as "fan" artifacts (the gridinit topology stays valid,
-    // so nothing catches it). OLAM's ocean defaults (beta=1.0, relax=0.035) relax
-    // cleanly. ProjectConfig does not expose these engine knobs yet, so GUI runs
-    // pin the lowered engine defaults here instead of adding another UI switch.
-    if cfg.expert.beta.is_none() && lowered.mkgrd.beta == 1.2 {
-        lowered.mkgrd.beta = 1.0;
-    }
-    if cfg.expert.relax.is_none() && lowered.mkgrd.relax == 0.04 {
-        lowered.mkgrd.relax = 0.035;
-    }
-    // `outdir` is the BASE output path (the user's choice, or a temp dir). Every
-    // file for this run lives in <base>/<project name>/ so outputs are grouped.
-    let base = outdir
-        .map(|p| p.trim_end_matches('/').to_string())
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| {
-            let ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            env::temp_dir()
-                .join(format!("earthmesh_run_{ts}"))
-                .to_string_lossy()
-                .into_owned()
-        });
-    // Project name -> folder name (sanitized) = the engine's experiment_name.
-    let exp: String = {
-        let s: String = cfg
-            .metadata
-            .name
-            .trim()
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        if s.is_empty() {
-            "mesh".to_string()
-        } else {
-            s
-        }
-    };
-    let run_dir = Path::new(&base).join(&exp);
-    fs::create_dir_all(&run_dir).map_err(|e| format!("mkdir {}: {e}", run_dir.display()))?;
+    let run_dir = project_run_dir(&cfg, outdir)?;
     let run_dir_str = run_dir.to_string_lossy().into_owned();
 
     normalize_engine_input_paths(&mut lowered, &run_dir);
@@ -98,9 +252,7 @@ pub(crate) async fn run_project(
     lowered.mkgrd.base_dir = format!("{run_dir_str}/");
     lowered.mkgrd.experiment_name = "output".to_string();
     let file_dir = run_dir.join("output");
-    for sub in ["", "result", "contain", "restart"] {
-        let _ = fs::create_dir_all(file_dir.join(sub));
-    }
+    create_output_directories(&file_dir)?;
 
     let threshold_dir = run_dir.join("threshold");
     if stage_threshold_layers(&cfg, &threshold_dir, &run_dir)? {
@@ -294,7 +446,7 @@ pub(crate) async fn run_project(
     }
 
     if let DomainConfig::Regional {
-        shape: RegionShape::Close { path, format },
+        shape: RegionShape::Close { path, format, .. },
         ..
     } = &cfg.domain
     {
@@ -415,7 +567,7 @@ pub(crate) async fn run_project(
     fs::write(&nml_path, namelist.as_bytes())
         .map_err(|e| format!("write {}: {e}", nml_path.display()))?;
 
-    let bin = resolve_mkgrd();
+    let bin = resolve_mkgrd()?;
     // Surface the staged engine's size + mtime so a stale temp copy (an old engine
     // still being run after a rebuild) is visible at a glance.
     if let Ok(md) = fs::metadata(&bin) {
@@ -493,7 +645,7 @@ pub(crate) async fn run_project(
     );
     let _ = app.emit("mkgrd://log", format!("$ {bin} {}", nml_path.display()));
 
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .arg(&nml_path)
         .current_dir(&run_dir)
         .stdout(Stdio::piped())
@@ -505,51 +657,112 @@ pub(crate) async fn run_project(
                  or set EARTHMESH_MKGRD to its full path."
             )
         })?;
-    // Record the PID so `kill_run` can stop this engine run on request.
-    if let Err(err) = record_running_child(child.id()) {
+    let (ok, code, gridfile) = capture_mesh_child(&app, child)?;
+    if ok {
+        let resolved_gridfile = gridfile
+            .as_deref()
+            .and_then(|path| existing_file_path(path, &run_dir));
+        let quality_gridfile = resolved_gridfile
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        enforce_backend_quality_policy(
+            &cfg,
+            quality_gridfile.as_deref().or(gridfile.as_deref()),
+            &yaml_path,
+        )?;
+    }
+    Ok(RunResult {
+        ok,
+        code,
+        outdir: run_dir_str,
+        gridfile,
+        auto_refine_decisions: Vec::new(),
+    })
+}
+
+fn project_run_dir(cfg: &ProjectConfig, outdir: Option<String>) -> Result<PathBuf, String> {
+    // `outdir` is the BASE output path. Every artifact is grouped under a
+    // filesystem-safe project folder, including the shared CLI AutoRefine run.
+    let base = outdir
+        .map(|path| path.trim_end_matches('/').to_string())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            env::temp_dir()
+                .join(format!("earthmesh_run_{timestamp}"))
+                .to_string_lossy()
+                .into_owned()
+        });
+    let name: String = cfg
+        .metadata
+        .name
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let run_dir = Path::new(&base).join(if name.is_empty() { "mesh" } else { &name });
+    fs::create_dir_all(&run_dir)
+        .map_err(|error| format!("mkdir {}: {error}", run_dir.display()))?;
+    fs::canonicalize(&run_dir)
+        .map_err(|error| format!("resolve run directory {}: {error}", run_dir.display()))
+}
+
+fn capture_mesh_child(
+    app: &AppHandle,
+    mut child: Child,
+) -> Result<(bool, Option<i32>, Option<String>), String> {
+    if let Err(error) = record_running_child(child.id()) {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(err);
+        return Err(error);
     }
 
-    let out = child.stdout.take();
-    let err = child.stderr.take();
-    let a1 = app.clone();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_app = app.clone();
     let gridfile_seen = Arc::new(Mutex::new(None::<String>));
-    let gf_capture = gridfile_seen.clone();
-    let t1 = thread::spawn(move || {
-        if let Some(o) = out {
-            for line in BufReader::new(o).lines().map_while(Result::ok) {
-                // The engine prints `gridfile=<path>` for the mesh it produced.
-                if let Some(rest) = line.strip_prefix("gridfile=") {
-                    if let Ok(mut gridfile) = gf_capture.lock() {
-                        *gridfile = Some(rest.trim().to_string());
+    let gridfile_capture = gridfile_seen.clone();
+    let stdout_thread = thread::spawn(move || {
+        if let Some(stdout) = stdout {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(path) = line.strip_prefix("gridfile=") {
+                    if let Ok(mut gridfile) = gridfile_capture.lock() {
+                        *gridfile = Some(path.trim().to_string());
                     }
                 }
-                let _ = a1.emit("mkgrd://log", line);
+                let _ = stdout_app.emit("mkgrd://log", line);
             }
         }
     });
-    let a2 = app.clone();
-    let t2 = thread::spawn(move || {
-        if let Some(e) = err {
-            for line in BufReader::new(e).lines().map_while(Result::ok) {
-                let _ = a2.emit("mkgrd://log", format!("[stderr] {line}"));
+    let stderr_app = app.clone();
+    let stderr_thread = thread::spawn(move || {
+        if let Some(stderr) = stderr {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let _ = stderr_app.emit("mkgrd://log", format!("[stderr] {line}"));
             }
         }
     });
 
     let wait_result = child.wait();
     clear_running_child();
-    let _ = t1.join();
-    let _ = t2.join();
-    let status = wait_result.map_err(|e| format!("wait failed: {e}"))?;
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+    let status = wait_result.map_err(|error| format!("wait failed: {error}"))?;
     let code = status.code();
     let _ = app.emit(
         "mkgrd://log",
         format!(
             "— exited with {}",
-            code.map(|c| c.to_string())
+            code.map(|value| value.to_string())
                 .unwrap_or_else(|| "signal".into())
         ),
     );
@@ -557,12 +770,49 @@ pub(crate) async fn run_project(
         .lock()
         .map_err(|_| "run gridfile state lock poisoned".to_string())?
         .clone();
-    Ok(RunResult {
-        ok: status.success(),
-        code,
-        outdir: run_dir_str,
-        gridfile,
-    })
+    Ok((status.success(), code, gridfile))
+}
+
+pub(crate) fn enforce_backend_quality_policy(
+    cfg: &ProjectConfig,
+    gridfile: Option<&str>,
+    project_path: &Path,
+) -> Result<(), String> {
+    if cfg.quality.on_violation != earthmesh_project::ViolationPolicy::Block {
+        return Ok(());
+    }
+    // Hydro projects are quality-gated only after the closed loop has applied
+    // the refinement plan and reported its final gridfile.
+    if cfg.hydro_coast.is_some() {
+        return Ok(());
+    }
+    enforce_final_quality_policy(cfg, gridfile, project_path)
+}
+
+fn enforce_final_quality_policy(
+    cfg: &ProjectConfig,
+    gridfile: Option<&str>,
+    project_path: &Path,
+) -> Result<(), String> {
+    if cfg.quality.on_violation != earthmesh_project::ViolationPolicy::Block {
+        return Ok(());
+    }
+    let gridfile = gridfile
+        .ok_or_else(|| "quality block policy requires the engine to report gridfile".to_string())?;
+    let quality = crate::mesh_outputs::project_mesh_quality(project_path, gridfile)?;
+    if quality.verdict.eq_ignore_ascii_case("fail") {
+        return Err("project quality gate failed under block policy".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn create_output_directories(file_dir: &Path) -> Result<(), String> {
+    for sub in ["", "result", "contain", "restart"] {
+        let path = file_dir.join(sub);
+        fs::create_dir_all(&path)
+            .map_err(|err| format!("create output directory {}: {err}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn hfield_enabled(lowered: &LoweredProject) -> bool {
@@ -851,64 +1101,6 @@ pub(crate) fn default_regional_bbox_refine_bbox(
     (refine_w, refine_e, refine_n, refine_s)
 }
 
-fn read_close_mask_nml_points(path: &Path) -> std::io::Result<Vec<(f64, f64)>> {
-    let text = fs::read_to_string(path)?;
-    let mut lines = text.lines();
-    let count = lines
-        .next()
-        .and_then(|line| line.split_once('='))
-        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing close_num"))?;
-    let _ = lines.next();
-    let points = read_lonlat_rows(lines.take(count))?;
-    if points.len() != count {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("close_num says {count}, found {}", points.len()),
-        ));
-    }
-    Ok(points)
-}
-
-fn read_lonlat_text_points(path: &Path) -> std::io::Result<Vec<(f64, f64)>> {
-    let text = fs::read_to_string(path)?;
-    read_lonlat_rows(text.lines())
-}
-
-fn read_lonlat_rows<'a>(lines: impl Iterator<Item = &'a str>) -> std::io::Result<Vec<(f64, f64)>> {
-    let mut points = Vec::new();
-    for (index, line) in lines.enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts = line
-            .split(|c: char| c.is_whitespace() || c == ',')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>();
-        if parts.len() < 2 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("lon/lat row {} needs two numbers", index + 1),
-            ));
-        }
-        let lon = parts[0].parse::<f64>().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("invalid lon: {e}"))
-        })?;
-        let lat = parts[1].parse::<f64>().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("invalid lat: {e}"))
-        })?;
-        points.push((lon, lat));
-    }
-    if points.len() < 3 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "close lon/lat text needs at least three points",
-        ));
-    }
-    Ok(points)
-}
-
 fn expanded_parent_bbox_ring(
     rings: &[Vec<(f64, f64)>],
     level: usize,
@@ -972,22 +1164,7 @@ fn write_circle_mask_nml(
     )
 }
 
-fn write_close_mask_nml(
-    path: &Path,
-    ring: &[(f64, f64)],
-    refine_degree: usize,
-) -> std::io::Result<()> {
-    let mut body = format!(
-        "close_num = {}\nclose_refine = {refine_degree}\n",
-        ring.len()
-    );
-    for &(lon, lat) in ring {
-        body.push_str(&format!("{lon:.10} {lat:.10}\n"));
-    }
-    fs::write(path, body)
-}
-
-fn write_specified_refinement_mask(
+pub(crate) fn write_specified_refinement_mask(
     refinement: &earthmesh_project::RefinementRecipe,
     run_dir: &Path,
     refine_level: i32,
@@ -1014,11 +1191,35 @@ fn write_specified_refinement_mask(
     }
     if let Some(close) = &refinement.specified_close {
         let prefix = run_dir.join("specified_close");
-        for (index, ring) in read_shapefile_polygon_rings(Path::new(&close.path))?
-            .into_iter()
-            .map(|ring| simplify_shapefile_mask_ring(&ring))
-            .enumerate()
-        {
+        let resolved =
+            existing_file_path(&close.path, run_dir).unwrap_or_else(|| PathBuf::from(&close.path));
+        let extension = resolved
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(extension.as_str(), "nc" | "nc4") {
+            fs::copy(
+                &resolved,
+                run_dir.join(format!("specified_close_001.{extension}")),
+            )?;
+            return Ok(("close", prefix));
+        }
+        let rings = match extension.as_str() {
+            "shp" => read_shapefile_polygon_rings(&resolved)?
+                .into_iter()
+                .map(|ring| simplify_shapefile_mask_ring(&ring))
+                .collect(),
+            "nml" => vec![read_close_mask_nml_points(&resolved)?],
+            "txt" | "csv" => vec![read_lonlat_text_points(&resolved)?],
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "unsupported specified close mask format",
+                ))
+            }
+        };
+        for (index, ring) in rings.into_iter().enumerate() {
             let path = run_dir.join(format!("specified_close_{:03}.nml", index + 1));
             write_close_mask_nml(&path, &ring, level_usize)?;
         }
@@ -1231,13 +1432,7 @@ pub(crate) fn regional_bbox_method_c_project_plan(
 }
 
 fn regional_method_c_level_cap(target_nxp: i32) -> usize {
-    let mut cap = 1;
-    while cap < METHOD_C_MAX_REFINEMENT_LEVEL
-        && METHOD_C_MIN_BASE_NXP * (1_i32 << (cap + 1)) <= target_nxp
-    {
-        cap += 1;
-    }
-    cap
+    usize::from(earthmesh_project::auto_refine_level_cap(target_nxp))
 }
 
 fn project_has_method_c_refine_source(cfg: &ProjectConfig) -> bool {
@@ -1331,10 +1526,8 @@ pub(crate) fn shapefile_boundary_geojson(path: String) -> Result<serde_json::Val
     let features = rings
         .into_iter()
         .map(|mut ring| {
-            if !same_point(ring.first(), ring.last()) {
-                if let Some(first) = ring.first().copied() {
-                    ring.push(first);
-                }
+            if let Some(first) = ring.first().copied() {
+                ring.push(first);
             }
             let coords: Vec<[f64; 2]> = ring.into_iter().map(|(lon, lat)| [lon, lat]).collect();
             json!({
@@ -1345,198 +1538,4 @@ pub(crate) fn shapefile_boundary_geojson(path: String) -> Result<serde_json::Val
         })
         .collect::<Vec<_>>();
     Ok(json!({ "type": "FeatureCollection", "features": features }))
-}
-
-pub(crate) fn read_shapefile_polygon_rings(path: &Path) -> std::io::Result<Vec<Vec<(f64, f64)>>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() < 100 || be_i32(&bytes, 0)? != 9994 || le_i32(&bytes, 28)? != 1000 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "not an ESRI shapefile",
-        ));
-    }
-    let mut offset = 100;
-    let mut out = Vec::new();
-    while offset < bytes.len() {
-        if offset + 8 > bytes.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "truncated shapefile record header",
-            ));
-        }
-        let content_len = be_usize(&bytes, offset + 4)?
-            .checked_mul(2)
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "record length overflow")
-            })?;
-        let start = offset + 8;
-        let end = start.checked_add(content_len).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "record end overflow")
-        })?;
-        if end > bytes.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "truncated shapefile record content",
-            ));
-        }
-        read_polygon_record(&bytes[start..end], &mut out)?;
-        offset = end;
-    }
-    if out.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "shapefile contains no polygon rings",
-        ));
-    }
-    Ok(out)
-}
-
-fn read_polygon_record(content: &[u8], out: &mut Vec<Vec<(f64, f64)>>) -> std::io::Result<()> {
-    if content.len() < 4 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "truncated shapefile record",
-        ));
-    }
-    let shape_type = le_i32(content, 0)?;
-    if shape_type == 0 {
-        return Ok(());
-    }
-    if !matches!(shape_type, 5 | 15 | 25) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("unsupported shapefile shape type {shape_type}; expected Polygon"),
-        ));
-    }
-    if content.len() < 44 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "truncated polygon record",
-        ));
-    }
-    let num_parts = le_usize(content, 36)?;
-    let num_points = le_usize(content, 40)?;
-    if num_parts == 0 || num_points == 0 || num_parts > num_points {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid polygon parts/points count",
-        ));
-    }
-    let parts_start = 44_usize;
-    let points_start = parts_start
-        .checked_add(num_parts.checked_mul(4).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "parts length overflow")
-        })?)
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "parts offset overflow")
-        })?;
-    let points_end = points_start
-        .checked_add(num_points.checked_mul(16).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "points length overflow")
-        })?)
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "points offset overflow")
-        })?;
-    if points_end > content.len() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid polygon parts/points length",
-        ));
-    }
-    let mut starts = Vec::with_capacity(num_parts + 1);
-    for i in 0..num_parts {
-        starts.push(le_usize(content, parts_start + i * 4)?);
-    }
-    starts.push(num_points);
-
-    let mut rings = Vec::new();
-    for pair in starts.windows(2) {
-        let (from, to) = (pair[0], pair[1]);
-        if from >= to || to > num_points {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid polygon part index",
-            ));
-        }
-        let mut ring = Vec::with_capacity(to - from);
-        for point in from..to {
-            let p = points_start + point * 16;
-            ring.push((le_f64(content, p)?, le_f64(content, p + 8)?));
-        }
-        if same_point(ring.first(), ring.last()) {
-            ring.pop();
-        }
-        if ring.len() >= 3 && ring.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
-            rings.push(ring);
-        }
-    }
-    let Some(outer_sign) = rings
-        .iter()
-        .map(|ring| signed_area(ring))
-        .max_by(|a, b| a.abs().total_cmp(&b.abs()))
-        .map(f64::signum)
-    else {
-        return Ok(());
-    };
-    out.extend(
-        rings
-            .into_iter()
-            .filter(|ring| signed_area(ring).signum() == outer_sign),
-    );
-    Ok(())
-}
-
-fn be_i32(bytes: &[u8], offset: usize) -> std::io::Result<i32> {
-    let chunk = bytes
-        .get(offset..offset + 4)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated i32"))?;
-    Ok(i32::from_be_bytes(chunk.try_into().unwrap()))
-}
-
-fn be_usize(bytes: &[u8], offset: usize) -> std::io::Result<usize> {
-    let value = be_i32(bytes, offset)?;
-    if value < 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "negative shapefile integer",
-        ));
-    }
-    Ok(value as usize)
-}
-
-fn le_i32(bytes: &[u8], offset: usize) -> std::io::Result<i32> {
-    let chunk = bytes
-        .get(offset..offset + 4)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated i32"))?;
-    Ok(i32::from_le_bytes(chunk.try_into().unwrap()))
-}
-
-fn le_usize(bytes: &[u8], offset: usize) -> std::io::Result<usize> {
-    let value = le_i32(bytes, offset)?;
-    if value < 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "negative shapefile integer",
-        ));
-    }
-    Ok(value as usize)
-}
-
-fn le_f64(bytes: &[u8], offset: usize) -> std::io::Result<f64> {
-    let chunk = bytes
-        .get(offset..offset + 8)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated f64"))?;
-    Ok(f64::from_le_bytes(chunk.try_into().unwrap()))
-}
-
-fn same_point(a: Option<&(f64, f64)>, b: Option<&(f64, f64)>) -> bool {
-    matches!((a, b), (Some(a), Some(b)) if (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12)
-}
-
-fn signed_area(ring: &[(f64, f64)]) -> f64 {
-    ring.iter()
-        .zip(ring.iter().cycle().skip(1))
-        .map(|(a, b)| a.0 * b.1 - b.0 * a.1)
-        .sum::<f64>()
-        * 0.5
 }

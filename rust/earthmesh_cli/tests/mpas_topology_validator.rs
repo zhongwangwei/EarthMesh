@@ -1,7 +1,7 @@
 //! check_mpas_mesh_topology must (a) pass a self-consistent mesh and report the
-//! right Euler characteristic, (b) catch a deliberately broken cross-reference.
+//! right Euler characteristic, (b) catch a deliberately broken cross-canonical.
 
-use earthmesh_cli::{check_mpas_mesh_topology, MpasMesh};
+use earthmesh_cli::{mpas_mesh_types::MpasMesh, mpas_topology::check_mpas_mesh_topology};
 
 /// Two triangular cells sharing edge e1 — a consistent open patch (disk, χ=1).
 fn two_cell_open() -> MpasMesh {
@@ -86,7 +86,7 @@ fn broken_cellsoncell_symmetry_is_caught() {
 }
 
 #[test]
-fn broken_edge_cell_reference_is_caught() {
+fn broken_edge_cell_canonical_is_caught() {
     let mut m = two_cell_open();
     // Edge 1 claims cell 2, but cell 2 no longer lists edge 1.
     m.edges_on_cell[2] = vec![9, 4, 5]; // 9 is also out of range
@@ -105,9 +105,9 @@ fn global_mpas_is_closed_sphere_when_fixture_present() {
         eprintln!("skip: global hex gridfile fixture not present");
         return;
     }
-    let mesh = earthmesh_cli::read_unstructured_mesh_netcdf(gf).unwrap();
+    let mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(gf).unwrap();
     let cw = vec![100.0f64; mesh.w_points.len()];
-    let g = earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cw, 16, 1)
+    let g = earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &cw, 16, 1)
         .unwrap();
     let r = check_mpas_mesh_topology(&g);
     assert!(

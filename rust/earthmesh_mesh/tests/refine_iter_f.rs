@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_iter_f_judge_fortran_indexed;
+use earthmesh_mesh::refine_iter_f_judge_one_based;
 
 #[test]
 fn iter_f_marks_zero_state_triangles_inside_original_vertex_protection_ring() {
@@ -7,16 +7,9 @@ fn iter_f_marks_zero_state_triangles_inside_original_vertex_protection_ring() {
     let mrl_new = vec![0, 1, 1, 0, 4, 0, 4];
     let impent = vec![2];
 
-    let ref_sjx = refine_iter_f_judge_fortran_indexed(
-        6,
-        2,
-        &triangles_on_cell,
-        &edge_counts,
-        &mrl_new,
-        &impent,
-        0,
-    )
-    .expect("calculate iterF protected-ring marks");
+    let ref_sjx =
+        refine_iter_f_judge_one_based(6, 2, &triangles_on_cell, &edge_counts, &mrl_new, &impent, 0)
+            .expect("calculate iterF protected-ring marks");
 
     assert_eq!(ref_sjx, vec![0, 0, 0, 1, 0, 1, 0]);
 }
@@ -34,7 +27,7 @@ fn iter_f_expands_protection_ring_by_boundary_cells_for_requested_layers() {
     let mrl_new = vec![0, 1, 1, 4, 4, 4, 4, 0, 0, 0, 0];
     let impent = vec![2];
 
-    let ref_sjx = refine_iter_f_judge_fortran_indexed(
+    let ref_sjx = refine_iter_f_judge_one_based(
         10,
         4,
         &triangles_on_cell,
@@ -58,16 +51,9 @@ fn iter_f_does_not_mark_when_protected_region_has_no_one_state_triangles() {
     let mrl_new = vec![0, 1, 0, 0, 4, 0, 4];
     let impent = vec![2];
 
-    let ref_sjx = refine_iter_f_judge_fortran_indexed(
-        6,
-        2,
-        &triangles_on_cell,
-        &edge_counts,
-        &mrl_new,
-        &impent,
-        0,
-    )
-    .expect("calculate iterF protected-ring marks");
+    let ref_sjx =
+        refine_iter_f_judge_one_based(6, 2, &triangles_on_cell, &edge_counts, &mrl_new, &impent, 0)
+            .expect("calculate iterF protected-ring marks");
 
     assert_eq!(ref_sjx, vec![0; mrl_new.len()]);
 }

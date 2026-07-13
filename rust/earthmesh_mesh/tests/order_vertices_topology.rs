@@ -1,4 +1,4 @@
-use earthmesh_mesh::{order_vertices_on_cell_by_shared_edges_fortran_indexed, CartesianPoint};
+use earthmesh_mesh::{order_vertices_on_cell_by_shared_edges_one_based, CartesianPoint};
 
 /// Hexagon fixture: cell 2's center on the +z axis, its six ring vertices on a
 /// small circle around it. `angles_deg[k]` places vertex id `(k + 1) * 10`;
@@ -34,7 +34,7 @@ fn topology_order_restores_cycle_when_last_two_vertices_are_swapped() {
     // Geometry agrees with the walk direction 10 -> 20 -> ... -> 60 (CCW).
     let (vertex_points, cell_points) = hexagon_points([0.0, 60.0, 120.0, 180.0, 240.0, 300.0]);
 
-    let ordered = order_vertices_on_cell_by_shared_edges_fortran_indexed(
+    let ordered = order_vertices_on_cell_by_shared_edges_one_based(
         &vertices_on_cell,
         &n_edges_on_cell,
         &edges_on_vertex,
@@ -56,7 +56,7 @@ fn topology_order_reverses_clockwise_walk_to_ccw() {
     // deterministic min-id start vertex in slot 0).
     let (vertex_points, cell_points) = hexagon_points([0.0, -60.0, -120.0, -180.0, -240.0, -300.0]);
 
-    let ordered = order_vertices_on_cell_by_shared_edges_fortran_indexed(
+    let ordered = order_vertices_on_cell_by_shared_edges_one_based(
         &vertices_on_cell,
         &n_edges_on_cell,
         &edges_on_vertex,

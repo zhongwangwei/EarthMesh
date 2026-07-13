@@ -28,7 +28,7 @@ to real project commands. No CSS/colour porting, no immediate-mode constraints.
 The frontend is plain static HTML/CSS/JS (no npm, no bundler). `tauri.conf.json`
 sets `app.withGlobalTauri: true`, so the page calls Rust over IPC through
 `window.__TAURI__.core.invoke(...)`. The Rust side stays **hdf5-free**: it only
-builds/validates the project *intent* and lowers it to a Fortran namelist.
+builds/validates the project *intent* and lowers it to the engine namelist.
 Actual mesh generation is delegated to the prebuilt engine: the backend lowers
 the project to a namelist and runs the discovered engine with `<mkgrd.nml>` as
 its positional input, so the GUI process never links netcdf/hdf5.
@@ -47,7 +47,7 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
 | `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
-| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,on_violation,refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]}` |
+| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
 | `set_threshold_value` | `yaml, id, value?` | updated **YAML** (per-criterion threshold; null uses default) |
 | `autofill_data_layers_from_folder` | `yaml, folder` | updated **YAML** with matching NetCDF layer paths |
@@ -56,10 +56,11 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
 | `set_domain_shapefile` | `yaml, path, seaRatio?` | updated **YAML** (watershed SHP domain) |
 | `set_domain_close` | `yaml, path, format, seaRatio?` | updated **YAML** (close boundary source) |
-| `set_quality` | `yaml, minAngleDeg, block` | updated **YAML** (min angle + policy) |
+| `set_close_boundary` | `yaml, target, mode, iterations?, marginKm?, maxRadiusDeg?, maxSegmentAngleDeg?` | updated **YAML** (expert close boundary mode) |
+| `set_quality` | `yaml, minAngleDeg, policy, autoRefineBatchCells` | updated **YAML** (min angle + policy + connected local repair batch) |
 | `set_refinement` | `yaml, enabled, maxPasses` | updated **YAML** (validated pass count) |
 | `set_specified_refinement` | `yaml, enabled, kind?, lon?, lat?, radiusKm?, w?, e?, s?, n?, path?` | updated **YAML** (radius, bbox, or close refinement) |
-| `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (default h-field; `enabled=false` stores legacy hard-mask mode) |
+| `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (default h-field; `enabled=false` stores discrete mask mode) |
 | `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?` | updated **YAML** (expert overrides) |
 | `pick_data_file` | – | native file picker → path (or `null`) |
 | `pick_data_folder` | – | native folder picker → path (tiled layers) |
@@ -67,7 +68,7 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `save_project` | `yaml` | native save → path (or `null`) |
 | `read_project` | `path` | `{path, yaml}` for recent-project reopen |
 | `open_path` | `path` | open output/report path in the OS file browser |
-| `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile}` |
+| `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile,auto_refine_decisions}`; each decision includes pass, selection reason, selected paths/verdict, structured guarded regressions, and its artifact path |
 | `kill_run` | – | terminate the running engine child if one exists |
 | `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard; `kind` is `tri` or `hex` and maps to report `cell_view` (omitted defaults to `hex`) |
 | `mesh_cell_polygons` | `gridfile, kind, maxCells?` | GeoJSON mesh overlay for the map |
@@ -145,6 +146,13 @@ automatically.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the
   engine reports a gridfile; quality uses `tri-strict` for triangle targets and
   `hex-cgrid` for hex targets.
+- AutoRefine runs scan only their own output tree (without following directory
+  symlinks) and show every `auto_refine_decision.json` in pass order. Accepted
+  candidates, baseline rollbacks, selected reports, and guarded metric
+  regressions are rendered with text-only DOM assignments. Decision schema v1
+  is authoritative; legacy artifacts without `schema_version` remain readable
+  with a warning, while unknown future versions are skipped rather than decoded
+  against an incompatible DTO.
 - The quality dashboard treats polygon side counts as observed cell makeup, not
   topology failures; failures come from gates and topology issues.
 

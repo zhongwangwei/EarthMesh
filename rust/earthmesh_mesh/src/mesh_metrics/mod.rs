@@ -10,7 +10,7 @@ pub struct PolygonLengthAngleMetrics {
 /// Port of `MOD_grid_preprocess:Get_Length_Angle`.
 ///
 /// For each polygon vertex, this builds the same `(previous, current, next)`
-/// triplet as the Fortran cyclic buffer, computes the spherical angle using the
+/// triplet as the Canonical cyclic buffer, computes the spherical angle using the
 /// half-angle formula, and records the current-to-next edge length scaled by
 /// `erad8`.
 pub fn polygon_length_angle_metrics(points: &[LonLatDegrees]) -> Option<PolygonLengthAngleMetrics> {
@@ -35,10 +35,17 @@ pub fn polygon_length_angle_metrics(points: &[LonLatDegrees]) -> Option<PolygonL
         let length2 = arc_length_unit_sphere(next_xyz, previous_xyz);
         let length3 = arc_length_unit_sphere(previous_xyz, current_xyz);
         let semiperimeter = 0.5 * (length1 + length2 + length3);
-        let angle_arg = ((semiperimeter - length1).sin() * (semiperimeter - length3).sin()
-            / (length1.sin() * length3.sin()))
-        .sqrt();
-        angles_degrees.push(rad_to_deg(2.0 * angle_arg.asin()));
+        let denom = length1.sin() * length3.sin();
+        let angle = if denom.abs() <= f64::EPSILON {
+            0.0
+        } else {
+            let arg = ((semiperimeter - length1).sin() * (semiperimeter - length3).sin() / denom)
+                .max(0.0)
+                .sqrt()
+                .clamp(0.0, 1.0);
+            rad_to_deg(2.0 * arg.asin())
+        };
+        angles_degrees.push(angle);
         edge_lengths_meters.push(length1 * earthmesh_core::EARTH_RADIUS_METERS);
     }
 
@@ -48,7 +55,7 @@ pub fn polygon_length_angle_metrics(points: &[LonLatDegrees]) -> Option<PolygonL
     })
 }
 
-/// Mesh-quality aggregate produced by Fortran `TriMeshQuality`/`PolyMeshQuality`.
+/// Mesh-quality aggregate produced by Canonical `TriMeshQuality`/`PolyMeshQuality`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshQualitySummary {
     pub cell_metrics: Vec<PolygonLengthAngleMetrics>,
@@ -127,7 +134,7 @@ pub fn triangle_mesh_quality(triangles: &[[LonLatDegrees; 3]]) -> Option<MeshQua
 /// Port of the aggregation core in `MOD_grid_preprocess:PolyMeshQuality`.
 ///
 /// All cells in the input should have the same edge count, matching each
-/// Fortran call for pentagons, hexagons, or heptagons. The regular angle is
+/// Canonical call for pentagons, hexagons, or heptagons. The regular angle is
 /// `(num_edges - 2) * 180 / num_edges`, with 0.9/1.1 threshold bands.
 pub fn polygon_mesh_quality(cells: &[Vec<LonLatDegrees>]) -> Option<MeshQualitySummary> {
     let first = cells.first()?;

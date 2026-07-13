@@ -1,11 +1,12 @@
+use crate::obc_boundary_output_path;
+use crate::obcv2_boundary_output_path;
+use crate::MaskPostprocDomainIoPlan;
 use std::io;
 use std::path::Path;
 
-use crate::*;
-
-/// Plan the legacy file names used by Earth/Lnd/Ocn mask post-processing.
+/// Plan the compatibility file names used by Earth/Lnd/Ocn mask post-processing.
 ///
-/// This is the side-effect-free I/O contract around the migrated pure helpers:
+/// This is the side-effect-free I/O contract around the current pure helpers:
 /// source mesh and contain-domain inputs, final clipped mesh output, optional
 /// land/earth `patchtype` output, and ocean-tri OBC outputs.
 pub fn plan_mask_postproc_domain_io(

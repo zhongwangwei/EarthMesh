@@ -2,8 +2,9 @@ use std::io;
 use std::path::Path;
 
 use crate::colm_coupling_csv::{
-    coast_class_code, read_colm_coupling_csv_rows, river_class_code, surface_class_code,
-    write_colm_f64_var, write_colm_i32_var, write_colm_i8_var,
+    coast_class_code, finite_or_fill, fraction_or_fill, read_colm_coupling_csv_rows,
+    river_class_code, surface_class_code, write_colm_f64_var, write_colm_i32_var,
+    write_colm_i8_var,
 };
 use crate::{netcdf_to_io_error, ColmCouplingNetcdfWriteReport};
 
@@ -101,7 +102,7 @@ pub fn write_colm_coupling_netcdf_from_csv(
         "river_fraction",
         &rows
             .iter()
-            .map(|row| row.river_fraction)
+            .map(|row| fraction_or_fill(row.river_fraction))
             .collect::<Vec<_>>(),
         Some("1"),
     )?;
@@ -110,7 +111,7 @@ pub fn write_colm_coupling_netcdf_from_csv(
         "estimated_river_area_m2",
         &rows
             .iter()
-            .map(|row| row.estimated_river_area_m2)
+            .map(|row| finite_or_fill(row.estimated_river_area_m2))
             .collect::<Vec<_>>(),
         Some("m2"),
     )?;
@@ -135,7 +136,7 @@ pub fn write_colm_coupling_netcdf_from_csv(
         "coastal_fraction",
         &rows
             .iter()
-            .map(|row| row.coastal_fraction)
+            .map(|row| fraction_or_fill(row.coastal_fraction))
             .collect::<Vec<_>>(),
         Some("1"),
     )?;
@@ -144,7 +145,7 @@ pub fn write_colm_coupling_netcdf_from_csv(
         "normalized_cell_area_m2",
         &rows
             .iter()
-            .map(|row| row.normalized_cell_area_m2)
+            .map(|row| finite_or_fill(row.normalized_cell_area_m2))
             .collect::<Vec<_>>(),
         Some("m2"),
     )?;
@@ -153,7 +154,7 @@ pub fn write_colm_coupling_netcdf_from_csv(
         "source_areaCell",
         &rows
             .iter()
-            .map(|row| row.source_area_cell)
+            .map(|row| finite_or_fill(row.source_area_cell))
             .collect::<Vec<_>>(),
         Some("source_areaCell_units from CSV when available"),
     )?;

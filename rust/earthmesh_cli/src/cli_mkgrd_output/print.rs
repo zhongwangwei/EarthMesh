@@ -1,8 +1,8 @@
-pub(crate) fn print_top_level_dispatch_report(
-    report: &earthmesh_cli::MkgrdTopLevelDispatchRunReport,
-) {
+use earthmesh_cli::prelude::MkgrdTopLevelDispatchRunReport;
+
+pub(crate) fn print_top_level_dispatch_report(report: &MkgrdTopLevelDispatchRunReport) {
     match report {
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::Gridinit(report) => {
+        MkgrdTopLevelDispatchRunReport::Gridinit(report) => {
             println!("gridfile={}", report.gridfile.output.display());
             if let Some(fvcom_2dm) = &report.fvcom_2dm {
                 println!("fvcom_2dm={}", fvcom_2dm.output.display());
@@ -10,19 +10,19 @@ pub(crate) fn print_top_level_dispatch_report(
             println!("sjx_points={}", report.gridfile.sjx_points);
             println!("lbx_points={}", report.gridfile.lbx_points);
         }
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::OlamRefineGlobalSource(report) => {
-            print_olam_refine_report(report);
+        MkgrdTopLevelDispatchRunReport::RefinePipeline(report) => {
+            print_refine_pipeline_report(report);
         }
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
+        MkgrdTopLevelDispatchRunReport::MaskRestartPatch(report) => {
             print_mask_restart_patch_report(report);
         }
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => {
+        MkgrdTopLevelDispatchRunReport::MaskRestartOcean(report) => {
             print_mask_restart_ocean_report(report);
         }
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
+        MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) => {
             print_mask_restart_area_judge_report(report);
         }
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report) => {
+        MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report) => {
             println!("mask_restart_action={:?}", report.remask.action);
             println!("mask_restart_step={}", report.remask.step);
             println!("mask_restart_file_dir={}", report.remask.file_dir.display());
@@ -31,7 +31,7 @@ pub(crate) fn print_top_level_dispatch_report(
 }
 
 pub(crate) fn print_mask_restart_patch_report(
-    report: &earthmesh_cli::MkgrdMaskRestartPatchRunReport,
+    report: &earthmesh_cli::mkgrd_restart_types::MkgrdMaskRestartPatchRunReport,
 ) {
     println!("mask_restart_action={:?}", report.plan.remask.action);
     println!(
@@ -45,7 +45,7 @@ pub(crate) fn print_mask_restart_patch_report(
 }
 
 pub(crate) fn print_mask_restart_ocean_report(
-    report: &earthmesh_cli::MkgrdMaskRestartOceanRunReport,
+    report: &earthmesh_cli::mkgrd_restart_types::MkgrdMaskRestartOceanRunReport,
 ) {
     println!("mask_restart_action={:?}", report.plan.remask.action);
     println!(
@@ -60,46 +60,8 @@ pub(crate) fn print_mask_restart_ocean_report(
     }
 }
 
-pub(crate) fn print_olam_refine_report(report: &earthmesh_cli::MkgrdOlamSpecifiedRefineRunReport) {
-    println!("refine_source=olam_global_source");
-    println!("gridfile={}", report.output.output.display());
-    println!("sjx_points={}", report.output.sjx_points);
-    println!("lbx_points={}", report.output.lbx_points);
-    println!("olam_regions={}", report.regions.len());
-    println!("olam_max_level={}", report.max_level);
-    println!("olam_transition_faces={}", report.transition_faces);
-    println!("olam_spring_nest_passes={}", report.spring_nest_passes);
-    println!(
-        "olam_spring_nest_iterations={}",
-        report.spring_nest_iterations
-    );
-    if let Some(raw_output) = &report.raw_output {
-        println!("olam_raw_gridfile={}", raw_output.output.display());
-    }
-    if let Some(landtype_masked_cells) = report.landtype_masked_cells {
-        println!("olam_landtype_masked_cells={landtype_masked_cells}");
-    }
-    if let Some(coupled) = &report.coupled_outputs {
-        println!(
-            "olam_land_gridfile={}",
-            coupled.land_output.output.display()
-        );
-        println!(
-            "olam_ocean_gridfile={}",
-            coupled.ocean_output.output.display()
-        );
-        println!("olam_coupling_csv={}", coupled.coupling_csv.display());
-        println!(
-            "olam_coupling_netcdf={}",
-            coupled.coupling_netcdf.output.display()
-        );
-        println!("olam_coupling_manifest={}", coupled.manifest.display());
-        println!("olam_coupling_rows={}", coupled.coupling_netcdf.rows);
-    }
-}
-
 pub(crate) fn print_mask_restart_area_judge_report(
-    report: &earthmesh_cli::MkgrdRestartAreaJudgeGlobalSourceRunReport,
+    report: &earthmesh_cli::mkgrd_restart_types::MkgrdRestartAreaJudgeGlobalSourceRunReport,
 ) {
     let restart = &report.restart;
     println!("mask_restart_action={:?}", restart.plan.remask.action);
@@ -121,7 +83,7 @@ pub(crate) fn print_mask_restart_area_judge_report(
             postproc_report.contain.output.display()
         );
         match &postproc_report.postproc {
-            earthmesh_cli::MkgrdFinalDomainPostprocReport::Earth(postproc) => {
+            earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Earth(postproc) => {
                 println!(
                     "mask_restart_postproc_gridfile={}",
                     postproc.final_gridfile.output.display()
@@ -135,7 +97,7 @@ pub(crate) fn print_mask_restart_area_judge_report(
                     postproc.earthmesh_info.output.display()
                 );
             }
-            earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+            earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Land(postproc) => {
                 println!(
                     "mask_restart_postproc_gridfile={}",
                     postproc.final_gridfile.output.display()
@@ -145,7 +107,7 @@ pub(crate) fn print_mask_restart_area_judge_report(
                     postproc.patchtype.output.display()
                 );
             }
-            earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
+            earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
                 println!(
                     "mask_restart_postproc_gridfile={}",
                     postproc.final_gridfile.output.display()
@@ -157,13 +119,15 @@ pub(crate) fn print_mask_restart_area_judge_report(
                     println!("mask_restart_postproc_obcv2={}", obcv2.output.display());
                 }
             }
-            earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
+            earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
                 println!(
                     "mask_restart_postproc_mpas_simple={}",
                     postproc.output.display()
                 );
             }
-            earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
+            earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::AtmosFull(
+                postproc,
+            ) => {
                 println!(
                     "mask_restart_postproc_mpas={}",
                     postproc.mesh.output.display()
@@ -174,5 +138,47 @@ pub(crate) fn print_mask_restart_area_judge_report(
                 );
             }
         }
+    }
+}
+
+pub(crate) fn print_refine_pipeline_report(
+    report: &earthmesh_cli::mkgrd_run_types::RefinePipelineRunReport,
+) {
+    println!("refine_source=refine_pipeline");
+    println!("refine_stack={}", report.refine_stack());
+    println!("gridfile={}", report.output.output.display());
+    println!("sjx_points={}", report.output.sjx_points);
+    println!("lbx_points={}", report.output.lbx_points);
+    println!("refine_regions={}", report.regions.len());
+    println!("refine_max_level={}", report.max_level);
+    println!("refine_transition_faces={}", report.transition_faces);
+    println!("refine_spring_passes={}", report.spring_nest_passes);
+    println!("refine_spring_iterations={}", report.spring_nest_iterations);
+    if let Some(raw_output) = &report.raw_output {
+        println!("refine_raw_gridfile={}", raw_output.output.display());
+    }
+    if let Some(landtype_masked_cells) = report.landtype_masked_cells {
+        println!("refine_landtype_masked_cells={landtype_masked_cells}");
+    }
+    if let Some(coupled) = &report.coupled_outputs {
+        println!(
+            "refine_land_gridfile={}",
+            coupled.land_output.output.display()
+        );
+        println!(
+            "refine_ocean_gridfile={}",
+            coupled.ocean_output.output.display()
+        );
+        println!("refine_coupling_csv={}", coupled.coupling_csv.display());
+        println!(
+            "refine_coupling_netcdf={}",
+            coupled.coupling_netcdf.output.display()
+        );
+        println!(
+            "refine_coupling_quality={}",
+            coupled.coupling_quality.display()
+        );
+        println!("refine_coupling_manifest={}", coupled.manifest.display());
+        println!("refine_coupling_rows={}", coupled.coupling_netcdf.rows);
     }
 }

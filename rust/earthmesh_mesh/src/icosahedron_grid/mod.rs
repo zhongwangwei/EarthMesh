@@ -5,27 +5,27 @@ use super::*;
 ///
 /// This creates initial M-point coordinates, fills diamond U/W connectivity,
 /// derives `tri_neighbors`, builds `spring_dynamics1` topology, computes the
-/// Fortran coarse target distance `beta * pi2_r8 * erad8 / (5 * nxp0)`, and
-/// applies the migrated spring loop for `niter` iterations.
-pub fn icosahedron_relaxed_grid_fortran(
+/// Canonical coarse target distance `beta * pi2_r8 * erad8 / (5 * nxp0)`, and
+/// applies the current spring loop for `niter` iterations.
+pub fn icosahedron_relaxed_grid_canonical(
     nxp0: usize,
     niter: usize,
     beta: f64,
     relax: f64,
     diagnostic_every: usize,
 ) -> Option<IcosahedronRelaxedGrid> {
-    let initial = icosahedron_initial_grid_fortran(nxp0)?;
-    let mut connectivity = icosahedron_fill_diamonds_fortran(nxp0)?;
-    let m_neighbors = derive_icosahedron_tri_neighbors_fortran(initial.nmd, &mut connectivity)?;
-    let topology = icosahedron_spring_topology_fortran(
+    let initial = icosahedron_initial_grid_canonical(nxp0)?;
+    let mut connectivity = icosahedron_fill_diamonds_canonical(nxp0)?;
+    let m_neighbors = derive_icosahedron_tri_neighbors_canonical(initial.nmd, &mut connectivity)?;
+    let topology = icosahedron_spring_topology_canonical(
         initial.nmd,
         &connectivity.u_edges,
         &m_neighbors,
         relax,
     )?;
-    let radius = OLAM_FORTRAN_EARTH_RADIUS_METERS;
-    let dist00 = olam_fortran_global_dist00(beta, radius, nxp0);
-    let spring = icosahedron_spring_dynamics1_fortran(
+    let radius = METHOD_C_CANONICAL_EARTH_RADIUS_METERS;
+    let dist00 = method_c_canonical_global_dist00(beta, radius, nxp0);
+    let spring = icosahedron_spring_dynamics1_canonical(
         &initial.m_points,
         &topology,
         niter,
@@ -48,10 +48,10 @@ pub fn icosahedron_relaxed_grid_fortran(
 
 /// Shared Rust port of `icosahedron.F90:mdloopf`, `udloopf`, and `wdloopf`.
 ///
-/// The three Fortran routines have identical flag semantics: `init == 'f'`
+/// The three Canonical routines have identical flag semantics: `init == 'f'`
 /// clears all loop flags, negative ids clear the selected loop, positive ids
-/// set it, and zero ids are ignored. Input ids are Fortran 1-based.
-pub fn apply_icosahedron_loop_flags_fortran(
+/// set it, and zero ids are ignored. Input ids are Canonical 1-based.
+pub fn apply_icosahedron_loop_flags_canonical(
     loop_flags: &mut [bool; ICOSAHEDRON_MLOOPS],
     initialize_false: bool,
     loop_ids: &[isize],

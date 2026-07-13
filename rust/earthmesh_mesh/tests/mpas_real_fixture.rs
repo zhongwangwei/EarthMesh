@@ -1,6 +1,5 @@
 use earthmesh_mesh::{
-    get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed, CartesianPoint,
-    GetAreaUnitInput,
+    get_area_unit_one_based, get_edge_connectivity_one_based, CartesianPoint, GetAreaUnitInput,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -172,7 +171,7 @@ fn get_area_matches_real_mpas_fixture_for_cell_and_vertex_areas() {
     ];
     let n_edges_on_cell = vec![0, 0, 6, 6, 6];
 
-    let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
+    let output = get_area_unit_one_based(GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cell_points,
@@ -211,7 +210,7 @@ fn get_edge_connectivity_matches_real_mpas_fixture_for_vertex_ring() {
         [4, 3, 0],
     ];
 
-    let output = get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_vertex)
+    let output = get_edge_connectivity_one_based(&triangle_neighbors, &cells_on_vertex)
         .expect("valid compact MPAS GetEdge fixture");
 
     assert_eq!(output.vertices_on_edge[2], [2, 3]);

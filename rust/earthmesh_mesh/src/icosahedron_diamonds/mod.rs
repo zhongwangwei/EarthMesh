@@ -8,7 +8,7 @@ fn to_usize_index(value: isize) -> Option<usize> {
     }
 }
 
-fn fill_diamond_fortran_indexed(
+fn fill_diamond_one_based(
     u_edges: &mut [IcosahedronUEdge],
     w_faces: &mut [IcosahedronWFace],
     im_left: usize,
@@ -61,12 +61,12 @@ fn fill_diamond_fortran_indexed(
 /// Port of the `fill_diamond` invocation loop inside
 /// `icosahedron.F90:icosahedron`.
 ///
-/// This preserves Fortran's 1-based allocated-array convention by returning
+/// This preserves Canonical's 1-based allocated-array convention by returning
 /// vectors with indices `0` and `1` unused/defaulted. It only covers the fields
 /// explicitly written by `fill_diamond`; `tri_neighbors` is responsible for
 /// later reciprocal U/W/M neighbor completion.
-pub fn icosahedron_fill_diamonds_fortran(nxp0: usize) -> Option<IcosahedronDiamondConnectivity> {
-    let counts = icosahedron_counts_fortran(nxp0)?;
+pub fn icosahedron_fill_diamonds_canonical(nxp0: usize) -> Option<IcosahedronDiamondConnectivity> {
+    let counts = icosahedron_counts_canonical(nxp0)?;
     let mut u_edges = vec![IcosahedronUEdge::default(); counts.nud + 1];
     let mut w_faces = vec![IcosahedronWFace::default(); counts.nwd + 1];
     let ibigd_ne = [6isize, 7, 8, 9, 10, 7, 8, 9, 10, 6];
@@ -156,7 +156,7 @@ pub fn icosahedron_fill_diamonds_fortran(nxp0: usize) -> Option<IcosahedronDiamo
                     (im_right, im_top, im_bot, iu2, iu4)
                 };
 
-                fill_diamond_fortran_indexed(
+                fill_diamond_one_based(
                     &mut u_edges,
                     &mut w_faces,
                     im_left,

@@ -1,3 +1,5 @@
+use earthmesh_geometry::EARTH_RADIUS_KM;
+
 /// Shared longitude/latitude row used by circle and close masks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LonLatPoint {
@@ -27,7 +29,7 @@ pub enum GridRegion {
 
 impl GridRegion {
     pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
-        let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
+        let norm = normalize_lon_degrees;
         match self {
             GridRegion::Bbox {
                 west,
@@ -38,20 +40,24 @@ impl GridRegion {
                 let (s, n) = ((*south).min(*north), (*south).max(*north));
                 let (w, e) = (norm(*west), norm(*east));
                 let lon = norm(lon);
-                lat >= s && lat <= n && lon >= w.min(e) && lon <= w.max(e)
+                let in_lon = if w <= e {
+                    lon >= w && lon <= e
+                } else {
+                    lon >= w || lon <= e
+                };
+                lat >= s && lat <= n && in_lon
             }
             GridRegion::Circle {
                 lon: clon,
                 lat: clat,
                 radius_km,
             } => {
-                let r = 6371.0_f64;
                 let (la1, la2) = (clat.to_radians(), lat.to_radians());
                 let dlat = (lat - *clat).to_radians();
                 let dlon = (norm(lon) - norm(*clon)).to_radians();
                 let a =
                     (dlat / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlon / 2.0).sin().powi(2);
-                2.0 * r * a.sqrt().asin() <= *radius_km
+                2.0 * EARTH_RADIUS_KM * a.sqrt().asin() <= *radius_km
             }
             GridRegion::Close { points } => point_in_close_region(points, lon, lat),
             GridRegion::Any(regions) => regions.iter().any(|region| region.contains(lon, lat)),
@@ -59,11 +65,15 @@ impl GridRegion {
     }
 }
 
+fn normalize_lon_degrees(x: f64) -> f64 {
+    ((x + 180.0).rem_euclid(360.0)) - 180.0
+}
+
 fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
     if points.len() < 3 || !lon.is_finite() || !lat.is_finite() {
         return false;
     }
-    let norm = |x: f64| ((x + 180.0).rem_euclid(360.0)) - 180.0;
+    let norm = normalize_lon_degrees;
     let lon0 = norm(lon);
     let normalized_lons = points
         .iter()
@@ -123,6 +133,19 @@ fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bbox_contains_antimeridian_span() {
+        let region = GridRegion::Bbox {
+            west: 170.0,
+            east: -170.0,
+            north: 10.0,
+            south: -10.0,
+        };
+        assert!(region.contains(175.0, 0.0));
+        assert!(region.contains(-175.0, 0.0));
+        assert!(!region.contains(0.0, 0.0));
+    }
 
     #[test]
     fn close_region_does_not_wrap_normal_polygon_around_query_longitude() {

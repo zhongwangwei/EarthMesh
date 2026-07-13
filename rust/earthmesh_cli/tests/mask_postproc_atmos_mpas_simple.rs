@@ -1,5 +1,5 @@
 #[test]
-fn atmos_mpas_simple_dispatch_uses_legacy_result_paths() {
+fn atmos_mpas_simple_dispatch_uses_compatibility_result_paths() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_atmos_mpas_simple_{}",
         std::process::id()
@@ -8,19 +8,19 @@ fn atmos_mpas_simple_dispatch_uses_legacy_result_paths() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&result_dir).expect("create result dir");
 
-    let mesh = earthmesh_cli::UnstructuredMesh {
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 90.0,
                 lat: 0.0,
             },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 180.0,
                 lat: 0.0,
             },
@@ -29,7 +29,7 @@ fn atmos_mpas_simple_dispatch_uses_legacy_result_paths() {
         w_to_m: vec![vec![1], vec![1, 2], vec![2, 1]],
         n_w_to_m: vec![1, 2, 2],
     };
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         result_dir.join("gridfile_NXP0009_tri.nc4"),
         &mesh,
     )
@@ -39,7 +39,7 @@ fn atmos_mpas_simple_dispatch_uses_legacy_result_paths() {
         &[12.0, 24.0, 48.0],
     );
 
-    let report = earthmesh_cli::write_mask_postproc_atmos_mpas_simple_netcdf(
+    let report = earthmesh_cli::mask_postproc_atmos::write_mask_postproc_atmos_mpas_simple_netcdf(
         &root,
         9,
         "tri",
@@ -60,7 +60,7 @@ fn atmos_mpas_simple_dispatch_uses_legacy_result_paths() {
 
 #[test]
 fn atmos_mpas_simple_dispatch_rejects_wrong_branch() {
-    let err = earthmesh_cli::write_mask_postproc_atmos_mpas_simple_netcdf(
+    let err = earthmesh_cli::mask_postproc_atmos::write_mask_postproc_atmos_mpas_simple_netcdf(
         std::env::temp_dir(),
         9,
         "tri",
@@ -70,7 +70,7 @@ fn atmos_mpas_simple_dispatch_rejects_wrong_branch() {
     .expect_err("non-atmos rejected");
     assert!(err.to_string().contains("atmosmesh"));
 
-    let err = earthmesh_cli::write_mask_postproc_atmos_mpas_simple_netcdf(
+    let err = earthmesh_cli::mask_postproc_atmos::write_mask_postproc_atmos_mpas_simple_netcdf(
         std::env::temp_dir(),
         9,
         "tri",
@@ -82,7 +82,7 @@ fn atmos_mpas_simple_dispatch_rejects_wrong_branch() {
 }
 
 fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
-    let mut file = netcdf::create(path).expect("create cellwidth fixture");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create cellwidth fixture");
     file.add_dimension("num_dbx", values.len())
         .expect("num_dbx dim");
     let mut var = file

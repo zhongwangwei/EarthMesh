@@ -5,7 +5,7 @@ use crate::{
     WorkspaceMaskApplyReport,
 };
 
-/// Report for the migrated top-level `mkgrd.F90` mask-restart branch.
+/// Report for the current top-level `mkgrd.F90` mask-restart branch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdMaskRestartPlanReport {
     pub config: EarthmeshConfig,
@@ -14,7 +14,7 @@ pub struct MkgrdMaskRestartPlanReport {
     pub remask: MaskRestartRemaskPlan,
 }
 
-/// Report for the migrated executable subset of the top-level `mkgrd.F90`
+/// Report for the current executable subset of the top-level `mkgrd.F90`
 /// mask-restart branch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdMaskRestartOceanRunReport {

@@ -1,10 +1,14 @@
+use crate::apply_area_judge_patch_sources_one_based;
+use crate::build_area_judge_base_state_one_based;
+use crate::build_area_judge_calculated_refine_one_based;
+use crate::AreaJudgeCalculatedRefineConfig;
+use crate::AreaJudgeNonRestartReport;
+use crate::AreaJudgePatchConfig;
 use std::io;
 use std::path::Path;
 
-use crate::*;
-
 /// Compose the non-restart `MOD_Area_judge.F90:Area_judge` branch.
-pub fn build_area_judge_non_restart_fortran_indexed(
+pub fn build_area_judge_non_restart_one_based(
     file_dir: impl AsRef<Path>,
     mask_domain_global: bool,
     mask_domain_type: &str,
@@ -22,7 +26,7 @@ pub fn build_area_judge_non_restart_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgeNonRestartReport> {
-    let mut base = build_area_judge_base_state_fortran_indexed(
+    let mut base = build_area_judge_base_state_one_based(
         &file_dir,
         mask_domain_global,
         mask_domain_type,
@@ -41,7 +45,7 @@ pub fn build_area_judge_non_restart_fortran_indexed(
 
     let patch = mask_patch
         .map(|config| {
-            apply_area_judge_patch_sources_fortran_indexed(
+            apply_area_judge_patch_sources_one_based(
                 &file_dir,
                 config.mask_patch_type,
                 0,
@@ -60,7 +64,7 @@ pub fn build_area_judge_non_restart_fortran_indexed(
 
     let calculated_refine = match (refine, calculated_refine) {
         (true, Some(config)) if config.refine_setting != "specified" => {
-            Some(build_area_judge_calculated_refine_fortran_indexed(
+            Some(build_area_judge_calculated_refine_one_based(
                 &file_dir,
                 0,
                 config.mask_refine_cal_type,

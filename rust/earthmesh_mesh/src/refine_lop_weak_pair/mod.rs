@@ -7,7 +7,7 @@ use std::io;
 /// for reverse one-into-two refinement, writes the paired weak-concavity segment
 /// entry for triangles sharing the paired weak triangle, and defers disjoint
 /// neighbors for an `mrl_new=4` renewal after the scan.
-pub fn refine_weak_concav_pair_special_fortran_indexed(
+pub fn refine_weak_concav_pair_special_one_based(
     num_weak_concav_pair: usize,
     num_ref_weak_concav: usize,
     triangle_neighbors: &[Vec<usize>],
@@ -30,7 +30,7 @@ pub fn refine_weak_concav_pair_special_fortran_indexed(
         ));
     }
 
-    let mut mrl_renew = vec![1_usize; num_weak_concav_pair + 1];
+    let mut mrl_renew = vec![None; num_weak_concav_pair + 1];
     for k in 1..=num_weak_concav_pair {
         let m1 = weak_concav_pair[k][0];
         let pair_index = if k % 2 == 0 {
@@ -108,12 +108,12 @@ pub fn refine_weak_concav_pair_special_fortran_indexed(
                 }
                 weak_concav_segment[segment_id][0] = m4;
             } else {
-                mrl_renew[k] = m4;
+                mrl_renew[k] = Some(m4);
             }
         }
     }
 
-    for &triangle in mrl_renew.iter().skip(1) {
+    for triangle in mrl_renew.iter().skip(1).flatten().copied() {
         if triangle >= mrl_new.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

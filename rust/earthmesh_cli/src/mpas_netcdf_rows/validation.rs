@@ -6,7 +6,7 @@ pub(crate) fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
     if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() || mesh.x_edge.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "MPAS mesh arrays must include the legacy placeholder row",
+            "MPAS mesh arrays must include the compatibility placeholder row",
         ));
     }
     let n_cells = mesh.x_cell.len();
@@ -93,7 +93,7 @@ pub(crate) fn validate_mpas_simple_mesh(mesh: &MpasSimpleMesh) -> io::Result<()>
     if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "MPAS simple mesh arrays must include the legacy placeholder row",
+            "MPAS simple mesh arrays must include the compatibility placeholder row",
         ));
     }
     for (name, actual, required) in [

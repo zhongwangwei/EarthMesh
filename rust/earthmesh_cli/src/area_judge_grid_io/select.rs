@@ -5,11 +5,9 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 use crate::require_len;
 
 use super::types::AreaJudgeGridPayload;
-use super::validate::{
-    grid_covers_area_judge_bounds_fortran_indexed, validate_area_judge_grid_payload,
-};
+use super::validate::{grid_covers_area_judge_bounds_one_based, validate_area_judge_grid_payload};
 
-pub fn select_area_judge_grid_fortran_indexed(
+pub fn select_area_judge_grid_one_based(
     is_in_area: &[Vec<i32>],
     seaorland: Option<&[Vec<i32>]>,
     lon_i: &[f64],
@@ -28,9 +26,9 @@ pub fn select_area_judge_grid_fortran_indexed(
             ),
         ));
     }
-    grid_covers_area_judge_bounds_fortran_indexed("IsInArea", is_in_area, bounds)?;
+    grid_covers_area_judge_bounds_one_based("IsInArea", is_in_area, bounds)?;
     if let Some(seaorland) = seaorland {
-        grid_covers_area_judge_bounds_fortran_indexed("seaorland", seaorland, bounds)?;
+        grid_covers_area_judge_bounds_one_based("seaorland", seaorland, bounds)?;
     }
     require_len("longitude source", lon_i.len(), bounds.maxlon_source + 1)?;
     require_len("latitude source", lat_i.len(), bounds.minlat_source + 1)?;
@@ -41,9 +39,8 @@ pub fn select_area_judge_grid_fortran_indexed(
     let latitude = (bounds.maxlat_source..=bounds.minlat_source)
         .map(|lat_index| lat_i[lat_index])
         .collect::<Vec<_>>();
-    let is_in_area_select = select_i32_matrix_fortran_indexed(is_in_area, bounds);
-    let seaorland_select =
-        seaorland.map(|values| select_i32_matrix_fortran_indexed(values, bounds));
+    let is_in_area_select = select_i32_matrix_one_based(is_in_area, bounds);
+    let seaorland_select = seaorland.map(|values| select_i32_matrix_one_based(values, bounds));
 
     let payload = AreaJudgeGridPayload {
         bounds,
@@ -56,7 +53,7 @@ pub fn select_area_judge_grid_fortran_indexed(
     Ok(payload)
 }
 
-fn select_i32_matrix_fortran_indexed(
+fn select_i32_matrix_one_based(
     values: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
 ) -> Vec<Vec<i32>> {

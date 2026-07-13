@@ -1,0 +1,41 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "earthmesh"
+version = "3.0.0a2"
+description = "Adaptive Earth-system mesh generation and coupled-model export workflows"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-2.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Zhongwang Wei", email = "zhongwang007@gmail.com" },
+]
+keywords = [
+    "earth-system-modeling",
+    "mesh-generation",
+    "unstructured-mesh",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhongwangwei/EarthMesh"
+Repository = "https://github.com/zhongwangwei/EarthMesh"
+Issues = "https://github.com/zhongwangwei/EarthMesh/issues"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "rust/earthmesh_cli/Cargo.toml"
+features = ["static-netcdf"]
+locked = true
+strip = true

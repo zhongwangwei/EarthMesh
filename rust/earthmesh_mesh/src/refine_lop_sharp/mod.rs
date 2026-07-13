@@ -1,13 +1,13 @@
 use std::io;
 
-use crate::{is_ngrmm, refine_m1w1_to_m11w11_fortran_indexed};
+use crate::{is_ngrmm, refine_m1w1_to_m11w11_one_based};
 
 /// Port of `MOD_refine.F90:sharp_concav_lop_judge`.
 ///
 /// Builds LOP transition segment pairs for sharp-concavity boundary segments.
-/// Segment matrices are represented as Fortran-indexed rows (`segment[i][j]`
-/// corresponds to Fortran `segment(j, i)`).
-pub fn refine_sharp_concav_lop_judge_fortran_indexed(
+/// Segment matrices are represented as Canonical-indexed rows (`segment[i][j]`
+/// corresponds to Canonical `segment(j, i)`).
+pub fn refine_sharp_concav_lop_judge_one_based(
     num_ref: &mut usize,
     num_bdy_refine_segment: usize,
     mrl_new: &[i32],
@@ -66,8 +66,7 @@ pub fn refine_sharp_concav_lop_judge_fortran_indexed(
                 break;
             };
 
-            let Some((m11, w11)) =
-                refine_m1w1_to_m11w11_fortran_indexed(m1, w1, sjx_child, ngrmw_new)?
+            let Some((m11, w11)) = refine_m1w1_to_m11w11_one_based(m1, w1, sjx_child, ngrmw_new)?
             else {
                 continue;
             };

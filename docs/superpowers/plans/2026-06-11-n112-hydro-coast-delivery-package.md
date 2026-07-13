@@ -4,7 +4,7 @@
 
 **Goal:** Add a reproducible package command that turns a selected hydro/coast refinement candidate into eval JSON, integrated HTML QA, ranking JSON, and a delivery manifest.
 
-**Architecture:** Implement a focused orchestration module under `util/hydro_mesh/refinement_package.py`. Reuse existing `refinement_eval`, `refinement_sweep`, and `geojson_map` code instead of duplicating metric, ranking, or HTML rendering logic. Keep the command file-based and dry-run-free: it packages existing artifacts and does not rerun EarthMesh Fortran.
+**Architecture:** Implement a focused orchestration module under `util/hydro_mesh/refinement_package.py`. Reuse existing `refinement_eval`, `refinement_sweep`, and `geojson_map` code instead of duplicating metric, ranking, or HTML rendering logic. Keep the command file-based and dry-run-free: it packages existing artifacts and does not rerun EarthMesh reference implementation.
 
 **Tech Stack:** Python standard library, existing hydro-mesh Python modules, pytest.
 

@@ -155,9 +155,9 @@ pub struct MaskPostprocOceanRunOptions {
 /// Restart action selected by the top-level `mkgrd.F90` mask-restart branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskRestartAction {
-    /// Fortran calls `mask_postproc(mesh_type)` and stops immediately.
+    /// Canonical calls `mask_postproc(mesh_type)` and stops immediately.
     RunMaskPostproc,
-    /// Fortran continues into the normal mkgrd path after the read_nl restart short-circuit.
+    /// Canonical continues into the normal mkgrd path after the read_nl restart short-circuit.
     ContinueMkgrd,
 }
 

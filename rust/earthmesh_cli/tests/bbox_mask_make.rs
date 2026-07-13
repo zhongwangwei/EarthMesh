@@ -1,7 +1,7 @@
 use std::fs;
 
 #[test]
-fn parse_bbox_mask_nml_matches_fortran_free_format_rules() {
+fn parse_bbox_mask_nml_matches_canonical_free_format_rules() {
     let root = std::env::temp_dir().join(format!("earthmesh_cli_bbox_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create root");
@@ -12,7 +12,7 @@ fn parse_bbox_mask_nml_matches_fortran_free_format_rules() {
     )
     .expect("write bbox nml");
 
-    let parsed = earthmesh_cli::parse_bbox_mask_nml(&input, 5)
+    let parsed = earthmesh_cli::bbox_mask_io::parse_bbox_mask_nml(&input, 5)
         .expect("parse bbox nml")
         .expect("refine degree within max_iter_spc");
 
@@ -20,7 +20,7 @@ fn parse_bbox_mask_nml_matches_fortran_free_format_rules() {
     assert_eq!(parsed.points.len(), 2);
     assert_eq!(
         parsed.points[0],
-        earthmesh_cli::BBoxPoint {
+        earthmesh_cli::bbox_mask_io::BBoxPoint {
             west: -10.0,
             east: 20.0,
             north: 50.0,
@@ -29,7 +29,7 @@ fn parse_bbox_mask_nml_matches_fortran_free_format_rules() {
     );
     assert_eq!(
         parsed.points[1],
-        earthmesh_cli::BBoxPoint {
+        earthmesh_cli::bbox_mask_io::BBoxPoint {
             west: 100.0,
             east: 120.0,
             north: 10.0,
@@ -52,8 +52,8 @@ fn parse_bbox_mask_nml_rejects_invalid_bbox_orientation_and_skips_too_high_refin
         "bbox_num = 1\nbbox_refine = 1\n20.0 -10.0 40.0 20.0\n",
     )
     .expect("write bad orientation");
-    let err = earthmesh_cli::parse_bbox_mask_nml(&bad_orientation, 5)
-        .expect_err("west greater than east should match Fortran stop");
+    let err = earthmesh_cli::bbox_mask_io::parse_bbox_mask_nml(&bad_orientation, 5)
+        .expect_err("west greater than east should match Canonical stop");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("west"));
 
@@ -63,16 +63,18 @@ fn parse_bbox_mask_nml_rejects_invalid_bbox_orientation_and_skips_too_high_refin
         "bbox_num = 1\nbbox_refine = 6\n-10.0 20.0 40.0 20.0\n",
     )
     .expect("write too high refine");
-    assert!(earthmesh_cli::parse_bbox_mask_nml(&too_high, 5)
-        .expect("too-high refine returns no parsed mask like Fortran return")
-        .is_none());
+    assert!(
+        earthmesh_cli::bbox_mask_io::parse_bbox_mask_nml(&too_high, 5)
+            .expect("too-high refine returns no parsed mask like Canonical return")
+            .is_none()
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
-fn bbox_mask_output_plan_matches_fortran_numbering() {
-    let mut counts = earthmesh_cli::MaskCountState::default();
+fn bbox_mask_output_plan_matches_canonical_numbering() {
+    let mut counts = earthmesh_cli::mask_counts::MaskCountState::default();
     let file_dir = "/tmp/case/";
 
     let first_domain = counts
@@ -110,15 +112,15 @@ fn bbox_mask_output_plan_matches_fortran_numbering() {
 }
 
 #[test]
-fn copy_bbox_mask_netcdf_matches_fortran_skip_copy_and_numbering() {
+fn copy_bbox_mask_netcdf_matches_canonical_skip_copy_and_numbering() {
     let root = std::env::temp_dir().join(format!("earthmesh_cli_bbox_copy_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("tmpfile")).expect("create tmpfile");
     let source = root.join("source_bbox.nc4");
     fs::write(&source, b"pretend netcdf bytes").expect("write source nc4");
-    let mut counts = earthmesh_cli::MaskCountState::default();
+    let mut counts = earthmesh_cli::mask_counts::MaskCountState::default();
 
-    let skipped = earthmesh_cli::copy_bbox_mask_netcdf_with_refine(
+    let skipped = earthmesh_cli::mask_operation_apply::copy_bbox_mask_netcdf_with_refine(
         &source,
         "mask_refine",
         6,
@@ -126,11 +128,11 @@ fn copy_bbox_mask_netcdf_matches_fortran_skip_copy_and_numbering() {
         &root,
         &mut counts,
     )
-    .expect("too-high refine is a no-op like Fortran");
+    .expect("too-high refine is a no-op like Canonical");
     assert!(skipped.is_none());
     assert_eq!(counts.mask_refine_ndm[6], 0);
 
-    let copied = earthmesh_cli::copy_bbox_mask_netcdf_with_refine(
+    let copied = earthmesh_cli::mask_operation_apply::copy_bbox_mask_netcdf_with_refine(
         &source,
         "mask_refine",
         4,
@@ -152,36 +154,37 @@ fn copy_bbox_mask_netcdf_matches_fortran_skip_copy_and_numbering() {
 }
 
 #[test]
-fn bbox_netcdf_reader_and_writer_match_fortran_schema() {
+fn bbox_netcdf_reader_and_writer_match_canonical_schema() {
     let root =
         std::env::temp_dir().join(format!("earthmesh_cli_bbox_netcdf_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create root");
     let source = root.join("source_bbox.nc");
     {
-        let mut file = netcdf::create(&source).expect("create source nc");
+        let mut file = earthmesh_cli::create_netcdf_quiet(&source).expect("create source nc");
         let mut refine = file
             .add_variable::<i32>("bbox_refine", &[])
             .expect("define bbox_refine");
         refine.put_value(3_i32, ()).expect("write bbox_refine");
     }
 
-    let refine = earthmesh_cli::read_bbox_refine_netcdf(&source).expect("read bbox_refine");
+    let refine =
+        earthmesh_cli::bbox_mask_io::read_bbox_refine_netcdf(&source).expect("read bbox_refine");
     assert_eq!(refine, 3);
 
     let output = root.join("written_bbox.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &output,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 2,
             points: vec![
-                earthmesh_cli::BBoxPoint {
+                earthmesh_cli::bbox_mask_io::BBoxPoint {
                     west: -1.0,
                     east: 2.0,
                     north: 30.0,
                     south: 20.0,
                 },
-                earthmesh_cli::BBoxPoint {
+                earthmesh_cli::bbox_mask_io::BBoxPoint {
                     west: 100.0,
                     east: 120.0,
                     north: 10.0,

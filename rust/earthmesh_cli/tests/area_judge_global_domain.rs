@@ -1,10 +1,10 @@
-use earthmesh_cli::initialize_area_judge_global_domain_fortran_indexed;
+use earthmesh_cli::area_judge_domain_builders::initialize_area_judge_global_domain_one_based;
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 #[test]
 fn global_domain_initializer_marks_every_one_based_source_cell() {
-    let report = initialize_area_judge_global_domain_fortran_indexed(4, 3)
-        .expect("initialize global domain");
+    let report =
+        initialize_area_judge_global_domain_one_based(4, 3).expect("initialize global domain");
 
     assert_eq!(
         report.bounds,
@@ -22,7 +22,7 @@ fn global_domain_initializer_marks_every_one_based_source_cell() {
     assert_eq!(
         report.is_in_domain[0],
         vec![0; 4],
-        "Fortran slot zero stays unused"
+        "Canonical slot zero stays unused"
     );
     for lon_index in 1..=4 {
         assert_eq!(report.is_in_domain[lon_index][0], 0);
@@ -34,7 +34,7 @@ fn global_domain_initializer_marks_every_one_based_source_cell() {
 
 #[test]
 fn global_domain_initializer_rejects_empty_source_dimensions() {
-    let err = initialize_area_judge_global_domain_fortran_indexed(0, 3)
+    let err = initialize_area_judge_global_domain_one_based(0, 3)
         .expect_err("empty longitude source should fail");
 
     assert!(err

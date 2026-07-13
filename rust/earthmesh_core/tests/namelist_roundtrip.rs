@@ -47,6 +47,22 @@ fn mkgrd_namelist_round_trips_through_writer() {
 }
 
 #[test]
+fn mkgrd_close_boundary_spec_round_trips_when_non_default() {
+    let mut original = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).expect("sample parses");
+    original.mask_domain_close_boundary =
+        "spherical_chaikin:iterations=2,max_segment_angle_deg=0.25".to_string();
+
+    let rendered = original.to_mkgrd_namelist();
+    assert!(rendered.contains("mask_domain_close_boundary"));
+    let reparsed =
+        EarthmeshConfig::from_mkgrd_namelist(&rendered).expect("rendered output re-parses");
+    assert_eq!(
+        reparsed.mask_domain_close_boundary,
+        original.mask_domain_close_boundary
+    );
+}
+
+#[test]
 fn mkgrd_writer_escapes_single_quotes_in_string_values() {
     let mut original = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).expect("sample parses");
     original.experiment_name = "case's quoted".to_string();
@@ -56,7 +72,7 @@ fn mkgrd_writer_escapes_single_quotes_in_string_values() {
     let rendered = original.to_mkgrd_namelist();
     assert!(
         rendered.contains("case''s quoted"),
-        "rendered namelist should use Fortran doubled quotes: {rendered}"
+        "rendered namelist should use Canonical doubled quotes: {rendered}"
     );
     let reparsed =
         EarthmeshConfig::from_mkgrd_namelist(&rendered).expect("escaped output re-parses");
@@ -125,6 +141,23 @@ fn mkrefine_namelist_round_trips_through_writer() {
 }
 
 #[test]
+fn mkrefine_close_boundary_spec_round_trips_when_non_default() {
+    let mut original = RefineConfig::from_mkrefine_namelist(SAMPLE_MKREFINE, "landmesh", "hex")
+        .expect("sample parses");
+    original.mask_refine_spc_close_boundary =
+        "enclosing_cap:margin_km=20,max_radius_deg=80,max_segment_angle_deg=0.25".to_string();
+
+    let rendered = original.to_mkrefine_namelist();
+    assert!(rendered.contains("mask_refine_spc_close_boundary"));
+    let reparsed = RefineConfig::from_mkrefine_namelist(&rendered, "landmesh", "hex")
+        .expect("rendered output re-parses");
+    assert_eq!(
+        reparsed.mask_refine_spc_close_boundary,
+        original.mask_refine_spc_close_boundary
+    );
+}
+
+#[test]
 fn mkrefine_writer_escapes_single_quotes_in_string_values() {
     let mut original = RefineConfig::from_mkrefine_namelist(SAMPLE_MKREFINE, "landmesh", "hex")
         .expect("sample parses");
@@ -134,7 +167,7 @@ fn mkrefine_writer_escapes_single_quotes_in_string_values() {
     let rendered = original.to_mkrefine_namelist();
     assert!(
         rendered.contains("refine''spc"),
-        "rendered namelist should use Fortran doubled quotes: {rendered}"
+        "rendered namelist should use Canonical doubled quotes: {rendered}"
     );
     let reparsed = RefineConfig::from_mkrefine_namelist(&rendered, "landmesh", "hex")
         .expect("escaped output re-parses");
@@ -201,6 +234,7 @@ fn quality_namelist_round_trips_through_writer() {
     assert_eq!(original.angle_deviation_warn_deg, 30.0);
     assert_eq!(original.cell_edge_cv_warn, 0.3);
     assert_eq!(original.worst_cells_limit, 100);
+    assert_eq!(original.repair_batch_limit, 1);
 }
 
 #[test]
@@ -215,6 +249,7 @@ fn quality_namelist_absent_block_yields_defaults() {
     assert_eq!(parsed.aspect_ratio_warn, 4.0);
     assert_eq!(parsed.cell_edge_cv_warn, 0.35);
     assert_eq!(parsed.worst_cells_limit, 50);
+    assert_eq!(parsed.repair_batch_limit, 1);
     assert_eq!(parsed.on_violation, "warn");
 }
 
@@ -323,6 +358,14 @@ fn datalayers_lower_warns_on_stem_mismatch_but_still_sets_switch() {
     assert_eq!(report.warnings.len(), 1);
     assert!(report.warnings[0].contains("lai"));
     assert!(refine.refine_onelayer_lnd[0], "switch still set (lenient)");
+}
+
+#[test]
+fn datalayers_parser_rejects_removed_specified_mask_role() {
+    let dl = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers\n  NL%layer = 'mask|specified_mask|./masks/refine.nc4||T|F'\n/\n",
+    );
+    assert!(dl.layers.is_empty());
 }
 
 #[test]

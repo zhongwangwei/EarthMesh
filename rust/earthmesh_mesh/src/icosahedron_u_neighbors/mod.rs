@@ -5,8 +5,8 @@ use super::*;
 /// This fills each active U edge's refinement level, four same-ring U
 /// neighbors, four outer W neighbors, and eight second-ring U neighbors from
 /// already-populated W-face inner-neighbor tables. W-face and M-point
-/// derivation are intentionally kept as separate migration surfaces.
-pub fn derive_icosahedron_u_neighbors_fortran(
+/// derivation are intentionally kept as separate architecture surfaces.
+pub fn derive_icosahedron_u_neighbors_canonical(
     connectivity: &mut IcosahedronDiamondConnectivity,
 ) -> Option<()> {
     for iu in 2..connectivity.u_edges.len() {

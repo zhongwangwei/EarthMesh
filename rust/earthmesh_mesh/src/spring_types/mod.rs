@@ -57,7 +57,7 @@ pub struct RegionalMoveMaskInput<'a> {
     pub vertex_protect_layers: usize,
 }
 
-/// Output from the migrated `set_dbxMove_regional_step` mask derivation.
+/// Output from the current `set_dbxMove_regional_step` mask derivation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionalMoveMaskOutput {
     pub move_mask: Vec<bool>,

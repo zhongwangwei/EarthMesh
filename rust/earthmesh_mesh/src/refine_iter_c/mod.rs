@@ -6,11 +6,11 @@ use crate::{validate_refine_cell_neighbors, validate_triangle_neighbor_rows};
 ///
 /// Combines weak-concavity cleanup around already-refined polygons with the
 /// `ref_lbx_in` transition propagation used to keep 5/6-edge cells from
-/// exceeding the seven-edge refinement cap.  Inputs preserve Fortran one-based
+/// exceeding the seven-edge refinement cap.  Inputs preserve Canonical one-based
 /// indexing: row 0 is unused, triangle rows after `num_vertex` contain exactly
 /// three `ngrmm` neighbors, and polygon rows after `num_center` use
 /// `edge_counts[cell]` entries from `triangles_on_cell[cell]`.
-pub fn refine_iter_c_judge_fortran_indexed(
+pub fn refine_iter_c_judge_one_based(
     set_dis_in: usize,
     num_vertex: usize,
     num_center: usize,

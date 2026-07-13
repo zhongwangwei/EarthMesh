@@ -41,19 +41,30 @@ fn resolve_layer_file(path: Option<&str>, gridfile_dir: &Path) -> Option<PathBuf
 /// Run `mkgrd.x --mesh-quality <gridfile> <dir> --kind <tri|hex>` and parse the
 /// resulting `quality_summary.json` for the Quality dashboard.
 #[tauri::command]
-pub(crate) fn mesh_quality(gridfile: String, kind: Option<String>) -> Result<MeshQuality, String> {
+pub(crate) fn mesh_quality(
+    gridfile: String,
+    kind: Option<String>,
+    min_angle_deg: Option<f64>,
+    on_violation: Option<String>,
+) -> Result<MeshQuality, String> {
     let kind = checked_mesh_kind(kind.as_deref())?;
     let dir = gridfile_dir(&gridfile)?;
     // Measure hexagon cells for hex/atmos (MPAS) meshes, triangles for FVCOM —
     // matching the cell view the map renders, so the reported angles are the real
     // cell angles (≈120° for hexagons), not the dual triangles (≈60°).
-    let bin = resolve_mkgrd();
+    let quality_path = dir.join("studio_quality.nml");
+    let quality_namelist = quality_namelist_for_gui(
+        min_angle_deg.unwrap_or(25.0),
+        on_violation.as_deref().unwrap_or("warn"),
+    )?;
+    fs::write(&quality_path, quality_namelist)
+        .map_err(|e| format!("write {}: {e}", quality_path.display()))?;
+    let bin = resolve_mkgrd()?;
     let out = Command::new(&bin)
-        .arg("--mesh-quality")
-        .arg(&gridfile)
+        .args(["--mesh-quality", &gridfile])
         .arg(&dir)
-        .arg("--kind")
-        .arg(kind)
+        .arg(&quality_path)
+        .args(["--kind", kind])
         .output()
         .map_err(|e| format!("run --mesh-quality ({bin}): {e}"))?;
     if !out.status.success() {
@@ -68,6 +79,53 @@ pub(crate) fn mesh_quality(gridfile: String, kind: Option<String>) -> Result<Mes
     parse_quality_summary(&text, &dir)
 }
 
+/// Run Project-aware quality so GUI Block/AutoRefine sees the same topology
+/// context and verdict as `mkgrd.x --project`.
+pub(crate) fn project_mesh_quality(
+    project_path: &Path,
+    gridfile: &str,
+) -> Result<MeshQuality, String> {
+    let dir = gridfile_dir(gridfile)?;
+    let bin = resolve_mkgrd()?;
+    let out = Command::new(&bin)
+        .arg("--project-quality")
+        .arg(project_path)
+        .arg(gridfile)
+        .arg(&dir)
+        .output()
+        .map_err(|e| format!("run --project-quality ({bin}): {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "project-quality failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let json_path = dir.join("quality_summary.json");
+    let text =
+        fs::read_to_string(&json_path).map_err(|e| format!("read {}: {e}", json_path.display()))?;
+    parse_quality_summary(&text, &dir)
+}
+
+pub(crate) fn quality_namelist_for_gui(
+    min_angle_deg: f64,
+    on_violation: &str,
+) -> Result<String, String> {
+    if !min_angle_deg.is_finite() || min_angle_deg <= 0.0 {
+        return Err("quality min_angle_deg must be finite and > 0".to_string());
+    }
+    let policy = match on_violation.trim() {
+        "warn" => "warn",
+        "block" => "block",
+        // The GUI owns the retry loop. The read-only quality subprocess must
+        // report with project thresholds rather than attempting orchestration.
+        "auto_refine" => "warn",
+        other => return Err(format!("unknown quality policy {other:?}")),
+    };
+    Ok(format!(
+        "&quality\n  NL%min_angle_warn_deg = {min_angle_deg}\n  NL%on_violation = '{policy}'\n/\n"
+    ))
+}
+
 /// Run `mkgrd.x --gridfile-cell-polygons <gridfile> <out.geojson> --kind <hex|tri>`
 /// and return the GeoJSON text for the frontend to overlay on the map.
 #[tauri::command]
@@ -79,7 +137,7 @@ pub(crate) fn mesh_cell_polygons(
     let kind = checked_mesh_kind(Some(&kind))?;
     let dir = gridfile_dir(&gridfile)?;
     let out_geojson = dir.join("mesh_cells.geojson");
-    let bin = resolve_mkgrd();
+    let bin = resolve_mkgrd()?;
     let mut cmd = Command::new(&bin);
     cmd.arg("--gridfile-cell-polygons")
         .arg(&gridfile)
@@ -133,7 +191,7 @@ pub(crate) fn mesh_merit_cells(
     let river_cells = out_dir.join("river_cell_intersections.geojson");
     let coast_cells = out_dir.join("coast_cell_intersections.geojson");
     let classified = out_dir.join("mesh_cells_merit.geojson");
-    let bin = resolve_mkgrd();
+    let bin = resolve_mkgrd()?;
     let landtype_file = resolve_layer_file(landtype_file.as_deref(), &dir);
 
     let res = Command::new(&bin)

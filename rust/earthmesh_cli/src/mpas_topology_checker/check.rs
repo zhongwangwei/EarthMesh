@@ -1,8 +1,9 @@
-use crate::*;
+use crate::MeshTopologyReport;
+use crate::MpasMesh;
 
 /// Check an [`MpasMesh`] for topological self-consistency: index ranges, the
 /// `cellsOnCell`/`cellsOnEdge`/`edgesOnCell`/`edgesOnVertex`/`verticesOnEdge`
-/// cross-reference symmetries, and the Euler characteristic. Works for a global
+/// cross-canonical symmetries, and the Euler characteristic. Works for a global
 /// (closed, chi=2) or a regional/limited-area (open disk, chi=1) mesh.
 pub fn check_mpas_mesh_topology(mesh: &MpasMesh) -> MeshTopologyReport {
     let mut v: Vec<String> = Vec::new();

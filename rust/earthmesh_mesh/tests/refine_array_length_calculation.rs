@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_array_length_calculation_fortran_indexed;
+use earthmesh_mesh::refine_array_length_calculation_one_based;
 
 #[test]
 fn array_length_calculation_combines_halo_sizing_with_refine_close_curves() {
@@ -38,7 +38,7 @@ fn array_length_calculation_combines_halo_sizing_with_refine_close_curves() {
         edge_counts[cell] = triangles_on_cell[cell].len();
     }
 
-    let result = refine_array_length_calculation_fortran_indexed(
+    let result = refine_array_length_calculation_one_based(
         1,
         1,
         9,

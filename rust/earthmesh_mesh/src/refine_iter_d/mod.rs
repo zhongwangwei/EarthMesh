@@ -1,9 +1,8 @@
 use std::io;
 
 use crate::{
-    is_ngrmm, refine_boundary_closed_curves_fortran_indexed,
-    refine_boundary_segments_fortran_indexed, validate_refine_cell_neighbors,
-    validate_triangle_neighbor_rows,
+    is_ngrmm, refine_boundary_closed_curves_one_based, refine_boundary_segments_one_based,
+    validate_refine_cell_neighbors, validate_triangle_neighbor_rows,
 };
 
 /// Port of `MOD_refine.F90:iterD_judge`.
@@ -11,11 +10,11 @@ use crate::{
 /// Finds weak-concavity boundary segment pairs where one side has one
 /// transition triangle and the neighboring side has more than one (`1+n`).
 /// Such pairs are marked for extra refinement by setting both boundary
-/// triangles in `ref_sjx`.  Inputs preserve Fortran one-based indexing:
+/// triangles in `ref_sjx`.  Inputs preserve Canonical one-based indexing:
 /// triangle row 0 is unused, active triangle rows after `num_vertex` have
 /// exactly three `triangle_neighbors`, and polygon rows after `num_center`
 /// expose `triangles_on_cell[cell][..edge_counts[cell]]`.
-pub fn refine_iter_d_judge_fortran_indexed(
+pub fn refine_iter_d_judge_one_based(
     set_dis_in: usize,
     num_vertex: usize,
     sjx_points: usize,
@@ -71,7 +70,7 @@ pub fn refine_iter_d_judge_fortran_indexed(
         validate_refine_cell_neighbors(cell, triangles_on_cell, edge_counts, sjx_points, None)?;
     }
 
-    let closed_curves = refine_boundary_closed_curves_fortran_indexed(
+    let closed_curves = refine_boundary_closed_curves_one_based(
         num_vertex,
         sjx_points,
         num_center,
@@ -80,7 +79,7 @@ pub fn refine_iter_d_judge_fortran_indexed(
         cells_on_triangle,
         mrl_new,
     )?;
-    let bdy_refine_segments = refine_boundary_segments_fortran_indexed(
+    let bdy_refine_segments = refine_boundary_segments_one_based(
         set_dis_in,
         &closed_curves,
         triangles_on_cell,

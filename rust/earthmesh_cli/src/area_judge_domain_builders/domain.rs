@@ -1,11 +1,12 @@
+use crate::build_area_judge_area_sources_one_based;
+use crate::AreaJudgeDomainInitializationReport;
 use std::io;
 use std::path::Path;
 
-use super::global::initialize_area_judge_global_domain_fortran_indexed;
-use crate::*;
+use super::global::initialize_area_judge_global_domain_one_based;
 
 /// Build the `Area_judge` domain mask for global or file-numbered domain sources.
-pub fn build_area_judge_domain_fortran_indexed(
+pub fn build_area_judge_domain_one_based(
     file_dir: impl AsRef<Path>,
     mask_domain_global: bool,
     mask_domain_type: &str,
@@ -19,10 +20,10 @@ pub fn build_area_judge_domain_fortran_indexed(
     nlats_source: usize,
 ) -> io::Result<AreaJudgeDomainInitializationReport> {
     if mask_domain_global {
-        return initialize_area_judge_global_domain_fortran_indexed(nlons_source, nlats_source);
+        return initialize_area_judge_global_domain_one_based(nlons_source, nlats_source);
     }
 
-    let source = build_area_judge_area_sources_fortran_indexed(
+    let source = build_area_judge_area_sources_one_based(
         file_dir,
         "mask_domain",
         mask_domain_type,

@@ -1,4 +1,4 @@
-use earthmesh_mesh::{get_sort_new_fortran_indexed, LonLatDegrees};
+use earthmesh_mesh::{get_sort_new_one_based, LonLatDegrees};
 
 fn ll(lon: f64, lat: f64) -> LonLatDegrees {
     LonLatDegrees::new(lon, lat)
@@ -18,7 +18,7 @@ fn get_sort_new_walks_adjacent_triangles_from_first_degree_one_entry() {
     triangle_points[3] = ll(1.0, 0.0);
     let mut triangles_on_cell = vec![vec![], vec![], vec![5, 3, 4]];
 
-    get_sort_new_fortran_indexed(
+    get_sort_new_one_based(
         num_dbx,
         &n_triangles_on_cell,
         &cells_on_triangle,
@@ -31,7 +31,7 @@ fn get_sort_new_walks_adjacent_triangles_from_first_degree_one_entry() {
 }
 
 #[test]
-fn get_sort_new_appends_unreachable_triangles_like_fortran_warning_fallback() {
+fn get_sort_new_appends_unreachable_triangles_like_canonical_warning_fallback() {
     let num_dbx = 2;
     let n_triangles_on_cell = vec![0, 0, 3];
     let mut cells_on_triangle = vec![[0, 0, 0]; 7];
@@ -44,7 +44,7 @@ fn get_sort_new_appends_unreachable_triangles_like_fortran_warning_fallback() {
     triangle_points[6] = ll(1.0, 0.0);
     let mut triangles_on_cell = vec![vec![], vec![], vec![3, 4, 6]];
 
-    get_sort_new_fortran_indexed(
+    get_sort_new_one_based(
         num_dbx,
         &n_triangles_on_cell,
         &cells_on_triangle,
@@ -70,7 +70,7 @@ fn get_sort_new_reverses_clockwise_area_to_counterclockwise_order() {
     triangle_points[5] = ll(0.0, 1.0);
     let mut triangles_on_cell = vec![vec![], vec![], vec![3, 4, 5]];
 
-    get_sort_new_fortran_indexed(
+    get_sort_new_one_based(
         num_dbx,
         &n_triangles_on_cell,
         &cells_on_triangle,

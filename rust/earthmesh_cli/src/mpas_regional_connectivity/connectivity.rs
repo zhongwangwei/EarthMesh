@@ -1,7 +1,8 @@
+use crate::n_edges_on_cell_usize_from_mesh;
+use crate::RegionalMpasConnectivity;
+use crate::UnstructuredMesh;
 use std::collections::HashMap;
 use std::io;
-
-use crate::*;
 
 /// Build [`RegionalMpasConnectivity`] from a carved hex [`UnstructuredMesh`].
 pub fn build_regional_mpas_connectivity(
@@ -36,7 +37,7 @@ pub fn build_regional_mpas_connectivity(
             if !is_real(a) || !is_real(b) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("cell {c} side ({a},{b}) references a placeholder vertex"),
+                    format!("cell {c} side ({a},{b}) canonicals a placeholder vertex"),
                 ));
             }
             let key = (a.min(b), a.max(b));

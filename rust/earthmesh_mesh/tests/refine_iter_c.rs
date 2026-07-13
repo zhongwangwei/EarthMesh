@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_iter_c_judge_fortran_indexed;
+use earthmesh_mesh::refine_iter_c_judge_one_based;
 
 #[test]
 fn iter_c_marks_pentagon_unrefined_triangles_when_refined_neighbors_exceed_limit() {
@@ -16,7 +16,7 @@ fn iter_c_marks_pentagon_unrefined_triangles_when_refined_neighbors_exceed_limit
     let mrl_new = vec![0, 1, 4, 4, 1, 1, 1];
     let ref_lbx = vec![0, 0, 1];
 
-    let ref_sjx = refine_iter_c_judge_fortran_indexed(
+    let ref_sjx = refine_iter_c_judge_one_based(
         1,
         1,
         1,
@@ -53,7 +53,7 @@ fn iter_c_marks_opposite_hex_gap_triangles_when_two_refined_triangles_face_each_
     let mrl_new = vec![0, 1, 4, 1, 1, 4, 1, 1];
     let ref_lbx = vec![0, 0, 1];
 
-    let ref_sjx = refine_iter_c_judge_fortran_indexed(
+    let ref_sjx = refine_iter_c_judge_one_based(
         1,
         1,
         1,
@@ -95,7 +95,7 @@ fn iter_c_marks_single_refined_hex_neighbors_when_incoming_transition_would_exce
     let mrl_new = vec![0, 1, 4, 1, 4, 4, 1, 1, 1, 1];
     let ref_lbx = vec![0, 0, 1, 0];
 
-    let ref_sjx = refine_iter_c_judge_fortran_indexed(
+    let ref_sjx = refine_iter_c_judge_one_based(
         2,
         1,
         1,
@@ -122,7 +122,7 @@ fn iter_c_rejects_invalid_triangle_neighbor_connectivity() {
     let mrl_new = vec![0, 1, 4, 1, 1];
     let ref_lbx = vec![0, 0, 1];
 
-    let err = refine_iter_c_judge_fortran_indexed(
+    let err = refine_iter_c_judge_one_based(
         1,
         1,
         1,

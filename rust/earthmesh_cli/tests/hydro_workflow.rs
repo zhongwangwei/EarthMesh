@@ -3,7 +3,7 @@
 //! (no NetCDF); a `#[ignore]` full-chain test also exercises the optional R7 mesh+land-type
 //! coupling-quality branch against real fixtures (run with `make test-slow`).
 
-use earthmesh_cli::run_hydro_workflow;
+use earthmesh_cli::hydro_delivery_refine_workflow::run_hydro_workflow;
 
 #[test]
 fn cells_and_corridors_to_coupling_and_plan() {
@@ -21,12 +21,13 @@ fn cells_and_corridors_to_coupling_and_plan() {
          "geometry":{"type":"Polygon","coordinates":[[[4,0],[6,0],[6,2],[4,2],[4,0]]]}}]}"#,
     )
     .unwrap();
-    // R3 corridor = left half of c0 -> river_fraction 0.5 for c0, no overlap for c1.
+    // R3 corridor covers slightly over half of c0. The margin avoids relying on
+    // planar 0.5 equality after great-circle densification + equal-area projection.
     std::fs::write(
         dir.join("corridors.geojson"),
         r#"{"type":"FeatureCollection","features":[
         {"type":"Feature","properties":{"river_class":"R3"},
-         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}]}"#,
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1.1,0],[1.1,2],[0,2],[0,0]]]}}]}"#,
     )
     .unwrap();
 
@@ -48,11 +49,11 @@ fn cells_and_corridors_to_coupling_and_plan() {
     .expect("hydro workflow");
 
     // only c0 overlaps -> 1 intersection feature -> 1 coupling row -> 1 refined cell
-    // (river_fraction 0.5 -> target_level round(0.5*3) = 2).
+    // R3 class demand is 1.0, so a physically narrow river is not rounded out.
     assert_eq!(report.intersection_cells, 1);
     assert_eq!(report.coupling_rows, 1);
     assert_eq!(report.cells_refined, 1);
-    assert_eq!(report.refinement_max_level, 2);
+    assert_eq!(report.refinement_max_level, 3);
     // no mesh + land-type given -> no R7 coupling-quality step
     assert!(report.coupling_quality_verdict.is_none());
     assert!(report.coupling_quality_path.is_none());
@@ -69,40 +70,116 @@ fn cells_and_corridors_to_coupling_and_plan() {
 
     let manifest = std::fs::read_to_string(&report.manifest_path).unwrap();
     assert!(manifest.contains("\"kind\": \"earthmesh_hydro_workflow\""));
+    assert!(
+        manifest.contains(
+            "\"overlay_semantics\": \"cell_local_lambert_azimuthal_equal_area_conservative\""
+        ),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("\"production_coupling\": true"),
+        "{manifest}"
+    );
+    assert!(report.coupling_csv_path.ends_with("colm_coupling.csv"));
     assert!(manifest.contains("\"coupling_rows\": 1"), "{manifest}");
     assert!(manifest.contains("\"cells_refined\": 1"), "{manifest}");
 
     let csv = std::fs::read_to_string(&report.coupling_csv_path).unwrap();
+    let columns = csv
+        .lines()
+        .nth(1)
+        .expect("coupling row")
+        .split(',')
+        .collect::<Vec<_>>();
+    assert_eq!(columns[0], "c0", "{csv}");
+    assert_eq!(columns[2], "R3", "{csv}");
     assert!(
-        csv.contains("c0") && csv.contains("R3") && csv.contains("0.5"),
+        (columns[3].parse::<f64>().unwrap() - 0.55).abs() < 1.0e-4,
         "{csv}"
     );
+    assert!(columns[4].parse::<f64>().unwrap() > 0.0, "{csv}");
+    assert!(columns[5].parse::<f64>().unwrap() > 0.0, "{csv}");
 
     let plan = std::fs::read_to_string(&report.refinement_plan_path).unwrap();
-    assert!(plan.contains("\"target_level\": 2"), "{plan}");
+    assert!(plan.contains("\"target_level\": 3"), "{plan}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn class_specific_coupling_rows_share_one_refinement_cell() {
+    let dir = std::env::temp_dir().join(format!("em3_wf_unique_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"cell_id":"c0","center_lon":1,"center_lat":1},
+           "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"river_class":"R2"},
+           "geometry":{"type":"Polygon","coordinates":[[[0,0],[0.5,0],[0.5,2],[0,2],[0,0]]]}},
+          {"type":"Feature","properties":{"river_class":"R3"},
+           "geometry":{"type":"Polygon","coordinates":[[[1,0],[1.5,0],[1.5,2],[1,2],[1,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let report = run_hydro_workflow(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        dir.join("workflow"),
+        &["R2".to_string(), "R3".to_string()],
+        0.0,
+        false,
+        None,
+        3,
+        Some(1),
+        None,
+        None,
+        1,
+    )
+    .expect("hydro workflow with duplicate class rows");
+
+    assert_eq!(report.intersection_cells, 2);
+    assert_eq!(report.coupling_rows, 2, "coupling remains class-specific");
+    assert_eq!(
+        report.cells_refined, 1,
+        "refinement budget is per mesh cell"
+    );
+    let plan = std::fs::read_to_string(&report.refinement_plan_path).unwrap();
+    assert!(plan.contains("\"total_cells\": 1"), "{plan}");
+    assert!(plan.contains("\"cell_id\": \"c0\""), "{plan}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Full chain including the optional R7 mesh+land-type coupling-quality branch: synthetic
 /// cells/corridors drive the hydro chain while a real EarthMesh gridfile + land-type
-/// NetCDF drive coupling_quality.json. Ignored (needs the NXP16 gridfile + a land-type
-/// NetCDF, like the colm sibling); run with `make test-slow`.
+/// NetCDF drive coupling_quality.json. The slow-test runner provisions the NXP16
+/// gridfile and requires a land-type NetCDF; run with `make test-slow`.
 #[test]
 #[ignore = "slow local-fixture full-chain workflow; run with make test-slow"]
 fn full_chain_with_mesh_landtype_coupling_quality() {
-    let gf = std::path::PathBuf::from(
-        "/tmp/earthmesh_cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4",
-    );
-    let lt = std::env::var("EARTHMESH_LANDTYPE").map(std::path::PathBuf::from).unwrap_or_else(|_| {
-        std::path::PathBuf::from(
-            "/Users/zhongwangwei/Desktop/EarthMesh_legacy_archive_20260616_142611/input/landtype_usgs_update.nc",
-        )
-    });
-    if !gf.exists() || !lt.exists() {
-        eprintln!("skip: no NXP16 gridfile / land-type fixture (set EARTHMESH_LANDTYPE)");
-        return;
-    }
+    let required_fixture = |name: &str| {
+        let path = std::env::var_os(name)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| panic!("{name} must be set by scripts/run_slow_fixture_e2e.sh"));
+        assert!(
+            path.is_file(),
+            "{name} fixture is missing: {}",
+            path.display()
+        );
+        path
+    };
+    let gf = required_fixture("EARTHMESH_SLOW_GRIDFILE");
+    let lt = required_fixture("EARTHMESH_LANDTYPE");
+    let gridnum_perdegree = earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&lt)
+        .expect("infer land-type resolution");
 
     let dir = std::env::temp_dir().join(format!("em3_wf_full_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -135,7 +212,7 @@ fn full_chain_with_mesh_landtype_coupling_quality() {
         None,
         Some(&gf),
         Some(&lt),
-        120,
+        gridnum_perdegree,
     )
     .expect("full-chain workflow");
 

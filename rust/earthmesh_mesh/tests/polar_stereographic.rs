@@ -1,6 +1,6 @@
 use earthmesh_core::{deg_to_rad, EARTH_RADIUS_METERS};
 use earthmesh_mesh::{
-    circumcenter_spherical_mesh_fortran_indexed, lonlat_degrees_to_unit_xyz,
+    circumcenter_spherical_mesh_one_based, lonlat_degrees_to_unit_xyz,
     project_to_polar_stereographic, spherical_centroid_degrees,
     spherical_circumcenter_from_barycenter, unproject_from_polar_stereographic, CartesianPoint,
     LonLatDegrees, PlanePoint, PoleBasis,
@@ -11,6 +11,29 @@ fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
         (actual - expected).abs() <= tolerance,
         "actual {actual} expected {expected} tolerance {tolerance}"
     );
+}
+
+fn circumcenter_for_triangle(triangle: [LonLatDegrees; 3]) -> CartesianPoint {
+    let r = EARTH_RADIUS_METERS;
+    let scale = |point: CartesianPoint| CartesianPoint::new(point.x * r, point.y * r, point.z * r);
+    let barycenter = spherical_centroid_degrees(&triangle).expect("spherical centroid");
+    let initial_centers = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(barycenter)),
+    ];
+    let vertex_points = vec![
+        CartesianPoint::new(0.0, 0.0, 0.0),
+        scale(lonlat_degrees_to_unit_xyz(triangle[0])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[1])),
+        scale(lonlat_degrees_to_unit_xyz(triangle[2])),
+    ];
+    circumcenter_spherical_mesh_one_based(
+        &initial_centers,
+        &vertex_points,
+        &[[0, 0, 0], [0, 0, 0], [1, 2, 3]],
+    )
+    .expect("local spherical circumcenter")[2]
 }
 
 #[test]
@@ -77,7 +100,72 @@ fn spherical_circumcenter_matches_symmetric_octant_triangle() {
 }
 
 #[test]
-fn circumcenter_spherical_mesh_preserves_fortran_indexing_and_inout_slots() {
+fn spherical_circumcenter_rejects_zero_barycenter() {
+    let r = EARTH_RADIUS_METERS;
+    let vertices = [
+        CartesianPoint::new(r, 0.0, 0.0),
+        CartesianPoint::new(0.0, r, 0.0),
+        CartesianPoint::new(0.0, 0.0, r),
+    ];
+
+    assert!(
+        spherical_circumcenter_from_barycenter(CartesianPoint::new(0.0, 0.0, 0.0), vertices,)
+            .is_none()
+    );
+}
+
+#[test]
+fn spherical_circumcenter_rejects_collinear_vertices() {
+    let r = EARTH_RADIUS_METERS;
+    let scale = |point: CartesianPoint| CartesianPoint::new(point.x * r, point.y * r, point.z * r);
+    let barycenter = scale(lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)));
+    let vertices = [
+        scale(lonlat_degrees_to_unit_xyz(LonLatDegrees::new(-1.0, 0.0))),
+        barycenter,
+        scale(lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0))),
+    ];
+
+    assert!(spherical_circumcenter_from_barycenter(barycenter, vertices).is_none());
+}
+
+#[test]
+fn spherical_circumcenter_accepts_polar_triangle_without_lon_envelope() {
+    let center = circumcenter_for_triangle([
+        LonLatDegrees::new(0.0, 80.0),
+        LonLatDegrees::new(120.0, 80.0),
+        LonLatDegrees::new(-120.0, 80.0),
+    ]);
+    assert!(earthmesh_mesh::xyz_to_lonlat_degrees(center).lat_degrees > 89.999999);
+}
+
+#[test]
+fn spherical_circumcenter_accepts_dateline_triangle_without_lon_envelope() {
+    let center = circumcenter_for_triangle([
+        LonLatDegrees::new(179.0, 0.0),
+        LonLatDegrees::new(-179.0, 0.0),
+        LonLatDegrees::new(180.0, 2.0),
+    ]);
+    assert!(
+        earthmesh_mesh::xyz_to_lonlat_degrees(center)
+            .lon_degrees
+            .abs()
+            > 179.0
+    );
+}
+
+#[test]
+fn spherical_circumcenter_accepts_local_obtuse_triangle() {
+    let center = circumcenter_for_triangle([
+        LonLatDegrees::new(0.0, 0.0),
+        LonLatDegrees::new(2.0, 0.0),
+        LonLatDegrees::new(0.5, 0.4),
+    ]);
+    let lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(center);
+    assert!(lonlat.lon_degrees.is_finite() && lonlat.lat_degrees.is_finite());
+}
+
+#[test]
+fn circumcenter_spherical_mesh_preserves_canonical_indexing_and_inout_slots() {
     let r = EARTH_RADIUS_METERS;
     let inv_sqrt_3 = 1.0 / 3.0_f64.sqrt();
     let initial_centers = vec![
@@ -94,12 +182,9 @@ fn circumcenter_spherical_mesh_preserves_fortran_indexing_and_inout_slots() {
     ];
     let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
 
-    let centers = circumcenter_spherical_mesh_fortran_indexed(
-        &initial_centers,
-        &vertex_points,
-        &cells_on_triangle,
-    )
-    .expect("valid triangle vertex references");
+    let centers =
+        circumcenter_spherical_mesh_one_based(&initial_centers, &vertex_points, &cells_on_triangle)
+            .expect("valid triangle vertex indices");
 
     assert_eq!(centers[0], initial_centers[0]);
     assert_eq!(centers[1], initial_centers[1]);
@@ -109,7 +194,7 @@ fn circumcenter_spherical_mesh_preserves_fortran_indexing_and_inout_slots() {
 }
 
 #[test]
-fn circumcenter_spherical_mesh_falls_back_for_nonlocal_near_collinear_triangle() {
+fn circumcenter_spherical_mesh_rejects_nonlocal_near_collinear_triangle() {
     let r = EARTH_RADIUS_METERS;
     let triangle = [
         LonLatDegrees::new(-21.591571, -51.613641),
@@ -131,22 +216,16 @@ fn circumcenter_spherical_mesh_falls_back_for_nonlocal_near_collinear_triangle()
     ];
     let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [1, 2, 3]];
 
-    let centers = circumcenter_spherical_mesh_fortran_indexed(
+    assert!(circumcenter_spherical_mesh_one_based(
         &initial_centers,
         &vertex_points,
         &cells_on_triangle,
     )
-    .expect("valid triangle");
-    let center_lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
-
-    assert!(
-        center_lonlat.lat_degrees > -55.0,
-        "near-collinear circumcenter should remain local, got {center_lonlat:?}"
-    );
+    .is_none());
 }
 
 #[test]
-fn circumcenter_spherical_mesh_falls_back_for_laterally_nonlocal_triangle() {
+fn circumcenter_spherical_mesh_rejects_laterally_nonlocal_triangle() {
     let r = EARTH_RADIUS_METERS;
     let triangle = [
         LonLatDegrees::new(-65.469629, -36.870840),
@@ -168,22 +247,16 @@ fn circumcenter_spherical_mesh_falls_back_for_laterally_nonlocal_triangle() {
     ];
     let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [1, 2, 3]];
 
-    let centers = circumcenter_spherical_mesh_fortran_indexed(
+    assert!(circumcenter_spherical_mesh_one_based(
         &initial_centers,
         &vertex_points,
         &cells_on_triangle,
     )
-    .expect("valid triangle");
-    let center_lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
-
-    assert!(
-        center_lonlat.lon_degrees > -70.0,
-        "near-collinear circumcenter should not run laterally away from its cells, got {center_lonlat:?}"
-    );
+    .is_none());
 }
 
 #[test]
-fn circumcenter_spherical_mesh_falls_back_outside_local_latitude_envelope() {
+fn circumcenter_spherical_mesh_accepts_local_southern_triangle_without_latitude_envelope() {
     let r = EARTH_RADIUS_METERS;
     let triangle = [
         LonLatDegrees::new(165.165231, -63.551627),
@@ -205,18 +278,11 @@ fn circumcenter_spherical_mesh_falls_back_outside_local_latitude_envelope() {
     ];
     let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [1, 2, 3]];
 
-    let centers = circumcenter_spherical_mesh_fortran_indexed(
-        &initial_centers,
-        &vertex_points,
-        &cells_on_triangle,
-    )
-    .expect("valid triangle");
-    let center_lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
-
-    assert!(
-        center_lonlat.lat_degrees < -60.0,
-        "circumcenter should stay inside the local latitude envelope, got {center_lonlat:?}"
-    );
+    let centers =
+        circumcenter_spherical_mesh_one_based(&initial_centers, &vertex_points, &cells_on_triangle)
+            .expect("a vector-local circumcenter should not depend on a latitude envelope");
+    let center = earthmesh_mesh::xyz_to_lonlat_degrees(centers[2]);
+    assert!(center.lon_degrees.is_finite() && center.lat_degrees.is_finite());
 }
 
 #[test]
@@ -234,7 +300,7 @@ fn circumcenter_spherical_mesh_rejects_out_of_range_vertex_id() {
     ];
     let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
 
-    assert!(circumcenter_spherical_mesh_fortran_indexed(
+    assert!(circumcenter_spherical_mesh_one_based(
         &initial_centers,
         &vertex_points,
         &cells_on_triangle,
@@ -243,7 +309,7 @@ fn circumcenter_spherical_mesh_rejects_out_of_range_vertex_id() {
 }
 
 #[test]
-fn single_precision_polar_projection_matches_fortran_de_ps_identity_pole() {
+fn single_precision_polar_projection_matches_canonical_de_ps_identity_pole() {
     let pole = earthmesh_mesh::PoleBasisF32::from_lonlat_radians(0.0, 0.0);
     let projected = earthmesh_mesh::project_to_polar_stereographic_f32(
         earthmesh_mesh::CartesianPointF32::new(0.0, EARTH_RADIUS_METERS as f32, 0.0),
@@ -255,7 +321,7 @@ fn single_precision_polar_projection_matches_fortran_de_ps_identity_pole() {
 }
 
 #[test]
-fn single_precision_polar_unprojection_preserves_sphere_radius_like_fortran_ps_de() {
+fn single_precision_polar_unprojection_preserves_sphere_radius_like_canonical_ps_de() {
     let pole = earthmesh_mesh::PoleBasisF32::from_lonlat_radians(0.0, 0.0);
     let unprojected = earthmesh_mesh::unproject_from_polar_stereographic_f32(
         earthmesh_mesh::PlanePointF32::new(100_000.0, 200_000.0),

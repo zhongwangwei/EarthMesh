@@ -18,8 +18,8 @@ pub(crate) fn tri_neighbors_outer_w_pair(
 /// This fills `itab_wd(iw)%npoly`, the three surrounding M points, the three
 /// inner W neighbors, and the six outer W neighbors for every active W face
 /// (`iw = 2..nwd`). U-edge and M-point reciprocal connectivity remain separate
-/// migration surfaces.
-pub fn derive_icosahedron_w_neighbors_fortran(
+/// architecture surfaces.
+pub fn derive_icosahedron_w_neighbors_canonical(
     connectivity: &mut IcosahedronDiamondConnectivity,
 ) -> Option<()> {
     for iw in 2..connectivity.w_faces.len() {
@@ -99,13 +99,13 @@ pub fn derive_icosahedron_w_neighbors_fortran(
 /// Integrated Rust wrapper for `icosahedron.F90:tri_neighbors`.
 ///
 /// The mutable U/W tables are updated in the same high-level sequence as the
-/// Fortran subroutine: W-face neighbors, U-edge reciprocal neighbors, then
-/// M-point polygon rings. The returned M table is Fortran-indexed.
-pub fn derive_icosahedron_tri_neighbors_fortran(
+/// Canonical subroutine: W-face neighbors, U-edge reciprocal neighbors, then
+/// M-point polygon rings. The returned M table is Canonical-indexed.
+pub fn derive_icosahedron_tri_neighbors_canonical(
     nmd: usize,
     connectivity: &mut IcosahedronDiamondConnectivity,
 ) -> Option<Vec<IcosahedronMPointNeighbors>> {
-    derive_icosahedron_w_neighbors_fortran(connectivity)?;
-    derive_icosahedron_u_neighbors_fortran(connectivity)?;
-    derive_icosahedron_m_neighbors_fortran(nmd, &connectivity.u_edges, &connectivity.w_faces)
+    derive_icosahedron_w_neighbors_canonical(connectivity)?;
+    derive_icosahedron_u_neighbors_canonical(connectivity)?;
+    derive_icosahedron_m_neighbors_canonical(nmd, &connectivity.u_edges, &connectivity.w_faces)
 }

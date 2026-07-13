@@ -55,7 +55,7 @@ fn resolve_source_path(path: &str, source_base: &Path) -> PathBuf {
 ///      dirs — so a freshly built tree "just works" with no configuration,
 ///   3. next to the running executable (installed / bundled case),
 ///   4. bare `mkgrd.x`, letting the OS search `PATH`.
-pub(crate) fn resolve_mkgrd() -> String {
+pub(crate) fn resolve_mkgrd() -> Result<String, String> {
     // Run the engine from a clean temp dir. The static netcdf/HDF5 build SIGKILLs
     // (OOM) when executed from certain source directories (observed in the dev
     // git-repo root) — an environment-level interaction with the C libraries, not a
@@ -63,7 +63,7 @@ pub(crate) fn resolve_mkgrd() -> String {
     let found = resolve_mkgrd_path();
     let src = Path::new(&found);
     if !src.is_file() {
-        return found;
+        return Ok(found);
     }
     let dst = env::temp_dir().join("earthmesh_studio_engine.x");
     let stale = match (fs::metadata(src), fs::metadata(&dst)) {
@@ -80,17 +80,25 @@ pub(crate) fn resolve_mkgrd() -> String {
         }
         _ => true,
     };
-    if stale && fs::copy(src, &dst).is_ok() {
+    if stale {
+        fs::copy(src, &dst).map_err(|err| {
+            format!(
+                "stage mesh engine {} -> {}: {err}",
+                src.display(),
+                dst.display()
+            )
+        })?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o755));
+            fs::set_permissions(&dst, fs::Permissions::from_mode(0o755))
+                .map_err(|err| format!("chmod {}: {err}", dst.display()))?;
         }
     }
     if dst.is_file() {
-        return dst.to_string_lossy().into_owned();
+        return Ok(dst.to_string_lossy().into_owned());
     }
-    found
+    Ok(found)
 }
 
 fn resolve_mkgrd_path() -> String {

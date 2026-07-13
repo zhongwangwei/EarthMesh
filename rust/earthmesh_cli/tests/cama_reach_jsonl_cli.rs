@@ -36,7 +36,7 @@ fn write_small_cama_map_dir(root: &Path) -> PathBuf {
     fs::create_dir_all(&map_dir).expect("create map dir");
     fs::write(
         map_dir.join("params.txt"),
-        "4\n3\n1\n0.5\n100.0\n102.0\n10.0\n11.5\n",
+        "4 !! endian=little\n3\n1\n0.5\n100.0\n102.0\n10.0\n11.5\n",
     )
     .expect("write params");
     write_f32_grid(

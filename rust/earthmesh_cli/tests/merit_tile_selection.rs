@@ -3,7 +3,9 @@
 //! both sides of the dateline. `select_merit_hydro_tiles` only reads file *names*
 //! (5° tile bounds), so this needs no NetCDF data — empty files suffice.
 
-use earthmesh_cli::{select_merit_hydro_tiles, MeritLonLatBbox};
+use earthmesh_cli::{
+    merit_tile_selection::select_merit_hydro_tiles, merit_tile_selection::MeritLonLatBbox,
+};
 use std::path::Path;
 
 fn touch(dir: &Path, name: &str) {

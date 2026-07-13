@@ -3,9 +3,9 @@ use super::*;
 /// Port of `MOD_mask_postproc.F90:narrow_waterway_widen`.
 ///
 /// The helper builds the temporary boundary vertex-to-vertex graph from compact
-/// center rows, detects the legacy four-connection narrow-waterway signature,
+/// center rows, detects the compatibility four-connection narrow-waterway signature,
 /// then activates every original center adjacent to the duplicated neighbor.
-pub fn widen_narrow_waterway_fortran_indexed(
+pub fn widen_narrow_waterway_one_based(
     is_in_domain: &mut [i32],
     vertex_neighbors: &[Vec<usize>],
     center_neighbors_new: &[Vec<usize>],
@@ -19,7 +19,7 @@ pub fn widen_narrow_waterway_fortran_indexed(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "neighbor tables and count arrays must have matching Fortran-indexed lengths",
+            "neighbor tables and count arrays must have matching Canonical-indexed lengths",
         ));
     }
 
@@ -44,7 +44,7 @@ pub fn widen_narrow_waterway_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {center_id} references vertex {left_vertex_id}, outside 0..={ustr_bounds}"
+                        "center {center_id} canonicals vertex {left_vertex_id}, outside 0..={ustr_bounds}"
                     ),
                 ));
             }
@@ -58,7 +58,7 @@ pub fn widen_narrow_waterway_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {center_id} references vertex {right_vertex_id}, outside 0..={ustr_bounds}"
+                        "center {center_id} canonicals vertex {right_vertex_id}, outside 0..={ustr_bounds}"
                     ),
                 ));
             }
@@ -103,7 +103,7 @@ pub fn widen_narrow_waterway_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "vertex {duplicated_neighbor} references center {center_id}, outside 0..={ustr_points}"
+                        "vertex {duplicated_neighbor} canonicals center {center_id}, outside 0..={ustr_points}"
                     ),
                 ));
             }
@@ -119,7 +119,7 @@ pub fn widen_narrow_waterway_fortran_indexed(
 /// FVCOM-style ocean cells should not meet only at one vertex.  When the active
 /// cells around an original vertex form multiple separated fans, activate the
 /// missing cells in that vertex ring so the contact becomes edge-connected.
-pub fn fill_vertex_only_ocean_contacts_fortran_indexed(
+pub fn fill_vertex_only_ocean_contacts_one_based(
     is_in_domain: &mut [i32],
     vertex_neighbors: &[Vec<usize>],
     vertex_neighbor_counts: &[usize],
@@ -127,7 +127,7 @@ pub fn fill_vertex_only_ocean_contacts_fortran_indexed(
     if vertex_neighbor_counts.len() < vertex_neighbors.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "vertex neighbor table and count array must have matching Fortran-indexed lengths",
+            "vertex neighbor table and count array must have matching Canonical-indexed lengths",
         ));
     }
 
@@ -153,7 +153,7 @@ pub fn fill_vertex_only_ocean_contacts_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "vertex {vertex_id} references center {center_id}, outside 0..={ustr_points}"
+                        "vertex {vertex_id} canonicals center {center_id}, outside 0..={ustr_points}"
                     ),
                 ));
             }

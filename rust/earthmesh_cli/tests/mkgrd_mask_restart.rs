@@ -20,7 +20,8 @@ fn mask_restart_ocean_without_patch_plans_remask_postproc_without_gridinit() {
     .expect("write namelist");
 
     let report =
-        earthmesh_cli::plan_mkgrd_mask_restart_namelist(&namelist, &root, 7).expect("restart plan");
+        earthmesh_cli::mkgrd_mask_restart::plan_mkgrd_mask_restart_namelist(&namelist, &root, 7)
+            .expect("restart plan");
 
     assert!(report.config.mask_restart);
     assert_eq!(report.remask.mesh_type, "oceanmesh");
@@ -29,19 +30,21 @@ fn mask_restart_ocean_without_patch_plans_remask_postproc_without_gridinit() {
     assert!(!report.remask.refine);
     assert_eq!(
         report.remask.action,
-        earthmesh_cli::MaskRestartAction::RunMaskPostproc
+        earthmesh_cli::mask_postproc_types::MaskRestartAction::RunMaskPostproc
     );
     assert_eq!(report.runtime_state.config.experiment_name, "case_restart");
     assert!(
         !report.runtime_state.config.refine,
-        "mask_restart runtime state should mirror Fortran refine=.false. override"
+        "mask_restart runtime state should mirror Canonical refine=.false. override"
     );
     assert_eq!(
         report.runtime_state.step, 8,
-        "mask_restart runtime state should carry the Fortran remask step max_iter + 1"
+        "mask_restart runtime state should carry the Canonical remask step max_iter + 1"
     );
     let dispatch_report =
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(report.clone());
+        earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(
+            report.clone(),
+        );
     assert_eq!(
         dispatch_report
             .runtime_state()
@@ -74,11 +77,11 @@ fn run_mask_restart_patch_namelist_executes_patch_mask_make_and_continues_mkgrd(
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
     let source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -1.0,
                 east: 1.0,
                 north: 1.0,
@@ -99,12 +102,14 @@ fn run_mask_restart_patch_namelist_executes_patch_mask_make_and_continues_mkgrd(
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_mask_restart_patch_namelist(&namelist, &root, 7)
-        .expect("run restart patch mask_make");
+    let report = earthmesh_cli::mkgrd_mask_restart::run_mkgrd_mask_restart_patch_namelist(
+        &namelist, &root, 7,
+    )
+    .expect("run restart patch mask_make");
 
     assert_eq!(
         report.plan.remask.action,
-        earthmesh_cli::MaskRestartAction::ContinueMkgrd
+        earthmesh_cli::mask_postproc_types::MaskRestartAction::ContinueMkgrd
     );
     assert_eq!(report.plan.remask.step, 8);
     assert_eq!(report.workspace_mask.mask_reports.len(), 1);
@@ -120,13 +125,14 @@ fn run_mask_restart_patch_namelist_executes_patch_mask_make_and_continues_mkgrd(
     let _ = fs::remove_dir_all(&root);
 }
 
-fn restart_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
-    let mut m_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
+fn restart_ocean_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    let mut m_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
     for (idx, point) in m_points.iter_mut().enumerate() {
         point.lon = idx as f64;
         point.lat = idx as f64 * 0.5;
     }
-    let mut w_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
+    let mut w_points =
+        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
     for (idx, point) in w_points.iter_mut().enumerate() {
         point.lon = 100.0 + idx as f64;
         point.lat = 40.0 + idx as f64 * 0.25;
@@ -154,7 +160,7 @@ fn restart_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
     n_w_to_m[11] = 5;
     n_w_to_m[12] = 5;
     n_w_to_m[13] = 5;
-    earthmesh_cli::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points,
         w_points,
         m_to_w,
@@ -163,40 +169,41 @@ fn restart_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
     }
 }
 
-fn restart_land_postproc_source_mesh() -> earthmesh_cli::UnstructuredMesh {
-    earthmesh_cli::UnstructuredMesh {
+fn restart_land_postproc_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh
+{
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.497,
                 lat: 86.497,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.497,
                 lat: 86.497,
             },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.497,
                 lat: 86.497,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.494,
                 lat: 86.497,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.496,
                 lat: 86.494,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.497,
                 lat: 86.497,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.494,
                 lat: 86.497,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: -176.496,
                 lat: 86.494,
             },
@@ -214,20 +221,21 @@ fn restart_land_postproc_source_mesh() -> earthmesh_cli::UnstructuredMesh {
     }
 }
 
-fn restart_atmos_mpas_simple_source_mesh() -> earthmesh_cli::UnstructuredMesh {
-    earthmesh_cli::UnstructuredMesh {
+fn restart_atmos_mpas_simple_source_mesh(
+) -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 90.0,
                 lat: 0.0,
             },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 180.0,
                 lat: 0.0,
             },
@@ -238,23 +246,24 @@ fn restart_atmos_mpas_simple_source_mesh() -> earthmesh_cli::UnstructuredMesh {
     }
 }
 
-fn restart_atmos_mpas_full_source_mesh() -> earthmesh_cli::UnstructuredMesh {
-    earthmesh_cli::UnstructuredMesh {
+fn restart_atmos_mpas_full_source_mesh(
+) -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.2 },
-            earthmesh_cli::LonLatPoint { lon: 0.8, lat: 0.2 },
-            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.8 },
-            earthmesh_cli::LonLatPoint { lon: 0.8, lat: 0.8 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.2, lat: 0.2 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.8, lat: 0.2 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.2, lat: 0.8 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.8, lat: 0.8 },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 1.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 1.0 },
         ],
         m_to_w: vec![
             [1, 1, 1],
@@ -277,7 +286,7 @@ fn restart_atmos_mpas_full_source_mesh() -> earthmesh_cli::UnstructuredMesh {
 }
 
 fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
-    let mut file = netcdf::create(path).expect("create cellwidth fixture");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create cellwidth fixture");
     file.add_dimension("num_dbx", values.len())
         .expect("num_dbx dim");
     let mut var = file
@@ -290,17 +299,22 @@ fn prepare_restart_ocean_inputs(root: &std::path::Path, case_name: &str, nxp: us
     let case_dir = root.join(case_name);
     fs::create_dir_all(case_dir.join("result")).expect("create result dir");
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, nxp, "tri", "oceanmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir,
+        nxp,
+        "tri",
+        "oceanmesh",
+        false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_ocean_source_mesh(),
     )
     .expect("write source gridfile");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![
                 vec![0, 0, 1],
                 vec![0, 0, 1],
@@ -340,17 +354,22 @@ fn run_mask_restart_ocean_namelist_executes_postproc_outputs() {
     )
     .expect("write namelist");
 
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "oceanmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir,
+        16,
+        "tri",
+        "oceanmesh",
+        false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_ocean_source_mesh(),
     )
     .expect("write source gridfile");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![
                 vec![0, 0, 1],
                 vec![0, 0, 1],
@@ -367,11 +386,11 @@ fn run_mask_restart_ocean_namelist_executes_postproc_outputs() {
     )
     .expect("write contain domain");
 
-    let report = earthmesh_cli::run_mkgrd_mask_restart_ocean_namelist(
+    let report = earthmesh_cli::mkgrd_mask_restart::run_mkgrd_mask_restart_ocean_namelist(
         &namelist,
         &root,
         7,
-        earthmesh_cli::MaskPostprocOceanRunOptions {
+        earthmesh_cli::mask_postproc_types::MaskPostprocOceanRunOptions {
             mask_sea_ratio: 0.5,
             num_vertex: 1,
         },
@@ -380,7 +399,7 @@ fn run_mask_restart_ocean_namelist_executes_postproc_outputs() {
 
     assert_eq!(
         report.plan.remask.action,
-        earthmesh_cli::MaskRestartAction::RunMaskPostproc
+        earthmesh_cli::mask_postproc_types::MaskRestartAction::RunMaskPostproc
     );
     assert_eq!(
         report.postproc.final_gridfile.output,
@@ -416,7 +435,7 @@ fn library_infers_mask_restart_ocean_num_vertex_from_restart_contain_file() {
     let config =
         earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&contents).expect("parse config");
 
-    let num_vertex = earthmesh_cli::infer_mask_restart_ocean_num_vertex_from_config(&config)
+    let num_vertex = earthmesh_cli::mkgrd_default_restart_handoff::infer_mask_restart_ocean_num_vertex_from_config(&config)
         .expect("infer num_vertex from contain file");
 
     assert_eq!(num_vertex, 1);
@@ -601,11 +620,11 @@ fn binary_can_run_mask_restart_patch_preprocessing_branch() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
     let source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -1.0,
                 east: 1.0,
                 north: 1.0,
@@ -667,11 +686,11 @@ fn top_level_dispatch_runs_mask_restart_patch_branch_without_gridinit_error() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
     let source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -1.0,
                 east: 1.0,
                 north: 1.0,
@@ -692,8 +711,10 @@ fn top_level_dispatch_runs_mask_restart_patch_branch_without_gridinit_error() {
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist(&namelist, &root, 100, 7)
-        .expect("top-level dispatcher should run mask_restart patch branch");
+    let report = earthmesh_cli::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist(
+        &namelist, &root, 100, 7,
+    )
+    .expect("top-level dispatcher should run mask_restart patch branch");
     let runtime_state = report
         .runtime_state()
         .expect("top-level mask_restart patch dispatch should expose runtime state");
@@ -702,12 +723,14 @@ fn top_level_dispatch_runs_mask_restart_patch_branch_without_gridinit_error() {
         "case_top_dispatch_restart_patch"
     );
 
-    let earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(patch) = report else {
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartPatch(patch) =
+        report
+    else {
         panic!("expected mask_restart patch branch, got {report:?}");
     };
     assert_eq!(
         patch.plan.remask.action,
-        earthmesh_cli::MaskRestartAction::ContinueMkgrd
+        earthmesh_cli::mask_postproc_types::MaskRestartAction::ContinueMkgrd
     );
     assert_eq!(patch.workspace_mask.mask_counts.mask_patch_ndm[0], 1);
     assert!(root
@@ -738,8 +761,10 @@ fn top_level_dispatch_runs_mask_restart_ocean_postproc_branch_without_plan_only(
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist(&namelist, &root, 100, 7)
-        .expect("top-level dispatcher should run mask_restart ocean postproc branch");
+    let report = earthmesh_cli::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist(
+        &namelist, &root, 100, 7,
+    )
+    .expect("top-level dispatcher should run mask_restart ocean postproc branch");
     let runtime_state = report
         .runtime_state()
         .expect("top-level ocean mask_restart postproc should expose runtime state");
@@ -751,7 +776,7 @@ fn top_level_dispatch_runs_mask_restart_ocean_postproc_branch_without_plan_only(
     assert!(
         !matches!(
             report,
-            earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(_)
+            earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartPlan(_)
         ),
         "top-level ocean restart must execute postproc instead of returning a plan-only report"
     );
@@ -775,9 +800,9 @@ fn top_level_dispatch_runs_non_ocean_mask_restart_area_judge_continuation_withou
     let case_dir = root.join("case_top_dispatch_restart_area_judge");
     fs::create_dir_all(case_dir.join("result")).expect("create result dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 2,
                 maxlon_source: 3,
@@ -802,10 +827,15 @@ fn top_level_dispatch_runs_non_ocean_mask_restart_area_judge_continuation_withou
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist(&namelist, &root, 100, 7)
-        .expect("top-level dispatcher should run non-ocean mask_restart Area_judge branch");
+    let report = earthmesh_cli::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist(
+        &namelist, &root, 100, 7,
+    )
+    .expect("top-level dispatcher should run non-ocean mask_restart Area_judge branch");
 
-    let earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) = report else {
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+        report,
+    ) = report
+    else {
         panic!("top-level non-ocean restart must execute Area_judge instead of returning a plan");
     };
     assert_eq!(report.restart.area_write.output, restart_input);
@@ -829,9 +859,9 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -845,17 +875,18 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", true)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", true,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -863,11 +894,11 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &patch_source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -10.0,
                 east: -9.9,
                 north: 10.0,
@@ -888,10 +919,15 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist(&namelist, &root, 100, 7)
-        .expect("top-level dispatcher should run patch-on Area_judge and final postprocess");
+    let report = earthmesh_cli::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist(
+        &namelist, &root, 100, 7,
+    )
+    .expect("top-level dispatcher should run patch-on Area_judge and final postprocess");
 
-    let earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) = report else {
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+        report,
+    ) = report
+    else {
         panic!("expected top-level patch-on restart to continue through Area_judge");
     };
     assert_eq!(report.restart.workspace_mask.mask_reports.len(), 1);
@@ -899,7 +935,7 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
     let postproc = report.postproc.expect("final postproc report");
     assert_eq!(postproc.contain.output, io_plan.contain_domain);
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Land(postproc) => {
             assert_eq!(postproc.final_gridfile.output, io_plan.result_gridfile);
             assert!(postproc.patchtype.output.exists());
         }
@@ -923,9 +959,9 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("tmpfile")).expect("create tmpfile dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -939,17 +975,22 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "oceanmesh", true)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir,
+        16,
+        "tri",
+        "oceanmesh",
+        true,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_ocean_source_mesh(),
     )
     .expect("write ocean postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![
                 vec![0, 0, 1],
                 vec![0, 0, 1],
@@ -966,11 +1007,11 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &patch_source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -177.0,
                 east: -176.0,
                 north: 87.0,
@@ -991,17 +1032,22 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist(&namelist, &root, 100, 7)
-        .expect("top-level dispatcher should run patch-on ocean Area_judge and final postprocess");
+    let report = earthmesh_cli::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist(
+        &namelist, &root, 100, 7,
+    )
+    .expect("top-level dispatcher should run patch-on ocean Area_judge and final postprocess");
 
-    let earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report) = report else {
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+        report,
+    ) = report
+    else {
         panic!("expected top-level patch-on ocean restart to continue through Area_judge");
     };
     let postproc = report.postproc.expect("ocean final postproc report");
     assert_eq!(postproc.contain.output, io_plan.contain_domain);
     assert_eq!(postproc.contain.runtime_counts.previous_num_vertex, 1);
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Ocean(postproc) => {
             assert_eq!(postproc.final_gridfile.output, io_plan.result_gridfile);
             assert!(postproc.obc.expect("ocean obc output").output.exists());
             assert!(postproc.obcv2.expect("ocean obcv2 output").output.exists());
@@ -1026,9 +1072,9 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1042,10 +1088,11 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
@@ -1061,12 +1108,11 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+    let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         &namelist,
         &root,
         100,
         7,
-        None,
         None,
         None,
         1,
@@ -1089,8 +1135,10 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
         "final Get_Contain(0) should write current mesh vertex count back to runtime state"
     );
 
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report),
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
+        earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+            report,
+        ),
     ) = report
     else {
         panic!("expected default dispatch to run mask_restart Area_judge postproc");
@@ -1098,7 +1146,7 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
     let postproc = report.postproc.expect("final postproc report");
     assert_eq!(postproc.contain.output, io_plan.contain_domain);
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Land(postproc) => {
             assert_eq!(postproc.final_gridfile.output, io_plan.result_gridfile);
             assert!(postproc.patchtype.output.exists());
         }
@@ -1121,9 +1169,9 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
     fs::create_dir_all(case_dir.join("result")).expect("create result dir");
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1138,7 +1186,7 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
     )
     .expect("write restart domain");
     let gridfile = case_dir.join("result/gridfile_NXP0009_tri.nc4");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &gridfile,
         &restart_atmos_mpas_simple_source_mesh(),
     )
@@ -1158,12 +1206,11 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+    let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         &namelist,
         &root,
         100,
         7,
-        None,
         None,
         None,
         1,
@@ -1171,8 +1218,10 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
     )
     .expect("default dispatcher should run atmos final postprocess");
 
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report),
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
+        earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+            report,
+        ),
     ) = report
     else {
         panic!("expected default dispatch to run atmos mask_restart Area_judge postproc");
@@ -1183,7 +1232,7 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
         case_dir.join("contain/contain_atmosmesh_domain_NXP0009_tri.nc4")
     );
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
             assert_eq!(
                 postproc.output,
                 case_dir.join("result/MPASOUT_NXP0009_global_Simple.nc4")
@@ -1209,9 +1258,9 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
     fs::create_dir_all(case_dir.join("result")).expect("create result dir");
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1227,11 +1276,11 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
     .expect("write restart domain");
     let gridfile = case_dir.join("result/gridfile_NXP0009_hex.nc4");
     let mesh = restart_atmos_mpas_full_source_mesh();
-    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
         .expect("write atmos source gridfile");
-    earthmesh_cli::write_cellwidth_netcdf(
+    earthmesh_cli::mesh_metric_writers::write_cellwidth_netcdf(
         case_dir.join("result/cellwidth_NXP0009_global.nc4"),
-        &earthmesh_cli::CellwidthMesh {
+        &earthmesh_cli::mesh_metric_writers::CellwidthMesh {
             cell_points: mesh.w_points.clone(),
             cellwidth: vec![100.0; mesh.w_points.len()],
         },
@@ -1248,12 +1297,11 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+    let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         &namelist,
         &root,
         100,
         7,
-        None,
         None,
         None,
         1,
@@ -1261,8 +1309,10 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
     )
     .expect("default dispatcher should run full MPAS atmos final postprocess");
 
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report),
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
+        earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+            report,
+        ),
     ) = report
     else {
         panic!("expected default dispatch to run atmos mask_restart Area_judge postproc");
@@ -1273,7 +1323,7 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
         case_dir.join("contain/contain_atmosmesh_domain_NXP0009_hex.nc4")
     );
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
             assert_eq!(
                 postproc.mesh.output,
                 case_dir.join("result/MPASOUT_NXP0009_global.nc4")
@@ -1306,9 +1356,9 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1322,17 +1372,18 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -1350,8 +1401,8 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &namelist, &root, 100, 7, None, None, None, 1, None,
+    let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+        &namelist, &root, 100, 7, None, None, 1, None,
     )
     .expect("default dispatcher should infer num_vertex and run final postprocess");
 
@@ -1371,8 +1422,10 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
         "default dispatch runtime state should include final Get_Contain(0) vertex-count writeback"
     );
 
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report),
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
+        earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+            report,
+        ),
     ) = report
     else {
         panic!("expected default dispatch to run inferred mask_restart Area_judge postproc");
@@ -1381,7 +1434,7 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
     assert_eq!(postproc.contain.output, io_plan.contain_domain);
     assert_eq!(postproc.contain.runtime_counts.previous_num_vertex, 1);
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Land(postproc) => {
             assert_eq!(postproc.final_gridfile.output, io_plan.result_gridfile);
             assert!(postproc.patchtype.output.exists());
         }
@@ -1405,9 +1458,9 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1421,17 +1474,18 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", true)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", true,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -1439,11 +1493,11 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &patch_source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -10.0,
                 east: -9.9,
                 north: 10.0,
@@ -1464,13 +1518,15 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &namelist, &root, 100, 7, None, None, None, 1, None,
+    let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+        &namelist, &root, 100, 7, None, None, 1, None,
     )
     .expect("default dispatcher should run patch-on Area_judge and final postprocess");
 
-    let earthmesh_cli::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
-        earthmesh_cli::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(report),
+    let earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(
+        earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport::MaskRestartAreaJudge(
+            report,
+        ),
     ) = report
     else {
         panic!("expected default patch-on restart to continue through Area_judge");
@@ -1481,7 +1537,7 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
     assert_eq!(postproc.contain.output, io_plan.contain_domain);
     assert_eq!(postproc.contain.runtime_counts.previous_num_vertex, 1);
     match postproc.postproc {
-        earthmesh_cli::MkgrdFinalDomainPostprocReport::Land(postproc) => {
+        earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Land(postproc) => {
             assert_eq!(postproc.final_gridfile.output, io_plan.result_gridfile);
             assert!(postproc.patchtype.output.exists());
         }
@@ -1505,9 +1561,9 @@ fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1521,17 +1577,18 @@ fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", true)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", true,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -1539,11 +1596,11 @@ fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &patch_source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -10.0,
                 east: -9.9,
                 north: 10.0,
@@ -1620,9 +1677,9 @@ fn binary_default_entry_reports_inferred_non_ocean_area_judge_final_postproc_out
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1636,17 +1693,18 @@ fn binary_default_entry_reports_inferred_non_ocean_area_judge_final_postproc_out
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -1719,9 +1777,9 @@ fn binary_explicit_area_judge_reports_inferred_non_ocean_final_postproc_outputs(
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1735,17 +1793,18 @@ fn binary_explicit_area_judge_reports_inferred_non_ocean_final_postproc_outputs(
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -1815,9 +1874,9 @@ fn binary_explicit_area_judge_source_override_reports_inferred_non_ocean_final_p
     fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
     fs::create_dir_all(case_dir.join("patchtype")).expect("create patchtype dir");
     let restart_input = case_dir.join("result/IsInDmArea_grid.nc4");
-    earthmesh_cli::write_area_judge_grid_netcdf(
+    earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
         &restart_input,
-        &earthmesh_cli::AreaJudgeGridPayload {
+        &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
                 minlon_source: 421,
                 maxlon_source: 422,
@@ -1831,17 +1890,18 @@ fn binary_explicit_area_judge_source_override_reports_inferred_non_ocean_final_p
         },
     )
     .expect("write restart domain");
-    let io_plan =
-        earthmesh_cli::plan_mask_postproc_domain_io(&case_dir, 16, "tri", "landmesh", false)
-            .expect("postproc io plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf(
+    let io_plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &case_dir, 16, "tri", "landmesh", false,
+    )
+    .expect("postproc io plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
         &restart_land_postproc_source_mesh(),
     )
     .expect("write postproc source mesh");
-    earthmesh_cli::write_contain_netcdf(
+    earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::ContainMesh {
+        &earthmesh_cli::contain_io::ContainMesh {
             ustr_id: vec![vec![0, 0], vec![1, 1]],
             ustr_ii: vec![vec![421, 421]],
             is_in_area_ustr: vec![0, 1],
@@ -1916,11 +1976,11 @@ fn binary_default_entry_dispatches_mask_restart_patch_branch() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
     let source = root.join("patch_source.nc4");
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         &source,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: -2.0,
                 east: 2.0,
                 north: 2.0,

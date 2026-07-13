@@ -1,7 +1,7 @@
 use crate::coordinates::{magnitude, vector_between};
 use crate::spring_edge_dynamics::{
-    spring_apply_cell_displacements_fortran_indexed, spring_edge_adjustment_fortran,
-    spring_edge_directions_fortran_indexed,
+    spring_apply_cell_displacements_one_based, spring_edge_adjustment_canonical,
+    spring_edge_directions_one_based,
 };
 use crate::{
     CartesianPoint, SpringDiagnosticMaxDisplacement, SpringDynamicsGlobalOutput,
@@ -10,11 +10,11 @@ use crate::{
 
 /// One-iteration Rust wrapper for `MOD_grid_preprocess:spring_dynamics_global`.
 ///
-/// This ports the calculation order inside one Fortran iteration: compute all
+/// This ports the calculation order inside one Canonical iteration: compute all
 /// current edge distances, update per-edge correction vectors from
 /// `EdgesOnedge_tri`, build/apply per-cell direction signs, then renormalize
 /// cell coordinates back to `radius`.
-pub fn spring_global_iteration_fortran_indexed(
+pub fn spring_global_iteration_one_based(
     cell_points: &[CartesianPoint],
     n_edges_on_cell: &[usize],
     edges_on_cell: &[Vec<usize>],
@@ -37,13 +37,13 @@ pub fn spring_global_iteration_fortran_indexed(
         let cells = cells_on_edge[edge_id];
         let cell1 = *cell_points.get(cells[0])?;
         let cell2 = *cell_points.get(cells[1])?;
-        // The Fortran reference (OLAM spring_dynamics_globe, mirrored by
+        // The Canonical canonical (Method-C spring_dynamics_globe, mirrored by
         // MOD_grid_preprocess) computes `dx(iu) = real(xem8(im2) - xem8(im1))`
         // -- default-real truncated components -- and derives the single
         // `dist(iu)` array from them, which then serves BOTH the "self" and
         // "neighbor" roles of every edge in the twocosphi formula. Truncate
         // identically here so this array matches the self-distance computed in
-        // `spring_edge_adjustment_fortran` for the same edge; a full-f64
+        // `spring_edge_adjustment_canonical` for the same edge; a full-f64
         // distance made the two roles of one edge disagree at sub-meter scale
         // on Earth-radius coordinates.
         let edge_vector = CartesianPoint::new(
@@ -59,7 +59,7 @@ pub fn spring_global_iteration_fortran_indexed(
     for edge_id in 2..cells_on_edge.len() {
         let cells = cells_on_edge[edge_id];
         let neighbor_edges = edges_on_edge_tri[edge_id];
-        let adjustment = spring_edge_adjustment_fortran(
+        let adjustment = spring_edge_adjustment_canonical(
             *cell_points.get(cells[0])?,
             *cell_points.get(cells[1])?,
             dists_on_edge[edge_id],
@@ -72,13 +72,9 @@ pub fn spring_global_iteration_fortran_indexed(
         frac_change_squared[edge_id] = adjustment.frac_change_squared;
     }
 
-    let directions = spring_edge_directions_fortran_indexed(
-        n_edges_on_cell,
-        edges_on_cell,
-        cells_on_edge,
-        relax,
-    )?;
-    let updated_cell_points = spring_apply_cell_displacements_fortran_indexed(
+    let directions =
+        spring_edge_directions_one_based(n_edges_on_cell, edges_on_cell, cells_on_edge, relax)?;
+    let updated_cell_points = spring_apply_cell_displacements_one_based(
         cell_points,
         n_edges_on_cell,
         edges_on_cell,
@@ -96,10 +92,10 @@ pub fn spring_global_iteration_fortran_indexed(
 
 /// Multi-iteration Rust wrapper for `MOD_grid_preprocess:spring_dynamics_global`.
 ///
-/// This keeps only the current coordinate arrays, matching the Fortran memory
+/// This keeps only the current coordinate arrays, matching the Canonical memory
 /// model, and records the periodic `Max DS` diagnostics for `iter == 1` or
 /// `iter % diagnostic_every == 0`.
-pub fn spring_dynamics_global_fortran_indexed(
+pub fn spring_dynamics_global_one_based(
     cell_points: &[CartesianPoint],
     n_edges_on_cell: &[usize],
     edges_on_cell: &[Vec<usize>],
@@ -116,7 +112,7 @@ pub fn spring_dynamics_global_fortran_indexed(
     }
 
     let mut current_cell_points = cell_points.to_vec();
-    let mut diagnostic_reference = cell_points.to_vec();
+    let mut diagnostic_canonical = cell_points.to_vec();
     let mut last_edge_displacements = vec![CartesianPoint::new(0.0, 0.0, 0.0); cells_on_edge.len()];
     let mut last_frac_change_squared = vec![0.0; cells_on_edge.len()];
     let mut diagnostic_max_displacements = Vec::new();
@@ -124,10 +120,10 @@ pub fn spring_dynamics_global_fortran_indexed(
     for iteration in 1..=niter_refine {
         let record_diagnostic = iteration == 1 || iteration % diagnostic_every == 0;
         if record_diagnostic {
-            diagnostic_reference = current_cell_points.clone();
+            diagnostic_canonical = current_cell_points.clone();
         }
 
-        let iteration_output = spring_global_iteration_fortran_indexed(
+        let iteration_output = spring_global_iteration_one_based(
             &current_cell_points,
             n_edges_on_cell,
             edges_on_cell,
@@ -145,7 +141,7 @@ pub fn spring_dynamics_global_fortran_indexed(
         if record_diagnostic {
             let mut max_displacement = 0.0_f64;
             for cell_id in 2..current_cell_points.len() {
-                let before = *diagnostic_reference.get(cell_id)?;
+                let before = *diagnostic_canonical.get(cell_id)?;
                 let after = current_cell_points[cell_id];
                 let displacement = magnitude(vector_between(before, after));
                 max_displacement = max_displacement.max(displacement);

@@ -2,11 +2,11 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::classify::classify_merit_hydro_window;
+use super::classify::classify_merit_hydro_window_with_adjacency;
 use super::types::{
     MeritHydroGeoJsonLayerWriteReport, MeritHydroWindowReport, MeritMaskThresholds,
 };
-use crate::{json_escape_string, json_number};
+use crate::{json_escape_string, json_number, require_len};
 
 /// Write native MERIT-Hydro classified windows as combined and split GeoJSON layers.
 pub fn write_merit_hydro_mask_geojson_layers(
@@ -29,9 +29,14 @@ pub fn write_merit_hydro_mask_geojson_layers(
     let mut coast_features = Vec::new();
     let mut surface_features = Vec::new();
     let mut mask_counts = std::collections::BTreeMap::<String, usize>::new();
+    let coast_adjacency = global_coast_adjacency(windows)?;
 
-    for window in windows {
-        let classification = classify_merit_hydro_window(window, thresholds)?;
+    for (window_index, window) in windows.iter().enumerate() {
+        let classification = classify_merit_hydro_window_with_adjacency(
+            window,
+            thresholds,
+            &coast_adjacency[window_index],
+        )?;
         for lon_index in 0..window.width {
             for lat_index in 0..window.height {
                 let offset = lon_index * window.height + lat_index;
@@ -83,6 +88,136 @@ pub fn write_merit_hydro_mask_geojson_layers(
         surface_feature_count: surface_features.len(),
         mask_counts,
     })
+}
+
+fn global_coast_adjacency(windows: &[MeritHydroWindowReport]) -> io::Result<Vec<Vec<bool>>> {
+    let lon_fallback = minimum_axis_step(windows, |window| &window.lon);
+    let lat_fallback = minimum_axis_step(windows, |window| &window.lat);
+    let mut surfaces = std::collections::HashMap::<(i64, i64), i8>::new();
+
+    for window in windows {
+        if window.sampling_stride != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "MERIT-Hydro coast export requires native stride 1; got {} for {}",
+                    window.sampling_stride, window.tile_name
+                ),
+            ));
+        }
+        require_len("longitude", window.lon.len(), window.width)?;
+        require_len("latitude", window.lat.len(), window.height)?;
+        let expected = window.width.checked_mul(window.height).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MERIT-Hydro window shape overflows usize",
+            )
+        })?;
+        require_len("landtype_igbp", window.landtype_igbp.len(), expected)?;
+        for lon_index in 0..window.width {
+            for lat_index in 0..window.height {
+                let offset = lon_index * window.height + lat_index;
+                let key = coordinate_key(window.lon[lon_index], window.lat[lat_index])?;
+                let surface = surface_code(window.landtype_igbp[offset]);
+                if let Some(previous) = surfaces.insert(key, surface) {
+                    if previous != surface {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "overlapping MERIT-Hydro windows disagree on land/ocean surface",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    windows
+        .iter()
+        .map(|window| {
+            let mut adjacency = vec![false; window.width * window.height];
+            for lon_index in 0..window.width {
+                let dlon = axis_step(&window.lon, lon_index, lon_fallback)?;
+                for lat_index in 0..window.height {
+                    let offset = lon_index * window.height + lat_index;
+                    let surface = surface_code(window.landtype_igbp[offset]);
+                    if surface == 0 {
+                        continue;
+                    }
+                    let dlat = axis_step(&window.lat, lat_index, lat_fallback)?;
+                    'neighbors: for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            if dx == 0 && dy == 0 {
+                                continue;
+                            }
+                            let key = coordinate_key(
+                                window.lon[lon_index] + f64::from(dx) * dlon,
+                                window.lat[lat_index] + f64::from(dy) * dlat,
+                            )?;
+                            if surfaces
+                                .get(&key)
+                                .is_some_and(|neighbor| *neighbor == -surface)
+                            {
+                                adjacency[offset] = true;
+                                break 'neighbors;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(adjacency)
+        })
+        .collect()
+}
+
+fn minimum_axis_step(
+    windows: &[MeritHydroWindowReport],
+    axis: impl Fn(&MeritHydroWindowReport) -> &[f64],
+) -> f64 {
+    windows
+        .iter()
+        .flat_map(|window| axis(window).windows(2))
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .reduce(f64::min)
+        .unwrap_or(1.0 / 1200.0)
+}
+
+fn axis_step(values: &[f64], index: usize, fallback: f64) -> io::Result<f64> {
+    let step = if values.len() <= 1 {
+        fallback
+    } else if index == 0 {
+        (values[1] - values[0]).abs()
+    } else {
+        (values[index] - values[index - 1]).abs()
+    };
+    if !step.is_finite() || step <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MERIT-Hydro coordinates must have a finite positive native step",
+        ));
+    }
+    Ok(step)
+}
+
+fn coordinate_key(lon: f64, lat: f64) -> io::Result<(i64, i64)> {
+    if !lon.is_finite() || !lat.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MERIT-Hydro coordinates must be finite",
+        ));
+    }
+    let lon = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    Ok(((lon * 1e9).round() as i64, (lat * 1e9).round() as i64))
+}
+
+fn surface_code(landtype_igbp: i32) -> i8 {
+    if landtype_igbp == 0 || landtype_igbp == 17 {
+        -1
+    } else if landtype_igbp > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn merit_mask_feature_json(
@@ -159,7 +294,20 @@ fn write_merit_mask_summary_json(
     mask_counts: &std::collections::BTreeMap<String, usize>,
     thresholds: MeritMaskThresholds,
 ) -> io::Result<()> {
-    let mut text = format!("{{\"feature_count\":{},\"mask_counts\":{{", feature_count);
+    let river_count =
+        mask_counts.get("R2").copied().unwrap_or(0) + mask_counts.get("R3").copied().unwrap_or(0);
+    let coast_count = mask_counts.get("COAST_LAND").copied().unwrap_or(0)
+        + mask_counts.get("COAST_OCEAN").copied().unwrap_or(0);
+    let hydro_coast_score = if feature_count > 0 {
+        (river_count + coast_count) as f64 / feature_count as f64
+    } else {
+        0.0
+    };
+    let mut text = format!(
+        "{{\"feature_count\":{},\"hydro_coast_score\":{},\"mask_counts\":{{",
+        feature_count,
+        json_number(hydro_coast_score)
+    );
     for (index, (class, count)) in mask_counts.iter().enumerate() {
         if index > 0 {
             text.push(',');

@@ -6,29 +6,33 @@
 //! (`run_mkgrd_top_level_namelist_with_default_restart_refine_handoff`) via the
 //! land-type refine source path, so it needs a real land-type NetCDF. It is
 //! ignored by default because the global land-type read dominates runtime
-//! (~1-2 min) and depends on machine-local fixtures. Run with `make test-slow`.
+//! (~1-2 min). The slow-test runner requires and injects the real fixture;
+//! missing data is an explicit failure. Run with `make test-slow`.
 
 use std::fs;
 use std::path::PathBuf;
 
-fn landtype_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("EARTHMESH_LANDTYPE") {
-        let p = PathBuf::from(p);
-        return p.exists().then_some(p);
-    }
-    let default = PathBuf::from(
-        "/Users/zhongwangwei/Desktop/EarthMesh_legacy_archive_20260616_142611/input/landtype_usgs_update.nc",
+fn required_landtype_path() -> PathBuf {
+    let path = std::env::var_os("EARTHMESH_LANDTYPE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!("EARTHMESH_LANDTYPE must be set by scripts/run_slow_fixture_e2e.sh")
+        });
+    assert!(
+        path.is_file(),
+        "EARTHMESH_LANDTYPE fixture is missing: {}",
+        path.display()
     );
-    default.exists().then_some(default)
+    path
 }
 
 #[test]
 #[ignore = "slow local-fixture refine topology smoke; run with make test-slow"]
 fn specified_bbox_refine_produces_consistent_closed_mpas() {
-    let Some(landtype) = landtype_path() else {
-        eprintln!("skip: no land-type NetCDF (set EARTHMESH_LANDTYPE)");
-        return;
-    };
+    let landtype = required_landtype_path();
+    let gridnum_perdegree =
+        earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&landtype)
+            .expect("infer land-type resolution");
     const NXP: usize = 6;
     let root = std::env::temp_dir().join("em_refine_e2e_topology");
     let _ = fs::remove_dir_all(&root);
@@ -37,15 +41,15 @@ fn specified_bbox_refine_produces_consistent_closed_mpas() {
     fs::create_dir_all(&sources).unwrap();
     // Specified-refine bbox region (per degree 1 and 2 for max_iter_spc=2).
     // Level 1 intentionally includes a parent halo around the level-2 target;
-    // otherwise Fortran Method-C rejects the child transition as too close to
+    // otherwise Canonical Method-C rejects the child transition as too close to
     // the parent boundary in perim_fill3.
     for deg in [1usize, 2] {
         let parent_halo = if deg == 1 { 30.0 } else { 0.0 };
-        earthmesh_cli::write_bbox_mask_netcdf(
+        earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
             sources.join(format!("refine_0{deg}.nc4")),
-            &earthmesh_cli::BBoxMask {
+            &earthmesh_cli::bbox_mask_io::BBoxMask {
                 refine_degree: deg,
-                points: vec![earthmesh_cli::BBoxPoint {
+                points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                     west: 0.0 - parent_halo,
                     east: 40.0 + parent_halo,
                     north: 50.0 + parent_halo,
@@ -61,21 +65,21 @@ fn specified_bbox_refine_produces_consistent_closed_mpas() {
     fs::write(
         &nml,
         format!(
-            "&mkgrd\n  NL%EXPNME='rr'\n  NL%base_dir='{base_dir}'\n  NL%NXP={NXP}\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.035\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype}'\n  NL%mask_domain_global=.true.\n  NL%mask_domain_type='circle'\n  NL%mask_patch_on=.false.\n  NL%output_format='MPAS'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%vertex_pretect_layers=15\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=50\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+            "&mkgrd\n  NL%EXPNME='rr'\n  NL%base_dir='{base_dir}'\n  NL%NXP={NXP}\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.035\n  NL%gridnum_perdegree={gridnum_perdegree}\n  NL%landtype_file='{landtype}'\n  NL%mask_domain_global=.true.\n  NL%mask_domain_type='circle'\n  NL%mask_patch_on=.false.\n  NL%output_format='MPAS'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%vertex_pretect_layers=15\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=50\n  RL%halo=4,4,3\n  RL%max_transition_row=4,4,3\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
             landtype = landtype.display(),
         ),
     )
     .unwrap();
 
-    earthmesh_cli::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &nml, &root, 200_000, 0, None, None, None, 1, None,
+    earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+        &nml, &root, 200_000, 0, None, None, 1, None,
     )
     .expect("engine refine run");
 
     let gf = root
         .join("rr/result")
         .join(format!("gridfile_NXP{NXP:04}_hex.nc4"));
-    let mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&gf).unwrap();
+    let mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&gf).unwrap();
     // Base NXP6 atmos hex is ~362 cells; refinement must have added cells.
     assert!(
         mesh.w_points.len() > 400,
@@ -84,9 +88,9 @@ fn specified_bbox_refine_produces_consistent_closed_mpas() {
     );
 
     let cw = vec![100.0f64; mesh.w_points.len()];
-    let mpas = earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cw, NXP, 1)
+    let mpas = earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &cw, NXP, 1)
         .expect("build MPAS from refined mesh");
-    let r = earthmesh_cli::check_mpas_mesh_topology(&mpas);
+    let r = earthmesh_cli::mpas_topology::check_mpas_mesh_topology(&mpas);
     assert!(
         r.is_consistent(),
         "violations: {:?}",

@@ -2,8 +2,8 @@
 ///
 /// For each edge, returns the two cyclic neighboring edges at the first
 /// endpoint followed by the two cyclic neighboring edges at the second endpoint.
-/// Indices preserve the Fortran convention that edge ids start at `2`.
-pub fn edges_on_edge_tri_fortran_indexed(
+/// Indices preserve the Canonical convention that edge ids start at `2`.
+pub fn edges_on_edge_tri_one_based(
     vertices_on_edge: &[[usize; 2]],
     edges_on_vertex: &[[usize; 3]],
 ) -> Option<Vec<[usize; 4]>> {

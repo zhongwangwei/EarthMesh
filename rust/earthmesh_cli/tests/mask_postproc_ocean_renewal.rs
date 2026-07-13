@@ -1,10 +1,13 @@
 #[test]
 fn ocean_tri_renewal_composes_boundary_metadata_without_changing_single_ocean_curve() {
-    let layout = earthmesh_cli::MaskPostprocLayout {
+    let layout = earthmesh_cli::mask_postproc_types::MaskPostprocLayout {
         ustr_points: 6,
         ustr_bounds: 14,
-        center_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 6],
-        vertex_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 14],
+        center_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 6],
+        vertex_points: vec![
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 };
+            14
+        ],
         center_neighbors: vec![
             vec![1, 1, 1],
             vec![1, 1, 1],
@@ -33,7 +36,7 @@ fn ocean_tri_renewal_composes_boundary_metadata_without_changing_single_ocean_cu
         vertex_neighbor_counts: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3],
     };
 
-    let report = earthmesh_cli::renew_mask_postproc_ocean_domain_fortran_indexed(
+    let report = earthmesh_cli::mask_postproc_ocean::renew_mask_postproc_ocean_domain_one_based(
         &layout,
         &[0, -1, 1, 1, 1, 1],
         "tri",
@@ -53,18 +56,18 @@ fn ocean_tri_renewal_composes_boundary_metadata_without_changing_single_ocean_cu
 
 #[test]
 fn ocean_hex_renewal_skips_tri_only_boundary_special_cases() {
-    let layout = earthmesh_cli::MaskPostprocLayout {
+    let layout = earthmesh_cli::mask_postproc_types::MaskPostprocLayout {
         ustr_points: 3,
         ustr_bounds: 4,
-        center_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 3],
-        vertex_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 4],
+        center_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 3],
+        vertex_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 4],
         center_neighbors: vec![vec![1; 7], vec![1; 7], vec![2, 3, 1, 1, 1, 1, 1]],
         vertex_neighbors: vec![vec![1, 1, 1], vec![1, 1, 1], vec![2, 1, 1], vec![2, 1, 1]],
         center_neighbor_counts: vec![0, 0, 2],
         vertex_neighbor_counts: vec![0, 0, 1, 1],
     };
 
-    let report = earthmesh_cli::renew_mask_postproc_ocean_domain_fortran_indexed(
+    let report = earthmesh_cli::mask_postproc_ocean::renew_mask_postproc_ocean_domain_one_based(
         &layout,
         &[0, -1, 1],
         "hex",

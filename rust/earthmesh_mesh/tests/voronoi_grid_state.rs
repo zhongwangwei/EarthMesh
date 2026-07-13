@@ -1,9 +1,10 @@
-use earthmesh_mesh::OLAM_FORTRAN_EARTH_RADIUS_METERS;
+use earthmesh_mesh::METHOD_C_CANONICAL_EARTH_RADIUS_METERS;
 use earthmesh_mesh::{
-    grid_xyz2lonlat_fortran_indexed_state, gridinit_voronoi_state_fortran,
-    icosahedron_relaxed_grid_fortran, pcvt_adjust_voronoi_grid_state,
-    spherical_circumcenter_from_barycenter, voronoi_grid_from_icosahedron_relaxed,
-    voronoi_grid_from_olam_delaunay_mesh, CartesianPoint, OlamDelaunayMesh,
+    grid_xyz2lonlat_one_based_state, gridinit_voronoi_state_canonical,
+    icosahedron_relaxed_grid_canonical, lonlat_degrees_to_unit_xyz, pcvt_adjust_voronoi_grid_state,
+    spherical_centroid_degrees, spherical_circumcenter_from_barycenter,
+    voronoi_grid_from_icosahedron_relaxed, voronoi_grid_from_method_c_delaunay_mesh,
+    CartesianPoint, LonLatDegrees, MethodCDelaunayMesh,
 };
 
 fn approx_eq(actual: f32, expected: f64, tolerance: f64) {
@@ -15,11 +16,12 @@ fn approx_eq(actual: f32, expected: f64, tolerance: f64) {
 
 #[test]
 fn voronoi_grid_from_relaxed_icosahedron_swaps_delaunay_counts_and_keeps_one_based_slots() {
-    let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+    let relaxed = icosahedron_relaxed_grid_canonical(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
 
-    let state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
-        .expect("voronoi grid state");
+    let state =
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
+            .expect("voronoi grid state");
 
     assert_eq!(state.grid.nma, relaxed.nwd);
     assert_eq!(state.grid.nua, relaxed.nud);
@@ -49,17 +51,18 @@ fn voronoi_grid_from_relaxed_icosahedron_swaps_delaunay_counts_and_keeps_one_bas
 
 #[test]
 fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
-    let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+    let relaxed = icosahedron_relaxed_grid_canonical(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
-    let state = voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
-        .expect("voronoi grid state");
+    let state =
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
+            .expect("voronoi grid state");
 
     let face = &relaxed.connectivity.w_faces[2];
     let [iw1, iw2, iw3] = face.im;
     let x = (relaxed.m_points[iw1].x + relaxed.m_points[iw2].x + relaxed.m_points[iw3].x) / 3.0;
     let y = (relaxed.m_points[iw1].y + relaxed.m_points[iw2].y + relaxed.m_points[iw3].y) / 3.0;
     let z = (relaxed.m_points[iw1].z + relaxed.m_points[iw2].z + relaxed.m_points[iw3].z) / 3.0;
-    let scale = OLAM_FORTRAN_EARTH_RADIUS_METERS / (x * x + y * y + z * z).sqrt();
+    let scale = METHOD_C_CANONICAL_EARTH_RADIUS_METERS / (x * x + y * y + z * z).sqrt();
 
     approx_eq(state.grid.xem[2], x * scale, 0.5);
     approx_eq(state.grid.yem[2], y * scale, 0.5);
@@ -67,14 +70,14 @@ fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
 }
 
 #[test]
-fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
-    let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+fn one_based_voronoi_state_can_fill_one_based_lonlat_arrays() {
+    let relaxed = icosahedron_relaxed_grid_canonical(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
     let mut state =
-        voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
             .expect("voronoi grid state");
 
-    earthmesh_mesh::grid_xyz2lonlat_fortran_indexed_state(&mut state.grid)
+    earthmesh_mesh::grid_xyz2lonlat_one_based_state(&mut state.grid)
         .expect("fill one-based lonlat arrays");
 
     assert_eq!(state.grid.glonm.len(), state.grid.nma + 1);
@@ -88,10 +91,10 @@ fn fortran_indexed_voronoi_state_can_fill_one_based_lonlat_arrays() {
 
 #[test]
 fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
-    let relaxed = icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+    let relaxed = icosahedron_relaxed_grid_canonical(1, 0, 1.0, 0.25, 100)
         .expect("relaxed icosahedron fixture");
     let mut state =
-        voronoi_grid_from_icosahedron_relaxed(&relaxed, OLAM_FORTRAN_EARTH_RADIUS_METERS)
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
             .expect("voronoi grid state");
 
     let im = (2..=state.grid.nma)
@@ -127,13 +130,49 @@ fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
         + f64::from(state.grid.yem[im]).powi(2)
         + f64::from(state.grid.zem[im]).powi(2))
     .sqrt();
-    assert!((radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 0.5);
+    assert!((radius - METHOD_C_CANONICAL_EARTH_RADIUS_METERS).abs() <= 0.5);
+}
+
+#[test]
+fn pcvt_rejects_nonlocal_near_collinear_circumcenter() {
+    let relaxed = icosahedron_relaxed_grid_canonical(1, 0, 1.0, 0.25, 100)
+        .expect("relaxed icosahedron fixture");
+    let mut state =
+        voronoi_grid_from_icosahedron_relaxed(&relaxed, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
+            .expect("voronoi grid state");
+    let triangle = [
+        LonLatDegrees::new(-21.591571, -51.613641),
+        LonLatDegrees::new(-28.757277, -51.768891),
+        LonLatDegrees::new(-24.323722, -51.622878),
+    ];
+    let barycenter = spherical_centroid_degrees(&triangle).expect("spherical barycenter");
+    let scale = |point: CartesianPoint| {
+        CartesianPoint::new(
+            point.x * METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
+            point.y * METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
+            point.z * METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
+        )
+    };
+    state.tabs.m[2].iw = [2, 3, 4];
+    for (iw, point) in (2..=4).zip(triangle) {
+        let point = scale(lonlat_degrees_to_unit_xyz(point));
+        state.grid.xew[iw] = point.x as f32;
+        state.grid.yew[iw] = point.y as f32;
+        state.grid.zew[iw] = point.z as f32;
+    }
+    let barycenter = scale(lonlat_degrees_to_unit_xyz(barycenter));
+    state.grid.xem[2] = barycenter.x as f32;
+    state.grid.yem[2] = barycenter.y as f32;
+    state.grid.zem[2] = barycenter.z as f32;
+
+    let err = pcvt_adjust_voronoi_grid_state(&mut state).expect_err("non-local circumcenter");
+    assert!(err.to_string().contains("non-local spherical circumcenter"));
 }
 
 #[test]
 fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
     let state =
-        gridinit_voronoi_state_fortran(1, 0, 1.0, 0.25, 100).expect("gridinit in-memory state");
+        gridinit_voronoi_state_canonical(1, 0, 1.0, 0.25, 100).expect("gridinit in-memory state");
 
     assert_eq!(state.grid.glonm.len(), state.grid.nma + 1);
     assert_eq!(state.grid.glatm.len(), state.grid.nma + 1);
@@ -148,7 +187,7 @@ fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
             + f64::from(state.grid.zem[im]).powi(2))
         .sqrt();
         assert!(
-            (radius - OLAM_FORTRAN_EARTH_RADIUS_METERS).abs() <= 0.5,
+            (radius - METHOD_C_CANONICAL_EARTH_RADIUS_METERS).abs() <= 0.5,
             "im={im} radius={radius}"
         );
         assert!(state.grid.glatm[im] >= -90.0 && state.grid.glatm[im] <= 90.0);
@@ -162,18 +201,20 @@ fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
 }
 
 #[test]
-fn gridinit_voronoi_state_uses_olam_factor2_expansion_when_selected() {
-    let base =
-        OlamDelaunayMesh::from_icosahedron(24, 0, 1.0, 0.25, 100).expect("OLAM base NXP 24 mesh");
-    let expanded = base.expand_by_factor(2).expect("OLAM factor-2 expansion");
+fn gridinit_voronoi_state_uses_method_c_factor2_expansion_when_selected() {
+    let base = MethodCDelaunayMesh::from_icosahedron(24, 0, 1.0, 0.25, 100)
+        .expect("Method-C base NXP 24 mesh");
+    let expanded = base
+        .expand_by_factor(2)
+        .expect("Method-C factor-2 expansion");
     let mut expected =
-        voronoi_grid_from_olam_delaunay_mesh(&expanded, OLAM_FORTRAN_EARTH_RADIUS_METERS)
-            .expect("expanded OLAM Voronoi state");
+        voronoi_grid_from_method_c_delaunay_mesh(&expanded, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
+            .expect("expanded Method-C Voronoi state");
     pcvt_adjust_voronoi_grid_state(&mut expected).expect("expected pcvt");
-    grid_xyz2lonlat_fortran_indexed_state(&mut expected.grid).expect("expected lonlat fill");
+    grid_xyz2lonlat_one_based_state(&mut expected.grid).expect("expected lonlat fill");
 
     let actual =
-        gridinit_voronoi_state_fortran(48, 0, 1.0, 0.25, 100).expect("factorized gridinit");
+        gridinit_voronoi_state_canonical(48, 0, 1.0, 0.25, 100).expect("factorized gridinit");
 
     assert_eq!(actual.grid.nma, expected.grid.nma);
     assert_eq!(actual.grid.nua, expected.grid.nua);

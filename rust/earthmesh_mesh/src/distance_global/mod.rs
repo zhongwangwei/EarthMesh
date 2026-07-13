@@ -1,6 +1,6 @@
 use crate::spring_global_debug;
 use crate::{
-    cellwidth_layers_fortran_indexed, distance_layers, dists_on_edge_layers_fortran_indexed,
+    cellwidth_layers_one_based, distance_layers, dists_on_edge_layers_one_based,
     DistanceLayerSpacing,
 };
 
@@ -39,14 +39,14 @@ pub struct SetDistsOnEdgeGlobalOutput {
 
 /// Rust orchestration wrapper for `MOD_grid_preprocess:set_distsOnEdge_global`.
 ///
-/// The Fortran routine derives refined-region flags through
+/// The Canonical routine derives refined-region flags through
 /// `refine_sjx_regional_make` and reads global `halo`, `step`, and
 /// `exit_loop_step` state. This pure Rust wrapper keeps the same distance
 /// update sequence but accepts each iteration's refinement flags explicitly:
 /// initialize background values, halve the selected edge/cellwidth scale after
-/// each active iteration, build transition layers, then call the migrated
+/// each active iteration, build transition layers, then call the current
 /// `distsOnEdge_layers_make` and optional `cellwidth_layers_make` kernels.
-pub fn set_dists_on_edge_global_fortran_indexed(
+pub fn set_dists_on_edge_global_one_based(
     input: SetDistsOnEdgeGlobalInput<'_>,
 ) -> Option<SetDistsOnEdgeGlobalOutput> {
     let mut dists_on_edge = vec![input.base_dists_on_edge; input.cells_on_edge.len()];
@@ -89,7 +89,7 @@ pub fn set_dists_on_edge_global_fortran_indexed(
             .iter()
             .filter(|value| (**value - input.base_dists_on_edge).abs() > 1.0e-12)
             .count();
-        dists_on_edge = dists_on_edge_layers_fortran_indexed(
+        dists_on_edge = dists_on_edge_layers_one_based(
             step.num_vertex_in,
             step.num_center_in,
             input.num_rc,
@@ -114,7 +114,7 @@ pub fn set_dists_on_edge_global_fortran_indexed(
         {
             let next_cellwidth_scale = current_cellwidth / 2.0;
             let cellwidth_layers = distance_layers(dist_len, current_cellwidth, input.spacing)?;
-            let updated = cellwidth_layers_fortran_indexed(
+            let updated = cellwidth_layers_one_based(
                 step.num_vertex_in,
                 step.num_center_in,
                 input.num_rc,

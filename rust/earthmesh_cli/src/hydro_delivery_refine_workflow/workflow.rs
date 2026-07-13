@@ -1,17 +1,22 @@
+use crate::write_colm_coupling_csv_from_intersections;
+use crate::write_coupling_quality_from_gridfile;
+use crate::write_earthmesh_intersection_geojson;
+use crate::HydroWorkflowReport;
+use crate::{
+    geojson_feature_nodes, json_escape_string, read_text_maybe_gzip, JsonNode, JsonParser,
+};
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::*;
-
 use super::plan::plan_refinement_from_hydro_geojson;
 
 /// End-to-end hydro workflow: cells (from a mesh, e.g. `--mpas-cell-polygons`) ×
-/// corridors → per-cell intersection GeoJSON → CoLM coupling CSV + R8 refinement plan,
-/// all under `out_dir`, plus a `workflow_manifest.json` listing the artifacts. Chains the
-/// migrated overlay / coupling / planner pieces into one command. When both `mesh` (an
-/// EarthMesh gridfile) and `landtype` are supplied, also runs the R7 mesh+land-type
-/// coupling-quality validator into `coupling_quality.json`.
+/// corridors → conservative spherical intersection GeoJSON → CoLM coupling CSV +
+/// R8 refinement plan, all under `out_dir`, plus a `workflow_manifest.json` listing
+/// the artifacts. When both `mesh` (an EarthMesh gridfile) and `landtype` are supplied,
+/// also runs the R7 mesh+land-type coupling-quality validator into
+/// `coupling_quality.json`.
 #[allow(clippy::too_many_arguments)]
 pub fn run_hydro_workflow(
     cells_geojson: impl AsRef<Path>,
@@ -48,6 +53,23 @@ pub fn run_hydro_workflow(
         &coupling_csv_path,
         min_fraction,
     )?;
+    let intersections = JsonParser::new(&read_text_maybe_gzip(&intersections_path)?).parse()?;
+    let estuary_coupling_rows = geojson_feature_nodes(&intersections)
+        .into_iter()
+        .filter(|feature| {
+            let properties = feature
+                .as_object()
+                .and_then(|object| object.get("properties"))
+                .and_then(JsonNode::as_object);
+            properties
+                .and_then(|props| props.get("is_estuary"))
+                .is_some_and(|value| matches!(value, JsonNode::Bool(true)))
+                && properties
+                    .and_then(|props| props.get("estuary_fraction"))
+                    .and_then(JsonNode::as_f64)
+                    .is_some_and(|fraction| fraction > 0.0)
+        })
+        .count();
     let report = plan_refinement_from_hydro_geojson(
         &intersections_path,
         &refinement_plan_path,
@@ -91,12 +113,13 @@ pub fn run_hydro_workflow(
         })
         .unwrap_or_default();
     let manifest = format!(
-        "{{\n  \"kind\": \"earthmesh_hydro_workflow\",\n  \"intersection_cells\": {},\n  \
-         \"coupling_rows\": {},\n  \"cells_refined\": {},\n  \"refinement_max_level\": {},\n{}  \
+        "{{\n  \"kind\": \"earthmesh_hydro_workflow\",\n  \"overlay_semantics\": \"cell_local_lambert_azimuthal_equal_area_conservative\",\n  \"production_coupling\": true,\n  \"intersection_cells\": {},\n  \
+         \"coupling_rows\": {},\n  \"estuary_coupling_rows\": {},\n  \"cells_refined\": {},\n  \"refinement_max_level\": {},\n{}  \
          \"artifacts\": {{\n    \"intersections_geojson\": \"{}\",\n    \
          \"colm_coupling_csv\": \"{}\",\n    \"refinement_plan_json\": \"{}\"{}\n  }}\n}}\n",
         intersection_cells,
         coupling_rows,
+        estuary_coupling_rows,
         cells_refined,
         refinement_max_level,
         cq_verdict_field,
@@ -110,6 +133,7 @@ pub fn run_hydro_workflow(
     Ok(HydroWorkflowReport {
         intersection_cells,
         coupling_rows,
+        estuary_coupling_rows,
         cells_refined,
         refinement_max_level,
         coupling_quality_verdict,

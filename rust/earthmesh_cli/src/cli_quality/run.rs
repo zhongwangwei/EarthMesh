@@ -9,7 +9,7 @@ use super::super::cli_args::usage;
 /// optional third arg is a namelist whose `&quality` block configures the gate
 /// thresholds and the on-violation policy; with `on_violation = 'block'` a Fail
 /// verdict exits non-zero (CI gate). Absent ⇒ default thresholds, warn-only
-/// (unchanged legacy behavior).
+/// (unchanged compatibility behavior).
 pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(), String> {
     // Optional `--kind tri|hex` selects the cell view: hex/atmos (MPAS) meshes are
     // measured as their W-cell hexagons (≈120° angles); tri/FVCOM meshes as the M
@@ -46,12 +46,12 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     let quality_cfg_path = positional.get(2).map(PathBuf::from);
     let kind = parse_quality_kind(&kind)?;
 
-    let mesh = earthmesh_cli::read_gridfile_mesh_points(&gridfile)
+    let mesh = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&gridfile)
         .map_err(|e| format!("read gridfile {}: {e}", gridfile.display()))?;
     let input = if kind == "hex" {
-        earthmesh_cli::quality_input_from_gridfile_hex(&mesh)
+        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh)
     } else {
-        earthmesh_cli::quality_input_from_gridfile(&mesh)
+        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&mesh)
     };
 
     // Optional &quality block → thresholds + policy; absent ⇒ defaults + warn.
@@ -72,19 +72,26 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
             "warn".to_string(),
         ),
     };
+    if on_violation.eq_ignore_ascii_case("auto_refine") {
+        return Err(
+            "on_violation=auto_refine requires `mkgrd.x --project <project.yaml>` so EarthMesh can change refinement and rerun; standalone --mesh-quality is read-only"
+                .to_string(),
+        );
+    }
 
     let mut report = earthmesh_quality::compute(&input, &thresholds);
     report.mesh_name = gridfile.display().to_string();
     report.cell_view = kind.to_string();
     if let Some(text) = &quality_cfg_text {
-        let attached = earthmesh_cli::attach_hfield_diagnostics_from_namelist(
-            &mut report,
-            &input,
-            &mesh,
-            kind,
-            text,
-        )
-        .map_err(|e| format!("attach h-field diagnostics: {e}"))?;
+        let attached =
+            earthmesh_cli::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
+                &mut report,
+                &input,
+                &mesh,
+                kind,
+                text,
+            )
+            .map_err(|e| format!("attach h-field diagnostics: {e}"))?;
         if attached {
             println!("mesh_quality_hfield=1");
         }
@@ -107,11 +114,11 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
         report.geometry.angle_deviation_deg.max
     );
     println!(
-        "mesh_quality_triangle_eta_min={}",
+        "mesh_quality_triangle_eta_local_min={}",
         report.geometry.triangle_eta.min
     );
     println!(
-        "mesh_quality_triangle_nsr_min={}",
+        "mesh_quality_triangle_nsr_local_min={}",
         report.geometry.triangle_nsr.min
     );
     println!(
@@ -161,5 +168,7 @@ fn quality_thresholds_from_namelist(
         area_cv_warn: q.area_cv_warn,
         max_adjacent_resolution_ratio_warn: q.max_adjacent_resolution_ratio_warn,
         worst_cells_limit: q.worst_cells_limit.max(0) as usize,
+        repair_batch_limit: q.repair_batch_limit.max(0) as usize,
+        repair_level_cap: None,
     }
 }

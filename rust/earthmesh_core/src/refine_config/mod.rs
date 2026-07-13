@@ -1,6 +1,6 @@
 use crate::{
-    parse_f64, parse_f64_array, parse_fortran_bool, parse_fortran_string, parse_i32,
-    parse_i32_fortran_1_based_array, strip_fortran_comment,
+    parse_canonical_bool, parse_canonical_string, parse_f64, parse_f64_array, parse_i32,
+    parse_i32_canonical_1_based_array, strip_canonical_comment,
 };
 
 /// Typed equivalent of the operational `refine_vars` module state.
@@ -9,6 +9,9 @@ pub struct RefineConfig {
     pub refine_setting: String,
     pub mask_refine_spc_type: String,
     pub mask_refine_spc_fprefix: String,
+    /// Optional preprocessing for specified close masks. `polyline` is the
+    /// compatibility default and is omitted from serialized namelists.
+    pub mask_refine_spc_close_boundary: String,
     pub mask_refine_cal_type: String,
     pub mask_refine_cal_fprefix: String,
     pub threshold_dir: String,
@@ -53,6 +56,7 @@ impl Default for RefineConfig {
             refine_setting: "/tmp".to_string(),
             mask_refine_spc_type: "/tmp".to_string(),
             mask_refine_spc_fprefix: "/tmp".to_string(),
+            mask_refine_spc_close_boundary: "polyline".to_string(),
             mask_refine_cal_type: "/tmp".to_string(),
             mask_refine_cal_fprefix: "/tmp".to_string(),
             threshold_dir: "/tmp".to_string(),
@@ -101,11 +105,25 @@ impl RefineConfig {
         mesh_type: &str,
         mode_grid: &str,
     ) -> Result<Self, String> {
+        Self::from_mkrefine_namelist_with_external_field(input, mesh_type, mode_grid, false)
+    }
+
+    /// Parse `&mkrefine` while allowing an independently validated external
+    /// cell-width field to be the sole refinement source. The caller must only
+    /// pass `external_field=true` after validating that field's own inputs.
+    pub fn from_mkrefine_namelist_with_external_field(
+        input: &str,
+        mesh_type: &str,
+        mode_grid: &str,
+        external_field: bool,
+    ) -> Result<Self, String> {
         let mut config = Self::default();
         let mut in_mkrefine = false;
 
         for raw_line in input.lines() {
-            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            let line = strip_canonical_comment(raw_line)
+                .trim()
+                .trim_end_matches(',');
             if line.is_empty() {
                 continue;
             }
@@ -131,102 +149,133 @@ impl RefineConfig {
 
             match field.to_ascii_lowercase().as_str() {
                 "weak_concav_eliminate" => {
-                    config.weak_concav_eliminate = parse_fortran_bool(field, value)?
+                    config.weak_concav_eliminate = parse_canonical_bool(field, value)?
                 }
-                "istransition" => config.is_transition = parse_fortran_bool(field, value)?,
-                "iterd" => config.iter_d = parse_fortran_bool(field, value)?,
-                "halo" => config.halo = parse_i32_fortran_1_based_array(field, value)?,
+                "istransition" => config.is_transition = parse_canonical_bool(field, value)?,
+                "iterd" => config.iter_d = parse_canonical_bool(field, value)?,
+                "halo" => config.halo = parse_i32_canonical_1_based_array(field, value)?,
                 "max_transition_row" => {
-                    config.max_transition_row = parse_i32_fortran_1_based_array(field, value)?
+                    config.max_transition_row = parse_i32_canonical_1_based_array(field, value)?
                 }
                 "springglobal_type" => config.spring_global_type = parse_i32(field, value)?,
                 "springregional_type" => config.spring_regional_type = parse_i32(field, value)?,
                 "num_rc" => config.num_rc = parse_i32(field, value)?,
-                "set_dis_type" => config.set_dis_type = parse_fortran_string(value),
+                "set_dis_type" => config.set_dis_type = parse_canonical_string(value),
                 "vertex_pretect_layers" => config.vertex_pretect_layers = parse_i32(field, value)?,
                 "niter_refine" => {
                     config.niter_refine = parse_i32(field, value)?;
                     config.niter_refine_specified = true;
                 }
-                "refine_spc" => config.refine_spc = parse_fortran_bool(field, value)?,
-                "refine_cal" => config.refine_cal = parse_fortran_bool(field, value)?,
+                "refine_spc" => config.refine_spc = parse_canonical_bool(field, value)?,
+                "refine_cal" => config.refine_cal = parse_canonical_bool(field, value)?,
                 "max_iter_spc" => config.max_iter_spc = parse_i32(field, value)?,
                 "max_iter_cal" => config.max_iter_cal = parse_i32(field, value)?,
-                "mask_refine_spc_type" => config.mask_refine_spc_type = parse_fortran_string(value),
+                "mask_refine_spc_type" => {
+                    config.mask_refine_spc_type = parse_canonical_string(value)
+                }
                 "mask_refine_spc_fprefix" => {
-                    config.mask_refine_spc_fprefix = parse_fortran_string(value)
+                    config.mask_refine_spc_fprefix = parse_canonical_string(value)
                 }
-                "mask_refine_cal_type" => config.mask_refine_cal_type = parse_fortran_string(value),
+                "mask_refine_spc_close_boundary" => {
+                    config.mask_refine_spc_close_boundary = parse_canonical_string(value)
+                }
+                "mask_refine_cal_type" => {
+                    config.mask_refine_cal_type = parse_canonical_string(value)
+                }
                 "mask_refine_cal_fprefix" => {
-                    config.mask_refine_cal_fprefix = parse_fortran_string(value)
+                    config.mask_refine_cal_fprefix = parse_canonical_string(value)
                 }
-                "threshold_dir" => config.threshold_dir = parse_fortran_string(value),
+                "threshold_dir" => config.threshold_dir = parse_canonical_string(value),
                 "refine_num_landtypes" => {
-                    config.refine_num_landtypes = parse_fortran_bool(field, value)?
+                    config.refine_num_landtypes = parse_canonical_bool(field, value)?
                 }
                 "refine_area_mainland" => {
-                    config.refine_area_mainland = parse_fortran_bool(field, value)?
+                    config.refine_area_mainland = parse_canonical_bool(field, value)?
                 }
-                "refine_sea_ratio" => config.refine_sea_ratio = parse_fortran_bool(field, value)?,
-                "refine_lai_m" => config.refine_onelayer_lnd[0] = parse_fortran_bool(field, value)?,
-                "refine_lai_s" => config.refine_onelayer_lnd[1] = parse_fortran_bool(field, value)?,
+                "refine_sea_ratio" => config.refine_sea_ratio = parse_canonical_bool(field, value)?,
+                "refine_lai_m" => {
+                    config.refine_onelayer_lnd[0] = parse_canonical_bool(field, value)?
+                }
+                "refine_lai_s" => {
+                    config.refine_onelayer_lnd[1] = parse_canonical_bool(field, value)?
+                }
                 "refine_slope_m" => {
-                    config.refine_onelayer_lnd[2] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_lnd[2] = parse_canonical_bool(field, value)?
                 }
                 "refine_slope_s" => {
-                    config.refine_onelayer_lnd[3] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_lnd[3] = parse_canonical_bool(field, value)?
                 }
-                "refine_dem_m" => config.refine_onelayer_lnd[4] = parse_fortran_bool(field, value)?,
-                "refine_dem_s" => config.refine_onelayer_lnd[5] = parse_fortran_bool(field, value)?,
+                "refine_dem_m" => {
+                    config.refine_onelayer_lnd[4] = parse_canonical_bool(field, value)?
+                }
+                "refine_dem_s" => {
+                    config.refine_onelayer_lnd[5] = parse_canonical_bool(field, value)?
+                }
                 "refine_slope_max_m" => {
-                    config.refine_onelayer_lnd[6] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_lnd[6] = parse_canonical_bool(field, value)?
                 }
                 "refine_slope_max_s" => {
-                    config.refine_onelayer_lnd[7] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_lnd[7] = parse_canonical_bool(field, value)?
                 }
-                "refine_k_s_m" => config.refine_twolayer_lnd[0] = parse_fortran_bool(field, value)?,
-                "refine_k_s_s" => config.refine_twolayer_lnd[1] = parse_fortran_bool(field, value)?,
+                "refine_k_s_m" => {
+                    config.refine_twolayer_lnd[0] = parse_canonical_bool(field, value)?
+                }
+                "refine_k_s_s" => {
+                    config.refine_twolayer_lnd[1] = parse_canonical_bool(field, value)?
+                }
                 "refine_k_solids_m" => {
-                    config.refine_twolayer_lnd[2] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[2] = parse_canonical_bool(field, value)?
                 }
                 "refine_k_solids_s" => {
-                    config.refine_twolayer_lnd[3] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[3] = parse_canonical_bool(field, value)?
                 }
                 "refine_tkdry_m" => {
-                    config.refine_twolayer_lnd[4] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[4] = parse_canonical_bool(field, value)?
                 }
                 "refine_tkdry_s" => {
-                    config.refine_twolayer_lnd[5] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[5] = parse_canonical_bool(field, value)?
                 }
                 "refine_tksatf_m" => {
-                    config.refine_twolayer_lnd[6] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[6] = parse_canonical_bool(field, value)?
                 }
                 "refine_tksatf_s" => {
-                    config.refine_twolayer_lnd[7] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[7] = parse_canonical_bool(field, value)?
                 }
                 "refine_tksatu_m" => {
-                    config.refine_twolayer_lnd[8] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[8] = parse_canonical_bool(field, value)?
                 }
                 "refine_tksatu_s" => {
-                    config.refine_twolayer_lnd[9] = parse_fortran_bool(field, value)?
+                    config.refine_twolayer_lnd[9] = parse_canonical_bool(field, value)?
                 }
-                "refine_sst_m" => config.refine_onelayer_ocn[0] = parse_fortran_bool(field, value)?,
-                "refine_sst_s" => config.refine_onelayer_ocn[1] = parse_fortran_bool(field, value)?,
-                "refine_ssh_m" => config.refine_onelayer_ocn[2] = parse_fortran_bool(field, value)?,
-                "refine_ssh_s" => config.refine_onelayer_ocn[3] = parse_fortran_bool(field, value)?,
-                "refine_eke_m" => config.refine_onelayer_ocn[4] = parse_fortran_bool(field, value)?,
-                "refine_eke_s" => config.refine_onelayer_ocn[5] = parse_fortran_bool(field, value)?,
+                "refine_sst_m" => {
+                    config.refine_onelayer_ocn[0] = parse_canonical_bool(field, value)?
+                }
+                "refine_sst_s" => {
+                    config.refine_onelayer_ocn[1] = parse_canonical_bool(field, value)?
+                }
+                "refine_ssh_m" => {
+                    config.refine_onelayer_ocn[2] = parse_canonical_bool(field, value)?
+                }
+                "refine_ssh_s" => {
+                    config.refine_onelayer_ocn[3] = parse_canonical_bool(field, value)?
+                }
+                "refine_eke_m" => {
+                    config.refine_onelayer_ocn[4] = parse_canonical_bool(field, value)?
+                }
+                "refine_eke_s" => {
+                    config.refine_onelayer_ocn[5] = parse_canonical_bool(field, value)?
+                }
                 "refine_sea_slope_m" => {
-                    config.refine_onelayer_ocn[6] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_ocn[6] = parse_canonical_bool(field, value)?
                 }
                 "refine_sea_slope_s" => {
-                    config.refine_onelayer_ocn[7] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_ocn[7] = parse_canonical_bool(field, value)?
                 }
                 "refine_typhoon_m" => {
-                    config.refine_onelayer_atmos[0] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_atmos[0] = parse_canonical_bool(field, value)?
                 }
                 "refine_typhoon_s" => {
-                    config.refine_onelayer_atmos[1] = parse_fortran_bool(field, value)?
+                    config.refine_onelayer_atmos[1] = parse_canonical_bool(field, value)?
                 }
                 "th_num_landtypes" => config.th_num_landtypes = parse_i32(field, value)?,
                 "th_area_mainland" => config.th_area_mainland = parse_f64(field, value)?,
@@ -295,7 +344,7 @@ impl RefineConfig {
             }
         }
 
-        config.validate_like_read_nl(mesh_type, mode_grid)?;
+        config.validate_like_read_nl(mesh_type, mode_grid, external_field)?;
         Ok(config)
     }
 }

@@ -1,7 +1,7 @@
 //! Rust port of util/hydro_mesh/refinement_package.py::_build_manifest: assemble the
 //! delivery-package manifest (the file qa_gates consumes) from eval + ranking JSON.
 
-use earthmesh_cli::write_hydro_delivery_manifest;
+use earthmesh_cli::hydro_delivery_manifest::write_hydro_delivery_manifest;
 
 #[test]
 fn builds_delivery_manifest_from_eval_and_ranking() {

@@ -4,7 +4,7 @@ use earthmesh_geometry::{
 };
 
 #[test]
-fn polygon_area_matches_python_reference_fixtures() {
+fn polygon_area_matches_python_canonical_fixtures() {
     let triangle = vec![
         Point::new(0.0, 0.0),
         Point::new(2.0, 0.0),

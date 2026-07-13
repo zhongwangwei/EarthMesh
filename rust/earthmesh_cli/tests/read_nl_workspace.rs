@@ -37,8 +37,9 @@ fn apply_read_nl_workspace_plan_creates_dirs_copies_namelist_and_cleans_filelist
         mask_operations: vec![MaskOperation::new("mask_domain", "bbox", "/tmp/domain")],
     };
 
-    let report = earthmesh_cli::apply_read_nl_workspace_plan(&plan, &namelist, &root)
-        .expect("workspace plan should apply");
+    let report =
+        earthmesh_cli::workspace_apply::apply_read_nl_workspace_plan(&plan, &namelist, &root)
+            .expect("workspace plan should apply");
 
     assert_eq!(report.created_directories.len(), 6);
     assert_eq!(
@@ -84,8 +85,9 @@ fn apply_read_nl_workspace_plan_preserves_restart_short_circuit() {
         mask_operations: vec![MaskOperation::new("mask_patch", "bbox", "/tmp/patch")],
     };
 
-    let report = earthmesh_cli::apply_read_nl_workspace_plan(&plan, &namelist, &root)
-        .expect("restart plan should apply without deleting case dir");
+    let report =
+        earthmesh_cli::workspace_apply::apply_read_nl_workspace_plan(&plan, &namelist, &root)
+            .expect("restart plan should apply without deleting case dir");
 
     assert!(report.created_directories.is_empty());
     assert!(report.removed_filelists.is_empty());
@@ -125,7 +127,7 @@ fn apply_read_nl_workspace_plan_rejects_delete_outside_workdir() {
         mask_operations: Vec::new(),
     };
 
-    let err = earthmesh_cli::apply_read_nl_workspace_plan(&plan, &namelist, &root)
+    let err = earthmesh_cli::workspace_apply::apply_read_nl_workspace_plan(&plan, &namelist, &root)
         .expect_err("outside file_dir must be rejected before deletion");
 
     assert!(

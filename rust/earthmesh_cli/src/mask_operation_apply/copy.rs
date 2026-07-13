@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::MaskCountState;
 
-/// Copy a circle NetCDF source into the Fortran tmpfile naming scheme.
+/// Copy a circle NetCDF source into the Canonical tmpfile naming scheme.
 pub fn copy_circle_mask_netcdf_with_refine(
     inputfile: impl AsRef<Path>,
     mask_select: &str,
@@ -25,7 +25,7 @@ pub fn copy_circle_mask_netcdf_with_refine(
     )
 }
 
-/// Copy a close NetCDF source into the Fortran tmpfile naming scheme.
+/// Copy a close NetCDF source into the Canonical tmpfile naming scheme.
 pub fn copy_close_mask_netcdf_with_refine(
     inputfile: impl AsRef<Path>,
     mask_select: &str,
@@ -46,12 +46,12 @@ pub fn copy_close_mask_netcdf_with_refine(
     )
 }
 
-/// Copy a bbox NetCDF source into the Fortran tmpfile naming scheme.
+/// Copy a bbox NetCDF source into the Canonical tmpfile naming scheme.
 ///
 /// This covers the `bbox_mask_make` `.nc/.nc4` branch after the caller has
 /// obtained `bbox_refine` from the NetCDF metadata. If `refine_degree` is above
 /// `max_iter_spc`, the function returns `Ok(None)` and leaves counters/files
-/// untouched, matching the Fortran early return.
+/// untouched, matching the Canonical early return.
 pub fn copy_bbox_mask_netcdf_with_refine(
     inputfile: impl AsRef<Path>,
     mask_select: &str,

@@ -5,10 +5,11 @@
 //! `window.__TAURI__.core.invoke(...)`.
 //!
 //! Deliberately hdf5-free: this process only builds/validates the project
-//! intent and lowers it to a Fortran namelist. Actual mesh generation is
-//! delegated to the discovered engine with the namelist as positional input, so
-//! the GUI never links netcdf.
+//! intent and lowers it to the engine namelist. Actual mesh generation is
+//! delegated to the discovered CLI; AutoRefine uses its authoritative
+//! `--project` closed loop, so the GUI never links netcdf.
 
+mod auto_refine;
 mod dto;
 mod engine;
 mod file_commands;
@@ -48,6 +49,7 @@ pub fn run() {
             set_domain_bbox,
             set_domain_shapefile,
             set_domain_close,
+            set_close_boundary,
             set_quality,
             set_refinement,
             set_specified_refinement,

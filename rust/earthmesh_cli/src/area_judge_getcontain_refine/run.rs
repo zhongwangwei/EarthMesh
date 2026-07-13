@@ -1,8 +1,19 @@
+use crate::getcontain_containment_matrix_flat_one_based;
+use crate::getcontain_is_in_area_ustr_one_based;
+use crate::getcontain_validate_source_matrix;
+use crate::read_area_judge_grid_netcdf;
+use crate::read_unstructured_mesh_netcdf;
+use crate::validate_area_judge_grid_payload;
+use crate::write_flat_contain_netcdf;
+use crate::AreaJudgeGridPayload;
+use crate::GetContainAreaBounds;
+use crate::GetContainRefineFileRunConfig;
+use crate::GetContainRefineFileRunReport;
+use crate::GetContainRuntimeCounts;
+use crate::LonLatPoint;
 use std::io;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
-
-use crate::*;
 
 /// File-backed adapter for the refinement branch of
 /// `MOD_GetContain.F90:Get_Contain(iter)`.
@@ -10,14 +21,14 @@ use crate::*;
 /// This covers the `refine .and. step <= max_iter` branch for triangular
 /// refinement grids: read the current `Unstructured_Mesh_Save` gridfile, expand
 /// the selected `Area_judge_refine` grid back into the full source grid, compute
-/// `IsInRfArea_sjx` plus containment rows, and persist the legacy
+/// `IsInRfArea_sjx` plus containment rows, and persist the compatibility
 /// `Contain_Save` schema selected by the caller.
-pub fn run_getcontain_refine_file_fortran_indexed(
+pub fn run_getcontain_refine_file_one_based(
     config: GetContainRefineFileRunConfig<'_>,
 ) -> io::Result<GetContainRefineFileRunReport> {
     let mesh = read_unstructured_mesh_netcdf(config.gridfile)?;
     let area_payload = read_area_judge_grid_netcdf(config.area_grid_file)?;
-    let is_in_refine_grid = expand_area_judge_selected_grid_only_fortran_indexed(
+    let is_in_refine_grid = expand_area_judge_selected_grid_only_one_based(
         &area_payload,
         config.lon_i.len().saturating_sub(1),
         config.lat_i.len().saturating_sub(1),
@@ -48,14 +59,14 @@ pub fn run_getcontain_refine_file_fortran_indexed(
     n_edges.push(0);
     n_edges.extend(std::iter::repeat_n(3, mesh.m_to_w.len()));
 
-    let is_in_area_ustr = getcontain_is_in_area_ustr_fortran_indexed(
+    let is_in_area_ustr = getcontain_is_in_area_ustr_one_based(
         bounds,
         &vertices,
         &cell_to_vertices,
         &n_edges,
         config.num_vertex,
     )?;
-    let contain = getcontain_containment_matrix_flat_fortran_indexed(
+    let contain = getcontain_containment_matrix_flat_one_based(
         config.mesh_kind,
         &vertices,
         &cell_to_vertices,
@@ -88,7 +99,7 @@ pub fn run_getcontain_refine_file_fortran_indexed(
     })
 }
 
-fn expand_area_judge_selected_grid_only_fortran_indexed(
+fn expand_area_judge_selected_grid_only_one_based(
     payload: &AreaJudgeGridPayload,
     nlons_source: usize,
     nlats_source: usize,

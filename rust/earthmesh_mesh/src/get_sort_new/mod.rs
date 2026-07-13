@@ -5,7 +5,7 @@ use super::*;
 /// For each cell `2..=num_dbx`, walks adjacent triangles using `IsNgrmm`, falls
 /// back to the next unused input triangle when the walk is disconnected, then
 /// reverses clockwise orders according to `robust_spherical_area_unit`.
-pub fn get_sort_new_fortran_indexed(
+pub fn get_sort_new_one_based(
     num_dbx: usize,
     n_triangles_on_cell: &[usize],
     cells_on_triangle: &[[usize; 3]],
@@ -39,7 +39,7 @@ pub fn get_sort_new_fortran_indexed(
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("cell {cell} references invalid triangle {triangle}"),
+                    format!("cell {cell} canonicals invalid triangle {triangle}"),
                 ));
             }
         }

@@ -1,16 +1,42 @@
+use crate::cells_on_triangle_one_based_from_mesh;
+use crate::get_edge_from_unstructured_mesh;
+use crate::lonlat_degrees_from_points;
+use crate::mpas_lat_lon_radians;
+use crate::n_edges_on_cell_usize_from_mesh;
+use crate::pad_f64_rows;
+use crate::split_cartesian_components;
+use crate::triangles_on_cell_one_based_from_mesh;
+use crate::usize_values_to_i32;
+use crate::validate_mpas_mesh;
+use crate::validate_unstructured_mesh;
+use crate::zero_based_padded_rows;
+use crate::zero_based_pair_rows;
+use crate::zero_based_triplet_rows;
+use crate::MpasMesh;
+use crate::UnstructuredMesh;
+use earthmesh_mesh::connect_on_cell_one_based;
+use earthmesh_mesh::edge_distance_angle_one_based;
+use earthmesh_mesh::get_area_production_one_based;
+use earthmesh_mesh::lonlat_points_to_unit_xyz;
+use earthmesh_mesh::order_vertices_on_cell_by_shared_edges_one_based;
+use earthmesh_mesh::order_vertices_on_cell_one_based;
+use earthmesh_mesh::set_weights_on_edge_one_based;
+use earthmesh_mesh::standardize_vertices_on_cell_rotation_one_based;
+use earthmesh_mesh::GetAreaUnitInput;
 use std::io;
 
-use super::legacy::{normalize_mpas_legacy_placeholder_inputs, trim_mpas_leading_placeholders};
-use crate::*;
+use super::placeholder_rows::{
+    normalize_mpas_placeholder_inputs, trim_mpas_inserted_placeholder_rows,
+};
 
 /// Build the in-memory payload produced by `MOD_mask_postproc.F90:MPAS_Mesh_Cal`
 /// before `MPAS_Mesh_Save` and `MPAS_info_Save` write side effects.
 ///
-/// The input mesh preserves EarthMesh/Fortran indexing. The returned payload
+/// The input mesh preserves EarthMesh/Canonical indexing. The returned payload
 /// keeps a placeholder row at index 0. Connectivity ids have that internal
 /// placeholder removed before `write_mpas_mesh_netcdf` writes rows, so `0` stays
 /// a missing/boundary marker and valid file ids start at `1`.
-pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
+pub fn build_mpas_mesh_from_unstructured_one_based(
     mesh: &UnstructuredMesh,
     cellwidth: &[f64],
     nxp: usize,
@@ -18,7 +44,7 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
 ) -> io::Result<MpasMesh> {
     let original_cell_rows = mesh.w_points.len();
     let original_vertex_rows = mesh.m_points.len();
-    let (mesh, cellwidth) = normalize_mpas_legacy_placeholder_inputs(mesh, cellwidth)?;
+    let (mesh, cellwidth) = normalize_mpas_placeholder_inputs(mesh, cellwidth)?;
     let mesh = &mesh;
     let extra_cell_rows = mesh.w_points.len().saturating_sub(original_cell_rows);
     let extra_vertex_rows = mesh.m_points.len().saturating_sub(original_vertex_rows);
@@ -50,8 +76,8 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         ));
     }
 
-    let cells_on_triangle = cells_on_triangle_fortran_indexed_from_mesh(mesh)?;
-    let vertices_on_cell = triangles_on_cell_fortran_indexed_from_mesh(mesh)?;
+    let cells_on_triangle = cells_on_triangle_one_based_from_mesh(mesh)?;
+    let vertices_on_cell = triangles_on_cell_one_based_from_mesh(mesh)?;
     let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
     let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
     let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
@@ -61,30 +87,26 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
     let cells = lonlat_points_to_unit_xyz(&cell_lonlat);
     let edge_points = lonlat_points_to_unit_xyz(&edge_output.edge_points);
 
-    let ordered_vertices_on_cell = order_vertices_on_cell_fortran_indexed(
-        &cells,
-        &vertices,
-        &vertices_on_cell,
-        &n_edges_on_cell,
-    )
-    .and_then(|ordered| {
-        standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, &n_edges_on_cell)
-    })
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "failed to order MPAS verticesOnCell from unstructured mesh",
-        )
-    })?;
+    let ordered_vertices_on_cell =
+        order_vertices_on_cell_one_based(&cells, &vertices, &vertices_on_cell, &n_edges_on_cell)
+            .and_then(|ordered| {
+                standardize_vertices_on_cell_rotation_one_based(&ordered, &n_edges_on_cell)
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "failed to order MPAS verticesOnCell from unstructured mesh",
+                )
+            })?;
     let mut ordered_vertices_on_cell = ordered_vertices_on_cell;
-    let mut cell_connectivity = connect_on_cell_fortran_indexed(
+    let mut cell_connectivity = connect_on_cell_one_based(
         &n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
         &ordered_vertices_on_cell,
     );
     if cell_connectivity.is_none() {
-        if let Some(topological_order) = order_vertices_on_cell_by_shared_edges_fortran_indexed(
+        if let Some(topological_order) = order_vertices_on_cell_by_shared_edges_one_based(
             &vertices_on_cell,
             &n_edges_on_cell,
             &edge_output.edges_on_vertex,
@@ -92,9 +114,9 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
             &cells,
         )
         .and_then(|ordered| {
-            standardize_vertices_on_cell_rotation_fortran_indexed(&ordered, &n_edges_on_cell)
+            standardize_vertices_on_cell_rotation_one_based(&ordered, &n_edges_on_cell)
         }) {
-            if let Some(topological_connectivity) = connect_on_cell_fortran_indexed(
+            if let Some(topological_connectivity) = connect_on_cell_one_based(
                 &n_edges_on_cell,
                 &edge_output.cells_on_edge,
                 &edge_output.edges_on_vertex,
@@ -112,7 +134,7 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         )
     })?;
 
-    let area = get_area_production_fortran_indexed(GetAreaUnitInput {
+    let area = get_area_production_one_based(GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cells,
@@ -143,7 +165,7 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         .iter()
         .map(|point| point.lat_degrees)
         .collect::<Vec<_>>();
-    let edge_metrics = edge_distance_angle_fortran_indexed(
+    let edge_metrics = edge_distance_angle_one_based(
         &vertices,
         &cells,
         &edge_points,
@@ -160,7 +182,7 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         )
     })?;
 
-    let weights = set_weights_on_edge_fortran_indexed(
+    let weights = set_weights_on_edge_one_based(
         &area.unit.area_cell,
         &edge_metrics.angle_edge,
         &edge_metrics.dc_edge,
@@ -250,7 +272,7 @@ pub fn build_mpas_mesh_from_unstructured_fortran_indexed(
         nominal_min_dc,
         error_segment: weights.error_segment,
     };
-    trim_mpas_leading_placeholders(&mut mpas, extra_cell_rows, extra_vertex_rows);
+    trim_mpas_inserted_placeholder_rows(&mut mpas, extra_cell_rows, extra_vertex_rows);
     validate_mpas_mesh(&mpas)?;
     Ok(mpas)
 }

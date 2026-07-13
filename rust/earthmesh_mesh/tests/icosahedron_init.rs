@@ -1,6 +1,14 @@
-use earthmesh_mesh::{icosahedron_initial_grid_fortran, CartesianPoint};
+use earthmesh_mesh::{icosahedron_initial_grid_canonical, CartesianPoint};
 
-const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
+const METHOD_C_CANONICAL_EARTH_RADIUS_METERS: f64 = earthmesh_core::EARTH_RADIUS_METERS;
+
+#[test]
+fn method_c_uses_shared_earth_radius() {
+    assert_eq!(
+        earthmesh_mesh::METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
+        earthmesh_core::EARTH_RADIUS_METERS
+    );
+}
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(
@@ -14,8 +22,8 @@ fn magnitude(point: CartesianPoint) -> f64 {
 }
 
 #[test]
-fn icosahedron_initial_grid_counts_and_pentagon_indices_match_fortran_nxp1() {
-    let grid = icosahedron_initial_grid_fortran(1).expect("valid nxp");
+fn icosahedron_initial_grid_counts_and_pentagon_indices_match_canonical_nxp1() {
+    let grid = icosahedron_initial_grid_canonical(1).expect("valid nxp");
 
     assert_eq!(grid.nmd, 13);
     assert_eq!(grid.nud, 31);
@@ -26,21 +34,21 @@ fn icosahedron_initial_grid_counts_and_pentagon_indices_match_fortran_nxp1() {
     approx_eq(grid.m_points[2].y, 0.0, 1.0e-9);
     approx_eq(
         grid.m_points[2].z,
-        -OLAM_FORTRAN_EARTH_RADIUS_METERS,
+        -METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
         1.0e-9,
     );
     approx_eq(grid.m_points[13].x, 0.0, 1.0e-9);
     approx_eq(grid.m_points[13].y, 0.0, 1.0e-9);
     approx_eq(
         grid.m_points[13].z,
-        OLAM_FORTRAN_EARTH_RADIUS_METERS,
+        METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
         1.0e-9,
     );
 }
 
 #[test]
 fn icosahedron_initial_grid_projects_all_active_points_to_earth_radius() {
-    let grid = icosahedron_initial_grid_fortran(2).expect("valid nxp");
+    let grid = icosahedron_initial_grid_canonical(2).expect("valid nxp");
 
     assert_eq!(grid.nmd, 43);
     assert_eq!(grid.nud, 121);
@@ -53,15 +61,15 @@ fn icosahedron_initial_grid_projects_all_active_points_to_earth_radius() {
     for point_id in 2..grid.m_points.len() {
         approx_eq(
             magnitude(grid.m_points[point_id]),
-            OLAM_FORTRAN_EARTH_RADIUS_METERS,
+            METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
             1.0,
         );
     }
 }
 
 #[test]
-fn icosahedron_fill_diamonds_matches_fortran_first_southern_diamond_nxp1() {
-    let connectivity = earthmesh_mesh::icosahedron_fill_diamonds_fortran(1)
+fn icosahedron_fill_diamonds_matches_canonical_first_southern_diamond_nxp1() {
+    let connectivity = earthmesh_mesh::icosahedron_fill_diamonds_canonical(1)
         .expect("valid nxp fill_diamond connectivity");
 
     assert_eq!(connectivity.u_edges.len(), 32);
@@ -96,11 +104,11 @@ fn icosahedron_fill_diamonds_matches_fortran_first_southern_diamond_nxp1() {
 #[test]
 fn icosahedron_loop_flags_match_mdloopf_sign_and_reset_rules() {
     let mut flags = [true; 7];
-    earthmesh_mesh::apply_icosahedron_loop_flags_fortran(&mut flags, true, &[1, 2, 3, 4, 5, 0])
+    earthmesh_mesh::apply_icosahedron_loop_flags_canonical(&mut flags, true, &[1, 2, 3, 4, 5, 0])
         .expect("valid initial loop flags");
     assert_eq!(flags, [true, true, true, true, true, false, false]);
 
-    earthmesh_mesh::apply_icosahedron_loop_flags_fortran(&mut flags, false, &[-2, 7, 0])
+    earthmesh_mesh::apply_icosahedron_loop_flags_canonical(&mut flags, false, &[-2, 7, 0])
         .expect("valid loop toggle flags");
     assert_eq!(flags, [true, false, true, true, true, false, true]);
 }
@@ -128,7 +136,7 @@ fn icosahedron_w_neighbor_derivation_matches_tri_neighbors_w_loops() {
     connectivity.u_edges[4].iw[0] = 2;
     connectivity.u_edges[4].iw[1] = 4;
 
-    earthmesh_mesh::derive_icosahedron_w_neighbors_fortran(&mut connectivity)
+    earthmesh_mesh::derive_icosahedron_w_neighbors_canonical(&mut connectivity)
         .expect("valid W-face neighbor derivation");
 
     assert_eq!(connectivity.w_faces[2].npoly, 3);
@@ -159,7 +167,7 @@ fn icosahedron_u_neighbor_derivation_matches_tri_neighbors_u_loop() {
     connectivity.w_faces[11].iu = [17, 18, 7];
     connectivity.w_faces[12].iu = [8, 19, 20];
 
-    earthmesh_mesh::derive_icosahedron_u_neighbors_fortran(&mut connectivity)
+    earthmesh_mesh::derive_icosahedron_u_neighbors_canonical(&mut connectivity)
         .expect("valid U-edge neighbor derivation");
 
     assert_eq!(connectivity.u_edges[2].mrlu, 9);
@@ -192,7 +200,7 @@ fn icosahedron_m_neighbor_derivation_matches_tri_neighbors_m_loop() {
     w_faces[9].npoly = 3;
 
     let m_neighbors =
-        earthmesh_mesh::derive_icosahedron_m_neighbors_fortran(40, &u_edges, &w_faces)
+        earthmesh_mesh::derive_icosahedron_m_neighbors_canonical(40, &u_edges, &w_faces)
             .expect("valid M-point polygon derivation");
 
     assert_eq!(m_neighbors[10].npoly, 3);
@@ -202,24 +210,25 @@ fn icosahedron_m_neighbor_derivation_matches_tri_neighbors_m_loop() {
 
 #[test]
 fn icosahedron_tri_neighbors_wrapper_matches_manual_w_u_m_sequence() {
-    let grid = earthmesh_mesh::icosahedron_initial_grid_fortran(1).expect("valid nxp grid");
-    let mut manual = earthmesh_mesh::icosahedron_fill_diamonds_fortran(1)
+    let grid = earthmesh_mesh::icosahedron_initial_grid_canonical(1).expect("valid nxp grid");
+    let mut manual = earthmesh_mesh::icosahedron_fill_diamonds_canonical(1)
         .expect("valid fill_diamond connectivity");
-    earthmesh_mesh::derive_icosahedron_w_neighbors_fortran(&mut manual)
+    earthmesh_mesh::derive_icosahedron_w_neighbors_canonical(&mut manual)
         .expect("valid manual W derivation");
-    earthmesh_mesh::derive_icosahedron_u_neighbors_fortran(&mut manual)
+    earthmesh_mesh::derive_icosahedron_u_neighbors_canonical(&mut manual)
         .expect("valid manual U derivation");
-    let expected_m = earthmesh_mesh::derive_icosahedron_m_neighbors_fortran(
+    let expected_m = earthmesh_mesh::derive_icosahedron_m_neighbors_canonical(
         grid.nmd,
         &manual.u_edges,
         &manual.w_faces,
     )
     .expect("valid manual M derivation");
 
-    let mut wrapped = earthmesh_mesh::icosahedron_fill_diamonds_fortran(1)
+    let mut wrapped = earthmesh_mesh::icosahedron_fill_diamonds_canonical(1)
         .expect("valid fill_diamond connectivity");
-    let actual_m = earthmesh_mesh::derive_icosahedron_tri_neighbors_fortran(grid.nmd, &mut wrapped)
-        .expect("valid integrated tri_neighbors derivation");
+    let actual_m =
+        earthmesh_mesh::derive_icosahedron_tri_neighbors_canonical(grid.nmd, &mut wrapped)
+            .expect("valid integrated tri_neighbors derivation");
 
     assert_eq!(wrapped, manual);
     assert_eq!(actual_m, expected_m);
@@ -240,7 +249,7 @@ fn icosahedron_spring_topology_matches_spring_dynamics1_setup_tables() {
     m_neighbors[10].iu[0..2].copy_from_slice(&[2, 3]);
 
     let topology =
-        earthmesh_mesh::icosahedron_spring_topology_fortran(20, &u_edges, &m_neighbors, 0.25)
+        earthmesh_mesh::icosahedron_spring_topology_canonical(20, &u_edges, &m_neighbors, 0.25)
             .expect("valid spring topology setup");
 
     assert_eq!(topology.edge_m_points[2], [10, 20]);
@@ -284,8 +293,9 @@ fn icosahedron_spring_iteration_matches_spring_dynamics1_edge_update() {
         CartesianPoint::new(-1.0, 0.0, 0.0),
     ];
 
-    let output = earthmesh_mesh::icosahedron_spring_iteration_fortran(&points, &topology, 2.0, 1.0)
-        .expect("valid spring_dynamics1 iteration");
+    let output =
+        earthmesh_mesh::icosahedron_spring_iteration_canonical(&points, &topology, 2.0, 1.0)
+            .expect("valid spring_dynamics1 iteration");
 
     let current_distance = 2.0_f64.sqrt();
     let frac_change = (2.0 - current_distance) / current_distance;
@@ -332,9 +342,10 @@ fn icosahedron_spring_dynamics_repeats_iterations_and_records_max_ds() {
         CartesianPoint::new(-1.0, 0.0, 0.0),
     ];
 
-    let first = earthmesh_mesh::icosahedron_spring_iteration_fortran(&points, &topology, 2.0, 1.0)
-        .expect("first iteration");
-    let second = earthmesh_mesh::icosahedron_spring_iteration_fortran(
+    let first =
+        earthmesh_mesh::icosahedron_spring_iteration_canonical(&points, &topology, 2.0, 1.0)
+            .expect("first iteration");
+    let second = earthmesh_mesh::icosahedron_spring_iteration_canonical(
         &first.updated_m_points,
         &topology,
         2.0,
@@ -343,7 +354,7 @@ fn icosahedron_spring_dynamics_repeats_iterations_and_records_max_ds() {
     .expect("second iteration");
 
     let output =
-        earthmesh_mesh::icosahedron_spring_dynamics1_fortran(&points, &topology, 2, 2.0, 1.0, 1)
+        earthmesh_mesh::icosahedron_spring_dynamics1_canonical(&points, &topology, 2, 2.0, 1.0, 1)
             .expect("valid spring_dynamics1 wrapper");
 
     assert_eq!(output.updated_m_points, second.updated_m_points);
@@ -357,9 +368,10 @@ fn icosahedron_spring_dynamics_repeats_iterations_and_records_max_ds() {
 
 #[test]
 fn icosahedron_relaxed_grid_wrapper_wires_initial_connectivity_and_spring() {
-    let initial = earthmesh_mesh::icosahedron_initial_grid_fortran(1).expect("valid initial grid");
+    let initial =
+        earthmesh_mesh::icosahedron_initial_grid_canonical(1).expect("valid initial grid");
 
-    let relaxed = earthmesh_mesh::icosahedron_relaxed_grid_fortran(1, 0, 1.0, 0.25, 100)
+    let relaxed = earthmesh_mesh::icosahedron_relaxed_grid_canonical(1, 0, 1.0, 0.25, 100)
         .expect("valid integrated icosahedron grid");
 
     assert_eq!(relaxed.nmd, initial.nmd);
@@ -375,8 +387,8 @@ fn icosahedron_relaxed_grid_wrapper_wires_initial_connectivity_and_spring() {
 
 #[test]
 #[ignore = "NXP64 post-spring parity is a long fixture check; run explicitly after icosahedron changes"]
-fn icosahedron_relaxed_grid_matches_fortran_nxp64_glonw_glatw_fixture() {
-    let relaxed = earthmesh_mesh::icosahedron_relaxed_grid_fortran(64, 5000, 1.0, 0.035, 100)
+fn icosahedron_relaxed_grid_matches_canonical_nxp64_glonw_glatw_fixture() {
+    let relaxed = earthmesh_mesh::icosahedron_relaxed_grid_canonical(64, 5000, 1.0, 0.035, 100)
         .expect("valid NXP64 relaxed icosahedron grid");
 
     assert_eq!(relaxed.nmd, 40963);

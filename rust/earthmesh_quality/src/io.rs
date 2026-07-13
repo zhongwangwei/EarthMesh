@@ -59,7 +59,7 @@ fn refine_level_json(level: Option<u32>) -> String {
 
 fn refine_group_json(g: &RefineLevelQualitySummary) -> String {
     format!(
-        "{{\"refine_level\":{},\"cell_count\":{},\"cell_area\":{},\"cell_edge_length_cv\":{},\"angle_deviation_deg\":{},\"triangle_eta\":{},\"triangle_nsr\":{}}}",
+        "{{\"refine_level\":{},\"cell_count\":{},\"cell_area\":{},\"cell_edge_length_cv\":{},\"angle_deviation_deg\":{},\"triangle_eta_local\":{},\"triangle_nsr_local\":{}}}",
         refine_level_json(g.refine_level),
         g.cell_count,
         stat_json(&g.cell_area),
@@ -75,6 +75,11 @@ fn opt_f64_json(v: Option<f64>) -> String {
 }
 
 fn opt_u32_json(v: Option<u32>) -> String {
+    v.map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn opt_isize_json(v: Option<isize>) -> String {
     v.map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_string())
 }
@@ -144,6 +149,14 @@ fn opt_u32_label(v: Option<u32>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
+fn fixed_or_na(value: f64, precision: usize) -> String {
+    if value.is_finite() {
+        format!("{value:.precision$}")
+    } else {
+        "n/a".to_string()
+    }
+}
+
 /// `quality_summary.json` content.
 pub fn to_summary_json(r: &MeshQualityReport) -> String {
     let g: &GeometryMetrics = &r.geometry;
@@ -191,11 +204,11 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         stat_json(&g.angle_deviation_deg)
     ));
     s.push_str(&format!(
-        "    \"triangle_eta\": {},\n",
+        "    \"triangle_eta_local\": {},\n",
         stat_json(&g.triangle_eta)
     ));
     s.push_str(&format!(
-        "    \"triangle_nsr\": {},\n",
+        "    \"triangle_nsr_local\": {},\n",
         stat_json(&g.triangle_nsr)
     ));
     s.push_str(&format!(
@@ -205,6 +218,14 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "    \"compactness\": {},\n",
         stat_json(&g.compactness)
+    ));
+    s.push_str(&format!(
+        "    \"local_shape_metric_sample_count\": {},\n",
+        g.local_shape_metric_sample_count
+    ));
+    s.push_str(&format!(
+        "    \"local_shape_metric_excluded_cell_count\": {},\n",
+        g.local_shape_metric_excluded_cell_count
     ));
     s.push_str(&format!(
         "    \"zero_area_cell_count\": {},\n",
@@ -228,6 +249,26 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     ));
     s.push_str("  },\n");
     s.push_str("  \"topology\": {\n");
+    s.push_str(&format!(
+        "    \"euler_characteristic\": {},\n",
+        t.euler_characteristic
+    ));
+    s.push_str(&format!(
+        "    \"expected_euler_characteristic\": {},\n",
+        opt_isize_json(t.expected_euler_characteristic)
+    ));
+    s.push_str(&format!(
+        "    \"euler_characteristic_mismatch_count\": {},\n",
+        t.euler_characteristic_mismatch_count
+    ));
+    s.push_str(&format!(
+        "    \"connected_component_count\": {},\n",
+        t.connected_component_count
+    ));
+    s.push_str(&format!(
+        "    \"non_manifold_vertex_fan_count\": {},\n",
+        t.non_manifold_vertex_fan_count
+    ));
     s.push_str(&format!(
         "    \"invalid_vertex_index_count\": {},\n",
         t.invalid_vertex_index_count
@@ -389,10 +430,20 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             "angle_deviation_deg_max",
             g.angle_deviation_deg.max,
         ),
-        ("geometry", "triangle_eta_min", g.triangle_eta.min),
-        ("geometry", "triangle_nsr_min", g.triangle_nsr.min),
+        ("geometry", "triangle_eta_local_min", g.triangle_eta.min),
+        ("geometry", "triangle_nsr_local_min", g.triangle_nsr.min),
         ("geometry", "aspect_ratio_max", g.aspect_ratio.max),
         ("geometry", "compactness_min", g.compactness.min),
+        (
+            "geometry",
+            "local_shape_metric_sample_count",
+            g.local_shape_metric_sample_count as f64,
+        ),
+        (
+            "geometry",
+            "local_shape_metric_excluded_cell_count",
+            g.local_shape_metric_excluded_cell_count as f64,
+        ),
         (
             "geometry",
             "zero_area_cell_count",
@@ -407,6 +458,26 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             "geometry",
             "invalid_polygon_count",
             g.invalid_polygon_count as f64,
+        ),
+        (
+            "topology",
+            "euler_characteristic",
+            t.euler_characteristic as f64,
+        ),
+        (
+            "topology",
+            "euler_characteristic_mismatch_count",
+            t.euler_characteristic_mismatch_count as f64,
+        ),
+        (
+            "topology",
+            "connected_component_count",
+            t.connected_component_count as f64,
+        ),
+        (
+            "topology",
+            "non_manifold_vertex_fan_count",
+            t.non_manifold_vertex_fan_count as f64,
         ),
         (
             "topology",
@@ -518,8 +589,8 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             ("cell_area_cv", group.cell_area.cv),
             ("cell_edge_length_cv_max", group.cell_edge_length_cv.max),
             ("angle_deviation_deg_max", group.angle_deviation_deg.max),
-            ("triangle_eta_min", group.triangle_eta.min),
-            ("triangle_nsr_min", group.triangle_nsr.min),
+            ("triangle_eta_local_min", group.triangle_eta.min),
+            ("triangle_nsr_local_min", group.triangle_nsr.min),
         ] {
             s.push_str(&format!("refine_level,{level}:{metric},{},\n", num(value)));
         }
@@ -636,6 +707,77 @@ pub fn to_worst_cells_geojson(r: &MeshQualityReport) -> String {
     s
 }
 
+/// Repairable quality defects as target-cell polygons for the existing
+/// HField/Method-C per-cell refinement adapter. Structurally invalid cells are
+/// deliberately excluded: subdividing an invalid polygon cannot repair it.
+pub fn to_quality_repair_cells_geojson(r: &MeshQualityReport) -> String {
+    let repairable = &r.repair_cells;
+    let mut s = String::from(
+        "{\n  \"type\": \"FeatureCollection\",\n  \"kind\": \"earthmesh_quality_repair_cells\",\n  \"features\": [\n",
+    );
+    for (index, worst) in repairable.iter().enumerate() {
+        let mut ring = worst.ring.clone();
+        if let Some(first) = ring.first().copied() {
+            ring.push(first);
+        }
+        let coordinates = ring
+            .iter()
+            .map(|point| format!("[{},{}]", num(point.x), num(point.y)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let comma = if index + 1 < repairable.len() {
+            ","
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": [[{coordinates}]]}}, \"properties\": {{\"cell_id\": \"{}\", \"cell_index\": {}, \"center_lon\": {}, \"center_lat\": {}, \"metric\": \"{}\"}}}}{comma}\n",
+            worst.cell_index,
+            worst.cell_index,
+            num(worst.centroid.x),
+            num(worst.centroid.y),
+            esc(&worst.metric),
+        ));
+    }
+    s.push_str("  ]\n}\n");
+    s
+}
+
+/// One additional refinement level for every repairable worst cell. The output
+/// uses absolute zero-based target levels and is accepted by the existing
+/// target-cell HField adapter.
+pub fn to_quality_repair_plan_json(r: &MeshQualityReport) -> String {
+    to_quality_repair_plan_json_capped(r, 5)
+}
+
+/// Project-aware repair plan capped to the refinement level supported by the
+/// source mesh resolution.
+pub fn to_quality_repair_plan_json_capped(r: &MeshQualityReport, max_level: u8) -> String {
+    let repairable = &r.repair_cells;
+    let mut s = format!(
+        "{{\n  \"kind\": \"earthmesh_refinement_plan\",\n  \"total_cells\": {},\n  \"cells\": [\n",
+        repairable.len()
+    );
+    for (index, worst) in repairable.iter().enumerate() {
+        let target_level = worst
+            .refine_level
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(u32::from(max_level.min(5)));
+        let comma = if index + 1 < repairable.len() {
+            ","
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "    {{\"cell\": {index}, \"cell_id\": \"{}\", \"target_level\": {target_level}}}{comma}\n",
+            worst.cell_index,
+        ));
+    }
+    s.push_str("  ]\n}\n");
+    s
+}
+
 /// `quality_report.md` content (human-readable).
 pub fn to_report_md(r: &MeshQualityReport) -> String {
     let g = &r.geometry;
@@ -656,7 +798,7 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         g.cell_count, g.vertex_count, g.edge_count
     ));
     s.push_str(&format!(
-        "- cell area (planar deg²): mean {:.4e}, CV {:.3}, max/min {:.2}\n",
+        "- cell area (spherical km²): mean {:.4e}, CV {:.3}, max/min {:.2}\n",
         g.cell_area.mean, g.cell_area.cv, g.cell_area_ratio
     ));
     s.push_str(&format!(
@@ -664,16 +806,20 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         g.edge_length_km.min, g.edge_length_km.mean, g.cell_edge_length_cv.max
     ));
     s.push_str(&format!(
-        "- min angle: {:.2}° · max angle: {:.2}° · max angle deviation: {:.2}° · max aspect: {:.2} · min compactness: {:.3}\n",
-        g.min_angle_deg,
-        g.max_angle_deg,
-        g.angle_deviation_deg.max,
-        g.aspect_ratio.max,
-        g.compactness.min
+        "- min angle: {}° · max angle: {}° · max angle deviation: {}° · max aspect: {} · min compactness: {}\n",
+        fixed_or_na(g.min_angle_deg, 2),
+        fixed_or_na(g.max_angle_deg, 2),
+        fixed_or_na(g.angle_deviation_deg.max, 2),
+        fixed_or_na(g.aspect_ratio.max, 2),
+        fixed_or_na(g.compactness.min, 3)
+    ));
+    s.push_str(&format!(
+        "- local shape metric samples: {} · excluded coarse cells: {}\n",
+        g.local_shape_metric_sample_count, g.local_shape_metric_excluded_cell_count
     ));
     if g.triangle_eta.max > 0.0 || g.triangle_nsr.max > 0.0 {
         s.push_str(&format!(
-            "- triangle quality: eta min {:.3} · NSR min {:.3}\n",
+            "- local triangle quality: eta min {:.3} · NSR min {:.3}\n",
             g.triangle_eta.min, g.triangle_nsr.min
         ));
     }
@@ -697,6 +843,15 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         t.neighbor_degree_mismatch_count,
         t.misoriented_shared_edge_count,
         t.abnormal_polygon_edge_count
+    ));
+    s.push_str(&format!(
+        "- Euler characteristic: {} · expected: {} · connected components: {} · non-manifold vertex fans: {}\n",
+        t.euler_characteristic,
+        t.expected_euler_characteristic
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".into()),
+        t.connected_component_count,
+        t.non_manifold_vertex_fan_count
     ));
     s.push_str(&format!(
         "- cell sides: triangles {} · quads {} · pentagons {} · hexagons {} · heptagons {} · other {}\n",
@@ -725,19 +880,19 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
     }
     if !r.refine_level_groups.is_empty() {
         s.push_str(
-            "\n## Refine-level groups\n\n| Level | Cells | Area CV | Edge CV max | Angle dev max | Tri eta min | Tri NSR min |\n",
+            "\n## Refine-level groups\n\n| Level | Cells | Area CV | Edge CV max | Angle dev max | Tri eta local min | Tri NSR local min |\n",
         );
         s.push_str("|-------|-------|---------|-------------|---------------|-------------|-------------|\n");
         for group in &r.refine_level_groups {
             s.push_str(&format!(
-                "| {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
                 refine_level_label(group.refine_level),
                 group.cell_count,
-                group.cell_area.cv,
-                group.cell_edge_length_cv.max,
-                group.angle_deviation_deg.max,
-                group.triangle_eta.min,
-                group.triangle_nsr.min
+                fixed_or_na(group.cell_area.cv, 3),
+                fixed_or_na(group.cell_edge_length_cv.max, 3),
+                fixed_or_na(group.angle_deviation_deg.max, 3),
+                fixed_or_na(group.triangle_eta.min, 3),
+                fixed_or_na(group.triangle_nsr.min, 3)
             ));
         }
     }
@@ -810,8 +965,8 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
     s
 }
 
-/// Write all four artifacts into `dir`: quality_summary.json/.csv,
-/// worst_cells.geojson, quality_report.md.
+/// Write quality reports plus the bounded local-refinement overlay consumed by
+/// the existing target-cell HField adapter.
 pub fn write_all(
     r: &MeshQualityReport,
     dir: impl AsRef<Path>,
@@ -822,6 +977,11 @@ pub fn write_all(
         ("quality_summary.json", to_summary_json(r)),
         ("quality_summary.csv", to_summary_csv(r)),
         ("worst_cells.geojson", to_worst_cells_geojson(r)),
+        (
+            "quality_repair_cells.geojson",
+            to_quality_repair_cells_geojson(r),
+        ),
+        ("quality_repair_plan.json", to_quality_repair_plan_json(r)),
         ("quality_report.md", to_report_md(r)),
     ];
     let mut written = Vec::new();

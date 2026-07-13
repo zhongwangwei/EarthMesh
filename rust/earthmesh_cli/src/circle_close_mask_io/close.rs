@@ -9,6 +9,11 @@ pub fn read_close_refine_netcdf(inputfile: impl AsRef<Path>) -> io::Result<usize
     read_nonnegative_refine_netcdf(inputfile, "close_refine")
 }
 
+pub(crate) fn close_mask_netcdf_has_refine(inputfile: impl AsRef<Path>) -> io::Result<bool> {
+    let file = crate::open_netcdf(inputfile.as_ref()).map_err(netcdf_to_io_error)?;
+    Ok(file.variable("close_refine").is_some())
+}
+
 pub fn read_close_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<CloseMask> {
     let inputfile = inputfile.as_ref();
     let file = crate::open_netcdf(inputfile).map_err(netcdf_to_io_error)?;

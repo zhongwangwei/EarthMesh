@@ -1,19 +1,18 @@
-//! Score-based / physics-aware refinement planning **skeleton** for EarthMesh v3.
+//! Experimental score-based / physics-aware refinement planner for EarthMesh v3.
 //!
-//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** No `earthmesh_cli`
-//! code path constructs a `CellFeatureTable` or calls [`plan`] yet —
-//! this crate is exercised only by its own unit tests and does not affect any mesh the
-//! product produces today. Wiring (feature extraction + lowering to the engine) is
-//! future work; see `docs/reviews/v3_mesh_audit/fix_reports/R8_score_refinement.md`.
+//! **INTEGRATION STATUS: EXPERIMENTAL / PARTIALLY WIRED.** The hydro-delivery CLI
+//! can produce a score plan, but the main mesh-generation/refinement pipeline does
+//! not consume that plan yet. General feature extraction and engine lowering remain
+//! future work.
 //!
 //! This does NOT replace the existing refinement workflow — it is an additive layer
 //! that turns per-cell features into a `target_level` map via pluggable
 //! [`RefinementCriterion`]s, a weighted composite score, a cell budget, and quality
 //! constraints, then emits a decision report. The transition / isolation / max-jump
-//! guarantees reuse `earthmesh_quality::topology` repair hooks (R5). No optimizer, no
+//! guarantees reuse `earthmesh_quality::topology` repair hooks. No optimizer, no
 //! large external data dependency: criteria read pre-extracted feature columns.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use earthmesh_geometry::{haversine_km, Point};
 use earthmesh_quality::topology::{
@@ -55,7 +54,21 @@ impl RegionSpec {
                 east,
                 south,
                 north,
-            } => p.x >= *west && p.x <= *east && p.y >= *south && p.y <= *north,
+            } => {
+                let full_longitude = (*east - *west).abs() >= 360.0;
+                let normalize_lon = |lon: f64| (lon + 180.0).rem_euclid(360.0) - 180.0;
+                let lon = normalize_lon(p.x);
+                let west = normalize_lon(*west);
+                let east = normalize_lon(*east);
+                let inside_lon = if full_longitude {
+                    true
+                } else if west <= east {
+                    lon >= west && lon <= east
+                } else {
+                    lon >= west || lon <= east
+                };
+                inside_lon && p.y >= *south && p.y <= *north
+            }
             RegionSpec::Circle {
                 lon,
                 lat,
@@ -69,6 +82,9 @@ impl RegionSpec {
 #[derive(Clone, Debug, Default)]
 pub struct CellFeatureTable {
     pub cell_count: usize,
+    /// Stable mesh-cell identities. These survive filtering/reordering and are
+    /// the join key for refinement plans; vector position is never identity.
+    pub cell_ids: Vec<String>,
     pub centroids: Vec<Point>,
     /// Named per-cell feature columns (e.g. "landcover_entropy", "distance_to_river_km").
     pub columns: BTreeMap<String, Vec<f64>>,
@@ -82,6 +98,51 @@ impl CellFeatureTable {
     pub fn column(&self, key: &str) -> Option<&[f64]> {
         self.columns.get(key).map(|v| v.as_slice())
     }
+}
+
+/// Copy-align one per-cell field to a target mesh order using stable cell IDs.
+/// Both sides must describe the same identity set; interpolation and
+/// recomputation belong in their own stage-specific operations.
+pub fn align_cell_values_by_id<T: Clone>(
+    source_ids: &[String],
+    source_values: &[T],
+    target_ids: &[String],
+) -> Result<Vec<T>, String> {
+    if source_ids.len() != source_values.len() {
+        return Err(format!(
+            "cell field has {} identities but {} values",
+            source_ids.len(),
+            source_values.len()
+        ));
+    }
+    let target_set = target_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if target_set.len() != target_ids.len() {
+        return Err("target mesh contains duplicate cell_id".into());
+    }
+    let mut by_id = BTreeMap::<&str, &T>::new();
+    for (cell_id, value) in source_ids.iter().zip(source_values) {
+        if cell_id.trim().is_empty() {
+            return Err("cell field contains an empty cell_id".into());
+        }
+        if !target_set.contains(cell_id.as_str()) {
+            return Err(format!("cell field references unknown cell_id {cell_id}"));
+        }
+        if by_id.insert(cell_id, value).is_some() {
+            return Err(format!("cell field contains duplicate cell_id {cell_id}"));
+        }
+    }
+    target_ids
+        .iter()
+        .map(|cell_id| {
+            by_id
+                .get(cell_id.as_str())
+                .map(|value| (*value).clone())
+                .ok_or_else(|| format!("cell field is missing target cell_id {cell_id}"))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +174,9 @@ pub struct CellScore {
 pub trait RefinementCriterion: Send + Sync {
     fn metadata(&self) -> CriterionMetadata;
     fn score(&self, ctx: &CriterionContext, cell: usize) -> CellScore;
+    fn required_column(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,10 +217,13 @@ impl Default for RefinementBudget {
     }
 }
 
-/// Quality constraints the plan must respect (representable; enforced where possible).
+/// Planner eligibility and transition controls. Final mesh quality must be
+/// measured after the plan is applied by an engine.
 #[derive(Clone, Copy, Debug)]
 pub struct QualityConstraint {
-    pub min_angle_deg: f64,
+    /// Eligibility floor applied to measured input/candidate-mesh values from
+    /// `cell_min_angle_deg`. This does not predict post-refinement geometry.
+    pub min_input_angle_for_refinement_deg: Option<f64>,
     pub min_cell_area_m2: f64,
     pub max_adjacent_resolution_ratio: f64,
     pub no_isolated_refined: bool,
@@ -166,7 +233,7 @@ pub struct QualityConstraint {
 impl Default for QualityConstraint {
     fn default() -> Self {
         Self {
-            min_angle_deg: 20.0,
+            min_input_angle_for_refinement_deg: None,
             min_cell_area_m2: 0.0,
             max_adjacent_resolution_ratio: 2.0,
             no_isolated_refined: true,
@@ -230,12 +297,7 @@ impl RefinementCriterion for SpecifiedRegionCriterion {
         }
     }
     fn score(&self, ctx: &CriterionContext, cell: usize) -> CellScore {
-        let p = ctx
-            .features
-            .centroids
-            .get(cell)
-            .copied()
-            .unwrap_or(Point::new(0.0, 0.0));
+        let p = ctx.features.centroids[cell];
         let inside = ctx.features.regions.iter().any(|r| r.contains(p));
         CellScore {
             raw: inside as i32 as f64,
@@ -271,22 +333,18 @@ impl RefinementCriterion for ColumnCriterion {
         }
     }
     fn score(&self, ctx: &CriterionContext, cell: usize) -> CellScore {
-        let raw = ctx
-            .features
-            .column(&self.column)
-            .and_then(|c| c.get(cell).copied())
-            .unwrap_or(0.0);
+        let raw = ctx.features.columns[&self.column][cell];
         let demand = raw.clamp(0.0, 1.0);
         CellScore {
             raw,
             demand,
-            confidence: if ctx.features.column(&self.column).is_some() {
-                1.0
-            } else {
-                0.0
-            },
+            confidence: 1.0,
             reason: format!("{}={:.3}", self.column, raw),
         }
+    }
+
+    fn required_column(&self) -> Option<&str> {
+        Some(&self.column)
     }
 }
 
@@ -312,22 +370,22 @@ impl RefinementCriterion for DistanceCriterion {
         }
     }
     fn score(&self, ctx: &CriterionContext, cell: usize) -> CellScore {
-        let d = ctx
-            .features
-            .column(&self.column)
-            .and_then(|c| c.get(cell).copied());
-        let (demand, raw) = match d {
-            Some(dist) if self.length_km > 0.0 => {
-                ((-dist / self.length_km).exp().clamp(0.0, 1.0), dist)
-            }
-            _ => (0.0, f64::NAN),
+        let d = ctx.features.columns[&self.column][cell];
+        let (demand, raw) = if self.length_km > 0.0 {
+            ((-d / self.length_km).exp().clamp(0.0, 1.0), d)
+        } else {
+            (0.0, f64::NAN)
         };
         CellScore {
             raw,
             demand,
-            confidence: if d.is_some() { 1.0 } else { 0.0 },
+            confidence: 1.0,
             reason: format!("{}={:.2}km", self.column, raw),
         }
+    }
+
+    fn required_column(&self) -> Option<&str> {
+        Some(&self.column)
     }
 }
 
@@ -392,11 +450,143 @@ pub fn plan(
     budget: &RefinementBudget,
     quality: &QualityConstraint,
     domain: MeshDomain,
-) -> RefinementReport {
+) -> Result<RefinementReport, String> {
     let n = features.cell_count;
+    if features.cell_ids.len() != n {
+        return Err(format!(
+            "feature cell_ids length {} must equal cell_count {n}",
+            features.cell_ids.len()
+        ));
+    }
+    let mut unique_ids = BTreeSet::new();
+    for (cell, id) in features.cell_ids.iter().enumerate() {
+        if id.trim().is_empty() {
+            return Err(format!("feature cell_id at row {cell} must not be empty"));
+        }
+        if !unique_ids.insert(id) {
+            return Err(format!("feature cell_id '{id}' is duplicated"));
+        }
+    }
+    if features.centroids.len() != n {
+        return Err(format!(
+            "feature centroids length {} must equal cell_count {n}",
+            features.centroids.len()
+        ));
+    }
+    if features
+        .centroids
+        .iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Err("feature centroids must contain only finite coordinates".into());
+    }
+    if features.neighbors.len() != n {
+        return Err(format!(
+            "feature neighbors length {} must equal cell_count {n}",
+            features.neighbors.len()
+        ));
+    }
+    for (cell, neighbors) in features.neighbors.iter().enumerate() {
+        for &neighbor in neighbors {
+            if neighbor >= n {
+                return Err(format!(
+                    "cell {cell} has neighbor index {neighbor} outside cell_count {n}"
+                ));
+            }
+            if neighbor == cell {
+                return Err(format!("cell {cell} must not list itself as a neighbor"));
+            }
+        }
+    }
+    if let Some(min_angle_deg) = quality.min_input_angle_for_refinement_deg {
+        if !min_angle_deg.is_finite() || min_angle_deg <= 0.0 || min_angle_deg >= 180.0 {
+            return Err(
+                "quality min_input_angle_for_refinement_deg must be finite and between 0 and 180"
+                    .into(),
+            );
+        }
+        let angles = features.columns.get("cell_min_angle_deg").ok_or_else(|| {
+            "quality min_input_angle_for_refinement_deg requires missing measured feature column 'cell_min_angle_deg'".to_string()
+        })?;
+        if angles.len() != n {
+            return Err(format!(
+                "quality min_input_angle_for_refinement_deg requires exactly {n} measured values in feature column 'cell_min_angle_deg', found {}",
+                angles.len()
+            ));
+        }
+        if angles
+            .iter()
+            .any(|angle| !angle.is_finite() || *angle <= 0.0 || *angle > 180.0)
+        {
+            return Err(
+                "quality min_input_angle_for_refinement_deg requires finite measured 'cell_min_angle_deg' values in (0, 180]"
+                    .into(),
+            );
+        }
+    }
+    if !quality.min_cell_area_m2.is_finite() || quality.min_cell_area_m2 < 0.0 {
+        return Err("quality min_cell_area_m2 must be finite and non-negative".into());
+    }
+    if !quality.max_adjacent_resolution_ratio.is_finite()
+        || quality.max_adjacent_resolution_ratio < 1.0
+    {
+        return Err("quality max_adjacent_resolution_ratio must be finite and at least 1".into());
+    }
+    if quality.min_cell_area_m2 > 0.0 {
+        let areas = features.columns.get("cell_area_m2").ok_or_else(|| {
+            "quality min_cell_area_m2 requires missing feature column 'cell_area_m2'".to_string()
+        })?;
+        if areas.len() != n {
+            return Err(format!(
+                "quality min_cell_area_m2 requires exactly {n} values in feature column 'cell_area_m2', found {}",
+                areas.len()
+            ));
+        }
+        if areas.iter().any(|area| !area.is_finite() || *area <= 0.0) {
+            return Err(
+                "quality min_cell_area_m2 requires finite positive 'cell_area_m2' values".into(),
+            );
+        }
+    }
     let ctx = CriterionContext { features, domain };
     let weight_of = |id: &str| cfg.weights.iter().find(|(c, _)| c == id).map(|(_, w)| *w);
     let total_weight: f64 = cfg.weights.iter().map(|(_, w)| *w).sum::<f64>().max(1e-12);
+
+    for criterion in criteria {
+        let metadata = criterion.metadata();
+        if weight_of(&metadata.id).is_none_or(|weight| weight <= 0.0) {
+            continue;
+        }
+        if !metadata.applicable_domains.contains(&MeshDomain::Any)
+            && !metadata.applicable_domains.contains(&domain)
+        {
+            return Err(format!(
+                "criterion '{}' is not applicable to domain {domain:?}",
+                metadata.id
+            ));
+        }
+        if let Some(column) = criterion.required_column() {
+            let values = features.columns.get(column).ok_or_else(|| {
+                format!(
+                    "criterion '{}' requires missing feature column '{column}'",
+                    metadata.id
+                )
+            })?;
+            if values.len() != n {
+                return Err(format!(
+                    "criterion '{}' requires exactly {n} values in feature column '{column}', found {}",
+                    metadata.id,
+                    values.len()
+                ));
+            }
+            if values.iter().any(|value| !value.is_finite()) {
+                return Err(format!(
+                    "criterion '{}' requires finite values in feature column '{column}'",
+                    metadata.id
+                ));
+            }
+        }
+    }
 
     let mut decisions: Vec<RefinementDecision> = Vec::with_capacity(n);
     for cell in 0..n {
@@ -468,22 +658,33 @@ pub fn plan(
 
     // 2. quality floor: refining below min cell area is rejected (4^level area heuristic).
     if quality.min_cell_area_m2 > 0.0 {
-        if let Some(area) = features.column("cell_area_m2") {
-            for d in decisions.iter_mut() {
-                if d.final_level == 0 {
-                    continue;
+        let area = &features.columns["cell_area_m2"];
+        for d in decisions.iter_mut() {
+            if d.final_level == 0 {
+                continue;
+            }
+            let cell_area = area[d.cell];
+            let mut lvl = d.final_level;
+            while lvl > 0 && cell_area / 4f64.powi(lvl as i32) < quality.min_cell_area_m2 {
+                lvl -= 1;
+            }
+            if lvl < d.final_level {
+                d.final_level = lvl;
+                if d.rejection_reason.is_none() {
+                    d.rejection_reason = Some("min_cell_area".into());
                 }
-                let cell_area = area.get(d.cell).copied().unwrap_or(f64::INFINITY);
-                let mut lvl = d.final_level;
-                while lvl > 0 && cell_area / 4f64.powi(lvl as i32) < quality.min_cell_area_m2 {
-                    lvl -= 1;
-                }
-                if lvl < d.final_level {
-                    d.final_level = lvl;
-                    if d.rejection_reason.is_none() {
-                        d.rejection_reason = Some("min_cell_area".into());
-                    }
-                }
+            }
+        }
+    }
+
+    // The angle column describes the input/candidate mesh only. It is an
+    // eligibility filter for refinement, not a claim about future child angles.
+    if let Some(min_angle_deg) = quality.min_input_angle_for_refinement_deg {
+        let angles = &features.columns["cell_min_angle_deg"];
+        for decision in &mut decisions {
+            if decision.final_level > 0 && angles[decision.cell] < min_angle_deg {
+                decision.final_level = 0;
+                decision.rejection_reason = Some("input_min_angle_for_refinement".into());
             }
         }
     }
@@ -493,10 +694,11 @@ pub fn plan(
     if quality.smooth_transition {
         smooth_target_levels(&mut levels, &features.neighbors);
     }
+    let ratio_jump = quality.max_adjacent_resolution_ratio.log2().floor() as u32;
     enforce_max_adjacent_level_jump(
         &mut levels,
         &features.neighbors,
-        budget.max_adjacent_level_jump,
+        budget.max_adjacent_level_jump.min(ratio_jump),
     );
     if quality.no_isolated_refined {
         remove_isolated_refined_cells(&mut levels, &features.neighbors);
@@ -514,13 +716,31 @@ pub fn plan(
         }
     }
 
+    // Keep the budget as a postcondition even if future transition hooks add
+    // bridge cells. Current hooks only lower levels, so this is intentionally a
+    // cheap invariant guard rather than a new allocation algorithm.
+    if let Some(max_refined) = budget.max_refined_cells {
+        let mut refined: Vec<usize> = (0..n).filter(|&c| decisions[c].final_level > 0).collect();
+        refined.sort_by(|&a, &b| {
+            decisions[b]
+                .composite_score
+                .partial_cmp(&decisions[a].composite_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for &cell in refined.iter().skip(max_refined) {
+            decisions[cell].final_level = 0;
+            decisions[cell].rejection_reason = Some("budget".into());
+            budget_hit = true;
+        }
+    }
+
     let cells_refined_after = decisions.iter().filter(|d| d.final_level > 0).count();
     let target_levels = TargetLevelMap {
         level: decisions.iter().map(|d| d.final_level).collect(),
         source: decisions.iter().map(|d| d.top_reason.clone()).collect(),
     };
 
-    RefinementReport {
+    Ok(RefinementReport {
         decisions,
         target_levels,
         budget_used: BudgetUsage {
@@ -529,12 +749,21 @@ pub fn plan(
             budget_hit,
         },
         max_passes: cfg.max_passes,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_field_alignment_uses_identity_not_row_order() {
+        let source_ids = vec!["east".into(), "west".into()];
+        let target_ids = vec!["west".into(), "east".into()];
+        let aligned = align_cell_values_by_id(&source_ids, &[0_u8, 2], &target_ids)
+            .expect("stable IDs align a per-cell field");
+        assert_eq!(aligned, vec![2, 0]);
+    }
 
     fn grid_features(n: usize) -> CellFeatureTable {
         // a 1-D chain of cells, neighbors = prev/next
@@ -553,6 +782,7 @@ mod tests {
             .collect();
         CellFeatureTable {
             cell_count: n,
+            cell_ids: (0..n).map(|cell| cell.to_string()).collect(),
             centroids,
             neighbors,
             ..Default::default()
@@ -594,7 +824,8 @@ mod tests {
                 ..Default::default()
             },
             MeshDomain::Any,
-        );
+        )
+        .expect("valid feature table");
         assert_eq!(r.decisions[0].composite_score, 1.0);
         assert_eq!(r.decisions[0].target_level, 3);
         assert!(r.decisions[0].top_reason.contains("specified_region"));
@@ -628,7 +859,8 @@ mod tests {
                 ..Default::default()
             },
             MeshDomain::Land,
-        );
+        )
+        .expect("valid feature table");
         // cell0: entropy 1 + exp(0)=1 -> composite 1.0; cell1: entropy 0 + exp(-10)~0 -> ~0
         assert!((r.decisions[0].composite_score - 1.0).abs() < 1e-9);
         assert!(r.decisions[1].composite_score < 0.01);
@@ -655,11 +887,258 @@ mod tests {
                 ..Default::default()
             },
             MeshDomain::Land,
-        );
+        )
+        .expect("valid feature table");
         assert!(r.budget_used.budget_hit);
         assert_eq!(r.budget_used.cells_refined_after, 2);
         // lowest-score cells rejected for budget
         assert!(r.decisions[3].rejection_reason.as_deref() == Some("budget"));
+    }
+
+    #[test]
+    fn missing_required_feature_column_is_an_error() {
+        let f = grid_features(2);
+        let err = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 2),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Land,
+        )
+        .expect_err("missing criterion input must not silently score as zero");
+
+        assert!(err.contains("landcover_entropy"), "{err}");
+    }
+
+    #[test]
+    fn missing_min_cell_area_column_is_an_error() {
+        let mut f = grid_features(1);
+        f.columns.insert("landcover_entropy".into(), vec![1.0]);
+        let err = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint {
+                min_cell_area_m2: 10.0,
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .expect_err("enabled min-cell-area constraint requires its feature column");
+        assert!(err.contains("cell_area_m2"), "{err}");
+    }
+
+    #[test]
+    fn min_angle_constraint_requires_measured_feature_column() {
+        let mut f = grid_features(1);
+        f.columns.insert("landcover_entropy".into(), vec![1.0]);
+        let err = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint {
+                min_input_angle_for_refinement_deg: Some(20.0),
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .expect_err("min-angle constraint requires measured cell angles");
+        assert!(err.contains("cell_min_angle_deg"), "{err}");
+    }
+
+    #[test]
+    fn min_angle_constraint_rejects_only_ineligible_input_cells() {
+        let mut f = grid_features(2);
+        f.columns.insert("landcover_entropy".into(), vec![1.0, 1.0]);
+        f.columns
+            .insert("cell_min_angle_deg".into(), vec![10.0, 30.0]);
+        let report = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 1),
+            &RefinementBudget {
+                max_adjacent_level_jump: 1,
+                ..Default::default()
+            },
+            &QualityConstraint {
+                min_input_angle_for_refinement_deg: Some(20.0),
+                no_isolated_refined: false,
+                smooth_transition: false,
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .expect("measured angle column satisfies the planner contract");
+
+        assert_eq!(report.decisions[0].final_level, 0);
+        assert_eq!(
+            report.decisions[0].rejection_reason.as_deref(),
+            Some("input_min_angle_for_refinement")
+        );
+        assert_eq!(report.decisions[1].final_level, 1);
+    }
+
+    #[test]
+    fn planner_rejects_incomplete_or_invalid_feature_topology() {
+        let mut f = grid_features(2);
+        f.cell_ids[1] = f.cell_ids[0].clone();
+        let err = plan(
+            &f,
+            &[],
+            &cfg(vec![], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Any,
+        )
+        .expect_err("stable cell identities must be unique");
+        assert!(err.contains("duplicated"), "{err}");
+
+        let mut f = grid_features(2);
+        f.centroids.pop();
+        let err = plan(
+            &f,
+            &[],
+            &cfg(vec![], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Any,
+        )
+        .expect_err("centroids must cover every cell");
+        assert!(err.contains("centroids"), "{err}");
+
+        let mut f = grid_features(2);
+        f.neighbors.pop();
+        let err = plan(
+            &f,
+            &[],
+            &cfg(vec![], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Any,
+        )
+        .expect_err("neighbors must cover every cell");
+        assert!(err.contains("neighbors length"), "{err}");
+
+        let mut f = grid_features(2);
+        f.neighbors[0] = vec![2];
+        let err = plan(
+            &f,
+            &[],
+            &cfg(vec![], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Any,
+        )
+        .expect_err("neighbor indices must be in range");
+        assert!(err.contains("neighbor index 2"), "{err}");
+    }
+
+    #[test]
+    fn criterion_domain_contract_is_enforced() {
+        let mut f = grid_features(1);
+        f.columns.insert("landcover_entropy".into(), vec![1.0]);
+        let err = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Ocean,
+        )
+        .expect_err("land-only criterion must not run for ocean");
+        assert!(err.contains("not applicable"), "{err}");
+    }
+
+    #[test]
+    fn directed_bbox_contains_dateline_crossing_longitudes() {
+        let bbox = RegionSpec::Bbox {
+            west: 170.0,
+            east: -170.0,
+            south: -10.0,
+            north: 10.0,
+        };
+        assert!(bbox.contains(Point::new(175.0, 0.0)));
+        assert!(bbox.contains(Point::new(-175.0, 0.0)));
+        assert!(!bbox.contains(Point::new(0.0, 0.0)));
+    }
+
+    #[test]
+    fn full_longitude_bbox_does_not_collapse_to_one_meridian() {
+        let bbox = RegionSpec::Bbox {
+            west: -180.0,
+            east: 180.0,
+            south: -10.0,
+            north: 10.0,
+        };
+        for lon in [-179.0, -45.0, 0.0, 120.0, 179.0] {
+            assert!(bbox.contains(Point::new(lon, 0.0)), "lon={lon}");
+        }
+    }
+
+    #[test]
+    fn budget_remains_strict_with_transition_repairs_enabled() {
+        let mut f = grid_features(5);
+        f.columns
+            .insert("landcover_entropy".into(), vec![1.0, 0.9, 0.8, 0.7, 0.6]);
+        let r = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 3),
+            &RefinementBudget {
+                max_refined_cells: Some(2),
+                max_adjacent_level_jump: 1,
+                ..Default::default()
+            },
+            &QualityConstraint {
+                no_isolated_refined: false,
+                smooth_transition: true,
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .expect("valid feature table");
+
+        assert!(r.budget_used.cells_refined_after <= 2);
+        assert!(
+            r.target_levels
+                .level
+                .iter()
+                .filter(|&&level| level > 0)
+                .count()
+                <= 2
+        );
+    }
+
+    #[test]
+    fn quality_resolution_ratio_limits_adjacent_level_jump() {
+        let mut f = grid_features(3);
+        f.columns
+            .insert("landcover_entropy".into(), vec![1.0, 0.0, 0.0]);
+        let r = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 4),
+            &RefinementBudget {
+                max_adjacent_level_jump: 4,
+                ..Default::default()
+            },
+            &QualityConstraint {
+                max_adjacent_resolution_ratio: 2.0,
+                no_isolated_refined: false,
+                smooth_transition: false,
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .expect("valid feature table");
+        assert!(r
+            .target_levels
+            .level
+            .windows(2)
+            .all(|pair| pair[0].abs_diff(pair[1]) <= 1));
     }
 
     #[test]
@@ -683,7 +1162,8 @@ mod tests {
                 ..Default::default()
             },
             MeshDomain::Land,
-        );
+        )
+        .expect("valid feature table");
         assert_eq!(r.decisions[0].target_level, 1);
         assert_eq!(r.decisions[0].final_level, 0);
         assert_eq!(
@@ -713,7 +1193,8 @@ mod tests {
                 ..Default::default()
             },
             MeshDomain::Land,
-        );
+        )
+        .expect("valid feature table");
         // after smoothing/transition, adjacent levels differ by <= 1
         let lv = &r.target_levels.level;
         assert!(lv[0].abs_diff(lv[1]) <= 1);
@@ -744,7 +1225,8 @@ mod tests {
                 ..Default::default()
             },
             MeshDomain::Any,
-        );
+        )
+        .expect("valid feature table");
         let csv = io::to_refinement_score_csv(&r);
         assert!(csv.starts_with(
             "cell,composite_score,target_level,final_level,rejection_reason,top_reason\n"

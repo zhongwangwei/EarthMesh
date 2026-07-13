@@ -10,9 +10,9 @@ pub struct MaskSourceDiscovery {
     pub files: Vec<PathBuf>,
 }
 
-/// Discover source mask files matching the Fortran `ls mask_fprefix*` behavior.
+/// Discover source mask files matching the Canonical `ls mask_fprefix*` behavior.
 ///
-/// The Fortran routine first splits `mask_fprefix` at the last `/`, then lists
+/// The Canonical routine first splits `mask_fprefix` at the last `/`, then lists
 /// every file whose full path starts with that prefix. This Rust adapter keeps
 /// the same prefix semantics while avoiding shell execution.
 pub fn discover_mask_sources(mask_fprefix: impl AsRef<Path>) -> io::Result<MaskSourceDiscovery> {

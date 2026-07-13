@@ -215,8 +215,21 @@ impl ProjectConfig {
                 threshold_value: None,
             });
         }
+        let refinement_enabled = data_layers.iter().any(|layer| {
+            if !layer.enabled {
+                return false;
+            }
+            match layer.role {
+                ProjectLayerRole::LandType => matches!(
+                    d.kind,
+                    MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth
+                ),
+                ProjectLayerRole::Threshold(_) => true,
+                ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
+            }
+        });
         ProjectConfig {
-            schema_version: "3.0.0".to_string(),
+            schema_version: crate::PROJECT_SCHEMA_VERSION.to_string(),
             metadata: ProjectMetadata {
                 name: name.to_string(),
                 ..Default::default()
@@ -231,15 +244,16 @@ impl ProjectConfig {
             },
             data_layers,
             refinement: RefinementRecipe {
-                enabled: !d.criteria.is_empty(),
-                max_passes: if d.criteria.is_empty() { 0 } else { 3 },
+                enabled: refinement_enabled,
+                max_passes: if refinement_enabled { 3 } else { 0 },
                 specified_circle: None,
                 specified_bbox: None,
                 specified_close: None,
-                hfield: (!d.criteria.is_empty()).then(Default::default),
+                hfield: refinement_enabled.then(Default::default),
             },
             quality: QualityConfig {
                 min_angle_deg: d.min_angle_deg,
+                auto_refine_batch_cells: crate::DEFAULT_AUTO_REFINE_BATCH_CELLS,
                 on_violation: ViolationPolicy::Warn,
             },
             expert: ExpertOverrides::default(),

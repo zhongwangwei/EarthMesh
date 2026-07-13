@@ -42,7 +42,7 @@ impl PathResolver {
 
     /// Resolve a path string. Absolute paths pass through unchanged; relative
     /// paths join `base_dir`. Surrounding whitespace is trimmed so a stray leading
-    /// space (e.g. the legacy `" /tmp"` default) does not create a bogus directory.
+    /// space (e.g. the compatibility `" /tmp"` default) does not create a bogus directory.
     pub fn resolve(&self, raw: impl AsRef<str>) -> PathBuf {
         let trimmed = raw.as_ref().trim();
         let p = Path::new(trimmed);
@@ -152,7 +152,7 @@ mod tests {
             PathBuf::from("/tmp/case/input/x.nc")
         );
         assert_eq!(r.resolve("/abs/y.nc"), PathBuf::from("/abs/y.nc"));
-        // leading/trailing whitespace is trimmed (guards the legacy " /tmp" default).
+        // leading/trailing whitespace is trimmed (guards the compatibility " /tmp" default).
         assert_eq!(r.resolve("  rel.nc  "), PathBuf::from("/tmp/case/rel.nc"));
     }
 

@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    build_area_judge_lambert_area_source_fortran_indexed, write_mode4_mesh_netcdf, LonLatPoint,
-    Mode4Mesh,
+    area_judge_lambert_sources::build_area_judge_lambert_area_source_one_based,
+    coordinate_types::LonLatPoint, lambert_mode4_io::write_mode4_mesh_netcdf,
+    lambert_mode4_io::Mode4Mesh,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -50,13 +51,13 @@ fn write_rectangle_mode4(path: &std::path::Path) {
 }
 
 #[test]
-fn lambert_area_source_builds_is_in_area_grid_and_fortran_numpatch() {
+fn lambert_area_source_builds_is_in_area_grid_and_canonical_numpatch() {
     let root = temp_root("area_judge_lambert_area_source");
     let source = root.join("mask_domain_lambert_0_01.nc4");
     write_rectangle_mode4(&source);
     let (lon_vertex, lat_vertex, lon_i, lat_i) = source_axes();
 
-    let report = build_area_judge_lambert_area_source_fortran_indexed(
+    let report = build_area_judge_lambert_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,
@@ -109,7 +110,7 @@ fn lambert_area_source_rejects_cells_with_too_few_vertices() {
     .expect("write bad lambert source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = source_axes();
 
-    let err = build_area_judge_lambert_area_source_fortran_indexed(
+    let err = build_area_judge_lambert_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,

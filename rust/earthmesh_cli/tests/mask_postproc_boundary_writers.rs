@@ -3,18 +3,18 @@ use std::fs;
 use earthmesh_mesh::{BoundaryClosedCurves, BoundaryConnection, BoundaryOrders};
 
 #[test]
-fn obc_writer_preserves_fortran_schema_and_patch_path() {
+fn obc_writer_preserves_canonical_schema_and_patch_path() {
     let root =
         std::env::temp_dir().join(format!("earthmesh_cli_obc_writer_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
 
     assert_eq!(
-        earthmesh_cli::obc_boundary_output_path(&root, false),
+        earthmesh_cli::obc_boundary_io::obc_boundary_output_path(&root, false),
         root.join("result/obc.nc4")
     );
     assert_eq!(
-        earthmesh_cli::obc_boundary_output_path(&root, true),
+        earthmesh_cli::obc_boundary_io::obc_boundary_output_path(&root, true),
         root.join("result/obc_patch.nc4")
     );
 
@@ -24,8 +24,9 @@ fn obc_writer_preserves_fortran_schema_and_patch_path() {
         ibc_order: vec![1, 1, 11, 1],
         rotation_start: Some(2),
     };
-    let output = earthmesh_cli::obc_boundary_output_path(&root, true);
-    let report = earthmesh_cli::write_obc_boundary_netcdf(&output, &orders).expect("write obc");
+    let output = earthmesh_cli::obc_boundary_io::obc_boundary_output_path(&root, true);
+    let report = earthmesh_cli::obc_boundary_io::write_obc_boundary_netcdf(&output, &orders)
+        .expect("write obc");
     assert_eq!(report.output, output);
     assert_eq!(report.boundary_points, 4);
 
@@ -46,11 +47,11 @@ fn obcv2_writer_preserves_closed_curve_schema_and_patch_path() {
     fs::create_dir_all(&root).expect("create temp root");
 
     assert_eq!(
-        earthmesh_cli::obcv2_boundary_output_path(&root, false),
+        earthmesh_cli::obc_boundary_io::obcv2_boundary_output_path(&root, false),
         root.join("result/obcv2.nc4")
     );
     assert_eq!(
-        earthmesh_cli::obcv2_boundary_output_path(&root, true),
+        earthmesh_cli::obc_boundary_io::obcv2_boundary_output_path(&root, true),
         root.join("result/obcv2_patch.nc4")
     );
 
@@ -65,9 +66,9 @@ fn obcv2_writer_preserves_closed_curve_schema_and_patch_path() {
             n_close_curve: vec![0, 3, 2],
         },
     };
-    let output = earthmesh_cli::obcv2_boundary_output_path(&root, false);
-    let report =
-        earthmesh_cli::write_obcv2_boundary_netcdf(&output, &connection).expect("write obcv2");
+    let output = earthmesh_cli::obc_boundary_io::obcv2_boundary_output_path(&root, false);
+    let report = earthmesh_cli::obc_boundary_io::write_obcv2_boundary_netcdf(&output, &connection)
+        .expect("write obcv2");
     assert_eq!(report.output, output);
     assert_eq!(report.longest_curve_slots, 4);
     assert_eq!(report.closed_curves, 2);

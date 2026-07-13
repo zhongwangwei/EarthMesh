@@ -137,12 +137,13 @@ pub(crate) fn run_hydro_close_mask_nmls(args: impl Iterator<Item = String>) -> R
         }
     }
 
-    let report = earthmesh_cli::write_hydro_close_mask_nmls(
+    let report = earthmesh_cli::hydro_close_masks::write_hydro_close_mask_nmls(
         &input_geojson,
         &output_prefix,
-        earthmesh_cli::HydroCloseMaskNmlOptions {
-            class_refine: class_refine
-                .unwrap_or_else(earthmesh_cli::default_hydro_close_class_refine),
+        earthmesh_cli::hydro_close_types::HydroCloseMaskNmlOptions {
+            class_refine: class_refine.unwrap_or_else(
+                earthmesh_cli::hydro_close_recipe::default_hydro_close_class_refine,
+            ),
             max_rings_per_class,
             max_rings_by_class,
             max_masks_per_refine_degree,

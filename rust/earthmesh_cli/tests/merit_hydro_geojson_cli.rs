@@ -10,7 +10,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 fn write_merit_fixture(path: &Path) {
-    let mut file = netcdf::create(path).expect("create MERIT tile fixture");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create MERIT tile fixture");
     file.add_dimension("longitude", 2)
         .expect("add longitude dimension");
     file.add_dimension("latitude", 2)

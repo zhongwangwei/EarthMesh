@@ -50,14 +50,14 @@ pub fn gridfile_mesh_from_state(grid: &GridMemory, tabs: &IjTabs) -> io::Result<
     })
 }
 
-/// Build the `Unstructured_Mesh_Save` payload from Fortran-indexed grid state.
+/// Build the `Unstructured_Mesh_Save` payload from Canonical-indexed grid state.
 ///
-/// Some migrated kernels, especially the remaining `gridinit/voronoi/pcvt`
-/// path, keep a direct Fortran-compatible layout with slot `0` unused and valid
+/// Some current kernels, especially the remaining `gridinit/voronoi/pcvt`
+/// path, keep a direct Canonical-compatible layout with slot `0` unused and valid
 /// records in `1..=nma` / `1..=nwa`. This adapter deliberately slices those
 /// one-based slots into the compact NetCDF payload written by
 /// `Unstructured_Mesh_Save`, without changing connectivity IDs.
-pub fn gridfile_mesh_from_fortran_indexed_state(
+pub fn gridfile_mesh_from_one_based_state(
     grid: &GridMemory,
     tabs: &IjTabs,
 ) -> io::Result<UnstructuredMesh> {

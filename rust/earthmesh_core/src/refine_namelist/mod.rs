@@ -1,4 +1,4 @@
-use crate::{fortran_quote, RefineConfig};
+use crate::{canonical_quote, RefineConfig};
 
 impl RefineConfig {
     /// Serialize the configuration back into the `&mkrefine` namelist block that
@@ -8,7 +8,7 @@ impl RefineConfig {
     ///
     /// Derived/internal fields (`refine_setting`, `max_iter`, `mask_refine_ndm`,
     /// `exit_loop_step`) are not namelist keys and are intentionally omitted; they
-    /// are recomputed during re-parse. `HALO`/`max_transition_row` are Fortran
+    /// are recomputed during re-parse. `HALO`/`max_transition_row` are Canonical
     /// 1-based arrays, so index 0 is the reserved sentinel and only indices 1..=9
     /// are emitted.
     pub fn to_mkrefine_namelist(&self) -> String {
@@ -30,7 +30,7 @@ impl RefineConfig {
             format!("{}, {}", values[0], values[1])
         }
         fn q(value: &str) -> String {
-            fortran_quote(value)
+            canonical_quote(value)
         }
 
         let mut out = String::new();
@@ -84,6 +84,12 @@ impl RefineConfig {
             "  RL%mask_refine_spc_fprefix = {}\n",
             q(&self.mask_refine_spc_fprefix)
         ));
+        if self.mask_refine_spc_close_boundary.trim() != "polyline" {
+            out.push_str(&format!(
+                "  RL%mask_refine_spc_close_boundary = {}\n",
+                q(&self.mask_refine_spc_close_boundary)
+            ));
+        }
         out.push_str(&format!(
             "  RL%mask_refine_cal_type = {}\n",
             q(&self.mask_refine_cal_type)

@@ -20,6 +20,10 @@ const COLM_COUPLING_FIELDS: &[&str] = &[
     "center_lat",
     "domain_clip_applied",
     "area_normalization",
+    "corridor_sources",
+    "is_estuary",
+    "estuary_fraction",
+    "reach_ids",
 ];
 
 fn coupling_prop_string(props: &BTreeMap<String, JsonNode>, key: &str) -> String {

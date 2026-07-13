@@ -1,12 +1,12 @@
+use crate::grid_covers_area_judge_bounds_one_based;
+use crate::AreaJudgeRefineActivationReport;
 use std::io;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-use crate::*;
-
 /// Copy calculated refine state into the active refine state for
 /// `MOD_Area_judge.F90:Area_judge_refine(iter == 0)`.
-pub fn activate_area_judge_calculated_refine_fortran_indexed(
+pub fn activate_area_judge_calculated_refine_one_based(
     is_in_refine_calculated: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<AreaJudgeRefineActivationReport> {
@@ -22,7 +22,7 @@ pub fn activate_area_judge_calculated_refine_fortran_indexed(
             ),
         ));
     }
-    grid_covers_area_judge_bounds_fortran_indexed(
+    grid_covers_area_judge_bounds_one_based(
         "IsInRfArea_cal_grid",
         is_in_refine_calculated,
         bounds,

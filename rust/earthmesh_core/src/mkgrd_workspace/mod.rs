@@ -1,6 +1,6 @@
 use crate::{mkgrd_config::EarthmeshConfig, RefineConfig};
 
-/// Non-destructive representation of a Fortran `Mask_make(...)` call.
+/// Non-destructive representation of a Canonical `Mask_make(...)` call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaskOperation {
     pub mask_select: String,

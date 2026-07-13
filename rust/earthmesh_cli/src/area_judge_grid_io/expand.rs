@@ -7,11 +7,11 @@ use super::types::{
 };
 use super::validate::validate_area_judge_grid_payload;
 
-pub fn run_area_judge_restart_grid_fortran_indexed(
+pub fn run_area_judge_restart_grid_one_based(
     config: AreaJudgeRestartGridRunConfig<'_>,
 ) -> io::Result<AreaJudgeRestartGridRunReport> {
     let payload = read_area_judge_grid_netcdf(config.input)?;
-    let expanded = expand_area_judge_grid_payload_fortran_indexed(
+    let expanded = expand_area_judge_grid_payload_one_based(
         &payload,
         config.nlons_source,
         config.nlats_source,
@@ -23,7 +23,7 @@ pub fn run_area_judge_restart_grid_fortran_indexed(
     })
 }
 
-pub fn expand_area_judge_grid_payload_fortran_indexed(
+pub fn expand_area_judge_grid_payload_one_based(
     payload: &AreaJudgeGridPayload,
     nlons_source: usize,
     nlats_source: usize,

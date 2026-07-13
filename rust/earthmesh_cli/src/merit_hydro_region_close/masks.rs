@@ -1,16 +1,23 @@
+use crate::read_merit_hydro_window;
+use crate::select_merit_hydro_tiles;
+use crate::write_hydro_close_mask_nmls;
+use crate::write_merit_hydro_mask_geojson_layers;
+use crate::HydroCloseMaskNmlOptions;
+use crate::MeritHydroRegionWorkflowReport;
+use crate::MeritLonLatBbox;
+use crate::MeritMaskThresholds;
 use std::fs;
 use std::io;
 use std::path::Path;
-
-use crate::*;
 
 /// Single-entry MERIT-Hydro regional close-mask workflow (the "Greater Bay Area"
 /// LOC recipe): select the MERIT-Hydro tiles overlapping `bbox`, read+classify
 /// each into river/coast masks, write the GeoJSON layers, then emit the
 /// EarthMesh close-mask `.nml` files (one set for rivers, one for coasts) that
-/// drive specified (`mask_refine_spc_type='close'`) refinement. `stride`
-/// subsamples the 90 m MERIT grid. Everything runs in pure Rust over the local
-/// MERIT-Hydro tiles; `[需数据]`: needs the MERIT-Hydro tile directory.
+/// drive specified (`mask_refine_spc_type='close'`) refinement. `stride` must
+/// be 1 because river/coast classification depends on native-cell adjacency.
+/// Everything runs in pure Rust over the local MERIT-Hydro tiles; `[需数据]`:
+/// needs the MERIT-Hydro tile directory.
 pub fn write_merit_hydro_region_close_masks(
     merit_root: impl AsRef<Path>,
     bbox: MeritLonLatBbox,

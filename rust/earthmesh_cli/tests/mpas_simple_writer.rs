@@ -1,5 +1,5 @@
 #[test]
-fn mpas_simple_writer_preserves_fortran_schema_and_placeholder_slices() {
+fn mpas_simple_writer_preserves_canonical_schema_and_placeholder_slices() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_mpas_simple_writer_{}",
         std::process::id()
@@ -8,7 +8,7 @@ fn mpas_simple_writer_preserves_fortran_schema_and_placeholder_slices() {
     std::fs::create_dir_all(&root).expect("create temp root");
     let output = root.join("MPASOUT_NXP0007_global_Simple.nc4");
 
-    let mesh = earthmesh_cli::MpasSimpleMesh {
+    let mesh = earthmesh_cli::mpas_simple_writer::MpasSimpleMesh {
         x_cell: vec![0.0, 10.0, 20.0],
         y_cell: vec![0.0, 11.0, 21.0],
         z_cell: vec![0.0, 12.0, 22.0],
@@ -19,7 +19,7 @@ fn mpas_simple_writer_preserves_fortran_schema_and_placeholder_slices() {
         mesh_density: vec![0.0, 1.0, 0.25],
     };
 
-    let report = earthmesh_cli::write_mpas_simple_mesh_netcdf(&output, &mesh)
+    let report = earthmesh_cli::mpas_simple_writer::write_mpas_simple_mesh_netcdf(&output, &mesh)
         .expect("write MPAS simple mesh");
 
     assert_eq!(report.output, output);
@@ -67,7 +67,7 @@ fn mpas_simple_writer_preserves_fortran_schema_and_placeholder_slices() {
 #[test]
 fn mpas_simple_writer_rejects_dimension_mismatches() {
     let output = std::env::temp_dir().join("earthmesh_cli_bad_mpas_simple.nc4");
-    let bad = earthmesh_cli::MpasSimpleMesh {
+    let bad = earthmesh_cli::mpas_simple_writer::MpasSimpleMesh {
         x_cell: vec![0.0, 1.0],
         y_cell: vec![0.0],
         z_cell: vec![0.0, 1.0],
@@ -78,7 +78,7 @@ fn mpas_simple_writer_rejects_dimension_mismatches() {
         mesh_density: vec![0.0, 1.0],
     };
 
-    let err = earthmesh_cli::write_mpas_simple_mesh_netcdf(&output, &bad)
+    let err = earthmesh_cli::mpas_simple_writer::write_mpas_simple_mesh_netcdf(&output, &bad)
         .expect_err("bad simple mesh rejected");
     assert!(err.to_string().contains("y_cell length"));
 }

@@ -19,7 +19,7 @@
 //!   polygon area or a local equal-area projection ([`AreaModel::SphericalMeters`] /
 //!   [`AreaModel::LocalEqualAreaProjected`]) — see the R3 report's roadmap.
 
-use crate::{area_judge_first_self_intersection_fortran_indexed, polygon_area, Point};
+use crate::{area_judge_first_self_intersection_one_based, polygon_area, Point};
 
 /// |lat| above which planar geometry is flagged as polar-distorted for polygons.
 pub const POLAR_LAT_WARN_DEG: f64 = 75.0;
@@ -60,7 +60,7 @@ pub enum GeometryKind {
     Production,
 }
 
-/// Explicit geometry warning/error flags. `as_str` matches the legacy string flags
+/// Explicit geometry warning/error flags. `as_str` matches the compatibility string flags
 /// already emitted by `overlay_cell` (`zero_area_cell`, `missing_mask`) so existing
 /// `Vec<String>` consumers keep working.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,7 +186,7 @@ pub fn validate_polygon(points: &[Point]) -> Vec<GeometryQualityFlag> {
         // has zero shoelace area (its two triangles cancel) yet is self-intersecting.
         // Collinear/degenerate rings give zero strict cross-products, so they do not
         // false-positive here.
-        if area_judge_first_self_intersection_fortran_indexed(points).is_some() {
+        if area_judge_first_self_intersection_one_based(points).is_some() {
             flags.push(GeometryQualityFlag::SelfIntersection);
         }
     }
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn flag_strings_match_legacy() {
+    fn flag_strings_match_compatibility() {
         assert_eq!(GeometryQualityFlag::ZeroAreaCell.as_str(), "zero_area_cell");
         assert_eq!(GeometryQualityFlag::MissingMask.as_str(), "missing_mask");
     }

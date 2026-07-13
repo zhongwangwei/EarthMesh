@@ -21,12 +21,14 @@ fn gba_region_produces_river_close_mask_nmls() {
         eprintln!("skip: no MERIT-Hydro root (set EARTHMESH_MERIT_ROOT)");
         return;
     };
-    // Pearl River Delta / Greater Bay Area.
-    let bbox = earthmesh_cli::MeritLonLatBbox {
-        west: 111.0,
-        east: 115.0,
-        south: 21.0,
-        north: 24.0,
+    // Native-resolution Pearl River sub-window. The coast classifier requires
+    // stride 1 so adjacency is physical; keep the footprint small enough for a
+    // bounded external-data regression while retaining R2/R3 rivers and coast.
+    let bbox = earthmesh_cli::merit_tile_selection::MeritLonLatBbox {
+        west: 113.25,
+        east: 113.5,
+        south: 22.0,
+        north: 22.25,
     };
     let out = std::env::temp_dir().join("gba_workflow_test");
     let _ = std::fs::remove_dir_all(&out);
@@ -34,7 +36,7 @@ fn gba_region_produces_river_close_mask_nmls() {
     let rep = earthmesh_cli::write_merit_hydro_region_close_masks(
         &root,
         bbox,
-        30,
+        1,
         Default::default(),
         &out,
         Default::default(),

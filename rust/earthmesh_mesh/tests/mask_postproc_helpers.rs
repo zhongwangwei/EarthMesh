@@ -1,15 +1,15 @@
 use earthmesh_mesh::{
-    boundary_closed_curves_fortran_indexed, boundary_connection_fortran_indexed,
-    classify_boundary_orders_fortran_indexed, extract_unique_vertices_fortran_indexed,
-    fill_vertex_only_ocean_contacts_fortran_indexed, finalize_mask_postproc_data_fortran_indexed,
-    reindex_final_center_vertices_fortran_indexed, remove_isolated_ocean_fortran_indexed,
-    renew_mask_postproc_data_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
-    renew_mask_postproc_opposite_domain_triangles_fortran_indexed, sort_and_reindex_vertices,
-    widen_narrow_waterway_fortran_indexed,
+    boundary_closed_curves_one_based, boundary_connection_one_based,
+    classify_boundary_orders_one_based, extract_unique_vertices_one_based,
+    fill_vertex_only_ocean_contacts_one_based, finalize_mask_postproc_data_one_based,
+    reindex_final_center_vertices_one_based, remove_isolated_ocean_one_based,
+    renew_mask_postproc_data_one_based, renew_mask_postproc_domain_triangles_one_based,
+    renew_mask_postproc_opposite_domain_triangles_one_based, sort_and_reindex_vertices,
+    widen_narrow_waterway_one_based,
 };
 
 #[test]
-fn extract_unique_vertices_preserves_fortran_placeholder_and_first_seen_order() {
+fn extract_unique_vertices_preserves_canonical_placeholder_and_first_seen_order() {
     let center_neighbors = vec![
         vec![1, 1, 1, 1],
         vec![1, 1, 1, 1],
@@ -19,14 +19,14 @@ fn extract_unique_vertices_preserves_fortran_placeholder_and_first_seen_order() 
     ];
     let neighbor_counts = vec![0, 0, 3, 3, 2];
 
-    let unique = extract_unique_vertices_fortran_indexed(&center_neighbors, &neighbor_counts, 8)
+    let unique = extract_unique_vertices_one_based(&center_neighbors, &neighbor_counts, 8)
         .expect("extract unique vertices");
 
     assert_eq!(unique, vec![1, 4, 2, 5, 6]);
 }
 
 #[test]
-fn sort_and_reindex_vertices_builds_fortran_old_to_new_mapping() {
+fn sort_and_reindex_vertices_builds_canonical_old_to_new_mapping() {
     let unique = vec![1, 4, 2, 5, 6];
 
     let reindexed = sort_and_reindex_vertices(&unique, 8).expect("sort and reindex");
@@ -51,7 +51,7 @@ fn reindex_final_center_vertices_applies_sorted_vertex_mapping_like_mask_postpro
     let center_neighbor_counts_final = vec![0, 0, 3, 2];
     let vertex_mapping = vec![0, 1, 2, 0, 3, 4, 5];
 
-    let reindexed = reindex_final_center_vertices_fortran_indexed(
+    let reindexed = reindex_final_center_vertices_one_based(
         &center_neighbors_final,
         &center_neighbor_counts_final,
         &vertex_mapping,
@@ -70,7 +70,7 @@ fn reindex_final_center_vertices_rejects_unmapped_or_out_of_range_vertices() {
     let center_neighbor_counts_final = vec![0, 0, 3];
     let vertex_mapping = vec![0, 1, 2, 0, 3, 4];
 
-    let err = reindex_final_center_vertices_fortran_indexed(
+    let err = reindex_final_center_vertices_one_based(
         &center_neighbors_final,
         &center_neighbor_counts_final,
         &vertex_mapping,
@@ -91,7 +91,7 @@ fn data_renew_compacts_active_centers_but_keeps_original_center_ids_for_vertices
     ];
     let center_neighbor_counts = vec![0, 0, 3, 3, 3];
 
-    let renewed = renew_mask_postproc_data_fortran_indexed(
+    let renewed = renew_mask_postproc_data_one_based(
         "tri",
         &active_centers,
         &center_neighbors,
@@ -142,7 +142,7 @@ fn data_finial_compacts_centers_and_vertices_using_compact_center_ids() {
     ];
     let center_neighbor_counts = vec![0, 0, 3, 3, 3];
 
-    let final_data = finalize_mask_postproc_data_fortran_indexed(
+    let final_data = finalize_mask_postproc_data_one_based(
         "tri",
         &active_centers,
         &center_coordinates,
@@ -199,7 +199,7 @@ fn domain_triangle_renew_deletes_solid_boundary_triangles_and_refills_one_missin
     let renewed_counts = vec![0, 0, 1, 1, 1, 1];
     let mut points_new = 4;
 
-    renew_mask_postproc_domain_triangles_fortran_indexed(
+    renew_mask_postproc_domain_triangles_one_based(
         &mut is_in_domain,
         &original_vertex_neighbors,
         &renewed_vertex_neighbors,
@@ -225,7 +225,7 @@ fn opposite_domain_triangle_renew_refills_two_opposed_missing_triangles() {
     let renewed_counts = vec![0, 0, 4];
     let mut points_new = 5;
 
-    renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
+    renew_mask_postproc_opposite_domain_triangles_one_based(
         &mut is_in_domain,
         &vertex_neighbors,
         &original_counts,
@@ -263,7 +263,7 @@ fn narrow_waterway_widen_activates_cells_around_duplicate_boundary_neighbor() {
     let vertex_neighbor_counts_new = vec![0, 0, 0, 1, 0, 1, 1, 1];
     let center_neighbor_counts_new = vec![0, 0, 2, 2, 2, 2];
 
-    widen_narrow_waterway_fortran_indexed(
+    widen_narrow_waterway_one_based(
         &mut is_in_domain,
         &vertex_neighbors,
         &center_neighbors_new,
@@ -283,7 +283,7 @@ fn vertex_only_ocean_contact_fill_activates_separated_vertex_fans() {
     let vertex_neighbors = vec![vec![1; 6], vec![1; 6], vec![2, 3, 4, 5, 6, 7]];
     let vertex_neighbor_counts = vec![0, 0, 6];
 
-    let activated = fill_vertex_only_ocean_contacts_fortran_indexed(
+    let activated = fill_vertex_only_ocean_contacts_one_based(
         &mut is_in_domain,
         &vertex_neighbors,
         &vertex_neighbor_counts,
@@ -300,7 +300,7 @@ fn vertex_only_ocean_contact_fill_leaves_contiguous_cyclic_fan() {
     let vertex_neighbors = vec![vec![1; 6], vec![1; 6], vec![2, 3, 4, 5, 6, 7]];
     let vertex_neighbor_counts = vec![0, 0, 6];
 
-    let activated = fill_vertex_only_ocean_contacts_fortran_indexed(
+    let activated = fill_vertex_only_ocean_contacts_one_based(
         &mut is_in_domain,
         &vertex_neighbors,
         &vertex_neighbor_counts,
@@ -312,7 +312,7 @@ fn vertex_only_ocean_contact_fill_leaves_contiguous_cyclic_fan() {
 }
 
 #[test]
-fn boundary_closed_curves_preserve_fortran_walk_order_and_longest_metadata() {
+fn boundary_closed_curves_preserve_canonical_walk_order_and_longest_metadata() {
     let boundary_order = vec![1, 10, 11, 12, 20, 21, 22, 23];
     let mut boundary_neighbors = vec![vec![1, 1]; 24];
     boundary_neighbors[10] = vec![11, 12];
@@ -323,12 +323,12 @@ fn boundary_closed_curves_preserve_fortran_walk_order_and_longest_metadata() {
     boundary_neighbors[22] = vec![23, 21];
     boundary_neighbors[23] = vec![20, 22];
 
-    let curves = boundary_closed_curves_fortran_indexed(&boundary_order, &boundary_neighbors)
+    let curves = boundary_closed_curves_one_based(&boundary_order, &boundary_neighbors)
         .expect("closed curves");
 
     assert_eq!(curves.num_closed_curve, 2);
-    // Corrected two-slot tracking: curve 1 (3 raw points, +1 legacy offset)
-    // is the true second-longest; the legacy logic reported 1 here.
+    // Corrected two-slot tracking: curve 1 (3 raw points, +1 compatibility offset)
+    // is the true second-longest; the compatibility logic reported 1 here.
     assert_eq!(curves.num_bdy_long, [5, 4, 2]);
     assert_eq!(curves.close_curves[1], vec![10, 11, 12]);
     assert_eq!(curves.close_curves[2], vec![20, 21, 22, 23]);
@@ -353,7 +353,7 @@ fn boundary_connection_builds_boundary_graph_and_closed_curve_from_center_edges(
         vertex_neighbor_counts_new[vertex_id] = 1;
     }
 
-    let boundary = boundary_connection_fortran_indexed(
+    let boundary = boundary_connection_one_based(
         &center_neighbors_new,
         &center_neighbor_counts_new,
         &vertex_neighbor_counts,
@@ -394,7 +394,7 @@ fn isolated_ocean_removal_keeps_longest_boundary_and_removes_smaller_ocean_curve
         vertex_neighbor_counts[vertex_id] = 3;
         vertex_neighbor_counts_new[vertex_id] = 1;
     }
-    let boundary = boundary_connection_fortran_indexed(
+    let boundary = boundary_connection_one_based(
         &center_neighbors_new,
         &center_neighbor_counts_new,
         &vertex_neighbor_counts,
@@ -413,7 +413,7 @@ fn isolated_ocean_removal_keeps_longest_boundary_and_removes_smaller_ocean_curve
         vertex_neighbors_new[vertex_id] = vec![30];
     }
 
-    let renewed = remove_isolated_ocean_fortran_indexed(
+    let renewed = remove_isolated_ocean_one_based(
         &mut is_in_domain,
         &center_neighbors,
         &center_neighbor_counts,
@@ -464,7 +464,7 @@ fn boundary_classification_maps_vertices_and_converts_singleton_obc_to_ibc() {
     is_in_domain[4] = -1;
     is_in_domain[5] = -1;
 
-    let classified = classify_boundary_orders_fortran_indexed(
+    let classified = classify_boundary_orders_one_based(
         num_bdy_long,
         &bdy_long_order,
         &vertex_neighbors,

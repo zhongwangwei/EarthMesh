@@ -1,10 +1,9 @@
 use std::io;
 
 use earthmesh_mesh::{
-    boundary_connection_fortran_indexed, fill_vertex_only_ocean_contacts_fortran_indexed,
-    remove_isolated_ocean_fortran_indexed, renew_mask_postproc_domain_triangles_fortran_indexed,
-    renew_mask_postproc_opposite_domain_triangles_fortran_indexed,
-    widen_narrow_waterway_fortran_indexed,
+    boundary_connection_one_based, fill_vertex_only_ocean_contacts_one_based,
+    remove_isolated_ocean_one_based, renew_mask_postproc_domain_triangles_one_based,
+    renew_mask_postproc_opposite_domain_triangles_one_based, widen_narrow_waterway_one_based,
 };
 
 use crate::{validate_mask_postproc_layout, MaskPostprocLayout, MaskPostprocOceanRenewalReport};
@@ -16,10 +15,10 @@ use super::helpers::{renew_mask_postproc_data_from_layout, restore_mask_postproc
 ///
 /// This starts after the sea-ratio mask has been applied and before the final
 /// `Data_Finial`/gridfile/OBC writers.  Hex grids only need the generic
-/// `Data_Renew` compaction.  Tri grids also run the legacy triangle cleanups,
+/// `Data_Renew` compaction.  Tri grids also run the compatibility triangle cleanups,
 /// narrow-waterway widening, boundary-curve discovery, and isolated-ocean
 /// peeling metadata.
-pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
+pub fn renew_mask_postproc_ocean_domain_one_based(
     layout: &MaskPostprocLayout,
     is_in_domain_ustr: &[i32],
     mode_grid: &str,
@@ -54,7 +53,7 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
                     "renewed point count does not fit isize",
                 )
             })?;
-            renew_mask_postproc_domain_triangles_fortran_indexed(
+            renew_mask_postproc_domain_triangles_one_based(
                 &mut is_in_domain,
                 &layout.vertex_neighbors,
                 &renewed.vertex_neighbors_next,
@@ -65,6 +64,7 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
             restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
             renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
 
+            let mut converged = false;
             for _ in 0..128 {
                 let before_opposite = renewed.points_next;
                 let mut points_new = isize::try_from(renewed.points_next).map_err(|_| {
@@ -73,7 +73,7 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
                         "renewed point count does not fit isize",
                     )
                 })?;
-                renew_mask_postproc_opposite_domain_triangles_fortran_indexed(
+                renew_mask_postproc_opposite_domain_triangles_one_based(
                     &mut is_in_domain,
                     &layout.vertex_neighbors,
                     &layout.vertex_neighbor_counts,
@@ -84,7 +84,7 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
                 renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
 
                 let before_widen = renewed.points_next;
-                widen_narrow_waterway_fortran_indexed(
+                widen_narrow_waterway_one_based(
                     &mut is_in_domain,
                     &layout.vertex_neighbors,
                     &renewed.center_neighbors_next,
@@ -94,7 +94,7 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
                 )?;
                 restore_mask_postproc_placeholders(&mut is_in_domain, is_in_domain_ustr);
 
-                fill_vertex_only_ocean_contacts_fortran_indexed(
+                fill_vertex_only_ocean_contacts_one_based(
                     &mut is_in_domain,
                     &layout.vertex_neighbors,
                     &layout.vertex_neighbor_counts,
@@ -103,18 +103,25 @@ pub fn renew_mask_postproc_ocean_domain_fortran_indexed(
                 renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
 
                 if renewed.points_next == before_opposite || renewed.points_next == before_widen {
+                    converged = true;
                     break;
                 }
             }
+            if !converged {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ocean mask_postproc triangle renewal did not converge within 128 passes",
+                ));
+            }
 
-            let boundary = boundary_connection_fortran_indexed(
+            let boundary = boundary_connection_one_based(
                 &renewed.center_neighbors_next,
                 &renewed.center_neighbor_counts_next,
                 &layout.vertex_neighbor_counts,
                 &renewed.vertex_neighbor_counts_next,
             )?;
             let mut vertex_neighbor_counts_after = renewed.vertex_neighbor_counts_next.clone();
-            let isolated = remove_isolated_ocean_fortran_indexed(
+            let isolated = remove_isolated_ocean_one_based(
                 &mut is_in_domain,
                 &layout.center_neighbors,
                 &layout.center_neighbor_counts,

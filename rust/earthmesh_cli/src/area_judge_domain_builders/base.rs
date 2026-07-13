@@ -1,12 +1,12 @@
+use crate::AreaJudgeBaseStateReport;
 use std::io;
 use std::path::Path;
 
-use super::domain::build_area_judge_domain_fortran_indexed;
-use super::seaorland::build_area_judge_seaorland_fortran_indexed;
-use crate::*;
+use super::domain::build_area_judge_domain_one_based;
+use super::seaorland::build_area_judge_seaorland_one_based;
 
 /// Compose the non-restart `Area_judge` base state before patches and refine masks.
-pub fn build_area_judge_base_state_fortran_indexed(
+pub fn build_area_judge_base_state_one_based(
     file_dir: impl AsRef<Path>,
     mask_domain_global: bool,
     mask_domain_type: &str,
@@ -22,7 +22,7 @@ pub fn build_area_judge_base_state_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgeBaseStateReport> {
-    let domain = build_area_judge_domain_fortran_indexed(
+    let domain = build_area_judge_domain_one_based(
         file_dir,
         mask_domain_global,
         mask_domain_type,
@@ -35,7 +35,7 @@ pub fn build_area_judge_base_state_fortran_indexed(
         nlons_source,
         nlats_source,
     )?;
-    let seaorland = build_area_judge_seaorland_fortran_indexed(
+    let seaorland = build_area_judge_seaorland_one_based(
         &domain.is_in_domain,
         landtypes_global,
         domain.bounds,

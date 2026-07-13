@@ -4,10 +4,13 @@
 //! relations are symmetric, and the Euler characteristic of the carved patch
 //! is that of a disk.
 
-use earthmesh_cli::{build_regional_mpas_connectivity, LonLatPoint, UnstructuredMesh};
+use earthmesh_cli::{
+    coordinate_types::LonLatPoint, mpas_topology::build_regional_mpas_connectivity,
+    unstructured_mesh_support::UnstructuredMesh,
+};
 
 /// Two triangular cells sharing one edge — the smallest carved patch with both
-/// an interior edge and boundary edges. Index 0/1 are the Fortran placeholders;
+/// an interior edge and boundary edges. Index 0/1 are the Canonical placeholders;
 /// a `1` in `m_to_w` marks a cell that was carved away (exterior).
 fn two_cell_patch() -> UnstructuredMesh {
     let p = |lon: f64, lat: f64| LonLatPoint { lon, lat };

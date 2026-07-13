@@ -1,13 +1,18 @@
+use crate::build_area_judge_bbox_area_source_one_based;
+use crate::build_area_judge_circle_area_source_one_based;
+use crate::build_area_judge_close_area_source_cells_one_based;
+use crate::build_area_judge_lambert_area_source_one_based;
+use crate::grid_covers_area_judge_bounds_one_based;
+use crate::require_len;
+use crate::AreaJudgeAreaSourceReport;
 use std::io;
 use std::path::Path;
-
-use crate::*;
 
 use super::bounds::merge_area_judge_source_bounds;
 use super::paths::area_judge_area_source_path;
 
 /// Build and merge the file-numbered `IsInArea_*_Calculation` source loop.
-pub fn build_area_judge_area_sources_fortran_indexed(
+pub fn build_area_judge_area_sources_one_based(
     file_dir: impl AsRef<Path>,
     type_select: &str,
     mask_type: &str,
@@ -36,7 +41,7 @@ pub fn build_area_judge_area_sources_fortran_indexed(
         let source =
             area_judge_area_source_path(&file_dir, type_select, mask_type, iter, source_index)?;
         if mask_type == "close" {
-            let report = build_area_judge_close_area_source_cells_fortran_indexed(
+            let report = build_area_judge_close_area_source_cells_one_based(
                 &source,
                 lon_vertex,
                 lat_vertex,
@@ -52,7 +57,7 @@ pub fn build_area_judge_area_sources_fortran_indexed(
             continue;
         }
         let report = match mask_type {
-            "bbox" => build_area_judge_bbox_area_source_fortran_indexed(
+            "bbox" => build_area_judge_bbox_area_source_one_based(
                 &source,
                 lon_vertex,
                 lat_vertex,
@@ -60,7 +65,7 @@ pub fn build_area_judge_area_sources_fortran_indexed(
                 nlons_source,
                 nlats_source,
             )?,
-            "circle" => build_area_judge_circle_area_source_fortran_indexed(
+            "circle" => build_area_judge_circle_area_source_one_based(
                 &source,
                 lon_vertex,
                 lat_vertex,
@@ -70,7 +75,7 @@ pub fn build_area_judge_area_sources_fortran_indexed(
                 nlons_source,
                 nlats_source,
             )?,
-            "lambert" => build_area_judge_lambert_area_source_fortran_indexed(
+            "lambert" => build_area_judge_lambert_area_source_one_based(
                 &source,
                 lon_vertex,
                 lat_vertex,
@@ -87,7 +92,7 @@ pub fn build_area_judge_area_sources_fortran_indexed(
                 ));
             }
         };
-        grid_covers_area_judge_bounds_fortran_indexed(
+        grid_covers_area_judge_bounds_one_based(
             "area source dispatch mask",
             &report.is_in_area,
             report.bounds,

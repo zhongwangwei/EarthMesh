@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    read_area_judge_grid_netcdf, select_area_judge_grid_fortran_indexed,
-    write_area_judge_grid_netcdf,
+    area_judge_grid_io::read_area_judge_grid_netcdf,
+    area_judge_grid_io::select_area_judge_grid_one_based,
+    area_judge_grid_io::write_area_judge_grid_netcdf,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -23,7 +24,7 @@ fn one_based_grid(nx: usize, ny: usize) -> Vec<Vec<i32>> {
 }
 
 #[test]
-fn area_judge_grid_writer_saves_fortran_selected_bounds_and_restart_aliases() {
+fn area_judge_grid_writer_saves_canonical_selected_bounds_and_restart_aliases() {
     let root = temp_root("area_judge_grid_writer");
     let output = root.join("IsInDmArea_grid.nc4");
     let area_grid = one_based_grid(4, 4);
@@ -32,7 +33,7 @@ fn area_judge_grid_writer_saves_fortran_selected_bounds_and_restart_aliases() {
     let longitude = vec![f64::NAN, 10.0, 20.0, 30.0, 40.0];
     let latitude = vec![f64::NAN, 50.0, 40.0, 30.0, 20.0];
 
-    let payload = select_area_judge_grid_fortran_indexed(
+    let payload = select_area_judge_grid_one_based(
         &area_grid,
         Some(&seaorland),
         &longitude,
@@ -75,7 +76,7 @@ fn area_judge_grid_reader_accepts_restart_schema_and_preserves_bounds() {
     let root = temp_root("area_judge_grid_reader");
     let input = root.join("restart.nc4");
     {
-        let mut file = netcdf::create(&input).expect("create restart");
+        let mut file = earthmesh_cli::create_netcdf_quiet(&input).expect("create restart");
         file.add_dimension("nlons_select", 2).unwrap();
         file.add_dimension("nlats_select", 2).unwrap();
         put_i32_scalar(&mut file, "minlon_DmArea", 4);

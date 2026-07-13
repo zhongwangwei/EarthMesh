@@ -1,9 +1,9 @@
 //! Land-ocean coupled mesh (LOCmesh) classification, fractions, coupling map and a
 //! coupling-quality report (MVP).
 //!
-//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** The real coupling output path
-//! (`earthmesh_cli::write_colm_coupling_csv_from_mesh`) does not call this module yet;
-//! it is exercised only by unit tests. Wiring is future work (R7 report §9).
+//! The LOCmesh production path writes this report beside its coupling CSV/NetCDF and
+//! records it in the CoLM package manifest. The module remains dependency-light so
+//! standalone hydro workflows can reuse the same classification and gates.
 //!
 //! Pure + dependency-light (no NetCDF, no GIS dependency): the caller builds
 //! [`CoupledCellInput`]s from its mesh + landtype/MERIT/CaMa data, and this module
@@ -199,36 +199,49 @@ pub fn build_coupling_map(
         }
         // coastline coupling: mixed coast land cell <-> adjacent ocean cell
         if matches!(class, CoupledCellClass::MixedCoast) {
-            for &nb in &cell.neighbors {
-                if matches!(
-                    classes.get(nb),
-                    Some(CoupledCellClass::Ocean | CoupledCellClass::MixedCoast)
-                ) && nb != ci
-                {
-                    maps.push(CouplingMap {
-                        land_cell_id: ci,
-                        ocean_cell_id: nb,
-                        overlap_fraction: cell.fractions.ocean_fraction,
-                        exchange_weight: cell.fractions.ocean_fraction,
-                        coupling_type: CouplingType::Coastline,
-                        source_reason: "coastline adjacency".to_string(),
-                    });
-                }
+            let ocean_neighbors = cell
+                .neighbors
+                .iter()
+                .copied()
+                .filter(|&nb| {
+                    nb != ci
+                        && matches!(
+                            classes.get(nb),
+                            Some(CoupledCellClass::Ocean | CoupledCellClass::MixedCoast)
+                        )
+                })
+                .collect::<Vec<_>>();
+            let pair_fraction = if ocean_neighbors.is_empty() {
+                0.0
+            } else {
+                cell.fractions.ocean_fraction / ocean_neighbors.len() as f64
+            };
+            for nb in ocean_neighbors {
+                maps.push(CouplingMap {
+                    land_cell_id: ci,
+                    ocean_cell_id: nb,
+                    overlap_fraction: pair_fraction,
+                    exchange_weight: pair_fraction,
+                    coupling_type: CouplingType::Coastline,
+                    source_reason: "coastline adjacency".to_string(),
+                });
             }
         }
     }
     maps
 }
 
-/// Max over ocean cells of `(sum of incoming exchange weight) - 1`, clamped at 0.
-/// A balanced map (no ocean cell over-subscribed) returns 0.
+/// Max over source cells of `(sum of outgoing exchange weight) - 1`, clamped at
+/// zero. Multiple land cells may legitimately exchange with the same ocean
+/// cell; conservation constrains each source allocation, not the aggregate
+/// incoming weight of an arbitrary shared neighbor.
 pub fn max_ocean_oversubscription(maps: &[CouplingMap]) -> f64 {
     use std::collections::BTreeMap;
-    let mut incoming: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut outgoing: BTreeMap<usize, f64> = BTreeMap::new();
     for m in maps {
-        *incoming.entry(m.ocean_cell_id).or_insert(0.0) += m.exchange_weight;
+        *outgoing.entry(m.land_cell_id).or_insert(0.0) += m.exchange_weight;
     }
-    incoming
+    outgoing
         .values()
         .map(|&w| (w - 1.0).max(0.0))
         .fold(0.0_f64, f64::max)
@@ -292,11 +305,12 @@ pub fn build_coupling_quality(
             CoupledCellClass::MixedCoast => {
                 r.total_land_cells += 1;
                 r.mixed_coastline_cells += 1;
-                if cell
-                    .neighbors
-                    .iter()
-                    .any(|&nb| matches!(classes.get(nb), Some(CoupledCellClass::Ocean)))
-                {
+                if cell.neighbors.iter().any(|&nb| {
+                    matches!(
+                        classes.get(nb),
+                        Some(CoupledCellClass::Ocean | CoupledCellClass::MixedCoast)
+                    )
+                }) {
                     mixed_with_ocean_neighbor += 1;
                 }
             }
@@ -313,7 +327,15 @@ pub fn build_coupling_quality(
 
         if f.land_fraction > 0.0 && f.ocean_fraction > 0.0 {
             r.coast_overlap_cells += 1;
-            r.unresolved_fractional_area += f.land_fraction.min(f.ocean_fraction);
+            let resolved = cell.neighbors.iter().any(|&nb| {
+                matches!(
+                    classes.get(nb),
+                    Some(CoupledCellClass::Ocean | CoupledCellClass::MixedCoast)
+                )
+            });
+            if !resolved {
+                r.unresolved_fractional_area += f.land_fraction.min(f.ocean_fraction);
+            }
         }
 
         r.land_fraction_error = r.land_fraction_error.max(range_error(f.land_fraction));
@@ -408,7 +430,7 @@ pub fn to_coupling_quality_json(r: &CouplingQualityReport) -> String {
         }
     };
     format!(
-        "{{\n  \"kind\": \"earthmesh_coupling_quality\",\n  \"verdict\": \"{}\",\n  \
+        "{{\n  \"kind\": \"earthmesh_coupling_quality\",\n  \"signal_scope\": \"landtype_grid_only\",\n  \"hydro_semantics_included\": false,\n  \"verdict\": \"{}\",\n  \
          \"total_land_cells\": {},\n  \"total_ocean_cells\": {},\n  \"mixed_coastline_cells\": {},\n  \
          \"coast_overlap_cells\": {},\n  \"river_mouth_cells\": {},\n  \"estuary_cells\": {},\n  \
          \"unresolved_fractional_area\": {},\n  \"land_fraction_error\": {},\n  \"sea_fraction_error\": {},\n  \
@@ -577,6 +599,33 @@ mod tests {
             .iter()
             .any(|m| m.coupling_type == CouplingType::Coastline));
         assert_eq!(max_ocean_oversubscription(&maps), 0.0);
+    }
+
+    #[test]
+    fn coastline_exchange_is_partitioned_per_source_not_rejected_per_shared_ocean() {
+        let cells = vec![
+            CoupledCellInput {
+                neighbors: vec![2],
+                ..cell(0.2, 0.8)
+            },
+            CoupledCellInput {
+                neighbors: vec![2],
+                ..cell(0.2, 0.8)
+            },
+            CoupledCellInput {
+                neighbors: vec![0, 1],
+                ..cell(0.0, 1.0)
+            },
+        ];
+        let classes = classify_all(&cells, &CoupledThresholds::default());
+        let maps = build_coupling_map(&cells, &classes);
+        assert_eq!(maps.len(), 2);
+        assert!(maps.iter().all(|map| map.exchange_weight == 0.8));
+        assert_eq!(max_ocean_oversubscription(&maps), 0.0);
+        let report = build_coupling_quality(&cells, &classes, &maps, &CoupledThresholds::default());
+        assert_eq!(report.unresolved_fractional_area, 0.0);
+        assert_eq!(report.coastline_preservation_score, 1.0);
+        assert_eq!(report.verdict, QualityLevel::Pass);
     }
 
     #[test]

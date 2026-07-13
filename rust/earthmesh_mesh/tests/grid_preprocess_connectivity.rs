@@ -1,12 +1,11 @@
 use earthmesh_mesh::{
-    arc_length_unit_sphere, connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
-    edge_id_sort_fortran_indexed, lonlat_degrees_to_unit_xyz,
-    order_vertices_on_cell_fortran_indexed, plane_angle_signed,
-    set_dbx_move_regional_step_fortran_indexed, set_weights_on_edge_fortran_indexed,
-    spring_apply_cell_displacements_fortran_indexed, spring_dynamics_global_fortran_indexed,
-    spring_dynamics_regional_fortran_indexed, spring_edge_adjustment_fortran,
-    spring_edge_directions_fortran_indexed, spring_global_iteration_fortran_indexed,
-    standardize_vertices_on_cell_rotation_fortran_indexed, CartesianPoint, LonLatDegrees,
+    arc_length_unit_sphere, connect_on_cell_one_based, edge_distance_angle_one_based,
+    edge_id_sort_one_based, lonlat_degrees_to_unit_xyz, order_vertices_on_cell_one_based,
+    plane_angle_signed, set_dbx_move_regional_step_one_based, set_weights_on_edge_one_based,
+    spring_apply_cell_displacements_one_based, spring_dynamics_global_one_based,
+    spring_dynamics_regional_one_based, spring_edge_adjustment_canonical,
+    spring_edge_directions_one_based, spring_global_iteration_one_based,
+    standardize_vertices_on_cell_rotation_one_based, CartesianPoint, LonLatDegrees,
     RegionalMoveMaskInput,
 };
 
@@ -22,7 +21,7 @@ fn standardize_vertices_on_cell_rotation_starts_each_cell_with_min_positive_vert
     let edge_counts = vec![0, 3, 3, 4, 0];
 
     let standardized =
-        standardize_vertices_on_cell_rotation_fortran_indexed(&vertices_on_cell, &edge_counts)
+        standardize_vertices_on_cell_rotation_one_based(&vertices_on_cell, &edge_counts)
             .expect("valid verticesOnCell inputs");
 
     assert_eq!(standardized[0], vertices_on_cell[0]);
@@ -38,8 +37,7 @@ fn standardize_vertices_on_cell_rotation_rejects_short_edge_counts() {
     let edge_counts = vec![0, 0];
 
     assert!(
-        standardize_vertices_on_cell_rotation_fortran_indexed(&vertices_on_cell, &edge_counts)
-            .is_none()
+        standardize_vertices_on_cell_rotation_one_based(&vertices_on_cell, &edge_counts).is_none()
     );
 }
 
@@ -59,7 +57,7 @@ fn connect_on_cell_rebuilds_edges_and_neighbor_cells_from_ordered_vertices() {
         [12, 2],
     ];
 
-    let output = connect_on_cell_fortran_indexed(
+    let output = connect_on_cell_one_based(
         &n_edges_on_cell,
         &cells_on_edge,
         &edges_on_vertex,
@@ -78,7 +76,7 @@ fn connect_on_cell_rejects_vertex_pair_without_common_edge() {
     let edges_on_vertex = vec![[0, 0, 0], [0, 0, 0], [5, 7, 9], [6, 8, 0], [6, 7, 0]];
     let cells_on_edge = vec![[0, 0]; 10];
 
-    assert!(connect_on_cell_fortran_indexed(
+    assert!(connect_on_cell_one_based(
         &n_edges_on_cell,
         &cells_on_edge,
         &edges_on_vertex,
@@ -105,7 +103,7 @@ fn order_vertices_on_cell_sorts_remaining_vertices_ccw_from_first_vertex() {
     let vertices_on_cell = vec![vec![], vec![], vec![2, 4, 3, 5]];
     let n_edges_on_cell = vec![0, 0, 4];
 
-    let ordered = order_vertices_on_cell_fortran_indexed(
+    let ordered = order_vertices_on_cell_one_based(
         &cell_points,
         &vertex_points,
         &vertices_on_cell,
@@ -127,7 +125,7 @@ fn order_vertices_on_cell_rejects_missing_vertex_coordinates() {
     let vertices_on_cell = vec![vec![], vec![], vec![2, 3, 4]];
     let n_edges_on_cell = vec![0, 0, 3];
 
-    assert!(order_vertices_on_cell_fortran_indexed(
+    assert!(order_vertices_on_cell_one_based(
         &cell_points,
         &vertex_points,
         &vertices_on_cell,
@@ -148,7 +146,7 @@ fn magnitude_for_test(point: CartesianPoint) -> f64 {
 }
 
 #[test]
-fn plane_angle_signed_matches_fortran_normal_sign_rule() {
+fn plane_angle_signed_matches_canonical_normal_sign_rule() {
     let origin = CartesianPoint::new(0.0, 0.0, 0.0);
     let east = CartesianPoint::new(1.0, 0.0, 0.0);
     let north = CartesianPoint::new(0.0, 1.0, 0.0);
@@ -167,11 +165,11 @@ fn plane_angle_signed_matches_fortran_normal_sign_rule() {
 }
 
 #[test]
-fn spring_edge_adjustment_matches_fortran_ratio_and_displacement_formula() {
+fn spring_edge_adjustment_matches_canonical_ratio_and_displacement_formula() {
     let point_a = CartesianPoint::new(0.0, 0.0, 0.0);
     let point_b = CartesianPoint::new(10.0, 0.0, 0.0);
 
-    let adjustment = spring_edge_adjustment_fortran(point_a, point_b, 12.0, 8.0, 9.0, 7.0, 6.0)
+    let adjustment = spring_edge_adjustment_canonical(point_a, point_b, 12.0, 8.0, 9.0, 7.0, 6.0)
         .expect("valid spring edge adjustment");
 
     // twocosphi3 = (8^2 + 9^2 - 10^2)/(8*9) = 45/72
@@ -194,15 +192,15 @@ fn spring_edge_adjustment_matches_fortran_ratio_and_displacement_formula() {
 }
 
 #[test]
-fn spring_edge_adjustment_truncates_edge_vector_to_default_real_like_fortran() {
+fn spring_edge_adjustment_truncates_edge_vector_to_default_real_like_canonical() {
     let point_a = CartesianPoint::new(6_371_000.123_456_789, -12.345_678_901, 99.000_000_1);
     let point_b = CartesianPoint::new(6_371_017.987_654_321, 27.891_234_567, 101.000_000_9);
 
     let adjustment =
-        spring_edge_adjustment_fortran(point_a, point_b, 64.0, 31.25, 29.75, 33.5, 28.125)
+        spring_edge_adjustment_canonical(point_a, point_b, 64.0, 31.25, 29.75, 33.5, 28.125)
             .expect("valid spring edge adjustment");
 
-    // Fortran's dx/dy/dz assignment uses REAL(...) without a kind argument:
+    // Canonical's dx/dy/dz assignment uses REAL(...) without a kind argument:
     //   dx(iu) = real(xew8(iw2) - xew8(iw1))
     // so each edge-vector component is rounded to default real before the
     // distance and displacement are calculated.
@@ -223,18 +221,14 @@ fn spring_edge_adjustment_truncates_edge_vector_to_default_real_like_fortran() {
 }
 
 #[test]
-fn spring_edge_directions_match_fortran_cell_side_sign_rule() {
+fn spring_edge_directions_match_canonical_cell_side_sign_rule() {
     let n_edges_on_cell = vec![0, 0, 2, 2];
     let edges_on_cell = vec![vec![], vec![], vec![2, 3], vec![2, 4]];
     let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [4, 2], [3, 5]];
 
-    let directions = spring_edge_directions_fortran_indexed(
-        &n_edges_on_cell,
-        &edges_on_cell,
-        &cells_on_edge,
-        0.25,
-    )
-    .expect("valid spring direction inputs");
+    let directions =
+        spring_edge_directions_one_based(&n_edges_on_cell, &edges_on_cell, &cells_on_edge, 0.25)
+            .expect("valid spring direction inputs");
 
     assert_eq!(directions[0], Vec::<f64>::new());
     assert_eq!(directions[1], Vec::<f64>::new());
@@ -243,7 +237,7 @@ fn spring_edge_directions_match_fortran_cell_side_sign_rule() {
 }
 
 #[test]
-fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_fortran() {
+fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_canonical() {
     let cell_points = vec![
         CartesianPoint::new(0.0, 0.0, 0.0),
         CartesianPoint::new(0.0, 0.0, 0.0),
@@ -260,7 +254,7 @@ fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_fortran() {
         CartesianPoint::new(0.0, 2.0, 0.0),
     ];
 
-    let updated = spring_apply_cell_displacements_fortran_indexed(
+    let updated = spring_apply_cell_displacements_one_based(
         &cell_points,
         &n_edges_on_cell,
         &edges_on_cell,
@@ -271,7 +265,7 @@ fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_fortran() {
     .expect("valid spring displacement inputs");
 
     // Cell 2 raw update: (1,0,0) + 0.5*(1,0,0) - 0.25*(0,2,0) = (1.5,-0.5,0),
-    // then Fortran scales it back onto the sphere.
+    // then Canonical scales it back onto the sphere.
     approx_eq(updated[2].x, 0.9486832980505138, 1.0e-15);
     approx_eq(updated[2].y, -0.31622776601683794, 1.0e-15);
     approx_eq(updated[2].z, 0.0, 1.0e-15);
@@ -294,7 +288,7 @@ fn spring_global_iteration_wrapper_matches_manual_helper_composition() {
     let edges_on_edge_tri = vec![[0, 0, 0, 0], [0, 0, 0, 0], [2, 2, 2, 2], [3, 3, 3, 3]];
     let dists_on_edge = vec![0.0, 0.0, 2.0, 2.0];
 
-    let output = spring_global_iteration_fortran_indexed(
+    let output = spring_global_iteration_one_based(
         &cell_points,
         &n_edges_on_cell,
         &edges_on_cell,
@@ -306,7 +300,7 @@ fn spring_global_iteration_wrapper_matches_manual_helper_composition() {
     )
     .expect("valid spring global iteration inputs");
 
-    let adjustment2 = spring_edge_adjustment_fortran(
+    let adjustment2 = spring_edge_adjustment_canonical(
         cell_points[2],
         cell_points[3],
         dists_on_edge[2],
@@ -316,7 +310,7 @@ fn spring_global_iteration_wrapper_matches_manual_helper_composition() {
         std::f64::consts::SQRT_2,
     )
     .expect("edge 2 adjustment");
-    let adjustment3 = spring_edge_adjustment_fortran(
+    let adjustment3 = spring_edge_adjustment_canonical(
         cell_points[4],
         cell_points[2],
         dists_on_edge[3],
@@ -332,14 +326,10 @@ fn spring_global_iteration_wrapper_matches_manual_helper_composition() {
         adjustment2.displacement,
         adjustment3.displacement,
     ];
-    let directions = spring_edge_directions_fortran_indexed(
-        &n_edges_on_cell,
-        &edges_on_cell,
-        &cells_on_edge,
-        0.25,
-    )
-    .expect("directions");
-    let expected = spring_apply_cell_displacements_fortran_indexed(
+    let directions =
+        spring_edge_directions_one_based(&n_edges_on_cell, &edges_on_cell, &cells_on_edge, 0.25)
+            .expect("directions");
+    let expected = spring_apply_cell_displacements_one_based(
         &cell_points,
         &n_edges_on_cell,
         &edges_on_cell,
@@ -378,7 +368,7 @@ fn spring_dynamics_global_wrapper_repeats_single_iteration_updates() {
     let edges_on_edge_tri = vec![[0, 0, 0, 0], [0, 0, 0, 0], [2, 2, 2, 2], [3, 3, 3, 3]];
     let dists_on_edge = vec![0.0, 0.0, 2.0, 2.0];
 
-    let output = spring_dynamics_global_fortran_indexed(
+    let output = spring_dynamics_global_one_based(
         &cell_points,
         &n_edges_on_cell,
         &edges_on_cell,
@@ -392,7 +382,7 @@ fn spring_dynamics_global_wrapper_repeats_single_iteration_updates() {
     )
     .expect("valid spring dynamics inputs");
 
-    let first = spring_global_iteration_fortran_indexed(
+    let first = spring_global_iteration_one_based(
         &cell_points,
         &n_edges_on_cell,
         &edges_on_cell,
@@ -403,7 +393,7 @@ fn spring_dynamics_global_wrapper_repeats_single_iteration_updates() {
         1.0,
     )
     .expect("first iteration");
-    let second = spring_global_iteration_fortran_indexed(
+    let second = spring_global_iteration_one_based(
         &first.updated_cell_points,
         &n_edges_on_cell,
         &edges_on_cell,
@@ -451,7 +441,7 @@ fn spring_dynamics_regional_wrapper_moves_only_masked_cells_by_neighbor_average(
     let cells_on_cell = vec![vec![], vec![], vec![3, 4], vec![], vec![]];
     let move_mask = vec![false, false, true, false, false];
 
-    let output = spring_dynamics_regional_fortran_indexed(
+    let output = spring_dynamics_regional_one_based(
         &cell_points,
         &n_edges_on_cell,
         &cells_on_cell,
@@ -499,7 +489,7 @@ fn set_dbx_move_regional_step_masks_refined_cells_but_freezes_boundary_cells() {
     let n_edges_on_cell = vec![0, 0, 2, 2, 2, 1];
     let refined_triangles = vec![false, false, false, true, false];
 
-    let output = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+    let output = set_dbx_move_regional_step_one_based(RegionalMoveMaskInput {
         set_dis: 0,
         refined_triangles: &refined_triangles,
         cells_on_triangle: &cells_on_triangle,
@@ -525,7 +515,7 @@ fn set_dbx_move_regional_step_protects_seed_vertex_cells_when_refinement_touches
     let n_edges_on_cell = vec![0, 0, 2, 2, 2, 1];
     let refined_triangles = vec![false, false, false, true, false];
 
-    let output = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+    let output = set_dbx_move_regional_step_one_based(RegionalMoveMaskInput {
         set_dis: 0,
         refined_triangles: &refined_triangles,
         cells_on_triangle: &cells_on_triangle,
@@ -541,7 +531,7 @@ fn set_dbx_move_regional_step_protects_seed_vertex_cells_when_refinement_touches
 }
 
 #[test]
-fn edge_distance_angle_matches_fortran_meridian_edge_case() {
+fn edge_distance_angle_matches_canonical_meridian_edge_case() {
     let vertex1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let vertex2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
     let cell1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(-1.0, 0.5));
@@ -557,7 +547,7 @@ fn edge_distance_angle_matches_fortran_meridian_edge_case() {
     let lon_edge = vec![0.0, 0.0, 0.0];
     let lat_edge = vec![0.0, 0.0, 0.5];
 
-    let output = edge_distance_angle_fortran_indexed(
+    let output = edge_distance_angle_one_based(
         &vertices,
         &cells,
         &edge_points,
@@ -592,7 +582,7 @@ fn edge_distance_angle_rejects_bad_connectivity() {
     let cells_on_edge = vec![[0, 0], [0, 0], [2, 2]];
     let coords = vec![0.0, 0.0, 0.0];
 
-    assert!(edge_distance_angle_fortran_indexed(
+    assert!(edge_distance_angle_one_based(
         &vertices,
         &cells,
         &edge_points,
@@ -606,8 +596,8 @@ fn edge_distance_angle_rejects_bad_connectivity() {
 }
 
 #[test]
-fn edge_id_sort_reorders_edges_to_match_reference_cells_and_rebuilds_edges_on_vertex() {
-    let cells_on_edge_reference = vec![[0, 0], [0, 0], [10, 20], [30, 40]];
+fn edge_id_sort_reorders_edges_to_match_canonical_cells_and_rebuilds_edges_on_vertex() {
+    let cells_on_edge_canonical = vec![[0, 0], [0, 0], [10, 20], [30, 40]];
     let cells_on_edge = vec![[0, 0], [0, 0], [30, 40], [10, 20]];
     let vertices_on_edge = vec![[0, 0], [0, 0], [4, 5], [2, 3]];
     let edge_points = vec![
@@ -617,9 +607,9 @@ fn edge_id_sort_reorders_edges_to_match_reference_cells_and_rebuilds_edges_on_ve
         LonLatDegrees::new(10.0, 20.0),
     ];
 
-    let output = edge_id_sort_fortran_indexed(
+    let output = edge_id_sort_one_based(
         6,
-        &cells_on_edge_reference,
+        &cells_on_edge_canonical,
         &cells_on_edge,
         &vertices_on_edge,
         &edge_points,
@@ -639,15 +629,15 @@ fn edge_id_sort_reorders_edges_to_match_reference_cells_and_rebuilds_edges_on_ve
 }
 
 #[test]
-fn edge_id_sort_rejects_missing_reference_match() {
-    let cells_on_edge_reference = vec![[0, 0], [0, 0], [10, 20]];
+fn edge_id_sort_rejects_missing_canonical_match() {
+    let cells_on_edge_canonical = vec![[0, 0], [0, 0], [10, 20]];
     let cells_on_edge = vec![[0, 0], [0, 0], [30, 40]];
     let vertices_on_edge = vec![[0, 0], [0, 0], [2, 3]];
     let edge_points = vec![LonLatDegrees::new(0.0, 0.0); 3];
 
-    assert!(edge_id_sort_fortran_indexed(
+    assert!(edge_id_sort_one_based(
         4,
-        &cells_on_edge_reference,
+        &cells_on_edge_canonical,
         &cells_on_edge,
         &vertices_on_edge,
         &edge_points,
@@ -656,7 +646,7 @@ fn edge_id_sort_rejects_missing_reference_match() {
 }
 
 #[test]
-fn set_weights_on_edge_matches_fortran_two_cell_stencil() {
+fn set_weights_on_edge_matches_canonical_two_cell_stencil() {
     let area_cell = vec![0.0, 0.0, 1.0, 1.0];
     let angle_edge = vec![0.0; 8];
     let dc_edge = vec![1.0; 8];
@@ -701,7 +691,7 @@ fn set_weights_on_edge_matches_fortran_two_cell_stencil() {
     ];
     let n_edges_on_cell = vec![0, 0, 3, 3];
 
-    let output = set_weights_on_edge_fortran_indexed(
+    let output = set_weights_on_edge_one_based(
         &area_cell,
         &angle_edge,
         &dc_edge,
@@ -739,7 +729,7 @@ fn set_weights_on_edge_rejects_missing_cell_in_vertex_kite_lookup() {
     let vertices_on_edge = vec![[0, 0], [0, 0], [2, 3]];
     let n_edges_on_cell = vec![0, 0, 1, 1];
 
-    assert!(set_weights_on_edge_fortran_indexed(
+    assert!(set_weights_on_edge_one_based(
         &area_cell,
         &angle_edge,
         &dc_edge,

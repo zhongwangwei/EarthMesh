@@ -1,19 +1,20 @@
+use crate::grid_covers_area_judge_bounds_one_based;
+use crate::AreaJudgeSeaOrLandReport;
 use std::io;
 
+use earthmesh_core::DomainMarker;
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-use crate::*;
-
 /// Build `seaorland` from `IsInDmArea_grid` and `landtypes_global`.
-pub fn build_area_judge_seaorland_fortran_indexed(
+pub fn build_area_judge_seaorland_one_based(
     is_in_domain: &[Vec<i32>],
     landtypes_global: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
     mesh_type: &str,
     refine: bool,
 ) -> io::Result<AreaJudgeSeaOrLandReport> {
-    grid_covers_area_judge_bounds_fortran_indexed("IsInDmArea_grid", is_in_domain, bounds)?;
-    grid_covers_area_judge_bounds_fortran_indexed("landtypes_global", landtypes_global, bounds)?;
+    grid_covers_area_judge_bounds_one_based("IsInDmArea_grid", is_in_domain, bounds)?;
+    grid_covers_area_judge_bounds_one_based("landtypes_global", landtypes_global, bounds)?;
 
     let nlons_source = is_in_domain.len().saturating_sub(1);
     let nlats_source = is_in_domain
@@ -35,7 +36,9 @@ pub fn build_area_judge_seaorland_fortran_indexed(
         let landtype_row = &landtypes_global[lon_index];
         let seaorland_row = &mut seaorland[lon_index];
         for lat_index in bounds.maxlat_source..=bounds.minlat_source {
-            if domain_row[lat_index] != 0 && landtype_row[lat_index] != 0 {
+            if DomainMarker::from_area_judge_values(domain_row[lat_index], landtype_row[lat_index])
+                == DomainMarker::Land
+            {
                 seaorland_row[lat_index] = 1;
                 sum_land_grid += 1;
             }

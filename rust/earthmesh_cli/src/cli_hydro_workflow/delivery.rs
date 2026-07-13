@@ -54,7 +54,7 @@ pub(crate) fn run_hydro_delivery_manifest(
         ranking_json.ok_or_else(|| usage("--hydro-delivery-manifest requires --ranking-json"))?;
     let output_json =
         output_json.ok_or_else(|| usage("--hydro-delivery-manifest requires --output-json"))?;
-    earthmesh_cli::write_hydro_delivery_manifest(
+    earthmesh_cli::hydro_delivery_manifest::write_hydro_delivery_manifest(
         &case_name,
         &eval_json,
         &ranking_json,
@@ -118,7 +118,7 @@ pub(crate) fn run_hydro_sweep_recipes(args: impl Iterator<Item = String>) -> Res
     let coast = coast.ok_or_else(|| usage("--hydro-sweep-recipes requires --coast-geojson"))?;
     let output_dir =
         output_dir.ok_or_else(|| usage("--hydro-sweep-recipes requires --output-dir"))?;
-    let count = earthmesh_cli::write_sweep_recipes(
+    let count = earthmesh_cli::hydro_sweep::write_sweep_recipes(
         &output_dir,
         &river,
         &coast,
@@ -168,8 +168,9 @@ pub(crate) fn run_hydro_sweep_rank(args: impl Iterator<Item = String>) -> Result
     }
     let output_json =
         output_json.ok_or_else(|| usage("--hydro-sweep-rank requires --output-json"))?;
-    let recommended = earthmesh_cli::write_sweep_ranking(&reports, &output_json, max_background)
-        .map_err(|err| format!("sweep ranking: {err}"))?;
+    let recommended =
+        earthmesh_cli::hydro_sweep::write_sweep_ranking(&reports, &output_json, max_background)
+            .map_err(|err| format!("sweep ranking: {err}"))?;
     println!("hydro_sweep_recommended={recommended}");
     println!("hydro_sweep_ranking_output={}", output_json.display());
     Ok(())
@@ -212,7 +213,7 @@ pub(crate) fn run_hydro_refinement_eval(args: impl Iterator<Item = String>) -> R
             "--hydro-refinement-eval needs <background.geojson> <intersections.geojson> <out.json>",
         ));
     }
-    earthmesh_cli::write_refinement_eval_json(
+    earthmesh_cli::hydro_refinement_eval::write_refinement_eval_json(
         &positional[0],
         &positional[1],
         &positional[2],
@@ -264,7 +265,7 @@ pub(crate) fn run_hydro_mesh_qa(args: impl Iterator<Item = String>) -> Result<()
     let delivery_manifest =
         delivery_manifest.ok_or_else(|| usage("--hydro-mesh-qa requires --delivery-manifest"))?;
     let output_json = output_json.ok_or_else(|| usage("--hydro-mesh-qa requires --output-json"))?;
-    let report = earthmesh_cli::write_hydro_mesh_qa_report(
+    let report = earthmesh_cli::hydro_delivery_qa::write_hydro_mesh_qa_report(
         &delivery_manifest,
         &output_json,
         colm_summary.as_deref(),

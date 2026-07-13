@@ -26,9 +26,10 @@ impl ReproducibilityManifest {
     }
 }
 
-fn sha256_file(path: &str) -> Option<InputFingerprint> {
+fn sha256_file(path: &str) -> Result<InputFingerprint, String> {
     use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(path).ok()?;
+    let bytes =
+        std::fs::read(path).map_err(|err| format!("fingerprint enabled input {path}: {err}"))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let sha256 = hasher
@@ -36,7 +37,7 @@ fn sha256_file(path: &str) -> Option<InputFingerprint> {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    Some(InputFingerprint {
+    Ok(InputFingerprint {
         path: path.to_string(),
         sha256,
         bytes: bytes.len() as u64,
@@ -45,14 +46,15 @@ fn sha256_file(path: &str) -> Option<InputFingerprint> {
 
 impl ProjectConfig {
     /// Build a reproducibility manifest: hash the enabled data-layer inputs and
-    /// snapshot the lowered namelist. Files that can't be read are skipped.
+    /// snapshot the lowered namelist. Every enabled input must be readable so a
+    /// manifest can never claim reproducibility while silently omitting data.
     pub fn try_reproducibility_manifest(&self) -> Result<ReproducibilityManifest, String> {
         let inputs = self
             .data_layers
             .iter()
             .filter(|l| l.enabled && !l.path.trim().is_empty())
-            .filter_map(|l| sha256_file(&l.path))
-            .collect();
+            .map(|l| sha256_file(&l.path))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(ReproducibilityManifest {
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             schema_version: self.schema_version.clone(),

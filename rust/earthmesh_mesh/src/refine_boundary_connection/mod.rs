@@ -1,13 +1,13 @@
 use std::io;
 
-use crate::{boundary_closed_curves_fortran_indexed, push_boundary_neighbor, BoundaryConnection};
+use crate::{boundary_closed_curves_one_based, push_boundary_neighbor, BoundaryConnection};
 
 /// Pure-data port of `MOD_refine.F90:bdy_connection_make`.
 ///
 /// Builds boundary vertex-vertex connections from unrefined triangles that have
 /// exactly one refined neighbor (`sum(mrl_bk(ngrmm(:, i))) == 6`), validates the
 /// closed boundary degree invariant, then reuses the shared closed-curve walker.
-pub fn refine_boundary_connection_make_fortran_indexed(
+pub fn refine_boundary_connection_make_one_based(
     num_vertex: usize,
     sjx_points: usize,
     lbx_points: usize,
@@ -51,7 +51,7 @@ pub fn refine_boundary_connection_make_fortran_indexed(
             if neighbor >= mrl_bk.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("triangle {triangle} references invalid neighbor {neighbor}"),
+                    format!("triangle {triangle} canonicals invalid neighbor {neighbor}"),
                 ));
             }
             neighbor_state_sum += mrl_bk[neighbor];
@@ -128,7 +128,7 @@ pub fn refine_boundary_connection_make_fortran_indexed(
         ));
     }
 
-    let curves = boundary_closed_curves_fortran_indexed(&boundary_order, &boundary_neighbors)?;
+    let curves = boundary_closed_curves_one_based(&boundary_order, &boundary_neighbors)?;
     Ok(BoundaryConnection {
         bdy_num_in,
         boundary_order,

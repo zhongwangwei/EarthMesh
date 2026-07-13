@@ -13,7 +13,7 @@ pub(super) fn renew_mask_postproc_data_from_layout(
         .iter()
         .map(|&value| value == 1)
         .collect::<Vec<_>>();
-    earthmesh_mesh::renew_mask_postproc_data_fortran_indexed(
+    earthmesh_mesh::renew_mask_postproc_data_one_based(
         mode_grid,
         &active_centers,
         &layout.center_neighbors,

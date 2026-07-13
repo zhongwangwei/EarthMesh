@@ -7,27 +7,27 @@ fn assert_close(actual: f64, expected: f64) {
 
 #[test]
 fn mpas_simple_builder_ports_cal_simple_payload_semantics() {
-    let mesh = earthmesh_cli::UnstructuredMesh {
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 90.0,
                 lat: 0.0,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 0.0,
                 lat: 90.0,
             },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 180.0,
                 lat: 0.0,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 90.0,
                 lat: 0.0,
             },
@@ -39,7 +39,7 @@ fn mpas_simple_builder_ports_cal_simple_payload_semantics() {
     let cellwidth = vec![10.0, 20.0, 40.0, 80.0];
 
     let simple =
-        earthmesh_cli::build_mpas_simple_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth)
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_simple_mesh_from_unstructured_one_based(&mesh, &cellwidth)
             .expect("build MPAS Simple payload");
 
     assert_eq!(
@@ -77,11 +77,11 @@ fn mpas_simple_builder_ports_cal_simple_payload_semantics() {
 
 #[test]
 fn mpas_simple_builder_rejects_invalid_cellwidth_inputs() {
-    let mesh = earthmesh_cli::UnstructuredMesh {
-        m_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }],
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 1.0 },
         ],
         m_to_w: vec![[1, 1, 1]],
         w_to_m: vec![vec![1], vec![1]],
@@ -89,12 +89,12 @@ fn mpas_simple_builder_rejects_invalid_cellwidth_inputs() {
     };
 
     let short =
-        earthmesh_cli::build_mpas_simple_mesh_from_unstructured_fortran_indexed(&mesh, &[1.0])
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_simple_mesh_from_unstructured_one_based(&mesh, &[1.0])
             .expect_err("short cellwidth rejected");
     assert!(short.to_string().contains("cellwidth length"));
 
     let zero =
-        earthmesh_cli::build_mpas_simple_mesh_from_unstructured_fortran_indexed(&mesh, &[1.0, 0.0])
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_simple_mesh_from_unstructured_one_based(&mesh, &[1.0, 0.0])
             .expect_err("zero cellwidth rejected");
     assert!(zero.to_string().contains("positive"));
 }
@@ -111,19 +111,19 @@ fn mpas_simple_file_pipeline_reads_inputs_and_writes_simple_output() {
     let cellwidth_file = root.join("cellwidth_NXP0004_global.nc4");
     let output = root.join("MPASOUT_NXP0004_global_Simple.nc4");
 
-    let mesh = earthmesh_cli::UnstructuredMesh {
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 90.0,
                 lat: 0.0,
             },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 180.0,
                 lat: 0.0,
             },
@@ -132,14 +132,15 @@ fn mpas_simple_file_pipeline_reads_inputs_and_writes_simple_output() {
         w_to_m: vec![vec![1], vec![1, 2], vec![2, 1]],
         n_w_to_m: vec![1, 2, 2],
     };
-    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh).expect("write gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write gridfile");
     write_cellwidth_fixture(&cellwidth_file, &[12.0, 24.0, 48.0]);
 
-    let cellwidth =
-        earthmesh_cli::read_cellwidth_netcdf(&cellwidth_file).expect("read cellwidth file");
+    let cellwidth = earthmesh_cli::mesh_metric_writers::read_cellwidth_netcdf(&cellwidth_file)
+        .expect("read cellwidth file");
     assert_eq!(cellwidth, vec![12.0, 24.0, 48.0]);
 
-    let report = earthmesh_cli::write_mpas_simple_mesh_from_netcdf_inputs(
+    let report = earthmesh_cli::gridfile_output_writers::write_mpas_simple_mesh_from_netcdf_inputs(
         &gridfile,
         &cellwidth_file,
         &output,
@@ -160,7 +161,7 @@ fn mpas_simple_file_pipeline_reads_inputs_and_writes_simple_output() {
 }
 
 fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
-    let mut file = netcdf::create(path).expect("create cellwidth fixture");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create cellwidth fixture");
     file.add_dimension("num_dbx", values.len())
         .expect("num_dbx dim");
     let mut var = file

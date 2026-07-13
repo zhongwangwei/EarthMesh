@@ -13,7 +13,6 @@ impl ProjectLayerRole {
             ProjectLayerRole::LandType => "landcover",
             ProjectLayerRole::MeritHydro => "merit",
             ProjectLayerRole::Cama => "cama",
-            ProjectLayerRole::SpecifiedMask => "mask",
             ProjectLayerRole::Threshold(_) => "threshold",
         }
     }
@@ -25,7 +24,6 @@ impl ProjectLayerRole {
     pub fn label(self) -> String {
         match self {
             ProjectLayerRole::LandType => "land type".to_string(),
-            ProjectLayerRole::SpecifiedMask => "specified mask".to_string(),
             ProjectLayerRole::MeritHydro => "MERIT-Hydro".to_string(),
             ProjectLayerRole::Cama => "CaMa".to_string(),
             ProjectLayerRole::Threshold(field) => {

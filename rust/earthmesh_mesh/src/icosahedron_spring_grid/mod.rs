@@ -2,11 +2,11 @@ use super::*;
 
 /// Port of one main-loop iteration in `icosahedron.F90:spring_dynamics1`.
 ///
-/// `dist00` is the coarse target segment length computed by Fortran as
-/// `beta * pi2_r8 * erad8 / (5 * nxp)`. The routine applies the OLAM-6.4
+/// `dist00` is the coarse target segment length computed by Canonical as
+/// `beta * pi2_r8 * erad8 / (5 * nxp)`. The routine applies the Method-C-6.4
 /// `dist00 / 1.2` target scaling, opposite-angle ratio clamp, per-M-point
 /// direction signs from `IcosahedronSpringTopology`, and radius normalization.
-pub fn icosahedron_spring_iteration_fortran(
+pub fn icosahedron_spring_iteration_canonical(
     m_points: &[CartesianPoint],
     topology: &IcosahedronSpringTopology,
     dist00: f64,
@@ -98,11 +98,11 @@ pub fn icosahedron_spring_iteration_fortran(
 
 /// Multi-iteration wrapper for `icosahedron.F90:spring_dynamics1`.
 ///
-/// It repeatedly applies `icosahedron_spring_iteration_fortran` and records the
-/// Fortran-style periodic Max-DS diagnostic for `iter == 1` or
+/// It repeatedly applies `icosahedron_spring_iteration_canonical` and records the
+/// Canonical-style periodic Max-DS diagnostic for `iter == 1` or
 /// `iter % diagnostic_every == 0`, comparing each diagnostic iteration against
 /// the coordinates at the start of that same iteration.
-pub fn icosahedron_spring_dynamics1_fortran(
+pub fn icosahedron_spring_dynamics1_canonical(
     m_points: &[CartesianPoint],
     topology: &IcosahedronSpringTopology,
     niter: usize,
@@ -126,21 +126,21 @@ pub fn icosahedron_spring_dynamics1_fortran(
             return None;
         }
         let record_diagnostic = iteration == 1 || iteration % diagnostic_every == 0;
-        let diagnostic_reference = if record_diagnostic {
+        let diagnostic_canonical = if record_diagnostic {
             Some(current_m_points.clone())
         } else {
             None
         };
 
         let iteration_output =
-            icosahedron_spring_iteration_fortran(&current_m_points, topology, dist00, radius)?;
+            icosahedron_spring_iteration_canonical(&current_m_points, topology, dist00, radius)?;
         current_m_points = iteration_output.updated_m_points;
         last_edge_displacements = iteration_output.edge_displacements;
 
-        if let Some(reference) = diagnostic_reference {
+        if let Some(canonical) = diagnostic_canonical {
             let mut max_displacement = 0.0_f64;
             for im in 2..current_m_points.len() {
-                let displacement = magnitude(vector_between(reference[im], current_m_points[im]));
+                let displacement = magnitude(vector_between(canonical[im], current_m_points[im]));
                 max_displacement = max_displacement.max(displacement);
             }
             diagnostic_max_displacements.push(SpringDiagnosticMaxDisplacement {

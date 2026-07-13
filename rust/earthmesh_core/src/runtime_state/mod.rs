@@ -14,7 +14,7 @@ pub struct EarthRadii {
 }
 
 impl EarthRadii {
-    /// Build the same secondary radius values that Fortran initializes from `erad`.
+    /// Build the same secondary radius values that Canonical initializes from `erad`.
     pub fn from_radius_meters(radius_meters: f64) -> Self {
         let double_radius_meters = radius_meters * 2.0;
         Self {
@@ -36,7 +36,7 @@ impl Default for EarthRadii {
 /// Rust-owned replacement for `MOD_data_preprocess` source-grid globals kept in
 /// `consts_coms`.
 ///
-/// Fortran derives `nlons_source` and `nlats_source` from
+/// Canonical derives `nlons_source` and `nlats_source` from
 /// `gridnum_perdegree`, then records `maxlc` after reading the landtype source.
 /// Keeping these values on the explicit runtime state removes another implicit
 /// handoff from the old module-global bundle.
@@ -49,7 +49,7 @@ pub struct SourceGridState {
 
 /// Rust-owned replacement for `consts_coms` mask counter globals.
 ///
-/// The Fortran driver mutates `mask_domain_ndm`, `mask_refine_ndm(0:9)`, and
+/// The Canonical driver mutates `mask_domain_ndm`, `mask_refine_ndm(0:9)`, and
 /// `mask_patch_ndm(0:9)` while applying `Mask_make`. Keeping the final counters
 /// on runtime state makes downstream Area_judge/refine handoffs explicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -82,15 +82,12 @@ impl Default for RuntimeScalarState {
     }
 }
 
-#[deprecated(note = "use RuntimeScalarState")]
-pub type LegacyScalarState = RuntimeScalarState;
-
 /// Rust-owned replacement for the production `consts_coms` + `mem_*` global
-/// bundle used by the legacy Fortran driver.
+/// bundle used by the compatibility Canonical driver.
 ///
 /// The individual memory structs preserve the old allocation/default rules;
 /// this container makes the runtime dependency explicit so downstream mkgrd and
-/// refine code can receive state by value/reference instead of reading module
+/// refine code can receive state by value/canonical instead of reading module
 /// globals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EarthmeshRuntimeState {
@@ -111,7 +108,7 @@ pub struct EarthmeshRuntimeState {
 }
 
 impl EarthmeshRuntimeState {
-    /// Initialize the non-allocating runtime state that Fortran gets from
+    /// Initialize the non-allocating runtime state that Canonical gets from
     /// `consts_coms` defaults plus `mkgrd:init_consts`.
     pub fn new(config: EarthmeshConfig) -> Self {
         Self {
@@ -138,7 +135,7 @@ impl EarthmeshRuntimeState {
         self
     }
 
-    /// Return the configured `nxp` as a Rust index/count, rejecting the legacy
+    /// Return the configured `nxp` as a Rust index/count, rejecting the compatibility
     /// uninitialized or invalid non-positive values at the state boundary.
     pub fn try_nxp(&self) -> Result<usize, String> {
         if self.config.nxp <= 0 {
@@ -167,12 +164,12 @@ impl EarthmeshRuntimeState {
         self
     }
 
-    /// Record real mesh point counts for a Fortran-style 1-based `mkgrd` step.
+    /// Record real mesh point counts for a Canonical-style 1-based `mkgrd` step.
     ///
-    /// Fortran stores `num_mp_step(step)` and `num_wp_step(step)` after reading
+    /// Canonical stores `num_mp_step(step)` and `num_wp_step(step)` after reading
     /// or generating a grid.  The Rust array uses `step - 1` as the storage
     /// slot while keeping `self.step` in the same 1-based convention as the
-    /// migrated orchestration.
+    /// current orchestration.
     pub fn record_mesh_counts_for_step(
         &mut self,
         step: usize,
@@ -194,9 +191,9 @@ impl EarthmeshRuntimeState {
         Ok(())
     }
 
-    /// Record the legacy `num_vertex` boundary reported by `Get_Contain`.
+    /// Record the compatibility `num_vertex` boundary reported by `Get_Contain`.
     ///
-    /// Fortran kept this value in `consts_coms` as an implicit module-global
+    /// Canonical kept this value in `consts_coms` as an implicit module-global
     /// handoff between containment and postprocess code. Rust keeps it on the
     /// explicit runtime state and rejects the uninitialized zero sentinel when a
     /// production handoff attempts to record it.
@@ -210,7 +207,7 @@ impl EarthmeshRuntimeState {
 
     /// Record the `MOD_GetContain` refine-area `num_center` handoff.
     ///
-    /// Fortran derives `num_center = num_wp_step(step-1)` before computing
+    /// Canonical derives `num_center = num_wp_step(step-1)` before computing
     /// refine-area containment. Rust keeps `step` 1-based like the driver while
     /// reading the previous step from the zero-based storage slot.
     pub fn record_num_center_from_previous_step(&mut self, step: usize) -> Result<(), String> {
@@ -239,7 +236,7 @@ impl EarthmeshRuntimeState {
 
     /// Record the `icosahedron` `impent(12)` scratch handoff explicitly.
     ///
-    /// The legacy Fortran icosahedron initializer stores the 12 pentagonal
+    /// The compatibility Canonical icosahedron initializer stores the 12 pentagonal
     /// M-point indices in `consts_coms:impent`; keeping them here avoids another
     /// hidden module-global dependency when spring/grid kernels need the same
     /// pentagon markers.
@@ -259,7 +256,7 @@ impl EarthmeshRuntimeState {
     /// Record source-grid dimensions and maximum land class from the
     /// `MOD_data_preprocess` stage.
     ///
-    /// Fortran stores `nlons_source = gridnum_perdegree * 360`,
+    /// Canonical stores `nlons_source = gridnum_perdegree * 360`,
     /// `nlats_source = gridnum_perdegree * 180`, and `maxlc =
     /// maxval(landtypes_global)` in `consts_coms`. Rust derives the dimensions
     /// from the typed config and keeps the resulting handoff explicit.
@@ -290,7 +287,7 @@ impl EarthmeshRuntimeState {
         Ok(())
     }
 
-    /// Allocate all migrated `mem_grid`, `mem_ijtabs`, and `mem_delaunay`
+    /// Allocate all current `mem_grid`, `mem_ijtabs`, and `mem_delaunay`
     /// buffers from one explicit shape.
     pub fn allocate_mesh_memories(&mut self, shape: MeshMemoryShape) {
         self.grid.nma = shape.nma;
@@ -308,10 +305,5 @@ impl EarthmeshRuntimeState {
         self.ijtabs = IjTabs::allocate(shape.mma, shape.mva, shape.mwa);
         self.delaunay
             .allocate_itabsd(shape.mma, shape.mua, shape.mwa);
-    }
-
-    #[deprecated(note = "use allocate_mesh_memories")]
-    pub fn allocate_legacy_memories(&mut self, shape: MeshMemoryShape) {
-        self.allocate_mesh_memories(shape);
     }
 }

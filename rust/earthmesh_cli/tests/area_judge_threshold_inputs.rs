@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    read_area_judge_threshold_inputs_fortran_indexed, AreaJudgeThresholdReadConfig,
+    area_judge_threshold_inputs::read_area_judge_threshold_inputs_one_based,
+    area_judge_types::AreaJudgeThresholdReadConfig,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ fn one_based_landtypes(nx: usize, ny: usize) -> Vec<Vec<i32>> {
 }
 
 fn write_2d_threshold(path: &Path, var_name: &str, nx: usize, ny: usize, base: f64) {
-    let mut file = netcdf::create(path).expect("create threshold file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create threshold file");
     file.add_dimension("lon", nx).expect("lon dim");
     file.add_dimension("lat", ny).expect("lat dim");
     let mut var = file
@@ -38,7 +39,7 @@ fn write_2d_threshold(path: &Path, var_name: &str, nx: usize, ny: usize, base: f
 }
 
 fn write_2layer_threshold(path: &Path, var_name: &str, nx: usize, ny: usize, base: f64) {
-    let mut file = netcdf::create(path).expect("create threshold file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create threshold file");
     file.add_dimension("lon", nx).expect("lon dim");
     file.add_dimension("lat", ny).expect("lat dim");
     for (layer_index, suffix) in ["l1", "l2"].iter().enumerate() {
@@ -70,7 +71,7 @@ fn threshold_inputs_follow_area_judge_bounds_and_mesh_type_dispatch() {
     write_2d_threshold(&root.join("sst.nc"), "sst", 5, 5, 20_000.0);
     write_2d_threshold(&root.join("typhoon.nc"), "typhoon", 5, 5, 30_000.0);
 
-    let report = read_area_judge_threshold_inputs_fortran_indexed(
+    let report = read_area_judge_threshold_inputs_one_based(
         AreaJudgeThresholdReadConfig {
             threshold_dir: &root,
             mesh_type: "LOCmesh",
@@ -150,7 +151,7 @@ fn threshold_inputs_skip_irrelevant_mesh_type_readers() {
     let root = temp_root("area_judge_threshold_inputs_land_only");
     write_2d_threshold(&root.join("lai.nc"), "lai", 5, 5, 0.0);
 
-    let report = read_area_judge_threshold_inputs_fortran_indexed(
+    let report = read_area_judge_threshold_inputs_one_based(
         AreaJudgeThresholdReadConfig {
             threshold_dir: &root,
             mesh_type: "landmesh",

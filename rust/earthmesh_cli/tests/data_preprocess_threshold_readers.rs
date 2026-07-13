@@ -1,14 +1,16 @@
 use std::fs;
 
 use earthmesh_cli::{
-    data_read_onelayer_fortran_indexed, data_read_twolayer_fortran_indexed,
-    threshold_read_lnd_fortran_indexed, threshold_read_ocn_fortran_indexed, ThresholdReadLndConfig,
-    ThresholdReadOcnConfig,
+    area_judge_threshold_inputs::data_read_onelayer_one_based,
+    area_judge_threshold_inputs::data_read_twolayer_one_based,
+    area_judge_threshold_inputs::threshold_read_lnd_one_based,
+    area_judge_threshold_inputs::threshold_read_ocn_one_based,
+    area_judge_types::ThresholdReadLndConfig, area_judge_types::ThresholdReadOcnConfig,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 #[test]
-fn data_preprocess_onelayer_and_twolayer_read_fortran_windows() {
+fn data_preprocess_onelayer_and_twolayer_read_canonical_windows() {
     let root = temp_root("earthmesh_cli_data_preprocess_threshold_windows");
     write_2d_file(&root.join("lai.nc"), "lai", &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     write_2layer_file(
@@ -24,13 +26,13 @@ fn data_preprocess_onelayer_and_twolayer_read_fortran_windows() {
         minlat_source: 2,
     };
 
-    let one = data_read_onelayer_fortran_indexed(root.join("lai.nc"), "lai", bounds)
+    let one = data_read_onelayer_one_based(root.join("lai.nc"), "lai", bounds)
         .expect("read onelayer window");
     assert_eq!(one.name, "lai");
     assert_eq!(one.values[1][1], 3.0);
     assert_eq!(one.values[2][2], 6.0);
 
-    let two = data_read_twolayer_fortran_indexed(root.join("k_s.nc"), "k_s", bounds)
+    let two = data_read_twolayer_one_based(root.join("k_s.nc"), "k_s", bounds)
         .expect("read twolayer window");
     assert_eq!(two.name, "k_s");
     assert_eq!(two.layers[0][1][1], 30.0);
@@ -50,7 +52,7 @@ fn data_preprocess_onelayer_reads_lat_lon_source_data_order() {
         minlat_source: 2,
     };
 
-    let one = data_read_onelayer_fortran_indexed(root.join("lai.nc"), "lai", bounds)
+    let one = data_read_onelayer_one_based(root.join("lai.nc"), "lai", bounds)
         .expect("read lat-lon onelayer window");
     assert_eq!(one.values[1][1], 2.0);
     assert_eq!(one.values[2][2], 6.0);
@@ -90,7 +92,7 @@ fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
         minlat_source: 2,
     };
 
-    let lnd = threshold_read_lnd_fortran_indexed(ThresholdReadLndConfig {
+    let lnd = threshold_read_lnd_one_based(ThresholdReadLndConfig {
         threshold_dir: &root,
         refine_onelayer_lnd: &[true, false, false, false, true, false, false, false],
         refine_twolayer_lnd: &[
@@ -106,7 +108,7 @@ fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
     assert!(lnd.twolayer[0].is_some());
     assert!(lnd.twolayer[1].is_none());
 
-    let ocn = threshold_read_ocn_fortran_indexed(ThresholdReadOcnConfig {
+    let ocn = threshold_read_ocn_one_based(ThresholdReadOcnConfig {
         threshold_dir: &root,
         refine_onelayer_ocn: &[true, false, false, false, false, false, false, false],
         bounds,
@@ -119,7 +121,7 @@ fn threshold_read_lnd_and_ocn_follow_enabled_flag_pairs() {
 }
 
 fn write_2d_file(path: &std::path::Path, var: &str, values: &[f64]) {
-    let mut file = netcdf::create(path).expect("create 2d threshold file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create 2d threshold file");
     file.add_dimension("lon", 3).expect("lon dim");
     file.add_dimension("lat", 2).expect("lat dim");
     let mut variable = file
@@ -131,7 +133,7 @@ fn write_2d_file(path: &std::path::Path, var: &str, values: &[f64]) {
 }
 
 fn write_2d_lat_lon_file(path: &std::path::Path, var: &str, values: &[f64]) {
-    let mut file = netcdf::create(path).expect("create lat-lon threshold file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create lat-lon threshold file");
     file.add_dimension("latitude", 2).expect("latitude dim");
     file.add_dimension("longitude", 3).expect("longitude dim");
     let mut variable = file
@@ -143,7 +145,7 @@ fn write_2d_lat_lon_file(path: &std::path::Path, var: &str, values: &[f64]) {
 }
 
 fn write_2layer_file(path: &std::path::Path, stem: &str, layer1: &[f64], layer2: &[f64]) {
-    let mut file = netcdf::create(path).expect("create 2layer threshold file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create 2layer threshold file");
     file.add_dimension("lon", 3).expect("lon dim");
     file.add_dimension("lat", 2).expect("lat dim");
     for (suffix, values) in [("l1", layer1), ("l2", layer2)] {

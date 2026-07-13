@@ -1,7 +1,4 @@
-use crate::{
-    AreaJudgeSeaOrLandReport, LandtypeDataPreprocessReport, MkgrdRefinePrepareSourceGridOptions,
-    V3DataSourceDescriptor,
-};
+use crate::{AreaJudgeSeaOrLandReport, LandtypeDataPreprocessReport, V3DataSourceDescriptor};
 
 /// Combined `MOD_data_preprocess` + `MOD_Area_judge` source-grid state.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,8 +8,8 @@ pub struct DataPreprocessAreaJudgeSourceReport {
 }
 
 /// Owned source state derived from `MOD_data_preprocess` and `Area_judge`
-/// that can be passed into the migrated `mkgrd` refine stack without an
-/// external source-state text file or Fortran module globals.
+/// that can be passed into the current `mkgrd` refine stack without an
+/// external source-state text file or Canonical module globals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdDataPreprocessSourceState {
     pub lon_vertex: Vec<f64>,
@@ -29,21 +26,6 @@ pub struct MkgrdDataPreprocessSourceState {
     pub seaorland: Vec<Vec<i32>>,
     pub landtypes_global: Vec<Vec<i32>>,
     pub maxlc: i32,
-}
-
-impl MkgrdDataPreprocessSourceState {
-    pub fn refine_prepare_source_grid(&self) -> MkgrdRefinePrepareSourceGridOptions<'_> {
-        MkgrdRefinePrepareSourceGridOptions {
-            lon_vertex: &self.lon_vertex,
-            lat_vertex: &self.lat_vertex,
-            lon_i: &self.lon_i,
-            lat_i: &self.lat_i,
-            gridnum_perdegree: self.gridnum_perdegree,
-            nlons_source: self.nlons_source,
-            nlats_source: self.nlats_source,
-            first_triangle_id: self.first_triangle_id,
-        }
-    }
 }
 
 /// Owned context required to construct land final-domain postprocessing from a

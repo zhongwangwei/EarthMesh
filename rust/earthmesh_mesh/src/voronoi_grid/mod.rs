@@ -3,7 +3,7 @@ use std::io;
 use earthmesh_core::{GridMemory, IjTabs, ItabM, ItabW};
 
 use crate::coordinates::normalize_cartesian_to_radius;
-use crate::{CartesianPoint, IcosahedronRelaxedGrid, OlamDelaunayMesh};
+use crate::{CartesianPoint, IcosahedronRelaxedGrid, MethodCDelaunayMesh};
 
 /// One-based grid/connectivity state after `mkgrd.F90:voronoi`, before `pcvt`.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,38 +15,38 @@ pub struct VoronoiGridState {
 
 /// Port the global icosahedron branch of `mkgrd.F90:voronoi`.
 ///
-/// The returned vectors intentionally keep Fortran-compatible one-based slots:
+/// The returned vectors intentionally keep Canonical-compatible one-based slots:
 /// index `0` is unused, and valid records live in `1..=nma` and `1..=nwa`.
 pub fn voronoi_grid_from_icosahedron_relaxed(
     relaxed: &IcosahedronRelaxedGrid,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    let mesh = OlamDelaunayMesh::from_relaxed_icosahedron(relaxed);
-    voronoi_grid_from_olam_delaunay_mesh(&mesh, radius)
+    let mesh = MethodCDelaunayMesh::from_relaxed_icosahedron(relaxed);
+    voronoi_grid_from_method_c_delaunay_mesh(&mesh, radius)
 }
 
-/// Convert a generic OLAM Delaunay mesh to the Voronoi grid state used by the
+/// Convert a generic Method-C Delaunay mesh to the Voronoi grid state used by the
 /// existing EarthMesh gridfile writers.
 ///
-/// This is the OLAM replacement boundary for `mkgrd.F90:voronoi`: callers should
-/// produce or refine an [`OlamDelaunayMesh`], validate it, then call this
+/// This is the Method-C replacement boundary for `mkgrd.F90:voronoi`: callers should
+/// produce or refine an [`MethodCDelaunayMesh`], validate it, then call this
 /// adapter at the output boundary.
-pub fn voronoi_grid_from_olam_delaunay_mesh(
-    mesh: &OlamDelaunayMesh,
+pub fn voronoi_grid_from_method_c_delaunay_mesh(
+    mesh: &MethodCDelaunayMesh,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    voronoi_grid_from_olam_delaunay_mesh_with_projection(mesh, radius, true)
+    voronoi_grid_from_method_c_delaunay_mesh_with_projection(mesh, radius, true)
 }
 
-pub fn voronoi_grid_from_olam_delaunay_mesh_cartesian(
-    mesh: &OlamDelaunayMesh,
+pub fn voronoi_grid_from_method_c_delaunay_mesh_cartesian(
+    mesh: &MethodCDelaunayMesh,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    voronoi_grid_from_olam_delaunay_mesh_with_projection(mesh, radius, false)
+    voronoi_grid_from_method_c_delaunay_mesh_with_projection(mesh, radius, false)
 }
 
-fn voronoi_grid_from_olam_delaunay_mesh_with_projection(
-    mesh: &OlamDelaunayMesh,
+fn voronoi_grid_from_method_c_delaunay_mesh_with_projection(
+    mesh: &MethodCDelaunayMesh,
     radius: f64,
     project_cell_centers_to_radius: bool,
 ) -> io::Result<VoronoiGridState> {

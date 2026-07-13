@@ -1,19 +1,19 @@
 /// Result of `MOD_grid_preprocess:find_frac_index`.
 ///
-/// `index` is intentionally 1-based to preserve the Fortran caller contract.
+/// `index` is intentionally 1-based to preserve the Canonical caller contract.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FortranFracIndex {
+pub struct CanonicalFracIndex {
     pub index: usize,
     pub frac: f64,
 }
 
 /// Port of `MOD_grid_preprocess:find_frac_index` with explicit failure.
 ///
-/// The Fortran subroutine supports monotonic ascending longitude grids and
+/// The Canonical subroutine supports monotonic ascending longitude grids and
 /// monotonic descending latitude grids. The original error path is unreachable
 /// after `return`; this Rust port returns `None` when the point is outside the
 /// provided bounds or a zero-width cell is encountered.
-pub fn find_frac_index_fortran(grid: &[f64], point: f64) -> Option<FortranFracIndex> {
+pub fn find_frac_index_canonical(grid: &[f64], point: f64) -> Option<CanonicalFracIndex> {
     if grid.len() < 2 {
         return None;
     }
@@ -34,7 +34,7 @@ pub fn find_frac_index_fortran(grid: &[f64], point: f64) -> Option<FortranFracIn
             return None;
         }
         let frac = ((point - grid[i]) / dx).clamp(0.0, 1.0);
-        return Some(FortranFracIndex { index: i + 1, frac });
+        return Some(CanonicalFracIndex { index: i + 1, frac });
     }
 
     None

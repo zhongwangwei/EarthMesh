@@ -1,4 +1,5 @@
 use super::*;
+use crate::mask_postproc_data::mask_postproc_neighbor_widths;
 
 /// Result of `MOD_mask_postproc.F90:Data_Finial`.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,9 +18,9 @@ pub struct MaskPostprocFinalData {
 ///
 /// This is the final placeholder-preserving compaction after domain-mask edits:
 /// active centers are copied to compact ids, vertex adjacency is rebuilt using
-/// those compact center ids (`k` in the Fortran comment), then only vertices
+/// those compact center ids (`k` in the Canonical comment), then only vertices
 /// that still have adjacent centers are copied to the final vertex arrays.
-pub fn finalize_mask_postproc_data_fortran_indexed(
+pub fn finalize_mask_postproc_data_one_based(
     mode_grid: &str,
     active_centers: &[bool],
     center_coordinates: &[[f64; 2]],
@@ -42,7 +43,7 @@ pub fn finalize_mask_postproc_data_fortran_indexed(
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "vertex_coordinates length {} must cover Fortran vertex ids 1..={ustr_bounds}",
+                "vertex_coordinates length {} must cover Canonical vertex ids 1..={ustr_bounds}",
                 vertex_coordinates.len()
             ),
         ));
@@ -90,7 +91,7 @@ pub fn finalize_mask_postproc_data_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {source_center_id} references vertex {vertex_id}, outside 0..={ustr_bounds}"
+                        "center {source_center_id} canonicals vertex {vertex_id}, outside 0..={ustr_bounds}"
                     ),
                 ));
             }

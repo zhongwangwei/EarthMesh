@@ -1,4 +1,4 @@
-use earthmesh_mesh::{refine_ngr_renew_core_fortran_indexed, LonLatDegrees};
+use earthmesh_mesh::{refine_ngr_renew_core_one_based, LonLatDegrees};
 
 fn ll(lon: f64, lat: f64) -> LonLatDegrees {
     LonLatDegrees::new(lon, lat)
@@ -32,7 +32,7 @@ fn ngr_renew_core_deduplicates_new_vertices_compacts_triangles_and_maps_boundari
     let bdy_refine = vec![5, 6, 7];
     let bdy_refine_tran = vec![6, 7];
 
-    let renewed = refine_ngr_renew_core_fortran_indexed(
+    let renewed = refine_ngr_renew_core_one_based(
         2,
         1,
         &num_mp,
@@ -67,7 +67,7 @@ fn ngr_renew_core_rejects_triangle_vertex_without_mapping() {
     let cell_points = vec![ll(0.0, 0.0); 3];
     let cells_on_triangle = vec![[0, 0, 0], [1, 2, 2], [2, 2, 9]];
 
-    let err = refine_ngr_renew_core_fortran_indexed(
+    let err = refine_ngr_renew_core_one_based(
         2,
         1,
         &num_mp,

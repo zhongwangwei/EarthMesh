@@ -1,6 +1,6 @@
 use std::io;
 
-pub(crate) fn refine_boundary_segments_fortran_indexed(
+pub(crate) fn refine_boundary_segments_one_based(
     set_dis_in: usize,
     closed_curves: &[Vec<usize>],
     triangles_on_cell: &[Vec<usize>],

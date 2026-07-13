@@ -1,6 +1,6 @@
 use crate::{
-    polygon_mesh_quality_fortran_indexed, triangle_mesh_quality_fortran_indexed, LonLatDegrees,
-    PolygonMeshQualityFortranOutput, TriangleMeshQualityFortranOutput,
+    polygon_mesh_quality_metrics_indexed, triangle_mesh_quality_metrics_indexed, LonLatDegrees,
+    PolygonMeshQualityCanonicalOutput, TriangleMeshQualityCanonicalOutput,
 };
 
 /// Polygon edge-count classes reported by
@@ -19,15 +19,13 @@ pub struct PolygonEdgeClassCounts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GridQualityGlobalOutput {
     pub edge_class_counts: PolygonEdgeClassCounts,
-    pub triangle: TriangleMeshQualityFortranOutput,
-    pub pentagon: Option<PolygonMeshQualityFortranOutput>,
-    pub hexagon: Option<PolygonMeshQualityFortranOutput>,
-    pub heptagon: Option<PolygonMeshQualityFortranOutput>,
+    pub triangle: TriangleMeshQualityCanonicalOutput,
+    pub pentagon: Option<PolygonMeshQualityCanonicalOutput>,
+    pub hexagon: Option<PolygonMeshQualityCanonicalOutput>,
+    pub heptagon: Option<PolygonMeshQualityCanonicalOutput>,
 }
 
-fn polygon_edge_class_counts_fortran_indexed(
-    polygon_edge_counts: &[usize],
-) -> PolygonEdgeClassCounts {
+fn polygon_edge_class_counts_one_based(polygon_edge_counts: &[usize]) -> PolygonEdgeClassCounts {
     let mut counts = PolygonEdgeClassCounts {
         pentagons: 0,
         hexagons: 0,
@@ -49,13 +47,13 @@ fn polygon_edge_class_counts_fortran_indexed(
     counts
 }
 
-fn polygon_quality_or_none_fortran_indexed(
+fn polygon_quality_or_none_one_based(
     num_edges: usize,
     polygon_points: &[LonLatDegrees],
     cells_on_polygon: &[Vec<usize>],
     polygon_edge_counts: &[usize],
     adjust_flags: &[bool],
-) -> Option<Option<PolygonMeshQualityFortranOutput>> {
+) -> Option<Option<PolygonMeshQualityCanonicalOutput>> {
     let matching_count = polygon_edge_counts
         .iter()
         .copied()
@@ -69,7 +67,7 @@ fn polygon_quality_or_none_fortran_indexed(
 
     let length_cache = vec![vec![0.0; num_edges]; matching_count];
     let angle_cache = vec![vec![0.0; num_edges]; matching_count];
-    polygon_mesh_quality_fortran_indexed(
+    polygon_mesh_quality_metrics_indexed(
         num_edges,
         polygon_points,
         cells_on_polygon,
@@ -83,11 +81,11 @@ fn polygon_quality_or_none_fortran_indexed(
 
 /// Rust orchestration wrapper for `MOD_grid_preprocess:Grid_Quality_Check_Global`.
 ///
-/// This ports the calculation side of the Fortran routine: polygon edge-class
+/// This ports the calculation side of the Canonical routine: polygon edge-class
 /// counting, all-true initial adjust flags, triangle quality, and 5/6/7-sided
 /// polygon quality groups. The NetCDF `quality_save_global` side effect remains
 /// an adapter/output-layer responsibility.
-pub fn grid_quality_check_global_fortran_indexed(
+pub fn grid_quality_check_global_one_based(
     triangle_cell_points: &[LonLatDegrees],
     cells_on_triangle: &[[usize; 3]],
     polygon_points: &[LonLatDegrees],
@@ -98,11 +96,11 @@ pub fn grid_quality_check_global_fortran_indexed(
         return None;
     }
 
-    let edge_class_counts = polygon_edge_class_counts_fortran_indexed(polygon_edge_counts);
+    let edge_class_counts = polygon_edge_class_counts_one_based(polygon_edge_counts);
     let triangle_adjust_flags = vec![true; cells_on_triangle.len()];
     let triangle_length_cache = vec![[0.0; 3]; cells_on_triangle.len()];
     let triangle_angle_cache = vec![[0.0; 3]; cells_on_triangle.len()];
-    let triangle = triangle_mesh_quality_fortran_indexed(
+    let triangle = triangle_mesh_quality_metrics_indexed(
         triangle_cell_points,
         cells_on_triangle,
         &triangle_adjust_flags,
@@ -111,21 +109,21 @@ pub fn grid_quality_check_global_fortran_indexed(
     )?;
 
     let polygon_adjust_flags = vec![true; cells_on_polygon.len()];
-    let pentagon = polygon_quality_or_none_fortran_indexed(
+    let pentagon = polygon_quality_or_none_one_based(
         5,
         polygon_points,
         cells_on_polygon,
         polygon_edge_counts,
         &polygon_adjust_flags,
     )?;
-    let hexagon = polygon_quality_or_none_fortran_indexed(
+    let hexagon = polygon_quality_or_none_one_based(
         6,
         polygon_points,
         cells_on_polygon,
         polygon_edge_counts,
         &polygon_adjust_flags,
     )?;
-    let heptagon = polygon_quality_or_none_fortran_indexed(
+    let heptagon = polygon_quality_or_none_one_based(
         7,
         polygon_points,
         cells_on_polygon,

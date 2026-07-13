@@ -2,11 +2,11 @@ use std::io;
 
 /// Port of `MOD_refine.F90:iterB_judge`.
 ///
-/// Inputs preserve Fortran indexing: row 0 is unused, `ngrmm[cell]` contains
+/// Inputs preserve Canonical indexing: row 0 is unused, `ngrmm[cell]` contains
 /// the three neighboring triangle ids for `cell`, and `mrl_new[cell] == 4`
 /// means the triangle has already been one-into-four refined.  The returned
 /// `ref_sjx` has the same placeholder-inclusive length as `mrl_new`.
-pub fn refine_iter_b_judge_fortran_indexed(
+pub fn refine_iter_b_judge_one_based(
     set_dis_in: usize,
     num_vertex: usize,
     ngrmm: &[Vec<usize>],
@@ -105,6 +105,6 @@ pub fn refine_iter_b_judge_fortran_indexed(
 
 /// Port of the empty `MOD_refine.F90:orial_vertices_protect` placeholder.
 ///
-/// The Fortran subroutine has no executable statements, so the Rust migration
+/// The Canonical subroutine has no executable statements, so the Rust architecture
 /// intentionally preserves all caller-owned refinement markers unchanged.
-pub fn refine_orial_vertices_protect_fortran_indexed(_ref_sjx: &mut [i32]) {}
+pub fn refine_orial_vertices_protect_one_based(_ref_sjx: &mut [i32]) {}

@@ -12,6 +12,8 @@ pub(crate) fn infer_restart_refine_initial_gridfile_arg(
         .map_err(|err| format!("failed to read namelist {namelist}: {err}"))?;
     let config = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| format!("failed to parse namelist {namelist}: {err}"))?;
-    earthmesh_cli::infer_restart_refine_initial_gridfile_from_config(&config)
-        .map_err(|err| err.to_string())
+    earthmesh_cli::mkgrd_default_restart_handoff::infer_restart_refine_initial_gridfile_from_config(
+        &config,
+    )
+    .map_err(|err| err.to_string())
 }

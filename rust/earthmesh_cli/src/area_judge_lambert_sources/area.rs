@@ -1,20 +1,24 @@
+use crate::area_judge_check_crossing;
+use crate::area_judge_close_crosses_dateline;
+use crate::read_mode4_mesh_netcdf;
+use crate::require_len;
+use crate::validate_mode4_mesh_for_area_judge;
+use crate::AreaJudgeAreaSourceReport;
 use std::io;
 use std::path::Path;
 
 use earthmesh_geometry::{is_point_in_convex_polygon, Point as AreaJudgePoint};
 use earthmesh_mesh::{
-    area_judge_minmax_range_make_fortran_indexed, area_judge_source_find_fortran_indexed,
-    AreaJudgeAxis, LonLatDegrees,
+    area_judge_minmax_range_make_one_based, area_judge_source_find_one_based, AreaJudgeAxis,
+    LonLatDegrees,
 };
-
-use crate::*;
 
 fn area_judge_checked_source_index_minus_one(index: usize) -> usize {
     index.saturating_sub(1).max(1)
 }
 
 /// Build the Lambert/mode4 `IsInArea_grid` source mask used by domain/refine/patch paths.
-pub fn build_area_judge_lambert_area_source_fortran_indexed(
+pub fn build_area_judge_lambert_area_source_one_based(
     inputfile: impl AsRef<Path>,
     lon_vertex: &[f64],
     lat_vertex: &[f64],
@@ -64,7 +68,7 @@ pub fn build_area_judge_lambert_area_source_fortran_indexed(
         edgee_temp = 180.0;
     }
 
-    let bounds = area_judge_minmax_range_make_fortran_indexed(
+    let bounds = area_judge_minmax_range_make_one_based(
         edgew_temp,
         edgee_temp,
         edgen_temp,
@@ -109,22 +113,22 @@ pub fn build_area_judge_lambert_area_source_fortran_indexed(
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "lambert mode4 cell {cell_index} references out-of-range vertex {bound_index}"
+                            "lambert mode4 cell {cell_index} canonicals out-of-range vertex {bound_index}"
                         ),
                     )
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        let cell_lon_span = cell_points
-            .iter()
-            .map(|point| point.lon)
-            .fold(f64::NEG_INFINITY, f64::max)
-            - cell_points
+        let restore_dateline_shift = area_judge_close_crosses_dateline(
+            &cell_points
                 .iter()
-                .map(|point| point.lon)
-                .fold(f64::INFINITY, f64::min);
-        let restore_dateline_shift = cell_lon_span > 180.0;
+                .map(|point| LonLatDegrees {
+                    lon_degrees: point.lon,
+                    lat_degrees: point.lat,
+                })
+                .collect::<Vec<_>>(),
+        );
         if restore_dateline_shift {
             let mut shifted = cell_points
                 .iter()
@@ -140,7 +144,7 @@ pub fn build_area_judge_lambert_area_source_fortran_indexed(
             }
         }
 
-        let minlon_source = area_judge_source_find_fortran_indexed(
+        let minlon_source = area_judge_source_find_one_based(
             cell_points
                 .iter()
                 .map(|point| point.lon)
@@ -157,7 +161,7 @@ pub fn build_area_judge_lambert_area_source_fortran_indexed(
                 format!("lambert mode4 cell {cell_index} west edge is outside source grid"),
             )
         })?;
-        let maxlon_source = area_judge_source_find_fortran_indexed(
+        let maxlon_source = area_judge_source_find_one_based(
             cell_points
                 .iter()
                 .map(|point| point.lon)
@@ -173,7 +177,7 @@ pub fn build_area_judge_lambert_area_source_fortran_indexed(
                 format!("lambert mode4 cell {cell_index} east edge is outside source grid"),
             )
         })?;
-        let maxlat_source = area_judge_source_find_fortran_indexed(
+        let maxlat_source = area_judge_source_find_one_based(
             cell_points
                 .iter()
                 .map(|point| point.lat)
@@ -190,7 +194,7 @@ pub fn build_area_judge_lambert_area_source_fortran_indexed(
                 format!("lambert mode4 cell {cell_index} north edge is outside source grid"),
             )
         })?;
-        let minlat_source = area_judge_source_find_fortran_indexed(
+        let minlat_source = area_judge_source_find_one_based(
             cell_points
                 .iter()
                 .map(|point| point.lat)

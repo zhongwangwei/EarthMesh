@@ -4,7 +4,7 @@
 //! one real cell, flux-stencil weights for dropped neighbour edges are zeroed,
 //! and per-cell/vertex/edge geometry is copied verbatim for the kept rows.
 
-use earthmesh_cli::{subset_mpas_mesh, MpasMesh};
+use earthmesh_cli::{mpas_mesh_types::MpasMesh, mpas_topology::subset_mpas_mesh};
 
 /// Two triangular cells sharing edge `e1`. Index 0 is the placeholder row.
 /// Cells 1,2 share vertices 1,2 (edge e1) and have unique vertices 3,4.
@@ -77,7 +77,7 @@ fn two_cell_global() -> MpasMesh {
 }
 
 #[test]
-fn keeping_one_cell_collapses_dropped_references_to_zero() {
+fn keeping_one_cell_collapses_dropped_canonicals_to_zero() {
     let g = two_cell_global();
     // keep cell 1, drop cell 2
     let keep = vec![false, true, false];

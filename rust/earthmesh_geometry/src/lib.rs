@@ -13,11 +13,314 @@ impl Point {
     }
 }
 
-/// Earth radius in kilometers used by `MOD_Area_judge:haversine`.
+/// Earth radius in kilometers used by `MOD_Area_judge:haversine`, derived from
+/// the workspace-wide canonical radius.
+pub const EARTH_RADIUS_KM: f64 = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+
+/// Which side of an oriented spherical ring should be measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SphericalAreaBranch {
+    /// The smaller of the two regions bounded by the ring, in `[0, 2π]`.
+    Minor,
+    /// The complement of [`Self::Minor`], in `[2π, 4π]` for a non-degenerate ring.
+    MajorComplement,
+    /// The region on the left of the directed ring, in `[0, 4π)`.
+    Oriented,
+    /// Signed minor area, in `[-2π, 2π]`; useful for winding checks.
+    SignedMinor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SphericalWinding {
+    CounterClockwise,
+    Clockwise,
+    Indeterminate,
+}
+
+/// Both complement candidates for a validated directed spherical ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SphericalArea {
+    pub signed_minor_sr: f64,
+    pub minor_sr: f64,
+    pub major_complement_sr: f64,
+    pub oriented_left_sr: f64,
+    pub winding: SphericalWinding,
+}
+
+/// Structured validation failures for spherical lon/lat polygon area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SphericalPolygonError {
+    TooFewVertices {
+        found: usize,
+    },
+    NonFiniteCoordinate {
+        vertex: usize,
+    },
+    LatitudeOutOfRange {
+        vertex: usize,
+    },
+    DuplicateConsecutiveVertex {
+        start_vertex: usize,
+    },
+    AntipodalEdge {
+        start_vertex: usize,
+    },
+    SelfIntersection {
+        first_edge: usize,
+        second_edge: usize,
+    },
+    DegenerateArea,
+    AmbiguousTriangulation {
+        vertex: usize,
+    },
+}
+
+impl std::fmt::Display for SphericalPolygonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooFewVertices { found } => {
+                write!(f, "spherical polygon needs at least three vertices; found {found}")
+            }
+            Self::NonFiniteCoordinate { vertex } => {
+                write!(f, "spherical polygon vertex {vertex} is not finite")
+            }
+            Self::LatitudeOutOfRange { vertex } => {
+                write!(f, "spherical polygon vertex {vertex} has latitude outside [-90, 90]")
+            }
+            Self::DuplicateConsecutiveVertex { start_vertex } => write!(
+                f,
+                "spherical polygon edge {start_vertex} has duplicate endpoints"
+            ),
+            Self::AntipodalEdge { start_vertex } => write!(
+                f,
+                "spherical polygon edge {start_vertex} has antipodal endpoints and no unique geodesic"
+            ),
+            Self::SelfIntersection {
+                first_edge,
+                second_edge,
+            } => write!(
+                f,
+                "spherical polygon edges {first_edge} and {second_edge} intersect"
+            ),
+            Self::DegenerateArea => write!(f, "spherical polygon has no resolved surface area"),
+            Self::AmbiguousTriangulation { vertex } => write!(
+                f,
+                "spherical polygon fan triangle ending at vertex {vertex} is ambiguous"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SphericalPolygonError {}
+
+/// Normalize a longitude delta in radians into [-π, π].
+#[inline]
+pub fn normalize_delta_lon_radians(delta: f64) -> f64 {
+    let pi = std::f64::consts::PI;
+    let normalized = (delta + pi).rem_euclid(2.0 * pi) - pi;
+    if normalized == -pi && delta > 0.0 {
+        pi
+    } else {
+        normalized
+    }
+}
+
+fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonError> {
+    for (vertex, point) in ring.iter().enumerate() {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Err(SphericalPolygonError::NonFiniteCoordinate { vertex });
+        }
+        if !(-90.0..=90.0).contains(&point.y) {
+            return Err(SphericalPolygonError::LatitudeOutOfRange { vertex });
+        }
+    }
+    let to_unit = |point: Point| {
+        let lon = point.x.to_radians();
+        let lat = point.y.to_radians();
+        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let determinant = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+            + a[2] * (b[0] * c[1] - b[1] * c[0])
+    };
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let norm = |a: [f64; 3]| dot(a, a).sqrt();
+    let angle = |a: [f64; 3], b: [f64; 3]| dot(a, b).clamp(-1.0, 1.0).acos();
+
+    let mut vertices = ring.iter().copied().map(to_unit).collect::<Vec<_>>();
+    if vertices.len() > 1 && dot(vertices[0], *vertices.last().unwrap()) >= 1.0 - 1.0e-14 {
+        vertices.pop();
+    }
+    if vertices.len() < 3 {
+        return Err(SphericalPolygonError::TooFewVertices {
+            found: vertices.len(),
+        });
+    }
+    for index in 0..vertices.len() {
+        let edge_dot = dot(vertices[index], vertices[(index + 1) % vertices.len()]);
+        if edge_dot >= 1.0 - 1.0e-14 {
+            return Err(SphericalPolygonError::DuplicateConsecutiveVertex {
+                start_vertex: index,
+            });
+        }
+        if edge_dot <= -1.0 + 1.0e-14 {
+            return Err(SphericalPolygonError::AntipodalEdge {
+                start_vertex: index,
+            });
+        }
+    }
+    let on_minor_arc = |point: [f64; 3], start: [f64; 3], end: [f64; 3]| {
+        let total = angle(start, end);
+        (angle(start, point) + angle(point, end) - total).abs() <= 1.0e-10
+    };
+    for first in 0..vertices.len() {
+        let first_next = (first + 1) % vertices.len();
+        for second in (first + 1)..vertices.len() {
+            let second_next = (second + 1) % vertices.len();
+            if first_next == second || second_next == first {
+                continue;
+            }
+            let normal1 = cross(vertices[first], vertices[first_next]);
+            let normal2 = cross(vertices[second], vertices[second_next]);
+            let intersections = cross(normal1, normal2);
+            let intersection_norm = norm(intersections);
+            let mut intersects = false;
+            if intersection_norm > 64.0 * f64::EPSILON {
+                let candidate = [
+                    intersections[0] / intersection_norm,
+                    intersections[1] / intersection_norm,
+                    intersections[2] / intersection_norm,
+                ];
+                for point in [candidate, [-candidate[0], -candidate[1], -candidate[2]]] {
+                    if on_minor_arc(point, vertices[first], vertices[first_next])
+                        && on_minor_arc(point, vertices[second], vertices[second_next])
+                    {
+                        intersects = true;
+                        break;
+                    }
+                }
+            } else {
+                intersects = [vertices[first], vertices[first_next]]
+                    .into_iter()
+                    .any(|point| on_minor_arc(point, vertices[second], vertices[second_next]))
+                    || [vertices[second], vertices[second_next]]
+                        .into_iter()
+                        .any(|point| on_minor_arc(point, vertices[first], vertices[first_next]));
+            }
+            if intersects {
+                return Err(SphericalPolygonError::SelfIntersection {
+                    first_edge: first,
+                    second_edge: second,
+                });
+            }
+        }
+    }
+
+    let anchor = vertices[0];
+    let mut raw = 0.0;
+    for index in 1..vertices.len() - 1 {
+        let b = vertices[index];
+        let c = vertices[index + 1];
+        let numerator = determinant(anchor, b, c);
+        let denominator = 1.0 + dot(anchor, b) + dot(b, c) + dot(c, anchor);
+        if numerator.abs() <= 64.0 * f64::EPSILON && denominator.abs() <= 64.0 * f64::EPSILON {
+            return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
+        }
+        let excess = 2.0 * numerator.atan2(denominator);
+        if !excess.is_finite() {
+            return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
+        }
+        raw += excess;
+    }
+    Ok(raw)
+}
+
+/// Validate a directed ring and return both spherical complement candidates.
+pub fn try_spherical_polygon_area(ring: &[Point]) -> Result<SphericalArea, SphericalPolygonError> {
+    let raw = raw_spherical_polygon_excess(ring)?;
+    if raw.abs() <= 64.0 * f64::EPSILON {
+        return Err(SphericalPolygonError::DegenerateArea);
+    }
+    let half_sphere = 2.0 * std::f64::consts::PI;
+    let full_sphere = 2.0 * half_sphere;
+    let normalized = (raw + half_sphere).rem_euclid(full_sphere) - half_sphere;
+    let signed_minor = if normalized == -half_sphere && raw > 0.0 {
+        half_sphere
+    } else {
+        normalized
+    };
+    let minor = signed_minor.abs();
+    Ok(SphericalArea {
+        signed_minor_sr: signed_minor,
+        minor_sr: minor,
+        major_complement_sr: full_sphere - minor,
+        oriented_left_sr: raw.rem_euclid(full_sphere),
+        winding: if signed_minor > 64.0 * f64::EPSILON {
+            SphericalWinding::CounterClockwise
+        } else if signed_minor < -64.0 * f64::EPSILON {
+            SphericalWinding::Clockwise
+        } else {
+            SphericalWinding::Indeterminate
+        },
+    })
+}
+
+/// Validated spherical excess on the unit sphere, in steradians.
+pub fn try_spherical_polygon_excess(
+    ring: &[Point],
+    branch: SphericalAreaBranch,
+) -> Result<f64, SphericalPolygonError> {
+    let area = try_spherical_polygon_area(ring)?;
+    Ok(match branch {
+        SphericalAreaBranch::Minor => area.minor_sr,
+        SphericalAreaBranch::MajorComplement => area.major_complement_sr,
+        SphericalAreaBranch::Oriented => area.oriented_left_sr,
+        SphericalAreaBranch::SignedMinor => area.signed_minor_sr,
+    })
+}
+
+/// Validated spherical lon/lat polygon area in km².
+pub fn try_spherical_polygon_area_km2(
+    ring: &[Point],
+    branch: SphericalAreaBranch,
+) -> Result<f64, SphericalPolygonError> {
+    try_spherical_polygon_excess(ring, branch)
+        .map(|excess| excess * EARTH_RADIUS_KM * EARTH_RADIUS_KM)
+}
+
+/// Signed minor spherical excess on the unit sphere, in steradians.
 ///
-/// The Fortran routine initializes `erad = 6371229` meters and computes
-/// `erad / 1000 * central_angle`.
-pub const EARTH_RADIUS_KM: f64 = 6_371.229;
+/// This compatibility wrapper preserves the historical `0` for short rings and
+/// `NaN` for invalid geometry. New callers should use
+/// [`try_spherical_polygon_excess`] to retain structured errors.
+pub fn signed_spherical_polygon_excess(ring: &[Point]) -> f64 {
+    if ring.len() < 3 {
+        0.0
+    } else {
+        match try_spherical_polygon_excess(ring, SphericalAreaBranch::SignedMinor) {
+            Ok(area) => area,
+            Err(SphericalPolygonError::DegenerateArea) => 0.0,
+            Err(_) => f64::NAN,
+        }
+    }
+}
+
+/// Signed spherical lon/lat polygon area in km², antimeridian-safe.
+pub fn signed_spherical_polygon_area_km2(ring: &[Point]) -> f64 {
+    signed_spherical_polygon_excess(ring) * EARTH_RADIUS_KM * EARTH_RADIUS_KM
+}
+
+/// Unsigned minor-branch spherical lon/lat polygon area in km².
+pub fn spherical_polygon_area_km2(ring: &[Point]) -> f64 {
+    signed_spherical_polygon_area_km2(ring).abs()
+}
 
 /// Port of `MOD_Area_judge:cross_product`.
 #[inline]
@@ -27,7 +330,7 @@ pub fn cross_product_2d(p1: Point, p2: Point, p3: Point) -> f64 {
 
 /// Port of `MOD_Area_judge:haversine`.
 ///
-/// Inputs use the same convention as the Fortran `point_i(2)` arrays:
+/// Inputs use the same convention as the Canonical `point_i(2)` arrays:
 /// `x = longitude degrees`, `y = latitude degrees`. The return value is km.
 pub fn haversine_km(point_i: Point, point_c: Point) -> f64 {
     let px1 = point_i.x.to_radians();
@@ -35,8 +338,9 @@ pub fn haversine_km(point_i: Point, point_c: Point) -> f64 {
     let px2 = point_c.x.to_radians();
     let py2 = point_c.y.to_radians();
 
-    let v = (py1 / 2.0 - py2 / 2.0).sin().powi(2)
-        + py2.cos() * py1.cos() * (px1 / 2.0 - px2 / 2.0).sin().powi(2);
+    let v = ((py1 / 2.0 - py2 / 2.0).sin().powi(2)
+        + py2.cos() * py1.cos() * (px1 / 2.0 - px2 / 2.0).sin().powi(2))
+    .clamp(0.0, 1.0);
     EARTH_RADIUS_KM * 2.0 * v.sqrt().atan2((1.0 - v).sqrt())
 }
 
@@ -48,7 +352,7 @@ pub fn is_point_in_circle_km(point: Point, center: Point, center_radius_km: f64)
 
 /// Port of `MOD_Area_judge:is_point_in_convex_polygon`.
 ///
-/// Boundary points are considered inside, matching the Fortran behavior where
+/// Boundary points are considered inside, matching the Canonical behavior where
 /// zero cross products do not flip the sign test.
 pub fn is_point_in_convex_polygon(polygon: &[Point], point: Point) -> bool {
     if polygon.len() < 3 {
@@ -641,7 +945,21 @@ fn line_intersection(a0: Point, a1: Point, b0: Point, b1: Point) -> Point {
 
 #[cfg(test)]
 mod tests {
-    use super::{intersection_area, polygon_area, polygon_union_area, Point};
+    use super::{
+        intersection_area, normalize_delta_lon_radians, polygon_area, polygon_union_area,
+        signed_spherical_polygon_excess, spherical_polygon_area_km2, try_spherical_polygon_area,
+        try_spherical_polygon_excess, Point, SphericalAreaBranch, SphericalPolygonError,
+        SphericalWinding, EARTH_RADIUS_KM,
+    };
+
+    #[test]
+    fn longitude_delta_normalization_handles_multiple_turns() {
+        let pi = std::f64::consts::PI;
+        assert_eq!(normalize_delta_lon_radians(5.0 * pi), pi);
+        assert_eq!(normalize_delta_lon_radians(-5.0 * pi), -pi);
+        assert!((normalize_delta_lon_radians(8.5 * pi) - 0.5 * pi).abs() < 1.0e-14);
+        assert!((normalize_delta_lon_radians(-8.5 * pi) + 0.5 * pi).abs() < 1.0e-14);
+    }
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
         vec![
@@ -731,6 +1049,156 @@ mod tests {
             0.0
         );
     }
+    #[test]
+    fn spherical_area_handles_dateline_and_latitude() {
+        let equator = vec![
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(0.0, 1.0),
+        ];
+        let high_lat = vec![
+            Point::new(0.0, 60.0),
+            Point::new(1.0, 60.0),
+            Point::new(1.0, 61.0),
+            Point::new(0.0, 61.0),
+        ];
+        let dateline = vec![
+            Point::new(179.0, 0.0),
+            Point::new(-179.0, 0.0),
+            Point::new(-179.0, 1.0),
+            Point::new(179.0, 1.0),
+        ];
+        let mut dateline_reversed = dateline.clone();
+        dateline_reversed.reverse();
+
+        assert!(spherical_polygon_area_km2(&equator) > spherical_polygon_area_km2(&high_lat));
+        assert!(
+            (spherical_polygon_area_km2(&dateline) / spherical_polygon_area_km2(&equator) - 2.0)
+                .abs()
+                < 0.02
+        );
+        assert!(
+            (spherical_polygon_area_km2(&dateline)
+                - spherical_polygon_area_km2(&dateline_reversed))
+            .abs()
+                < 1.0e-9
+        );
+        assert!(signed_spherical_polygon_excess(&dateline) > 0.0);
+        assert!(signed_spherical_polygon_excess(&dateline_reversed) < 0.0);
+        assert!(
+            (signed_spherical_polygon_excess(&dateline)
+                + signed_spherical_polygon_excess(&dateline_reversed))
+            .abs()
+                < 1.0e-15
+        );
+    }
+
+    #[test]
+    fn spherical_area_uses_minor_branch_for_polar_ring() {
+        let mut polar = vec![
+            Point::new(0.0, 80.0),
+            Point::new(120.0, 80.0),
+            Point::new(-120.0, 80.0),
+        ];
+        let unit_area = spherical_polygon_area_km2(&polar) / (EARTH_RADIUS_KM * EARTH_RADIUS_KM);
+        let expected_triangle = 0.03992494515762063;
+
+        assert!(
+            (unit_area - expected_triangle).abs() < 1.0e-12,
+            "unit area={unit_area}"
+        );
+        assert!(unit_area < 2.0 * std::f64::consts::PI);
+
+        polar.reverse();
+        let reversed = spherical_polygon_area_km2(&polar) / (EARTH_RADIUS_KM * EARTH_RADIUS_KM);
+        assert!((reversed - expected_triangle).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn structured_spherical_area_distinguishes_minor_major_and_orientation() {
+        let mut polar = vec![
+            Point::new(0.0, 80.0),
+            Point::new(120.0, 80.0),
+            Point::new(-120.0, 80.0),
+        ];
+        let minor = try_spherical_polygon_excess(&polar, SphericalAreaBranch::Minor).unwrap();
+        let major =
+            try_spherical_polygon_excess(&polar, SphericalAreaBranch::MajorComplement).unwrap();
+        let oriented = try_spherical_polygon_excess(&polar, SphericalAreaBranch::Oriented).unwrap();
+        assert!((minor - 0.03992494515762063).abs() < 1.0e-12);
+        assert!((minor + major - 4.0 * std::f64::consts::PI).abs() < 1.0e-12);
+        assert!((oriented - minor).abs() < 1.0e-12);
+        let summary = try_spherical_polygon_area(&polar).unwrap();
+        assert_eq!(summary.winding, SphericalWinding::CounterClockwise);
+        assert!((summary.major_complement_sr - major).abs() < 1.0e-12);
+
+        polar.reverse();
+        let reversed = try_spherical_polygon_excess(&polar, SphericalAreaBranch::Oriented).unwrap();
+        assert!((reversed - major).abs() < 1.0e-12);
+        assert_eq!(
+            try_spherical_polygon_area(&polar).unwrap().winding,
+            SphericalWinding::Clockwise
+        );
+    }
+
+    #[test]
+    fn structured_spherical_area_rejects_invalid_and_antipodal_edges() {
+        assert_eq!(
+            try_spherical_polygon_excess(
+                &[Point::new(0.0, 0.0), Point::new(1.0, 0.0)],
+                SphericalAreaBranch::Minor,
+            ),
+            Err(SphericalPolygonError::TooFewVertices { found: 2 })
+        );
+        assert_eq!(
+            try_spherical_polygon_excess(
+                &[
+                    Point::new(0.0, 0.0),
+                    Point::new(f64::NAN, 0.0),
+                    Point::new(0.0, 1.0),
+                ],
+                SphericalAreaBranch::Minor,
+            ),
+            Err(SphericalPolygonError::NonFiniteCoordinate { vertex: 1 })
+        );
+        assert_eq!(
+            try_spherical_polygon_excess(
+                &[
+                    Point::new(0.0, 0.0),
+                    Point::new(180.0, 0.0),
+                    Point::new(90.0, 45.0),
+                ],
+                SphericalAreaBranch::Minor,
+            ),
+            Err(SphericalPolygonError::AntipodalEdge { start_vertex: 0 })
+        );
+        assert_eq!(
+            try_spherical_polygon_excess(
+                &[
+                    Point::new(-10.0, -10.0),
+                    Point::new(10.0, 10.0),
+                    Point::new(-10.0, 10.0),
+                    Point::new(10.0, -10.0),
+                ],
+                SphericalAreaBranch::Minor,
+            ),
+            Err(SphericalPolygonError::SelfIntersection {
+                first_edge: 0,
+                second_edge: 2,
+            })
+        );
+        let degenerate = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(20.0, 0.0),
+        ];
+        assert_eq!(
+            try_spherical_polygon_excess(&degenerate, SphericalAreaBranch::Minor),
+            Err(SphericalPolygonError::DegenerateArea)
+        );
+        assert_eq!(signed_spherical_polygon_excess(&degenerate), 0.0);
+    }
 
     #[test]
     fn nested_rectangle_intersection_keeps_inner_area() {
@@ -753,7 +1221,7 @@ mod tests {
 
 /// Port of `MOD_Area_judge:ray_segment_intersect`.
 ///
-/// Fortran returns the ray start longitude as a sentinel for no intersection.
+/// Canonical returns the ray start longitude as a sentinel for no intersection.
 /// Rust exposes that sentinel as `None` while keeping the same intersection math.
 pub fn ray_segment_intersection_lon(
     ray_start: Point,
@@ -789,7 +1257,7 @@ pub fn cross_product_components(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
 
 /// Port of `MOD_Area_judge:segments_intersect`.
 ///
-/// This intentionally uses the strict Fortran rule (`< 0` products), so
+/// This intentionally uses the strict Canonical rule (`< 0` products), so
 /// endpoint touches and collinear overlaps are not intersections.
 pub fn segments_intersect_strict(a1: Point, a2: Point, b1: Point, b2: Point) -> bool {
     let cp1 = cross_product_components(a2.x - a1.x, a2.y - a1.y, b1.x - a1.x, b1.y - a1.y);
@@ -810,12 +1278,12 @@ pub struct AreaJudgeSelfIntersection {
 
 /// Return-value wrapper for `MOD_Area_judge:check_self_intersection`.
 ///
-/// Fortran closes the polygon by appending point 1 at `close_num + 1`, scans
+/// Canonical closes the polygon by appending point 1 at `close_num + 1`, scans
 /// `i = 1..close_num-2` and `j = i+2..close_num`, prints both segment ids and
 /// endpoints, then stops on the first strict intersection.  Rust preserves the
 /// one-based segment ids and endpoint payload as data so callers can turn it
 /// into an error without terminating the process.
-pub fn area_judge_first_self_intersection_fortran_indexed(
+pub fn area_judge_first_self_intersection_one_based(
     close_points: &[Point],
 ) -> Option<AreaJudgeSelfIntersection> {
     let close_num = close_points.len();

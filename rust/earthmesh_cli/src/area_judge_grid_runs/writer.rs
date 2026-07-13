@@ -1,9 +1,10 @@
+use crate::select_area_judge_grid_one_based;
+use crate::write_area_judge_grid_netcdf;
+use crate::AreaJudgeGridWriteReport;
 use std::io;
 use std::path::Path;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
-
-use crate::*;
 
 pub(crate) fn write_area_judge_selected_grid_report(
     output: &Path,
@@ -13,8 +14,7 @@ pub(crate) fn write_area_judge_selected_grid_report(
     lat_i: &[f64],
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<AreaJudgeGridWriteReport> {
-    let payload =
-        select_area_judge_grid_fortran_indexed(is_in_area, seaorland, lon_i, lat_i, bounds)?;
+    let payload = select_area_judge_grid_one_based(is_in_area, seaorland, lon_i, lat_i, bounds)?;
     write_area_judge_grid_netcdf(output, &payload)?;
     Ok(AreaJudgeGridWriteReport {
         output: output.to_path_buf(),

@@ -41,7 +41,7 @@ pub struct V3HydroCoastSourceBundle {
 
 /// Build a normalized v3 data-source descriptor.
 ///
-/// This keeps the migrated Fortran `landtype_file` and `threshold_dir` inputs
+/// This keeps the current Canonical `landtype_file` and `threshold_dir` inputs
 /// on the same flat source boundary as newer hydro/coast products, so later
 /// MERIT/CaMa readers can plug in without reintroducing module-global handoff.
 pub fn build_v3_data_source_descriptor(
@@ -68,8 +68,8 @@ pub fn build_v3_data_source_descriptor(
 ///
 /// The existing Python MERIT/CaMa utilities emit bounded GeoJSON feature
 /// collections with `hydro_class`, `mask_class`, or `coast_class` properties.
-/// This reader gives the Rust migration a concrete source boundary without
-/// adding a JSON dependency or reintroducing Fortran module globals.
+/// This reader gives the Rust architecture a concrete source boundary without
+/// adding a JSON dependency or reintroducing Canonical module globals.
 pub fn read_v3_geojson_source_summary(
     kind: V3DataSourceKind,
     path: impl AsRef<Path>,

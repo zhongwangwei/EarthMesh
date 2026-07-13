@@ -8,7 +8,7 @@
 //! `Severity::Fail`; refinement/transition degradation is `Severity::Warn`.
 
 use crate::QualityMeshInput;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Per-category cap so a broken mesh cannot emit unbounded issues.
 pub const MAX_ISSUES_PER_TYPE: usize = 100;
@@ -44,6 +44,8 @@ pub enum TopologyIssueType {
     AbnormalPolygonEdgeCount,
     InvalidRefinementLevel,
     TransitionDiscontinuity,
+    DisconnectedMesh,
+    NonManifoldVertexFan,
 }
 
 impl TopologyIssueType {
@@ -61,6 +63,8 @@ impl TopologyIssueType {
             TopologyIssueType::AbnormalPolygonEdgeCount => "abnormal_polygon_edge_count",
             TopologyIssueType::InvalidRefinementLevel => "invalid_refinement_level",
             TopologyIssueType::TransitionDiscontinuity => "transition_discontinuity",
+            TopologyIssueType::DisconnectedMesh => "disconnected_mesh",
+            TopologyIssueType::NonManifoldVertexFan => "non_manifold_vertex_fan",
         }
     }
     /// Connectivity errors are catastrophic (Fail); refinement issues degrade (Warn).
@@ -71,6 +75,135 @@ impl TopologyIssueType {
             _ => Severity::Fail,
         }
     }
+}
+
+fn valid_edge_cells(mesh: &QualityMeshInput) -> BTreeMap<(usize, usize), Vec<usize>> {
+    let mut edge_cells = BTreeMap::<(usize, usize), Vec<usize>>::new();
+    for (ci, cell) in mesh.cells.iter().enumerate() {
+        for k in 0..cell.vertices.len() {
+            let a = cell.vertices[k];
+            let b = cell.vertices[(k + 1) % cell.vertices.len()];
+            if a < mesh.vertices.len() && b < mesh.vertices.len() && a != b {
+                edge_cells.entry(edge_key(a, b)).or_default().push(ci);
+            }
+        }
+    }
+    edge_cells
+}
+
+/// Euler characteristic of the represented cell complex (`used vertices - edges + cells`).
+///
+/// This is informational because the expected value depends on whether the mesh is
+/// global, regional, holed, or disconnected.
+pub fn euler_characteristic(mesh: &QualityMeshInput) -> isize {
+    let mut used_vertices = BTreeSet::new();
+    let mut valid_cells = 0isize;
+    for cell in &mesh.cells {
+        let distinct: BTreeSet<_> = cell
+            .vertices
+            .iter()
+            .copied()
+            .filter(|&v| v < mesh.vertices.len())
+            .collect();
+        if distinct.len() >= 3 {
+            valid_cells += 1;
+            used_vertices.extend(distinct);
+        }
+    }
+    used_vertices.len() as isize - valid_edge_cells(mesh).len() as isize + valid_cells
+}
+
+/// Number of edge-connected cell components. Cells touching only at a vertex are
+/// deliberately separate: such a vertex is a non-manifold fan junction.
+pub fn connected_component_count(mesh: &QualityMeshInput) -> usize {
+    if mesh.cells.is_empty() {
+        return 0;
+    }
+    let mut adjacency = vec![Vec::<usize>::new(); mesh.cells.len()];
+    for cells in valid_edge_cells(mesh).values() {
+        for &a in cells {
+            for &b in cells {
+                if a != b && !adjacency[a].contains(&b) {
+                    adjacency[a].push(b);
+                }
+            }
+        }
+    }
+    let mut seen = vec![false; mesh.cells.len()];
+    let mut components = 0;
+    for start in 0..mesh.cells.len() {
+        if seen[start] {
+            continue;
+        }
+        components += 1;
+        seen[start] = true;
+        let mut queue = VecDeque::from([start]);
+        while let Some(ci) = queue.pop_front() {
+            for &next in &adjacency[ci] {
+                if !seen[next] {
+                    seen[next] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    components
+}
+
+fn non_manifold_vertex_fans(mesh: &QualityMeshInput) -> Vec<(usize, usize)> {
+    let edge_cells = valid_edge_cells(mesh);
+    let mut incidents = vec![Vec::<usize>::new(); mesh.vertices.len()];
+    for (ci, cell) in mesh.cells.iter().enumerate() {
+        for &vertex in &cell.vertices {
+            if vertex < mesh.vertices.len() && !incidents[vertex].contains(&ci) {
+                incidents[vertex].push(ci);
+            }
+        }
+    }
+    let mut broken = Vec::new();
+    for (vertex, cells) in incidents.iter().enumerate() {
+        if cells.len() <= 1 {
+            continue;
+        }
+        let incident_set: BTreeSet<_> = cells.iter().copied().collect();
+        let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
+        for (&(a, b), edge_incidents) in &edge_cells {
+            if a != vertex && b != vertex {
+                continue;
+            }
+            for &left in edge_incidents {
+                for &right in edge_incidents {
+                    if left != right
+                        && incident_set.contains(&left)
+                        && incident_set.contains(&right)
+                        && !adjacency.entry(left).or_default().contains(&right)
+                    {
+                        adjacency.entry(left).or_default().push(right);
+                    }
+                }
+            }
+        }
+        let start = cells[0];
+        let mut seen = BTreeSet::from([start]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(ci) = queue.pop_front() {
+            if let Some(neighbors) = adjacency.get(&ci) {
+                for &next in neighbors {
+                    if seen.insert(next) {
+                        queue.push_back(next);
+                    }
+                }
+            }
+        }
+        if seen.len() != cells.len() {
+            broken.push((vertex, start));
+        }
+    }
+    broken
+}
+
+pub fn non_manifold_vertex_fan_count(mesh: &QualityMeshInput) -> usize {
+    non_manifold_vertex_fans(mesh).len()
 }
 
 /// One structured topology problem.
@@ -155,7 +288,7 @@ impl<'a> MeshTopologyValidator<'a> {
                             Some(ci),
                             None,
                             Some(v),
-                            format!("cell {ci} references vertex {v} (>= {})", self.nv()),
+                            format!("cell {ci} uses vertex {v} (>= {})", self.nv()),
                             "drop the cell or remap to a valid vertex index",
                         ),
                     );
@@ -169,7 +302,7 @@ impl<'a> MeshTopologyValidator<'a> {
                         None,
                         None,
                         format!("cell {ci} lists neighbor {n} (>= {})", self.nc()),
-                        "drop the stale neighbor reference",
+                        "drop the stale neighbor id",
                     ));
                 }
             }
@@ -381,7 +514,7 @@ impl<'a> MeshTopologyValidator<'a> {
         issues
     }
 
-    /// Each cell must reference at least 3 distinct, in-range vertices.
+    /// Each cell must canonical at least 3 distinct, in-range vertices.
     pub fn validate_cell_vertex_incidence(&self) -> Vec<TopologyIssue> {
         let mut issues = Vec::new();
         for (ci, cell) in self.mesh.cells.iter().enumerate() {
@@ -541,6 +674,38 @@ impl<'a> MeshTopologyValidator<'a> {
         issues
     }
 
+    pub fn validate_connected_components(&self) -> Vec<TopologyIssue> {
+        let count = connected_component_count(self.mesh);
+        if count <= 1 {
+            return Vec::new();
+        }
+        vec![TopologyIssue::new(
+            TopologyIssueType::DisconnectedMesh,
+            None,
+            None,
+            None,
+            format!("mesh contains {count} edge-connected cell components"),
+            "connect the components or export them as separate meshes",
+        )]
+    }
+
+    pub fn validate_non_manifold_vertex_fans(&self) -> Vec<TopologyIssue> {
+        non_manifold_vertex_fans(self.mesh)
+            .into_iter()
+            .take(MAX_ISSUES_PER_TYPE)
+            .map(|(vertex, cell)| {
+                TopologyIssue::new(
+                    TopologyIssueType::NonManifoldVertexFan,
+                    Some(cell),
+                    None,
+                    Some(vertex),
+                    format!("vertex {vertex} has multiple disconnected incident-cell fans"),
+                    "split the vertex so each incident-cell fan has its own vertex id",
+                )
+            })
+            .collect()
+    }
+
     /// Run every validator. Issues are capped per type ([`MAX_ISSUES_PER_TYPE`]).
     pub fn validate_all(&self) -> Vec<TopologyIssue> {
         let mut all = Vec::new();
@@ -555,6 +720,8 @@ impl<'a> MeshTopologyValidator<'a> {
         all.extend(self.validate_orphan_cells());
         all.extend(self.validate_refinement_levels());
         all.extend(self.validate_transition_continuity());
+        all.extend(self.validate_connected_components());
+        all.extend(self.validate_non_manifold_vertex_fans());
         all
     }
 }
@@ -717,6 +884,8 @@ pub fn mark_unrepairable(issues: &[TopologyIssue]) -> Vec<TopologyIssue> {
                     | OrphanCell
                     | NonreciprocalNeighbor
                     | AbnormalPolygonEdgeCount
+                    | DisconnectedMesh
+                    | NonManifoldVertexFan
             )
         })
         .cloned()

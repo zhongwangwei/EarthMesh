@@ -2,12 +2,12 @@ use std::io;
 
 /// Port of `MOD_refine.F90:iterG_judge`.
 ///
-/// Inputs preserve Fortran indexing: row 0 is unused, polygon/cell ids start
+/// Inputs preserve Canonical indexing: row 0 is unused, polygon/cell ids start
 /// after `num_center`, `triangles_on_cell[cell]` corresponds to
 /// `ngrwm(1:n_ngrwm(cell), cell)`, and `mrl_new[triangle] == 1` means the
 /// triangle is still unrefined.  A six-edge polygon with refinement-state sum
 /// 18 marks its unrefined adjacent triangles as weak-concavity refinements.
-pub fn refine_iter_g_judge_fortran_indexed(
+pub fn refine_iter_g_judge_one_based(
     num_center: usize,
     lbx_points: usize,
     triangles_on_cell: &[Vec<usize>],

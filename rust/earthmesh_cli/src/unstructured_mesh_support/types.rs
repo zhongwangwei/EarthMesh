@@ -42,6 +42,19 @@ pub struct UnstructuredMeshWriteReport {
     pub dimc: usize,
 }
 
+/// Optional Method-C fields carried alongside compact gridfile connectivity.
+/// Refinement levels are zero-based at the file boundary; `ngr` retains its
+/// native one-based Method-C value (placeholder rows may be zero).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MethodCGridfileMetadataSlices<'a> {
+    pub m_refine_level: Option<&'a [i32]>,
+    pub m_refine_level_orig: Option<&'a [i32]>,
+    pub m_ngr: Option<&'a [i32]>,
+    pub w_refine_level: Option<&'a [i32]>,
+    pub w_refine_level_orig: Option<&'a [i32]>,
+    pub w_ngr: Option<&'a [i32]>,
+}
+
 /// Mesh node coordinates plus compact connectivity read from an EarthMesh gridfile.
 pub struct GridfileMeshPoints {
     pub m_lon: Vec<f64>,
@@ -51,6 +64,10 @@ pub struct GridfileMeshPoints {
     pub m_to_w: Vec<i32>,
     /// Optional EarthMesh extension: zero-based refinement level per M cell.
     pub m_refine_level: Vec<i32>,
+    /// Original zero-based Method-C refinement ownership per M cell.
+    pub m_refine_level_orig: Vec<i32>,
+    /// Native Method-C nest/grid ownership (`itab_m%ngr`) per M cell.
+    pub m_ngr: Vec<i32>,
     /// Flattened `itab_w%im`: the M-points around each W cell.
     pub w_to_m: Vec<i32>,
     pub w_to_m_width: usize,
@@ -58,6 +75,10 @@ pub struct GridfileMeshPoints {
     pub n_w: Vec<i32>,
     /// Optional EarthMesh extension: zero-based refinement level per W cell.
     pub w_refine_level: Vec<i32>,
+    /// Original zero-based Method-C refinement ownership per W cell.
+    pub w_refine_level_orig: Vec<i32>,
+    /// Native Method-C nest/grid ownership (`itab_w%ngr`) per W cell.
+    pub w_ngr: Vec<i32>,
 }
 
 /// Which connectivity view to render from a gridfile: `Tri` builds one triangle per

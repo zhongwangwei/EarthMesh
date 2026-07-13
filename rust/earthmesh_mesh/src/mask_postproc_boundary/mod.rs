@@ -27,14 +27,14 @@ pub(crate) fn push_boundary_neighbor(
 /// Port of `MOD_mask_postproc.F90:bdy_connection_closed_curve`.
 ///
 /// `boundary_order[0]` and output curve slot `0` are placeholders matching the
-/// Fortran convention that useful records start at index `1`/`2` depending on
-/// the source array.  `num_bdy_long[0..2]` preserves the legacy final `+1` on
+/// Canonical convention that useful records start at index `1`/`2` depending on
+/// the source array.  `num_bdy_long[0..2]` preserves the compatibility final `+1` on
 /// longest/second-longest lengths because downstream allocation expects the
 /// extra placeholder space.  Slot `1` (second-longest) deliberately deviates
-/// from the legacy Fortran, whose tracking logic was wrong (no demotion of the
-/// old longest, curve 1 excluded); the Fortran reference has been fixed the
+/// from the compatibility Canonical, whose tracking logic was wrong (no demotion of the
+/// old longest, curve 1 excluded); the Canonical canonical has been fixed the
 /// same way.
-pub fn boundary_closed_curves_fortran_indexed(
+pub fn boundary_closed_curves_one_based(
     boundary_order: &[usize],
     boundary_neighbors: &[Vec<usize>],
 ) -> io::Result<BoundaryClosedCurves> {
@@ -122,8 +122,8 @@ pub fn boundary_closed_curves_fortran_indexed(
         close_curves.push(boundary_queue);
         n_close_curve.push(num_points);
 
-        // Two-slot max tracking. The legacy Fortran had three flaws here, fixed
-        // identically on the Fortran side: it never demoted the previous
+        // Two-slot max tracking. The compatibility Canonical had three flaws here, fixed
+        // identically on the Canonical side: it never demoted the previous
         // longest into slot 1, it permanently excluded curve 1 from the
         // second-longest slot, and it excluded curves tying the longest
         // length. Slot 1 has no production consumer, so this cannot change any

@@ -5,6 +5,7 @@ impl RefineConfig {
         &mut self,
         mesh_type: &str,
         mode_grid: &str,
+        external_field: bool,
     ) -> Result<(), String> {
         if !self.is_transition {
             if mode_grid != "tri" {
@@ -34,14 +35,11 @@ impl RefineConfig {
             return Err("vertex_pretect_layers must >= 0".to_string());
         }
 
-        if self.refine_cal && mesh_type == "atmosmesh" {
-            return Err("atmosmesh can not use in refine_cal".to_string());
-        }
-
         self.refine_setting = match (self.refine_spc, self.refine_cal) {
             (true, true) => "mixed".to_string(),
             (true, false) => "specified".to_string(),
             (false, true) => "calculate".to_string(),
+            (false, false) if external_field => "external_field".to_string(),
             (false, false) => {
                 return Err(
                     "Must one of TRUE in the refine_spc and refine_cal when refine is TRUE"
@@ -51,6 +49,9 @@ impl RefineConfig {
         };
 
         if self.refine_setting == "calculate" || self.refine_setting == "mixed" {
+            // Deliberately allow atmosmesh calculated thresholds: the Rust hfield path
+            // supports atmosphere/typhoon criteria even though the old Canonical read_nl
+            // guard rejected RL%refine_cal for atmosmesh.
             self.validate_threshold_switches_for_mesh(mesh_type)?;
         }
         self.validate_enabled_threshold_values()?;

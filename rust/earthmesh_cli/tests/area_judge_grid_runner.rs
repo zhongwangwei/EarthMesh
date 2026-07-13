@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use earthmesh_cli::{
-    run_area_judge_non_restart_grids_fortran_indexed, write_bbox_mask_netcdf,
-    AreaJudgeCalculatedRefineConfig, AreaJudgeGridRunConfig, BBoxMask, BBoxPoint,
+    area_judge_grid_runs::run_area_judge_non_restart_grids_one_based,
+    area_judge_types::AreaJudgeCalculatedRefineConfig, area_judge_types::AreaJudgeGridRunConfig,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
@@ -75,7 +76,7 @@ fn area_judge_grid_runner_writes_domain_and_iter_zero_refine_grids() {
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
     let landtypes_global = one_based_landtypes(6, 6, &[(2, 2), (3, 3), (6, 6)]);
 
-    let report = run_area_judge_non_restart_grids_fortran_indexed(AreaJudgeGridRunConfig {
+    let report = run_area_judge_non_restart_grids_one_based(AreaJudgeGridRunConfig {
         file_dir: &root,
         mask_domain_global: false,
         mask_domain_type: "bbox",

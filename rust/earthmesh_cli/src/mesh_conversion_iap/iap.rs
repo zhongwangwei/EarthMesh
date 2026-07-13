@@ -2,21 +2,21 @@ use std::io;
 
 use earthmesh_mesh::LonLatDegrees;
 
-use crate::*;
+use crate::usize_to_i32;
 
-pub(crate) fn derive_iap_w_to_m_fortran_indexed(
-    fortran_vertices: usize,
-    m_to_w_fortran: &[[usize; 3]],
-    m_points_fortran: &[LonLatDegrees],
+pub(crate) fn derive_iap_w_to_m_one_based(
+    canonical_vertices: usize,
+    m_to_w_canonical: &[[usize; 3]],
+    m_points_canonical: &[LonLatDegrees],
 ) -> io::Result<(Vec<Vec<i32>>, Vec<i32>)> {
-    let mut incident = vec![Vec::<usize>::new(); fortran_vertices + 1];
-    for triangle_id in 2..m_to_w_fortran.len() {
-        for &vertex_id in &m_to_w_fortran[triangle_id] {
-            if vertex_id == 0 || vertex_id > fortran_vertices {
+    let mut incident = vec![Vec::<usize>::new(); canonical_vertices + 1];
+    for triangle_id in 2..m_to_w_canonical.len() {
+        for &vertex_id in &m_to_w_canonical[triangle_id] {
+            if vertex_id == 0 || vertex_id > canonical_vertices {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "IAP-Ocean triangle {triangle_id} references W point {vertex_id}, outside 1..={fortran_vertices}"
+                        "IAP-Ocean triangle {triangle_id} canonicals W point {vertex_id}, outside 1..={canonical_vertices}"
                     ),
                 ));
             }
@@ -26,17 +26,20 @@ pub(crate) fn derive_iap_w_to_m_fortran_indexed(
 
     let maxnum = incident
         .iter()
-        .take(fortran_vertices + 1)
+        .take(canonical_vertices + 1)
         .skip(1)
         .map(Vec::len)
         .max()
         .unwrap_or(0)
         .max(7);
-    let mut w_to_m = Vec::with_capacity(fortran_vertices);
-    let mut n_w_to_m = Vec::with_capacity(fortran_vertices);
-    for vertex_id in 1..=fortran_vertices {
-        let sorted =
-            sort_iap_incident_triangles(&incident[vertex_id], m_to_w_fortran, m_points_fortran)?;
+    let mut w_to_m = Vec::with_capacity(canonical_vertices);
+    let mut n_w_to_m = Vec::with_capacity(canonical_vertices);
+    for vertex_id in 1..=canonical_vertices {
+        let sorted = sort_iap_incident_triangles(
+            &incident[vertex_id],
+            m_to_w_canonical,
+            m_points_canonical,
+        )?;
         n_w_to_m.push(i32::try_from(incident[vertex_id].len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -54,8 +57,8 @@ pub(crate) fn derive_iap_w_to_m_fortran_indexed(
 
 fn sort_iap_incident_triangles(
     incident: &[usize],
-    m_to_w_fortran: &[[usize; 3]],
-    m_points_fortran: &[LonLatDegrees],
+    m_to_w_canonical: &[[usize; 3]],
+    m_points_canonical: &[LonLatDegrees],
 ) -> io::Result<Vec<usize>> {
     if incident.len() <= 1 {
         return Ok(incident.to_vec());
@@ -68,8 +71,8 @@ fn sort_iap_incident_triangles(
                 continue;
             }
             if iap_triangles_are_neighbors(
-                m_to_w_fortran[triangle_id],
-                m_to_w_fortran[other_triangle_id],
+                m_to_w_canonical[triangle_id],
+                m_to_w_canonical[other_triangle_id],
             ) {
                 neighbor_degree[idx] += 1;
             }
@@ -92,8 +95,10 @@ fn sort_iap_incident_triangles(
             if used[idx] {
                 continue;
             }
-            if iap_triangles_are_neighbors(m_to_w_fortran[ref_triangle], m_to_w_fortran[candidate])
-            {
+            if iap_triangles_are_neighbors(
+                m_to_w_canonical[ref_triangle],
+                m_to_w_canonical[candidate],
+            ) {
                 found_pos = Some(idx);
                 break;
             }
@@ -113,7 +118,7 @@ fn sort_iap_incident_triangles(
         &ordered
             .iter()
             .map(|&triangle_id| {
-                m_points_fortran.get(triangle_id).copied().ok_or_else(|| {
+                m_points_canonical.get(triangle_id).copied().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         "IAP-Ocean sorted triangle id missing M point",

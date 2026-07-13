@@ -2,7 +2,7 @@ use super::*;
 
 /// Port of `MOD_grid_preprocess:CheckLon`.
 ///
-/// The Fortran routine performs a single +/-360 adjustment rather than a full
+/// The Canonical routine performs a single +/-360 adjustment rather than a full
 /// modulo normalization. Preserve that behavior for parity.
 pub fn normalize_lon_m180_180(lon_degrees: f64) -> f64 {
     if lon_degrees > 180.0 {
@@ -16,7 +16,7 @@ pub fn normalize_lon_m180_180(lon_degrees: f64) -> f64 {
 
 /// Port of the swap predicate in `MOD_grid_preprocess:GetSort_verticesOnEdge`.
 ///
-/// Fortran compares the 2-D cross product between the cell-center edge vector
+/// Canonical compares the 2-D cross product between the cell-center edge vector
 /// and the current vertex-edge vector. If `res > 0`, ordering is kept; otherwise
 /// `verticesOnEdge(1:2, i)` is swapped.
 pub fn should_swap_vertices_on_edge(
@@ -36,11 +36,11 @@ pub fn should_swap_vertices_on_edge(
 
 /// Port of `MOD_grid_preprocess:GetSort_verticesOnEdge`.
 ///
-/// Returns a sorted copy of `verticesOnEdge`, preserving the Fortran convention
-/// that edge ids start at `2`. Each edge is swapped when the migrated
-/// cross-product predicate indicates Fortran would exchange
+/// Returns a sorted copy of `verticesOnEdge`, preserving the Canonical convention
+/// that edge ids start at `2`. Each edge is swapped when the current
+/// cross-product predicate indicates Canonical would exchange
 /// `verticesOnEdge(1:2, i)`.
-pub fn order_vertices_on_edge_fortran_indexed(
+pub fn order_vertices_on_edge_one_based(
     point_lonlat: &[LonLatDegrees],
     cell_lonlat: &[LonLatDegrees],
     cells_on_edge: &[[usize; 2]],
@@ -69,30 +69,30 @@ pub fn order_vertices_on_edge_fortran_indexed(
 
 pub fn next_ccw_edge_candidate_slot(
     vertex: CartesianPoint,
-    reference_edge: CartesianPoint,
+    canonical_edge: CartesianPoint,
     candidate_edges: &[CartesianPoint],
 ) -> Option<usize> {
     let normal = vertex;
     let normal_mag = magnitude(normal);
-    let reference_vec = vector_between(vertex, reference_edge);
-    let reference_mag = magnitude(reference_vec);
+    let canonical_vec = vector_between(vertex, canonical_edge);
+    let canonical_mag = magnitude(canonical_vec);
     let mut min_angle = std::f64::consts::PI * 2.0;
     let mut best_slot = None;
 
     for (slot, candidate_edge) in candidate_edges.iter().copied().enumerate() {
         let candidate_vec = vector_between(vertex, candidate_edge);
         let candidate_mag = magnitude(candidate_vec);
-        let cross_prod = cross(reference_vec, candidate_vec);
+        let cross_prod = cross(canonical_vec, candidate_vec);
         let cross_mag = magnitude(cross_prod);
 
         if cross_mag > 1.0e-15 && normal_mag > 1.0e-15 {
             let dot_val = dot(cross_prod, normal) / (cross_mag * normal_mag);
             if dot_val > 0.0 {
-                let denom = reference_mag * candidate_mag;
+                let denom = canonical_mag * candidate_mag;
                 if denom == 0.0 {
                     continue;
                 }
-                let cos_angle = (dot(reference_vec, candidate_vec) / denom).clamp(-1.0, 1.0);
+                let cos_angle = (dot(canonical_vec, candidate_vec) / denom).clamp(-1.0, 1.0);
                 let angle = cos_angle.acos();
                 if angle < min_angle {
                     min_angle = angle;

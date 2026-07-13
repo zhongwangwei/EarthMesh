@@ -15,7 +15,7 @@ pub struct AreaJudgeSourceBounds {
     pub minlat_source: usize,
 }
 
-fn area_judge_source_window_fortran_indexed(
+fn area_judge_source_window_one_based(
     temp: f64,
     axis: AreaJudgeAxis,
     gridnum_perdegree: usize,
@@ -48,12 +48,12 @@ fn area_judge_source_window_fortran_indexed(
 
 /// Pure Rust port of `MOD_Area_judge:Source_Find`.
 ///
-/// The routine keeps the Fortran one-based indexing convention: callers pass
+/// The routine keeps the Canonical one-based indexing convention: callers pass
 /// a placeholder at index 0, source vertices occupy `1..=n_source+1`, longitude
 /// vertices ascend from -180 to 180, and latitude vertices descend from 90 to
 /// -90.  The search is bounded by the same degree-derived ±10-cell window used
-/// in Fortran before scanning for the first matching vertex.
-pub fn area_judge_source_find_fortran_indexed(
+/// in Canonical before scanning for the first matching vertex.
+pub fn area_judge_source_find_one_based(
     temp: f64,
     seq_lonlat: &[f64],
     axis: AreaJudgeAxis,
@@ -61,13 +61,8 @@ pub fn area_judge_source_find_fortran_indexed(
     n_source: usize,
 ) -> Option<usize> {
     let max_index = seq_lonlat.len().checked_sub(1)?;
-    let (start, end) = area_judge_source_window_fortran_indexed(
-        temp,
-        axis,
-        gridnum_perdegree,
-        n_source,
-        max_index,
-    )?;
+    let (start, end) =
+        area_judge_source_window_one_based(temp, axis, gridnum_perdegree, n_source, max_index)?;
     match axis {
         AreaJudgeAxis::Longitude => (start..=end).find(|&index| temp <= seq_lonlat[index]),
         AreaJudgeAxis::Latitude => (start..=end).find(|&index| temp >= seq_lonlat[index]),
@@ -76,11 +71,11 @@ pub fn area_judge_source_find_fortran_indexed(
 
 /// Pure Rust return-value form of `MOD_Area_judge:minmax_range_make`.
 ///
-/// The Fortran subroutine also mutates one of three global range accumulators
+/// The Canonical subroutine also mutates one of three global range accumulators
 /// depending on `type_select`.  This kernel intentionally returns just the
 /// source bounds; the later `Area_judge` orchestration can merge these bounds
 /// into domain/refine/patch accumulators without reimplementing the lookup.
-pub fn area_judge_minmax_range_make_fortran_indexed(
+pub fn area_judge_minmax_range_make_one_based(
     edgew_temp: f64,
     edgee_temp: f64,
     edgen_temp: f64,
@@ -91,14 +86,14 @@ pub fn area_judge_minmax_range_make_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> Option<AreaJudgeSourceBounds> {
-    let minlon_source = area_judge_source_find_fortran_indexed(
+    let minlon_source = area_judge_source_find_one_based(
         edgew_temp,
         lon_vertex,
         AreaJudgeAxis::Longitude,
         gridnum_perdegree,
         nlons_source,
     )?;
-    let mut maxlon_source = area_judge_source_find_fortran_indexed(
+    let mut maxlon_source = area_judge_source_find_one_based(
         edgee_temp,
         lon_vertex,
         AreaJudgeAxis::Longitude,
@@ -106,14 +101,14 @@ pub fn area_judge_minmax_range_make_fortran_indexed(
         nlons_source,
     )?
     .checked_sub(2)?;
-    let maxlat_source = area_judge_source_find_fortran_indexed(
+    let maxlat_source = area_judge_source_find_one_based(
         edgen_temp,
         lat_vertex,
         AreaJudgeAxis::Latitude,
         gridnum_perdegree,
         nlats_source,
     )?;
-    let mut minlat_source = area_judge_source_find_fortran_indexed(
+    let mut minlat_source = area_judge_source_find_one_based(
         edges_temp,
         lat_vertex,
         AreaJudgeAxis::Latitude,

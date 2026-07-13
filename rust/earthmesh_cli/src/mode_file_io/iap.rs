@@ -1,12 +1,12 @@
 use std::{io, path::Path};
 
 use earthmesh_mesh::{
-    centroid_spherical_mesh_fortran_indexed, circumcenter_spherical_mesh_fortran_indexed,
+    centroid_spherical_mesh_one_based, circumcenter_spherical_mesh_one_based,
     lonlat_points_to_unit_xyz, xyz_to_lonlat_degrees, LonLatDegrees,
 };
 
 use crate::{
-    derive_iap_w_to_m_fortran_indexed, gridfile_output_path, netcdf_to_io_error, normalize_degrees,
+    derive_iap_w_to_m_one_based, gridfile_output_path, netcdf_to_io_error, normalize_degrees,
     rad_to_deg, require_len, required_dimension_len, required_values_f64,
     required_values_i32_matrix, scale_cartesian_points_by_earth_radius,
     usize_from_i32_connectivity, write_unstructured_mesh_netcdf, IapMeshReadPayload, LonLatPoint,
@@ -84,8 +84,8 @@ pub fn convert_iap_ocean_mode_file_to_earthmesh(
     let file = crate::open_netcdf(mode_file).map_err(netcdf_to_io_error)?;
     let source_triangles = required_dimension_len(&file, "sjx_points")?;
     let source_vertices = required_dimension_len(&file, "lbx_points")?;
-    let fortran_triangles = source_triangles + 1;
-    let fortran_vertices = source_vertices + 1;
+    let canonical_triangles = source_triangles + 1;
+    let canonical_vertices = source_vertices + 1;
 
     let glonw = required_values_f64(&file, "GLONW")?;
     let glatw = required_values_f64(&file, "GLATW")?;
@@ -109,39 +109,39 @@ pub fn convert_iap_ocean_mode_file_to_earthmesh(
     require_len("GLONW", glonw.len(), source_vertices)?;
     require_len("GLATW", glatw.len(), source_vertices)?;
 
-    let mut w_points_fortran = vec![LonLatDegrees::new(0.0, 0.0); fortran_vertices + 1];
+    let mut w_points_canonical = vec![LonLatDegrees::new(0.0, 0.0); canonical_vertices + 1];
     for source_idx in 0..source_vertices {
-        let fortran_idx = source_idx + 2;
-        w_points_fortran[fortran_idx] = LonLatDegrees::new(
+        let canonical_idx = source_idx + 2;
+        w_points_canonical[canonical_idx] = LonLatDegrees::new(
             normalize_degrees(rad_to_deg(glonw[source_idx])),
             rad_to_deg(glatw[source_idx]),
         );
     }
 
-    let mut m_to_w_fortran = vec![[1_usize, 1, 1]; fortran_triangles + 1];
+    let mut m_to_w_canonical = vec![[1_usize, 1, 1]; canonical_triangles + 1];
     for source_idx in 0..source_triangles {
-        let fortran_idx = source_idx + 2;
+        let canonical_idx = source_idx + 2;
         let base = source_idx * 3;
-        m_to_w_fortran[fortran_idx] = [
+        m_to_w_canonical[canonical_idx] = [
             usize_from_i32_connectivity(source_m_to_w[base], "itab_m%iw")? + 1,
             usize_from_i32_connectivity(source_m_to_w[base + 1], "itab_m%iw")? + 1,
             usize_from_i32_connectivity(source_m_to_w[base + 2], "itab_m%iw")? + 1,
         ];
     }
 
-    let centroids = centroid_spherical_mesh_fortran_indexed(&w_points_fortran, &m_to_w_fortran)
+    let centroids = centroid_spherical_mesh_one_based(&w_points_canonical, &m_to_w_canonical)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "IAP-Ocean triangle connectivity references missing W points",
+                "IAP-Ocean triangle connectivity canonicals missing W points",
             )
         })?;
     let mut centroid_xyz = lonlat_points_to_unit_xyz(&centroids);
-    let mut vertex_xyz = lonlat_points_to_unit_xyz(&w_points_fortran);
+    let mut vertex_xyz = lonlat_points_to_unit_xyz(&w_points_canonical);
     scale_cartesian_points_by_earth_radius(&mut centroid_xyz);
     scale_cartesian_points_by_earth_radius(&mut vertex_xyz);
     let circumcenters =
-        circumcenter_spherical_mesh_fortran_indexed(&centroid_xyz, &vertex_xyz, &m_to_w_fortran)
+        circumcenter_spherical_mesh_one_based(&centroid_xyz, &vertex_xyz, &m_to_w_canonical)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -149,38 +149,46 @@ pub fn convert_iap_ocean_mode_file_to_earthmesh(
                 )
             })?;
 
-    let mut m_points_fortran = vec![LonLatDegrees::new(0.0, 0.0); fortran_triangles + 1];
-    for fortran_idx in 2..=fortran_triangles {
-        m_points_fortran[fortran_idx] = xyz_to_lonlat_degrees(circumcenters[fortran_idx]);
+    let mut m_points_canonical = vec![LonLatDegrees::new(0.0, 0.0); canonical_triangles + 1];
+    for canonical_idx in 2..=canonical_triangles {
+        m_points_canonical[canonical_idx] = xyz_to_lonlat_degrees(circumcenters[canonical_idx]);
     }
 
-    let mut m_points = Vec::with_capacity(fortran_triangles);
-    for lonlat in m_points_fortran.iter().take(fortran_triangles + 1).skip(1) {
+    let mut m_points = Vec::with_capacity(canonical_triangles);
+    for lonlat in m_points_canonical
+        .iter()
+        .take(canonical_triangles + 1)
+        .skip(1)
+    {
         m_points.push(LonLatPoint {
             lon: lonlat.lon_degrees,
             lat: lonlat.lat_degrees,
         });
     }
 
-    let mut w_points = Vec::with_capacity(fortran_vertices);
-    for point in w_points_fortran.iter().take(fortran_vertices + 1).skip(1) {
+    let mut w_points = Vec::with_capacity(canonical_vertices);
+    for point in w_points_canonical
+        .iter()
+        .take(canonical_vertices + 1)
+        .skip(1)
+    {
         w_points.push(LonLatPoint {
             lon: point.lon_degrees,
             lat: point.lat_degrees,
         });
     }
 
-    let m_to_w = (1..=fortran_triangles)
+    let m_to_w = (1..=canonical_triangles)
         .map(|idx| {
             [
-                m_to_w_fortran[idx][0] as i32,
-                m_to_w_fortran[idx][1] as i32,
-                m_to_w_fortran[idx][2] as i32,
+                m_to_w_canonical[idx][0] as i32,
+                m_to_w_canonical[idx][1] as i32,
+                m_to_w_canonical[idx][2] as i32,
             ]
         })
         .collect::<Vec<_>>();
     let (w_to_m, n_w_to_m) =
-        derive_iap_w_to_m_fortran_indexed(fortran_vertices, &m_to_w_fortran, &m_points_fortran)?;
+        derive_iap_w_to_m_one_based(canonical_vertices, &m_to_w_canonical, &m_points_canonical)?;
 
     let mesh = UnstructuredMesh {
         m_points,

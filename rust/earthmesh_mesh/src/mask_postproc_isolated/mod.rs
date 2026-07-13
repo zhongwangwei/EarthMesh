@@ -12,8 +12,8 @@ pub struct IsolatedOceanRenewal {
 /// Pure-data port of `MOD_mask_postproc.F90:Isolated_Ocean_Renew`.
 ///
 /// The caller supplies the already-built boundary connection so this helper can
-/// focus on the legacy closed-curve classification and inward peeling rule.
-pub fn remove_isolated_ocean_fortran_indexed(
+/// focus on the compatibility closed-curve classification and inward peeling rule.
+pub fn remove_isolated_ocean_one_based(
     is_in_domain: &mut [i32],
     center_neighbors: &[Vec<usize>],
     center_neighbor_counts: &[usize],
@@ -33,7 +33,7 @@ pub fn remove_isolated_ocean_fortran_indexed(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "vertex neighbor tables/counts must share a compatible Fortran-indexed domain",
+            "vertex neighbor tables/counts must share a compatible Canonical-indexed domain",
         ));
     }
 
@@ -113,7 +113,7 @@ pub fn remove_isolated_ocean_fortran_indexed(
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             format!(
-                                "vertex {boundary_vertex_id} references center {center_id}, outside is_in_domain"
+                                "vertex {boundary_vertex_id} canonicals center {center_id}, outside is_in_domain"
                             ),
                         ));
                     }

@@ -1,0 +1,20 @@
+schema_version: 3.0.0
+metadata:
+  name: quickstart_project
+  authors: []
+  description: Minimal project-layer smoke example.
+domain: Global
+target:
+  kind: Atmosphere
+  cell: Hex
+  intent: AtmosphereMpas
+  resolution: !Nxp 16
+  model_format: Mpas
+data_layers: []
+refinement:
+  enabled: false
+  max_passes: 0
+quality:
+  min_angle_deg: 25.0
+  on_violation: Warn
+expert: {}

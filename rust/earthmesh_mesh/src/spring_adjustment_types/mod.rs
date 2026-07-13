@@ -91,7 +91,7 @@ pub struct SpringjustmentRegionalFromRefinementInput<'a> {
 }
 
 /// Output from `Springjustment_regional_step` after mask derivation and the
-/// migrated regional spring core have both run.
+/// current regional spring core have both run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpringjustmentRegionalFromRefinementOutput {
     pub mask: RegionalMoveMaskOutput,

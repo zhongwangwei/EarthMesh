@@ -1,7 +1,9 @@
 //! Rust port of util/hydro_mesh/coastal_band.py (pure grid core): land mask from
 //! elevation + Chebyshev coastal-band cell selection. Pure (no NetCDF/CaMa data).
 
-use earthmesh_cli::{coastal_band_cells, coastal_land_mask_from_elevation};
+use earthmesh_cli::{
+    coastal_band_io::coastal_band_cells, coastal_band_io::coastal_land_mask_from_elevation,
+};
 
 #[test]
 fn land_mask_drops_undef_and_nonfinite() {

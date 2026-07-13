@@ -7,7 +7,7 @@ fn mode4mesh_make_lambert_netcdf_writes_gridfile_mode4_schema() {
     fs::create_dir_all(root.join("gridfile")).expect("create gridfile dir");
     let source = root.join("lambert_mode.nc4");
     {
-        let mut file = netcdf::create(&source).expect("create source");
+        let mut file = earthmesh_cli::create_netcdf_quiet(&source).expect("create source");
         file.add_dimension("xi_vert", 2).expect("xi dim");
         file.add_dimension("eta_vert", 3).expect("eta dim");
         file.add_variable::<f64>("lon_vert", &["xi_vert", "eta_vert"])
@@ -21,7 +21,7 @@ fn mode4mesh_make_lambert_netcdf_writes_gridfile_mode4_schema() {
     }
 
     let output = root.join("gridfile/gridfile_mode4_lambert.nc4");
-    let report = earthmesh_cli::mode4mesh_make_netcdf(&source, "lambert", &output)
+    let report = earthmesh_cli::mode4mesh_make::mode4mesh_make_netcdf(&source, "lambert", &output)
         .expect("mode4mesh_make lambert nc");
 
     assert_eq!(report.input, source);
@@ -54,7 +54,7 @@ fn mode4mesh_make_lambert_netcdf_writes_gridfile_mode4_schema() {
 }
 
 #[test]
-fn mode4mesh_make_rejects_unsupported_grid_select_and_nml_lambert_like_fortran() {
+fn mode4mesh_make_rejects_unsupported_grid_select_and_nml_lambert_like_canonical() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_mode4mesh_reject_{}",
         std::process::id()
@@ -65,11 +65,11 @@ fn mode4mesh_make_rejects_unsupported_grid_select_and_nml_lambert_like_fortran()
     fs::write(&nml, "&dummy\n/\n").expect("write nml");
     let out = root.join("out.nc4");
 
-    let err = earthmesh_cli::mode4mesh_make_netcdf(&nml, "lambert", &out)
-        .expect_err("lambert nml is unsupported like Fortran");
+    let err = earthmesh_cli::mode4mesh_make::mode4mesh_make_netcdf(&nml, "lambert", &out)
+        .expect_err("lambert nml is unsupported like Canonical");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 
-    let err = earthmesh_cli::mode4mesh_make_netcdf(&nml, "cubical", &out)
+    let err = earthmesh_cli::mode4mesh_make::mode4mesh_make_netcdf(&nml, "cubical", &out)
         .expect_err("cubical unsupported");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 

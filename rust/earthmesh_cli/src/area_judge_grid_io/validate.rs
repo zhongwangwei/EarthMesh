@@ -90,7 +90,7 @@ pub(crate) fn validate_i32_matrix_shape(
     Ok(())
 }
 
-pub(crate) fn grid_covers_area_judge_bounds_fortran_indexed<T>(
+pub(crate) fn grid_covers_area_judge_bounds_one_based<T>(
     name: &str,
     grid: &[Vec<T>],
     bounds: AreaJudgeSourceBounds,

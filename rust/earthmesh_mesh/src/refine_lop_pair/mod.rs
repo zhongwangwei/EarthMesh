@@ -6,10 +6,10 @@ use crate::is_ngrmm;
 ///
 /// Given two parent triangles (`m1`, `w1`) and their two recorded children in
 /// `sjx_child`, returns the first child pair that shares an edge according to
-/// the Fortran `IsNgrmm` test.  Missing child adjacency is represented as
-/// `Ok(None)`, matching the modern Fortran optional `found=.false.` path used by
+/// the Canonical `IsNgrmm` test.  Missing child adjacency is represented as
+/// `Ok(None)`, matching the modern Canonical optional `found=.false.` path used by
 /// weak-concavity LOP handling.
-pub fn refine_m1w1_to_m11w11_fortran_indexed(
+pub fn refine_m1w1_to_m11w11_one_based(
     m1: usize,
     w1: usize,
     sjx_child: &[[usize; 2]],

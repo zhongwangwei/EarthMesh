@@ -1,9 +1,9 @@
 use earthmesh_mesh::{
-    area_judge_closed_curve_fill_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
-    area_judge_source_find_fortran_indexed, AreaJudgeAxis, AreaJudgeSourceBounds, LonLatDegrees,
+    area_judge_closed_curve_fill_one_based, area_judge_minmax_range_make_one_based,
+    area_judge_source_find_one_based, AreaJudgeAxis, AreaJudgeSourceBounds, LonLatDegrees,
 };
 
-fn one_degree_lon_vertices_fortran_indexed() -> Vec<f64> {
+fn one_degree_lon_vertices_one_based() -> Vec<f64> {
     let mut vertices = Vec::with_capacity(362);
     vertices.push(f64::NAN);
     for lon in -180..=180 {
@@ -12,7 +12,7 @@ fn one_degree_lon_vertices_fortran_indexed() -> Vec<f64> {
     vertices
 }
 
-fn one_degree_lat_vertices_fortran_indexed() -> Vec<f64> {
+fn one_degree_lat_vertices_one_based() -> Vec<f64> {
     let mut vertices = Vec::with_capacity(182);
     vertices.push(f64::NAN);
     for lat in (-90..=90).rev() {
@@ -22,79 +22,43 @@ fn one_degree_lat_vertices_fortran_indexed() -> Vec<f64> {
 }
 
 #[test]
-fn source_find_uses_fortran_one_based_window_for_lon_and_lat_vertices() {
-    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
-    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+fn source_find_uses_canonical_one_based_window_for_lon_and_lat_vertices() {
+    let lon_vertices = one_degree_lon_vertices_one_based();
+    let lat_vertices = one_degree_lat_vertices_one_based();
 
     assert_eq!(
-        area_judge_source_find_fortran_indexed(
-            -180.0,
-            &lon_vertices,
-            AreaJudgeAxis::Longitude,
-            1,
-            360,
-        ),
+        area_judge_source_find_one_based(-180.0, &lon_vertices, AreaJudgeAxis::Longitude, 1, 360,),
         Some(1)
     );
     assert_eq!(
-        area_judge_source_find_fortran_indexed(
-            -179.2,
-            &lon_vertices,
-            AreaJudgeAxis::Longitude,
-            1,
-            360,
-        ),
+        area_judge_source_find_one_based(-179.2, &lon_vertices, AreaJudgeAxis::Longitude, 1, 360,),
         Some(2)
     );
     assert_eq!(
-        area_judge_source_find_fortran_indexed(
-            180.0,
-            &lon_vertices,
-            AreaJudgeAxis::Longitude,
-            1,
-            360,
-        ),
+        area_judge_source_find_one_based(180.0, &lon_vertices, AreaJudgeAxis::Longitude, 1, 360,),
         Some(361)
     );
 
     assert_eq!(
-        area_judge_source_find_fortran_indexed(
-            90.0,
-            &lat_vertices,
-            AreaJudgeAxis::Latitude,
-            1,
-            180,
-        ),
+        area_judge_source_find_one_based(90.0, &lat_vertices, AreaJudgeAxis::Latitude, 1, 180,),
         Some(1)
     );
     assert_eq!(
-        area_judge_source_find_fortran_indexed(
-            89.2,
-            &lat_vertices,
-            AreaJudgeAxis::Latitude,
-            1,
-            180,
-        ),
+        area_judge_source_find_one_based(89.2, &lat_vertices, AreaJudgeAxis::Latitude, 1, 180,),
         Some(2)
     );
     assert_eq!(
-        area_judge_source_find_fortran_indexed(
-            -90.0,
-            &lat_vertices,
-            AreaJudgeAxis::Latitude,
-            1,
-            180,
-        ),
+        area_judge_source_find_one_based(-90.0, &lat_vertices, AreaJudgeAxis::Latitude, 1, 180,),
         Some(181)
     );
 }
 
 #[test]
-fn minmax_range_make_returns_fortran_adjusted_cell_bounds() {
-    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
-    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+fn minmax_range_make_returns_canonical_adjusted_cell_bounds() {
+    let lon_vertices = one_degree_lon_vertices_one_based();
+    let lat_vertices = one_degree_lat_vertices_one_based();
 
-    let bounds = area_judge_minmax_range_make_fortran_indexed(
+    let bounds = area_judge_minmax_range_make_one_based(
         -179.2,
         -177.2,
         89.2,
@@ -118,11 +82,11 @@ fn minmax_range_make_returns_fortran_adjusted_cell_bounds() {
 }
 
 #[test]
-fn minmax_range_make_preserves_fortran_eastern_and_southern_edge_adjustments() {
-    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
-    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+fn minmax_range_make_preserves_canonical_eastern_and_southern_edge_adjustments() {
+    let lon_vertices = one_degree_lon_vertices_one_based();
+    let lat_vertices = one_degree_lat_vertices_one_based();
 
-    let bounds = area_judge_minmax_range_make_fortran_indexed(
+    let bounds = area_judge_minmax_range_make_one_based(
         178.2,
         179.2,
         -88.2,
@@ -147,8 +111,8 @@ fn minmax_range_make_preserves_fortran_eastern_and_southern_edge_adjustments() {
 
 #[test]
 fn closed_curve_fill_marks_cells_between_sorted_ray_intersections() {
-    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
-    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+    let lon_vertices = one_degree_lon_vertices_one_based();
+    let lat_vertices = one_degree_lat_vertices_one_based();
     let square = [
         LonLatDegrees::new(0.0, 2.0),
         LonLatDegrees::new(2.0, 2.0),
@@ -156,7 +120,7 @@ fn closed_curve_fill_marks_cells_between_sorted_ray_intersections() {
         LonLatDegrees::new(0.0, 0.0),
     ];
 
-    let filled = area_judge_closed_curve_fill_fortran_indexed(
+    let filled = area_judge_closed_curve_fill_one_based(
         &square,
         &lon_vertices,
         &lat_vertices,
@@ -176,8 +140,8 @@ fn closed_curve_fill_marks_cells_between_sorted_ray_intersections() {
 
 #[test]
 fn closed_curve_fill_restores_shifted_dateline_longitudes() {
-    let lon_vertices = one_degree_lon_vertices_fortran_indexed();
-    let lat_vertices = one_degree_lat_vertices_fortran_indexed();
+    let lon_vertices = one_degree_lon_vertices_one_based();
+    let lat_vertices = one_degree_lat_vertices_one_based();
     let shifted_square = [
         LonLatDegrees::new(-2.0, 2.0),
         LonLatDegrees::new(2.0, 2.0),
@@ -185,7 +149,7 @@ fn closed_curve_fill_restores_shifted_dateline_longitudes() {
         LonLatDegrees::new(-2.0, 0.0),
     ];
 
-    let filled = area_judge_closed_curve_fill_fortran_indexed(
+    let filled = area_judge_closed_curve_fill_one_based(
         &shifted_square,
         &lon_vertices,
         &lat_vertices,

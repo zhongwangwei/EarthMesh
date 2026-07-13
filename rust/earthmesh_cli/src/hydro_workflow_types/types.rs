@@ -33,6 +33,8 @@ pub struct HydroMeshQaReport {
 pub struct HydroWorkflowReport {
     pub intersection_cells: usize,
     pub coupling_rows: usize,
+    /// Production CoLM rows with a positive CaMa/estuary contribution.
+    pub estuary_coupling_rows: usize,
     pub cells_refined: usize,
     pub refinement_max_level: u8,
     /// R7 verdict (pass/warn/fail), present only when mesh + land-type were supplied.

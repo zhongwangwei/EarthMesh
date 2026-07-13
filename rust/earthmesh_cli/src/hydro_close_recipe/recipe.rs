@@ -1,11 +1,16 @@
+use crate::json_escape_string;
+use crate::json_number;
+use crate::json_string_array;
+use crate::json_usize_f64_map;
+use crate::json_usize_map;
+use crate::HydroCloseRefinementRecipeOptions;
+use crate::HydroCloseRefinementRecipeWriteReport;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::*;
-
-/// Default hydro class-to-refine-degree mapping used by the migrated hydro workflow.
+/// Default hydro class-to-refine-degree mapping used by the current hydro workflow.
 pub fn default_hydro_close_class_refine() -> BTreeMap<String, usize> {
     BTreeMap::from([("R2".to_string(), 1_usize), ("R3".to_string(), 2_usize)])
 }

@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    apply_area_judge_bbox_patch_source_fortran_indexed, read_bbox_mask_netcdf,
-    write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_bbox_sources::apply_area_judge_bbox_patch_source_one_based,
+    bbox_mask_io::read_bbox_mask_netcdf, bbox_mask_io::write_bbox_mask_netcdf,
+    bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -57,7 +58,7 @@ fn bbox_patch_source_reads_netcdf_and_zeroes_selected_land_cells() {
     let lat_vertex = vec![f64::NAN, 90.0, 89.0, 88.0, 87.0, 86.0, 85.0, 84.0];
     let mut seaorland = one_based_seaorland(6, 6);
 
-    let report = apply_area_judge_bbox_patch_source_fortran_indexed(
+    let report = apply_area_judge_bbox_patch_source_one_based(
         &source,
         &mut seaorland,
         &lon_vertex,

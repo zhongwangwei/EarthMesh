@@ -1,4 +1,4 @@
-use earthmesh_mesh::{refine_ngr_renew_fortran_indexed, LonLatDegrees};
+use earthmesh_mesh::{refine_ngr_renew_one_based, LonLatDegrees};
 
 fn ll(lon: f64, lat: f64) -> LonLatDegrees {
     LonLatDegrees::new(lon, lat)
@@ -25,7 +25,7 @@ fn ngr_renew_wrapper_sorts_final_cell_triangle_adjacency_like_get_sort_new() {
     cells_on_triangle[4] = [4, 3, 5];
     cells_on_triangle[5] = [5, 3, 6];
 
-    let renewed = refine_ngr_renew_fortran_indexed(
+    let renewed = refine_ngr_renew_one_based(
         2,
         1,
         &num_mp,

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io};
 
 use crate::hydro_close_hole_decomposition::{
     decompose_axis_aligned_rectangular_hole,
@@ -15,32 +15,37 @@ pub(crate) use crate::hydro_close_proximity::is_close_mask_ring_too_close;
 
 pub(crate) fn geojson_close_mask_rings(
     geometry: &BTreeMap<String, JsonNode>,
-) -> Vec<Vec<(f64, f64)>> {
+) -> io::Result<Vec<Vec<(f64, f64)>>> {
     let geometry_type = geometry
         .get("type")
         .and_then(JsonNode::as_str)
         .unwrap_or("");
     if geometry_type == "GeometryCollection" {
-        return geometry
+        let mut out = Vec::new();
+        for geometry in geometry
             .get("geometries")
             .and_then(JsonNode::as_array)
             .into_iter()
             .flat_map(|geometries| geometries.iter())
             .filter_map(JsonNode::as_object)
-            .flat_map(geojson_close_mask_rings)
-            .collect();
+        {
+            out.extend(geojson_close_mask_rings(geometry)?);
+        }
+        return Ok(out);
     }
     let Some(coordinates) = geometry.get("coordinates").and_then(JsonNode::as_array) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     match geometry_type {
         "Polygon" => geojson_polygon_close_mask_rings(coordinates),
-        "MultiPolygon" => coordinates
-            .iter()
-            .filter_map(JsonNode::as_array)
-            .flat_map(|rings| geojson_polygon_close_mask_rings(rings))
-            .collect(),
-        _ => Vec::new(),
+        "MultiPolygon" => {
+            let mut out = Vec::new();
+            for rings in coordinates.iter().filter_map(JsonNode::as_array) {
+                out.extend(geojson_polygon_close_mask_rings(rings)?);
+            }
+            Ok(out)
+        }
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -83,7 +88,9 @@ pub(crate) fn geojson_close_mask_lines(
     }
 }
 
-fn geojson_polygon_close_mask_rings(polygon_rings: &[JsonNode]) -> Vec<Vec<(f64, f64)>> {
+fn geojson_polygon_close_mask_rings(
+    polygon_rings: &[JsonNode],
+) -> io::Result<Vec<Vec<(f64, f64)>>> {
     let mut rings = polygon_rings
         .iter()
         .filter_map(JsonNode::as_array)
@@ -91,15 +98,20 @@ fn geojson_polygon_close_mask_rings(polygon_rings: &[JsonNode]) -> Vec<Vec<(f64,
         .filter(|ring| ring.len() >= 3)
         .collect::<Vec<_>>();
     if rings.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let exterior = rings.remove(0);
     if rings.is_empty() {
-        return vec![exterior];
+        return Ok(vec![exterior]);
     }
     decompose_axis_aligned_rectangular_hole(&exterior, &rings)
         .or_else(|| decompose_non_axis_aligned_exterior_holes_vertical_slabs(&exterior, &rings))
-        .unwrap_or_else(|| vec![exterior])
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "GeoJSON polygon hole could not be decomposed into close-mask rings",
+            )
+        })
 }
 
 fn normalize_geojson_ring(ring: &[JsonNode]) -> Vec<(f64, f64)> {
@@ -119,7 +131,7 @@ fn normalize_geojson_ring(ring: &[JsonNode]) -> Vec<(f64, f64)> {
     if coordinates.len() > 1 && coordinates.first() == coordinates.last() {
         coordinates.pop();
     }
-    coordinates
+    unwrap_longitudes(coordinates)
 }
 
 fn normalize_geojson_line(line: &[JsonNode]) -> Vec<(f64, f64)> {
@@ -150,6 +162,19 @@ fn normalize_geojson_line(line: &[JsonNode]) -> Vec<(f64, f64)> {
             .is_some_and(|(first, last)| points_equal(*first, *last))
     {
         coordinates.pop();
+    }
+    unwrap_longitudes(coordinates)
+}
+
+fn unwrap_longitudes(mut coordinates: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    for idx in 1..coordinates.len() {
+        let prev = coordinates[idx - 1].0;
+        while coordinates[idx].0 - prev > 180.0 {
+            coordinates[idx].0 -= 360.0;
+        }
+        while coordinates[idx].0 - prev < -180.0 {
+            coordinates[idx].0 += 360.0;
+        }
     }
     coordinates
 }

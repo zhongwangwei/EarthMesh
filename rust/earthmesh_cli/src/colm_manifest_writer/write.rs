@@ -14,6 +14,27 @@ pub fn write_colm_package_delivery_manifest(
     restart_template_netcdf: Option<&Path>,
     forcing_template_netcdf: Option<&Path>,
 ) -> io::Result<PathBuf> {
+    write_colm_package_delivery_manifest_with_quality(
+        output_manifest,
+        case_name,
+        rows,
+        coupling_netcdf,
+        restart_template_netcdf,
+        forcing_template_netcdf,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn write_colm_package_delivery_manifest_with_quality(
+    output_manifest: impl AsRef<Path>,
+    case_name: &str,
+    rows: usize,
+    coupling_netcdf: impl AsRef<Path>,
+    restart_template_netcdf: Option<&Path>,
+    forcing_template_netcdf: Option<&Path>,
+    coupling_quality_json: Option<&Path>,
+) -> io::Result<PathBuf> {
     let output_manifest = output_manifest.as_ref().to_path_buf();
     crate::ensure_parent_dir(&output_manifest)?;
     let mut text = String::from("{\"kind\":\"earthmesh_colm_package_manifest\"");
@@ -35,6 +56,11 @@ pub fn write_colm_package_delivery_manifest(
     }
     if let Some(path) = forcing_template_netcdf {
         text.push_str(",\"forcing_template_netcdf\":\"");
+        text.push_str(&json_escape_string(&path.display().to_string()));
+        text.push('"');
+    }
+    if let Some(path) = coupling_quality_json {
+        text.push_str(",\"coupling_quality_json\":\"");
         text.push_str(&json_escape_string(&path.display().to_string()));
         text.push('"');
     }

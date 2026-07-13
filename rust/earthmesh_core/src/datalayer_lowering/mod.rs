@@ -40,7 +40,6 @@ impl ThresholdVar {
 pub struct LowerReport {
     pub landtype_set: bool,
     pub enabled_thresholds: Vec<ThresholdVar>,
-    pub specified_mask_set: bool,
     pub warnings: Vec<String>,
 }
 
@@ -59,9 +58,9 @@ fn set_refine_switch(refine: &mut RefineConfig, arr: RefineSwitchArray, idx: usi
 impl DataLayersNamelist {
     /// Apply enabled layers to the engine config (the L1->L3 lowering): set
     /// `landtype_file` from the LandType layer; for each enabled ThresholdField
-    /// flip its mean+std `refine_*` switches and enable `refine_cal`; route a
-    /// SpecifiedMask to `mask_refine_spc_fprefix`. **Does not touch the mesh
-    /// algorithm** — it only fills config fields the engine already consumes.
+    /// flip its mean+std `refine_*` switches and enable `refine_cal`.
+    /// **Does not touch the mesh algorithm** — it only fills config fields the
+    /// engine already consumes.
     ///
     /// A ThresholdField whose path file stem != the engine stem (e.g. `lai`) is
     /// recorded as a warning, since the executor reads `threshold_dir/<stem>.nc`.
@@ -96,11 +95,6 @@ impl DataLayersNamelist {
                     set_refine_switch(refine, arr, base + 1);
                     refine.refine_cal = true;
                     report.enabled_thresholds.push(v);
-                }
-                DataLayerRole::SpecifiedMask => {
-                    refine.mask_refine_spc_fprefix = l.path.clone();
-                    refine.refine_spc = true;
-                    report.specified_mask_set = true;
                 }
                 DataLayerRole::MeritHydroRoot | DataLayerRole::CamaReach => {
                     // Hydro / CaMa roles flow through the dedicated hydro

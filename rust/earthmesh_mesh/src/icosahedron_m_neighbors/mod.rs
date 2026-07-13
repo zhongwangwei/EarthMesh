@@ -3,26 +3,26 @@ use super::*;
 /// Port of the M-point polygon assembly portion of
 /// `icosahedron.F90:tri_neighbors`.
 ///
-/// Returns a Fortran-indexed table (`0` and `1` are placeholders) with each M
+/// Returns a Canonical-indexed table (`0` and `1` are placeholders) with each M
 /// point's surrounding U and W rings. The original routine stops when a ring
 /// exceeds seven sides; this Rust boundary returns `None` instead.
-pub fn derive_icosahedron_m_neighbors_fortran(
+pub fn derive_icosahedron_m_neighbors_canonical(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],
 ) -> Option<Vec<IcosahedronMPointNeighbors>> {
-    derive_icosahedron_m_neighbors_fortran_checked(nmd, u_edges, w_faces).ok()
+    derive_icosahedron_m_neighbors_canonical_checked(nmd, u_edges, w_faces).ok()
 }
 
-pub(crate) fn derive_icosahedron_m_neighbors_fortran_checked(
+pub(crate) fn derive_icosahedron_m_neighbors_canonical_checked(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],
 ) -> io::Result<Vec<IcosahedronMPointNeighbors>> {
-    derive_icosahedron_m_neighbors_fortran_checked_with_prognostic(nmd, u_edges, w_faces, None)
+    derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(nmd, u_edges, w_faces, None)
 }
 
-pub(crate) fn derive_icosahedron_m_neighbors_fortran_checked_with_prognostic(
+pub(crate) fn derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],
@@ -78,10 +78,11 @@ pub(crate) fn derive_icosahedron_m_neighbors_fortran_checked_with_prognostic(
                 })?;
                 walk_trace.push((iunow, edge_now.im, edge_now.iw, edge_now.iu));
                 if npoly > 7 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
+                    return Err(method_c_repairable_error(
+                        MethodCRepairableKind::Valence,
+                        Some(im),
                         format!(
-                            "Method-C perimeter length invalid: Current nested grid crosses (or is too close to) the next coarser grid boundary; M point {im} exceeds 7-edge OLAM ring while walking from U edge {iu}; trace {:?}",
+                            "Method-C perimeter length invalid: Current nested grid crosses (or is too close to) the next coarser grid boundary; M point {im} exceeds 7-edge Method-C ring while walking from U edge {iu}; trace {:?}",
                             walk_trace
                         ),
                     ));

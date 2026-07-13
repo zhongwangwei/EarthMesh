@@ -69,7 +69,7 @@ python3 -m pytest tests/test_colm_coupling.py::test_colm_coupling_package_cli_wr
 
 Expected: FAIL until the CLI subcommand exists.
 
-- [ ] **Step 3: Implement CLI subcommand while preserving legacy CLI**
+- [ ] **Step 3: Implement CLI subcommand while preserving existing CLI**
 
 Detect `argv[0] == "package"` and route to a package subparser. Otherwise keep existing positional river-only behavior unchanged.
 

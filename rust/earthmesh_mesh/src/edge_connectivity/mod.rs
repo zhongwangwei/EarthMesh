@@ -11,7 +11,7 @@ pub struct CellConnectivityOnCell {
 /// each consecutive vertex pair, this finds the shared edge from the two
 /// `edgesOnVertex` triplets, then maps that edge to the neighboring cell via
 /// `cellsOnEdge`.
-pub fn connect_on_cell_fortran_indexed(
+pub fn connect_on_cell_one_based(
     n_edges_on_cell: &[usize],
     cells_on_edge: &[[usize; 2]],
     edges_on_vertex: &[[usize; 3]],

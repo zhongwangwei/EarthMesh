@@ -15,16 +15,16 @@
 //!    existing subdivision engines; `sample` feeds continuous targets to the
 //!    spring relaxers ("split between levels, stretch within levels").
 //!
-//! Design constraints: zero dependencies, deterministic (fixed-order fast
-//! sweeping, no threads), pure f64. All longitudes are degrees in [-180, 180)
-//! (inputs are wrapped), latitudes are degrees in [-90, 90].
+//! Design constraints: deterministic (fixed-order fast sweeping, no threads),
+//! pure f64. All longitudes are degrees in [-180, 180) (inputs are wrapped),
+//! latitudes are degrees in [-90, 90].
 
 use std::f64::consts::PI;
 use std::io;
 
-/// Mean Earth radius in meters. Matches `earthmesh_core::EARTH_RADIUS_METERS`
-/// (Fortran `erad = 6371229`); kept local so this crate stays dependency-free.
-pub const EARTH_RADIUS_METERS: f64 = 6_371_229.0;
+/// Canonical EarthMesh radius (`erad = 6_371_229 m`). Re-exporting the core
+/// constant keeps every spherical calculation on one source of truth.
+pub use earthmesh_core::EARTH_RADIUS_METERS;
 
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
@@ -262,6 +262,33 @@ impl HField {
             nlat,
             values: vec![h_meters; nlon * nlat],
         })
+    }
+
+    /// Restore a persisted field after validating its exact shape and values.
+    pub fn from_values(nlon: usize, nlat: usize, values: Vec<f64>) -> io::Result<Self> {
+        if nlon < 4 || nlat < 2 {
+            return Err(invalid(format!(
+                "HField grid {nlon}x{nlat} too small (need >= 4x2)"
+            )));
+        }
+        let expected = nlon
+            .checked_mul(nlat)
+            .ok_or_else(|| invalid("HField dimensions overflow usize".into()))?;
+        if values.len() != expected {
+            return Err(invalid(format!(
+                "HField values length {} must equal {nlon}x{nlat}={expected}",
+                values.len()
+            )));
+        }
+        if values
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err(invalid(
+                "HField restored values must be positive and finite".into(),
+            ));
+        }
+        Ok(Self { nlon, nlat, values })
     }
 
     pub fn nlon(&self) -> usize {
@@ -549,6 +576,15 @@ mod tests {
 
     fn meters_per_degree_lat() -> f64 {
         (PI / 180.0) * EARTH_RADIUS_METERS
+    }
+
+    #[test]
+    fn persisted_values_restore_only_valid_fields() {
+        let values = vec![42.0; 8];
+        let field = HField::from_values(4, 2, values.clone()).unwrap();
+        assert_eq!(field.values(), values);
+        assert!(HField::from_values(4, 2, vec![42.0; 7]).is_err());
+        assert!(HField::from_values(4, 2, vec![f64::NAN; 8]).is_err());
     }
 
     #[test]

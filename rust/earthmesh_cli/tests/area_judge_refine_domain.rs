@@ -1,4 +1,4 @@
-use earthmesh_cli::validate_area_judge_refine_within_domain_fortran_indexed;
+use earthmesh_cli::area_judge_refine_steps::validate_area_judge_refine_within_domain_one_based;
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 #[test]
@@ -13,7 +13,7 @@ fn refine_domain_validator_accepts_refine_cells_inside_domain() {
     refine[2][2] = 1;
     refine[3][3] = 1;
 
-    validate_area_judge_refine_within_domain_fortran_indexed(
+    validate_area_judge_refine_within_domain_one_based(
         &refine,
         &domain,
         AreaJudgeSourceBounds {
@@ -34,7 +34,7 @@ fn refine_domain_validator_rejects_refine_cells_outside_domain() {
     refine[2][2] = 1;
     refine[3][3] = 1;
 
-    let err = validate_area_judge_refine_within_domain_fortran_indexed(
+    let err = validate_area_judge_refine_within_domain_one_based(
         &refine,
         &domain,
         AreaJudgeSourceBounds {

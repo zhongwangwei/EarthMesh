@@ -1,36 +1,36 @@
 use std::fs;
 
 #[test]
-fn lambert_vertices_convert_to_mode4_mesh_with_fortran_indexing() {
-    let vertices = earthmesh_cli::LambertVertices {
+fn lambert_vertices_convert_to_mode4_mesh_with_canonical_indexing() {
+    let vertices = earthmesh_cli::lambert_mode4_io::LambertVertices {
         xi_vert: 2,
         eta_vert: 2,
         lon_vert: vec![181.0, 182.0, 183.0, 184.0],
         lat_vert: vec![10.0, 11.0, 12.0, 13.0],
     };
 
-    let mesh =
-        earthmesh_cli::lambert_vertices_to_mode4_mesh(&vertices).expect("convert lambert vertices");
+    let mesh = earthmesh_cli::lambert_mode4_io::lambert_vertices_to_mode4_mesh(&vertices)
+        .expect("convert lambert vertices");
 
     assert_eq!(mesh.bound_points(), 5);
     assert_eq!(mesh.mode_points(), 2);
     assert_eq!(
         mesh.lonlat_bound[0],
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -999.0,
             lat: -999.0
         }
     );
     assert_eq!(
         mesh.lonlat_bound[1],
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -179.0,
             lat: 10.0
         }
     );
     assert_eq!(
         mesh.lonlat_bound[4],
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -176.0,
             lat: 13.0
         }
@@ -41,14 +41,14 @@ fn lambert_vertices_convert_to_mode4_mesh_with_fortran_indexing() {
 }
 
 #[test]
-fn lambert_reader_writer_and_output_numbering_match_fortran_schema() {
+fn lambert_reader_writer_and_output_numbering_match_canonical_schema() {
     let root = std::env::temp_dir().join(format!("earthmesh_cli_lambert_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("tmpfile")).expect("create tmpfile");
 
     let source = root.join("lambert_source.nc4");
     {
-        let mut file = netcdf::create(&source).expect("create lambert source");
+        let mut file = earthmesh_cli::create_netcdf_quiet(&source).expect("create lambert source");
         file.add_dimension("xi_vert", 2).expect("xi dim");
         file.add_dimension("eta_vert", 2).expect("eta dim");
         file.add_variable::<f64>("lon_vert", &["xi_vert", "eta_vert"])
@@ -61,15 +61,19 @@ fn lambert_reader_writer_and_output_numbering_match_fortran_schema() {
             .expect("write lat");
     }
 
-    let vertices =
-        earthmesh_cli::read_lambert_vertices_netcdf(&source).expect("read lambert vertices");
+    let vertices = earthmesh_cli::lambert_mode4_io::read_lambert_vertices_netcdf(&source)
+        .expect("read lambert vertices");
     assert_eq!(vertices.xi_vert, 2);
     assert_eq!(vertices.eta_vert, 2);
 
-    let mut counts = earthmesh_cli::MaskCountState::default();
-    let output =
-        earthmesh_cli::convert_lambert_mask_netcdf(&source, "mask_domain", &root, &mut counts)
-            .expect("convert lambert source");
+    let mut counts = earthmesh_cli::mask_counts::MaskCountState::default();
+    let output = earthmesh_cli::lambert_mode4_io::convert_lambert_mask_netcdf(
+        &source,
+        "mask_domain",
+        &root,
+        &mut counts,
+    )
+    .expect("convert lambert source");
 
     assert_eq!(output, root.join("tmpfile/mask_domain_lambert_0_01.nc4"));
     assert_eq!(counts.mask_domain_ndm, 1);

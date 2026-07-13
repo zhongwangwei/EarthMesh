@@ -1,10 +1,17 @@
+use crate::apply_workspace_and_mask_operations;
+use crate::convert_fvcom_mode_file_to_earthmesh;
+use crate::convert_iap_ocean_mode_file_to_earthmesh;
+use crate::convert_mpas_mode_file_to_earthmesh;
+use crate::copy_existing_earthmesh_mode_file;
+use crate::earthmesh_runtime_state_from_compact_mesh;
+use crate::read_unstructured_mesh_netcdf;
+use crate::write_gridfile_from_one_based_state;
+use crate::MkgrdGridinitRunReport;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState};
-
-use crate::*;
 
 /// Run the Rust replacement path for the initial global `mkgrd.x` gridinit branch.
 ///
@@ -12,8 +19,8 @@ use crate::*;
 /// not exist: parse the mkgrd namelist, apply the read_nl workspace/mask plan,
 /// generate the in-memory global grid, and write
 /// `gridfile/gridfile_NXP####_01_<mode_grid>.nc4`.  Restart mode and reading an
-/// existing `mode_file` remain explicit `InvalidInput` errors until those legacy
-/// branches are migrated behind tests.
+/// existing `mode_file` remain explicit `InvalidInput` errors until those compatibility
+/// branches are current behind tests.
 pub fn run_mkgrd_gridinit_global_namelist(
     namelist_source: impl AsRef<Path>,
     workdir: impl AsRef<Path>,
@@ -28,7 +35,7 @@ pub fn run_mkgrd_gridinit_global_namelist(
     if config.mask_restart {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "mask_restart mkgrd branch is not yet migrated to Rust",
+            "mask_restart mkgrd branch is not yet current to Rust",
         ));
     }
     if !matches!(config.mode_grid.as_str(), "hex" | "tri") {
@@ -57,7 +64,11 @@ pub fn run_mkgrd_gridinit_global_namelist(
     let niter = usize::try_from(config.niter)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "niter must fit usize"))?;
 
-    let plan = config.read_nl_workspace_plan(None);
+    let mut plan = config.read_nl_workspace_plan(None);
+    // Inline Project geometry is consumed by the Method-C region adapters and
+    // subsequent regional clip; it is not a file prefix for legacy Mask_make.
+    plan.mask_operations
+        .retain(|operation| !operation.mask_fprefix.trim().starts_with("inline:"));
     let workspace_mask =
         apply_workspace_and_mask_operations(&plan, namelist_source, workdir, 9, false)?;
 
@@ -91,7 +102,7 @@ pub fn run_mkgrd_gridinit_global_namelist(
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "only existing EarthMesh, MPAS, FVCOM, and IAP-Ocean mode_file ingestion are migrated to Rust",
+                    "only existing EarthMesh, MPAS, FVCOM, and IAP-Ocean mode_file ingestion are current to Rust",
                 ));
             }
         };
@@ -99,14 +110,14 @@ pub fn run_mkgrd_gridinit_global_namelist(
         let runtime_state = Some(earthmesh_runtime_state_from_compact_mesh(&config, &mesh)?);
         (gridfile, runtime_state)
     } else {
-        let state = earthmesh_mesh::gridinit_voronoi_state_fortran(
+        let state = earthmesh_mesh::gridinit_voronoi_state_canonical(
             nxp,
             niter,
             f64::from(config.beta),
             f64::from(config.relax),
             max_tris,
         )?;
-        let gridfile = write_gridfile_from_fortran_indexed_state(
+        let gridfile = write_gridfile_from_one_based_state(
             config.file_dir(),
             nxp,
             1,

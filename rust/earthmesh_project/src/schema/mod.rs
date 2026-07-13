@@ -1,8 +1,14 @@
 use earthmesh_core::{EarthmeshConfig, EARTH_RADIUS_METERS};
 use serde::{Deserialize, Serialize};
 
+use crate::CloseBoundaryMode;
+
 pub const DEFAULT_MIN_ANGLE_DEG: f64 = 25.0;
-pub const OLAM_SPRING_NXP1_KM: f64 =
+pub const DEFAULT_AUTO_REFINE_BATCH_CELLS: usize = 1;
+pub const PROJECT_SCHEMA_VERSION: &str = "3.0.0";
+pub const METHOD_C_MIN_BASE_NXP: i32 = 10;
+pub const METHOD_C_MAX_AUTO_REFINE_LEVEL: u8 = 5;
+pub const METHOD_C_SPRING_NXP1_KM: f64 =
     std::f64::consts::PI * 2.0 * (EARTH_RADIUS_METERS / 1000.0) / 5.0;
 
 pub fn default_mask_sea_ratio() -> f64 {
@@ -13,6 +19,7 @@ pub fn default_mask_sea_ratio() -> f64 {
 
 /// One project = one reproducible mesh production.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     pub schema_version: String,
     pub metadata: ProjectMetadata,
@@ -26,7 +33,9 @@ pub struct ProjectConfig {
     pub quality: QualityConfig,
     #[serde(default)]
     pub expert: ExpertOverrides,
-    /// MERIT-Hydro / CaMa river-coast (routed to the hydro workflow, not mkgrd).
+    /// Optional MERIT-Hydro/CaMa closed-loop workflow. Hydro target levels are
+    /// applied through the shared HField/Method-C engine and all delivery,
+    /// coupling, and quality artifacts are recomputed on the final mesh.
     #[serde(default)]
     pub hydro_coast: Option<HydroCoastConfig>,
     /// Land-ocean coupling options.
@@ -35,6 +44,7 @@ pub struct ProjectConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectMetadata {
     pub name: String,
     #[serde(default)]
@@ -46,6 +56,7 @@ pub struct ProjectMetadata {
 // ----------------------------- domain -----------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum DomainConfig {
     Global,
     Regional {
@@ -56,6 +67,7 @@ pub enum DomainConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum RegionShape {
     Bbox {
         w: f64,
@@ -74,7 +86,24 @@ pub enum RegionShape {
     Close {
         path: String,
         format: CloseMaskFormat,
+        #[serde(default)]
+        boundary: CloseBoundaryMode,
     },
+}
+
+impl ProjectConfig {
+    /// Euler expectation that is safe before inspecting the final mask topology.
+    ///
+    /// Only an unmasked global Earth/atmosphere mesh is known a priori to be a
+    /// closed sphere. Land, ocean, coupled, and every regional result can gain
+    /// boundaries, holes, or multiple components from masking, so they remain
+    /// infer-only until final boundary cycles are available.
+    pub fn expected_euler_characteristic(&self) -> Option<isize> {
+        match (&self.domain, self.target.kind) {
+            (DomainConfig::Global, MeshDomainKind::Earth | MeshDomainKind::Atmosphere) => Some(2),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +117,7 @@ pub enum CloseMaskFormat {
 // ----------------------------- target -----------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeshTargetConfig {
     pub kind: MeshDomainKind,
     pub cell: MeshCellKind,
@@ -148,6 +178,7 @@ pub const INTENT_PRESETS: &[MeshIntentPreset] = &[
 
 /// Friendly km/degree, or an explicit engine NXP.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ResolutionSpec {
     ApproxKm(f64),
     ApproxDegree(f64),
@@ -160,14 +191,12 @@ pub enum ModelFormat {
     Mpas,
     MpasSimple,
     Fvcom,
-    /// Compatibility parse path for old project files. The project layer does
-    /// not expose native OLAM output; direct OLAM paths live in the engine/CLI.
-    Olam,
 }
 
 // ----------------------------- data layers -----------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectDataLayer {
     pub id: String,
     pub role: ProjectLayerRole,
@@ -185,7 +214,6 @@ pub struct ProjectDataLayer {
 pub enum ProjectLayerRole {
     LandType,
     Threshold(ThresholdField),
-    SpecifiedMask,
     MeritHydro,
     Cama,
 }
@@ -212,6 +240,7 @@ pub enum ThresholdField {
 // ----------------------------- refinement / quality / expert -----------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefinementRecipe {
     #[serde(default)]
     pub enabled: bool,
@@ -231,8 +260,9 @@ pub struct RefinementRecipe {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HfieldRefinementRecipe {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_hfield_g")]
     pub g: f64,
@@ -241,6 +271,12 @@ pub struct HfieldRefinementRecipe {
     pub max_level: u8,
     #[serde(default)]
     pub base_m: Option<f64>,
+    /// Geographic origin used to sample lon/lat threshold rasters from a
+    /// native Cartesian-XY mesh. Both values must be set together.
+    #[serde(default)]
+    pub origin_lon: Option<f64>,
+    #[serde(default)]
+    pub origin_lat: Option<f64>,
 }
 
 impl Default for HfieldRefinementRecipe {
@@ -250,6 +286,8 @@ impl Default for HfieldRefinementRecipe {
             g: default_hfield_g(),
             max_level: 0,
             base_m: None,
+            origin_lon: None,
+            origin_lat: None,
         }
     }
 }
@@ -258,7 +296,12 @@ fn default_hfield_g() -> f64 {
     0.2
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpecifiedCircleRefinement {
     pub lon: f64,
     pub lat: f64,
@@ -266,6 +309,7 @@ pub struct SpecifiedCircleRefinement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpecifiedBboxRefinement {
     pub w: f64,
     pub e: f64,
@@ -274,21 +318,33 @@ pub struct SpecifiedBboxRefinement {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpecifiedCloseRefinement {
     pub path: String,
+    #[serde(default)]
+    pub boundary: CloseBoundaryMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QualityConfig {
     pub min_angle_deg: f64,
+    /// Maximum connected defect cells changed by one AutoRefine pass.
+    #[serde(default = "default_auto_refine_batch_cells")]
+    pub auto_refine_batch_cells: usize,
     #[serde(default)]
     pub on_violation: ViolationPolicy,
+}
+
+fn default_auto_refine_batch_cells() -> usize {
+    DEFAULT_AUTO_REFINE_BATCH_CELLS
 }
 
 impl Default for QualityConfig {
     fn default() -> Self {
         Self {
             min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
+            auto_refine_batch_cells: DEFAULT_AUTO_REFINE_BATCH_CELLS,
             on_violation: ViolationPolicy::Warn,
         }
     }
@@ -316,6 +372,7 @@ impl ViolationPolicy {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExpertOverrides {
     #[serde(default)]
     pub nxp: Option<i32>,
@@ -351,14 +408,23 @@ pub struct ExpertOverrides {
     pub weak_concav_eliminate: Option<bool>,
 }
 
-/// MERIT-Hydro / CaMa river-coast config. Carried by the project
-/// and routed to the hydro workflow CLI commands - it does not lower into the
-/// mkgrd run.
+/// MERIT-Hydro inputs used by the post-mesh hydro workflow. Project execution
+/// turns the generated gridfile into cell polygons, derives R2/R3 corridors,
+/// and runs the shared hydro delivery/refinement workflow. Target levels are
+/// converted into the production HField/Method-C input, followed by final-mesh
+/// hydro and quality recomputation. When `cama_root` is present, the same stage
+/// also exports the native CaMa reach inventory and river-mouth signals for the
+/// Project footprint.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HydroCoastConfig {
     pub merit_root: String,
     #[serde(default)]
     pub cama_root: Option<String>,
+    /// Spatial sampling stride within each MERIT tile. Must remain 1 because
+    /// physical river/coast adjacency cannot be reconstructed after sampling.
+    #[serde(default = "default_merit_stride")]
+    pub merit_stride: usize,
     #[serde(default = "default_r3_width")]
     pub r3_width_m: f64,
     #[serde(default = "default_r2_width")]
@@ -373,8 +439,13 @@ fn default_r2_width() -> f64 {
     50.0
 }
 
+fn default_merit_stride() -> usize {
+    1
+}
+
 /// Land-ocean coupling config.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoupledMeshConfig {
     #[serde(default)]
     pub fraction_method: FractionMethod,
@@ -382,6 +453,9 @@ pub struct CoupledMeshConfig {
     pub identify_coastline: bool,
     #[serde(default)]
     pub identify_river_mouth: bool,
+    /// CaMa root used only by coupled river-mouth identification.
+    #[serde(default, alias = "river_mouth_cama_root")]
+    pub cama_root: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,21 +465,49 @@ pub enum FractionMethod {
     ConservativeOverlay,
 }
 
-/// Approximate OLAM global NXP from the spring target spacing `2*pi*R/(5*NXP)`.
+impl FractionMethod {
+    pub fn engine_str(self) -> &'static str {
+        match self {
+            Self::PointSample => "point_sample",
+            Self::ConservativeOverlay => "conservative_overlay",
+        }
+    }
+}
+
+/// Approximate Method-C global NXP from the spring target spacing `2*pi*R/(5*NXP)`.
 pub fn km_to_nxp(km: f64) -> i32 {
     if km <= 0.0 {
         return 1;
     }
-    (OLAM_SPRING_NXP1_KM / km).round().max(1.0) as i32
+    (METHOD_C_SPRING_NXP1_KM / km).round().max(1.0) as i32
 }
 
 pub fn nxp_to_km(nxp: i32) -> f64 {
     if nxp <= 0 {
-        return OLAM_SPRING_NXP1_KM;
+        return METHOD_C_SPRING_NXP1_KM;
     }
-    OLAM_SPRING_NXP1_KM / f64::from(nxp)
+    METHOD_C_SPRING_NXP1_KM / f64::from(nxp)
 }
 
 pub fn degree_to_nxp(degrees_at_equator: f64) -> i32 {
     km_to_nxp(degrees_at_equator * 111.32)
+}
+
+pub fn auto_refine_level_cap(target_nxp: i32) -> u8 {
+    let mut cap = 1u8;
+    while cap < METHOD_C_MAX_AUTO_REFINE_LEVEL
+        && METHOD_C_MIN_BASE_NXP.saturating_mul(1_i32 << (cap + 1)) <= target_nxp
+    {
+        cap += 1;
+    }
+    cap
+}
+
+pub fn next_auto_refine_pass(current: u8, target_nxp: i32) -> Option<u8> {
+    let cap = auto_refine_level_cap(target_nxp);
+    (current < cap).then_some(current + 1)
+}
+
+pub fn effective_auto_refine_pass(requested: u8, target_nxp: i32) -> u8 {
+    requested.max(1).min(auto_refine_level_cap(target_nxp))
 }

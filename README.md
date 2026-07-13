@@ -1,14 +1,14 @@
-# EarthMesh v3.0.0-alpha1
+# EarthMesh v3.0.0-alpha2
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
-Earth-system workflows. The v3 alpha line is the Rust migration of the legacy
-`mkgrd.x` workflow: existing namelists still run, while the new project schema,
-quality reports, hydro/coast tools, and Tauri desktop GUI are being layered on top.
+Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
+remain a supported input format alongside the project schema, quality reports,
+hydro/coast tools, and Tauri desktop GUI.
 
 ## What is in this alpha
 
 - Rust `mkgrd.x` build path for the active mesh engine.
-- Legacy namelist execution for atmosphere, land, ocean, and coupled meshes.
+- Namelist execution for atmosphere, land, ocean, and coupled meshes.
 - Project YAML/JSON intent layer through `earthmesh_project`, used by the GUI and
   executable through `./mkgrd.x --project project.yaml`.
 - Mesh quality reports through `--mesh-quality`.
@@ -25,6 +25,23 @@ quality reports, hydro/coast tools, and Tauri desktop GUI are being layered on t
 - Tauri platform prerequisites only if running the desktop GUI.
 
 ## Quick Start
+
+After this alpha is published to PyPI, install the Rust CLI as a Python wheel
+(the installed command remains `earthmesh_cli`):
+
+```bash
+python -m pip install earthmesh==3.0.0a2
+earthmesh_cli --version
+earthmesh_cli --help
+```
+
+Before the alpha wheel is uploaded to PyPI, build and install the same package
+directly from a source checkout:
+
+```bash
+python -m pip install .
+earthmesh_cli --version
+```
 
 Build the compatible executable:
 
@@ -55,7 +72,7 @@ make clean
 
 ## Main CLI Entrypoints
 
-Run a legacy namelist:
+Run a namelist:
 
 ```bash
 ./mkgrd.x examples/default/atmosphere_hex_global.nml
@@ -77,8 +94,11 @@ Export MERIT-Hydro masks for a regional box:
 
 ```bash
 ./mkgrd.x --merit-hydro-geojson /path/to/MERIT_Hydro out_dir \
-    --bbox W S E N --stride 5
+    --bbox W S E N --stride 1
 ```
+
+Physical coast adjacency and production coupling require native `stride 1`;
+sparse MERIT samples are rejected rather than treated as neighboring cells.
 
 Convert an MPAS/EarthMesh mesh to cell polygons, then run the hydro/coast
 workflow:
@@ -96,6 +116,8 @@ Use `./mkgrd.x --help` for the top-level usage summary.
 Runnable examples that do not require external data:
 
 - `examples/00_quickstart_n16.nml` - tiny global smoke case.
+- `examples/projects/quickstart.yaml` - minimal Project YAML smoke case.
+- `examples/projects/auto_refine.yaml` - regional quality-to-HField AutoRefine loop.
 - `examples/default/atmosphere_hex_global.nml` - global hex atmosphere to MPAS.
 - `examples/default/land_hex_global.nml` - global hex land to CoLM.
 - `examples/default/ocean_hex_global.nml` - global tri ocean to FVCOM.
@@ -127,23 +149,28 @@ known gaps.
 ```text
 EarthMesh/
 |-- Cargo.toml                 # Rust workspace
+|-- LICENSE                    # GNU General Public License v2.0
 |-- Makefile                   # build/test entrypoint
 |-- README.md                  # this page
 |-- cases/                     # generated and fixture run outputs
-|-- docs/                      # architecture, audits, migration notes
+|-- docs/                      # architecture and technical references
 |-- examples/                  # runnable namelists and external-data templates
 |-- gui-tauri/                 # EarthMesh Studio desktop GUI
 |-- input/                     # small/default input references
 |-- rust/
 |   |-- earthmesh_core/        # config, namelist parsing, run manifest support
 |   |-- earthmesh_geometry/    # geometry helpers
-|   |-- earthmesh_mesh/        # migrated mesh kernels
+|   |-- earthmesh_hfield/      # continuous target cell-width field
+|   |-- earthmesh_mesh/        # mesh kernels
 |   |-- earthmesh_quality/     # mesh quality metrics and reports
 |   |-- earthmesh_refine_planner/ # experimental score-based planning crate
 |   |-- earthmesh_project/     # v3 project schema and lowering
 |   `-- earthmesh_cli/         # mkgrd-compatible CLI and workflows
 `-- scripts/                   # local validation helpers
 ```
+
+The crate boundaries and the canonical Project/CLI/GUI execution paths are
+documented in [`docs/architecture.md`](docs/architecture.md).
 
 ## Verification
 
@@ -189,20 +216,11 @@ Quality runs write `quality_summary.json`, `quality_summary.csv`,
 Polygon side-count rows in those reports are observational; quality decisions come
 from the reported gates and topology issues.
 Use `--mesh-quality ... --kind tri|hex` to select the cell view; the report records
-the selected view in `cell_view`. If omitted, the CLI keeps the legacy `tri`
-view.
+the selected view in `cell_view`. If omitted, the CLI uses the default `tri` view.
 The CLI also prints `mesh_quality_cell_sides=...` as the same observational
 summary.
 Run `make check-mesh-quality-views` to smoke-test both `tri` and `hex` report
 views against a generated temporary gridfile.
-
-## Migration Notes
-
-The active implementation is Rust. The legacy Fortran source tree is no longer
-part of the active source layout; migration status and parity notes are tracked
-in `docs/fortran_to_rust_migration.md`,
-`docs/fortran_to_rust_migration_manifest.json`, and
-`docs/olam_method_c_fortran_comparison.md`.
 
 ## Authors
 
@@ -226,7 +244,8 @@ high-resolution representation of spatial heterogeneity in land surface models.
 
 ## License
 
-This project is licensed under the GNU General Public License v2.0.
+This project is licensed under the GNU General Public License v2.0 only. See
+[`LICENSE`](LICENSE) for the complete terms.
 
 ## Contact
 
@@ -236,6 +255,8 @@ For questions or support, please contact:
 
 ## Revision History
 
+- 2026.07.14 - v3.0.0-alpha2 closes the AutoRefine/Hydro quality loops, adds
+  auditable GUI decisions, and introduces the maturin/PyPI binary package.
 - 2026.06.29 - v3.0.0-alpha1 README refresh for Rust CLI, project schema,
   quality, hydro/coast workflows, and Tauri GUI.
 - 2025.10.28 - Reorganized code structure with src/ and examples/ directories.

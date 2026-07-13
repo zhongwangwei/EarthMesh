@@ -4,13 +4,13 @@ use crate::{is_ngrmm, RefineWeakConcavitySegments};
 
 /// Public pure-data port of `MOD_refine.F90:weak_concav_segment_make`.
 ///
-/// The input boundary segments are Rust vectors in Fortran traversal order
+/// The input boundary segments are Rust vectors in Canonical traversal order
 /// (`bdy_refine_segment[:, i]` becomes one `Vec<usize>`).  Adjacent segment
 /// pairs whose boundary triangles are opposite neighbors by `IsNgrmm` are
 /// removed from the ordinary boundary segment list and emitted either as
 /// singleton weak-concavity pairs (`weak_concav_pair`) or as weak-concavity
 /// transition segments (`weak_concav_segment`).
-pub fn refine_weak_concav_segment_make_fortran_indexed(
+pub fn refine_weak_concav_segment_make_one_based(
     set_dis_in: usize,
     num_ref_weak_concav: usize,
     cells_on_triangle: &[[usize; 3]],
@@ -43,7 +43,7 @@ pub fn refine_weak_concav_segment_make_fortran_indexed(
         if m1 >= cells_on_triangle.len() || m2 >= cells_on_triangle.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("weak-concavity pair references triangles {m1} and {m2} outside cells_on_triangle"),
+                format!("weak-concavity pair canonicals triangles {m1} and {m2} outside cells_on_triangle"),
             ));
         }
         if is_ngrmm(cells_on_triangle[m1], cells_on_triangle[m2]).is_none() {

@@ -12,7 +12,7 @@ use super::helpers::{
     getcontain_validate_source_matrix,
 };
 
-pub fn getcontain_containment_matrix_fortran_indexed(
+pub fn getcontain_containment_matrix_one_based(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
     cell_to_vertices: &[Vec<i32>],
@@ -24,7 +24,7 @@ pub fn getcontain_containment_matrix_fortran_indexed(
     lat_i: &[f64],
     num_vertex: usize,
 ) -> io::Result<ContainMesh> {
-    getcontain_containment_matrix_flat_fortran_indexed(
+    getcontain_containment_matrix_flat_one_based(
         mesh_kind,
         vertices,
         cell_to_vertices,
@@ -39,7 +39,7 @@ pub fn getcontain_containment_matrix_fortran_indexed(
     .to_contain_mesh()
 }
 
-pub fn getcontain_containment_matrix_flat_fortran_indexed(
+pub fn getcontain_containment_matrix_flat_one_based(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
     cell_to_vertices: &[Vec<i32>],

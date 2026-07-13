@@ -1,4 +1,4 @@
-use earthmesh_mesh::{area_judge_apply_mask_patch_fortran_indexed, AreaJudgeSourceBounds};
+use earthmesh_mesh::{area_judge_apply_mask_patch_one_based, AreaJudgeSourceBounds};
 
 fn one_based_grid(nx: usize, ny: usize, fill: i32) -> Vec<Vec<i32>> {
     vec![vec![fill; ny + 1]; nx + 1]
@@ -14,7 +14,7 @@ fn mask_patch_modify_zeroes_land_where_patch_mask_is_nonzero_inside_bounds() {
     patch_mask[3][3] = 1;
     patch_mask[4][4] = 1;
 
-    let report = area_judge_apply_mask_patch_fortran_indexed(
+    let report = area_judge_apply_mask_patch_one_based(
         &mut seaorland,
         &patch_mask,
         AreaJudgeSourceBounds {
@@ -35,11 +35,11 @@ fn mask_patch_modify_zeroes_land_where_patch_mask_is_nonzero_inside_bounds() {
 }
 
 #[test]
-fn mask_patch_modify_rejects_bounds_or_masks_that_do_not_cover_fortran_indices() {
+fn mask_patch_modify_rejects_bounds_or_masks_that_do_not_cover_canonical_indices() {
     let mut seaorland = one_based_grid(2, 2, 1);
     let patch_mask = one_based_grid(2, 2, 1);
 
-    assert!(area_judge_apply_mask_patch_fortran_indexed(
+    assert!(area_judge_apply_mask_patch_one_based(
         &mut seaorland,
         &patch_mask,
         AreaJudgeSourceBounds {
@@ -52,7 +52,7 @@ fn mask_patch_modify_rejects_bounds_or_masks_that_do_not_cover_fortran_indices()
     .is_none());
 
     let ragged_patch = vec![vec![0; 3], vec![0; 2], vec![0; 3]];
-    assert!(area_judge_apply_mask_patch_fortran_indexed(
+    assert!(area_judge_apply_mask_patch_one_based(
         &mut seaorland,
         &ragged_patch,
         AreaJudgeSourceBounds {

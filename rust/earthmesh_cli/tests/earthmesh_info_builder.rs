@@ -1,9 +1,12 @@
-fn sample_layout() -> earthmesh_cli::MaskPostprocLayout {
-    earthmesh_cli::MaskPostprocLayout {
+fn sample_layout() -> earthmesh_cli::mask_postproc_types::MaskPostprocLayout {
+    earthmesh_cli::mask_postproc_types::MaskPostprocLayout {
         ustr_points: 6,
         ustr_bounds: 10,
-        center_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 6],
-        vertex_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 10],
+        center_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 6],
+        vertex_points: vec![
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 };
+            10
+        ],
         center_neighbors: vec![
             vec![1, 1, 1],
             vec![1, 1, 1],
@@ -24,7 +27,7 @@ fn earthmesh_info_builder_matches_tri_refine_loop() {
     let is_in_domain = vec![0, 0, 1, 1, -1, 1];
     let seaorland = vec![0, 0, 1, -1, 0, 1];
 
-    let info = earthmesh_cli::build_earthmesh_info_fortran_indexed(
+    let info = earthmesh_cli::mask_postproc_patchtypes::build_earthmesh_info_one_based(
         "tri",
         &[3, 5],
         6,
@@ -40,12 +43,12 @@ fn earthmesh_info_builder_matches_tri_refine_loop() {
 }
 
 #[test]
-fn earthmesh_info_builder_matches_hex_refine_loop_from_center_neighbors() {
+fn earthmesh_info_builder_matches_hex_refined_mesh_from_center_neighbors() {
     let layout = sample_layout();
     let is_in_domain = vec![0, 0, 1, 1, -1, 1];
     let seaorland = vec![0, 0, 1, -1, 0, 1];
 
-    let info = earthmesh_cli::build_earthmesh_info_fortran_indexed(
+    let info = earthmesh_cli::mask_postproc_patchtypes::build_earthmesh_info_one_based(
         "hex",
         &[3, 5, 8],
         6,
@@ -65,8 +68,10 @@ fn earthmesh_info_builder_accepts_hex_role_masks_at_cell_grain() {
     let mut layout = sample_layout();
     layout.ustr_points = 24;
     layout.ustr_bounds = 30;
-    layout.center_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 24];
-    layout.vertex_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 30];
+    layout.center_points =
+        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 24];
+    layout.vertex_points =
+        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 30];
     layout.center_neighbors = (0..24)
         .map(|source_id| match source_id {
             2 => vec![1, 2, 3],
@@ -82,7 +87,7 @@ fn earthmesh_info_builder_accepts_hex_role_masks_at_cell_grain() {
     let is_in_domain = vec![0, 0, 1, -1, 1, 0, 1, -1, 1];
     let seaorland = vec![0, 0, 1, 0, -1, 0, 1, 0, -1];
 
-    let info = earthmesh_cli::build_earthmesh_info_fortran_indexed(
+    let info = earthmesh_cli::mask_postproc_patchtypes::build_earthmesh_info_one_based(
         "hex",
         &[3, 6, 10],
         24,
@@ -100,7 +105,7 @@ fn earthmesh_info_builder_accepts_hex_role_masks_at_cell_grain() {
 #[test]
 fn earthmesh_info_builder_rejects_short_role_mask() {
     let layout = sample_layout();
-    let err = earthmesh_cli::build_earthmesh_info_fortran_indexed(
+    let err = earthmesh_cli::mask_postproc_patchtypes::build_earthmesh_info_one_based(
         "tri",
         &[3],
         6,

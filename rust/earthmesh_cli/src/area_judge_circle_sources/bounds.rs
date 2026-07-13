@@ -2,7 +2,7 @@ use std::io;
 
 use crate::LonLatPoint;
 
-pub(super) fn area_judge_circle_scan_bounds_fortran(
+pub(super) fn area_judge_circle_scan_bounds_canonical(
     center: LonLatPoint,
     radius_km: f64,
 ) -> io::Result<(f64, f64, f64, f64)> {

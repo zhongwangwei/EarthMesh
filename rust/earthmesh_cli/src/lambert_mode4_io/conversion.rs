@@ -5,7 +5,7 @@ use crate::{LonLatPoint, MaskCountState};
 
 use super::{read_lambert_vertices_netcdf, write_mode4_mesh_netcdf, LambertVertices, Mode4Mesh};
 
-/// Convert Lambert vertex arrays into the Fortran-indexed mode4 mesh payload.
+/// Convert Lambert vertex arrays into the Canonical-indexed mode4 mesh payload.
 pub fn lambert_vertices_to_mode4_mesh(vertices: &LambertVertices) -> io::Result<Mode4Mesh> {
     if vertices.xi_vert < 2 || vertices.eta_vert < 2 {
         return Err(io::Error::new(

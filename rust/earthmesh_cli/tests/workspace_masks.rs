@@ -3,11 +3,11 @@ use std::fs;
 use earthmesh_core::{MaskOperation, MkgrdWorkspacePlan};
 
 fn write_bbox_source(path: &std::path::Path, refine_degree: usize) {
-    earthmesh_cli::write_bbox_mask_netcdf(
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
         path,
-        &earthmesh_cli::BBoxMask {
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree,
-            points: vec![earthmesh_cli::BBoxPoint {
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
                 west: 100.0,
                 east: 120.0,
                 north: 30.0,
@@ -66,9 +66,10 @@ fn apply_workspace_and_mask_operations_runs_masks_after_workspace_setup() {
         ],
     };
 
-    let report =
-        earthmesh_cli::apply_workspace_and_mask_operations(&plan, &namelist, &root, 2, true)
-            .expect("workspace plus masks");
+    let report = earthmesh_cli::workspace_mask_apply::apply_workspace_and_mask_operations(
+        &plan, &namelist, &root, 2, true,
+    )
+    .expect("workspace plus masks");
 
     assert_eq!(report.workspace.created_directories.len(), 6);
     assert_eq!(report.mask_reports.len(), 2);
@@ -110,8 +111,10 @@ fn apply_workspace_and_mask_operations_validates_requested_refine_count() {
         )],
     };
 
-    let err = earthmesh_cli::apply_workspace_and_mask_operations(&plan, &namelist, &root, 2, true)
-        .expect_err("missing max_iter_spc mask_refine should fail");
+    let err = earthmesh_cli::workspace_mask_apply::apply_workspace_and_mask_operations(
+        &plan, &namelist, &root, 2, true,
+    )
+    .expect_err("missing max_iter_spc mask_refine should fail");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
     let _ = fs::remove_dir_all(&root);

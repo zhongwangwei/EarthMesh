@@ -1,13 +1,19 @@
+use crate::lonlat_degrees_from_points;
+use crate::split_cartesian_components;
+use crate::validate_mpas_simple_mesh;
+use crate::validate_unstructured_mesh;
+use crate::MpasSimpleMesh;
+use crate::UnstructuredMesh;
+use earthmesh_mesh::lonlat_points_to_unit_xyz;
 use std::io;
 
-use super::legacy::normalize_mpas_legacy_placeholder_inputs;
-use crate::*;
+use super::placeholder_rows::normalize_mpas_placeholder_inputs;
 
-pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
+pub fn build_mpas_simple_mesh_from_unstructured_one_based(
     mesh: &UnstructuredMesh,
     cellwidth: &[f64],
 ) -> io::Result<MpasSimpleMesh> {
-    let (mesh, cellwidth) = normalize_mpas_legacy_placeholder_inputs(mesh, cellwidth)?;
+    let (mesh, cellwidth) = normalize_mpas_placeholder_inputs(mesh, cellwidth)?;
     let mesh = &mesh;
     let cellwidth = cellwidth.as_slice();
     validate_unstructured_mesh(mesh)?;
@@ -24,7 +30,7 @@ pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
     if cellwidth.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "cellwidth must include the legacy placeholder row",
+            "cellwidth must include the Canonical placeholder row",
         ));
     }
     if cellwidth
@@ -49,10 +55,19 @@ pub fn build_mpas_simple_mesh_from_unstructured_fortran_indexed(
         .map(|(row_idx, row)| {
             row.iter()
                 .map(|&value| {
+                    if value < 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("m_to_w row {row_idx} contains negative cell id {value}"),
+                        ));
+                    }
+                    if value <= 1 {
+                        return Ok(0);
+                    }
                     value.checked_sub(1).ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            format!("m_to_w row {row_idx} contains non-positive cell id {value}"),
+                            format!("m_to_w row {row_idx} contains invalid cell id {value}"),
                         )
                     })
                 })

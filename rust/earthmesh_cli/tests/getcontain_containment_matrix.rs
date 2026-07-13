@@ -1,6 +1,8 @@
 use earthmesh_cli::{
-    getcontain_containment_matrix_flat_fortran_indexed,
-    getcontain_containment_matrix_fortran_indexed, GetContainMeshKind, LonLatPoint,
+    coordinate_types::LonLatPoint,
+    getcontain_geometry::getcontain_containment_matrix_flat_one_based,
+    getcontain_geometry::getcontain_containment_matrix_one_based,
+    getcontain_types::GetContainMeshKind,
 };
 
 fn square_vertices() -> Vec<LonLatPoint> {
@@ -38,11 +40,11 @@ fn source_grid() -> (Vec<f64>, Vec<f64>, Vec<Vec<i32>>, Vec<Vec<i32>>) {
 }
 
 #[test]
-fn flat_containment_matches_legacy_contain_mesh_without_distortion() {
+fn flat_containment_matches_compatibility_contain_mesh_without_distortion() {
     let (cell_to_vertices, n_edges, is_in_area_ustr) = one_cell_connectivity();
     let (lon_i, lat_i, is_in_area_grid, seaorland) = source_grid();
 
-    let legacy = getcontain_containment_matrix_fortran_indexed(
+    let compatibility = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,
         &square_vertices(),
         &cell_to_vertices,
@@ -54,9 +56,9 @@ fn flat_containment_matches_legacy_contain_mesh_without_distortion() {
         &lat_i,
         0,
     )
-    .expect("calculate legacy ocean containment");
+    .expect("calculate compatibility ocean containment");
 
-    let flat = getcontain_containment_matrix_flat_fortran_indexed(
+    let flat = getcontain_containment_matrix_flat_one_based(
         GetContainMeshKind::Ocean,
         &square_vertices(),
         &cell_to_vertices,
@@ -72,15 +74,18 @@ fn flat_containment_matches_legacy_contain_mesh_without_distortion() {
 
     assert_eq!(flat.ustr_id_width, 3);
     assert_eq!(flat.ustr_ii_width, 2);
-    assert_eq!(flat.to_contain_mesh().expect("flat to legacy"), legacy);
+    assert_eq!(
+        flat.to_contain_mesh().expect("flat to compatibility"),
+        compatibility
+    );
 }
 
 #[test]
-fn land_containment_keeps_only_land_pixels_and_fortran_offsets() {
+fn land_containment_keeps_only_land_pixels_and_canonical_offsets() {
     let (cell_to_vertices, n_edges, is_in_area_ustr) = one_cell_connectivity();
     let (lon_i, lat_i, is_in_area_grid, seaorland) = source_grid();
 
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Land,
         &square_vertices(),
         &cell_to_vertices,
@@ -104,7 +109,7 @@ fn ocean_containment_keeps_ocean_pixels_and_records_total_selected_pixels() {
     let (cell_to_vertices, n_edges, is_in_area_ustr) = one_cell_connectivity();
     let (lon_i, lat_i, is_in_area_grid, seaorland) = source_grid();
 
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,
         &square_vertices(),
         &cell_to_vertices,
@@ -131,7 +136,7 @@ fn atmos_containment_keeps_all_pixels_and_flags_land_pixels() {
     let (cell_to_vertices, n_edges, is_in_area_ustr) = one_cell_connectivity();
     let (lon_i, lat_i, is_in_area_grid, seaorland) = source_grid();
 
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Atmos,
         &square_vertices(),
         &cell_to_vertices,
@@ -210,7 +215,7 @@ fn dateline_containment_shifts_test_points_and_restores_source_indices() {
     is_in_area_grid[12][2] = 1;
     is_in_area_grid[1][2] = 1;
 
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,
         &vertices,
         &cell_to_vertices,
@@ -268,7 +273,7 @@ fn south_pole_pentagon_splits_virtual_wedges_and_merges_back_to_original_cell() 
         row[1] = 1;
     }
 
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,
         &vertices,
         &cell_to_vertices,
@@ -291,7 +296,7 @@ fn south_pole_pentagon_splits_virtual_wedges_and_merges_back_to_original_cell() 
 }
 
 #[test]
-fn south_pole_triangle_reshapes_to_fortran_rectangle_before_scanning() {
+fn south_pole_triangle_reshapes_to_canonical_rectangle_before_scanning() {
     let vertices = vec![
         LonLatPoint {
             lon: f64::NAN,
@@ -319,7 +324,7 @@ fn south_pole_triangle_reshapes_to_fortran_rectangle_before_scanning() {
     let seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
     is_in_area_grid[3][1] = 1;
 
-    let contain = getcontain_containment_matrix_fortran_indexed(
+    let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,
         &vertices,
         &cell_to_vertices,

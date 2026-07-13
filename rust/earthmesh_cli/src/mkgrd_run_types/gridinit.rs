@@ -2,7 +2,7 @@ use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState};
 
 use crate::{FvcomMesh2dmWriteReport, UnstructuredMeshWriteReport, WorkspaceMaskApplyReport};
 
-/// Report for the migrated initial-grid branch of the `mkgrd.x` driver.
+/// Report for the current initial-grid branch of the `mkgrd.x` driver.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MkgrdGridinitRunReport {
     pub config: EarthmeshConfig,

@@ -395,13 +395,17 @@ let regional=true; // domain mode: true=regional (bbox), false=global (no bounds
 let domainMode="regional"; // global | regional | watershed | close
 let watershedPath="";
 let closePath="";
-let closeFormat="polygon_shp";
+let closeFormat="nml";
+let domainCloseBoundary={mode:"polyline",iterations:2,margin_km:0,max_radius_deg:80,max_segment_angle_deg:0.25};
+// Tauri installs the full expert controls after its bridge initializes. Keep a
+// static-browser fallback so this standalone HTML remains renderable.
+function closeBoundaryControls(){ return ""; }
 var hiddenDomainShape=null; // opened regional shapes this screen preserves but cannot edit yet
 const DEFAULT_BBOX=[108,120,18,26]; // [W,E,S,N]
 const DEFAULT_SEA_RATIO_PCT=50;
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
-let runInfo=null;   // { ok, outdir, code, gridfile } from the last run
+let runInfo=null;   // { ok, outdir, code, gridfile, autoRefineDecisions } from the last run
 let maxPasses=null; // null means use ProjectConfig summary default
 let outputPath=""; // base output folder; outputs go to <outputPath>/<project name>/
 const DEFAULT_NEST_SPRING_ITERATIONS=2000;
@@ -419,11 +423,11 @@ function templateDefaultCell(){
   const meta=((TPL[tpl]&&TPL[tpl].meta&&TPL[tpl].meta[0])||"").toLowerCase();
   return meta.includes("tri") ? "tri" : "hex";
 }
-function defaultOlamSpringNestIterations(cell){
+function defaultMethodCSpringNestIterations(cell){
   return String(cell || templateDefaultCell()).toLowerCase()==="tri" ? DEFAULT_NEST_SPRING_ITERATIONS : null;
 }
 function defaultRefineNiter(cell){
-  return defaultOlamSpringNestIterations(cell) ?? DEFAULT_REFINEMENT_NITER;
+  return defaultMethodCSpringNestIterations(cell) ?? DEFAULT_REFINEMENT_NITER;
 }
 function autoSpringStrategyLabel(cell, regionalDomain, z){
   if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（嵌套弹性平滑）" : "Auto (nested spring smoothing)";
@@ -464,7 +468,7 @@ function selectTemplate(k){
     regional=domainMode!=="global";
     watershedPath="";
     closePath="";
-    closeFormat="polygon_shp";
+    closeFormat="nml";
     hiddenDomainShape=null;
     if(typeof window.resetTemplateDerivedState==="function") window.resetTemplateDerivedState();
   }
@@ -474,7 +478,7 @@ function selectTemplate(k){
 }
 
 /* ---------------- resolution control (value + ticked slider) ---------------- */
-const OLAM_SPRING_NXP1_KM=8006.322488295298; // 2*pi*R/5, mirrors earthmesh_project::km_to_nxp
+const METHOD_C_SPRING_NXP1_KM=8006.322488295298; // 2*pi*R/5, mirrors earthmesh_project::km_to_nxp
 const KM_PER_DEG_EQ=111.32;
 const RES_UNITS=[
  {label:["km","km"], suffix:" km", min:1, max:500, step:0.5, def:100, ticks:[1,25,100,250,500]},
@@ -483,8 +487,8 @@ const RES_UNITS=[
 ];
 let resUnitIdx=0, resVal=RES_UNITS[0].def;
 function fmtRes(){const u=RES_UNITS[resUnitIdx];return resVal+u.suffix;}
-function kmToNxp(km){ return km>0 ? Math.max(1, Math.round(OLAM_SPRING_NXP1_KM/km)) : 0; }
-function nxpToKm(nxp){ return nxp>0 ? OLAM_SPRING_NXP1_KM/nxp : OLAM_SPRING_NXP1_KM; }
+function kmToNxp(km){ return km>0 ? Math.max(1, Math.round(METHOD_C_SPRING_NXP1_KM/km)) : 0; }
+function nxpToKm(nxp){ return nxp>0 ? METHOD_C_SPRING_NXP1_KM/nxp : METHOD_C_SPRING_NXP1_KM; }
 // Cross-unit equivalents. Engine relation mirrors earthmesh_project::km_to_nxp.
 function fmtEquiv(){
   if(!(resVal>0)) return "";
@@ -614,18 +618,19 @@ function renderStep(i){
   }
   else if(i===2){
     const hiddenDomain = hiddenDomainShape;
-    html=head(STEPS[2].t[lang],lang?"设全球、区域矩形框、流域 SHP 或闭合区域；右侧地图实时反映可编辑矩形框。":"Set global, regional bbox, watershed SHP, or close domain; the map reflects editable bbox domains live.")
+    html=head(STEPS[2].t[lang],lang?"设全球、区域矩形框、流域 SHP 或闭合区域；右侧地图实时反映边界。":"Set a global, regional bbox, watershed SHP, or close domain; the map reflects the boundary live.")
     +`<div class="card"><h3>${lang?"计算域":"Domain"}</h3>
-       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span><span class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域":"Watershed"}</span><span class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</span></div>
+       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span><span class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域 SHP":"Watershed SHP"}</span><span class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</span></div>
        ${hiddenDomain?`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"此项目使用当前界面尚未编辑的区域形状（":"This project uses a regional shape not edited by this screen ("}<span id="hiddenDomainShapeText"></span>${lang?"）；保存/运行会保留它。切换到「区域」会改为矩形框。":"); Save/Run preserves it. Switch to Regional to replace it with a bounding box."}</div>`
        :domainMode==="watershed"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">SHP</span></div>
        ${field(lang?"流域边界文件":"Watershed boundary file",`<div class="browse" id="watershedBrowse" style="cursor:pointer"><span class="path" id="watershedPathText" style="max-width:none">${watershedPath ? "📄 "+watershedPath : (lang?"📄 点击选择 .shp 文件":"📄 Choose a .shp file")}</span></div>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
        ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
-       <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"运行时会把 Polygon SHP 转成后端 close mask；不依赖 GDAL。":"At run time, Polygon SHP is converted to a backend close mask without GDAL."}</div>`
+       <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"SHP 会自动转换为引擎 close 输入；支持 WGS84、Web Mercator 和 WGS84 UTM。":"SHP is converted automatically to the engine close input; WGS84, Web Mercator, and WGS84 UTM are supported."}</div>`
        :domainMode==="close"?`
        ${field(lang?"闭合区域文件":"Close boundary file",`<div class="browse" id="closeBrowse" style="cursor:pointer"><span class="path" id="closePathText" style="max-width:none">${closePath ? "📄 "+closePath : (lang?"📄 点击选择文件":"📄 Choose file")}</span></div>`)}
        ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
-       <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"按文件扩展名自动识别：.shp / .nml / .nc / .nc4 / .txt / .csv。":"Auto-detected from extension: .shp / .nml / .nc / .nc4 / .txt / .csv."}</div>`
+       ${closeBoundaryControls("domain",domainCloseBoundary,lang)}
+       <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"支持 .shp / .nml / .nc / .nc4 / .txt / .csv；SHP/TXT 会先转换为临时 NML。":"Supports .shp / .nml / .nc / .nc4 / .txt / .csv; SHP/TXT are converted to temporary NML first."}</div>`
        :domainMode==="regional"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
        <div class="grid2">
          ${field(lang?"西经度 (°)":"West lon (°)",inp(DEFAULT_BBOX[0].toFixed(1)))}${field(lang?"东经度 (°)":"East lon (°)",inp(DEFAULT_BBOX[1].toFixed(1)))}
@@ -648,12 +653,15 @@ function renderStep(i){
     +`<div class="card"><h3>${lang?"细化策略":"Refinement strategy"}</h3><div class="ch">${lang?"正在读取项目细化配置…":"loading refinement settings…"}</div></div>`;
   }
   else if(i===5){
-    html=head(STEPS[5].t[lang],lang?"设质量门限；当前会写入最小角和违规策略。":"Set the quality gate; Studio writes the minimum angle and violation policy.")
+    html=head(STEPS[5].t[lang],lang?"设质量门限、违规策略与每轮局部修复规模。":"Set the quality gate, violation policy, and bounded local repair batch.")
     +`<div class="card"><h3>${lang?"违规处理":"Violation behavior"}</h3>
       ${field(lang?"违规时":"On violation",`<select class="select"><option selected>${lang?"警告并继续":"Warn & continue"}</option><option>${lang?"直接失败":"Fail"}</option><option>${lang?"自动尝试修复":"Auto repair attempt"}</option></select>`)}
     </div>
     <div class="quality-detail expert"><span class="expert-tag">⚙ ${lang?"专家 — 逐项门禁":"EXPERT — per-gate thresholds"}</span>
-      ${field(lang?"最小角 ≥":"Min angle ≥",inp("25°"))}</div>`;
+      <div class="grid2">
+        ${field(lang?"最小角 ≥":"Min angle ≥",inp("25°"))}
+        ${field(lang?"每轮局部修复单元":"Local repair cells / pass",`<input class="input" id="qualityBatchCells" type="number" min="1" step="1" value="1">`,lang?"只处理同一缺陷连通分量；默认 1，便于严格比较和回滚。":"Only one connected defect component is touched; default 1 keeps comparison and rollback attributable.")}
+      </div></div>`;
   }
   else{
     html=head(STEPS[6].t[lang],lang?"点击下方「运行」生成网格；过程日志见右侧。完成后这里显示结果与质量指标。":"Click Run below to generate; live log on the right. Results and quality metrics appear here when it finishes.");
@@ -673,6 +681,7 @@ function renderStep(i){
         <div><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
         <div class="vs" id="runOutputSummary"></div></div></div>
         ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><span class="btn-ghost" id="openOutBtn" style="cursor:pointer">📂 ${lang?"打开输出文件夹":"Open output folder"}</span></div>`:""}
+        <div class="card" id="autoRefineCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="qualityCard" style="margin-top:16px"><h3>${lang?"质量指标":"Quality metrics"}</h3>
           <div class="ch">${lang?"运行后自动解析（quality_summary.json）。":"Parsed automatically after a run (quality_summary.json)."}</div></div>`;
     }
@@ -1070,16 +1079,84 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
   const layerEdits = {};   // layer id -> { path, enabled }
   const thresholdEdits = {}; // threshold layer id -> number|null (null = catalog default)
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
-  let qualityEdit = null;  // null | { minAngle, policy }
+  let qualityEdit = null;  // null | { minAngle, policy, batchCells }
   let cellEdit = null;     // null | "hex" | "tri"; null means template default
 let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
-  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
   let lastSummary = null;    // cached ProjectSummary (+ _valid/_err) for the summary panel
   let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
   // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
+
+  function normalizeCloseBoundary(value) {
+    const b = value || {};
+    return {
+      mode: b.mode || "polyline",
+      iterations: b.iterations ?? 2,
+      margin_km: b.margin_km ?? 0,
+      max_radius_deg: b.max_radius_deg ?? 80,
+      max_segment_angle_deg: b.max_segment_angle_deg ?? 0.25,
+    };
+  }
+
+  function closeBoundaryControls(prefix, value, z) {
+    const b = normalizeCloseBoundary(value);
+    return `<div class="expert" style="margin-top:12px">
+      <span class="expert-tag">⚙ ${z ? "专家 — 闭合边界" : "EXPERT — close boundary"}</span>
+      <div class="grid2" style="margin-top:10px">
+        ${field(z?"边界表示":"Boundary mode",`<select class="select" id="${prefix}CloseBoundaryMode"><option value="polyline" ${b.mode==="polyline"?"selected":""}>${z?"原折线（默认）":"Polyline (default)"}</option><option value="spherical_chaikin" ${b.mode==="spherical_chaikin"?"selected":""}>${z?"球面 Chaikin 平滑":"Spherical Chaikin"}</option><option value="enclosing_cap" ${b.mode==="enclosing_cap"?"selected":""}>${z?"保守外接球冠":"Conservative enclosing cap"}</option></select>`,z?"默认保持现有行为":"default preserves existing behavior")}
+        ${field(z?"最大分段角 (°)":"Max segment angle (°)",`<input class="input" type="number" id="${prefix}CloseMaxSegment" min="0.001" max="30" step="0.05" value="${b.max_segment_angle_deg}">`,z?"平滑/拟合前的边界采样上限":"boundary sampling limit")}
+      </div>
+      <div class="grid2" id="${prefix}CloseChaikinOptions" style="margin-top:10px">
+        ${field(z?"Chaikin 迭代":"Chaikin iterations",`<input class="input" type="number" id="${prefix}CloseIterations" min="1" max="6" step="1" value="${b.iterations}">`,z?"建议 1–3":"recommended 1–3")}
+      </div>
+      <div class="grid2" id="${prefix}CloseCapOptions" style="margin-top:10px">
+        ${field(z?"外扩余量 (km)":"Outward margin (km)",`<input class="input" type="number" id="${prefix}CloseMarginKm" min="0" step="1" value="${b.margin_km}">`,z?"允许覆盖原区域之外":"intentional over-cover")}
+        ${field(z?"最大球冠半径 (°)":"Max cap radius (°)",`<input class="input" type="number" id="${prefix}CloseMaxRadius" min="0.1" max="89.9" step="1" value="${b.max_radius_deg}">`,z?"拒绝接近半球的退化区域":"reject near-hemisphere regions")}
+      </div>
+      <div style="color:var(--muted);font-size:11px;line-height:1.5;margin-top:8px">${z?"平滑会削角并可能缩小范围；外接球冠会扩大范围。非默认模式会执行自交、对跖与半球限制检查。":"Smoothing cuts corners and may shrink the footprint; enclosing caps expand it. Non-default modes validate intersections, antipodal edges, and cap extent."}</div>
+    </div>`;
+  }
+  window.closeBoundaryControls = closeBoundaryControls;
+
+  function bindCloseBoundaryControls(prefix, current, onChange) {
+    const mode = document.getElementById(prefix+"CloseBoundaryMode");
+    const iterations = document.getElementById(prefix+"CloseIterations");
+    const margin = document.getElementById(prefix+"CloseMarginKm");
+    const maxRadius = document.getElementById(prefix+"CloseMaxRadius");
+    const maxSegment = document.getElementById(prefix+"CloseMaxSegment");
+    if (!mode) return;
+    const paint = () => {
+      const chaikin = document.getElementById(prefix+"CloseChaikinOptions");
+      const cap = document.getElementById(prefix+"CloseCapOptions");
+      if (chaikin) chaikin.style.display = mode.value === "spherical_chaikin" ? "" : "none";
+      if (cap) cap.style.display = mode.value === "enclosing_cap" ? "" : "none";
+      if (maxSegment) maxSegment.disabled = mode.value === "polyline";
+    };
+    const sync = () => {
+      const previous = normalizeCloseBoundary(current());
+      const next = {
+        mode: mode.value,
+        iterations: iterations ? Math.max(1,Math.min(6,parseInt(iterations.value,10)||2)) : previous.iterations,
+        margin_km: margin ? Math.max(0,parseFloat(margin.value)||0) : previous.margin_km,
+        max_radius_deg: maxRadius ? (parseFloat(maxRadius.value)||80) : previous.max_radius_deg,
+        max_segment_angle_deg: maxSegment ? (parseFloat(maxSegment.value)||0.25) : previous.max_segment_angle_deg,
+      };
+      onChange(next); paint(); clearRunArtifacts();
+    };
+    [mode,iterations,margin,maxRadius,maxSegment].forEach((el)=>{ if(el){el.oninput=sync;el.onchange=sync;} });
+    paint();
+  }
+
+  async function applyCloseBoundary(yaml, target, value) {
+    const b = normalizeCloseBoundary(value);
+    return await invoke("set_close_boundary", {
+      yaml, target, mode:b.mode, iterations:b.iterations, marginKm:b.margin_km,
+      maxRadiusDeg:b.max_radius_deg, maxSegmentAngleDeg:b.max_segment_angle_deg
+    });
+  }
 
   function landcoverCanRefine(summary) {
     return ["land", "coupled", "earth"].includes(String(summary && summary.target_kind || "").toLowerCase());
@@ -1107,9 +1184,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml = await invoke("set_domain_shapefile", { yaml, path, seaRatio });
     } else if (mode === "close") {
       const path = (domainEdit && domainEdit.kind === "close" ? domainEdit.path : closePath) || "";
-      const format = (domainEdit && domainEdit.kind === "close" ? domainEdit.format : closeFormat) || "polygon_shp";
+      const format = (domainEdit && domainEdit.kind === "close" ? domainEdit.format : closeFormat) || "nml";
       const seaRatio = domainEdit && domainEdit.kind === "close" ? (domainEdit.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_close", { yaml, path, format, seaRatio });
+      yaml = await applyCloseBoundary(yaml, "domain", domainCloseBoundary);
     } else {
       const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : DEFAULT_BBOX;
       const seaRatio = domainEdit && domainEdit.kind === "bbox" ? (domainEdit.seaRatio ?? null) : null;
@@ -1131,18 +1209,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
     }
     const spring = springTypesFor(expertEdit.springStrategy);
-    const legacyBackend = specifiedRefine.hfieldEnabled === false;
+    const discreteMask = specifiedRefine.hfieldEnabled === false;
     yaml = await invoke("set_expert", {
       yaml, nxp: null, openmp: expertEdit.openmp, niter: expertEdit.niter,
-      niterRefine: expertEdit.niterRefine ?? defaultOlamSpringNestIterations(cellEdit), maxIterSpc: expertEdit.maxIterSpc, maxIterCal: expertEdit.maxIterCal,
-      halo: legacyBackend ? expertEdit.halo : null,
-      maxTransitionRow: legacyBackend ? expertEdit.maxTransitionRow : null,
-      setDisType: legacyBackend ? expertEdit.setDisType : null,
-      numRc: legacyBackend ? expertEdit.numRc : null,
-      vertexPretectLayers: legacyBackend ? expertEdit.vertexPretectLayers : null,
+      niterRefine: expertEdit.niterRefine ?? defaultMethodCSpringNestIterations(cellEdit), maxIterSpc: expertEdit.maxIterSpc, maxIterCal: expertEdit.maxIterCal,
+      halo: discreteMask ? expertEdit.halo : null,
+      maxTransitionRow: discreteMask ? expertEdit.maxTransitionRow : null,
+      setDisType: discreteMask ? expertEdit.setDisType : null,
+      numRc: discreteMask ? expertEdit.numRc : null,
+      vertexPretectLayers: discreteMask ? expertEdit.vertexPretectLayers : null,
       springGlobalType: spring.springGlobalType, springRegionalType: spring.springRegionalType,
       beta: expertEdit.beta, relax: expertEdit.relax,
-      weakConcavEliminate: legacyBackend ? true : null
+      weakConcavEliminate: discreteMask ? true : null
     });
     const summary = await invoke("project_summary", { yaml });
     const thresholdRefine = hasEnabledThresholdLayer(summary);
@@ -1159,6 +1237,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       w: specifiedRefine.w, e: specifiedRefine.e, s: specifiedRefine.s, n: specifiedRefine.n,
       path: specifiedRefine.path
     });
+    if (specifiedRefine.enabled && specifiedRefine.kind === "close") {
+      yaml = await applyCloseBoundary(yaml, "specified", specifiedRefine.closeBoundary);
+    }
     yaml = await invoke("set_hfield_refinement", {
       yaml, enabled: specifiedRefine.hfieldEnabled !== false,
       g: specifiedRefine.hfieldG ?? null,
@@ -1167,7 +1248,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     });
     if (qualityEdit) {
       yaml = await invoke("set_quality",
-        { yaml, minAngleDeg: qualityEdit.minAngle, policy: qualityEdit.policy });
+        { yaml, minAngleDeg: qualityEdit.minAngle, policy: qualityEdit.policy, autoRefineBatchCells: qualityEdit.batchCells });
     }
     return yaml;
   }
@@ -1255,6 +1336,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       for (const id of Object.keys(thresholdEdits)) delete thresholdEdits[id];
       baseProjectYaml = null;
       domainEdit = null;
+      domainCloseBoundary = normalizeCloseBoundary(null);
       qualityEdit = null;
       lastSummary = null;
       cellEdit = null;
@@ -1272,9 +1354,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
       if (t.maxPasses) maxPasses = t.maxPasses;
       if (t.specifiedClosePath) {
-        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: t.specifiedClosePath };
+        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
       } else {
-        specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+        specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
       }
       if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       clearRunArtifacts();
@@ -1476,7 +1558,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       };
       if (domainEdit && domainEdit.kind === "close") {
         closePath = domainEdit.path || "";
-        closeFormat = domainEdit.format || "polygon_shp";
+        closeFormat = domainEdit.format || "nml";
         if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
       }
       syncClose();
@@ -1485,6 +1567,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         if (!p) return;
         closePath = p;
         closeFormat = inferCloseFormat(p);
+        if (!closeFormat) {
+          logLine("✗ " + (zh() ? "闭合区域支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Close domains support .shp / .nml / .nc / .nc4 / .txt / .csv"));
+          return;
+        }
         domainEdit = { kind: "close", path: p, format: closeFormat, seaRatio: readSeaRatio() };
         clearRunArtifacts();
         syncClose();
@@ -1494,6 +1580,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         if (closePath) domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: readSeaRatio() };
         paintSeaRatio();
       });
+      bindCloseBoundaryControls(
+        "domain",
+        () => domainCloseBoundary,
+        (value) => { domainCloseBoundary = value; }
+      );
       return;
     }
     const sync = () => {
@@ -1524,21 +1615,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   async function enhanceQualityStep() {
     const sel = document.querySelector("#work .card select.select"); // on-violation
     const minIn = document.querySelector("#work .quality-detail input.input"); // min angle
+    const batchIn = document.getElementById("qualityBatchCells");
     if (!qualityEdit) {
       const s = await refreshSummary();
-      if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn" };
+      if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn", batchCells: s.auto_refine_batch_cells || 1 };
     }
     const readQ = () => {
-      let minAngle = 0, policy = "warn";
+      let minAngle = 0, policy = "warn", batchCells = 1;
       if (minIn) { const v = num(minIn); if (minIn.value.trim() && !isNaN(v)) minAngle = v; }
       if (sel) policy = ["warn", "block", "auto_refine"][sel.selectedIndex] || "warn";
-      return { minAngle, policy };
+      if (batchIn) { const v = Number.parseInt(batchIn.value, 10); if (Number.isInteger(v) && v > 0) batchCells = v; }
+      return { minAngle, policy, batchCells };
     };
     const update = () => { qualityEdit = readQ(); };
     if (sel) sel.addEventListener("change", update);
     if (minIn) minIn.addEventListener("input", update);
+    if (batchIn) batchIn.addEventListener("input", update);
     if (qualityEdit) {
       if (minIn) minIn.value = qualityEdit.minAngle + "°";
+      if (batchIn) batchIn.value = String(qualityEdit.batchCells || 1);
       if (sel) sel.selectedIndex = qualityEdit.policy === "auto_refine" ? 2 : (qualityEdit.policy === "block" ? 1 : 0);
     }
   }
@@ -1618,7 +1713,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div style="font-weight:700;margin-bottom:10px">${z ? "指定细化" : "Specified refinement"}</div>
       <div class="grid2">
         ${field(z?"开关":"Switch",`<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用":"Enable"}</label>`)}
-        ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合区域 SHP":"Close SHP"}</option></select>`)}
+        ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合掩膜":"Close mask"}</option></select>`)}
       </div>
       <div class="grid2" id="specifiedRadiusFields" style="margin-top:10px">
         ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" min="0.001" step="1" value="${specifiedRefine.radiusKm ?? 100}">`)}
@@ -1632,7 +1727,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"北纬度":"North lat",`<input class="input" type="number" id="specifiedN" min="-90" max="90" step="0.01" value="${specifiedRefine.n ?? DEFAULT_BBOX[3]}">`)}
       </div>
       <div id="specifiedCloseFields" style="margin-top:10px">
-        ${field(z?"闭合区域文件":"Close region file",`<div class="browse" id="specifiedCloseBrowse" style="cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none">${specifiedRefine.path ? "📄 "+specifiedRefine.path : (z?"📄 点击选择 .shp 文件":"📄 Choose a .shp file")}</span></div>`)}
+        ${field(z?"闭合区域文件":"Close region file",`<div class="browse" id="specifiedCloseBrowse" style="cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none">${specifiedRefine.path ? "📄 "+specifiedRefine.path : (z?"📄 点击选择 SHP/NML/NetCDF/TXT":"📄 Choose SHP/NML/NetCDF/TXT")}</span></div>`)}
+        ${closeBoundaryControls("specified",specifiedRefine.closeBoundary,z)}
       </div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
@@ -1644,25 +1740,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax}</span></div>
       </div>
     </div>`;
-    const backend = specifiedRefine.hfieldEnabled === false ? "legacy" : "hfield";
+    const backend = specifiedRefine.hfieldEnabled === false ? "discrete" : "hfield";
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 细化方案" : "EXPERT — refinement backend"}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场（默认）":"H-field (default)"}</option><option value="legacy" ${backend==="legacy"?"selected":""}>${z?"legacy 硬掩膜":"legacy hard-mask"}</option></select>`,z?"默认 H 场；legacy 只为复现实验":"default H-field; legacy only for parity")}
+        ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场（默认）":"H-field (default)"}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"discrete 硬掩膜":"discrete mask"}</option></select>`,z?"默认 H 场；discrete 只为复现实验":"default H-field; discrete only for parity")}
       </div>
       <div id="hfieldOptions" class="grid2" style="margin-top:10px;${backend==="hfield"?"":"display:none"}">
         ${field(z?"梯度上限 g":"Gradation g",`<input class="input" type="number" id="hfieldG" min="0.01" max="1" step="0.01" value="${specifiedRefine.hfieldG ?? 0.2}">`,z?"默认 0.2；邻胞尺寸比 ≤ 1+g":"default 0.2; neighbor ratio ≤ 1+g")}
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="hfieldMaxLevel" min="0" max="5" step="1" value="${specifiedRefine.hfieldMaxLevel ?? 0}">`,z?"0 = 自动；上限 5":"0 = auto; max 5")}
         ${field(z?"基准尺寸 m":"Base size m",`<input class="input" type="number" id="hfieldBaseM" min="0" step="1000" placeholder="${Math.round(nxpToKm(currentNxp())*1000)}" value="${specifiedRefine.hfieldBaseM ?? ""}">`,z?"空=自动，按 2πR/(5·NXP)":"blank=auto from 2πR/(5·NXP)")}
       </div>
-      <div id="legacyOptions" class="grid2" style="margin-top:10px;${backend==="legacy"?"":"display:none"}">
-        <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"legacy 使用旧的指定/阈值硬掩膜，不写 &hfield。以下参数只属于 legacy。":"Legacy uses old specified/threshold hard masks and does not emit &hfield. The controls below are legacy-only."}</div>
-        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"legacy 默认 4,4,3":"legacy default 4,4,3")}
-        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"legacy 默认 4,4,3":"legacy default 4,4,3")}
-        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"legacy 距离分布函数":"legacy distance distribution")}
-        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"legacy 默认 0":"legacy default 0")}
-        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"legacy 默认 1":"legacy default 1")}
-        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" checked disabled> <span>${z?"开启":"On"}</span></label>`,z?"legacy 默认开启；必须开启":"legacy default on; required")}
+      <div id="discreteOptions" class="grid2" style="margin-top:10px;${backend==="discrete"?"":"display:none"}">
+        <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散模式使用指定/阈值掩膜，不写 &hfield。以下参数只属于 discrete。":"Discrete mode uses specified/threshold masks and does not emit &hfield. The controls below are discrete-only."}</div>
+        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"discrete 默认 4,4,3":"discrete default 4,4,3")}
+        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"discrete 默认 4,4,3":"discrete default 4,4,3")}
+        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"discrete 距离分布函数":"discrete distance distribution")}
+        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"discrete 默认 0":"discrete default 0")}
+        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"discrete 默认 1":"discrete default 1")}
+        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" checked disabled> <span>${z?"开启":"On"}</span></label>`,z?"discrete 默认开启；必须开启":"discrete default on; required")}
       </div>
     </div>`;
     const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
@@ -1709,10 +1805,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (rows) crits.forEach((l) => rows.appendChild(criterionRow(l)));
       const backendSel = document.getElementById("refineBackend");
       const syncBackend = () => {
-        if (backendSel) specifiedRefine.hfieldEnabled = backendSel.value !== "legacy";
+        if (backendSel) specifiedRefine.hfieldEnabled = backendSel.value !== "discrete";
         const showH = specifiedRefine.hfieldEnabled !== false;
         const hf = document.getElementById("hfieldOptions"); if (hf) hf.style.display = showH ? "" : "none";
-        const lg = document.getElementById("legacyOptions"); if (lg) lg.style.display = showH ? "none" : "";
+        const lg = document.getElementById("discreteOptions"); if (lg) lg.style.display = showH ? "none" : "";
         expertEdit.enabled = expertEnabled();
         clearRunArtifacts();
       };
@@ -1811,11 +1907,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (radiusFields) radiusFields.style.display = kind === "radius" ? "" : "none";
       if (bboxFields) bboxFields.style.display = kind === "bbox" ? "" : "none";
       if (closeFields) closeFields.style.display = kind === "close" ? "" : "none";
-      if (specCloseText) specCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z?"📄 点击选择 .shp 文件":"📄 Choose a .shp file");
+      if (specCloseText) specCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z?"📄 点击选择 SHP/NML/NetCDF/TXT":"📄 Choose SHP/NML/NetCDF/TXT");
     };
     const syncSpecified = () => {
       const kind = specKind ? specKind.value : "radius";
       specifiedRefine = {
+        ...specifiedRefine,
         enabled: !!(specOn && specOn.checked),
         kind,
         lon: readNum(specLon),
@@ -1837,10 +1934,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (specCloseBrowse) specCloseBrowse.onclick = async () => {
       let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
       if (!p) return;
+      if (!inferCloseFormat(p)) {
+        logLine("✗ " + (z ? "指定闭合细化支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Specified close refinement supports .shp / .nml / .nc / .nc4 / .txt / .csv"));
+        return;
+      }
       specifiedRefine.path = p;
       if (specKind) specKind.value = "close";
       syncSpecified();
     };
+    bindCloseBoundaryControls(
+      "specified",
+      () => specifiedRefine.closeBoundary,
+      (value) => { specifiedRefine.closeBoundary = value; }
+    );
     paintSpecifiedKind(specKind ? specKind.value : "radius");
   }
 
@@ -1854,6 +1960,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (ob) ob.onclick = () => {
       if (runInfo && runInfo.outdir) invoke("open_path", { path: runInfo.outdir }).catch((e) => logLine("✗ " + e));
     };
+    if (runInfo) renderAutoRefineDecisions(runInfo.autoRefineDecisions || []);
     // Re-render the cached quality result when step 6 rebuilds its DOM.
     if (runInfo && runInfo.ok && _lastQuality) renderQualityCard(_lastQuality);
   }
@@ -1917,6 +2024,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
       sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: true }; });
       sum.layers.forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
+      domainCloseBoundary = normalizeCloseBoundary(null);
       if (sum.domain_shape === "shapefile") {
         domainMode = "watershed";
         regional = true;
@@ -1927,7 +2035,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         domainMode = "close";
         regional = true;
         closePath = sum.watershed_path || "";
-        closeFormat = sum.close_format || "polygon_shp";
+        closeFormat = sum.close_format || "nml";
+        domainCloseBoundary = normalizeCloseBoundary(sum.domain_close_boundary);
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: sum.sea_ratio ?? null };
         await loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
       } else if (sum.bbox) {
@@ -1977,13 +2086,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         s: sum.specified_refine_bbox ? sum.specified_refine_bbox[2] : null,
         n: sum.specified_refine_bbox ? sum.specified_refine_bbox[3] : null,
         path: sum.specified_refine_path ?? null,
+        closeBoundary: normalizeCloseBoundary(sum.specified_refine_close_boundary),
         hfieldEnabled: sum.hfield_enabled !== false,
         hfieldG: sum.hfield_g ?? null,
         hfieldMaxLevel: sum.hfield_max_level ?? null,
         hfieldBaseM: sum.hfield_base_m ?? null,
       };
       if ((expertEdit.enabled || specifiedRefine.hfieldEnabled === false) && typeof setExpertMode === "function") setExpertMode(true);
-      qualityEdit = { minAngle: sum.min_angle_deg, policy: sum.on_violation || "warn" };
+      qualityEdit = { minAngle: sum.min_angle_deg, policy: sum.on_violation || "warn", batchCells: sum.auto_refine_batch_cells || 1 };
       maxPasses = sum.max_passes;
       if (typeof renderSteps === "function") renderSteps();
       if (typeof renderStep === "function") renderStep(typeof cur !== "undefined" ? cur : 0);
@@ -2017,7 +2127,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "polygon_shp"; cellEdit = null;
+    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();
@@ -2027,7 +2137,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
-    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
     metadataEdit = { authors: [], description: "" };
@@ -2098,15 +2208,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (p.endsWith(".nml")) return "nml";
     if (p.endsWith(".nc") || p.endsWith(".nc4")) return "netcdf";
     if (p.endsWith(".txt") || p.endsWith(".csv")) return "lonlat_text";
-    return "polygon_shp";
+    return null;
   }
   function expertEnabled() {
-    const legacyBackend = specifiedRefine.hfieldEnabled === false;
+    const discreteMask = specifiedRefine.hfieldEnabled === false;
     return expertEdit.openmp != null || expertEdit.niter != null || expertEdit.niterRefine != null ||
       expertEdit.maxIterSpc != null || expertEdit.maxIterCal != null ||
-      (legacyBackend && (expertEdit.halo != null || expertEdit.maxTransitionRow != null ||
+      (discreteMask && (expertEdit.halo != null || expertEdit.maxTransitionRow != null ||
         expertEdit.setDisType != null || expertEdit.numRc != null ||
-        expertEdit.vertexPretectLayers != null || legacyBackend)) ||
+        expertEdit.vertexPretectLayers != null || discreteMask)) ||
       expertEdit.springStrategy != null || expertEdit.beta != null || expertEdit.relax != null;
   }
 
@@ -2264,7 +2374,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ? (z ? "全球" : "global")
         : ((z ? "保留隐藏区域：" : "preserved regional: ") + (s.domain_shape || s.domain || "—")));
     const gate = (s.min_angle_deg != null)
-      ? (s.min_angle_deg + "° · " + (s.on_violation === "auto_refine" ? (z ? "自动尝试修复" : "auto_refine") : (s.on_violation === "block" ? (z ? "违规即停" : "block") : (z ? "违规告警" : "warn"))))
+      ? (s.min_angle_deg + "° · " + (s.on_violation === "auto_refine" ? ((z ? "自动修复" : "auto_refine") + " ×" + (s.auto_refine_batch_cells || 1)) : (s.on_violation === "block" ? (z ? "违规即停" : "block") : (z ? "违规告警" : "warn"))))
       : "—";
     const ok = !!s._valid;
     sumEl.innerHTML =
@@ -2332,62 +2442,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
     document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
     let finalQuality = null;
-    let bestRun = null;
-    let bestQuality = null;
     try {
       for (;;) {
         let yaml;
         try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
         try { lastSummary = await api.summary(yaml); } catch (e) {}
-        const autoRefine = lastSummary && lastSummary.domain === "regional" && lastSummary.on_violation === "auto_refine";
-        const maxAutoLevel = regionalMethodCLevelCap(currentNxp());
-        const requestedLevel = maxPasses == null ? regionalDefaultRefineLevel(currentNxp()) : Math.max(1, Math.min(maxAutoLevel, maxPasses));
-        const actualLevel = requestedLevel;
-        if (autoRefine && maxPasses != null && maxPasses > actualLevel) maxPasses = actualLevel;
-        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + (autoRefine ? ", auto refine level=" + actualLevel : "") + ")");
+        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
         const r = await api.runProject(yaml, outputPath || null);
         logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
                      : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
         setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile };
-        if (!(r.ok && r.gridfile && autoRefine)) {
-          if (autoRefine && actualLevel < maxAutoLevel) {
-            if (bestRun) {
-              logLine(zh() ? "⚠ 更高细化级别运行失败，保留上一次可用结果。" : "⚠ higher refine level failed; keeping the last usable result.");
-              runInfo = bestRun;
-              finalQuality = bestQuality;
-              setStatus(zh() ? "运行完成" : "finished", true);
-              break;
-            }
-            maxPasses = actualLevel + 1;
-            logLine((zh() ? "↻ 当前级别运行失败，继续尝试细化级别 " : "↻ current level failed; retrying with refine level ") + maxPasses);
-            continue;
-          }
-          break;
-        }
-        try {
-          finalQuality = await readMeshQuality(r.gridfile);
-          bestRun = runInfo;
-          bestQuality = finalQuality;
-          _lastQuality = finalQuality;
-          const verdict = String(finalQuality.verdict || "").toLowerCase();
-          logLine("✓ " + (zh() ? "质量检查：" : "quality check: ") + (finalQuality.verdict || "unknown"));
-          if (verdict !== "fail") break;
-          if (actualLevel >= maxAutoLevel) {
-            logLine((zh() ? "⚠ 自动修复已到最大细化级别 " : "⚠ auto repair reached max refine level ") + maxAutoLevel + (zh() ? "，保留最后一次结果。" : "; keeping the last result."));
-            break;
-          }
-          maxPasses = actualLevel + 1;
-          logLine((zh() ? "↻ 质量仍失败，自动提高细化级别到 " : "↻ quality still failed; retrying with refine level ") + maxPasses);
-        } catch (e) {
-          logLine((zh() ? "⚠ 自动质量检查失败：" : "⚠ auto quality check failed: ") + e);
-          break;
-        }
+        const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
+        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, autoRefineDecisions: decisions };
+        if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
+        break;
       }
     } catch (e) {
       logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
       setStatus(zh() ? "运行失败" : "failed", true);
-      hasRun = true; runInfo = { ok: false, outdir: "", code: null };
+      hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
     }
     setRunControls(false);
     if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") renderStep(6);
@@ -2410,13 +2483,153 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     renderQualityNote(zh() ? "引擎没有在日志中报告 gridfile，无法自动解析质量报告或叠加网格。" : "The engine did not report a gridfile in the log, so quality parsing and map overlay were skipped.");
   }
 
+  function renderAutoRefineDecisions(decisions) {
+    const card = document.getElementById("autoRefineCard");
+    if (!card) return;
+    card.textContent = "";
+    if (!Array.isArray(decisions) || !decisions.length) {
+      card.style.display = "none";
+      return;
+    }
+    card.style.display = "";
+    const z = zh();
+    const title = document.createElement("h3");
+    title.textContent = z ? "AutoRefine 决策审计" : "AutoRefine decision audit";
+    const note = document.createElement("div");
+    note.className = "ch";
+    note.textContent = z
+      ? "候选网格只有在严格改进且受保护指标不退化时才会被采用。"
+      : "A candidate is selected only when it strictly improves quality without guarded regressions.";
+    card.append(title, note);
+
+    const numberText = (value) => {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "N/A";
+      const abs = Math.abs(value);
+      return abs >= 100 ? value.toFixed(1) : (abs >= 1 ? value.toFixed(4) : value.toPrecision(5));
+    };
+    const reasonText = (reason) => {
+      if (!z) return reason || "N/A";
+      const translated = {
+        "candidate strictly improved quality without guarded regressions": "候选网格严格改善质量，且受保护指标无退化",
+        "candidate did not strictly improve all guarded quality metrics": "候选网格未能严格改善全部受保护质量指标",
+        "quality gates passed": "质量门禁已通过",
+        "no locally repairable connected defect cells": "未发现可局部修复的连通缺陷单元"
+      };
+      return translated[reason] || reason || "N/A";
+    };
+    const preferenceText = (preference) => {
+      if (!z) return preference || "N/A";
+      if (preference === "lower") return "越低越好";
+      if (preference === "higher") return "越高越好";
+      return preference || "N/A";
+    };
+    const openButton = (label, path) => {
+      if (!path) return null;
+      const button = document.createElement("span");
+      button.className = "btn-ghost";
+      button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
+      button.textContent = label;
+      button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
+      return button;
+    };
+
+    decisions.forEach((decision) => {
+      const outcome = String(decision.decision || "").toLowerCase();
+      const accepted = outcome === "accepted";
+      const completed = outcome === "complete";
+      const kept = outcome === "kept";
+      const section = document.createElement("div");
+      section.style.cssText = "border-top:1px solid var(--border-soft);padding-top:12px;margin-top:12px";
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+      const pass = document.createElement("b");
+      pass.textContent = (z ? "第 " : "Pass ") + decision.pass + (z ? " 轮" : "");
+      const badge = document.createElement("span");
+      badge.style.cssText = "display:inline-block;padding:2px 8px;border-radius:5px;color:#fff;font-size:10px;font-weight:800;background:" + ((accepted || completed) ? "var(--pass)" : (kept ? "var(--warn)" : "#e5484d"));
+      badge.textContent = accepted
+        ? (z ? "采用候选" : "CANDIDATE SELECTED")
+        : (completed
+          ? (z ? "质量通过" : "QUALITY COMPLETE")
+          : (kept ? (z ? "保留当前网格" : "CURRENT MESH KEPT") : (z ? "回滚基线" : "BASELINE KEPT")));
+      header.append(pass, badge);
+      section.appendChild(header);
+
+      const verdicts = document.createElement("div");
+      verdicts.style.cssText = "font-size:12px;color:var(--muted);margin-top:6px";
+      verdicts.textContent = (z ? "质量判定：" : "Verdicts: ")
+        + (decision.baseline_verdict || "N/A") + " → " + (decision.candidate_verdict || "N/A")
+        + " · " + (z ? "最终 " : "selected ") + (decision.selected_verdict || "N/A");
+      section.appendChild(verdicts);
+
+      const reason = document.createElement("div");
+      reason.style.cssText = "font-size:12.5px;line-height:1.5;margin-top:6px";
+      reason.textContent = (z ? "原因：" : "Reason: ") + reasonText(decision.reason);
+      section.appendChild(reason);
+
+      const selected = document.createElement("div");
+      selected.style.cssText = "font-size:11px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere";
+      selected.textContent = (z ? "最终网格：" : "Selected mesh: ") + (decision.selected_gridfile || "N/A");
+      section.appendChild(selected);
+
+      const regressions = Array.isArray(decision.regressions) ? decision.regressions : [];
+      if (regressions.length) {
+        const table = document.createElement("table");
+        table.className = "layers";
+        table.style.marginTop = "10px";
+        const head = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        [z ? "退化指标" : "Regressed metric", z ? "优化方向" : "Preferred", z ? "基线" : "Baseline", z ? "候选" : "Candidate", "Δ"].forEach((label) => {
+          const cell = document.createElement("th");
+          cell.textContent = label;
+          headRow.appendChild(cell);
+        });
+        head.appendChild(headRow);
+        const body = document.createElement("tbody");
+        regressions.forEach((regression) => {
+          const row = document.createElement("tr");
+          const values = [regression.metric, preferenceText(regression.preferred), numberText(regression.baseline), numberText(regression.candidate), numberText(regression.delta)];
+          values.forEach((value) => {
+            const cell = document.createElement("td");
+            cell.textContent = value == null ? "N/A" : String(value);
+            row.appendChild(cell);
+          });
+          body.appendChild(row);
+        });
+        table.append(head, body);
+        section.appendChild(table);
+      } else {
+        const clean = document.createElement("div");
+        clean.style.cssText = "font-size:12px;color:" + ((accepted || completed) ? "var(--pass)" : "var(--muted)") + ";margin-top:7px";
+        clean.textContent = (accepted || completed)
+          ? ("✓ " + (z ? "受保护指标无退化" : "no guarded metric regressions"))
+          : (z ? "未记录受保护指标退化；请结合上方原因。" : "No guarded regression recorded; see the reason above.");
+        section.appendChild(clean);
+      }
+
+      const actions = document.createElement("div");
+      const reportButton = openButton(z ? "📄 最终质量报告" : "📄 Selected report", decision.selected_quality_report);
+      const artifactButton = openButton(z ? "🧾 决策 JSON" : "🧾 Decision JSON", decision.artifact_path);
+      if (reportButton) actions.appendChild(reportButton);
+      if (artifactButton) actions.appendChild(artifactButton);
+      if (actions.childNodes.length) section.appendChild(actions);
+      card.appendChild(section);
+    });
+  }
+
   // After a successful run: parse mesh quality into the step-6 card, and overlay
   // the generated mesh on the map using the ProjectSummary cell shape.
   function meshViewKind() {
     return (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
   }
   function readMeshQuality(gridfile) {
-    return invoke("mesh_quality", { gridfile, kind: meshViewKind() });
+    const minAngleDeg = lastSummary && Number(lastSummary.min_angle_deg);
+    const onViolation = lastSummary && lastSummary.on_violation;
+    return invoke("mesh_quality", {
+      gridfile,
+      kind: meshViewKind(),
+      minAngleDeg: Number.isFinite(minAngleDeg) ? minAngleDeg : 25.0,
+      onViolation: onViolation || "warn"
+    });
   }
   function loadMeshMeritCells(gridfile, kind) {
     const summary = lastSummary;
@@ -2491,7 +2704,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     text("qualityCells", num(q.cell_count));
     text("qualityVertices", num(q.vertex_count));
     text("qualityEdges", num(q.edge_count));
-    text("qualityAngleRange", (q.min_angle_deg || 0).toFixed(1) + "°–" + (q.max_angle_deg || 0).toFixed(1) + "°");
+    const angleRange = (typeof q.min_angle_deg === "number" && typeof q.max_angle_deg === "number")
+      ? q.min_angle_deg.toFixed(1) + "°–" + q.max_angle_deg.toFixed(1) + "°"
+      : "N/A";
+    text("qualityAngleRange", angleRange);
     text("qualityCellView", q.cell_view || "");
     const cellSides = (q.cell_sides || []).filter((t) => t[1] > 0);
     if (cellSides.length) {
@@ -2520,7 +2736,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       card.appendChild(title);
       q.gates.forEach((g) => {
         const col = g.level === "pass" ? "var(--pass)" : (g.level === "fail" ? "#e5484d" : "var(--warn)");
-        const v = Math.abs(g.value) >= 100 ? g.value.toFixed(0) : g.value.toFixed(2);
+        const v = typeof g.value === "number"
+          ? (Math.abs(g.value) >= 100 ? g.value.toFixed(0) : g.value.toFixed(2))
+          : "N/A";
         const row = document.createElement("div");
         row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:5px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px";
         const metric = document.createElement("span");
@@ -2593,7 +2811,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const setMini = (i, txt, col) => { if (minis[i]) { minis[i].textContent = txt; minis[i].style.color = col || "var(--text)"; } };
     setMini(0, num(q.cell_count));
     setMini(1, num(q.vertex_count));
-    setMini(2, (q.min_angle_deg || 0).toFixed(1) + "°", color);
+    setMini(2, typeof q.min_angle_deg === "number" ? q.min_angle_deg.toFixed(1) + "°" : "N/A", color);
     if (q.aspect_ratio) setMini(3, q.aspect_ratio.max.toFixed(2));
     document.querySelectorAll('.live-pane[data-pane="quality"] .badge').forEach((b) => { b.style.display = ""; b.style.background = color; b.textContent = "● " + verdict; });
   }

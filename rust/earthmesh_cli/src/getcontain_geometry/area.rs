@@ -6,7 +6,7 @@ use crate::{GetContainAreaBounds, LonLatPoint};
 
 use super::helpers::getcontain_cell_polygon;
 
-pub fn getcontain_is_in_area_ustr_fortran_indexed(
+pub fn getcontain_is_in_area_ustr_one_based(
     bounds: GetContainAreaBounds,
     vertices: &[LonLatPoint],
     cell_to_vertices: &[Vec<i32>],

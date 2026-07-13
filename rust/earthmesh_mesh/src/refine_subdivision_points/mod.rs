@@ -1,26 +1,20 @@
 use std::io;
 
-use crate::LonLatDegrees;
+use crate::{spherical_centroid_degrees, LonLatDegrees};
 
-pub(crate) fn midpoint_lonlat(a: LonLatDegrees, b: LonLatDegrees) -> LonLatDegrees {
-    LonLatDegrees::new(
-        (a.lon_degrees + b.lon_degrees) / 2.0,
-        (a.lat_degrees + b.lat_degrees) / 2.0,
-    )
+pub(crate) fn midpoint_lonlat(a: LonLatDegrees, b: LonLatDegrees) -> Option<LonLatDegrees> {
+    spherical_centroid_degrees(&[a, b])
 }
 
 pub(crate) fn average_lonlat3(
     a: LonLatDegrees,
     b: LonLatDegrees,
     c: LonLatDegrees,
-) -> LonLatDegrees {
-    LonLatDegrees::new(
-        (a.lon_degrees + b.lon_degrees + c.lon_degrees) / 3.0,
-        (a.lat_degrees + b.lat_degrees + c.lat_degrees) / 3.0,
-    )
+) -> Option<LonLatDegrees> {
+    spherical_centroid_degrees(&[a, b, c])
 }
 
-pub(crate) fn check_crossing_fortran_lonlat(points: &mut [LonLatDegrees]) {
+pub(crate) fn check_crossing_canonical_lonlat(points: &mut [LonLatDegrees]) {
     for point in points {
         if point.lon_degrees < 0.0 {
             point.lon_degrees += 180.0;
@@ -30,7 +24,7 @@ pub(crate) fn check_crossing_fortran_lonlat(points: &mut [LonLatDegrees]) {
     }
 }
 
-pub(crate) fn crossline_check_fortran(
+pub(crate) fn crossline_check_canonical(
     iter: usize,
     num_mp: &[usize],
     num_wp: &[usize],

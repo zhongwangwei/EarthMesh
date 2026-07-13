@@ -1,5 +1,5 @@
-fn sample_full_mpas_mesh() -> earthmesh_cli::MpasMesh {
-    earthmesh_cli::MpasMesh {
+fn sample_full_mpas_mesh() -> earthmesh_cli::mpas_mesh_types::MpasMesh {
+    earthmesh_cli::mpas_mesh_types::MpasMesh {
         lat_cell: vec![0.0, 0.11, 0.12],
         lon_cell: vec![0.0, 1.11, 1.12],
         x_cell: vec![0.0, 10.0, 20.0],
@@ -53,7 +53,7 @@ fn sample_full_mpas_mesh() -> earthmesh_cli::MpasMesh {
 }
 
 #[test]
-fn mpas_full_writer_preserves_fortran_schema_and_placeholder_slices() {
+fn mpas_full_writer_preserves_canonical_schema_and_placeholder_slices() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_mpas_full_writer_{}",
         std::process::id()

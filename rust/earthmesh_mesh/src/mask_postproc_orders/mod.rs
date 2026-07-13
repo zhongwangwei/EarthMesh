@@ -12,9 +12,9 @@ pub struct BoundaryOrders {
 /// Pure-data port of `MOD_mask_postproc.F90:bdy_calculation`.
 ///
 /// This helper classifies the retained longest boundary into OBC/IBC order
-/// arrays and performs the legacy order rotation. Writing `obc.nc4` is kept in
+/// arrays and performs the compatibility order rotation. Writing `obc.nc4` is kept in
 /// the adapter layer.
-pub fn classify_boundary_orders_fortran_indexed(
+pub fn classify_boundary_orders_one_based(
     num_bdy_long: [usize; 3],
     bdy_long_order: &[usize],
     vertex_neighbors: &[Vec<usize>],
@@ -57,11 +57,11 @@ pub fn classify_boundary_orders_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "boundary vertex {vertex_id} references center {center_id}, outside is_in_domain"
+                        "boundary vertex {vertex_id} canonicals center {center_id}, outside is_in_domain"
                     ),
                 ));
             }
-            if is_in_domain[center_id] == -1 {
+            if is_in_domain[center_id] != 1 {
                 all_adjacent_centers_active = false;
                 break;
             }
@@ -91,9 +91,9 @@ pub fn classify_boundary_orders_fortran_indexed(
                 continue;
             }
             if obc_order[idx + 1] != 1 && obc_order[idx + 2] == 1 {
-                rotate_boundary_order_like_fortran(&mut bdy_order, idx);
-                rotate_boundary_order_like_fortran(&mut obc_order, idx);
-                rotate_boundary_order_like_fortran(&mut ibc_order, idx);
+                rotate_boundary_order_like_canonical(&mut bdy_order, idx);
+                rotate_boundary_order_like_canonical(&mut obc_order, idx);
+                rotate_boundary_order_like_canonical(&mut ibc_order, idx);
                 rotation_start = Some(idx + 1);
                 break;
             }
@@ -108,7 +108,7 @@ pub fn classify_boundary_orders_fortran_indexed(
     })
 }
 
-fn rotate_boundary_order_like_fortran(values: &mut [usize], split_idx: usize) {
+fn rotate_boundary_order_like_canonical(values: &mut [usize], split_idx: usize) {
     let original = values.to_vec();
     let mut write_idx = 1;
     for &value in original.iter().skip(split_idx + 1) {

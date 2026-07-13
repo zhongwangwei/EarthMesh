@@ -1,15 +1,16 @@
+use crate::build_area_judge_base_state_one_based;
+use crate::MkgrdDataPreprocessSourceState;
 use std::io;
 use std::path::Path;
 
 use earthmesh_core::EarthmeshConfig;
 
-use super::read_landtype_data_preprocess_fortran_indexed;
-use crate::*;
+use super::read_landtype_data_preprocess_one_based;
 
-/// Build the owned source-state bundle consumed by migrated `mkgrd` refine
+/// Build the owned source-state bundle consumed by current `mkgrd` refine
 /// executors from `data_preprocess` landtype data plus `Area_judge` domain
 /// classification.
-pub fn build_mkgrd_data_preprocess_source_state_fortran_indexed(
+pub fn build_mkgrd_data_preprocess_source_state_one_based(
     file_dir: impl AsRef<Path>,
     landtype_file: impl AsRef<Path>,
     gridnum_perdegree: usize,
@@ -21,9 +22,8 @@ pub fn build_mkgrd_data_preprocess_source_state_fortran_indexed(
     num_vertex: usize,
     first_triangle_id: usize,
 ) -> io::Result<MkgrdDataPreprocessSourceState> {
-    let preprocess =
-        read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
-    let base = build_area_judge_base_state_fortran_indexed(
+    let preprocess = read_landtype_data_preprocess_one_based(landtype_file, gridnum_perdegree)?;
+    let base = build_area_judge_base_state_one_based(
         file_dir,
         mask_domain_global,
         mask_domain_type,
@@ -63,8 +63,8 @@ pub fn build_mkgrd_data_preprocess_source_state_fortran_indexed(
 ///
 /// This centralizes the direct `mkgrd` front-end expansion of `NL%landtype_file`,
 /// `NL%gridnum_perdegree`, `NL%mode_grid`, domain flags, and source first-id
-/// values before the migrated refine executors consume typed Rust state.
-pub fn build_mkgrd_data_preprocess_source_state_from_config_fortran_indexed(
+/// values before the current refine executors consume typed Rust state.
+pub fn build_mkgrd_data_preprocess_source_state_from_config_one_based(
     file_dir: impl AsRef<Path>,
     config: &EarthmeshConfig,
     source_gridnum_perdegree: Option<usize>,
@@ -91,7 +91,7 @@ pub fn build_mkgrd_data_preprocess_source_state_from_config_fortran_indexed(
             ),
         ));
     }
-    build_mkgrd_data_preprocess_source_state_fortran_indexed(
+    build_mkgrd_data_preprocess_source_state_one_based(
         file_dir,
         Path::new(config.landtype_file.trim()),
         gridnum_perdegree,

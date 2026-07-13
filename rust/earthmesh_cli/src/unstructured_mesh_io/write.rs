@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::{
     lat_values, lon_values, netcdf_to_io_error, unstructured_dimc, validate_unstructured_mesh,
-    UnstructuredMesh, UnstructuredMeshWriteReport,
+    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 
 use super::rows::{flatten_m_to_w, flatten_w_to_m};
@@ -12,7 +12,7 @@ pub fn write_unstructured_mesh_netcdf(
     output: impl AsRef<Path>,
     mesh: &UnstructuredMesh,
 ) -> io::Result<UnstructuredMeshWriteReport> {
-    write_unstructured_mesh_netcdf_with_refine_levels(output, mesh, None, None)
+    write_unstructured_mesh_netcdf_with_method_c_metadata(output, mesh, Default::default())
 }
 
 pub fn write_unstructured_mesh_netcdf_with_refine_levels(
@@ -21,17 +21,43 @@ pub fn write_unstructured_mesh_netcdf_with_refine_levels(
     m_refine_level: Option<&[i32]>,
     w_refine_level: Option<&[i32]>,
 ) -> io::Result<UnstructuredMeshWriteReport> {
+    write_unstructured_mesh_netcdf_with_method_c_metadata(
+        output,
+        mesh,
+        MethodCGridfileMetadataSlices {
+            m_refine_level,
+            w_refine_level,
+            ..Default::default()
+        },
+    )
+}
+
+pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
+    output: impl AsRef<Path>,
+    mesh: &UnstructuredMesh,
+    metadata: MethodCGridfileMetadataSlices<'_>,
+) -> io::Result<UnstructuredMeshWriteReport> {
     validate_unstructured_mesh(mesh)?;
-    validate_refine_level_len(
-        "earthmesh_m_refine_level",
-        m_refine_level,
-        mesh.m_points.len(),
-    )?;
-    validate_refine_level_len(
-        "earthmesh_w_refine_level",
-        w_refine_level,
-        mesh.w_points.len(),
-    )?;
+    for (name, values) in [
+        ("earthmesh_m_refine_level", metadata.m_refine_level),
+        (
+            "earthmesh_m_refine_level_orig",
+            metadata.m_refine_level_orig,
+        ),
+        ("earthmesh_m_ngr", metadata.m_ngr),
+    ] {
+        validate_metadata_len(name, values, mesh.m_points.len())?;
+    }
+    for (name, values) in [
+        ("earthmesh_w_refine_level", metadata.w_refine_level),
+        (
+            "earthmesh_w_refine_level_orig",
+            metadata.w_refine_level_orig,
+        ),
+        ("earthmesh_w_ngr", metadata.w_ngr),
+    ] {
+        validate_metadata_len(name, values, mesh.w_points.len())?;
+    }
     let output = output.as_ref();
     crate::ensure_parent_dir(output)?;
 
@@ -94,17 +120,36 @@ pub fn write_unstructured_mesh_netcdf_with_refine_levels(
         var.put_values(&mesh.n_w_to_m, ..)
             .map_err(netcdf_to_io_error)?;
     }
-    if let Some(levels) = m_refine_level {
-        let mut var = file
-            .add_variable::<i32>("earthmesh_m_refine_level", &["sjx_points"])
-            .map_err(netcdf_to_io_error)?;
-        var.put_values(levels, ..).map_err(netcdf_to_io_error)?;
-    }
-    if let Some(levels) = w_refine_level {
-        let mut var = file
-            .add_variable::<i32>("earthmesh_w_refine_level", &["lbx_points"])
-            .map_err(netcdf_to_io_error)?;
-        var.put_values(levels, ..).map_err(netcdf_to_io_error)?;
+    for (name, dimension, values) in [
+        (
+            "earthmesh_m_refine_level",
+            "sjx_points",
+            metadata.m_refine_level,
+        ),
+        (
+            "earthmesh_m_refine_level_orig",
+            "sjx_points",
+            metadata.m_refine_level_orig,
+        ),
+        ("earthmesh_m_ngr", "sjx_points", metadata.m_ngr),
+        (
+            "earthmesh_w_refine_level",
+            "lbx_points",
+            metadata.w_refine_level,
+        ),
+        (
+            "earthmesh_w_refine_level_orig",
+            "lbx_points",
+            metadata.w_refine_level_orig,
+        ),
+        ("earthmesh_w_ngr", "lbx_points", metadata.w_ngr),
+    ] {
+        if let Some(values) = values {
+            let mut var = file
+                .add_variable::<i32>(name, &[dimension])
+                .map_err(netcdf_to_io_error)?;
+            var.put_values(values, ..).map_err(netcdf_to_io_error)?;
+        }
     }
 
     Ok(UnstructuredMeshWriteReport {
@@ -115,11 +160,7 @@ pub fn write_unstructured_mesh_netcdf_with_refine_levels(
     })
 }
 
-fn validate_refine_level_len(
-    name: &str,
-    levels: Option<&[i32]>,
-    expected: usize,
-) -> io::Result<()> {
+fn validate_metadata_len(name: &str, levels: Option<&[i32]>, expected: usize) -> io::Result<()> {
     let Some(levels) = levels else {
         return Ok(());
     };

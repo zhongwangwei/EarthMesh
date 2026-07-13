@@ -17,16 +17,19 @@ fn final_mask_postproc_gridfile_keeps_tri_orientation_for_unstructured_mesh_save
         vertex_neighbor_counts_final: vec![0, 0, 1, 2, 1],
     };
 
-    let mesh = earthmesh_cli::unstructured_mesh_from_mask_postproc_final(&final_data, "tri")
-        .expect("tri final mesh");
+    let mesh = earthmesh_cli::mask_postproc_layout::unstructured_mesh_from_mask_postproc_final(
+        &final_data,
+        "tri",
+    )
+    .expect("tri final mesh");
 
     assert_eq!(
         mesh.m_points[2],
-        earthmesh_cli::LonLatPoint { lon: 2.0, lat: 2.0 }
+        earthmesh_cli::coordinate_types::LonLatPoint { lon: 2.0, lat: 2.0 }
     );
     assert_eq!(
         mesh.w_points[4],
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: 14.0,
             lat: 14.0
         }
@@ -37,7 +40,7 @@ fn final_mask_postproc_gridfile_keeps_tri_orientation_for_unstructured_mesh_save
 }
 
 #[test]
-fn final_mask_postproc_gridfile_swaps_hex_orientation_like_fortran_save_call() {
+fn final_mask_postproc_gridfile_swaps_hex_orientation_like_canonical_save_call() {
     let final_data = earthmesh_mesh::MaskPostprocFinalData {
         points_final: 2,
         bounds_final: 3,
@@ -49,19 +52,22 @@ fn final_mask_postproc_gridfile_swaps_hex_orientation_like_fortran_save_call() {
         vertex_neighbor_counts_final: vec![0, 0, 3, 3],
     };
 
-    let mesh = earthmesh_cli::unstructured_mesh_from_mask_postproc_final(&final_data, "hex")
-        .expect("hex final mesh");
+    let mesh = earthmesh_cli::mask_postproc_layout::unstructured_mesh_from_mask_postproc_final(
+        &final_data,
+        "hex",
+    )
+    .expect("hex final mesh");
 
     assert_eq!(
         mesh.m_points[2],
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: 50.0,
             lat: 50.0
         }
     );
     assert_eq!(
         mesh.w_points[2],
-        earthmesh_cli::LonLatPoint {
+        earthmesh_cli::coordinate_types::LonLatPoint {
             lon: 30.0,
             lat: 30.0
         }
@@ -84,11 +90,17 @@ fn final_mask_postproc_gridfile_rejects_unsupported_mode_and_non_triangle_m_rows
         vertex_neighbor_counts_final: vec![0, 0, 1],
     };
 
-    let err = earthmesh_cli::unstructured_mesh_from_mask_postproc_final(&final_data, "quad")
-        .expect_err("unsupported mode rejected");
+    let err = earthmesh_cli::mask_postproc_layout::unstructured_mesh_from_mask_postproc_final(
+        &final_data,
+        "quad",
+    )
+    .expect_err("unsupported mode rejected");
     assert!(err.to_string().contains("tri or hex"));
 
-    let err = earthmesh_cli::unstructured_mesh_from_mask_postproc_final(&final_data, "tri")
-        .expect_err("tri m_to_w must have three vertices");
+    let err = earthmesh_cli::mask_postproc_layout::unstructured_mesh_from_mask_postproc_final(
+        &final_data,
+        "tri",
+    )
+    .expect_err("tri m_to_w must have three vertices");
     assert!(err.to_string().contains("three"));
 }

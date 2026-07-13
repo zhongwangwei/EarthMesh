@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::{refine_boundary_connection_make_fortran_indexed, BoundaryConnection};
+use crate::{refine_boundary_connection_make_one_based, BoundaryConnection};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefineArrayLengthHalo {
@@ -21,10 +21,10 @@ pub struct RefineArrayLengthCalculation {
 /// Pure halo-sizing core of `MOD_refine.F90:Array_length_calculation`.
 ///
 /// This excludes `bdy_connection_make` close-curve generation and NetCDF side
-/// effects, but preserves the Fortran boundary criterion and outward halo
+/// effects, but preserves the Canonical boundary criterion and outward halo
 /// expansion that updates `num_tranrow_sjx`, `isbdy_refine`, `bdy_refine`, and
 /// `bdy_refine_tran`.
-pub fn refine_array_length_halo_fortran_indexed(
+pub fn refine_array_length_halo_one_based(
     set_dis_in: usize,
     num_center: usize,
     _sjx_points: usize,
@@ -67,7 +67,7 @@ pub fn refine_array_length_halo_fortran_indexed(
                 if triangle == 0 || triangle >= expanded_mrl.len() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("cell {cell} references invalid triangle {triangle}"),
+                        format!("cell {cell} canonicals invalid triangle {triangle}"),
                     ));
                 }
                 if expanded_mrl[triangle] == 4 {
@@ -105,12 +105,12 @@ pub fn refine_array_length_halo_fortran_indexed(
 
 /// File-I/O-free wrapper for `MOD_refine.F90:Array_length_calculation`.
 ///
-/// This composes the already migrated halo sizing with
-/// `bdy_connection_make` close-curve construction.  The Fortran
+/// This composes the already current halo sizing with
+/// `bdy_connection_make` close-curve construction.  The Canonical
 /// `close_Mesh_Save` NetCDF writes remain an adapter concern; callers can use
 /// `boundary.curves.close_curves` plus their coordinate table to write the same
 /// files.
-pub fn refine_array_length_calculation_fortran_indexed(
+pub fn refine_array_length_calculation_one_based(
     set_dis_in: usize,
     num_vertex: usize,
     num_center: usize,
@@ -123,7 +123,7 @@ pub fn refine_array_length_calculation_fortran_indexed(
     edge_counts: &[usize],
     initial_num_transition_row_triangles: usize,
 ) -> io::Result<RefineArrayLengthCalculation> {
-    let halo = refine_array_length_halo_fortran_indexed(
+    let halo = refine_array_length_halo_one_based(
         set_dis_in,
         num_center,
         sjx_points,
@@ -133,7 +133,7 @@ pub fn refine_array_length_calculation_fortran_indexed(
         edge_counts,
         initial_num_transition_row_triangles,
     )?;
-    let boundary = refine_boundary_connection_make_fortran_indexed(
+    let boundary = refine_boundary_connection_make_one_based(
         num_vertex,
         sjx_points,
         lbx_points,
@@ -165,7 +165,7 @@ fn refine_boundary_mask_from_mrl(
             if triangle == 0 || triangle >= mrl.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("cell {cell} references invalid triangle {triangle}"),
+                    format!("cell {cell} canonicals invalid triangle {triangle}"),
                 ));
             }
             state_sum += mrl[triangle];

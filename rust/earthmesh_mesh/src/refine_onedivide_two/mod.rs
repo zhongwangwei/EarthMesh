@@ -1,7 +1,7 @@
 use std::io;
 
 use crate::{
-    average_lonlat3, check_crossing_fortran_lonlat, crossline_check_fortran, midpoint_lonlat,
+    average_lonlat3, check_crossing_canonical_lonlat, crossline_check_canonical, midpoint_lonlat,
     validate_triangle_neighbor_rows, LonLatDegrees,
 };
 
@@ -11,10 +11,10 @@ use crate::{
 /// mode chooses the neighboring already-refined triangle (`mrl_new == 4`) to
 /// identify the shared edge; reverse mode chooses the neighboring unrefined
 /// triangle (`mrl_new == 1`).  The parent triangle connectivity is cleared to
-/// Fortran placeholder `1`, child connectivity and `sjx_child` are filled, and
-/// dateline-crossing coordinates follow the Fortran `CheckCrossing` and
+/// Canonical placeholder `1`, child connectivity and `sjx_child` are filled, and
+/// dateline-crossing coordinates follow the Canonical `CheckCrossing` and
 /// `crossline_check` rules.
-pub fn refine_onedivide_two_fortran_indexed(
+pub fn refine_onedivide_two_one_based(
     iter: usize,
     is_reverse: bool,
     num_vertex: usize,
@@ -143,12 +143,30 @@ pub fn refine_onedivide_two_fortran_indexed(
                 .fold(f64::INFINITY, f64::min)
             > 180.0;
         if crosses_dateline {
-            check_crossing_fortran_lonlat(&mut split_points);
+            check_crossing_canonical_lonlat(&mut split_points);
         }
 
-        let mut new_cell_point = midpoint_lonlat(split_points[1], split_points[2]);
-        let mut child_point_a = average_lonlat3(split_points[0], new_cell_point, split_points[1]);
-        let mut child_point_b = average_lonlat3(split_points[0], new_cell_point, split_points[2]);
+        let mut new_cell_point =
+            midpoint_lonlat(split_points[1], split_points[2]).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "split edge has no unique spherical midpoint",
+                )
+            })?;
+        let mut child_point_a = average_lonlat3(split_points[0], new_cell_point, split_points[1])
+            .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "first child centroid is degenerate",
+            )
+        })?;
+        let mut child_point_b = average_lonlat3(split_points[0], new_cell_point, split_points[2])
+            .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "second child centroid is degenerate",
+            )
+        })?;
         let m1 = num_mp[iter - 1] + refed_iter * 2 + 1;
         let m2 = num_mp[iter - 1] + refed_iter * 2 + 2;
         let w4 = num_wp[iter - 1] + refed_iter + 1;
@@ -165,9 +183,9 @@ pub fn refine_onedivide_two_fortran_indexed(
         cells_on_triangle_new[m1] = [w1, w2, w4];
         cells_on_triangle_new[m2] = [w1, w3, w4];
         if crosses_dateline {
-            check_crossing_fortran_lonlat(std::slice::from_mut(&mut child_point_a));
-            check_crossing_fortran_lonlat(std::slice::from_mut(&mut child_point_b));
-            check_crossing_fortran_lonlat(std::slice::from_mut(&mut new_cell_point));
+            check_crossing_canonical_lonlat(std::slice::from_mut(&mut child_point_a));
+            check_crossing_canonical_lonlat(std::slice::from_mut(&mut child_point_b));
+            check_crossing_canonical_lonlat(std::slice::from_mut(&mut new_cell_point));
         }
         triangle_points[m1] = child_point_a;
         triangle_points[m2] = child_point_b;
@@ -177,7 +195,7 @@ pub fn refine_onedivide_two_fortran_indexed(
         refed_iter += 1;
     }
 
-    crossline_check_fortran(iter, num_mp, num_wp, triangle_points, cell_points)?;
+    crossline_check_canonical(iter, num_mp, num_wp, triangle_points, cell_points)?;
 
     Ok(())
 }

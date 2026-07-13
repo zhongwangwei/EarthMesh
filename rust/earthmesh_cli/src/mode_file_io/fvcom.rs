@@ -6,6 +6,10 @@ use crate::{
     write_unstructured_mesh_netcdf, LonLatPoint, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 
+use super::{
+    detect_connectivity_base, earthmesh_canonical_connectivity_id, validate_connectivity_base,
+};
+
 pub fn convert_fvcom_mode_file_to_earthmesh(
     mode_file: impl AsRef<Path>,
     file_dir: impl AsRef<Path>,
@@ -17,10 +21,10 @@ pub fn convert_fvcom_mode_file_to_earthmesh(
     let maxelem = required_dimension_len(&file, "maxelem")?;
     let n_nodes = required_dimension_len(&file, "node")?;
     let n_elements = required_dimension_len(&file, "nele")?;
-    if maxelem < 7 {
+    if maxelem == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "FVCOM maxelem must be at least 7 for EarthMesh dimc",
+            "FVCOM maxelem must be positive",
         ));
     }
 
@@ -37,6 +41,25 @@ pub fn convert_fvcom_mode_file_to_earthmesh(
     require_len("lon", lon.len(), n_nodes)?;
     require_len("lat", lat.len(), n_nodes)?;
     require_len("ntve", ntve.len(), n_nodes)?;
+    for (node, &count) in ntve.iter().enumerate() {
+        if count < 0 || count as usize > maxelem {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("FVCOM ntve[{node}]={count} must be in 0..={maxelem}"),
+            ));
+        }
+    }
+    // Every nv entry is active, so it unambiguously distinguishes standard
+    // FVCOM's 1-based ids from EarthMesh's historical 0-based dialect. Reuse
+    // that decision for nbve, whose zero padding is otherwise ambiguous.
+    let connectivity_base = detect_connectivity_base("FVCOM nv", &nv, n_nodes)?;
+    validate_connectivity_base(
+        "FVCOM nbve",
+        &nbve,
+        n_elements,
+        connectivity_base,
+        connectivity_base == super::ConnectivityBase::One,
+    )?;
 
     let mut m_points = Vec::with_capacity(n_elements + 1);
     m_points.push(LonLatPoint { lon: 0.0, lat: 0.0 });
@@ -60,14 +83,23 @@ pub fn convert_fvcom_mode_file_to_earthmesh(
     m_to_w.push([1, 1, 1]);
     for element in 0..n_elements {
         let base = element * 3;
-        m_to_w.push([nv[base] + 1, nv[base + 1] + 1, nv[base + 2] + 1]);
+        m_to_w.push([
+            earthmesh_canonical_connectivity_id(nv[base], connectivity_base),
+            earthmesh_canonical_connectivity_id(nv[base + 1], connectivity_base),
+            earthmesh_canonical_connectivity_id(nv[base + 2], connectivity_base),
+        ]);
     }
 
     let mut w_to_m = Vec::with_capacity(n_nodes + 1);
-    w_to_m.push(vec![1; 7]);
+    w_to_m.push(vec![1; maxelem]);
     for node in 0..n_nodes {
         let base = node * maxelem;
-        w_to_m.push(nbve[base..base + 7].iter().map(|value| value + 1).collect());
+        w_to_m.push(
+            nbve[base..base + maxelem]
+                .iter()
+                .map(|&value| earthmesh_canonical_connectivity_id(value, connectivity_base))
+                .collect(),
+        );
     }
 
     let mut n_w_to_m = Vec::with_capacity(n_nodes + 1);

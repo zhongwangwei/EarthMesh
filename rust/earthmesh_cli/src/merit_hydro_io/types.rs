@@ -9,6 +9,7 @@ pub struct MeritHydroWindowReport {
     pub lat: Vec<f64>,
     pub width: usize,
     pub height: usize,
+    pub sampling_stride: usize,
     pub dir: Vec<i32>,
     pub upa_km2: Vec<f64>,
     pub elv_m: Vec<f64>,

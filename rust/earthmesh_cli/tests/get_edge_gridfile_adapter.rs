@@ -9,10 +9,12 @@ fn get_edge_adapter_builds_production_edges_from_unstructured_gridfile() {
     let gridfile = root.join("gridfile.nc4");
 
     let mesh = tetrahedron_like_unstructured_mesh();
-    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh).expect("write gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write gridfile");
 
-    let output = earthmesh_cli::get_edge_from_unstructured_gridfile(&gridfile)
-        .expect("build GetEdge production output");
+    let output =
+        earthmesh_cli::grid_quality_pipeline::get_edge_from_unstructured_gridfile(&gridfile)
+            .expect("build GetEdge production output");
 
     assert_eq!(output.cells_on_edge[2], [2, 3]);
     assert_eq!(output.cells_on_edge[3], [1, 3]);
@@ -30,29 +32,30 @@ fn get_edge_adapter_rejects_invalid_connectivity_ids() {
     let mut mesh = tetrahedron_like_unstructured_mesh();
     mesh.m_to_w[1] = [10, 2, 3];
 
-    let err = earthmesh_cli::get_edge_from_unstructured_mesh(&mesh)
+    let err = earthmesh_cli::grid_quality_pipeline::get_edge_from_unstructured_mesh(&mesh)
         .expect_err("invalid triangle-to-cell id rejected");
     assert!(err
         .to_string()
-        .contains("m_to_w row 1 references cell id 10"));
+        .contains("m_to_w row 1 canonicals cell id 10"));
 }
 
-fn tetrahedron_like_unstructured_mesh() -> earthmesh_cli::UnstructuredMesh {
-    earthmesh_cli::UnstructuredMesh {
+fn tetrahedron_like_unstructured_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh
+{
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 1.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 1.0 },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 2.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 2.0 },
-            earthmesh_cli::LonLatPoint { lon: 2.0, lat: 2.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 2.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 2.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 2.0, lat: 2.0 },
         ],
         m_to_w: vec![
             [1, 1, 1],

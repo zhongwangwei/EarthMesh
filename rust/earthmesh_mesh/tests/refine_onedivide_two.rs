@@ -1,4 +1,4 @@
-use earthmesh_mesh::{refine_onedivide_two_fortran_indexed, LonLatDegrees};
+use earthmesh_mesh::{refine_onedivide_two_one_based, spherical_centroid_degrees, LonLatDegrees};
 
 fn ll(lon: f64, lat: f64) -> LonLatDegrees {
     LonLatDegrees::new(lon, lat)
@@ -44,10 +44,18 @@ fn onedivide_two_forward_splits_triangle_next_to_refined_neighbor() {
     cell_points[2] = ll(0.0, 0.0);
     cell_points[3] = ll(6.0, 0.0);
     cell_points[4] = ll(0.0, 6.0);
+    let expected_midpoint = spherical_centroid_degrees(&[cell_points[3], cell_points[4]])
+        .expect("spherical edge midpoint");
+    let expected_a =
+        spherical_centroid_degrees(&[cell_points[2], expected_midpoint, cell_points[3]])
+            .expect("first child spherical centroid");
+    let expected_b =
+        spherical_centroid_degrees(&[cell_points[2], expected_midpoint, cell_points[4]])
+            .expect("second child spherical centroid");
     let mut cells_on_triangle_new = cells_on_triangle.clone();
     let mut sjx_child = vec![[0, 0]; 6];
 
-    refine_onedivide_two_fortran_indexed(
+    refine_onedivide_two_one_based(
         2,
         false,
         1,
@@ -64,9 +72,21 @@ fn onedivide_two_forward_splits_triangle_next_to_refined_neighbor() {
     )
     .expect("split transition triangle into two children");
 
-    assert_ll(cell_points[7], 3.0, 3.0);
-    assert_ll(triangle_points[4], 3.0, 1.0);
-    assert_ll(triangle_points[5], 1.0, 3.0);
+    assert_ll(
+        cell_points[7],
+        expected_midpoint.lon_degrees,
+        expected_midpoint.lat_degrees,
+    );
+    assert_ll(
+        triangle_points[4],
+        expected_a.lon_degrees,
+        expected_a.lat_degrees,
+    );
+    assert_ll(
+        triangle_points[5],
+        expected_b.lon_degrees,
+        expected_b.lat_degrees,
+    );
     assert_eq!(cells_on_triangle_new[2], [1, 1, 1]);
     assert_eq!(cells_on_triangle_new[4], [2, 3, 7]);
     assert_eq!(cells_on_triangle_new[5], [2, 4, 7]);
@@ -103,7 +123,7 @@ fn onedivide_two_ignores_markers_after_previous_triangle_count() {
     let mut cells_on_triangle_new = cells_on_triangle.clone();
     let mut sjx_child = vec![[0, 0]; 6];
 
-    refine_onedivide_two_fortran_indexed(
+    refine_onedivide_two_one_based(
         2,
         false,
         1,
@@ -153,10 +173,18 @@ fn onedivide_two_reverse_uses_unrefined_neighbor_and_restores_dateline_shift() {
     cell_points[2] = ll(170.0, 0.0);
     cell_points[3] = ll(-170.0, 0.0);
     cell_points[4] = ll(180.0, 6.0);
+    let expected_midpoint = spherical_centroid_degrees(&[cell_points[3], cell_points[4]])
+        .expect("dateline spherical edge midpoint");
+    let expected_a =
+        spherical_centroid_degrees(&[cell_points[2], expected_midpoint, cell_points[3]])
+            .expect("first dateline child centroid");
+    let expected_b =
+        spherical_centroid_degrees(&[cell_points[2], expected_midpoint, cell_points[4]])
+            .expect("second dateline child centroid");
     let mut cells_on_triangle_new = cells_on_triangle.clone();
     let mut sjx_child = vec![[0, 0]; 6];
 
-    refine_onedivide_two_fortran_indexed(
+    refine_onedivide_two_one_based(
         2,
         true,
         1,
@@ -173,9 +201,21 @@ fn onedivide_two_reverse_uses_unrefined_neighbor_and_restores_dateline_shift() {
     )
     .expect("reverse split uses the single unrefined neighbor");
 
-    assert_ll(cell_points[7], -175.0, 3.0);
-    assert_ll(triangle_points[4], -178.33333333333334, 1.0);
-    assert_ll(triangle_points[5], 178.33333333333334, 3.0);
+    assert_ll(
+        cell_points[7],
+        expected_midpoint.lon_degrees,
+        expected_midpoint.lat_degrees,
+    );
+    assert_ll(
+        triangle_points[4],
+        expected_a.lon_degrees,
+        expected_a.lat_degrees,
+    );
+    assert_ll(
+        triangle_points[5],
+        expected_b.lon_degrees,
+        expected_b.lat_degrees,
+    );
     assert_eq!(sjx_child[2], [4, 5]);
 }
 
@@ -199,7 +239,7 @@ fn onedivide_two_rejects_marked_triangle_without_required_neighbor_state() {
     let mut cells_on_triangle_new = cells_on_triangle.clone();
     let mut sjx_child = vec![[0, 0]; 6];
 
-    let err = refine_onedivide_two_fortran_indexed(
+    let err = refine_onedivide_two_one_based(
         2,
         false,
         1,

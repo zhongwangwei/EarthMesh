@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_iter_d_judge_fortran_indexed;
+use earthmesh_mesh::refine_iter_d_judge_one_based;
 
 fn fixture_one_plus_n_weak_concavity() -> (
     Vec<Vec<usize>>,
@@ -65,7 +65,7 @@ fn iter_d_marks_one_plus_n_weak_concavity_segment_pair() {
     let (triangle_neighbors, cells_on_triangle, triangles_on_cell, edge_counts, mrl_new) =
         fixture_one_plus_n_weak_concavity();
 
-    let ref_sjx = refine_iter_d_judge_fortran_indexed(
+    let ref_sjx = refine_iter_d_judge_one_based(
         3,
         1,
         31,
@@ -89,7 +89,7 @@ fn iter_d_marks_one_plus_n_weak_concavity_segment_pair() {
 
 #[test]
 fn iter_d_returns_zero_when_transition_distance_is_one() {
-    let ref_sjx = refine_iter_d_judge_fortran_indexed(
+    let ref_sjx = refine_iter_d_judge_one_based(
         1,
         1,
         3,
@@ -101,7 +101,7 @@ fn iter_d_returns_zero_when_transition_distance_is_one() {
         &[0, 0],
         &[0, 1, 1, 1],
     )
-    .expect("set_dis_in=1 short-circuits like Fortran iterD");
+    .expect("set_dis_in=1 short-circuits like Canonical iterD");
 
     assert_eq!(ref_sjx, vec![0, 0, 0, 0]);
 }
@@ -111,11 +111,11 @@ fn iter_d_rejects_open_boundary_connections() {
     let (mut triangle_neighbors, cells_on_triangle, triangles_on_cell, edge_counts, mrl_new) =
         fixture_one_plus_n_weak_concavity();
     // Remove the refined neighbor from one boundary triangle, producing a graph
-    // vertex with only one boundary connection.  Fortran stops here; Rust
+    // vertex with only one boundary connection.  Canonical stops here; Rust
     // surfaces it as InvalidInput.
     triangle_neighbors[5] = vec![13, 14, 15];
 
-    let err = refine_iter_d_judge_fortran_indexed(
+    let err = refine_iter_d_judge_one_based(
         3,
         1,
         31,

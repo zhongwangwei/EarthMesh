@@ -1,7 +1,9 @@
+use crate::write_quality_global_netcdf;
+use crate::GlobalQualityMesh;
+use crate::GlobalQualityWriteReport;
+use crate::QualityClassMetrics;
 use std::io;
 use std::path::Path;
-
-use crate::*;
 
 /// Convert the pure `Grid_Quality_Check_Global` Rust kernel output into the
 /// `quality_save_global` writer payload.
@@ -25,7 +27,7 @@ pub fn global_quality_mesh_from_grid_quality(
     }
 }
 
-/// Compose the migrated `Grid_Quality_Check_Global` pure output with the
+/// Compose the current `Grid_Quality_Check_Global` pure output with the
 /// `quality_save_global` NetCDF side effect.
 pub fn write_grid_quality_global_netcdf(
     output: impl AsRef<Path>,
@@ -36,7 +38,7 @@ pub fn write_grid_quality_global_netcdf(
 }
 
 fn quality_class_from_triangle_quality(
-    output: &earthmesh_mesh::TriangleMeshQualityFortranOutput,
+    output: &earthmesh_mesh::TriangleMeshQualityCanonicalOutput,
 ) -> QualityClassMetrics {
     QualityClassMetrics {
         length: output.length_cache.iter().map(|row| row.to_vec()).collect(),
@@ -56,7 +58,7 @@ fn quality_class_from_triangle_quality(
 }
 
 fn quality_class_from_polygon_quality(
-    output: &earthmesh_mesh::PolygonMeshQualityFortranOutput,
+    output: &earthmesh_mesh::PolygonMeshQualityCanonicalOutput,
 ) -> QualityClassMetrics {
     QualityClassMetrics {
         length: output.length_cache.clone(),

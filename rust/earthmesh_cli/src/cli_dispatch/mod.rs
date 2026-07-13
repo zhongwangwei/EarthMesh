@@ -14,6 +14,8 @@ use super::cli_hydro_workflow::{
     run_mpas_cell_polygons, run_plan_refinement_from_hydro,
 };
 use super::cli_mkgrd_run::run_mkgrd_or_project;
+use super::cli_project_hydro::run_project_hydro_postprocess;
+use super::cli_project_quality::run_project_quality;
 use super::cli_quality::run_mesh_quality;
 
 pub(crate) fn run_cli_command() -> Result<(), String> {
@@ -21,6 +23,10 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
     let first = args
         .next()
         .ok_or_else(|| usage("missing command or mkgrd namelist path"))?;
+    if first == "-V" || first == "--version" {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if first == "-h" || first == "--help" {
         println!("{}", usage(""));
         return Ok(());
@@ -90,6 +96,12 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
     }
     if first == "--mesh-quality" {
         return run_mesh_quality(args);
+    }
+    if first == "--project-hydro-postprocess" {
+        return run_project_hydro_postprocess(args);
+    }
+    if first == "--project-quality" {
+        return run_project_quality(args);
     }
     run_mkgrd_or_project(first, args)
 }

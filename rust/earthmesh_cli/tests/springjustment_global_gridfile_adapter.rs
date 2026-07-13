@@ -8,26 +8,28 @@ fn springjustment_global_gridfile_adapter_reads_mesh_writes_persistence_and_retu
     std::fs::create_dir_all(root.join("gridfile")).expect("create gridfile root");
     let gridfile = root.join("gridfile/gridfile_NXP0009_03_hex.nc4");
     let mesh = spring_fixture_mesh();
-    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh).expect("write gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write gridfile");
 
-    let report = earthmesh_cli::run_springjustment_global_from_unstructured_gridfile(
-        &gridfile,
-        &root,
-        9,
-        3,
-        earthmesh_cli::SpringjustmentGlobalRunOptions {
-            base_dists_on_edge: 100.0,
-            base_cellwidth: Some(200.0),
-            distance_num_rc: 0,
-            distance_spacing: earthmesh_mesh::DistanceLayerSpacing::Linear,
-            distance_steps: &[],
-            niter_refine: 0,
-            relax: 0.25,
-            radius: 1.0,
-            diagnostic_every: 100,
-        },
-    )
-    .expect("run springjustment global gridfile adapter");
+    let report =
+        earthmesh_cli::grid_quality_pipeline::run_springjustment_global_from_unstructured_gridfile(
+            &gridfile,
+            &root,
+            9,
+            3,
+            earthmesh_cli::springjustment_gridfile_types::SpringjustmentGlobalRunOptions {
+                base_dists_on_edge: 100.0,
+                base_cellwidth: Some(200.0),
+                distance_num_rc: 0,
+                distance_spacing: earthmesh_mesh::DistanceLayerSpacing::Linear,
+                distance_steps: &[],
+                niter_refine: 0,
+                relax: 0.25,
+                radius: 1.0,
+                diagnostic_every: 100,
+            },
+        )
+        .expect("run springjustment global gridfile adapter");
 
     assert_eq!(report.mesh.m_to_w, mesh.m_to_w);
     assert_eq!(report.mesh.w_to_m, mesh.w_to_m);
@@ -69,52 +71,54 @@ fn springjustment_global_gridfile_adapter_rejects_invalid_connectivity_before_wr
     let mut mesh = spring_fixture_mesh();
     mesh.m_to_w[2] = [1, 2, 99];
     let gridfile = root.join("bad_gridfile.nc4");
-    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh).expect("write gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write gridfile");
 
-    let err = earthmesh_cli::run_springjustment_global_from_unstructured_gridfile(
-        &gridfile,
-        &root,
-        9,
-        3,
-        earthmesh_cli::SpringjustmentGlobalRunOptions {
-            base_dists_on_edge: 100.0,
-            base_cellwidth: None,
-            distance_num_rc: 0,
-            distance_spacing: earthmesh_mesh::DistanceLayerSpacing::Linear,
-            distance_steps: &[],
-            niter_refine: 0,
-            relax: 0.25,
-            radius: 1.0,
-            diagnostic_every: 100,
-        },
-    )
-    .expect_err("invalid gridfile connectivity rejected");
+    let err =
+        earthmesh_cli::grid_quality_pipeline::run_springjustment_global_from_unstructured_gridfile(
+            &gridfile,
+            &root,
+            9,
+            3,
+            earthmesh_cli::springjustment_gridfile_types::SpringjustmentGlobalRunOptions {
+                base_dists_on_edge: 100.0,
+                base_cellwidth: None,
+                distance_num_rc: 0,
+                distance_spacing: earthmesh_mesh::DistanceLayerSpacing::Linear,
+                distance_steps: &[],
+                niter_refine: 0,
+                relax: 0.25,
+                radius: 1.0,
+                diagnostic_every: 100,
+            },
+        )
+        .expect_err("invalid gridfile connectivity rejected");
 
     assert!(err
         .to_string()
-        .contains("m_to_w row 2 references cell id 99"));
+        .contains("m_to_w row 2 canonicals cell id 99"));
     assert!(!root.join("result").exists());
 
     let _ = std::fs::remove_dir_all(&root);
 }
 
-fn spring_fixture_mesh() -> earthmesh_cli::UnstructuredMesh {
-    earthmesh_cli::UnstructuredMesh {
+fn spring_fixture_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.2 },
-            earthmesh_cli::LonLatPoint { lon: 0.8, lat: 0.2 },
-            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.8 },
-            earthmesh_cli::LonLatPoint { lon: 0.8, lat: 0.8 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.2, lat: 0.2 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.8, lat: 0.2 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.2, lat: 0.8 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.8, lat: 0.8 },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 1.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 1.0 },
         ],
         m_to_w: vec![
             [1, 1, 1],

@@ -13,6 +13,7 @@
 
 # Rust build outputs
 target/
+dist/
 
 # Brainstorming companion working dir
 .superpowers/

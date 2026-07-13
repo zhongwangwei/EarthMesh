@@ -2,7 +2,10 @@
 //! topology validator / neighbor-reciprocity / transition metrics are not no-ops on a
 //! real gridfile. Pure (no NetCDF): we hand-build a tiny `GridfileMeshPoints`.
 
-use earthmesh_cli::{quality_input_from_gridfile, GridfileMeshPoints};
+use earthmesh_cli::{
+    grid_quality_pipeline::quality_input_from_gridfile,
+    unstructured_mesh_support::GridfileMeshPoints,
+};
 
 #[test]
 fn cell_neighbors_are_derived_from_shared_edges() {
@@ -15,10 +18,14 @@ fn cell_neighbors_are_derived_from_shared_edges() {
         w_lat: vec![0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0],
         m_to_w: vec![1, 2, 3, 1, 2, 4, 5, 6, 7],
         m_refine_level: vec![],
+        m_refine_level_orig: vec![],
+        m_ngr: vec![],
         w_to_m: vec![],
         w_to_m_width: 0,
         n_w: vec![],
         w_refine_level: vec![],
+        w_refine_level_orig: vec![],
+        w_ngr: vec![],
     };
 
     let input = quality_input_from_gridfile(&mesh);

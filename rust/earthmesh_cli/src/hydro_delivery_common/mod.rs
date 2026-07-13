@@ -13,7 +13,7 @@ pub(crate) fn format_coupling_number(n: f64) -> String {
 }
 
 /// Unit-sphere radius used by `util/hydro_mesh/earthmesh_intersection.py`.
-pub(crate) const HYDRO_EARTH_RADIUS_M: f64 = 6_371_000.0;
+pub(crate) const HYDRO_EARTH_RADIUS_M: f64 = earthmesh_core::EARTH_RADIUS_METERS;
 
 pub(crate) fn read_text_maybe_gzip(path: impl AsRef<Path>) -> io::Result<String> {
     let path = path.as_ref();

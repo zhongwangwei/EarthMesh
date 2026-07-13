@@ -2,10 +2,22 @@ use earthmesh_core::EarthmeshRuntimeState;
 
 use crate::{
     AreaJudgeGridWriteReport, AreaJudgeRestartReport, GetContainRefineFileRunReport,
-    GetContainRuntimeCounts, MkgrdFinalDomainPostprocReport, WorkspaceMaskApplyReport,
+    GetContainRuntimeCounts, MaskPostprocEarthDomainReport, MaskPostprocLandDomainReport,
+    MaskPostprocOceanDomainReport, MpasFullMeshPipelineReport, MpasSimpleMeshWriteReport,
+    WorkspaceMaskApplyReport,
 };
 
 use super::MkgrdMaskRestartPlanReport;
+
+/// Final domain postprocessing result used by the active mask-restart path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MkgrdFinalDomainPostprocReport {
+    Earth(MaskPostprocEarthDomainReport),
+    Land(MaskPostprocLandDomainReport),
+    Ocean(MaskPostprocOceanDomainReport),
+    Atmos(MpasSimpleMeshWriteReport),
+    AtmosFull(MpasFullMeshPipelineReport),
+}
 
 /// Source-grid geometry supplied by the caller for the restarted `Area_judge`
 /// continuation inside the `mkgrd.F90` mask-restart path.

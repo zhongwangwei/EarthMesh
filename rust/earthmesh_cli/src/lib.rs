@@ -1,27 +1,14 @@
-//! Rust orchestration adapters for replacing `mkgrd.x` side effects.
+//! EarthMesh execution pipelines, format adapters, and CLI-facing reports.
 
-use earthmesh_core::{MkgrdWorkspacePlan, RefineConfig};
-use earthmesh_mesh::{
-    connect_on_cell_fortran_indexed, edge_distance_angle_fortran_indexed,
-    get_area_production_fortran_indexed, get_edge_production_fortran_indexed,
-    lonlat_points_to_unit_xyz, order_vertices_on_cell_by_shared_edges_fortran_indexed,
-    order_vertices_on_cell_fortran_indexed, refine_boundary_segments_make_fortran_indexed,
-    refine_iter_b_judge_fortran_indexed, refine_iter_c_judge_fortran_indexed,
-    refine_iter_e_judge_fortran_indexed, refine_iter_g_judge_fortran_indexed,
-    set_weights_on_edge_fortran_indexed, springjustment_global_core_fortran_indexed,
-    springjustment_regional_core_fortran_indexed,
-    standardize_vertices_on_cell_rotation_fortran_indexed,
-    triangle_neighbors_from_cell_membership_fortran_indexed, AreaJudgeSourceBounds,
-    GetAreaProductionOutput, GetAreaUnitInput, GetEdgeProductionOutput, LonLatDegrees,
-    OlamRefinementRegion, SpringjustmentGlobalCoreInput, SpringjustmentGlobalCoreOutput,
-    SpringjustmentRegionalCoreInput, SpringjustmentRegionalCoreOutput,
-};
+use earthmesh_core::MkgrdWorkspacePlan;
+use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
 
-mod mask_source_discovery;
-pub use mask_source_discovery::*;
+pub mod mask_source_discovery;
+use mask_source_discovery::discover_mask_sources;
+
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
-mod coordinate_types;
-pub use coordinate_types::*;
+pub mod coordinate_types;
+use coordinate_types::{GridRegion, LonLatPoint};
 mod fs_support;
 pub(crate) use fs_support::ensure_parent_dir;
 mod json_support;
@@ -30,22 +17,33 @@ pub(crate) use json_support::{
     json_string_array, json_string_usize_map, json_usize_f64_map, json_usize_f64_map_node,
     json_usize_map, JsonNode, JsonParser,
 };
-mod v3_data_source_io;
-pub use v3_data_source_io::*;
-mod mkgrd_compact_source_state;
-pub use mkgrd_compact_source_state::*;
-mod global_source_axes;
-pub use global_source_axes::*;
-mod unstructured_mesh_support;
-pub(crate) use unstructured_mesh_support::mesh_row_for_fortran_id;
-pub use unstructured_mesh_support::*;
+pub mod v3_data_source_io;
+use v3_data_source_io::{
+    build_v3_data_source_descriptor, V3DataSourceDescriptor, V3DataSourceKind,
+};
+pub mod global_source_axes;
+use global_source_axes::build_global_source_axes_one_based;
+pub mod unstructured_mesh_support;
+pub(crate) use unstructured_mesh_support::mesh_row_for_canonical_id;
 pub(crate) use unstructured_mesh_support::{unstructured_dimc, validate_unstructured_mesh};
-mod merit_tile_selection;
-pub use merit_tile_selection::*;
-mod merit_hydro_io;
-pub use merit_hydro_io::*;
-mod hydro_close_types;
-pub use hydro_close_types::*;
+use unstructured_mesh_support::{
+    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileMetadataSlices,
+    UnstructuredMesh, UnstructuredMeshWriteReport,
+};
+pub mod merit_tile_selection;
+use merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
+pub mod merit_hydro_io;
+use merit_hydro_io::{
+    read_merit_hydro_window, write_merit_hydro_mask_geojson_layers,
+    MeritHydroGeoJsonLayerWriteReport, MeritMaskThresholds,
+};
+pub mod hydro_close_types;
+use hydro_close_types::{
+    HydroCloseMaskNmlOptions, HydroCloseMaskNmlWriteReport, HydroCloseMaskSpec,
+    HydroCloseRefinementRecipeOptions, HydroCloseRefinementRecipeWriteReport,
+    HydroCompositeCloseMaskComponentSummary, HydroCompositeCloseMaskNmlWriteReport,
+    MeritHydroRegionWorkflowReport,
+};
 mod hydro_close_buffer;
 mod hydro_close_composite;
 mod hydro_close_envelope_merge;
@@ -54,46 +52,53 @@ mod hydro_close_geometry_utils;
 mod hydro_close_hole_decomposition;
 mod hydro_close_hole_slabs;
 mod hydro_close_hole_spans;
-mod hydro_close_masks;
+pub mod hydro_close_masks;
 mod hydro_close_proximity;
-mod hydro_close_recipe;
+pub mod hydro_close_recipe;
 mod merit_hydro_region_close;
 pub use hydro_close_composite::write_hydro_composite_close_mask_nmls;
-pub use hydro_close_masks::*;
-pub use hydro_close_recipe::*;
+use hydro_close_masks::{
+    read_hydro_close_mask_specs, write_hydro_close_mask_nmls, write_hydro_close_mask_specs,
+};
+use hydro_close_recipe::default_hydro_close_class_refine;
 pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;
-mod hydro_workflow_types;
-pub use hydro_workflow_types::*;
-mod hydro_refinement_eval;
-pub use hydro_refinement_eval::*;
-mod hydro_sweep;
-pub use hydro_sweep::*;
-mod hydro_delivery_cells;
-mod hydro_delivery_colm;
+pub mod hydro_workflow_types;
+use hydro_workflow_types::{HydroMeshQaCheck, HydroMeshQaReport, HydroWorkflowReport};
+pub mod hydro_delivery_cells;
+pub mod hydro_delivery_colm;
 mod hydro_delivery_common;
 mod hydro_delivery_complete_mask;
-mod hydro_delivery_coupling_quality;
-mod hydro_delivery_intersections;
-mod hydro_delivery_manifest;
-mod hydro_delivery_qa;
-mod hydro_delivery_refine_workflow;
-pub use hydro_delivery_cells::*;
+pub mod hydro_delivery_coupling_quality;
+pub mod hydro_delivery_intersections;
+pub mod hydro_delivery_manifest;
+pub mod hydro_delivery_qa;
+pub mod hydro_delivery_refine_workflow;
+pub mod hydro_refinement_adapter;
+pub mod hydro_refinement_eval;
+pub mod hydro_sweep;
+pub mod project_hydro;
+pub mod project_hydro_closed_loop;
+pub mod project_quality;
 pub(crate) use hydro_delivery_cells::{
     convex_hull_order_indices, gridfile_lonlat_has_two_placeholders,
 };
-pub use hydro_delivery_colm::*;
+use hydro_delivery_colm::write_colm_coupling_csv_from_intersections;
 pub(crate) use hydro_delivery_common::{
     format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
 };
 pub use hydro_delivery_complete_mask::write_complete_cell_mask_geojson;
-pub use hydro_delivery_coupling_quality::*;
-pub use hydro_delivery_intersections::*;
+use hydro_delivery_coupling_quality::{
+    write_colm_coupling_csv_from_mesh_with_options, write_coupling_quality_from_gridfile,
+    CouplingCsvOptions,
+};
+use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
 pub(crate) use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
-pub use hydro_delivery_manifest::*;
-pub use hydro_delivery_qa::*;
-pub use hydro_delivery_refine_workflow::*;
-mod colm_types;
-pub use colm_types::*;
+pub(crate) use unstructured_mesh_support::mesh_canonical_id_for_row;
+pub mod colm_types;
+use colm_types::{
+    ColmCouplingNetcdfWriteReport, ColmForcingTemplateNetcdfWriteReport,
+    ColmRestartTemplateNetcdfWriteReport, ColmSurfaceClassPoint, ColmSurfaceCounts,
+};
 mod colm_coupling_csv;
 mod colm_coupling_netcdf;
 mod colm_manifest_writer;
@@ -103,285 +108,353 @@ mod netcdf_io;
 pub(crate) use netcdf_io::{
     create_netcdf, first_existing_dimension_len, netcdf_to_io_error, open_netcdf,
     optional_values_i32_2d, required_dimension_len, required_scalar_usize_i32, required_values_f64,
-    required_values_f64_any, required_values_f64_any_matrix, required_values_i32,
-    required_values_i32_2d, required_values_i32_any_matrix, required_values_i32_matrix,
-    required_values_i8, required_values_i8_matrix, write_f64_scalar, write_i32_scalar,
+    required_values_f64_any, required_values_i32, required_values_i32_2d,
+    required_values_i32_matrix, required_values_i8, required_values_i8_matrix, write_f64_scalar,
+    write_i32_scalar,
 };
-mod colm_package_io;
-pub use colm_package_io::*;
-mod cama_binary_io;
-mod cama_binary_params;
-mod cama_binary_window_readers;
-mod cama_reach_inventory;
-pub use cama_binary_io::*;
-pub use cama_binary_params::*;
-pub use cama_binary_window_readers::*;
-pub use cama_reach_inventory::*;
-mod coastal_band_io;
-pub use coastal_band_io::*;
-mod bbox_mask_io;
+
+/// Create a NetCDF file with HDF5's diagnostic stack silenced.
+///
+/// This is mainly useful for test/fixture writers that need direct NetCDF
+/// access without noisy `HDF5-DIAG` stderr output from libnetcdf's existence
+/// checks.
+#[doc(hidden)]
+pub fn create_netcdf_quiet(
+    path: impl AsRef<std::path::Path>,
+) -> Result<netcdf::FileMut, netcdf::Error> {
+    create_netcdf(path)
+}
+pub mod colm_package_io;
+use colm_package_io::{
+    write_colm_coupling_netcdf_from_csv, write_colm_package_delivery_manifest_with_quality,
+};
+pub mod cama_binary_io;
+pub mod cama_binary_params;
+pub mod cama_binary_window_readers;
+pub mod cama_reach_inventory;
+use cama_binary_io::CamaSurfaceClass;
+use cama_binary_params::read_cama_grid_spec_from_params_file;
+use cama_binary_window_readers::read_cama_elevtn_surface_window;
+pub mod bbox_mask_io;
+pub mod coastal_band_io;
 pub(crate) use bbox_mask_io::validate_bbox_mask;
-pub use bbox_mask_io::*;
-mod close_mesh_io;
-pub use close_mesh_io::*;
-mod circle_close_mask_io;
-pub use circle_close_mask_io::*;
-pub(crate) use circle_close_mask_io::{validate_circle_mask, validate_close_mask};
-mod mode4mesh_make;
-pub use mode4mesh_make::*;
-mod mode_file_io;
-pub use mode_file_io::*;
-mod contain_io;
-pub(crate) use contain_io::validate_contain_mesh;
-pub use contain_io::*;
-mod getcontain_types;
-pub use getcontain_types::*;
-mod getcontain_geometry;
-pub use getcontain_geometry::*;
-pub(crate) use getcontain_geometry::{
-    getcontain_mesh_kind_from_mesh_type, getcontain_validate_source_matrix,
+use bbox_mask_io::{
+    parse_bbox_mask_nml, read_bbox_mask_netcdf, read_bbox_refine_netcdf, write_bbox_mask_netcdf,
 };
-mod unstructured_mesh_io;
-pub use unstructured_mesh_io::*;
+pub mod close_mesh_io;
+use close_mesh_io::read_close_mesh_netcdf;
+pub mod circle_close_mask_io;
+use circle_close_mask_io::{
+    close_mask_netcdf_has_refine, parse_circle_mask_nml, parse_close_mask_nml,
+    read_circle_mask_netcdf, read_circle_refine_netcdf, read_close_mask_netcdf,
+    read_close_refine_netcdf, write_circle_mask_netcdf, write_close_mask_netcdf, CloseMask,
+};
+pub(crate) use circle_close_mask_io::{validate_circle_mask, validate_close_mask};
+pub mod mode4mesh_make;
+pub mod mode_file_io;
+use mode_file_io::{
+    convert_fvcom_mode_file_to_earthmesh, convert_iap_ocean_mode_file_to_earthmesh,
+    convert_mpas_mode_file_to_earthmesh, copy_existing_earthmesh_mode_file,
+    write_gridfile_from_one_based_state,
+};
+pub mod contain_io;
+pub(crate) use contain_io::validate_contain_mesh;
+use contain_io::{
+    read_contain_netcdf, write_flat_contain_netcdf, ContainMesh, ContainWriteReport,
+    FlatContainMesh,
+};
+pub mod getcontain_types;
+use getcontain_types::{
+    GetContainAreaBounds, GetContainMeshKind, GetContainRefineFileRunConfig,
+    GetContainRefineFileRunReport, GetContainRuntimeCounts,
+};
+pub mod getcontain_geometry;
+pub(crate) use getcontain_geometry::getcontain_validate_source_matrix;
+use getcontain_geometry::{
+    getcontain_containment_matrix_flat_one_based, getcontain_is_in_area_ustr_one_based,
+};
+pub mod unstructured_mesh_io;
+use unstructured_mesh_io::{
+    gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
+    write_unstructured_mesh_netcdf_with_method_c_metadata,
+};
 mod mesh_conversion_support;
 pub(crate) use mesh_conversion_support::{
-    aggregate_getref_ref_sjx, cells_on_triangle_fortran_indexed_from_mesh,
-    copy_getref_threshold_column, f64_matrix_width, flatten_i32_rows, get_getref_layer_value,
-    i32_counts_as_usize, i32_matrix_from_flat, i32_rows_as_usize, lat_values, lon_values,
-    lonlat_degrees_from_points, lonlat_pairs_from_points, lonlat_points_from_pairs, lookup_f64,
-    m_to_w_as_usize_rows, matrix_width, n_edges_on_cell_usize_from_mesh, normalize_degrees,
-    one_to_n_i32, parse_value_after_equals, patchtype_indices, rad_to_deg,
-    require_getref_two_layer_values, require_len, rows_from_flat_i32,
+    cells_on_triangle_one_based_from_mesh, f64_matrix_width, flatten_i32_rows, i32_counts_as_usize,
+    i32_matrix_from_flat, i32_rows_as_usize, lat_values, lon_values, lonlat_degrees_from_points,
+    lonlat_pairs_from_points, lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows,
+    matrix_width, n_edges_on_cell_usize_from_mesh, normalize_degrees, one_to_n_i32,
+    parse_value_after_equals, patchtype_indices, rad_to_deg, require_len, rows_from_flat_i32,
     rows_to_triangle_connectivity, scale_cartesian_points_by_earth_radius,
-    split_cartesian_components, triangles_on_cell_fortran_indexed_from_mesh,
-    usize_from_i32_connectivity, usize_from_i32_nonnegative, usize_from_i32_positive,
-    usize_rows_to_i32, usize_to_i32, usize_values_to_i32, validate_mask_postproc_layout,
-    write_f64_1d, write_f64_matrix_rows, write_i32_1d, write_i32_matrix_rows, write_i32_pair_rows,
+    split_cartesian_components, triangles_on_cell_one_based_from_mesh, usize_from_i32_connectivity,
+    usize_from_i32_nonnegative, usize_from_i32_positive, usize_rows_to_i32, usize_to_i32,
+    usize_values_to_i32, validate_mask_postproc_layout, write_f64_1d, write_f64_matrix_rows,
+    write_i32_1d, write_i32_matrix_rows, write_i32_pair_rows,
 };
-mod mesh_conversion_gridfile_state;
+pub mod mesh_conversion_gridfile_state;
 pub(crate) use mesh_conversion_gridfile_state::earthmesh_runtime_state_from_compact_mesh;
-pub use mesh_conversion_gridfile_state::*;
+use mesh_conversion_gridfile_state::{
+    gridfile_mesh_from_one_based_state, gridfile_mesh_from_state,
+};
 mod mesh_conversion_iap;
-pub(crate) use mesh_conversion_iap::derive_iap_w_to_m_fortran_indexed;
-mod fvcom_mesh_writer;
+pub(crate) use mesh_conversion_iap::derive_iap_w_to_m_one_based;
+pub mod fvcom_mesh_writer;
 pub(crate) use fvcom_mesh_writer::write_fvcom_ns_records;
-pub use fvcom_mesh_writer::*;
-mod obc_boundary_io;
-pub use obc_boundary_io::*;
-mod lambert_mode4_io;
+use fvcom_mesh_writer::{
+    fvcom_mesh_2dm_output_path, write_fvcom_mesh_2dm, FvcomMesh2dmWriteReport,
+};
+pub mod obc_boundary_io;
+use obc_boundary_io::{
+    obc_boundary_output_path, obcv2_boundary_output_path, read_obc_order_netcdf,
+    write_obc_boundary_netcdf, write_obcv2_boundary_netcdf, ObcBoundaryWriteReport,
+    Obcv2BoundaryWriteReport,
+};
+pub mod lambert_mode4_io;
 pub(crate) use lambert_mode4_io::validate_mode4_mesh_for_area_judge;
-pub use lambert_mode4_io::*;
-mod area_judge_grid_io;
-pub use area_judge_grid_io::*;
+use lambert_mode4_io::{
+    convert_lambert_mask_netcdf, lambert_vertices_to_mode4_mesh, read_lambert_vertices_netcdf,
+    read_mode4_mesh_netcdf, write_mode4_mesh_netcdf,
+};
+pub mod area_judge_grid_io;
 pub(crate) use area_judge_grid_io::{
-    grid_covers_area_judge_bounds_fortran_indexed, validate_area_judge_grid_payload,
+    grid_covers_area_judge_bounds_one_based, validate_area_judge_grid_payload,
     validate_i32_matrix_shape,
 };
-mod area_judge_types;
-pub use area_judge_types::*;
-mod area_judge_domain_builders;
-pub use area_judge_domain_builders::*;
-mod area_judge_getcontain_refine;
-pub use area_judge_getcontain_refine::*;
-mod area_judge_refine_steps;
-pub use area_judge_refine_steps::*;
-mod area_judge_branch_builders;
-pub use area_judge_branch_builders::*;
-mod area_judge_grid_runs;
+use area_judge_grid_io::{
+    read_area_judge_grid_netcdf, run_area_judge_restart_grid_one_based,
+    select_area_judge_grid_one_based, write_area_judge_grid_netcdf, AreaJudgeGridPayload,
+    AreaJudgeRestartGridRunConfig,
+};
+pub mod area_judge_types;
+use area_judge_types::{
+    AreaJudgeAreaSourceReport, AreaJudgeBaseStateReport, AreaJudgeCalculatedRefineConfig,
+    AreaJudgeDomainInitializationReport, AreaJudgeGridRunConfig, AreaJudgeGridRunReport,
+    AreaJudgeGridWriteReport, AreaJudgeLandtypeClass, AreaJudgeNonRestartReport,
+    AreaJudgePatchConfig, AreaJudgePatchModifyReport, AreaJudgePatchSourceReport,
+    AreaJudgeRefineActivationReport, AreaJudgeRefineGridRunConfig, AreaJudgeRefineGridRunReport,
+    AreaJudgeRefineStepReport, AreaJudgeRestartGridsRunConfig, AreaJudgeRestartGridsRunReport,
+    AreaJudgeRestartReport, AreaJudgeSeaOrLandReport, AreaJudgeSparseAreaSourceReport,
+    AreaJudgeThreshold2D, AreaJudgeThreshold2Layer, AreaJudgeThresholdInputsReport,
+    AreaJudgeThresholdReadConfig, ThresholdReadAtmosConfig, ThresholdReadAtmosReport,
+    ThresholdReadLndConfig, ThresholdReadLndReport, ThresholdReadOcnConfig, ThresholdReadOcnReport,
+};
+pub mod area_judge_domain_builders;
+use area_judge_domain_builders::{
+    build_area_judge_base_state_one_based, build_area_judge_seaorland_one_based,
+    classify_area_judge_landtype_one_based,
+};
+pub mod area_judge_getcontain_refine;
+use area_judge_getcontain_refine::run_getcontain_refine_file_one_based;
+pub mod area_judge_refine_steps;
+use area_judge_refine_steps::{
+    build_area_judge_calculated_refine_one_based, run_area_judge_refine_one_based,
+};
+pub mod area_judge_branch_builders;
+use area_judge_branch_builders::{
+    build_area_judge_non_restart_one_based, build_area_judge_restart_one_based,
+};
+pub mod area_judge_grid_runs;
 pub(crate) use area_judge_grid_runs::write_area_judge_selected_grid_report;
-pub use area_judge_grid_runs::*;
-mod area_judge_sources;
-pub use area_judge_sources::*;
-pub(crate) use area_judge_sources::{area_judge_area_source_path, merge_area_judge_source_bounds};
-mod area_judge_bbox_sources;
-pub use area_judge_bbox_sources::*;
-mod area_judge_circle_sources;
-pub use area_judge_circle_sources::*;
-mod area_judge_close_sources;
-pub use area_judge_close_sources::*;
+pub mod area_judge_sources;
+pub(crate) use area_judge_sources::merge_area_judge_source_bounds;
+use area_judge_sources::{
+    apply_area_judge_patch_sources_one_based, build_area_judge_area_sources_one_based,
+};
+pub mod area_judge_bbox_sources;
+use area_judge_bbox_sources::{
+    apply_area_judge_bbox_patch_source_one_based, build_area_judge_bbox_area_source_one_based,
+};
+pub mod area_judge_circle_sources;
+use area_judge_circle_sources::{
+    apply_area_judge_circle_patch_source_one_based, build_area_judge_circle_area_source_one_based,
+};
+pub mod area_judge_close_sources;
+use area_judge_close_sources::{
+    apply_area_judge_close_patch_source_one_based,
+    build_area_judge_close_area_source_cells_one_based,
+};
 pub(crate) use area_judge_close_sources::{
     area_judge_check_crossing, area_judge_close_crosses_dateline,
 };
-mod area_judge_lambert_sources;
-pub use area_judge_lambert_sources::*;
-mod area_judge_threshold_inputs;
-pub use area_judge_threshold_inputs::*;
-mod mask_postproc_writers;
-pub use mask_postproc_writers::*;
-mod mask_postproc_types;
-pub use mask_postproc_types::*;
-mod mask_postproc_atmos;
-pub use mask_postproc_atmos::*;
-mod mask_postproc_ocean;
-pub use mask_postproc_ocean::*;
-mod mask_postproc_patchtypes;
-pub use mask_postproc_patchtypes::*;
-mod mask_postproc_layout;
+pub mod area_judge_lambert_sources;
+use area_judge_lambert_sources::{
+    apply_area_judge_lambert_patch_source_one_based, build_area_judge_lambert_area_source_one_based,
+};
+pub mod area_judge_threshold_inputs;
+pub mod mask_postproc_writers;
+use mask_postproc_writers::{
+    write_earthmesh_info_netcdf, write_patchid_netcdf, EarthmeshInfo, EarthmeshInfoWriteReport,
+    PatchIdMesh, PatchIdWriteReport,
+};
+pub mod mask_postproc_types;
+use mask_postproc_types::{
+    EarthPatchtypes, LandPatchtypes, MaskPostprocDomainInputs, MaskPostprocDomainIoPlan,
+    MaskPostprocEarthDomainReport, MaskPostprocEarthRunOptions, MaskPostprocFinalizationReport,
+    MaskPostprocLandDomainReport, MaskPostprocLandRunOptions, MaskPostprocLayout,
+    MaskPostprocOceanDomainReport, MaskPostprocOceanRenewalReport, MaskPostprocOceanRunOptions,
+    MaskRestartAction, MaskRestartRemaskPlan,
+};
+pub mod mask_postproc_atmos;
+use mask_postproc_atmos::{
+    write_mask_postproc_atmos_mpas_netcdf, write_mask_postproc_atmos_mpas_simple_netcdf,
+};
+pub mod mask_postproc_ocean;
+use mask_postproc_ocean::{
+    apply_ocean_mask_sea_ratio_one_based, renew_mask_postproc_ocean_domain_one_based,
+};
+pub mod mask_postproc_patchtypes;
+use mask_postproc_patchtypes::{
+    build_earth_patchtypes_one_based, build_land_patchtypes_one_based,
+    write_mask_postproc_earth_info_netcdf, write_mask_postproc_patchtype_netcdf,
+};
+pub mod mask_postproc_layout;
 pub(crate) use mask_postproc_layout::ensure_leading_mask_postproc_placeholder;
-pub use mask_postproc_layout::*;
-mod mask_postproc_domain;
-pub use mask_postproc_domain::*;
-mod mesh_metric_writers;
-pub use mesh_metric_writers::*;
-mod quality_global_writer;
-pub use quality_global_writer::*;
-mod mpas_edge_reference_io;
-pub use mpas_edge_reference_io::*;
-mod mpas_mesh_types;
-pub use mpas_mesh_types::*;
+use mask_postproc_layout::{
+    finalize_mask_postproc_layout_with_reindex_report, mask_postproc_layout_from_unstructured_mesh,
+    read_mask_postproc_domain_inputs, write_mask_postproc_final_gridfile,
+};
+pub mod mask_postproc_domain;
+use mask_postproc_domain::{
+    plan_mask_postproc_domain_io, run_mask_postproc_earth_domain, run_mask_postproc_land_domain,
+    run_mask_postproc_ocean_domain,
+};
+pub mod mesh_metric_writers;
+use mesh_metric_writers::{
+    read_cellwidth_netcdf, write_cellwidth_netcdf, write_dists_on_edge_netcdf, CellwidthMesh,
+    CellwidthWriteReport, DistsOnEdgeMesh, DistsOnEdgeWriteReport,
+};
+pub mod quality_global_writer;
+use quality_global_writer::{
+    write_quality_global_netcdf, GlobalQualityMesh, GlobalQualityWriteReport, QualityClassMetrics,
+};
+pub mod mpas_edge_index_io;
+pub mod mpas_mesh_types;
+use mpas_mesh_types::{
+    MeshTopologyReport, MpasFullMeshPipelineReport, MpasMesh, MpasMeshWriteReport,
+    RegionalMpasConnectivity,
+};
 mod mpas_netcdf_rows;
 mod mpas_regional_connectivity;
 mod mpas_subset;
-mod mpas_topology;
+pub mod mpas_topology;
 mod mpas_topology_checker;
-pub use mpas_topology::*;
+use mpas_topology::subset_mpas_mesh;
 pub(crate) use mpas_topology::{
     mpas_lat_lon_radians, pad_f64_rows, validate_mpas_mesh, validate_mpas_simple_mesh,
     zero_based_padded_rows, zero_based_pair_rows, zero_based_triplet_rows,
 };
-mod mpas_graph_info_writer;
-pub use mpas_graph_info_writer::*;
-mod mpas_simple_writer;
-pub use mpas_simple_writer::*;
+pub mod mpas_graph_info_writer;
+use mpas_graph_info_writer::{write_mpas_graph_info, MpasGraphInfoWriteReport};
+pub mod mpas_simple_writer;
+use mpas_simple_writer::{
+    write_mpas_simple_mesh_netcdf, MpasSimpleMesh, MpasSimpleMeshWriteReport,
+};
 mod mpas_full_writer;
 pub use mpas_full_writer::write_mpas_mesh_netcdf;
-mod mpas_unstructured_mesh_builders;
-pub use mpas_unstructured_mesh_builders::*;
-pub(crate) use mpas_unstructured_mesh_builders::{
-    normalize_unstructured_mesh_legacy_placeholders, restore_unstructured_mesh_shape,
+pub mod mpas_unstructured_mesh_builders;
+use mpas_unstructured_mesh_builders::{
+    build_mpas_mesh_from_unstructured_one_based, build_mpas_simple_mesh_from_unstructured_one_based,
 };
-mod gridfile_output_writers;
-pub use gridfile_output_writers::*;
-mod mpas_gridfile_writers;
-pub use mpas_gridfile_writers::*;
-mod regional_gridfile_writers;
-pub use regional_gridfile_writers::*;
-mod getref_threshold_io;
-pub use getref_threshold_io::*;
-mod getref_types;
-pub use getref_types::*;
-mod getref_threshold_support;
-pub(crate) use getref_threshold_support::require_getref_lookup_width;
-mod getref_threshold_basic;
-pub use getref_threshold_basic::calculate_getref_land_basic_fortran_indexed;
-mod getref_threshold_statistics;
-pub use getref_threshold_statistics::*;
-mod getref_threshold_inputs;
-pub use getref_threshold_inputs::*;
-mod getref_threshold_loc;
-pub use getref_threshold_loc::split_getref_loc_containment_fortran_indexed;
-mod getref_threshold_land;
-pub use getref_threshold_land::calculate_getref_land_threshold_report_fortran_indexed;
-mod getref_threshold_ocean;
-pub use getref_threshold_ocean::*;
-mod getref_threshold_atmos;
-pub use getref_threshold_atmos::*;
-mod getref_threshold_aggregation;
-pub use getref_threshold_aggregation::*;
-mod getref_threshold_calculation;
-pub use getref_threshold_calculation::*;
-mod getref_threshold_runners;
-pub use getref_threshold_runners::*;
-mod getref_threshold_land_writer;
-mod getref_threshold_ocean_atmos_writers;
-mod getref_threshold_writer_helpers;
-mod getref_threshold_writers;
-pub use getref_threshold_writers::*;
-pub(crate) use getref_threshold_writers::{
-    validate_getref_atmos_threshold_report_for_aggregation,
-    validate_getref_land_threshold_report_for_aggregation,
-    validate_getref_ocean_threshold_report_for_aggregation,
+pub mod gridfile_output_writers;
+use gridfile_output_writers::{
+    write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
-mod mask_counts;
-pub use mask_counts::*;
-mod mask_operation_apply;
-pub use mask_operation_apply::*;
-mod refine_array_length_adapter;
-pub use refine_array_length_adapter::*;
-mod refine_loop_plan_types;
-pub use refine_loop_plan_types::*;
-mod refine_loop_types;
-pub use refine_loop_types::*;
-mod refine_loop_adapters;
-pub(crate) use refine_loop_adapters::fortran_rows_to_triangle_major;
-mod refine_loop_concavity_adapters;
-pub use refine_loop_concavity_adapters::*;
-mod refine_loop_onedivide_four;
-pub use refine_loop_onedivide_four::*;
-mod refine_loop_topology_adapters;
-pub use refine_loop_topology_adapters::*;
-mod refine_loop_handoff;
-pub use refine_loop_handoff::*;
-mod refine_loop_io_plan;
-pub use refine_loop_io_plan::*;
-pub(crate) use refine_loop_io_plan::{
-    effective_mkgrd_refine_loop_io_plan, final_quality_non_negative_usize, mkgrd_tmpfile_path,
+pub mod mpas_gridfile_writers;
+pub mod regional_gridfile_writers;
+use regional_gridfile_writers::{
+    write_clean_regional_ocean_gridfile, write_fvcom_2dm_from_carved,
+    write_landtype_masked_gridfile, write_landtype_masked_gridfile_with_refine_levels,
+    write_regional_gridfile_with_refine_levels,
 };
-mod refine_loop_transition_helpers;
-mod refine_loop_working_state;
-pub use refine_loop_working_state::*;
-mod refine_loop_executor;
-pub use refine_loop_executor::*;
-mod refine_loop_source_executors;
-pub use refine_loop_source_executors::*;
-mod refine_loop_composite_executor;
-pub use refine_loop_composite_executor::*;
-mod mkgrd_refine_orchestration;
-pub use mkgrd_refine_orchestration::*;
-mod mkgrd_refine_source_orchestration;
-pub(crate) use mkgrd_refine_source_orchestration::runtime_refine_from_prepare;
-pub use mkgrd_refine_source_orchestration::*;
-mod springjustment_gridfile_types;
-pub use springjustment_gridfile_types::*;
+pub mod mask_counts;
+use mask_counts::MaskCountState;
+pub mod mask_operation_apply;
+use mask_operation_apply::{
+    apply_mask_operation, validate_mask_refine_reaches_max_iter_spc, MaskOperationReport,
+};
+pub mod springjustment_gridfile_types;
+use springjustment_gridfile_types::{
+    SpringjustmentGlobalGridfileReport, SpringjustmentGlobalPersistenceReport,
+    SpringjustmentGlobalRunOptions, SpringjustmentRegionalGridfileReport,
+    SpringjustmentRegionalRunOptions,
+};
 mod grid_production_adapters;
 mod grid_quality_global;
 mod grid_quality_inputs;
-mod grid_quality_pipeline;
+pub mod grid_quality_pipeline;
+pub(crate) use grid_quality_pipeline::{
+    get_edge_from_unstructured_mesh, read_gridfile_mesh_points,
+};
 mod springjustment_gridfile_adapters;
-pub use grid_quality_pipeline::*;
-mod mkgrd_quality_checks;
-pub use mkgrd_quality_checks::*;
-mod workspace_apply;
-pub use workspace_apply::*;
-mod workspace_mask_apply;
-pub use workspace_mask_apply::*;
-mod data_preprocess_types;
-pub use data_preprocess_types::*;
-mod mkgrd_data_preprocess_source;
-pub use mkgrd_data_preprocess_source::*;
-mod mkgrd_final_handoff;
-pub use mkgrd_final_handoff::*;
-mod mkgrd_restart_types;
-pub use mkgrd_restart_types::*;
-mod mkgrd_selected_land_domain;
-pub use mkgrd_selected_land_domain::*;
-mod mkgrd_mask_restart;
-pub use mkgrd_mask_restart::*;
-mod mkgrd_default_restart_handoff;
-pub use mkgrd_default_restart_handoff::*;
-mod mkgrd_run_types;
-pub use mkgrd_run_types::*;
-mod olam_native_namelist;
-pub(crate) use olam_native_namelist::*;
-mod olam_native_parser;
-mod olam_region_sources;
-pub(crate) use olam_region_sources::*;
-mod olam_method_c_support;
-pub(crate) use olam_method_c_support::*;
-mod olam_mesh_gridfile_handoff;
-pub(crate) use olam_mesh_gridfile_handoff::*;
-mod olam_direct_refine_support;
-pub(crate) use olam_direct_refine_support::*;
-mod mkgrd_gridinit_driver;
-pub use mkgrd_gridinit_driver::*;
+pub mod workspace_apply;
+use workspace_apply::{apply_read_nl_workspace_plan, WorkspaceApplyReport};
+pub mod workspace_mask_apply;
+use workspace_mask_apply::{apply_workspace_and_mask_operations, WorkspaceMaskApplyReport};
+pub mod data_preprocess_types;
+use data_preprocess_types::{DataPreprocessAreaJudgeSourceReport, MkgrdDataPreprocessSourceState};
+pub mod mkgrd_data_preprocess_source;
+use mkgrd_data_preprocess_source::sample_landtype_values_for_points_one_based;
+pub mod mkgrd_restart_types;
+use mkgrd_restart_types::{
+    MkgrdDefaultRestartRefineHandoff, MkgrdFinalDomainPostprocReport,
+    MkgrdMaskRestartOceanRunReport, MkgrdMaskRestartPatchRunReport, MkgrdMaskRestartPlanReport,
+    MkgrdRestartAreaJudgeGlobalSourceRunReport, MkgrdRestartAreaJudgeOptions,
+    MkgrdRestartAreaJudgePostprocOptions, MkgrdRestartAreaJudgePostprocRunReport,
+    MkgrdRestartAreaJudgeRunReport,
+};
+pub mod mkgrd_mask_restart;
+use mkgrd_mask_restart::{
+    plan_mkgrd_mask_restart_namelist,
+    run_mkgrd_mask_restart_area_judge_configured_global_source_namelist,
+    run_mkgrd_mask_restart_area_judge_namelist,
+    run_mkgrd_mask_restart_area_judge_postproc_namelist, run_mkgrd_mask_restart_ocean_namelist,
+    run_mkgrd_mask_restart_patch_namelist,
+};
+pub mod mkgrd_default_restart_handoff;
+use mkgrd_default_restart_handoff::{
+    infer_mask_restart_ocean_num_vertex_from_config, landtype_file_is_real,
+    maybe_infer_mask_restart_non_ocean_num_vertex_from_config,
+    maybe_infer_mask_restart_ocean_num_vertex_from_config, namelist_sets_landtype_file,
+};
+pub mod mkgrd_run_types;
+use mkgrd_run_types::{
+    LandtypeDataPreprocessReport, MkgrdGridinitRunReport,
+    MkgrdTopLevelDefaultRestartRefineRunReport, MkgrdTopLevelDispatchRunReport,
+    RefineCoupledOutputReport, RefinePipelineRunReport,
+};
+mod native_grid_config;
+pub(crate) use native_grid_config::*;
+mod namelist_reader;
+mod region_sources;
+pub(crate) use region_sources::*;
+mod refine_runtime;
+pub(crate) use refine_runtime::*;
+mod refine_gridfile;
+pub(crate) use refine_gridfile::*;
+mod refine_controls;
+pub(crate) use refine_controls::*;
+pub mod mkgrd_gridinit_driver;
+use mkgrd_gridinit_driver::{
+    run_mkgrd_gridinit_global_namelist, run_mkgrd_regional_clip_base_namelist,
+};
 
 mod hfield_refine;
 pub use hfield_refine::{
     build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
 };
-mod mkgrd_refine_namelist;
-pub use mkgrd_refine_namelist::*;
-mod mkgrd_olam_refine_namelist;
-pub use mkgrd_olam_refine_namelist::run_mkgrd_olam_specified_refine_global_source_namelist;
-mod mkgrd_top_level_dispatch;
-pub use mkgrd_top_level_dispatch::*;
+mod refine_pipeline;
+pub use refine_pipeline::run_refine_pipeline_namelist;
+pub mod mkgrd_top_level_dispatch;
+use mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist;
+
+/// Stable facade for new CLI/GUI integrations. Prefer this over glob-importing
+/// the architecture internals from the crate root.
+pub mod prelude {
+    pub use crate::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff;
+    pub use crate::mkgrd_run_types::{
+        MkgrdTopLevelDefaultRestartRefineRunReport, MkgrdTopLevelDispatchRunReport,
+    };
+    pub use crate::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist;
+    pub use earthmesh_core::DomainMarker;
+    pub use earthmesh_project::prelude::*;
+}

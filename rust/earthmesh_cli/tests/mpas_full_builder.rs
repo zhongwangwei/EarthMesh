@@ -10,7 +10,7 @@ fn mpas_full_builder_composes_geometry_payload_and_writer() {
     let cellwidth = vec![100.0; mesh.w_points.len()];
 
     let mpas =
-        earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth, 9, 3)
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, 9, 3)
             .expect("build full MPAS mesh payload");
 
     assert_eq!(mpas.x_cell.len(), mesh.w_points.len());
@@ -38,19 +38,19 @@ fn mpas_full_builder_composes_geometry_payload_and_writer() {
 }
 
 #[test]
-fn mpas_full_builder_restores_fortran_single_placeholder_payload_shape() {
+fn mpas_full_builder_restores_canonical_single_placeholder_payload_shape() {
     let root = std::env::temp_dir().join(format!(
-        "earthmesh_cli_mpas_full_fortran_placeholder_{}",
+        "earthmesh_cli_mpas_full_canonical_placeholder_{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create temp root");
-    let mesh = fortran_single_placeholder_fixture_mesh();
+    let mesh = canonical_single_placeholder_fixture_mesh();
     let cellwidth = vec![100.0; mesh.w_points.len()];
 
     let mpas =
-        earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth, 9, 3)
-            .expect("build MPAS from Fortran single-placeholder mesh");
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, 9, 3)
+            .expect("build MPAS from Canonical single-placeholder mesh");
     assert_eq!(mpas.x_cell.len(), mesh.w_points.len());
     assert_eq!(mpas.x_vertex.len(), mesh.m_points.len());
 
@@ -67,49 +67,50 @@ fn mpas_full_builder_restores_fortran_single_placeholder_payload_shape() {
 fn mpas_full_builder_rejects_bad_cellwidth_length() {
     let mesh = closed_fixture_mesh();
     let err =
-        earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &[100.0], 9, 3)
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &[100.0], 9, 3)
             .expect_err("bad cellwidth rejected");
     assert!(err.to_string().contains("cellwidth length"));
 }
 
-fn fortran_single_placeholder_fixture_mesh() -> earthmesh_cli::UnstructuredMesh {
-    let legacy = closed_fixture_mesh();
-    earthmesh_cli::UnstructuredMesh {
-        m_points: std::iter::once(legacy.m_points[0])
-            .chain(legacy.m_points[2..].iter().copied())
+fn canonical_single_placeholder_fixture_mesh(
+) -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    let compatibility = closed_fixture_mesh();
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: std::iter::once(compatibility.m_points[0])
+            .chain(compatibility.m_points[2..].iter().copied())
             .collect(),
-        w_points: std::iter::once(legacy.w_points[0])
-            .chain(legacy.w_points[2..].iter().copied())
+        w_points: std::iter::once(compatibility.w_points[0])
+            .chain(compatibility.w_points[2..].iter().copied())
             .collect(),
         m_to_w: std::iter::once([1, 1, 1])
-            .chain(legacy.m_to_w[2..].iter().copied())
+            .chain(compatibility.m_to_w[2..].iter().copied())
             .collect(),
         w_to_m: std::iter::once(vec![1])
-            .chain(legacy.w_to_m[2..].iter().cloned())
+            .chain(compatibility.w_to_m[2..].iter().cloned())
             .collect(),
         n_w_to_m: std::iter::once(0)
-            .chain(legacy.n_w_to_m[2..].iter().copied())
+            .chain(compatibility.n_w_to_m[2..].iter().copied())
             .collect(),
     }
 }
 
-fn closed_fixture_mesh() -> earthmesh_cli::UnstructuredMesh {
-    earthmesh_cli::UnstructuredMesh {
+fn closed_fixture_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.2 },
-            earthmesh_cli::LonLatPoint { lon: 0.8, lat: 0.2 },
-            earthmesh_cli::LonLatPoint { lon: 0.2, lat: 0.8 },
-            earthmesh_cli::LonLatPoint { lon: 0.8, lat: 0.8 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.2, lat: 0.2 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.8, lat: 0.2 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.2, lat: 0.8 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.8, lat: 0.8 },
         ],
         w_points: vec![
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 0.0 },
-            earthmesh_cli::LonLatPoint { lon: 0.0, lat: 1.0 },
-            earthmesh_cli::LonLatPoint { lon: 1.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 1.0, lat: 1.0 },
         ],
         m_to_w: vec![
             [1, 1, 1],
@@ -144,17 +145,18 @@ fn mpas_full_file_pipeline_reads_inputs_and_writes_mesh_plus_graph() {
     let mesh_output = root.join("result/MPASOUT_NXP0009_global.nc4");
     let graph_output = root.join("result/MPASOUT_NXP0009_global.graph.info");
     let mesh = closed_fixture_mesh();
-    earthmesh_cli::write_unstructured_mesh_netcdf(&gridfile, &mesh).expect("write gridfile");
-    earthmesh_cli::write_cellwidth_netcdf(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write gridfile");
+    earthmesh_cli::mesh_metric_writers::write_cellwidth_netcdf(
         &cellwidth_file,
-        &earthmesh_cli::CellwidthMesh {
+        &earthmesh_cli::mesh_metric_writers::CellwidthMesh {
             cell_points: mesh.w_points.clone(),
             cellwidth: vec![100.0; mesh.w_points.len()],
         },
     )
     .expect("write cellwidth");
 
-    let report = earthmesh_cli::write_mpas_mesh_from_netcdf_inputs(
+    let report = earthmesh_cli::gridfile_output_writers::write_mpas_mesh_from_netcdf_inputs(
         &gridfile,
         &cellwidth_file,
         &mesh_output,
@@ -175,12 +177,12 @@ fn mpas_full_file_pipeline_reads_inputs_and_writes_mesh_plus_graph() {
 }
 
 #[test]
-fn mpas_full_builder_nominal_min_dc_uses_fortran_integer_nxp_division() {
+fn mpas_full_builder_nominal_min_dc_uses_canonical_integer_nxp_division() {
     let mesh = closed_fixture_mesh();
     let cellwidth = vec![100.0; mesh.w_points.len()];
 
     let mpas =
-        earthmesh_cli::build_mpas_mesh_from_unstructured_fortran_indexed(&mesh, &cellwidth, 112, 4)
+        earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, 112, 4)
             .expect("build MPAS with non-divisible NXP");
 
     let expected =

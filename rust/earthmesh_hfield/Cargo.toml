@@ -1,11 +1,13 @@
 [package]
 name = "earthmesh_hfield"
-version = "0.1.0"
+version = "3.0.0-alpha2"
 edition = "2021"
 description = "Unified mesh cell-width field h(x): criterion/region composition, spherical gradient limiting, and level quantization for EarthMesh refinement"
-license = "MIT OR Apache-2.0"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
 
 [dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
 
 [dev-dependencies]
 earthmesh_mesh = { path = "../earthmesh_mesh" }

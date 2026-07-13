@@ -24,7 +24,7 @@ pub(crate) fn run_cama_reach_export(
         args.next()
             .ok_or_else(|| usage(&format!("{command} requires an output {output_label} path")))?,
     );
-    let mut bbox: Option<earthmesh_cli::CamaLonLatBbox> = None;
+    let mut bbox: Option<earthmesh_cli::cama_binary_io::CamaLonLatBbox> = None;
     let mut target_dx_km: Option<f64> = None;
     let mut uparea_to_km2 = 1.0e-6_f64;
     let mut y_reversed_storage = true;
@@ -44,7 +44,7 @@ pub(crate) fn run_cama_reach_export(
                     "--bbox north",
                     &next_required_arg(&mut args, "--bbox north")?,
                 )?;
-                bbox = Some(earthmesh_cli::CamaLonLatBbox {
+                bbox = Some(earthmesh_cli::cama_binary_io::CamaLonLatBbox {
                     west,
                     east,
                     south,
@@ -74,7 +74,7 @@ pub(crate) fn run_cama_reach_export(
     let bbox = bbox.ok_or_else(|| usage(&format!("{command} requires --bbox W S E N")))?;
     let target_dx_km =
         target_dx_km.ok_or_else(|| usage(&format!("{command} requires --target-dx-km")))?;
-    let inventory = earthmesh_cli::read_cama_reach_inventory_from_map_dir(
+    let inventory = earthmesh_cli::cama_reach_inventory::read_cama_reach_inventory_from_map_dir(
         &map_dir,
         bbox,
         target_dx_km,
@@ -84,15 +84,19 @@ pub(crate) fn run_cama_reach_export(
     .map_err(|err| err.to_string())?;
     match command {
         "--cama-reach-jsonl" => {
-            let report = earthmesh_cli::write_cama_reach_inventory_jsonl(&inventory, &output)
-                .map_err(|err| err.to_string())?;
+            let report = earthmesh_cli::cama_reach_inventory::write_cama_reach_inventory_jsonl(
+                &inventory, &output,
+            )
+            .map_err(|err| err.to_string())?;
             println!("cama_reach_jsonl={}", report.output.display());
             println!("cama_reach_records={}", report.record_count);
         }
         "--cama-reach-geojson" => {
             let report =
-                earthmesh_cli::write_cama_reach_inventory_point_geojson(&inventory, &output)
-                    .map_err(|err| err.to_string())?;
+                earthmesh_cli::cama_reach_inventory::write_cama_reach_inventory_point_geojson(
+                    &inventory, &output,
+                )
+                .map_err(|err| err.to_string())?;
             println!("cama_reach_geojson={}", report.output.display());
             println!("cama_reach_features={}", report.feature_count);
         }

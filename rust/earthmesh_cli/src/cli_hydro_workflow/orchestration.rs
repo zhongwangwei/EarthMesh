@@ -36,13 +36,14 @@ pub(crate) fn run_coupling_quality_from_mesh(
             "--coupling-quality-from-mesh needs <gridfile.nc> <landtype.nc> <out.json>",
         ));
     }
-    let report = earthmesh_cli::write_coupling_quality_from_gridfile(
-        &positional[0],
-        &positional[1],
-        gridnum_perdegree,
-        &positional[2],
-    )
-    .map_err(|err| format!("coupling quality from mesh: {err}"))?;
+    let report =
+        earthmesh_cli::hydro_delivery_coupling_quality::write_coupling_quality_from_gridfile(
+            &positional[0],
+            &positional[1],
+            gridnum_perdegree,
+            &positional[2],
+        )
+        .map_err(|err| format!("coupling quality from mesh: {err}"))?;
     println!("coupling_quality_verdict={}", report.verdict.as_str());
     println!("coupling_quality_land_cells={}", report.total_land_cells);
     println!("coupling_quality_ocean_cells={}", report.total_ocean_cells);
@@ -97,7 +98,7 @@ pub(crate) fn run_plan_refinement_from_hydro(
             "--plan-refinement-from-hydro needs <cells.geojson> <plan.json>",
         ));
     }
-    let report = earthmesh_cli::plan_refinement_from_hydro_geojson(
+    let report = earthmesh_cli::hydro_delivery_refine_workflow::plan_refinement_from_hydro_geojson(
         &positional[0],
         &positional[1],
         max_level,
@@ -178,7 +179,7 @@ pub(crate) fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(
                     .get(i)
                     .ok_or_else(|| usage("--domain-geojson requires a value"))?;
                 domain = Some(
-                    earthmesh_cli::read_polygon_outer_rings(path)
+                    earthmesh_cli::hydro_delivery_intersections::read_polygon_outer_rings(path)
                         .map_err(|err| format!("read domain geojson: {err}"))?,
                 );
             }
@@ -232,7 +233,7 @@ pub(crate) fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(
             "--mesh and --landtype must be given together (R7 coupling quality)",
         ));
     }
-    let report = earthmesh_cli::run_hydro_workflow(
+    let report = earthmesh_cli::hydro_delivery_refine_workflow::run_hydro_workflow(
         &positional[0],
         &positional[1],
         &positional[2],

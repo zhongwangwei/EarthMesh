@@ -1,6 +1,6 @@
 use earthmesh_core::deg_to_rad;
 
-use crate::coordinates::{dot, magnitude, xyz_to_lonlat_degrees, CartesianPoint};
+use crate::coordinates::{dot, magnitude, CartesianPoint};
 use crate::{spherical_circumcenter_from_barycenter, spring_global_debug};
 
 fn angular_distance_radians(a: CartesianPoint, b: CartesianPoint) -> Option<f64> {
@@ -11,7 +11,7 @@ fn angular_distance_radians(a: CartesianPoint, b: CartesianPoint) -> Option<f64>
     Some((dot(a, b) / mag).clamp(-1.0, 1.0).acos())
 }
 
-fn circumcenter_is_local_enough(
+pub(crate) fn circumcenter_is_local_enough(
     barycenter: CartesianPoint,
     circumcenter: CartesianPoint,
     vertices: [CartesianPoint; 3],
@@ -23,65 +23,41 @@ fn circumcenter_is_local_enough(
         .iter()
         .filter_map(|vertex| angular_distance_radians(barycenter, *vertex))
         .fold(0.0_f64, f64::max);
-
     if max_vertex_distance == 0.0 {
         return false;
     }
 
-    (center_distance <= deg_to_rad(5.0) || center_distance <= 2.5 * max_vertex_distance)
-        && circumcenter_fits_local_lonlat_envelope(barycenter, circumcenter, vertices)
-}
+    let distances = vertices.map(|vertex| angular_distance_radians(circumcenter, vertex));
+    let [Some(distance0), Some(distance1), Some(distance2)] = distances else {
+        return false;
+    };
+    let min_distance = distance0.min(distance1).min(distance2);
+    let max_distance = distance0.max(distance1).max(distance2);
+    let equidistance_tolerance = 256.0 * f64::EPSILON.sqrt();
+    let same_hemisphere = dot(barycenter, circumcenter) > 0.0;
+    let local_distance =
+        center_distance <= deg_to_rad(5.0) || center_distance <= 2.5 * max_vertex_distance;
 
-fn unwrap_lon_around(lon_degrees: f64, reference_degrees: f64) -> f64 {
-    if lon_degrees - reference_degrees > 180.0 {
-        lon_degrees - 360.0
-    } else if lon_degrees - reference_degrees < -180.0 {
-        lon_degrees + 360.0
-    } else {
-        lon_degrees
+    let equidistance_residual = max_distance - min_distance;
+    let valid =
+        same_hemisphere && local_distance && equidistance_residual <= equidistance_tolerance;
+    if !valid {
+        spring_global_debug(&format!(
+            "circumcenter locality rejected: center_distance={center_distance:.9e}, \
+             max_vertex_distance={max_vertex_distance:.9e}, \
+             equidistance_residual={equidistance_residual:.9e}, \
+             same_hemisphere={same_hemisphere}"
+        ));
     }
-}
-
-fn circumcenter_fits_local_lonlat_envelope(
-    barycenter: CartesianPoint,
-    circumcenter: CartesianPoint,
-    vertices: [CartesianPoint; 3],
-) -> bool {
-    let barycenter_lonlat = xyz_to_lonlat_degrees(barycenter);
-    let circumcenter_lonlat = xyz_to_lonlat_degrees(circumcenter);
-    let circumcenter_lon = unwrap_lon_around(
-        circumcenter_lonlat.lon_degrees,
-        barycenter_lonlat.lon_degrees,
-    );
-    let mut min_lon = f64::MAX;
-    let mut max_lon = f64::MIN;
-    let mut min_lat = f64::MAX;
-    let mut max_lat = f64::MIN;
-
-    for vertex in vertices {
-        let vertex_lonlat = xyz_to_lonlat_degrees(vertex);
-        let vertex_lon =
-            unwrap_lon_around(vertex_lonlat.lon_degrees, barycenter_lonlat.lon_degrees);
-        min_lon = min_lon.min(vertex_lon);
-        max_lon = max_lon.max(vertex_lon);
-        min_lat = min_lat.min(vertex_lonlat.lat_degrees);
-        max_lat = max_lat.max(vertex_lonlat.lat_degrees);
-    }
-
-    let lon_margin = ((max_lon - min_lon) * 1.5).max(1.0);
-    let lat_margin = ((max_lat - min_lat) * 1.5).max(1.0);
-    circumcenter_lon >= min_lon - lon_margin
-        && circumcenter_lon <= max_lon + lon_margin
-        && circumcenter_lonlat.lat_degrees >= min_lat - lat_margin
-        && circumcenter_lonlat.lat_degrees <= max_lat + lat_margin
+    valid
 }
 
 /// Batch port of `MOD_grid_preprocess:circumcenter_spherical_calculation`.
 ///
 /// Returns a copy of the incoming M-point Cartesian centers with triangle ids
-/// `2..len` replaced by spherical circumcenters, preserving the Fortran inout
+/// `2..len` replaced by spherical circumcenters, preserving the Canonical inout
 /// behavior for slots not visited by the loop.
-pub fn circumcenter_spherical_mesh_fortran_indexed(
+pub fn circumcenter_spherical_mesh_one_based(
     initial_centers: &[CartesianPoint],
     vertex_points: &[CartesianPoint],
     cells_on_triangle: &[[usize; 3]],
@@ -107,14 +83,13 @@ pub fn circumcenter_spherical_mesh_fortran_indexed(
                     return None;
                 }
             };
-        centers[triangle_id] = if circumcenter_is_local_enough(barycenter, circumcenter, vertices) {
-            circumcenter
-        } else {
+        if !circumcenter_is_local_enough(barycenter, circumcenter, vertices) {
             spring_global_debug(&format!(
-                "circumcenter for triangle {triangle_id} is outside local triangle; using barycenter"
+                "circumcenter for triangle {triangle_id} is outside the local triangle"
             ));
-            barycenter
-        };
+            return None;
+        }
+        centers[triangle_id] = circumcenter;
     }
 
     Some(centers)

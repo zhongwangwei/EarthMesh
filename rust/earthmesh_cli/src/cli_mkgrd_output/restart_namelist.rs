@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn write_olam_restart_refine_namelist(
+pub(crate) fn write_restart_refine_namelist(
     namelist: &str,
     workdir: &Path,
     initial_gridfile: &Path,
@@ -63,7 +63,7 @@ pub(crate) fn write_olam_restart_refine_namelist(
         .map_err(|err| err.to_string())?
         .as_nanos();
     let path = workdir.join(format!(
-        "earthmesh_olam_restart_refine_{}_{}.nml",
+        "earthmesh_restart_refine_{}_{}.nml",
         std::process::id(),
         stamp
     ));

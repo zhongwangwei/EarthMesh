@@ -1,16 +1,39 @@
 use std::io;
 use std::path::Path;
 
-use crate::{read_gridfile_mesh_points, MaskPostprocFinalizationReport};
+use crate::{
+    read_gridfile_mesh_points, MaskPostprocFinalizationReport, MethodCGridfileMetadataSlices,
+};
 
 pub(crate) struct OptionalRefineLevelVectors {
     pub m: Vec<i32>,
+    pub m_orig: Vec<i32>,
+    pub m_ngr: Vec<i32>,
     pub w: Vec<i32>,
+    pub w_orig: Vec<i32>,
+    pub w_ngr: Vec<i32>,
 }
 
 pub(crate) struct FinalRefineLevelVectors {
     pub m: Option<Vec<i32>>,
+    pub m_orig: Option<Vec<i32>>,
+    pub m_ngr: Option<Vec<i32>>,
     pub w: Option<Vec<i32>>,
+    pub w_orig: Option<Vec<i32>>,
+    pub w_ngr: Option<Vec<i32>>,
+}
+
+impl FinalRefineLevelVectors {
+    pub(crate) fn slices(&self) -> MethodCGridfileMetadataSlices<'_> {
+        MethodCGridfileMetadataSlices {
+            m_refine_level: self.m.as_deref(),
+            m_refine_level_orig: self.m_orig.as_deref(),
+            m_ngr: self.m_ngr.as_deref(),
+            w_refine_level: self.w.as_deref(),
+            w_refine_level_orig: self.w_orig.as_deref(),
+            w_ngr: self.w_ngr.as_deref(),
+        }
+    }
 }
 
 pub(crate) fn refine_levels_from_gridfile(
@@ -19,7 +42,11 @@ pub(crate) fn refine_levels_from_gridfile(
     let mesh = read_gridfile_mesh_points(gridfile)?;
     Ok(OptionalRefineLevelVectors {
         m: mesh.m_refine_level,
+        m_orig: mesh.m_refine_level_orig,
+        m_ngr: mesh.m_ngr,
         w: mesh.w_refine_level,
+        w_orig: mesh.w_refine_level_orig,
+        w_ngr: mesh.w_ngr,
     })
 }
 
@@ -52,6 +79,7 @@ pub(crate) fn final_refine_levels_for_mask_postproc(
                     &report.vertex_reindex.sorted_vertices,
                     report.mesh.w_points.len(),
                 ),
+                ..empty_final_metadata()
             })
         }
         "hex" => {
@@ -74,10 +102,63 @@ pub(crate) fn final_refine_levels_for_mask_postproc(
                     ustr_points,
                     report.mesh.w_points.len(),
                 ),
+                ..empty_final_metadata()
             })
         }
-        _ => Ok(FinalRefineLevelVectors { m: None, w: None }),
+        _ => Ok(empty_final_metadata()),
     }
+}
+
+fn empty_final_metadata() -> FinalRefineLevelVectors {
+    FinalRefineLevelVectors {
+        m: None,
+        m_orig: None,
+        m_ngr: None,
+        w: None,
+        w_orig: None,
+        w_ngr: None,
+    }
+}
+
+pub(crate) fn final_method_c_metadata_for_mask_postproc(
+    mode_grid: &str,
+    report: &MaskPostprocFinalizationReport,
+    is_in_domain: &[i32],
+    ustr_points: usize,
+    source: &OptionalRefineLevelVectors,
+) -> io::Result<FinalRefineLevelVectors> {
+    let current = final_refine_levels_for_mask_postproc(
+        mode_grid,
+        report,
+        is_in_domain,
+        ustr_points,
+        &source.m,
+        &source.w,
+    )?;
+    let original = final_refine_levels_for_mask_postproc(
+        mode_grid,
+        report,
+        is_in_domain,
+        ustr_points,
+        &source.m_orig,
+        &source.w_orig,
+    )?;
+    let ngr = final_refine_levels_for_mask_postproc(
+        mode_grid,
+        report,
+        is_in_domain,
+        ustr_points,
+        &source.m_ngr,
+        &source.w_ngr,
+    )?;
+    Ok(FinalRefineLevelVectors {
+        m: current.m,
+        m_orig: original.m,
+        m_ngr: ngr.m,
+        w: current.w,
+        w_orig: original.w,
+        w_ngr: ngr.w,
+    })
 }
 
 pub(crate) fn final_refine_levels_from_gridfile_for_mask_postproc(
@@ -88,13 +169,12 @@ pub(crate) fn final_refine_levels_from_gridfile_for_mask_postproc(
     ustr_points: usize,
 ) -> io::Result<FinalRefineLevelVectors> {
     let source_levels = refine_levels_from_gridfile(source_gridfile)?;
-    final_refine_levels_for_mask_postproc(
+    final_method_c_metadata_for_mask_postproc(
         mode_grid,
         report,
         is_in_domain,
         ustr_points,
-        &source_levels.m,
-        &source_levels.w,
+        &source_levels,
     )
 }
 

@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    build_area_judge_domain_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_domain_builders::build_area_judge_domain_one_based,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -63,7 +64,7 @@ fn domain_orchestration_builds_non_global_mask_domain_from_sources() {
     .expect("write second domain source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
 
-    let report = build_area_judge_domain_fortran_indexed(
+    let report = build_area_judge_domain_one_based(
         &root,
         false,
         "bbox",
@@ -100,7 +101,7 @@ fn domain_orchestration_preserves_global_domain_shortcut() {
     let root = temp_root("area_judge_domain_global");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
 
-    let report = build_area_judge_domain_fortran_indexed(
+    let report = build_area_judge_domain_one_based(
         &root,
         true,
         "bbox",

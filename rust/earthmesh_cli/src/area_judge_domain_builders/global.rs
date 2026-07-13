@@ -1,11 +1,10 @@
+use crate::AreaJudgeDomainInitializationReport;
 use std::io;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-use crate::*;
-
 /// Initialize the global-domain branch of `MOD_Area_judge.F90:Area_judge`.
-pub fn initialize_area_judge_global_domain_fortran_indexed(
+pub fn initialize_area_judge_global_domain_one_based(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgeDomainInitializationReport> {

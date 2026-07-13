@@ -1,6 +1,9 @@
 use std::fs;
 
-use earthmesh_cli::{read_close_mesh_netcdf, write_close_mesh_netcdf, LonLatPoint};
+use earthmesh_cli::{
+    close_mesh_io::read_close_mesh_netcdf, close_mesh_io::write_close_mesh_netcdf,
+    coordinate_types::LonLatPoint,
+};
 
 #[test]
 fn close_mesh_reader_writer_match_mod_file_preprocess_schema_without_refine_var() {

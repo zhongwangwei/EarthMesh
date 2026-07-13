@@ -19,8 +19,10 @@ fn run_mkgrd_gridinit_global_namelist_writes_initial_gridfile() {
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
-        .expect("run Rust mkgrd gridinit path");
+    let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
+        &namelist, &root, 100,
+    )
+    .expect("run Rust mkgrd gridinit path");
 
     assert_eq!(report.config.nxp, 1);
     assert_eq!(report.config.mode_grid, "hex");
@@ -113,14 +115,14 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
     let mode_file = root.join("source_mode.nc4");
-    let source_mesh = earthmesh_cli::UnstructuredMesh {
-        m_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 1.0 }],
-        w_points: vec![earthmesh_cli::LonLatPoint { lon: 2.0, lat: 3.0 }],
+    let source_mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 }],
+        w_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 2.0, lat: 3.0 }],
         m_to_w: vec![[1, 1, 1]],
         w_to_m: vec![vec![1, 1, 1, 1, 1, 1, 1]],
         n_w_to_m: vec![1],
     };
-    earthmesh_cli::write_unstructured_mesh_netcdf(&mode_file, &source_mesh)
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&mode_file, &source_mesh)
         .expect("write source EarthMesh mode file");
 
     let namelist = root.join("mkgrd_existing.nml");
@@ -134,8 +136,10 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
-        .expect("copy existing EarthMesh mode file");
+    let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
+        &namelist, &root, 100,
+    )
+    .expect("copy existing EarthMesh mode file");
 
     assert_eq!(report.gridfile.sjx_points, 1);
     assert_eq!(report.gridfile.lbx_points, 1);
@@ -184,8 +188,10 @@ fn run_mkgrd_gridinit_global_converts_existing_mpas_mode_file() {
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
-        .expect("convert MPAS mode file");
+    let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
+        &namelist, &root, 100,
+    )
+    .expect("convert MPAS mode file");
 
     assert_eq!(report.gridfile.sjx_points, 3);
     assert_eq!(report.gridfile.lbx_points, 3);
@@ -220,21 +226,25 @@ fn run_mkgrd_gridinit_global_converts_existing_mpas_mode_file() {
             .expect("itab_m%iw")
             .get_values::<i32, _>((.., ..))
             .expect("read itab_m%iw"),
-        vec![1, 1, 1, 2, 3, 1, 3, 2, 1]
+        vec![1, 1, 1, 1, 2, 1, 2, 1, 1]
     );
     assert_eq!(
         file.variable("itab_w%im")
             .expect("itab_w%im")
             .get_values::<i32, _>((.., ..))
             .expect("read itab_w%im"),
-        vec![1, 0, 0, 0, 0, 0, 0, 2, 3, 1, 1, 0, 0, 0, 3, 2, 1, 1, 0, 0, 0]
+        vec![
+            1, 0, 0, 0, 0, 0, 0, //
+            1, 2, 1, 1, 0, 0, 0, //
+            2, 1, 1, 1, 0, 0, 0,
+        ]
     );
     assert_eq!(
         file.variable("n_ngrwm")
             .expect("n_ngrwm")
             .get_values::<i32, _>(..)
             .expect("read n_ngrwm"),
-        vec![1, 4, 4]
+        vec![1, 2, 2]
     );
 
     let _ = fs::remove_dir_all(&root);
@@ -260,8 +270,10 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
-        .expect("convert FVCOM mode file");
+    let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
+        &namelist, &root, 100,
+    )
+    .expect("convert FVCOM mode file");
 
     assert_eq!(report.gridfile.sjx_points, 3);
     assert_eq!(report.gridfile.lbx_points, 4);
@@ -288,7 +300,7 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
             .expect("itab_m%iw")
             .get_values::<i32, _>((.., ..))
             .expect("read itab_m%iw"),
-        vec![1, 1, 1, 2, 3, 4, 4, 3, 2]
+        vec![1, 1, 1, 1, 2, 3, 3, 2, 1]
     );
     assert_eq!(
         file.variable("itab_w%im")
@@ -297,9 +309,9 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
             .expect("read itab_w%im"),
         vec![
             1, 1, 1, 1, 1, 1, 1, //
-            2, 3, 1, 1, 1, 1, 1, //
-            3, 4, 2, 1, 1, 1, 1, //
-            4, 3, 2, 1, 1, 1, 1,
+            1, 2, 1, 1, 1, 1, 1, //
+            2, 1, 1, 1, 1, 1, 1, //
+            2, 1, 1, 1, 1, 1, 1,
         ]
     );
     assert_eq!(
@@ -307,7 +319,7 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
             .expect("n_ngrwm")
             .get_values::<i32, _>(..)
             .expect("read n_ngrwm"),
-        vec![0, 2, 3, 3]
+        vec![0, 2, 2, 2]
     );
 
     let _ = fs::remove_dir_all(&root);
@@ -332,8 +344,10 @@ fn run_mkgrd_gridinit_global_converts_existing_iap_ocean_mode_file() {
     )
     .expect("write namelist");
 
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
-        .expect("convert IAP-Ocean mode file");
+    let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
+        &namelist, &root, 100,
+    )
+    .expect("convert IAP-Ocean mode file");
 
     assert_eq!(report.gridfile.sjx_points, 2);
     assert_eq!(report.gridfile.lbx_points, 4);
@@ -401,7 +415,8 @@ fn run_mkgrd_gridinit_global_converts_existing_iap_ocean_mode_file() {
 }
 
 fn write_synthetic_mpas_mode_file(path: &std::path::Path) {
-    let mut file = netcdf::create(path).expect("create synthetic MPAS mode file");
+    let mut file =
+        earthmesh_cli::create_netcdf_quiet(path).expect("create synthetic MPAS mode file");
     file.add_dimension("nVertices", 2).expect("nVertices");
     file.add_dimension("nCells", 2).expect("nCells");
     file.add_dimension("maxEdges", 4).expect("maxEdges");
@@ -452,12 +467,15 @@ fn write_synthetic_mpas_mode_file(path: &std::path::Path) {
         let mut var = file
             .add_variable::<i32>("nEdgesOnCell", &["nCells"])
             .expect("nEdgesOnCell");
-        var.put_values(&[4, 4], ..).expect("write nEdgesOnCell");
+        // Standard MPAS is 1-based and uses trailing zero padding beyond the
+        // active nEdgesOnCell entries.
+        var.put_values(&[2, 2], ..).expect("write nEdgesOnCell");
     }
 }
 
 fn write_synthetic_fvcom_mode_file(path: &std::path::Path) {
-    let mut file = netcdf::create(path).expect("create synthetic FVCOM mode file");
+    let mut file =
+        earthmesh_cli::create_netcdf_quiet(path).expect("create synthetic FVCOM mode file");
     file.add_dimension("maxelem", 7).expect("maxelem");
     file.add_dimension("node", 3).expect("node");
     file.add_dimension("nele", 2).expect("nele");
@@ -493,8 +511,8 @@ fn write_synthetic_fvcom_mode_file(path: &std::path::Path) {
         var.put_values(
             &[
                 1, 2, 0, 0, 0, 0, 0, //
-                2, 3, 1, 0, 0, 0, 0, //
-                3, 2, 1, 0, 0, 0, 0,
+                2, 1, 0, 0, 0, 0, 0, //
+                2, 1, 0, 0, 0, 0, 0,
             ],
             (.., ..),
         )
@@ -502,12 +520,13 @@ fn write_synthetic_fvcom_mode_file(path: &std::path::Path) {
     }
     {
         let mut var = file.add_variable::<i32>("ntve", &["node"]).expect("ntve");
-        var.put_values(&[2, 3, 3], ..).expect("write ntve");
+        var.put_values(&[2, 2, 2], ..).expect("write ntve");
     }
 }
 
 fn write_synthetic_iap_ocean_mode_file(path: &std::path::Path) {
-    let mut file = netcdf::create(path).expect("create synthetic IAP-Ocean mode file");
+    let mut file =
+        earthmesh_cli::create_netcdf_quiet(path).expect("create synthetic IAP-Ocean mode file");
     file.add_dimension("sjx_points", 1).expect("sjx_points");
     file.add_dimension("lbx_points", 3).expect("lbx_points");
     file.add_dimension("dimb", 3).expect("dimb");
@@ -550,16 +569,16 @@ fn assert_close(actual: f64, expected: f64, tolerance: f64) {
 
 #[test]
 #[ignore = "NXP64 full Rust gridinit parity writes a large gridfile and takes about two minutes"]
-fn run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture() {
+fn run_mkgrd_gridinit_global_matches_canonical_nxp64_gridfile_fixture() {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("repo root");
-    let reference = repo_root.join(
+    let canonical = repo_root.join(
         "cases/ATMOS_hex_N64_refine2_global_LOM67_251027/gridfile/gridfile_NXP0064_01_hex.nc4",
     );
-    if !reference.exists() {
-        eprintln!("skip: missing reference fixture {reference:?}");
+    if !canonical.exists() {
+        eprintln!("skip: missing canonical fixture {canonical:?}");
         return;
     }
 
@@ -580,13 +599,15 @@ fn run_mkgrd_gridinit_global_matches_fortran_nxp64_gridfile_fixture() {
     )
     .expect("write NXP64 namelist");
 
-    let report = earthmesh_cli::run_mkgrd_gridinit_global_namelist(&namelist, &root, 100)
-        .expect("run Rust NXP64 mkgrd gridinit path");
+    let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
+        &namelist, &root, 100,
+    )
+    .expect("run Rust NXP64 mkgrd gridinit path");
     assert_eq!(report.gridfile.sjx_points, 81921);
     assert_eq!(report.gridfile.lbx_points, 40963);
 
     let produced = netcdf::open(&report.gridfile.output).expect("open produced gridfile");
-    let expected = netcdf::open(&reference).expect("open reference gridfile");
+    let expected = netcdf::open(&canonical).expect("open canonical gridfile");
     assert_eq!(
         produced
             .dimension("sjx_points")

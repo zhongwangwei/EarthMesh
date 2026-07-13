@@ -10,9 +10,9 @@ pub struct VertexReindex {
 /// Port of `MOD_mask_postproc.F90:extract_unique_vertices`.
 ///
 /// The input is Rust row-major by center id: `center_neighbors[j][i]` mirrors
-/// Fortran `ustr_ngr_center_f(i, j)`. Slot `1` is preserved as the legacy empty
+/// Canonical `ustr_ngr_center_f(i, j)`. Slot `1` is preserved as the compatibility empty
 /// vertex placeholder and the scan starts at center id `2`.
-pub fn extract_unique_vertices_fortran_indexed(
+pub fn extract_unique_vertices_one_based(
     center_neighbors: &[Vec<usize>],
     neighbor_counts: &[usize],
     max_vertex_id: usize,
@@ -42,7 +42,7 @@ pub fn extract_unique_vertices_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {center_id} references vertex {vertex_id}, outside 0..={max_vertex_id}"
+                        "center {center_id} canonicals vertex {vertex_id}, outside 0..={max_vertex_id}"
                     ),
                 ));
             }
@@ -58,7 +58,7 @@ pub fn extract_unique_vertices_fortran_indexed(
 
 /// Port of `MOD_mask_postproc.F90:sort_and_reindex`.
 ///
-/// Returns the sorted unique vertex list and the Fortran-style old vertex id to
+/// Returns the sorted unique vertex list and the Canonical-style old vertex id to
 /// new compact id mapping. Mapping slot `0` is retained but unused.
 pub fn sort_and_reindex_vertices(
     unique_vertices: &[usize],
@@ -87,9 +87,9 @@ pub fn sort_and_reindex_vertices(
 /// Port of the final `ustr_ngr_center_f = vertex_mapping(ustr_ngr_center_f)`
 /// loop in `MOD_mask_postproc.F90:mask_postproc_*`.
 ///
-/// The scan preserves Fortran indexing by leaving rows `0` and `1` untouched
+/// The scan preserves Canonical indexing by leaving rows `0` and `1` untouched
 /// and only remapping slots covered by `center_neighbor_counts`.
-pub fn reindex_final_center_vertices_fortran_indexed(
+pub fn reindex_final_center_vertices_one_based(
     center_neighbors_final: &[Vec<usize>],
     center_neighbor_counts_final: &[usize],
     vertex_mapping: &[usize],
@@ -116,14 +116,14 @@ pub fn reindex_final_center_vertices_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {center_id} references vertex {old_vertex_id}, outside vertex_mapping"
+                        "center {center_id} canonicals vertex {old_vertex_id}, outside vertex_mapping"
                     ),
                 ));
             };
             if new_vertex_id == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("center {center_id} references unmapped vertex {old_vertex_id}"),
+                    format!("center {center_id} canonicals unmapped vertex {old_vertex_id}"),
                 ));
             }
             reindexed[center_id][slot] = new_vertex_id;

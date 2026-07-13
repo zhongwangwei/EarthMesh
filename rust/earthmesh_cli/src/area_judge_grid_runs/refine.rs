@@ -1,14 +1,15 @@
+use crate::run_area_judge_refine_one_based;
+use crate::AreaJudgeRefineGridRunConfig;
+use crate::AreaJudgeRefineGridRunReport;
 use std::io;
-
-use crate::*;
 
 use super::writer::write_area_judge_selected_grid_report;
 
 /// Run one `Area_judge_refine(iter)` step and write its selected refine grid.
-pub fn run_area_judge_refine_grid_fortran_indexed(
+pub fn run_area_judge_refine_grid_one_based(
     config: AreaJudgeRefineGridRunConfig<'_>,
 ) -> io::Result<AreaJudgeRefineGridRunReport> {
-    let refine_step = run_area_judge_refine_fortran_indexed(
+    let refine_step = run_area_judge_refine_one_based(
         config.file_dir,
         config.iter,
         config.calculated_refine,

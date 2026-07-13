@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    run_area_judge_refine_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_refine_steps::run_area_judge_refine_one_based, bbox_mask_io::write_bbox_mask_netcdf,
+    bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -57,7 +58,7 @@ fn refine_step_iter_zero_activates_calculated_grid_without_reading_sources() {
         minlat_source: 3,
     };
 
-    let report = run_area_judge_refine_fortran_indexed(
+    let report = run_area_judge_refine_one_based(
         &root,
         0,
         Some((&calculated, calculated_bounds)),
@@ -102,7 +103,7 @@ fn refine_step_iter_positive_reads_specified_sources() {
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
     let domain = full_domain(6, 6);
 
-    let report = run_area_judge_refine_fortran_indexed(
+    let report = run_area_judge_refine_one_based(
         &root,
         2,
         None,

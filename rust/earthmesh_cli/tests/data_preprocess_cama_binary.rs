@@ -35,7 +35,7 @@ fn cama_elevtn_reader_reads_y_reversed_float32_window_and_classifies_surface() {
         ],
     );
 
-    let grid = earthmesh_cli::CamaBinaryGridSpec {
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
         nx: 4,
         ny: 3,
         west: 100.0,
@@ -49,7 +49,7 @@ fn cama_elevtn_reader_reads_y_reversed_float32_window_and_classifies_surface() {
         .expect("bbox overlaps grid");
     assert_eq!(
         window,
-        earthmesh_cli::CamaBinaryWindow {
+        earthmesh_cli::cama_binary_io::CamaBinaryWindow {
             x_start: 1,
             y_start: 0,
             width: 2,
@@ -57,9 +57,13 @@ fn cama_elevtn_reader_reads_y_reversed_float32_window_and_classifies_surface() {
         }
     );
 
-    let report =
-        earthmesh_cli::read_cama_elevtn_surface_window(&elevtn_path, grid, window, -9999.0)
-            .expect("read CaMa elevtn window");
+    let report = earthmesh_cli::cama_binary_window_readers::read_cama_elevtn_surface_window(
+        &elevtn_path,
+        grid,
+        window,
+        -9999.0,
+    )
+    .expect("read CaMa elevtn window");
 
     assert_eq!(report.window, window);
     assert_eq!(report.elevation[0], vec![20.0, -9999.0]);
@@ -70,16 +74,16 @@ fn cama_elevtn_reader_reads_y_reversed_float32_window_and_classifies_surface() {
         report.surface_mask,
         vec![
             vec![
-                earthmesh_cli::CamaSurfaceClass::Land,
-                earthmesh_cli::CamaSurfaceClass::Ocean
+                earthmesh_cli::cama_binary_io::CamaSurfaceClass::Land,
+                earthmesh_cli::cama_binary_io::CamaSurfaceClass::Ocean
             ],
             vec![
-                earthmesh_cli::CamaSurfaceClass::Land,
-                earthmesh_cli::CamaSurfaceClass::Ocean
+                earthmesh_cli::cama_binary_io::CamaSurfaceClass::Land,
+                earthmesh_cli::cama_binary_io::CamaSurfaceClass::Ocean
             ],
             vec![
-                earthmesh_cli::CamaSurfaceClass::Land,
-                earthmesh_cli::CamaSurfaceClass::Land
+                earthmesh_cli::cama_binary_io::CamaSurfaceClass::Land,
+                earthmesh_cli::cama_binary_io::CamaSurfaceClass::Land
             ],
         ]
     );
@@ -106,7 +110,7 @@ fn cama_nextxy_reader_reads_planar_int32_topology_and_converts_to_logical_zero_b
     let root = temp_root("data_preprocess_cama_nextxy_binary");
     let nextxy_path = root.join("nextxy.bin");
 
-    let grid = earthmesh_cli::CamaBinaryGridSpec {
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
         nx: 4,
         ny: 3,
         west: 100.0,
@@ -115,7 +119,7 @@ fn cama_nextxy_reader_reads_planar_int32_topology_and_converts_to_logical_zero_b
         little_endian: true,
         y_reversed_storage: true,
     };
-    let window = earthmesh_cli::CamaBinaryWindow {
+    let window = earthmesh_cli::cama_binary_io::CamaBinaryWindow {
         x_start: 1,
         y_start: 0,
         width: 2,
@@ -145,13 +149,21 @@ fn cama_nextxy_reader_reads_planar_int32_topology_and_converts_to_logical_zero_b
         ],
     );
 
-    let report = earthmesh_cli::read_cama_nextxy_window(&nextxy_path, grid, window)
-        .expect("read CaMa nextxy topology window");
+    let report = earthmesh_cli::cama_binary_window_readers::read_cama_nextxy_window(
+        &nextxy_path,
+        grid,
+        window,
+    )
+    .expect("read CaMa nextxy topology window");
 
     assert_eq!(report.grid, grid);
     assert_eq!(report.window, window);
     assert_eq!(report.next_x, vec![vec![1, 0], vec![2, 1], vec![0, 1]]);
     assert_eq!(report.next_y, vec![vec![1, 0], vec![2, 0], vec![0, 1]]);
+    assert_eq!(
+        report.terminal_or_ocean,
+        vec![vec![false, true], vec![false, false], vec![false, false]]
+    );
     assert_eq!(report.valid_downstream_links, 5);
     assert_eq!(report.terminal_or_ocean_links, 1);
 
@@ -165,7 +177,7 @@ fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
     let uparea_path = root.join("uparea.bin");
     let rivlen_path = root.join("rivlen.bin");
 
-    let grid = earthmesh_cli::CamaBinaryGridSpec {
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
         nx: 4,
         ny: 3,
         west: 100.0,
@@ -174,7 +186,7 @@ fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
         little_endian: true,
         y_reversed_storage: true,
     };
-    let window = earthmesh_cli::CamaBinaryWindow {
+    let window = earthmesh_cli::cama_binary_io::CamaBinaryWindow {
         x_start: 1,
         y_start: 0,
         width: 2,
@@ -206,14 +218,17 @@ fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
         ],
     );
 
-    let width = earthmesh_cli::read_cama_float32_metric_window(
+    let width = earthmesh_cli::cama_binary_window_readers::read_cama_float32_metric_window(
         &width_path,
         grid,
         window,
-        earthmesh_cli::CamaMetricKind::RiverWidth,
+        earthmesh_cli::cama_binary_io::CamaMetricKind::RiverWidth,
     )
     .expect("read width metric");
-    assert_eq!(width.kind, earthmesh_cli::CamaMetricKind::RiverWidth);
+    assert_eq!(
+        width.kind,
+        earthmesh_cli::cama_binary_io::CamaMetricKind::RiverWidth
+    );
     assert_eq!(
         width.values,
         vec![vec![1.5, 0.0], vec![5.0, -1.0], vec![7.0, 8.0]]
@@ -221,11 +236,11 @@ fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
     assert_eq!(width.positive_cells, 4);
     assert_eq!(width.non_positive_or_invalid_cells, 2);
 
-    let uparea = earthmesh_cli::read_cama_float32_metric_window(
+    let uparea = earthmesh_cli::cama_binary_window_readers::read_cama_float32_metric_window(
         &uparea_path,
         grid,
         window,
-        earthmesh_cli::CamaMetricKind::UpstreamArea,
+        earthmesh_cli::cama_binary_io::CamaMetricKind::UpstreamArea,
     )
     .expect("read uparea metric");
     assert_eq!(
@@ -234,11 +249,11 @@ fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
     );
     assert_eq!(uparea.positive_cells, 5);
 
-    let rivlen = earthmesh_cli::read_cama_float32_metric_window(
+    let rivlen = earthmesh_cli::cama_binary_window_readers::read_cama_float32_metric_window(
         &rivlen_path,
         grid,
         window,
-        earthmesh_cli::CamaMetricKind::RiverLength,
+        earthmesh_cli::cama_binary_io::CamaMetricKind::RiverLength,
     )
     .expect("read rivlen metric");
     assert_eq!(
@@ -252,7 +267,7 @@ fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
 
 #[test]
 fn cama_reach_inventory_combines_metrics_and_nextxy_into_river_source_records() {
-    let grid = earthmesh_cli::CamaBinaryGridSpec {
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
         nx: 4,
         ny: 3,
         west: 100.0,
@@ -261,46 +276,47 @@ fn cama_reach_inventory_combines_metrics_and_nextxy_into_river_source_records() 
         little_endian: true,
         y_reversed_storage: true,
     };
-    let window = earthmesh_cli::CamaBinaryWindow {
+    let window = earthmesh_cli::cama_binary_io::CamaBinaryWindow {
         x_start: 1,
         y_start: 0,
         width: 2,
         height: 2,
     };
-    let uparea = earthmesh_cli::CamaMetricWindowReport {
+    let uparea = earthmesh_cli::cama_binary_io::CamaMetricWindowReport {
         grid,
         window,
-        kind: earthmesh_cli::CamaMetricKind::UpstreamArea,
+        kind: earthmesh_cli::cama_binary_io::CamaMetricKind::UpstreamArea,
         values: vec![vec![10.0, 20.0], vec![30.0, 40.0]],
         positive_cells: 4,
         non_positive_or_invalid_cells: 0,
     };
-    let width = earthmesh_cli::CamaMetricWindowReport {
+    let width = earthmesh_cli::cama_binary_io::CamaMetricWindowReport {
         grid,
         window,
-        kind: earthmesh_cli::CamaMetricKind::RiverWidth,
+        kind: earthmesh_cli::cama_binary_io::CamaMetricKind::RiverWidth,
         values: vec![vec![5.0, 0.0], vec![7.5, 8.5]],
         positive_cells: 3,
         non_positive_or_invalid_cells: 1,
     };
-    let rivlen = earthmesh_cli::CamaMetricWindowReport {
+    let rivlen = earthmesh_cli::cama_binary_io::CamaMetricWindowReport {
         grid,
         window,
-        kind: earthmesh_cli::CamaMetricKind::RiverLength,
+        kind: earthmesh_cli::cama_binary_io::CamaMetricKind::RiverLength,
         values: vec![vec![100.0, 200.0], vec![0.0, 400.0]],
         positive_cells: 3,
         non_positive_or_invalid_cells: 1,
     };
-    let nextxy = earthmesh_cli::CamaNextxyWindowReport {
+    let nextxy = earthmesh_cli::cama_binary_io::CamaNextxyWindowReport {
         grid,
         window,
-        next_x: vec![vec![0, 1], vec![2, 0]],
-        next_y: vec![vec![0, 1], vec![0, 0]],
+        next_x: vec![vec![0, 1], vec![2, -9]],
+        next_y: vec![vec![0, 1], vec![0, -9]],
+        terminal_or_ocean: vec![vec![false, false], vec![false, true]],
         valid_downstream_links: 3,
         terminal_or_ocean_links: 1,
     };
 
-    let inventory = earthmesh_cli::build_cama_reach_inventory(
+    let inventory = earthmesh_cli::cama_reach_inventory::build_cama_reach_inventory(
         grid, window, 2.5, 1000.0, &uparea, &width, &rivlen, &nextxy,
     )
     .expect("build CaMa reach inventory");
@@ -317,13 +333,13 @@ fn cama_reach_inventory_combines_metrics_and_nextxy_into_river_source_records() 
     assert_eq!(inventory.records[0].width_m, 5.0);
     assert_eq!(inventory.records[0].river_length_m, 100.0);
     assert_eq!(inventory.records[0].target_dx_km, 2.5);
-    assert!(inventory.records[0].is_estuary);
+    assert!(!inventory.records[0].is_estuary);
 
     assert_eq!(inventory.records[1].reach_id, "cama-1-2");
     assert_eq!(inventory.records[1].x_index, 2);
     assert_eq!(inventory.records[1].y_index, 1);
-    assert_eq!(inventory.records[1].downstream_x, 0);
-    assert_eq!(inventory.records[1].downstream_y, 0);
+    assert_eq!(inventory.records[1].downstream_x, -9);
+    assert_eq!(inventory.records[1].downstream_y, -9);
     assert!(inventory.records[1].is_estuary);
     assert_eq!(inventory.records[1].upstream_area_km2, 40000.0);
     assert_eq!(inventory.records[1].width_m, 8.5);
@@ -335,7 +351,7 @@ fn cama_map_dir_loader_reads_params_bbox_and_prefers_rivwth_for_reach_inventory(
     let root = temp_root("data_preprocess_cama_map_dir_loader");
     fs::write(
         root.join("params.txt"),
-        "4\n3\n1\n0.5\n100.0\n102.0\n10.0\n11.5\n",
+        "4 !! endian=little\n3\n1\n0.5\n100.0\n102.0\n10.0\n11.5\n",
     )
     .expect("write params.txt");
 
@@ -374,14 +390,14 @@ fn cama_map_dir_loader_reads_params_bbox_and_prefers_rivwth_for_reach_inventory(
     write_i32_planes(
         &root.join("nextxy.bin"),
         &[
-            vec![vec![0, 1, 2, 3], vec![0, 1, 2, 3], vec![0, 1, 0, 3]],
-            vec![vec![0, 3, 2, 1], vec![0, 2, 1, 3], vec![0, 1, 0, 3]],
+            vec![vec![0, 1, 2, 3], vec![0, 1, 2, 3], vec![0, 1, -9, 3]],
+            vec![vec![0, 3, 2, 1], vec![0, 2, 1, 3], vec![0, 1, -9, 3]],
         ],
     );
 
-    let inventory = earthmesh_cli::read_cama_reach_inventory_from_map_dir(
+    let inventory = earthmesh_cli::cama_reach_inventory::read_cama_reach_inventory_from_map_dir(
         &root,
-        earthmesh_cli::CamaLonLatBbox {
+        earthmesh_cli::cama_binary_io::CamaLonLatBbox {
             west: 100.5,
             east: 101.5,
             south: 10.0,
@@ -395,7 +411,7 @@ fn cama_map_dir_loader_reads_params_bbox_and_prefers_rivwth_for_reach_inventory(
 
     assert_eq!(
         inventory.window,
-        earthmesh_cli::CamaBinaryWindow {
+        earthmesh_cli::cama_binary_io::CamaBinaryWindow {
             x_start: 1,
             y_start: 0,
             width: 2,
@@ -420,7 +436,7 @@ fn cama_map_dir_loader_reads_params_bbox_and_prefers_rivwth_for_reach_inventory(
 fn cama_reach_inventory_jsonl_export_writes_hydro_source_records() {
     let root = temp_root("data_preprocess_cama_jsonl_export");
     let output = root.join("cama_reaches.jsonl");
-    let grid = earthmesh_cli::CamaBinaryGridSpec {
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
         nx: 2,
         ny: 1,
         west: 100.0,
@@ -429,17 +445,17 @@ fn cama_reach_inventory_jsonl_export_writes_hydro_source_records() {
         little_endian: true,
         y_reversed_storage: false,
     };
-    let window = earthmesh_cli::CamaBinaryWindow {
+    let window = earthmesh_cli::cama_binary_io::CamaBinaryWindow {
         x_start: 0,
         y_start: 0,
         width: 2,
         height: 1,
     };
-    let inventory = earthmesh_cli::CamaReachInventoryReport {
+    let inventory = earthmesh_cli::cama_binary_io::CamaReachInventoryReport {
         grid,
         window,
         records: vec![
-            earthmesh_cli::CamaReachRecord {
+            earthmesh_cli::cama_binary_io::CamaReachRecord {
                 reach_id: "cama-0-0".to_string(),
                 x_index: 0,
                 y_index: 0,
@@ -454,7 +470,7 @@ fn cama_reach_inventory_jsonl_export_writes_hydro_source_records() {
                 downstream_x: 1,
                 downstream_y: 0,
             },
-            earthmesh_cli::CamaReachRecord {
+            earthmesh_cli::cama_binary_io::CamaReachRecord {
                 reach_id: "cama-0-1".to_string(),
                 x_index: 1,
                 y_index: 0,
@@ -474,8 +490,9 @@ fn cama_reach_inventory_jsonl_export_writes_hydro_source_records() {
         skipped_cells: 0,
     };
 
-    let report = earthmesh_cli::write_cama_reach_inventory_jsonl(&inventory, &output)
-        .expect("write reach inventory JSONL");
+    let report =
+        earthmesh_cli::cama_reach_inventory::write_cama_reach_inventory_jsonl(&inventory, &output)
+            .expect("write reach inventory JSONL");
 
     assert_eq!(report.output, output);
     assert_eq!(report.record_count, 2);
@@ -503,7 +520,7 @@ fn cama_reach_inventory_jsonl_export_writes_hydro_source_records() {
 fn cama_reach_inventory_geojson_export_writes_point_feature_collection() {
     let root = temp_root("data_preprocess_cama_geojson_export");
     let output = root.join("cama_reaches.geojson");
-    let grid = earthmesh_cli::CamaBinaryGridSpec {
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
         nx: 2,
         ny: 1,
         west: 100.0,
@@ -512,17 +529,17 @@ fn cama_reach_inventory_geojson_export_writes_point_feature_collection() {
         little_endian: true,
         y_reversed_storage: false,
     };
-    let window = earthmesh_cli::CamaBinaryWindow {
+    let window = earthmesh_cli::cama_binary_io::CamaBinaryWindow {
         x_start: 0,
         y_start: 0,
         width: 2,
         height: 1,
     };
-    let inventory = earthmesh_cli::CamaReachInventoryReport {
+    let inventory = earthmesh_cli::cama_binary_io::CamaReachInventoryReport {
         grid,
         window,
         records: vec![
-            earthmesh_cli::CamaReachRecord {
+            earthmesh_cli::cama_binary_io::CamaReachRecord {
                 reach_id: "cama-0-0".to_string(),
                 x_index: 0,
                 y_index: 0,
@@ -537,7 +554,7 @@ fn cama_reach_inventory_geojson_export_writes_point_feature_collection() {
                 downstream_x: 1,
                 downstream_y: 0,
             },
-            earthmesh_cli::CamaReachRecord {
+            earthmesh_cli::cama_binary_io::CamaReachRecord {
                 reach_id: "cama-0-1".to_string(),
                 x_index: 1,
                 y_index: 0,
@@ -557,8 +574,10 @@ fn cama_reach_inventory_geojson_export_writes_point_feature_collection() {
         skipped_cells: 0,
     };
 
-    let report = earthmesh_cli::write_cama_reach_inventory_point_geojson(&inventory, &output)
-        .expect("write reach inventory point GeoJSON");
+    let report = earthmesh_cli::cama_reach_inventory::write_cama_reach_inventory_point_geojson(
+        &inventory, &output,
+    )
+    .expect("write reach inventory point GeoJSON");
 
     assert_eq!(report.output, output);
     assert_eq!(report.feature_count, 2);

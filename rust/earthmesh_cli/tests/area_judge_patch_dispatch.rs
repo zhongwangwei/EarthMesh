@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    apply_area_judge_patch_sources_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_sources::apply_area_judge_patch_sources_one_based,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ fn one_based_seaorland(nx: usize, ny: usize) -> Vec<Vec<i32>> {
 }
 
 #[test]
-fn patch_dispatch_reads_fortran_numbered_bbox_sources_and_merges_bounds() {
+fn patch_dispatch_reads_canonical_numbered_bbox_sources_and_merges_bounds() {
     let root = temp_root("area_judge_patch_dispatch");
     write_bbox_mask_netcdf(
         root.join("tmpfile/mask_patch_bbox_0_01.nc4"),
@@ -70,7 +71,7 @@ fn patch_dispatch_reads_fortran_numbered_bbox_sources_and_merges_bounds() {
         .collect::<Vec<_>>();
     let mut seaorland = one_based_seaorland(6, 6);
 
-    let report = apply_area_judge_patch_sources_fortran_indexed(
+    let report = apply_area_judge_patch_sources_one_based(
         &root,
         "bbox",
         0,

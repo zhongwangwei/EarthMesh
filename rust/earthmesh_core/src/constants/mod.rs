@@ -1,7 +1,7 @@
-/// Maximum number of remote send/receive processes in the original Fortran module.
+/// Maximum number of remote send/receive processes in the original Canonical module.
 pub const MAX_REMOTE: usize = 30;
 
-/// Maximum path length used by the original Fortran character buffers.
+/// Maximum path length used by the original Canonical character buffers.
 pub const PATH_LEN: usize = 256;
 
 /// Earth radius used by `mkgrd.F90:init_consts`, matching MPAS.
@@ -42,28 +42,28 @@ pub const JTU_WALL: usize = 7;
 pub const JTV_WALL: usize = 7;
 pub const JTW_VADJ: usize = 7;
 
-/// Radians per degree: `atan(1.0_r8) / 45.0_r8` in Fortran.
+/// Radians per degree: `atan(1.0_r8) / 45.0_r8` in Canonical.
 pub const PIO180: f64 = std::f64::consts::PI / 180.0;
 pub const PIO180_R8: f64 = PIO180;
 
-/// Degrees per radian: `45.0_r8 / atan(1.0_r8)` in Fortran.
+/// Degrees per radian: `45.0_r8 / atan(1.0_r8)` in Canonical.
 pub const PIU180: f64 = 180.0 / std::f64::consts::PI;
 pub const PIU180_R8: f64 = PIU180;
 
-/// Full turn in radians: `8.0_r8 * atan(1.0_r8)` in Fortran.
+/// Full turn in radians: `8.0_r8 * atan(1.0_r8)` in Canonical.
 pub const PI2: f64 = 2.0 * std::f64::consts::PI;
 pub const PI2_R8: f64 = PI2;
 
-/// Pi in double precision: `4.0_r8 * atan(1.0_r8)` in Fortran.
+/// Pi in double precision: `4.0_r8 * atan(1.0_r8)` in Canonical.
 pub const PI_R8: f64 = std::f64::consts::PI;
 
-/// Convert degrees to radians using the migrated Fortran conversion constant.
+/// Convert degrees to radians using the current Canonical conversion constant.
 #[inline]
 pub fn deg_to_rad(degrees: f64) -> f64 {
     degrees * PIO180
 }
 
-/// Convert radians to degrees using the migrated Fortran conversion constant.
+/// Convert radians to degrees using the current Canonical conversion constant.
 #[inline]
 pub fn rad_to_deg(radians: f64) -> f64 {
     radians * PIU180

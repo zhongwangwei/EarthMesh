@@ -1,9 +1,18 @@
+use crate::classify_area_judge_landtype_one_based;
+use crate::geojson_feature_nodes;
+use crate::geometry_outer_rings;
+use crate::json_node_to_string;
+use crate::read_text_maybe_gzip;
+use crate::read_unstructured_mesh_netcdf;
+use crate::sample_landtype_values_for_points_one_based;
+use crate::AreaJudgeLandtypeClass;
+use crate::JsonNode;
+use crate::JsonParser;
+use crate::LonLatPoint;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
-
-use crate::*;
 
 /// R7 coupling-quality validator (`earthmesh_quality::coupling`) fed by the mesh +
 /// land-type land/ocean signal.
@@ -61,66 +70,79 @@ pub fn write_coupling_quality_from_gridfile(
     output_json: impl AsRef<Path>,
 ) -> io::Result<earthmesh_quality::coupling::CouplingQualityReport> {
     let mesh = read_unstructured_mesh_netcdf(gridfile)?;
-    let lt = read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
-    if lt.lon_i.len() < 3 || lt.lat_i.len() < 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "land-type axes too short to derive sampling step",
-        ));
-    }
-    let (nlon, nlat) = (lt.nlons_source, lt.nlats_source);
-    let lon0 = lt.lon_i[1];
-    let lat0 = lt.lat_i[1];
-    let dlon = lt.lon_i[2] - lt.lon_i[1];
-    let dlat = lt.lat_i[2] - lt.lat_i[1];
-    let sample_land = |lon: f64, lat: f64| -> bool {
-        let li = (((lon - lon0) / dlon).round() as i64).rem_euclid(nlon as i64);
-        let lj = (((lat - lat0) / dlat).round() as i64).clamp(0, nlat as i64 - 1);
-        matches!(
-            classify_area_judge_landtype_fortran_indexed(
-                lt.landtypes_global[(li + 1) as usize][(lj + 1) as usize]
-            ),
-            AreaJudgeLandtypeClass::Land
-        )
+    let has_two_placeholders = |points: &[LonLatPoint]| {
+        points.len() > 2
+            && points[0].lon == 0.0
+            && points[0].lat == 0.0
+            && points[1].lon == 0.0
+            && points[1].lat == 0.0
     };
-    let is_marker = |p: &LonLatPoint| p.lon == 0.0 && p.lat == 0.0;
+    let w_has_two_placeholders = has_two_placeholders(&mesh.w_points);
+    let m_has_two_placeholders = has_two_placeholders(&mesh.m_points);
 
     let mut dense_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let mut wi_list: Vec<usize> = Vec::new();
-    for (wi, c) in mesh.w_points.iter().enumerate() {
-        if wi == 0 || is_marker(c) {
+    for wi in 0..mesh.w_points.len() {
+        if wi == 0 {
             continue;
         }
-        dense_of.insert(wi, wi_list.len());
+        let Some(canonical_id) =
+            crate::unstructured_mesh_support::mesh_canonical_id_for_row(wi, w_has_two_placeholders)
+        else {
+            continue;
+        };
+        dense_of.insert(canonical_id as usize, wi_list.len());
         wi_list.push(wi);
     }
 
-    let mut land_fraction = Vec::with_capacity(wi_list.len());
+    let mut sample_points = Vec::new();
+    let mut sample_ranges = Vec::with_capacity(wi_list.len());
     for &wi in &wi_list {
+        let start = sample_points.len();
         let center = &mesh.w_points[wi];
-        let mut land = usize::from(sample_land(center.lon, center.lat));
-        let mut total = 1usize;
+        sample_points.push(*center);
         if let Some(corners) = mesh.w_to_m.get(wi) {
             for &mi in corners {
-                if mi >= 1 && (mi as usize) < mesh.m_points.len() {
-                    let p = &mesh.m_points[mi as usize];
-                    if is_marker(p) {
-                        continue;
-                    }
-                    land += usize::from(sample_land(p.lon, p.lat));
-                    total += 1;
+                if let Some(m_row) = crate::unstructured_mesh_support::mesh_row_for_canonical_id(
+                    mi,
+                    mesh.m_points.len(),
+                    m_has_two_placeholders,
+                ) {
+                    sample_points.push(mesh.m_points[m_row]);
                 }
             }
         }
-        land_fraction.push(land as f64 / total as f64);
+        sample_ranges.push(start..sample_points.len());
     }
+    let sampled = sample_landtype_values_for_points_one_based(
+        landtype_file,
+        gridnum_perdegree,
+        &sample_points,
+    )?;
+    let land_fraction = sample_ranges
+        .into_iter()
+        .map(|range| {
+            let total = range.len();
+            let land = sampled[range]
+                .iter()
+                .filter(|&&value| {
+                    matches!(
+                        classify_area_judge_landtype_one_based(value),
+                        AreaJudgeLandtypeClass::Land
+                    )
+                })
+                .count();
+            land as f64 / total as f64
+        })
+        .collect::<Vec<_>>();
 
     let mut nbset: Vec<std::collections::BTreeSet<usize>> =
         vec![std::collections::BTreeSet::new(); wi_list.len()];
     for tri in &mesh.m_to_w {
         let dense: Vec<usize> = tri
             .iter()
-            .filter_map(|&w| dense_of.get(&(w as usize)).copied())
+            .filter_map(|&w_id| usize::try_from(w_id).ok())
+            .filter_map(|w_id| dense_of.get(&w_id).copied())
             .collect();
         for &a in &dense {
             for &b in &dense {
@@ -147,32 +169,15 @@ pub fn write_landtype_cell_mask_geojson(
     gridnum_perdegree: usize,
     output_geojson: impl AsRef<Path>,
 ) -> io::Result<usize> {
-    let lt = read_landtype_data_preprocess_fortran_indexed(landtype_file, gridnum_perdegree)?;
-    if lt.lon_i.len() < 3 || lt.lat_i.len() < 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "land-type axes too short to derive sampling step",
-        ));
-    }
-    let (nlon, nlat) = (lt.nlons_source, lt.nlats_source);
-    let lon0 = lt.lon_i[1];
-    let lat0 = lt.lat_i[1];
-    let dlon = lt.lon_i[2] - lt.lon_i[1];
-    let dlat = lt.lat_i[2] - lt.lat_i[1];
-    let sample_land = |lon: f64, lat: f64| -> bool {
-        let li = (((lon - lon0) / dlon).round() as i64).rem_euclid(nlon as i64);
-        let lj = (((lat - lat0) / dlat).round() as i64).clamp(0, nlat as i64 - 1);
-        matches!(
-            classify_area_judge_landtype_fortran_indexed(
-                lt.landtypes_global[(li + 1) as usize][(lj + 1) as usize]
-            ),
-            AreaJudgeLandtypeClass::Land
-        )
-    };
-
     let root = JsonParser::new(&read_text_maybe_gzip(cell_geojson.as_ref())?).parse()?;
     let esc = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
-    let mut out_features = Vec::new();
+    struct PendingFeature {
+        geometry: String,
+        properties: BTreeMap<String, String>,
+        samples: std::ops::Range<usize>,
+    }
+    let mut sample_points = Vec::new();
+    let mut pending = Vec::new();
     for feature in geojson_feature_nodes(&root) {
         let obj = feature.as_object();
         let Some(geom) = obj.and_then(|o| o.get("geometry")) else {
@@ -181,30 +186,55 @@ pub fn write_landtype_cell_mask_geojson(
         let props = obj
             .and_then(|o| o.get("properties"))
             .and_then(JsonNode::as_object);
-        let mut samples = Vec::new();
+        let sample_start = sample_points.len();
         if let Some(p) = props {
             if let (Some(lon), Some(lat)) = (
                 p.get("center_lon").and_then(JsonNode::as_f64),
                 p.get("center_lat").and_then(JsonNode::as_f64),
             ) {
-                samples.push((lon, lat));
+                sample_points.push(LonLatPoint { lon, lat });
             }
         }
         for ring in geometry_outer_rings(geom) {
             for p in ring {
                 if p.x.is_finite() && p.y.is_finite() {
-                    samples.push((p.x, p.y));
+                    sample_points.push(LonLatPoint { lon: p.x, lat: p.y });
                 }
             }
         }
-        if samples.is_empty() {
+        if sample_points.len() == sample_start {
             continue;
         }
-        let land = samples
+        let mut out_props = BTreeMap::new();
+        if let Some(p) = props {
+            for (k, v) in p {
+                out_props.insert(k.clone(), json_node_to_string(v));
+            }
+        }
+        pending.push(PendingFeature {
+            geometry: json_node_to_string(geom),
+            properties: out_props,
+            samples: sample_start..sample_points.len(),
+        });
+    }
+    let sampled = sample_landtype_values_for_points_one_based(
+        landtype_file,
+        gridnum_perdegree,
+        &sample_points,
+    )?;
+    let mut out_features = Vec::with_capacity(pending.len());
+    for pending in pending {
+        let sample_count = pending.samples.len();
+        let land = sampled[pending.samples]
             .iter()
-            .filter(|&&(lon, lat)| sample_land(lon, lat))
+            .filter(|&&value| {
+                matches!(
+                    classify_area_judge_landtype_one_based(value),
+                    AreaJudgeLandtypeClass::Land
+                )
+            })
             .count();
-        let land_fraction = land as f64 / samples.len() as f64;
+        let land_fraction = land as f64 / sample_count as f64;
         let ocean_fraction = 1.0 - land_fraction;
         let surface_class = if land_fraction >= ocean_fraction {
             "LAND"
@@ -217,12 +247,7 @@ pub fn write_landtype_cell_mask_geojson(
             surface_class
         };
 
-        let mut out_props: BTreeMap<String, String> = BTreeMap::new();
-        if let Some(p) = props {
-            for (k, v) in p {
-                out_props.insert(k.clone(), json_node_to_string(v));
-            }
-        }
+        let mut out_props = pending.properties;
         out_props.insert(
             "surface_class".into(),
             format!("\"{}\"", esc(surface_class)),
@@ -248,8 +273,7 @@ pub fn write_landtype_cell_mask_geojson(
             .join(", ");
         out_features.push(format!(
             "    {{\"type\": \"Feature\", \"geometry\": {}, \"properties\": {{{}}}}}",
-            json_node_to_string(geom),
-            body
+            pending.geometry, body
         ));
     }
 

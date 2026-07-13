@@ -1,15 +1,10 @@
-mod getref;
 mod mesh_connectivity;
 mod netcdf_rows;
 mod primitives;
 
-pub(crate) use getref::{
-    aggregate_getref_ref_sjx, copy_getref_threshold_column, get_getref_layer_value,
-    require_getref_two_layer_values,
-};
 pub(crate) use mesh_connectivity::{
-    cells_on_triangle_fortran_indexed_from_mesh, n_edges_on_cell_usize_from_mesh,
-    parse_value_after_equals, triangles_on_cell_fortran_indexed_from_mesh,
+    cells_on_triangle_one_based_from_mesh, n_edges_on_cell_usize_from_mesh,
+    parse_value_after_equals, triangles_on_cell_one_based_from_mesh,
 };
 pub(crate) use netcdf_rows::{
     f64_matrix_width, flatten_i32_rows, i32_matrix_from_flat, matrix_width, one_to_n_i32,

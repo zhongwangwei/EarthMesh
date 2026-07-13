@@ -1,10 +1,10 @@
 use std::fs;
 
-use earthmesh_cli::{LonLatPoint, UnstructuredMesh};
+use earthmesh_cli::{coordinate_types::LonLatPoint, unstructured_mesh_support::UnstructuredMesh};
 use earthmesh_mesh::BoundaryOrders;
 
 #[test]
-fn fvcom_2dm_writer_preserves_fortran_ids_and_boundary_segments() {
+fn fvcom_2dm_writer_preserves_canonical_ids_and_boundary_segments() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_fvcom_2dm_writer_{}",
         std::process::id()
@@ -14,8 +14,9 @@ fn fvcom_2dm_writer_preserves_fortran_ids_and_boundary_segments() {
 
     let output = root.join("fvcom.2dm");
     let mesh = sample_mesh();
-    let report = earthmesh_cli::write_fvcom_mesh_2dm(&output, &mesh, &[1, 2, 3, 1, 5])
-        .expect("write fvcom 2dm");
+    let report =
+        earthmesh_cli::fvcom_mesh_writer::write_fvcom_mesh_2dm(&output, &mesh, &[1, 2, 3, 1, 5])
+            .expect("write fvcom 2dm");
 
     assert_eq!(report.output, output);
     assert_eq!(report.triangles, 2);
@@ -43,7 +44,7 @@ fn fvcom_2dm_writer_preserves_fortran_ids_and_boundary_segments() {
 }
 
 #[test]
-fn fvcom_mesh_save_wrapper_reads_patch_obc_and_writes_legacy_result_path() {
+fn fvcom_mesh_save_wrapper_reads_patch_obc_and_writes_compatibility_result_path() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_fvcom_mesh_save_wrapper_{}",
         std::process::id()
@@ -57,15 +58,20 @@ fn fvcom_mesh_save_wrapper_reads_patch_obc_and_writes_legacy_result_path() {
         ibc_order: vec![1, 1, 1, 1, 1],
         rotation_start: None,
     };
-    let obc = earthmesh_cli::obc_boundary_output_path(&root, true);
-    earthmesh_cli::write_obc_boundary_netcdf(&obc, &orders).expect("write patch obc");
+    let obc = earthmesh_cli::obc_boundary_io::obc_boundary_output_path(&root, true);
+    earthmesh_cli::obc_boundary_io::write_obc_boundary_netcdf(&obc, &orders)
+        .expect("write patch obc");
 
-    let report = earthmesh_cli::write_fvcom_mesh_save_outputs(&root, &sample_mesh(), true)
-        .expect("write fvcom outputs");
+    let report = earthmesh_cli::fvcom_mesh_writer::write_fvcom_mesh_save_outputs(
+        &root,
+        &sample_mesh(),
+        true,
+    )
+    .expect("write fvcom outputs");
 
     assert_eq!(
         report.output,
-        earthmesh_cli::fvcom_mesh_2dm_output_path(&root)
+        earthmesh_cli::fvcom_mesh_writer::fvcom_mesh_2dm_output_path(&root)
     );
     assert_eq!(report.boundary_segments, 2);
     let content = fs::read_to_string(&report.output).expect("read wrapper output");
@@ -77,7 +83,7 @@ fn fvcom_mesh_save_wrapper_reads_patch_obc_and_writes_legacy_result_path() {
 }
 
 #[test]
-fn fvcom_2dm_writer_rejects_connectivity_without_fortran_vertex_offset() {
+fn fvcom_2dm_writer_rejects_connectivity_without_canonical_vertex_offset() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_fvcom_2dm_invalid_{}",
         std::process::id()
@@ -87,10 +93,11 @@ fn fvcom_2dm_writer_rejects_connectivity_without_fortran_vertex_offset() {
 
     let mut mesh = sample_mesh();
     mesh.m_to_w[1] = [1, 2, 3];
-    let err = earthmesh_cli::write_fvcom_mesh_2dm(root.join("bad.2dm"), &mesh, &[1])
-        .expect_err("reject zero-offset connectivity");
+    let err =
+        earthmesh_cli::fvcom_mesh_writer::write_fvcom_mesh_2dm(root.join("bad.2dm"), &mesh, &[1])
+            .expect_err("reject zero-offset connectivity");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(err.to_string().contains("Fortran index 2.."));
+    assert!(err.to_string().contains("Canonical index 2.."));
 
     let _ = fs::remove_dir_all(&root);
 }

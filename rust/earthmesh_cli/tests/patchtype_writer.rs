@@ -5,7 +5,7 @@ fn patchtype_writer_preserves_patchid_save_schema() {
     std::fs::create_dir_all(&root).expect("create temp root");
     let output = root.join("patchtype.nc4");
 
-    let patch = earthmesh_cli::PatchIdMesh {
+    let patch = earthmesh_cli::mask_postproc_writers::PatchIdMesh {
         elmindex: vec![vec![2, 3], vec![4, 5], vec![6, 7]],
         lon_w: vec![100.0, 101.0, 102.0],
         lon_e: vec![101.0, 102.0, 103.0],
@@ -15,7 +15,8 @@ fn patchtype_writer_preserves_patchid_save_schema() {
         latitude: vec![29.5, 28.5],
     };
 
-    let report = earthmesh_cli::write_patchid_netcdf(&output, &patch).expect("write patchid");
+    let report = earthmesh_cli::mask_postproc_writers::write_patchid_netcdf(&output, &patch)
+        .expect("write patchid");
     assert_eq!(report.output, output);
     assert_eq!(report.nlon, 3);
     assert_eq!(report.nlat, 2);
@@ -37,7 +38,7 @@ fn patchtype_writer_preserves_patchid_save_schema() {
 #[test]
 fn patchtype_writer_rejects_dimension_mismatches() {
     let output = std::env::temp_dir().join("earthmesh_cli_bad_patchtype.nc4");
-    let bad = earthmesh_cli::PatchIdMesh {
+    let bad = earthmesh_cli::mask_postproc_writers::PatchIdMesh {
         elmindex: vec![vec![1, 2], vec![3]],
         lon_w: vec![0.0, 1.0],
         lon_e: vec![1.0, 2.0],
@@ -46,7 +47,8 @@ fn patchtype_writer_rejects_dimension_mismatches() {
         longitude: vec![0.5, 1.5],
         latitude: vec![0.5, -0.5],
     };
-    let err = earthmesh_cli::write_patchid_netcdf(&output, &bad).expect_err("ragged rejected");
+    let err = earthmesh_cli::mask_postproc_writers::write_patchid_netcdf(&output, &bad)
+        .expect_err("ragged rejected");
     assert!(err
         .to_string()
         .contains("elmindex rows must have uniform width"));

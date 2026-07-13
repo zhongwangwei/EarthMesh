@@ -1,15 +1,15 @@
 use std::io;
 
-use crate::refine_m1w1_to_m11w11_fortran_indexed;
+use crate::refine_m1w1_to_m11w11_one_based;
 
 /// Port of `MOD_refine.F90:weak_concav_lop_judge`.
 ///
-/// Weak-concavity segment matrices use zero-based inner slots for the Fortran
-/// first dimension (`weak_concav_segment[i][0]` is Fortran
+/// Weak-concavity segment matrices use zero-based inner slots for the Canonical
+/// first dimension (`weak_concav_segment[i][0]` is Canonical
 /// `weak_concav_segment(1, i)`), matching `weak_concav_pair_special` output.
 /// `ref_sjx_segment_temp` remains one-based in the inner slot to match the LOP
 /// segment consumers and `sharp_concav_lop_judge`.
-pub fn refine_weak_concav_lop_judge_fortran_indexed(
+pub fn refine_weak_concav_lop_judge_one_based(
     num_ref: &mut usize,
     num_bdy_refine_segment: usize,
     num_ref_weak_concav: usize,
@@ -36,8 +36,7 @@ pub fn refine_weak_concav_lop_judge_fortran_indexed(
     let num_end = if num_weak_concav_pair != 0 {
         for pair_id in 1..=num_weak_concav_pair {
             let [m1, w1] = weak_concav_pair[pair_id];
-            let Some((m11, w11)) =
-                refine_m1w1_to_m11w11_fortran_indexed(m1, w1, sjx_child, ngrmw_new)?
+            let Some((m11, w11)) = refine_m1w1_to_m11w11_one_based(m1, w1, sjx_child, ngrmw_new)?
             else {
                 continue;
             };
@@ -106,8 +105,7 @@ pub fn refine_weak_concav_lop_judge_fortran_indexed(
             }
             let m1 = weak_concav_segment_old[segment_id_weak][n_segment];
             let w1 = weak_concav_segment_old[segment_id_weak + 1][0];
-            if let Some((m11, w11)) =
-                refine_m1w1_to_m11w11_fortran_indexed(m1, w1, sjx_child, ngrmw_new)?
+            if let Some((m11, w11)) = refine_m1w1_to_m11w11_one_based(m1, w1, sjx_child, ngrmw_new)?
             {
                 if ref_sjx_segment_temp[segment_id].len() <= kk + 2 {
                     return Err(io::Error::new(
@@ -168,8 +166,7 @@ pub fn refine_weak_concav_lop_judge_fortran_indexed(
                         ),
                     )
                 })?;
-            let Some((m11, w11)) =
-                refine_m1w1_to_m11w11_fortran_indexed(m1, w1, sjx_child, ngrmw_new)?
+            let Some((m11, w11)) = refine_m1w1_to_m11w11_one_based(m1, w1, sjx_child, ngrmw_new)?
             else {
                 continue;
             };

@@ -1,14 +1,18 @@
+use crate::grid_covers_area_judge_bounds_one_based;
+use crate::merge_area_judge_source_bounds;
+use crate::read_bbox_mask_netcdf;
+use crate::validate_bbox_mask;
+use crate::AreaJudgeAreaSourceReport;
+use crate::AreaJudgePatchSourceReport;
 use std::io;
 use std::path::Path;
 
 use earthmesh_mesh::{
-    area_judge_apply_mask_patch_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
+    area_judge_apply_mask_patch_one_based, area_judge_minmax_range_make_one_based,
 };
 
-use crate::*;
-
 /// Build the bbox `IsInArea_grid` source mask used by domain/refine/patch paths.
-pub fn build_area_judge_bbox_area_source_fortran_indexed(
+pub fn build_area_judge_bbox_area_source_one_based(
     inputfile: impl AsRef<Path>,
     lon_vertex: &[f64],
     lat_vertex: &[f64],
@@ -28,7 +32,7 @@ pub fn build_area_judge_bbox_area_source_fortran_indexed(
     let mut numpatch = 0usize;
 
     for point in &mask.points {
-        let bounds = area_judge_minmax_range_make_fortran_indexed(
+        let bounds = area_judge_minmax_range_make_one_based(
             point.west,
             point.east,
             point.north,
@@ -48,7 +52,7 @@ pub fn build_area_judge_bbox_area_source_fortran_indexed(
                 ),
             )
         })?;
-        grid_covers_area_judge_bounds_fortran_indexed("bbox area mask", &is_in_area, bounds)?;
+        grid_covers_area_judge_bounds_one_based("bbox area mask", &is_in_area, bounds)?;
         for lon_index in bounds.minlon_source..=bounds.maxlon_source {
             for lat_index in bounds.maxlat_source..=bounds.minlat_source {
                 is_in_area[lon_index][lat_index] = 1;
@@ -77,10 +81,10 @@ pub fn build_area_judge_bbox_area_source_fortran_indexed(
 ///
 /// This is the file-backed orchestration slice of
 /// `MOD_Area_judge.F90:mask_patch_modify` for bbox patch sources: read the
-/// bbox source, derive Fortran one-based source bounds through
+/// bbox source, derive Canonical one-based source bounds through
 /// `minmax_range_make`, fill the selected patch grid, then call the already
-/// migrated `seaorland(i,j)=0` patch core.
-pub fn apply_area_judge_bbox_patch_source_fortran_indexed(
+/// current `seaorland(i,j)=0` patch core.
+pub fn apply_area_judge_bbox_patch_source_one_based(
     inputfile: impl AsRef<Path>,
     seaorland: &mut [Vec<i32>],
     lon_vertex: &[f64],
@@ -89,7 +93,7 @@ pub fn apply_area_judge_bbox_patch_source_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgePatchSourceReport> {
-    let source = build_area_judge_bbox_area_source_fortran_indexed(
+    let source = build_area_judge_bbox_area_source_one_based(
         inputfile,
         lon_vertex,
         lat_vertex,
@@ -104,13 +108,13 @@ pub fn apply_area_judge_bbox_patch_source_fortran_indexed(
         )
     })?;
     let report =
-        area_judge_apply_mask_patch_fortran_indexed(seaorland, &source.is_in_area, source.bounds)
+        area_judge_apply_mask_patch_one_based(seaorland, &source.is_in_area, source.bounds)
             .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "seaorland or bbox patch mask does not cover selected source bounds",
-            )
-        })?;
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "seaorland or bbox patch mask does not cover selected source bounds",
+                )
+            })?;
 
     Ok(AreaJudgePatchSourceReport {
         bounds: source.bounds,

@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_weak_concav_segment_make_fortran_indexed;
+use earthmesh_mesh::refine_weak_concav_segment_make_one_based;
 
 fn cells_fixture(max_triangle: usize) -> Vec<[usize; 3]> {
     let mut cells = vec![[0, 0, 0]; max_triangle + 1];
@@ -14,7 +14,7 @@ fn weak_concav_segment_make_records_one_plus_one_as_pair_entries() {
     cells[2] = [10, 11, 12];
     cells[3] = [10, 11, 13];
 
-    let result = refine_weak_concav_segment_make_fortran_indexed(2, 2, &cells, &[vec![2], vec![3]])
+    let result = refine_weak_concav_segment_make_one_based(2, 2, &cells, &[vec![2], vec![3]])
         .expect("1+1 weak concavity pair");
 
     assert_eq!(result.num_ref_weak_concav, 2);
@@ -38,9 +38,8 @@ fn weak_concav_segment_make_moves_equal_non_singleton_segments() {
     cells[5] = [200, 201, 202];
     cells[2] = [300, 301, 302];
 
-    let result =
-        refine_weak_concav_segment_make_fortran_indexed(2, 2, &cells, &[vec![2, 4], vec![3, 5]])
-            .expect("n+n weak concavity segments");
+    let result = refine_weak_concav_segment_make_one_based(2, 2, &cells, &[vec![2, 4], vec![3, 5]])
+        .expect("n+n weak concavity segments");
 
     assert_eq!(result.num_ref_weak_concav, 2);
     assert_eq!(result.num_weak_concav_segment, 2);
@@ -61,9 +60,8 @@ fn weak_concav_segment_make_extracts_pair_from_one_plus_n_and_keeps_remainder() 
     cells[3] = [50, 51, 53];
     cells[5] = [900, 901, 902];
 
-    let result =
-        refine_weak_concav_segment_make_fortran_indexed(3, 2, &cells, &[vec![2], vec![3, 4, 5]])
-            .expect("1+n weak concavity split");
+    let result = refine_weak_concav_segment_make_one_based(3, 2, &cells, &[vec![2], vec![3, 4, 5]])
+        .expect("1+n weak concavity split");
 
     assert_eq!(result.num_ref_weak_concav, 2);
     assert_eq!(result.num_weak_concav_segment, 0);

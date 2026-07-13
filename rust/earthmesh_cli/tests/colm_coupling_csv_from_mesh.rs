@@ -1,9 +1,9 @@
 //! CoLM surface-data workflow: a mesh gridfile + a global land-type NetCDF must
 //! classify each cell LAND/OCEAN (Area_judge rule) and feed the existing
 //! CoLM coupling NetCDF writer. The global land/ocean split is the geographic
-//! sanity check (~71% ocean on Earth). Needs the local NXP16 hex gridfile and a
-//! land-type NetCDF; ignored by default because the global land-type read is
-//! slow and depends on machine-local fixtures. Run with `make test-slow`.
+//! sanity check (~71% ocean on Earth). The slow-test runner creates the NXP16
+//! gridfile and requires a real land-type NetCDF; the tests fail rather than
+//! silently skip when either fixture is missing. Run with `make test-slow`.
 
 use std::path::PathBuf;
 
@@ -14,15 +14,16 @@ fn temp_root(name: &str) -> PathBuf {
     path
 }
 
-fn landtype() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("EARTHMESH_LANDTYPE") {
-        let p = PathBuf::from(p);
-        return p.exists().then_some(p);
-    }
-    let d = PathBuf::from(
-        "/Users/zhongwangwei/Desktop/EarthMesh_legacy_archive_20260616_142611/input/landtype_usgs_update.nc",
+fn required_fixture(name: &str) -> PathBuf {
+    let path = std::env::var_os(name)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{name} must be set by scripts/run_slow_fixture_e2e.sh"));
+    assert!(
+        path.is_file(),
+        "{name} fixture is missing: {}",
+        path.display()
     );
-    d.exists().then_some(d)
+    path
 }
 
 #[test]
@@ -41,10 +42,12 @@ case_3,3,112.000000,22.000000,COAST,false,none,0.0,0.0,true,COAST,0.5,0.0,0.0\n"
     )
     .expect("write csv");
 
-    earthmesh_cli::write_colm_coupling_netcdf_from_csv(&csv, &nc, "case", &manifest)
-        .expect("write CoLM coupling NetCDF");
-    let points =
-        earthmesh_cli::read_colm_surface_class_points_netcdf(&nc).expect("read class points");
+    earthmesh_cli::colm_package_io::write_colm_coupling_netcdf_from_csv(
+        &csv, &nc, "case", &manifest,
+    )
+    .expect("write CoLM coupling NetCDF");
+    let points = earthmesh_cli::colm_package_io::read_colm_surface_class_points_netcdf(&nc)
+        .expect("read class points");
 
     assert_eq!(points.len(), 3);
     assert_eq!(
@@ -60,21 +63,21 @@ case_3,3,112.000000,22.000000,COAST,false,none,0.0,0.0,true,COAST,0.5,0.0,0.0\n"
 #[test]
 #[ignore = "slow local-fixture CoLM smoke; run with make test-slow"]
 fn mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf() {
-    let gf =
-        PathBuf::from("/tmp/earthmesh_cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4");
-    let Some(lt) = landtype() else {
-        eprintln!("skip: no land-type NetCDF (set EARTHMESH_LANDTYPE)");
-        return;
-    };
-    if !gf.exists() {
-        eprintln!("skip: no NXP16 hex gridfile fixture");
-        return;
-    }
-    let tmp = std::env::temp_dir();
-    let csv = tmp.join("colm_cells_test.csv");
-    let counts =
-        earthmesh_cli::write_colm_coupling_csv_from_mesh(&gf, &lt, 120, "qs16", "hex", &csv)
-            .expect("generate CoLM coupling CSV");
+    let gf = required_fixture("EARTHMESH_SLOW_GRIDFILE");
+    let lt = required_fixture("EARTHMESH_LANDTYPE");
+    let gridnum_perdegree = earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&lt)
+        .expect("infer land-type resolution");
+    let root = temp_root("colm_cells");
+    let csv = root.join("colm_cells_test.csv");
+    let counts = earthmesh_cli::hydro_delivery_coupling_quality::write_colm_coupling_csv_from_mesh(
+        &gf,
+        &lt,
+        gridnum_perdegree,
+        "qs16",
+        "hex",
+        &csv,
+    )
+    .expect("generate CoLM coupling CSV");
     let total = counts.land + counts.ocean;
     assert!(
         total > 2000,
@@ -87,12 +90,15 @@ fn mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf() {
         "ocean fraction {ocean_frac:.3} outside sane 0.60–0.80 band (sampling orientation?)"
     );
 
-    let nc = tmp.join("colm_cells_test.nc");
-    let manifest = tmp.join("colm_manifest_test.json");
+    let nc = root.join("colm_cells_test.nc");
+    let manifest = root.join("colm_manifest_test.json");
     std::fs::write(&manifest, "{}").unwrap();
-    earthmesh_cli::write_colm_coupling_netcdf_from_csv(&csv, &nc, "qs16", &manifest)
-        .expect("CSV -> CoLM coupling NetCDF");
+    earthmesh_cli::colm_package_io::write_colm_coupling_netcdf_from_csv(
+        &csv, &nc, "qs16", &manifest,
+    )
+    .expect("CSV -> CoLM coupling NetCDF");
     assert!(nc.exists() && std::fs::metadata(&nc).unwrap().len() > 0);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 // R7 coupling-quality validator end-to-end on the same mesh+land-type fixtures: each
@@ -102,18 +108,19 @@ fn mesh_plus_landtype_classifies_cells_and_writes_colm_netcdf() {
 #[test]
 #[ignore = "slow local-fixture coupling-quality smoke; run with make test-slow"]
 fn mesh_plus_landtype_coupling_quality_report() {
-    let gf =
-        PathBuf::from("/tmp/earthmesh_cases/quickstart_n16/gridfile/gridfile_NXP0016_01_hex.nc4");
-    let Some(lt) = landtype() else {
-        eprintln!("skip: no land-type NetCDF (set EARTHMESH_LANDTYPE)");
-        return;
-    };
-    if !gf.exists() {
-        eprintln!("skip: no NXP16 hex gridfile fixture");
-        return;
-    }
-    let out = std::env::temp_dir().join("coupling_quality_test.json");
-    let report = earthmesh_cli::write_coupling_quality_from_gridfile(&gf, &lt, 120, &out)
+    let gf = required_fixture("EARTHMESH_SLOW_GRIDFILE");
+    let lt = required_fixture("EARTHMESH_LANDTYPE");
+    let gridnum_perdegree = earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&lt)
+        .expect("infer land-type resolution");
+    let root = temp_root("coupling_quality");
+    let out = root.join("coupling_quality_test.json");
+    let report =
+        earthmesh_cli::hydro_delivery_coupling_quality::write_coupling_quality_from_gridfile(
+            &gf,
+            &lt,
+            gridnum_perdegree,
+            &out,
+        )
         .expect("coupling quality from gridfile");
     let total = report.total_land_cells + report.total_ocean_cells;
     assert!(total > 2000, "global NXP16 mesh ~2562 cells, got {total}");
@@ -128,4 +135,5 @@ fn mesh_plus_landtype_coupling_quality_report() {
         json.contains("\"kind\": \"earthmesh_coupling_quality\""),
         "{json}"
     );
+    let _ = std::fs::remove_dir_all(root);
 }

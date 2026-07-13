@@ -1,13 +1,13 @@
 use super::*;
 
 /// Topological fallback vertex-ring orderer (used when the geometric
-/// `order_vertices_on_cell_fortran_indexed` fails). Walks shared edges to
+/// `order_vertices_on_cell_one_based` fails). Walks shared edges to
 /// rebuild each cell's vertex cycle, then orients it counterclockwise as seen
 /// from outside the sphere (`cross(v_i - c, v_{i+1} - c) . c > 0`, the same
 /// convention as the geometric orderer). Without the orientation pass the walk
 /// direction was decided by vertex-ID magnitude, so a clockwise ring could
 /// silently reach the CCW-assuming area/quality consumers downstream.
-pub fn order_vertices_on_cell_by_shared_edges_fortran_indexed(
+pub fn order_vertices_on_cell_by_shared_edges_one_based(
     vertices_on_cell: &[Vec<usize>],
     n_edges_on_cell: &[usize],
     edges_on_vertex: &[[usize; 3]],

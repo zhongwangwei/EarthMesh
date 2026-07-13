@@ -16,8 +16,8 @@ pub struct MaskPostprocRenewedData {
 /// The function compacts active centers (`IsInDmArea_ustr(i)==1`) into a new
 /// center-neighbor table, then rebuilds vertex-to-center adjacency.  It
 /// deliberately writes the original source center id into `vertex_neighbors_next`
-/// to preserve the Fortran branch highlighted by the in-source comment.
-pub fn renew_mask_postproc_data_fortran_indexed(
+/// to preserve the Canonical branch highlighted by the in-source comment.
+pub fn renew_mask_postproc_data_one_based(
     mode_grid: &str,
     active_centers: &[bool],
     center_neighbors: &[Vec<usize>],
@@ -74,7 +74,7 @@ pub fn renew_mask_postproc_data_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {source_center_id} references vertex {vertex_id}, outside 0..={ustr_bounds}"
+                        "center {source_center_id} canonicals vertex {vertex_id}, outside 0..={ustr_bounds}"
                     ),
                 ));
             }

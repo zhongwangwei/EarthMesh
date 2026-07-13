@@ -16,7 +16,7 @@ pub(crate) struct Stat {
 #[derive(Serialize)]
 pub(crate) struct Gate {
     pub(crate) metric: String,
-    pub(crate) value: f64,
+    pub(crate) value: Option<f64>,
     pub(crate) level: String,
 }
 
@@ -28,13 +28,13 @@ pub(crate) struct MeshQuality {
     pub(crate) cell_count: i64,
     pub(crate) vertex_count: i64,
     pub(crate) edge_count: i64,
-    pub(crate) min_angle_deg: f64,
-    pub(crate) max_angle_deg: f64,
+    pub(crate) min_angle_deg: Option<f64>,
+    pub(crate) max_angle_deg: Option<f64>,
     // Per-metric distribution summaries (for the box/range charts).
-    pub(crate) cell_area: Stat,
-    pub(crate) edge_length_km: Stat,
-    pub(crate) aspect_ratio: Stat,
-    pub(crate) compactness: Stat,
+    pub(crate) cell_area: Option<Stat>,
+    pub(crate) edge_length_km: Option<Stat>,
+    pub(crate) aspect_ratio: Option<Stat>,
+    pub(crate) compactness: Option<Stat>,
     // Degeneracy counts.
     pub(crate) zero_area: i64,
     pub(crate) negative_area: i64,
@@ -51,14 +51,14 @@ pub(crate) struct MeshQuality {
 }
 
 impl Stat {
-    fn from_json(value: &serde_json::Value, key: &str) -> Self {
+    fn from_json(value: &serde_json::Value, key: &str) -> Option<Self> {
         let s = &value[key];
-        Self {
-            min: s["min"].as_f64().unwrap_or(0.0),
-            max: s["max"].as_f64().unwrap_or(0.0),
-            mean: s["mean"].as_f64().unwrap_or(0.0),
-            std: s["std"].as_f64().unwrap_or(0.0),
-        }
+        Some(Self {
+            min: s["min"].as_f64()?,
+            max: s["max"].as_f64()?,
+            mean: s["mean"].as_f64()?,
+            std: s["std"].as_f64()?,
+        })
     }
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
             arr.iter()
                 .map(|g| Gate {
                     metric: g["metric"].as_str().unwrap_or("?").to_string(),
-                    value: g["value"].as_f64().unwrap_or(0.0),
+                    value: g["value"].as_f64(),
                     level: g["level"].as_str().unwrap_or("").to_string(),
                 })
                 .collect()
@@ -117,8 +117,8 @@ pub(crate) fn parse_quality_summary(text: &str, dir: &Path) -> Result<MeshQualit
         cell_count: geom["cell_count"].as_i64().unwrap_or(0),
         vertex_count: geom["vertex_count"].as_i64().unwrap_or(0),
         edge_count: geom["edge_count"].as_i64().unwrap_or(0),
-        min_angle_deg: geom["min_angle_deg"].as_f64().unwrap_or(0.0),
-        max_angle_deg: geom["max_angle_deg"].as_f64().unwrap_or(0.0),
+        min_angle_deg: geom["min_angle_deg"].as_f64(),
+        max_angle_deg: geom["max_angle_deg"].as_f64(),
         cell_area: Stat::from_json(geom, "cell_area"),
         edge_length_km: Stat::from_json(geom, "edge_length_km"),
         aspect_ratio: Stat::from_json(geom, "aspect_ratio"),

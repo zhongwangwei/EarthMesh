@@ -5,12 +5,12 @@ use super::*;
 ///
 /// This keeps NetCDF/file persistence and the original upstream
 /// `refine_sjx_regional_make` source classification outside the kernel, but
-/// wires the already-migrated `set_dbxMove_regional_step` mask derivation into
+/// wires the already-current `set_dbxMove_regional_step` mask derivation into
 /// the regional spring core so callers do not have to manually compose them.
-pub fn springjustment_regional_from_refinement_fortran_indexed(
+pub fn springjustment_regional_from_refinement_one_based(
     input: SpringjustmentRegionalFromRefinementInput<'_>,
 ) -> Option<SpringjustmentRegionalFromRefinementOutput> {
-    let mask = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+    let mask = set_dbx_move_regional_step_one_based(RegionalMoveMaskInput {
         set_dis: input.set_dis,
         refined_triangles: input.refined_triangles,
         cells_on_triangle: input.cells_on_triangle,
@@ -19,7 +19,7 @@ pub fn springjustment_regional_from_refinement_fortran_indexed(
         protected_seed_cells: input.protected_seed_cells,
         vertex_protect_layers: input.vertex_protect_layers,
     })?;
-    let core = springjustment_regional_core_fortran_indexed(SpringjustmentRegionalCoreInput {
+    let core = springjustment_regional_core_one_based(SpringjustmentRegionalCoreInput {
         triangle_lonlat: input.triangle_lonlat,
         cell_lonlat: input.cell_lonlat,
         cells_on_triangle: input.cells_on_triangle,
@@ -38,19 +38,19 @@ pub fn springjustment_regional_from_refinement_fortran_indexed(
 /// `MOD_grid_preprocess:Springjustment_regional_step`.
 ///
 /// This composes `refine_sjx_regional_make`, `set_dbxMove_regional_step`, and
-/// the migrated regional spring/circumcenter core while still leaving NetCDF
+/// the current regional spring/circumcenter core while still leaving NetCDF
 /// mask loading and final persistence outside this deterministic kernel.
-pub fn springjustment_regional_from_source_mask_fortran_indexed(
+pub fn springjustment_regional_from_source_mask_one_based(
     input: SpringjustmentRegionalFromSourceMaskInput<'_>,
 ) -> Option<SpringjustmentRegionalFromSourceMaskOutput> {
-    let refined_triangles = refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
+    let refined_triangles = refine_sjx_regional_make_one_based(RefineRegionalMaskInput {
         triangle_lonlat: input.triangle_lonlat,
         source_lon_vertices: input.source_lon_vertices,
         source_lat_vertices: input.source_lat_vertices,
         mask_patch: input.mask_patch,
         first_triangle_id: input.first_triangle_id,
     })?;
-    let regional = springjustment_regional_from_refinement_fortran_indexed(
+    let regional = springjustment_regional_from_refinement_one_based(
         SpringjustmentRegionalFromRefinementInput {
             triangle_lonlat: input.triangle_lonlat,
             cell_lonlat: input.cell_lonlat,

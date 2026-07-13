@@ -6,10 +6,10 @@ use crate::{unique_triangle_cell, validate_refine_cell_neighbors};
 ///
 /// Finds adjacent refined-triangle pairs around polygons (`ngrwm`) that form a
 /// convex refinement region.  If either opposite polygon across the pair has a
-/// matching convex region, the Fortran routine marks one neighboring triangle
+/// matching convex region, the Canonical routine marks one neighboring triangle
 /// in `ref_sjx` to avoid the conflicting convex transition.  Inputs preserve
-/// one-based Fortran indexing and placeholder row 0.
-pub fn refine_iter_e_judge_fortran_indexed(
+/// one-based Canonical indexing and placeholder row 0.
+pub fn refine_iter_e_judge_one_based(
     num_center: usize,
     lbx_points: usize,
     cells_on_triangle: &[[usize; 3]],

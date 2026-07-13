@@ -2,7 +2,7 @@ use crate::cells_on_edge_from_neighbor_cells;
 
 /// Port of the shared-cell lookup in `MOD_grid_preprocess:GetArea`.
 ///
-/// Fortran checks all four combinations from `cellsOnEdge(:, edge1)` and
+/// Canonical checks all four combinations from `cellsOnEdge(:, edge1)` and
 /// `cellsOnEdge(:, edge2)` and keeps the maximum matching positive cell id.
 /// Zero is the no-cell sentinel and is returned as `None`.
 pub fn shared_cell_for_edge_pair(
@@ -23,7 +23,7 @@ pub fn shared_cell_for_edge_pair(
 
 /// Port of the `cellsOnVertex(:, i)` scan in `MOD_grid_preprocess:GetArea`.
 ///
-/// Returns a zero-based Rust index for the matching Fortran `icv` slot.
+/// Returns a zero-based Rust index for the matching Canonical `icv` slot.
 pub fn vertex_cell_position(cells_on_vertex: [usize; 3], cell: usize) -> Option<usize> {
     cells_on_vertex
         .iter()
@@ -42,8 +42,8 @@ pub struct GetEdgeConnectivity {
 ///
 /// The optional midpoint calculation is intentionally separate; this function
 /// ports edge-id creation/reuse, `verticesOnEdge`, `cellsOnEdge`, and
-/// `edgesOnVertex` for Fortran-indexed arrays.
-pub fn get_edge_connectivity_fortran_indexed(
+/// `edgesOnVertex` for Canonical-indexed arrays.
+pub fn get_edge_connectivity_one_based(
     triangle_neighbors: &[[usize; 3]],
     cells_on_vertex: &[[usize; 3]],
 ) -> Option<GetEdgeConnectivity> {

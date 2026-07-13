@@ -1,8 +1,15 @@
+use crate::classify_area_judge_landtype_one_based;
+use crate::ensure_leading_mask_postproc_placeholder;
+use crate::finalize_mask_postproc_layout_with_reindex_report;
+use crate::mask_postproc_layout_from_unstructured_mesh;
+use crate::read_unstructured_mesh_netcdf;
+use crate::sample_landtype_values_for_points_one_based;
+use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
+use crate::AreaJudgeLandtypeClass;
 use std::io;
 use std::path::Path;
 
-use super::levels::{final_refine_levels_for_mask_postproc, refine_levels_from_gridfile};
-use crate::*;
+use super::levels::{final_method_c_metadata_for_mask_postproc, refine_levels_from_gridfile};
 
 /// Carve a gridfile to land-only or ocean-only cells from a land-type NetCDF.
 ///
@@ -56,7 +63,7 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
     let mesh = read_unstructured_mesh_netcdf(input_gridfile)?;
     let raw_layout = mask_postproc_layout_from_unstructured_mesh(&mesh, mode_grid)?;
     let layout = ensure_leading_mask_postproc_placeholder(raw_layout);
-    let landtype_values = sample_landtype_values_for_points_fortran_indexed(
+    let landtype_values = sample_landtype_values_for_points_one_based(
         landtype_file,
         gridnum_perdegree,
         &layout.center_points[2..],
@@ -72,7 +79,7 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
     }
     for (i, landtype_value) in (2..layout.ustr_points).zip(landtype_values) {
         let is_land = matches!(
-            classify_area_judge_landtype_fortran_indexed(landtype_value),
+            classify_area_judge_landtype_one_based(landtype_value),
             AreaJudgeLandtypeClass::Land
         );
         if is_land == keep_land {
@@ -88,30 +95,24 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
     }
     let report =
         finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
-    let source_levels = if m_refine_level.is_none() || w_refine_level.is_none() {
-        Some(refine_levels_from_gridfile(input_gridfile)?)
-    } else {
-        None
-    };
-    let source_m_levels = m_refine_level
-        .or_else(|| source_levels.as_ref().map(|levels| levels.m.as_slice()))
-        .unwrap_or(&[]);
-    let source_w_levels = w_refine_level
-        .or_else(|| source_levels.as_ref().map(|levels| levels.w.as_slice()))
-        .unwrap_or(&[]);
-    let final_levels = final_refine_levels_for_mask_postproc(
+    let mut source_metadata = refine_levels_from_gridfile(input_gridfile)?;
+    if let Some(levels) = m_refine_level {
+        source_metadata.m = levels.to_vec();
+    }
+    if let Some(levels) = w_refine_level {
+        source_metadata.w = levels.to_vec();
+    }
+    let final_metadata = final_method_c_metadata_for_mask_postproc(
         mode_grid,
         &report,
         &is_in_domain,
         layout.ustr_points,
-        source_m_levels,
-        source_w_levels,
+        &source_metadata,
     )?;
-    write_unstructured_mesh_netcdf_with_refine_levels(
+    write_unstructured_mesh_netcdf_with_method_c_metadata(
         output_gridfile,
         &report.mesh,
-        final_levels.m.as_deref(),
-        final_levels.w.as_deref(),
+        final_metadata.slices(),
     )?;
     Ok(kept)
 }

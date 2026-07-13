@@ -1,6 +1,6 @@
 use crate::LonLatPoint;
 
-pub(crate) fn mesh_row_for_fortran_id(
+pub(crate) fn mesh_row_for_canonical_id(
     id: i32,
     rows: usize,
     has_two_placeholder_rows: bool,
@@ -20,7 +20,7 @@ pub(crate) fn mesh_row_for_fortran_id(
     (row < rows).then_some(row)
 }
 
-pub(super) fn mesh_fortran_id_for_row(row: usize, has_two_placeholder_rows: bool) -> Option<i32> {
+pub(crate) fn mesh_canonical_id_for_row(row: usize, has_two_placeholder_rows: bool) -> Option<i32> {
     if has_two_placeholder_rows {
         if row < 2 {
             return None;

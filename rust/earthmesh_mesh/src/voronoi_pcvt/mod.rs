@@ -1,6 +1,7 @@
 use std::io;
 
 use crate::coordinates::{magnitude, require_grid_coordinate_len};
+use crate::spherical_circumcenter_mesh::circumcenter_is_local_enough;
 use crate::{spherical_circumcenter_from_barycenter_with_radius, CartesianPoint, VoronoiGridState};
 
 /// Port of `mkgrd.F90:pcvt` for the one-based Voronoi grid state.
@@ -8,7 +9,7 @@ use crate::{spherical_circumcenter_from_barycenter_with_radius, CartesianPoint, 
 /// The input state is the direct output of `voronoi_grid_from_icosahedron_relaxed`:
 /// M points are initialized as triangle barycenters and `tabs.m[im].iw[0..3]`
 /// points to the three surrounding W vertices.  This routine mirrors the
-/// Fortran loop over `im = 2, nma`: invalid placeholder triangles are skipped;
+/// Canonical loop over `im = 2, nma`: invalid placeholder triangles are skipped;
 /// valid triangles are replaced by spherical circumcenters and normalized back
 /// to the Earth radius by `spherical_circumcenter_from_barycenter`.
 pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Result<()> {
@@ -37,7 +38,7 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
         if vertex_ids.iter().any(|&iw| iw > state.grid.nwa) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("M point {im} references W vertex beyond nwa"),
+                format!("M point {im} references a W vertex beyond nwa"),
             ));
         }
 
@@ -61,6 +62,12 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
                         format!("M point {im} has degenerate spherical circumcenter"),
                     )
                 })?;
+        if !circumcenter_is_local_enough(barycenter, circumcenter, vertices) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("M point {im} has a non-local spherical circumcenter"),
+            ));
+        }
         state.grid.xem[im] = circumcenter.x as f32;
         state.grid.yem[im] = circumcenter.y as f32;
         state.grid.zem[im] = circumcenter.z as f32;

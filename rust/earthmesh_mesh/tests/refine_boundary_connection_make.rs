@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_boundary_connection_make_fortran_indexed;
+use earthmesh_mesh::refine_boundary_connection_make_one_based;
 
 #[test]
 fn refine_boundary_connection_make_builds_closed_curve_from_unrefined_boundary_triangles() {
@@ -28,7 +28,7 @@ fn refine_boundary_connection_make_builds_closed_curve_from_unrefined_boundary_t
     cells_on_triangle[8] = [12, 13, 92];
     cells_on_triangle[9] = [13, 10, 93];
 
-    let boundary = refine_boundary_connection_make_fortran_indexed(
+    let boundary = refine_boundary_connection_make_one_based(
         1,
         sjx_points,
         lbx_points,
@@ -62,7 +62,7 @@ fn refine_boundary_connection_make_rejects_open_boundary_vertex_degree_one() {
     cells_on_triangle[2] = [10, 11, 99];
     cells_on_triangle[3] = [10, 11, 90];
 
-    let err = refine_boundary_connection_make_fortran_indexed(
+    let err = refine_boundary_connection_make_one_based(
         1,
         sjx_points,
         lbx_points,

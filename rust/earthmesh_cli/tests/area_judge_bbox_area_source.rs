@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    build_area_judge_bbox_area_source_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_bbox_sources::build_area_judge_bbox_area_source_one_based,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -12,7 +13,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 #[test]
-fn bbox_area_source_builds_is_in_area_grid_and_fortran_numpatch() {
+fn bbox_area_source_builds_is_in_area_grid_and_canonical_numpatch() {
     let root = temp_root("area_judge_bbox_area_source");
     let source = root.join("mask_domain_bbox_0_01.nc4");
     write_bbox_mask_netcdf(
@@ -49,15 +50,9 @@ fn bbox_area_source_builds_is_in_area_grid_and_fortran_numpatch() {
     ];
     let lat_vertex = vec![f64::NAN, 90.0, 89.0, 88.0, 87.0, 86.0, 85.0, 84.0];
 
-    let report = build_area_judge_bbox_area_source_fortran_indexed(
-        &source,
-        &lon_vertex,
-        &lat_vertex,
-        1,
-        6,
-        6,
-    )
-    .expect("build bbox area source");
+    let report =
+        build_area_judge_bbox_area_source_one_based(&source, &lon_vertex, &lat_vertex, 1, 6, 6)
+            .expect("build bbox area source");
 
     assert_eq!(
         report.bounds,
@@ -91,15 +86,9 @@ fn bbox_area_source_rejects_empty_bbox_file() {
     let lon_vertex = vec![f64::NAN, -180.0, -179.0];
     let lat_vertex = vec![f64::NAN, 90.0, 89.0];
 
-    let err = build_area_judge_bbox_area_source_fortran_indexed(
-        &source,
-        &lon_vertex,
-        &lat_vertex,
-        1,
-        2,
-        2,
-    )
-    .expect_err("empty bbox source should fail");
+    let err =
+        build_area_judge_bbox_area_source_one_based(&source, &lon_vertex, &lat_vertex, 1, 2, 2)
+            .expect_err("empty bbox source should fail");
 
     assert!(err
         .to_string()

@@ -2,7 +2,7 @@ use super::*;
 
 /// File-I/O-free port of `MOD_refine.F90:NGR_RENEW` including the final
 /// `GetSortNew` adjacency ordering pass.
-pub fn refine_ngr_renew_fortran_indexed(
+pub fn refine_ngr_renew_one_based(
     iter: usize,
     num_vertex: usize,
     num_mp: &[usize],
@@ -13,7 +13,7 @@ pub fn refine_ngr_renew_fortran_indexed(
     boundary_refine: &[usize],
     boundary_refine_transition: &[usize],
 ) -> io::Result<RefineNgrRenewCore> {
-    let mut renewed = refine_ngr_renew_core_fortran_indexed(
+    let mut renewed = refine_ngr_renew_core_one_based(
         iter,
         num_vertex,
         num_mp,
@@ -24,7 +24,7 @@ pub fn refine_ngr_renew_fortran_indexed(
         boundary_refine,
         boundary_refine_transition,
     )?;
-    get_sort_new_fortran_indexed(
+    get_sort_new_one_based(
         renewed.num_dbx,
         &renewed.n_triangles_on_cell,
         &renewed.cells_on_triangle,

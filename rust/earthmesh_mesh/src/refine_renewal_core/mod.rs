@@ -16,12 +16,12 @@ pub struct RefineNgrRenewCore {
 
 /// Pure Rust core for `MOD_refine.F90:NGR_RENEW` before `GetSortNew` and file IO.
 ///
-/// This preserves the Fortran-indexed data model: slot `0` is a placeholder,
+/// This preserves the Canonical-indexed data model: slot `0` is a placeholder,
 /// original vertices `1..=num_wp[1]` are copied directly, new vertices are
 /// deduplicated only against previously accepted new vertices, deleted
 /// triangles have connectivity `[1, 1, 1]`, and triangle-to-vertex adjacency is
 /// rebuilt from final compacted triangle ids starting at triangle `2`.
-pub fn refine_ngr_renew_core_fortran_indexed(
+pub fn refine_ngr_renew_core_one_based(
     iter: usize,
     num_vertex: usize,
     num_mp: &[usize],
@@ -132,7 +132,7 @@ pub fn refine_ngr_renew_core_fortran_indexed(
             if *cell == 0 || *cell >= vertex_mapping.len() || vertex_mapping[*cell] == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("triangle references cell {cell} without final vertex mapping"),
+                    format!("triangle canonicals cell {cell} without final vertex mapping"),
                 ));
             }
             *cell = vertex_mapping[*cell];

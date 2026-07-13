@@ -1,9 +1,10 @@
 [package]
 name = "earthmesh_studio"
-version = "0.1.0"
+version = "3.0.0-alpha2"
 edition = "2021"
 description = "EarthMesh Studio — Tauri shell (web frontend + Rust backend over earthmesh_project)"
-license = "MIT OR Apache-2.0"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
 
 # The Tauri desktop binary links against this library crate. `main.rs` is a thin
 # launcher that calls `earthmesh_studio_lib::run()`; all command logic lives in

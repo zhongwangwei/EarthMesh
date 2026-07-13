@@ -8,7 +8,7 @@ use super::types::{BBoxMask, BBoxPoint};
 
 /// Parse the text `.nml` branch of `mkgrd.F90:bbox_mask_make`.
 ///
-/// Returns `Ok(None)` when `refine_degree > max_iter_spc`, matching the Fortran
+/// Returns `Ok(None)` when `refine_degree > max_iter_spc`, matching the Canonical
 /// early return before any output/count update.
 pub fn parse_bbox_mask_nml(
     inputfile: impl AsRef<Path>,

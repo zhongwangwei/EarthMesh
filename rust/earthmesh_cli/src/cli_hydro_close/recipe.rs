@@ -88,13 +88,14 @@ pub(crate) fn run_hydro_close_recipe(args: impl Iterator<Item = String>) -> Resu
         }
     }
 
-    let report = earthmesh_cli::write_hydro_close_refinement_recipe_json(
+    let report = earthmesh_cli::hydro_close_recipe::write_hydro_close_refinement_recipe_json(
         &output_json,
-        earthmesh_cli::HydroCloseRefinementRecipeOptions {
+        earthmesh_cli::hydro_close_types::HydroCloseRefinementRecipeOptions {
             input_geojson,
             output_prefix,
-            class_refine: class_refine
-                .unwrap_or_else(earthmesh_cli::default_hydro_close_class_refine),
+            class_refine: class_refine.unwrap_or_else(
+                earthmesh_cli::hydro_close_recipe::default_hydro_close_class_refine,
+            ),
             buffer_deg_by_refine_degree,
             simplify_tolerance_deg,
             example_namelist,

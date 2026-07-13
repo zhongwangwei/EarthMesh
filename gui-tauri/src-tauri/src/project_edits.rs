@@ -1,9 +1,10 @@
 //! Project YAML edit command handlers.
 
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, MeshCellKind,
-    ProjectConfig, ProjectLayerRole, RegionShape, SpecifiedBboxRefinement,
-    SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField, ViolationPolicy,
+    default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, DomainConfig,
+    HfieldRefinementRecipe, MeshCellKind, ProjectConfig, ProjectLayerRole, RegionShape,
+    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
+    ViolationPolicy,
 };
 use std::path::{Path, PathBuf};
 
@@ -194,21 +195,27 @@ pub(crate) fn set_domain_close(
     };
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.domain = DomainConfig::Regional {
-        shape: RegionShape::Close { path, format },
+        shape: RegionShape::Close {
+            path,
+            format,
+            boundary: CloseBoundaryMode::Polyline,
+        },
         sea_ratio: Some(sea_ratio.unwrap_or_else(default_mask_sea_ratio)),
     };
     validated_yaml(cfg)
 }
 
-/// Set the quality gate (min angle + on-violation policy), returning the YAML.
+/// Set the quality gate and bounded AutoRefine repair batch, returning the YAML.
 #[tauri::command]
 pub(crate) fn set_quality(
     yaml: String,
     min_angle_deg: f64,
     policy: String,
+    auto_refine_batch_cells: usize,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.quality.min_angle_deg = min_angle_deg;
+    cfg.quality.auto_refine_batch_cells = auto_refine_batch_cells;
     cfg.quality.on_violation = match policy.trim() {
         "warn" => ViolationPolicy::Warn,
         "block" => ViolationPolicy::Block,
@@ -272,6 +279,7 @@ pub(crate) fn set_specified_refinement(
     } else if enabled && kind == "close" {
         cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
             path: path.unwrap_or_default(),
+            boundary: CloseBoundaryMode::Polyline,
         });
     } else if enabled {
         return Err("specified refinement kind must be radius, bbox, or close".to_string());
@@ -279,8 +287,61 @@ pub(crate) fn set_specified_refinement(
     validated_yaml(cfg)
 }
 
+/// Set the geometry semantics for a close domain or specified close refinement.
+/// The UI exposes this only in expert mode, while the option stays attached to
+/// the close source in the project schema for reproducibility.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_close_boundary(
+    yaml: String,
+    target: String,
+    mode: String,
+    iterations: Option<u8>,
+    margin_km: Option<f64>,
+    max_radius_deg: Option<f64>,
+    max_segment_angle_deg: Option<f64>,
+) -> Result<String, String> {
+    let boundary = match mode.trim() {
+        "" | "polyline" => CloseBoundaryMode::Polyline,
+        "spherical_chaikin" => CloseBoundaryMode::SphericalChaikin {
+            iterations: iterations.unwrap_or(2),
+            max_segment_angle_deg: max_segment_angle_deg.unwrap_or(0.25),
+        },
+        "enclosing_cap" => CloseBoundaryMode::EnclosingCap {
+            margin_km: margin_km.unwrap_or(0.0),
+            max_radius_deg: max_radius_deg.unwrap_or(80.0),
+            max_segment_angle_deg: max_segment_angle_deg.unwrap_or(0.25),
+        },
+        other => return Err(format!("unknown close boundary mode '{other}'")),
+    };
+    boundary.validate()?;
+
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    match target.trim() {
+        "domain" => match &mut cfg.domain {
+            DomainConfig::Regional {
+                shape: RegionShape::Close { boundary: slot, .. },
+                ..
+            } => *slot = boundary,
+            _ => return Err("domain close boundary requires a close domain".to_string()),
+        },
+        "specified" => {
+            let close = cfg.refinement.specified_close.as_mut().ok_or_else(|| {
+                "specified close boundary requires a specified close refinement".to_string()
+            })?;
+            close.boundary = boundary;
+        }
+        other => {
+            return Err(format!(
+                "close boundary target must be domain or specified; got {other:?}"
+            ))
+        }
+    }
+    validated_yaml(cfg)
+}
+
 /// Toggle h-field refinement (continuous cell-width field driving Method-C).
-/// `enabled=false` stores an explicit legacy hard-mask override; absent hfield
+/// `enabled=false` stores an explicit discrete mask override; absent hfield
 /// recipes default to h-field during lowering.
 #[tauri::command]
 pub(crate) fn set_hfield_refinement(
@@ -305,6 +366,8 @@ pub(crate) fn set_hfield_refinement(
             g,
             max_level,
             base_m: base_m.filter(|base| base.is_finite() && *base > 0.0),
+            origin_lon: None,
+            origin_lat: None,
         })
     } else {
         Some(HfieldRefinementRecipe {

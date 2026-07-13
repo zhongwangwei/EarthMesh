@@ -1,11 +1,12 @@
+use crate::build_area_judge_area_sources_one_based;
+use crate::AreaJudgeAreaSourceReport;
 use std::io;
 use std::path::Path;
 
-use super::validation::validate_area_judge_refine_within_domain_fortran_indexed;
-use crate::*;
+use super::validation::validate_area_judge_refine_within_domain_one_based;
 
 /// Build calculated `mask_refine` sources and validate they stay inside domain.
-pub fn build_area_judge_calculated_refine_fortran_indexed(
+pub fn build_area_judge_calculated_refine_one_based(
     file_dir: impl AsRef<Path>,
     iter: usize,
     mask_refine_cal_type: &str,
@@ -19,7 +20,7 @@ pub fn build_area_judge_calculated_refine_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgeAreaSourceReport> {
-    let refine = build_area_judge_area_sources_fortran_indexed(
+    let refine = build_area_judge_area_sources_one_based(
         file_dir,
         "mask_refine",
         mask_refine_cal_type,
@@ -33,7 +34,7 @@ pub fn build_area_judge_calculated_refine_fortran_indexed(
         nlons_source,
         nlats_source,
     )?;
-    validate_area_judge_refine_within_domain_fortran_indexed(
+    validate_area_judge_refine_within_domain_one_based(
         &refine.is_in_area,
         is_in_domain,
         refine.bounds,

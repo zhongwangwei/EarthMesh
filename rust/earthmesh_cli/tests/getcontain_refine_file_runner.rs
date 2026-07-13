@@ -1,15 +1,18 @@
 use std::fs;
 
 use earthmesh_cli::{
-    read_contain_netcdf, run_getcontain_refine_file_fortran_indexed,
-    select_area_judge_grid_fortran_indexed, write_area_judge_grid_netcdf,
-    write_unstructured_mesh_netcdf, GetContainMeshKind, GetContainRefineFileRunConfig, LonLatPoint,
-    UnstructuredMesh,
+    area_judge_getcontain_refine::run_getcontain_refine_file_one_based,
+    area_judge_grid_io::select_area_judge_grid_one_based,
+    area_judge_grid_io::write_area_judge_grid_netcdf, contain_io::read_contain_netcdf,
+    coordinate_types::LonLatPoint, getcontain_types::GetContainMeshKind,
+    getcontain_types::GetContainRefineFileRunConfig,
+    unstructured_mesh_io::write_unstructured_mesh_netcdf,
+    unstructured_mesh_support::UnstructuredMesh,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 #[test]
-fn getcontain_refine_file_runner_reads_grid_and_area_then_writes_legacy_contain() {
+fn getcontain_refine_file_runner_reads_grid_and_area_then_writes_compatibility_contain() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_getcontain_refine_file_{}",
         std::process::id()
@@ -44,7 +47,7 @@ fn getcontain_refine_file_runner_reads_grid_and_area_then_writes_legacy_contain(
     refine_grid[1][2] = 1;
     refine_grid[2][1] = 1;
     refine_grid[2][2] = 1;
-    let payload = select_area_judge_grid_fortran_indexed(
+    let payload = select_area_judge_grid_one_based(
         &refine_grid,
         None,
         &lon_i,
@@ -67,7 +70,7 @@ fn getcontain_refine_file_runner_reads_grid_and_area_then_writes_legacy_contain(
     seaorland[2][2] = 1;
     let output = root.join("contain/contain_landmesh_refine_spc_NXP0004_01_tri.nc4");
 
-    let report = run_getcontain_refine_file_fortran_indexed(GetContainRefineFileRunConfig {
+    let report = run_getcontain_refine_file_one_based(GetContainRefineFileRunConfig {
         gridfile: &gridfile,
         area_grid_file: &area_grid,
         output: &output,

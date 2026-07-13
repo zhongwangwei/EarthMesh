@@ -10,6 +10,30 @@ pub fn classify_merit_hydro_window(
     window: &MeritHydroWindowReport,
     thresholds: MeritMaskThresholds,
 ) -> io::Result<MeritHydroMaskClassificationReport> {
+    let adjacency = (0..window.width)
+        .flat_map(|lon_index| {
+            (0..window.height).map(move |lat_index| {
+                merit_cell_adjacent_to_other_surface(window, lon_index, lat_index)
+            })
+        })
+        .collect::<Vec<_>>();
+    classify_merit_hydro_window_with_adjacency(window, thresholds, &adjacency)
+}
+
+pub(super) fn classify_merit_hydro_window_with_adjacency(
+    window: &MeritHydroWindowReport,
+    thresholds: MeritMaskThresholds,
+    adjacency: &[bool],
+) -> io::Result<MeritHydroMaskClassificationReport> {
+    if window.sampling_stride != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "MERIT-Hydro coast classification requires native stride 1; got {}",
+                window.sampling_stride
+            ),
+        ));
+    }
     let expected = window.width.checked_mul(window.height).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -22,6 +46,7 @@ pub fn classify_merit_hydro_window(
         ("elv", window.elv_m.len()),
         ("wth", window.width_m.len()),
         ("landtype_igbp", window.landtype_igbp.len()),
+        ("coast adjacency", adjacency.len()),
     ] {
         require_len(name, len, expected)?;
     }
@@ -45,7 +70,7 @@ pub fn classify_merit_hydro_window(
                 window.width_m[offset],
                 window.upa_km2[offset],
                 window.landtype_igbp[offset],
-                merit_cell_adjacent_to_other_surface(window, lon_index, lat_index),
+                adjacency[offset],
                 thresholds,
             );
             match class {
@@ -108,11 +133,15 @@ fn merit_cell_adjacent_to_other_surface(
     if !cell_ocean && !cell_land {
         return false;
     }
-    let lon_min = lon_index.saturating_sub(1);
-    let lon_max = (lon_index + 1).min(window.width.saturating_sub(1));
+    let wrap_lon = merit_window_wraps_longitude(window);
     let lat_min = lat_index.saturating_sub(1);
     let lat_max = (lat_index + 1).min(window.height.saturating_sub(1));
-    for ni in lon_min..=lon_max {
+    for dx in -1_isize..=1 {
+        let candidate_lon = lon_index as isize + dx;
+        if !wrap_lon && (candidate_lon < 0 || candidate_lon >= window.width as isize) {
+            continue;
+        }
+        let ni = candidate_lon.rem_euclid(window.width as isize) as usize;
         for nj in lat_min..=lat_max {
             if ni == lon_index && nj == lat_index {
                 continue;
@@ -126,6 +155,19 @@ fn merit_cell_adjacent_to_other_surface(
         }
     }
     false
+}
+
+fn merit_window_wraps_longitude(window: &MeritHydroWindowReport) -> bool {
+    if window.lon.len() < 2 {
+        return false;
+    }
+    let first = window.lon[0];
+    let last = *window.lon.last().unwrap_or(&first);
+    let step = (window.lon[1] - window.lon[0]).abs();
+    first.is_finite()
+        && last.is_finite()
+        && step.is_finite()
+        && (last - first).abs() + step >= 359.0
 }
 
 fn is_merit_ocean_landtype(value: i32) -> bool {

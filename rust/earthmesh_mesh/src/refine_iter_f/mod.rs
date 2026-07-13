@@ -5,10 +5,10 @@ use crate::validate_refine_cell_neighbors;
 /// Port of `MOD_refine.F90:iterF_judge`.
 ///
 /// Builds the protection halo around the original icosahedron vertices
-/// (`impent`) using Fortran one-based `ngrwm/n_ngrwm` connectivity.  If a
+/// (`impent`) using Canonical one-based `ngrwm/n_ngrwm` connectivity.  If a
 /// protected region still contains an `mrl_new == 1` triangle, all protected
 /// `mrl_new == 0` triangles are marked for refinement.
-pub fn refine_iter_f_judge_fortran_indexed(
+pub fn refine_iter_f_judge_one_based(
     num_sjx: usize,
     num_dbx: usize,
     triangles_on_cell: &[Vec<usize>],

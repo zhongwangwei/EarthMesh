@@ -13,14 +13,14 @@ pub struct AreaJudgeThresholdReadConfig<'a> {
     pub refine_onelayer_atmos: &'a [bool],
 }
 
-/// One selected 2-D threshold dataset, stored with local Fortran one-based indices.
+/// One selected 2-D threshold dataset, stored with local Canonical one-based indices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AreaJudgeThreshold2D {
     pub name: String,
     pub values: Vec<Vec<f64>>,
 }
 
-/// One selected two-layer threshold dataset, stored as layer x local Fortran one-based grid.
+/// One selected two-layer threshold dataset, stored as layer x local Canonical one-based grid.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AreaJudgeThreshold2Layer {
     pub name: String,

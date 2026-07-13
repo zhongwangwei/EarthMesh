@@ -2,7 +2,7 @@
 //! river/coast signal: a per-cell intersection / complete-mask GeoJSON ->
 //! hydro_coast_score demand -> target_level plan. Pure (no NetCDF).
 
-use earthmesh_cli::plan_refinement_from_hydro_geojson;
+use earthmesh_cli::hydro_delivery_refine_workflow::plan_refinement_from_hydro_geojson;
 
 #[test]
 fn river_fraction_drives_target_level() {
@@ -67,4 +67,34 @@ fn coastal_fraction_drives_demand_and_budget_caps_cells() {
         "lower-demand cell dropped"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn duplicate_class_rows_use_one_unique_cell_budget() {
+    let dir = std::env::temp_dir().join(format!("em3_refplan_unique_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let geometry = r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}"#;
+    std::fs::write(
+        dir.join("cells.geojson"),
+        format!(
+            r#"{{"type":"FeatureCollection","features":[
+              {{"type":"Feature","properties":{{"cell_id":"c0","overlap_class":"R2","river_fraction":0.4}},"geometry":{geometry}}},
+              {{"type":"Feature","properties":{{"cell_id":"c0","overlap_class":"R3","river_fraction":0.1}},"geometry":{geometry}}}
+            ]}}"#
+        ),
+    )
+    .unwrap();
+    let output = dir.join("plan.json");
+    let report = plan_refinement_from_hydro_geojson(dir.join("cells.geojson"), &output, 3, Some(1))
+        .expect("plan unique hydro cell");
+
+    assert_eq!(report.target_levels.level, vec![3]);
+    assert_eq!(report.budget_used.cells_refined_after, 1);
+    assert!(!report.budget_used.budget_hit);
+    let json = std::fs::read_to_string(output).unwrap();
+    assert!(json.contains("\"total_cells\": 1"), "{json}");
+    assert!(json.contains("\"cells_refined\": 1"), "{json}");
+    assert!(json.contains("\"cell_id\": \"c0\""), "{json}");
+    let _ = std::fs::remove_dir_all(dir);
 }

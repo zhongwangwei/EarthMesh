@@ -8,14 +8,14 @@ fn earthmesh_info_writer_preserves_locmesh_info_schema() {
     std::fs::create_dir_all(&root).expect("create temp root");
     let output = root.join("earthmesh_info.nc4");
 
-    let info = earthmesh_cli::EarthmeshInfo {
+    let info = earthmesh_cli::mask_postproc_writers::EarthmeshInfo {
         num_step_f: vec![1, 4, 7],
         refine_degree_f: vec![0, 0, 1, 1, 2],
         seaorland_ustr_f: vec![0, 1, -1, 1, -1],
     };
 
-    let report =
-        earthmesh_cli::write_earthmesh_info_netcdf(&output, &info).expect("write earthmesh info");
+    let report = earthmesh_cli::mask_postproc_writers::write_earthmesh_info_netcdf(&output, &info)
+        .expect("write earthmesh info");
     assert_eq!(report.output, output);
     assert_eq!(report.num_step, 3);
     assert_eq!(report.num_ustr, 5);
@@ -33,14 +33,14 @@ fn earthmesh_info_writer_preserves_locmesh_info_schema() {
 #[test]
 fn earthmesh_info_writer_rejects_ustr_vector_length_mismatches() {
     let output = std::env::temp_dir().join("earthmesh_cli_bad_earthmesh_info.nc4");
-    let bad = earthmesh_cli::EarthmeshInfo {
+    let bad = earthmesh_cli::mask_postproc_writers::EarthmeshInfo {
         num_step_f: vec![1, 4],
         refine_degree_f: vec![0, 1, 2],
         seaorland_ustr_f: vec![1, -1],
     };
 
-    let err =
-        earthmesh_cli::write_earthmesh_info_netcdf(&output, &bad).expect_err("mismatch rejected");
+    let err = earthmesh_cli::mask_postproc_writers::write_earthmesh_info_netcdf(&output, &bad)
+        .expect_err("mismatch rejected");
     assert!(err
         .to_string()
         .contains("refine_degree_f and seaorland_ustr_f must have matching length"));

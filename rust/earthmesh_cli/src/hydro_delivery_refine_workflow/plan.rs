@@ -1,12 +1,16 @@
+use crate::json_escape_string;
+use crate::json_number;
+use crate::read_text_maybe_gzip;
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::*;
+use super::feature_table::hydro_refine_feature_set;
 
-use super::feature_table::hydro_refine_feature_table;
-
-fn hydro_refine_plan_json(report: &earthmesh_refine_planner::RefinementReport) -> String {
+fn hydro_refine_plan_json(
+    report: &earthmesh_refine_planner::RefinementReport,
+    cell_ids: &[String],
+) -> String {
     let levels = &report.target_levels.level;
     let max_level = levels.iter().copied().max().unwrap_or(0);
     let mut hist = vec![0usize; max_level as usize + 1];
@@ -22,9 +26,11 @@ fn hydro_refine_plan_json(report: &earthmesh_refine_planner::RefinementReport) -
         .decisions
         .iter()
         .map(|d| {
+            let cell_id = cell_ids.get(d.cell).map(String::as_str).unwrap_or("");
             format!(
-                "    {{\"cell\": {}, \"target_level\": {}, \"composite_score\": {}, \"why\": \"{}\"}}",
+                "    {{\"cell\": {}, \"cell_id\": \"{}\", \"target_level\": {}, \"composite_score\": {}, \"why\": \"{}\"}}",
                 d.cell,
+                json_escape_string(cell_id),
                 d.final_level,
                 json_number(d.composite_score),
                 json_escape_string(&d.top_reason),
@@ -58,7 +64,7 @@ pub fn plan_refinement_from_hydro_geojson(
     max_refined_cells: Option<usize>,
 ) -> io::Result<earthmesh_refine_planner::RefinementReport> {
     use earthmesh_refine_planner as rp;
-    let features = hydro_refine_feature_table(&read_text_maybe_gzip(geojson.as_ref())?)?;
+    let features = hydro_refine_feature_set(&read_text_maybe_gzip(geojson.as_ref())?)?;
     let criteria = vec![rp::hydro_coast_score_criterion()];
     let cfg = rp::CompositeScoreConfig {
         weights: vec![("hydro_coast_score".to_string(), 1.0)],
@@ -75,14 +81,18 @@ pub fn plan_refinement_from_hydro_geojson(
         ..Default::default()
     };
     let report = rp::plan(
-        &features,
+        &features.table,
         &criteria,
         &cfg,
         &budget,
         &quality,
         rp::MeshDomain::Coupled,
-    );
+    )
+    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     crate::ensure_parent_dir(output_json.as_ref())?;
-    fs::write(output_json, hydro_refine_plan_json(&report))?;
+    fs::write(
+        output_json,
+        hydro_refine_plan_json(&report, &features.table.cell_ids),
+    )?;
     Ok(report)
 }

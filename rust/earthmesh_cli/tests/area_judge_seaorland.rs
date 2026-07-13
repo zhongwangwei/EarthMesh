@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    build_area_judge_seaorland_fortran_indexed, classify_area_judge_landtype_fortran_indexed,
-    AreaJudgeLandtypeClass,
+    area_judge_domain_builders::build_area_judge_seaorland_one_based,
+    area_judge_domain_builders::classify_area_judge_landtype_one_based,
+    area_judge_types::AreaJudgeLandtypeClass,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
@@ -9,23 +10,23 @@ fn one_based_landtypes(nx: usize, ny: usize) -> Vec<Vec<i32>> {
 }
 
 #[test]
-fn seaorland_builder_treats_ocean_land_river_and_coast_codes_like_fortran_binary_mask() {
+fn seaorland_builder_treats_ocean_land_river_and_coast_codes_like_canonical_binary_mask() {
     // MOD_Area_judge.F90 uses `landtypes_global(i, j) /= 0` for seaorland.
     // That means river/coast-coded cells remain land in this binary Area_judge mask.
     assert_eq!(
-        classify_area_judge_landtype_fortran_indexed(0),
+        classify_area_judge_landtype_one_based(0),
         AreaJudgeLandtypeClass::Ocean
     );
     assert_eq!(
-        classify_area_judge_landtype_fortran_indexed(1),
+        classify_area_judge_landtype_one_based(1),
         AreaJudgeLandtypeClass::Land
     );
     assert_eq!(
-        classify_area_judge_landtype_fortran_indexed(2),
+        classify_area_judge_landtype_one_based(2),
         AreaJudgeLandtypeClass::Land
     );
     assert_eq!(
-        classify_area_judge_landtype_fortran_indexed(7),
+        classify_area_judge_landtype_one_based(7),
         AreaJudgeLandtypeClass::Land
     );
 
@@ -42,7 +43,7 @@ fn seaorland_builder_treats_ocean_land_river_and_coast_codes_like_fortran_binary
     landtypes[3][1] = 2; // river-like nonzero code
     landtypes[4][1] = 7; // coast-like nonzero code
 
-    let report = build_area_judge_seaorland_fortran_indexed(
+    let report = build_area_judge_seaorland_one_based(
         &domain,
         &landtypes,
         AreaJudgeSourceBounds {
@@ -78,7 +79,7 @@ fn seaorland_builder_marks_only_domain_land_cells_and_counts_them() {
     landtypes[3][3] = 7;
     landtypes[4][4] = 9;
 
-    let report = build_area_judge_seaorland_fortran_indexed(
+    let report = build_area_judge_seaorland_one_based(
         &domain,
         &landtypes,
         AreaJudgeSourceBounds {
@@ -100,11 +101,11 @@ fn seaorland_builder_marks_only_domain_land_cells_and_counts_them() {
 }
 
 #[test]
-fn seaorland_builder_skips_atmosmesh_without_refine_like_fortran() {
+fn seaorland_builder_skips_atmosmesh_without_refine_like_canonical() {
     let domain = vec![vec![1; 3]; 3];
     let landtypes = vec![vec![8; 3]; 3];
 
-    let report = build_area_judge_seaorland_fortran_indexed(
+    let report = build_area_judge_seaorland_one_based(
         &domain,
         &landtypes,
         AreaJudgeSourceBounds {

@@ -12,16 +12,16 @@ pub struct EdgeIdSortOutput {
 /// Port of `MOD_grid_preprocess:edgeIDSort`.
 ///
 /// Edges from the current mesh are reordered to match
-/// `cells_on_edge_reference`; `edges_on_vertex` is then rebuilt from the sorted
+/// `cells_on_edge_canonical`; `edges_on_vertex` is then rebuilt from the sorted
 /// `vertices_on_edge` arrays.
-pub fn edge_id_sort_fortran_indexed(
+pub fn edge_id_sort_one_based(
     num_vertices: usize,
-    cells_on_edge_reference: &[[usize; 2]],
+    cells_on_edge_canonical: &[[usize; 2]],
     cells_on_edge: &[[usize; 2]],
     vertices_on_edge: &[[usize; 2]],
     edge_points: &[LonLatDegrees],
 ) -> Option<EdgeIdSortOutput> {
-    let num_edges = cells_on_edge_reference.len();
+    let num_edges = cells_on_edge_canonical.len();
     if cells_on_edge.len() != num_edges
         || vertices_on_edge.len() != num_edges
         || edge_points.len() != num_edges
@@ -34,10 +34,10 @@ pub fn edge_id_sort_fortran_indexed(
     let mut sorted_edge_points = vec![LonLatDegrees::new(0.0, 0.0); num_edges];
 
     for target_edge_id in 2..num_edges {
-        let reference_cells = cells_on_edge_reference[target_edge_id];
+        let canonical_cells = cells_on_edge_canonical[target_edge_id];
         let source_edge_id = (2..num_edges).find(|&candidate| {
-            cells_on_edge[candidate][0] == reference_cells[0]
-                && cells_on_edge[candidate][1] == reference_cells[1]
+            cells_on_edge[candidate][0] == canonical_cells[0]
+                && cells_on_edge[candidate][1] == canonical_cells[1]
         })?;
         sorted_cells_on_edge[target_edge_id] = cells_on_edge[source_edge_id];
         sorted_vertices_on_edge[target_edge_id] = vertices_on_edge[source_edge_id];

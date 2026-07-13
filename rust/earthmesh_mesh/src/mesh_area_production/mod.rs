@@ -1,7 +1,7 @@
 use super::*;
 
 /// Production-facing `GetArea` output with the diagnostic summary printed by
-/// the Fortran routine.
+/// the Canonical routine.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GetAreaProductionOutput {
     pub unit: GetAreaUnitOutput,
@@ -10,14 +10,14 @@ pub struct GetAreaProductionOutput {
 
 /// Production wrapper for `MOD_grid_preprocess:GetArea`.
 ///
-/// This combines the migrated unit-sphere area workflow with the reconstruction
-/// relative-error diagnostic that the Fortran routine prints after computing
+/// This combines the current unit-sphere area workflow with the reconstruction
+/// relative-error diagnostic that the Canonical routine prints after computing
 /// `areaTriangle`.
-pub fn get_area_production_fortran_indexed(
+pub fn get_area_production_one_based(
     input: GetAreaUnitInput<'_>,
 ) -> Option<GetAreaProductionOutput> {
-    let unit = get_area_unit_fortran_indexed(input)?;
-    let reconstruction_error = area_triangle_reconstruction_error_fortran_indexed(
+    let unit = get_area_unit_one_based(input)?;
+    let reconstruction_error = area_triangle_reconstruction_error_one_based(
         &unit.area_triangle,
         input.cell_points,
         input.cells_on_vertex,
@@ -31,10 +31,10 @@ pub fn get_area_production_fortran_indexed(
 
 /// Port of the `GetArea` area-triangle reconstruction error summary.
 ///
-/// For each Fortran-indexed vertex id from `2..`, the routine recomputes the
+/// For each Canonical-indexed vertex id from `2..`, the routine recomputes the
 /// triangle area from `cellsOnVertex(:, i)` cell centers and compares it with
 /// the reconstructed `areaTriangle(i)`.
-pub fn area_triangle_reconstruction_error_fortran_indexed(
+pub fn area_triangle_reconstruction_error_one_based(
     area_triangle: &[f64],
     cell_points: &[CartesianPoint],
     cells_on_vertex: &[[usize; 3]],

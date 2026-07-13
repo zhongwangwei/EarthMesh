@@ -14,8 +14,8 @@ pub struct MpasGraphInfoWriteReport {
 /// Write the METIS-style `graph.info` text produced by
 /// `MOD_file_preprocess.F90:MPAS_info_Save`.
 ///
-/// Inputs keep the legacy placeholder row at Rust index `0`; only rows/edges
-/// from index `1` onward are written or counted, matching Fortran `2:nCells`
+/// Inputs keep the compatibility placeholder row at Rust index `0`; only rows/edges
+/// from index `1` onward are written or counted, matching Canonical `2:nCells`
 /// and `2:nEdges` loops after internal placeholder-row removal.
 pub fn write_mpas_graph_info(
     output: impl AsRef<Path>,
@@ -33,7 +33,7 @@ pub fn write_mpas_graph_info(
     if cells_on_cell.is_empty() || cells_on_edge.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "MPAS graph info inputs must include the legacy placeholder row",
+            "MPAS graph info inputs must include the compatibility placeholder row",
         ));
     }
     if cells_on_cell.len() != n_edges_on_cell.len() {

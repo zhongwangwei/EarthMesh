@@ -1,12 +1,12 @@
 #[test]
-fn patchid_mesh_from_selected_domain_matches_fortran_patchid_save_coordinate_lookup() {
+fn patchid_mesh_from_selected_domain_matches_canonical_patchid_save_coordinate_lookup() {
     let patchtypes_select = vec![vec![2, 3, 4], vec![5, 6, 7]];
     let lon_vertex = (0..16).map(|idx| idx as f64 + 0.1).collect::<Vec<_>>();
     let lon_i = (0..16).map(|idx| idx as f64 + 0.5).collect::<Vec<_>>();
     let lat_vertex = (0..25).map(|idx| idx as f64 + 0.2).collect::<Vec<_>>();
     let lat_i = (0..25).map(|idx| idx as f64 + 0.6).collect::<Vec<_>>();
 
-    let patch = earthmesh_cli::patchid_mesh_from_selected_domain(
+    let patch = earthmesh_cli::mask_postproc_patchtypes::patchid_mesh_from_selected_domain(
         patchtypes_select.clone(),
         10,
         20,
@@ -29,7 +29,7 @@ fn patchid_mesh_from_selected_domain_matches_fortran_patchid_save_coordinate_loo
 #[test]
 fn patchid_mesh_from_selected_domain_rejects_missing_lookup_coordinates() {
     let patchtypes_select = vec![vec![2]];
-    let err = earthmesh_cli::patchid_mesh_from_selected_domain(
+    let err = earthmesh_cli::mask_postproc_patchtypes::patchid_mesh_from_selected_domain(
         patchtypes_select,
         10,
         20,

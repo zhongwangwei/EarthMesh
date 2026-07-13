@@ -2,7 +2,7 @@ use std::io;
 
 use crate::UnstructuredMesh;
 
-pub(crate) fn cells_on_triangle_fortran_indexed_from_mesh(
+pub(crate) fn cells_on_triangle_one_based_from_mesh(
     mesh: &UnstructuredMesh,
 ) -> io::Result<Vec<[usize; 3]>> {
     mesh.m_to_w
@@ -22,7 +22,7 @@ pub(crate) fn cells_on_triangle_fortran_indexed_from_mesh(
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "m_to_w row {row_idx} references cell id {value}, but only {} cell rows exist",
+                            "m_to_w row {row_idx} canonicals cell id {value}, but only {} cell rows exist",
                             mesh.w_points.len()
                         ),
                     ));
@@ -34,7 +34,7 @@ pub(crate) fn cells_on_triangle_fortran_indexed_from_mesh(
         .collect()
 }
 
-pub(crate) fn triangles_on_cell_fortran_indexed_from_mesh(
+pub(crate) fn triangles_on_cell_one_based_from_mesh(
     mesh: &UnstructuredMesh,
 ) -> io::Result<Vec<Vec<usize>>> {
     let mut rows = Vec::with_capacity(mesh.w_to_m.len());
@@ -52,7 +52,7 @@ pub(crate) fn triangles_on_cell_fortran_indexed_from_mesh(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "w_to_m row {row_idx} references triangle id {value}, but only {} triangle rows exist",
+                        "w_to_m row {row_idx} canonicals triangle id {value}, but only {} triangle rows exist",
                         mesh.m_points.len()
                     ),
                 ));

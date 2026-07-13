@@ -5,8 +5,8 @@ use std::io;
 /// Applies the refinement marker `ref_sjx` to the current refinement state:
 /// each requested, still-unrefined triangle (`mrl_new == 1`) marks its three
 /// parent polygon cells in `ref_lbx` and promotes the triangle state to `4`.
-/// Inputs and mutable outputs preserve Fortran one-based indexing.
-pub fn refine_onedivide_four_connection_fortran_indexed(
+/// Inputs and mutable outputs preserve Canonical one-based indexing.
+pub fn refine_onedivide_four_connection_one_based(
     num_vertex: usize,
     sjx_points: usize,
     cells_on_triangle: &[[usize; 3]],
@@ -38,7 +38,7 @@ pub fn refine_onedivide_four_connection_fortran_indexed(
             if cell == 0 || cell >= ref_lbx.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("triangle {triangle} references invalid parent cell {cell}"),
+                    format!("triangle {triangle} canonicals invalid parent cell {cell}"),
                 ));
             }
             ref_lbx[cell] = 1;

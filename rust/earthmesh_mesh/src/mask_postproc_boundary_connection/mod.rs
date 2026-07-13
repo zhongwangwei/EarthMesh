@@ -14,7 +14,7 @@ pub struct BoundaryConnection {
 /// NetCDF writing of `obcv2.nc4` remains an adapter concern; this helper
 /// returns the boundary order, the two-neighbor boundary graph, and the
 /// closed-curve metadata needed by isolated-ocean removal.
-pub fn boundary_connection_fortran_indexed(
+pub fn boundary_connection_one_based(
     center_neighbors_new: &[Vec<usize>],
     center_neighbor_counts_new: &[usize],
     vertex_neighbor_counts: &[usize],
@@ -54,7 +54,7 @@ pub fn boundary_connection_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {center_id} references vertex {left_vertex_id}, outside 0..={ustr_bounds}"
+                        "center {center_id} canonicals vertex {left_vertex_id}, outside 0..={ustr_bounds}"
                     ),
                 ));
             }
@@ -68,7 +68,7 @@ pub fn boundary_connection_fortran_indexed(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "center {center_id} references vertex {right_vertex_id}, outside 0..={ustr_bounds}"
+                        "center {center_id} canonicals vertex {right_vertex_id}, outside 0..={ustr_bounds}"
                     ),
                 ));
             }
@@ -111,7 +111,7 @@ pub fn boundary_connection_fortran_indexed(
         }
     }
 
-    let curves = boundary_closed_curves_fortran_indexed(&boundary_order, &boundary_neighbors)?;
+    let curves = boundary_closed_curves_one_based(&boundary_order, &boundary_neighbors)?;
     Ok(BoundaryConnection {
         bdy_num_in: boundary_order.len(),
         boundary_order,

@@ -1,4 +1,4 @@
-use crate::{fortran_quote, parse_fortran_string, strip_fortran_comment};
+use crate::{canonical_quote, parse_canonical_string, strip_canonical_comment};
 
 /// A NetCDF criterion field that calculated refinement reads from
 /// `threshold_dir/<file_stem>.nc`. The stem is the **authoritative engine name**
@@ -82,8 +82,6 @@ pub enum DataLayerRole {
     LandType,
     /// -> `threshold_dir/<stem>.nc` + the matching `refine_*` switch.
     ThresholdField(ThresholdVar),
-    /// -> `mask_refine_spc_fprefix` (specified-region mask).
-    SpecifiedMask,
     /// -> MERIT-Hydro workflow root.
     MeritHydroRoot,
     /// -> CaMa reach data.
@@ -95,7 +93,6 @@ impl DataLayerRole {
         match self {
             DataLayerRole::LandType => "landtype".to_string(),
             DataLayerRole::ThresholdField(v) => format!("threshold:{}", v.file_stem()),
-            DataLayerRole::SpecifiedMask => "specified_mask".to_string(),
             DataLayerRole::MeritHydroRoot => "merit_hydro".to_string(),
             DataLayerRole::CamaReach => "cama_reach".to_string(),
         }
@@ -107,7 +104,6 @@ impl DataLayerRole {
         }
         Some(match s {
             "landtype" => DataLayerRole::LandType,
-            "specified_mask" => DataLayerRole::SpecifiedMask,
             "merit_hydro" => DataLayerRole::MeritHydroRoot,
             "cama_reach" => DataLayerRole::CamaReach,
             _ => return None,
@@ -142,7 +138,9 @@ impl DataLayersNamelist {
         let mut layers = Vec::new();
         let mut in_block = false;
         for raw_line in input.lines() {
-            let line = strip_fortran_comment(raw_line).trim().trim_end_matches(',');
+            let line = strip_canonical_comment(raw_line)
+                .trim()
+                .trim_end_matches(',');
             if line.is_empty() {
                 continue;
             }
@@ -164,7 +162,7 @@ impl DataLayersNamelist {
                 continue;
             };
             if field.eq_ignore_ascii_case("layer") {
-                let token = parse_fortran_string(right.trim().trim_end_matches(','));
+                let token = parse_canonical_string(right.trim().trim_end_matches(','));
                 if let Some(layer) = parse_data_layer_token(&token) {
                     layers.push(layer);
                 }
@@ -179,7 +177,7 @@ impl DataLayersNamelist {
         for l in &self.layers {
             out.push_str(&format!(
                 "  NL%layer = {}\n",
-                fortran_quote(&data_layer_token(l))
+                canonical_quote(&data_layer_token(l))
             ));
         }
         out.push_str("/\n");

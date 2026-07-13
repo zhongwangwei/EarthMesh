@@ -7,13 +7,14 @@ fn read_i32(file: &netcdf::File, name: &str) -> Vec<i32> {
         .unwrap_or_else(|err| panic!("read {name}: {err}"))
 }
 
-fn sample_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
-    let mut m_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
+fn sample_ocean_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    let mut m_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
     for (idx, point) in m_points.iter_mut().enumerate() {
         point.lon = idx as f64;
         point.lat = idx as f64 * 0.5;
     }
-    let mut w_points = vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
+    let mut w_points =
+        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
     for (idx, point) in w_points.iter_mut().enumerate() {
         point.lon = 100.0 + idx as f64;
         point.lat = 40.0 + idx as f64 * 0.25;
@@ -44,7 +45,7 @@ fn sample_ocean_source_mesh() -> earthmesh_cli::UnstructuredMesh {
     n_w_to_m[12] = 5;
     n_w_to_m[13] = 5;
 
-    earthmesh_cli::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points,
         w_points,
         m_to_w,
@@ -63,16 +64,22 @@ fn ocean_runner_reads_inputs_writes_final_gridfile_and_tri_boundaries() {
     fs::create_dir_all(root.join("result")).expect("create result dir");
     fs::create_dir_all(root.join("contain")).expect("create contain dir");
 
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 9, "tri", "oceanmesh", false)
-        .expect("ocean plan");
-    earthmesh_cli::write_unstructured_mesh_netcdf_with_refine_levels(
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        9,
+        "tri",
+        "oceanmesh",
+        false,
+    )
+    .expect("ocean plan");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_refine_levels(
         &plan.source_gridfile,
         &sample_ocean_source_mesh(),
         Some(&[0, 1, 2, 3, 4, 5, 6, 7]),
         Some(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]),
     )
     .expect("write source mesh");
-    let contain = earthmesh_cli::ContainMesh {
+    let contain = earthmesh_cli::contain_io::ContainMesh {
         ustr_id: vec![
             vec![0, 0, 1],
             vec![0, 0, 1],
@@ -86,12 +93,12 @@ fn ocean_runner_reads_inputs_writes_final_gridfile_and_tri_boundaries() {
         ustr_ii: vec![vec![0, 0, 0]],
         is_in_area_ustr: vec![0, -1, 1, 1, 1, 1, -1, -1],
     };
-    earthmesh_cli::write_contain_netcdf(&plan.contain_domain, &contain)
+    earthmesh_cli::contain_io::write_contain_netcdf(&plan.contain_domain, &contain)
         .expect("write contain domain");
 
-    let report = earthmesh_cli::run_mask_postproc_ocean_domain(
+    let report = earthmesh_cli::mask_postproc_domain::run_mask_postproc_ocean_domain(
         &plan,
-        earthmesh_cli::MaskPostprocOceanRunOptions {
+        earthmesh_cli::mask_postproc_types::MaskPostprocOceanRunOptions {
             mask_sea_ratio: 0.5,
             num_vertex: 1,
         },
@@ -111,12 +118,16 @@ fn ocean_runner_reads_inputs_writes_final_gridfile_and_tri_boundaries() {
     assert_eq!(report.renewal.renewed.points_next, 5);
     assert_eq!(report.finalization.vertex_reindex.vertex_mapping[10], 6);
 
-    let final_mesh = earthmesh_cli::read_unstructured_mesh_netcdf(&report.final_gridfile.output)
-        .expect("read final gridfile");
+    let final_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+        &report.final_gridfile.output,
+    )
+    .expect("read final gridfile");
     assert_eq!(final_mesh.m_to_w[2], [6, 7, 2]);
     assert_eq!(final_mesh.m_to_w[5], [9, 6, 5]);
-    let final_points = earthmesh_cli::read_gridfile_mesh_points(&report.final_gridfile.output)
-        .expect("read final points");
+    let final_points = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(
+        &report.final_gridfile.output,
+    )
+    .expect("read final points");
     assert_eq!(final_points.m_refine_level.len(), final_mesh.m_points.len());
     assert_eq!(final_points.w_refine_level.len(), final_mesh.w_points.len());
     assert!(final_points.m_refine_level.contains(&5));
@@ -144,12 +155,14 @@ fn ocean_runner_rejects_non_ocean_plan_before_writing_outputs() {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 9, "tri", "landmesh", false)
-        .expect("land plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root, 9, "tri", "landmesh", false,
+    )
+    .expect("land plan");
 
-    let err = earthmesh_cli::run_mask_postproc_ocean_domain(
+    let err = earthmesh_cli::mask_postproc_domain::run_mask_postproc_ocean_domain(
         &plan,
-        earthmesh_cli::MaskPostprocOceanRunOptions {
+        earthmesh_cli::mask_postproc_types::MaskPostprocOceanRunOptions {
             mask_sea_ratio: 0.5,
             num_vertex: 1,
         },

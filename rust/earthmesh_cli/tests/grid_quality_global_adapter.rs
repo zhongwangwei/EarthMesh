@@ -1,5 +1,5 @@
 #[test]
-fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
+fn grid_quality_global_adapter_writes_mesh_output_to_canonical_quality_schema() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_grid_quality_global_adapter_{}",
         std::process::id()
@@ -16,7 +16,7 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
             less_than_five: 0,
             greater_than_seven: 0,
         },
-        triangle: earthmesh_mesh::TriangleMeshQualityFortranOutput {
+        triangle: earthmesh_mesh::TriangleMeshQualityCanonicalOutput {
             length_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [3.0, 4.0, 5.0]],
             angle_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [50.0, 60.0, 70.0]],
             extreme_angles_degrees: (50.0, 70.0),
@@ -25,7 +25,7 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
             angle_less_flags: vec![false, false, true],
             angle_more_flags: vec![false, false, false],
         },
-        pentagon: Some(earthmesh_mesh::PolygonMeshQualityFortranOutput {
+        pentagon: Some(earthmesh_mesh::PolygonMeshQualityCanonicalOutput {
             length_cache: vec![vec![1.0, 2.0, 3.0, 4.0, 5.0]],
             angle_cache: vec![vec![100.0, 105.0, 108.0, 110.0, 115.0]],
             extreme_angles_degrees: (100.0, 115.0),
@@ -34,7 +34,7 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
             angle_less_flags: vec![false],
             angle_more_flags: vec![true],
         }),
-        hexagon: Some(earthmesh_mesh::PolygonMeshQualityFortranOutput {
+        hexagon: Some(earthmesh_mesh::PolygonMeshQualityCanonicalOutput {
             length_cache: vec![vec![6.0, 7.0, 8.0, 9.0, 10.0, 11.0]],
             angle_cache: vec![vec![110.0, 115.0, 120.0, 125.0, 130.0, 135.0]],
             extreme_angles_degrees: (110.0, 135.0),
@@ -43,7 +43,7 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
             angle_less_flags: vec![false],
             angle_more_flags: vec![true],
         }),
-        heptagon: Some(earthmesh_mesh::PolygonMeshQualityFortranOutput {
+        heptagon: Some(earthmesh_mesh::PolygonMeshQualityCanonicalOutput {
             length_cache: vec![vec![12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0]],
             angle_cache: vec![vec![120.0, 125.0, 128.0, 130.0, 132.0, 135.0, 138.0]],
             extreme_angles_degrees: (120.0, 138.0),
@@ -54,8 +54,11 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
         }),
     };
 
-    let report = earthmesh_cli::write_grid_quality_global_netcdf(&output, &grid_quality)
-        .expect("write grid quality output");
+    let report = earthmesh_cli::grid_quality_pipeline::write_grid_quality_global_netcdf(
+        &output,
+        &grid_quality,
+    )
+    .expect("write grid quality output");
 
     assert_eq!(report.output, output);
     assert_eq!(report.num_sjx, 3);
@@ -78,7 +81,7 @@ fn grid_quality_global_adapter_writes_mesh_output_to_fortran_quality_schema() {
 
 #[test]
 fn grid_quality_global_adapter_omits_absent_heptagon_quality() {
-    let mesh = earthmesh_cli::global_quality_mesh_from_grid_quality(
+    let mesh = earthmesh_cli::grid_quality_pipeline::global_quality_mesh_from_grid_quality(
         &earthmesh_mesh::GridQualityGlobalOutput {
             edge_class_counts: earthmesh_mesh::PolygonEdgeClassCounts {
                 pentagons: 0,
@@ -87,7 +90,7 @@ fn grid_quality_global_adapter_omits_absent_heptagon_quality() {
                 less_than_five: 0,
                 greater_than_seven: 0,
             },
-            triangle: earthmesh_mesh::TriangleMeshQualityFortranOutput {
+            triangle: earthmesh_mesh::TriangleMeshQualityCanonicalOutput {
                 length_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [3.0, 4.0, 5.0]],
                 angle_cache: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [50.0, 60.0, 70.0]],
                 extreme_angles_degrees: (50.0, 70.0),

@@ -117,6 +117,7 @@ pub struct CamaNextxyWindowReport {
     pub window: CamaBinaryWindow,
     pub next_x: Vec<Vec<i32>>,
     pub next_y: Vec<Vec<i32>>,
+    pub terminal_or_ocean: Vec<Vec<bool>>,
     pub valid_downstream_links: usize,
     pub terminal_or_ocean_links: usize,
 }

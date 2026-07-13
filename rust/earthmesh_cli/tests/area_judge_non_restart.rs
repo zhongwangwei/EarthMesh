@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    build_area_judge_non_restart_fortran_indexed, write_bbox_mask_netcdf,
-    AreaJudgeCalculatedRefineConfig, AreaJudgePatchConfig, BBoxMask, BBoxPoint,
+    area_judge_branch_builders::build_area_judge_non_restart_one_based,
+    area_judge_types::AreaJudgeCalculatedRefineConfig, area_judge_types::AreaJudgePatchConfig,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -66,7 +67,7 @@ fn non_restart_area_judge_applies_patch_before_calculated_refine() {
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
     let landtypes_global = one_based_landtypes(6, 6, &[(2, 2), (3, 3), (6, 6)]);
 
-    let report = build_area_judge_non_restart_fortran_indexed(
+    let report = build_area_judge_non_restart_one_based(
         &root,
         false,
         "bbox",
@@ -125,7 +126,7 @@ fn non_restart_area_judge_skips_calculated_refine_for_specified_setting() {
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
     let landtypes_global = one_based_landtypes(6, 6, &[(2, 2)]);
 
-    let report = build_area_judge_non_restart_fortran_indexed(
+    let report = build_area_judge_non_restart_one_based(
         &root,
         false,
         "bbox",

@@ -2,7 +2,7 @@
 //! map dir (params.txt + elevtn.bin) -> land mask -> coastal band -> dissolved GeoJSON.
 //! Tiny synthetic binary; no external CaMa data.
 
-use earthmesh_cli::write_coastal_band_geojson_from_cama;
+use earthmesh_cli::coastal_band_io::write_coastal_band_geojson_from_cama;
 
 #[test]
 fn cama_elevtn_to_dissolved_coastal_band() {
@@ -14,7 +14,7 @@ fn cama_elevtn_to_dissolved_coastal_band() {
     // nx ny nflp gsize west east south north
     std::fs::write(
         dir.join("params.txt"),
-        "4\n4\n0\n1.0\n100.0\n104.0\n20.0\n24.0\n",
+        "4 !! endian=little\n4\n0\n1.0\n100.0\n104.0\n20.0\n24.0\n",
     )
     .unwrap();
 
@@ -64,7 +64,7 @@ fn cama_elevtn_to_per_cell_coastal_band_no_dissolve() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("params.txt"),
-        "4\n4\n0\n1.0\n100.0\n104.0\n20.0\n24.0\n",
+        "4 !! endian=little\n4\n0\n1.0\n100.0\n104.0\n20.0\n24.0\n",
     )
     .unwrap();
     let mut bytes = Vec::new();

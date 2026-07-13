@@ -1,5 +1,5 @@
 #[test]
-fn springjustment_global_persistence_writes_legacy_result_files() {
+fn springjustment_global_persistence_writes_compatibility_result_files() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_springjustment_global_persistence_{}",
         std::process::id()
@@ -8,7 +8,7 @@ fn springjustment_global_persistence_writes_legacy_result_files() {
     std::fs::create_dir_all(root.join("result")).expect("create result root");
 
     let output = spring_output(Some(vec![12.0, 24.0, 48.0]));
-    let report = earthmesh_cli::write_springjustment_global_persistence(
+    let report = earthmesh_cli::grid_quality_pipeline::write_springjustment_global_persistence(
         &root,
         9,
         3,
@@ -62,7 +62,7 @@ fn springjustment_global_persistence_skips_cellwidth_when_absent() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("result")).expect("create result root");
 
-    let report = earthmesh_cli::write_springjustment_global_persistence(
+    let report = earthmesh_cli::grid_quality_pipeline::write_springjustment_global_persistence(
         &root,
         10,
         4,

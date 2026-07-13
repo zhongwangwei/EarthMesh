@@ -1,3 +1,13 @@
+use crate::plan_mkgrd_mask_restart_namelist;
+use crate::refine_pipeline_refine_dispatch_requested;
+use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
+use crate::run_mkgrd_regional_clip_base_namelist;
+use crate::run_mkgrd_top_level_namelist;
+use crate::run_refine_pipeline_namelist;
+use crate::MaskRestartAction;
+use crate::MkgrdDefaultRestartRefineHandoff;
+use crate::MkgrdTopLevelDefaultRestartRefineRunReport;
+use crate::MkgrdTopLevelDispatchRunReport;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -5,14 +15,23 @@ use std::{
 
 use earthmesh_core::EarthmeshConfig;
 
-use crate::*;
-
 use super::infer::{
     infer_restart_refine_initial_gridfile_from_config, landtype_file_is_real,
     maybe_infer_mask_restart_non_ocean_num_vertex_from_config,
     maybe_infer_mask_restart_ocean_num_vertex_from_config,
     maybe_infer_restart_refine_initial_gridfile_from_config, namelist_sets_landtype_file,
 };
+
+fn mkgrd_mode_grid_num_vertex(mode_grid: &str) -> io::Result<usize> {
+    match mode_grid.trim() {
+        "tri" => Ok(3),
+        "hex" => Ok(6),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported NL%mode_grid for restart handoff: {other}"),
+        )),
+    }
+}
 
 fn default_mask_restart_area_judge_postproc_num_vertex(
     config: &EarthmeshConfig,
@@ -42,30 +61,22 @@ fn default_mask_restart_area_judge_postproc_num_vertex(
 pub fn infer_default_restart_refine_handoff_from_config(
     config: &EarthmeshConfig,
     namelist_contents: &str,
-    has_restart_refine_source_state: bool,
     restart_refine_initial_gridfile: Option<&Path>,
 ) -> io::Result<Option<MkgrdDefaultRestartRefineHandoff>> {
-    if restart_refine_initial_gridfile.is_some() || has_restart_refine_source_state {
+    if restart_refine_initial_gridfile.is_some() {
         let initial_gridfile = match restart_refine_initial_gridfile {
             Some(path) => path.to_path_buf(),
             None => infer_restart_refine_initial_gridfile_from_config(config)?,
         };
-        let source = if has_restart_refine_source_state {
-            MkgrdDefaultRestartRefineSource::SourceState
-        } else if namelist_sets_landtype_file(namelist_contents)
-            && landtype_file_is_real(&config.landtype_file)
+        if !(namelist_sets_landtype_file(namelist_contents)
+            && landtype_file_is_real(&config.landtype_file))
         {
-            MkgrdDefaultRestartRefineSource::LandtypeFile
-        } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "default restart-refine handoff requires --restart-refine-source-state or NL%landtype_file",
+                "default restart-refine handoff requires NL%landtype_file",
             ));
-        };
-        return Ok(Some(MkgrdDefaultRestartRefineHandoff {
-            source,
-            initial_gridfile,
-        }));
+        }
+        return Ok(Some(MkgrdDefaultRestartRefineHandoff { initial_gridfile }));
     }
 
     if config.mask_restart
@@ -76,10 +87,7 @@ pub fn infer_default_restart_refine_handoff_from_config(
         if let Some(initial_gridfile) =
             maybe_infer_restart_refine_initial_gridfile_from_config(config)?
         {
-            return Ok(Some(MkgrdDefaultRestartRefineHandoff {
-                source: MkgrdDefaultRestartRefineSource::LandtypeFile,
-                initial_gridfile,
-            }));
+            return Ok(Some(MkgrdDefaultRestartRefineHandoff { initial_gridfile }));
         }
     }
 
@@ -91,7 +99,6 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
     workdir: impl AsRef<Path>,
     max_tris: usize,
     mask_restart_max_iter: i32,
-    restart_refine_source_state: Option<&Path>,
     restart_refine_initial_gridfile: Option<&Path>,
     source_gridnum_perdegree: Option<usize>,
     source_first_triangle_id: usize,
@@ -106,7 +113,6 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
     let Some(handoff) = infer_default_restart_refine_handoff_from_config(
         &config,
         &contents,
-        restart_refine_source_state.is_some(),
         restart_refine_initial_gridfile,
     )?
     else {
@@ -143,15 +149,15 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
                 .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
             }
         }
-        if !config.mask_restart && olam_direct_refine_dispatch_requested(&contents, &config)? {
+        if !config.mask_restart && refine_pipeline_refine_dispatch_requested(&contents, &config)? {
             let _ = source_first_triangle_id;
-            return run_mkgrd_olam_specified_refine_global_source_namelist(
+            return run_refine_pipeline_namelist(
                 namelist_source,
                 workdir,
                 max_tris,
                 source_gridnum_perdegree,
             )
-            .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource);
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline);
         }
         let regional_clip_source = !config.mask_restart && !config.mask_domain_global && {
             let prefix = config.mask_domain_fprefix.trim();
@@ -177,49 +183,18 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
     };
 
-    match handoff.source {
-        MkgrdDefaultRestartRefineSource::SourceState => {
-            let source_state = restart_refine_source_state.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "default source-state restart-refine handoff requires a source-state path",
-                )
-            })?;
-            fs::metadata(source_state)?;
-            let _ = mask_postproc_num_vertex;
-            let rewritten = rewrite_restart_refine_namelist_for_olam_direct(
-                namelist_source,
-                workdir,
-                &handoff.initial_gridfile,
-            )?;
-            run_mkgrd_olam_specified_refine_global_source_namelist(
-                &rewritten,
-                workdir,
-                max_tris,
-                source_gridnum_perdegree,
-            )
-            .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource)
-        }
-        MkgrdDefaultRestartRefineSource::LandtypeFile => {
-            let _ = source_first_triangle_id;
-            let _ = mask_postproc_num_vertex;
-            let rewritten = rewrite_restart_refine_namelist_for_olam_direct(
-                namelist_source,
-                workdir,
-                &handoff.initial_gridfile,
-            )?;
-            run_mkgrd_olam_specified_refine_global_source_namelist(
-                &rewritten,
-                workdir,
-                max_tris,
-                source_gridnum_perdegree,
-            )
-            .map(MkgrdTopLevelDefaultRestartRefineRunReport::OlamRefineGlobalSource)
-        }
-    }
+    let _ = source_first_triangle_id;
+    let _ = mask_postproc_num_vertex;
+    let rewritten = rewrite_restart_refine_namelist_for_refine_pipeline(
+        namelist_source,
+        workdir,
+        &handoff.initial_gridfile,
+    )?;
+    run_refine_pipeline_namelist(&rewritten, workdir, max_tris, source_gridnum_perdegree)
+        .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline)
 }
 
-fn rewrite_restart_refine_namelist_for_olam_direct(
+fn rewrite_restart_refine_namelist_for_refine_pipeline(
     namelist_source: &Path,
     workdir: &Path,
     initial_gridfile: &Path,
@@ -266,7 +241,7 @@ fn rewrite_restart_refine_namelist_for_olam_direct(
         .map_err(io::Error::other)?
         .as_nanos();
     let path = workdir.join(format!(
-        "earthmesh_olam_default_restart_refine_{}_{}.nml",
+        "earthmesh_restart_refine_{}_{}.nml",
         std::process::id(),
         stamp
     ));

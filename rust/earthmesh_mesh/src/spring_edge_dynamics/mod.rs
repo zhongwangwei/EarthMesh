@@ -5,9 +5,9 @@ use crate::{CartesianPoint, SpringEdgeAdjustment};
 /// `MOD_grid_preprocess:spring_dynamics_global`.
 ///
 /// `neighbor_distance_1..4` correspond to `dist(iu1..iu4)` from
-/// `EdgesOnedge_tri(:, iu)`. The returned displacement is the Fortran-updated
+/// `EdgesOnedge_tri(:, iu)`. The returned displacement is the Canonical-updated
 /// `(dx, dy, dz)` after multiplying the edge vector by `frac_change`.
-pub fn spring_edge_adjustment_fortran(
+pub fn spring_edge_adjustment_canonical(
     cell1: CartesianPoint,
     cell2: CartesianPoint,
     target_edge_distance: f64,
@@ -16,7 +16,7 @@ pub fn spring_edge_adjustment_fortran(
     neighbor_distance_3: f64,
     neighbor_distance_4: f64,
 ) -> Option<SpringEdgeAdjustment> {
-    // Fortran assigns the edge vector with `real(...)` and no kind argument
+    // Canonical assigns the edge vector with `real(...)` and no kind argument
     // even though `dx/dy/dz` are real(r8), so each component is rounded through
     // default real before distance and displacement calculations.
     let edge_vector = CartesianPoint::new(
@@ -60,10 +60,10 @@ pub fn spring_edge_adjustment_fortran(
 /// Port of the `dirs(j, iw)` sign setup in
 /// `MOD_grid_preprocess:spring_dynamics_global`.
 ///
-/// For each cell edge, Fortran assigns `+relax` when the current cell is
+/// For each cell edge, Canonical assigns `+relax` when the current cell is
 /// `CellsOnEdge(2, edge)` and `-relax` otherwise. Rows preserve the compact
-/// `edgesOnCell` row length supplied for each Fortran-indexed cell id.
-pub fn spring_edge_directions_fortran_indexed(
+/// `edgesOnCell` row length supplied for each Canonical-indexed cell id.
+pub fn spring_edge_directions_one_based(
     n_edges_on_cell: &[usize],
     edges_on_cell: &[Vec<usize>],
     cells_on_edge: &[[usize; 2]],
@@ -99,12 +99,12 @@ pub fn spring_edge_directions_fortran_indexed(
 /// `MOD_grid_preprocess:spring_dynamics_global`.
 ///
 /// The caller supplies the per-edge displacements already produced by
-/// `spring_edge_adjustment_fortran` and the compact per-cell direction rows
-/// produced by `spring_edge_directions_fortran_indexed`. This helper performs
-/// the Fortran update:
+/// `spring_edge_adjustment_canonical` and the compact per-cell direction rows
+/// produced by `spring_edge_directions_one_based`. This helper performs
+/// the Canonical update:
 /// `xew8(iw) += dirs(j, iw) * dx(edge)` for each cell edge, followed by
 /// normalization back to `radius`.
-pub fn spring_apply_cell_displacements_fortran_indexed(
+pub fn spring_apply_cell_displacements_one_based(
     cell_points: &[CartesianPoint],
     n_edges_on_cell: &[usize],
     edges_on_cell: &[Vec<usize>],

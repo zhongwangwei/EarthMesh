@@ -1,7 +1,7 @@
 //! Rust port of util/hydro_mesh/refinement_sweep.py: recipe sweep + report ranking.
 //! Pure JSON (no NetCDF data).
 
-use earthmesh_cli::{write_sweep_ranking, write_sweep_recipes};
+use earthmesh_cli::{hydro_sweep::write_sweep_ranking, hydro_sweep::write_sweep_recipes};
 use std::path::PathBuf;
 
 fn report(case: &str, status: &str, retained3: i64, cells: i64) -> String {

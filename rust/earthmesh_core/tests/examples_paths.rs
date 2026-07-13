@@ -60,7 +60,7 @@ fn examples_have_no_personal_absolute_paths() {
     );
 }
 
-/// Runnable templates must NOT reference `${EARTHMESH_DATA}` (they work out-of-box);
+/// Runnable templates must NOT canonical `${EARTHMESH_DATA}` (they work out-of-box);
 /// every external-data case directory must ship a README documenting the requirement.
 #[test]
 fn runnable_templates_need_no_external_data_and_external_cases_are_documented() {

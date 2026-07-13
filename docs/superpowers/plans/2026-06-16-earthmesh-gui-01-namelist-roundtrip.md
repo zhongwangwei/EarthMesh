@@ -6,7 +6,7 @@
 
 **Architecture:** 写入器与现有解析器 `EarthmeshConfig::from_mkgrd_namelist`（`earthmesh_core/src/lib.rs:805`）对称放在同一 crate、同一 `impl` 里（"一起变的代码放一起"）。CLI 与未来的 `earthmesh_gui` 都复用它。本计划是纯库改动，TDD，不涉及 UI 或引擎运行路径。
 
-**Tech Stack:** Rust（`earthmesh_core` crate）；Fortran 风格 namelist 文本；`cargo test` 集成测试。
+**Tech Stack:** Rust（`earthmesh_core` crate）；engine namelist 文本；`cargo test` 集成测试。
 
 ---
 

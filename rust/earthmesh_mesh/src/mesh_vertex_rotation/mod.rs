@@ -34,11 +34,11 @@ pub fn normalize_vertex_rotation(
 
 /// Port of `MOD_grid_preprocess:standardizeVerticesOnCellRotation`.
 ///
-/// Cell ids preserve the migrated Fortran indexing convention: slot `1` is
+/// Cell ids preserve the current Canonical indexing convention: slot `1` is
 /// skipped and valid cells are visited from id `2`. Only the first
 /// `n_edges_on_cell[cell_id]` entries are rotated; any storage tail is kept in
-/// place, matching Fortran's fixed-width `verticesOnCell(:, i)` arrays.
-pub fn standardize_vertices_on_cell_rotation_fortran_indexed(
+/// place, matching Canonical's fixed-width `verticesOnCell(:, i)` arrays.
+pub fn standardize_vertices_on_cell_rotation_one_based(
     vertices_on_cell: &[Vec<usize>],
     n_edges_on_cell: &[usize],
 ) -> Option<Vec<Vec<usize>>> {

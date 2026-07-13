@@ -1,3 +1,3 @@
 mod iap;
 
-pub(crate) use iap::derive_iap_w_to_m_fortran_indexed;
+pub(crate) use iap::derive_iap_w_to_m_one_based;

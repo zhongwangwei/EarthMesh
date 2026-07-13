@@ -6,7 +6,7 @@ pub struct AreaJudgeMaskPatchReport {
     pub patched_cells: usize,
 }
 
-fn area_judge_grid_covers_bounds_fortran_indexed<T>(
+fn area_judge_grid_covers_bounds_one_based<T>(
     grid: &[Vec<T>],
     bounds: AreaJudgeSourceBounds,
 ) -> bool {
@@ -22,18 +22,18 @@ fn area_judge_grid_covers_bounds_fortran_indexed<T>(
 
 /// Pure Rust core of `MOD_Area_judge:mask_patch_modify`.
 ///
-/// Fortran first builds an `IsInPaArea_grid` patch mask, then scans the
+/// Canonical first builds an `IsInPaArea_grid` patch mask, then scans the
 /// inclusive patch bounds and sets `seaorland(i, j) = 0` wherever that patch
 /// mask is nonzero.  This helper keeps the same one-based array convention and
 /// returns the number of nonzero patch cells applied; area construction and
 /// NetCDF restart I/O remain in the higher-level orchestration layer.
-pub fn area_judge_apply_mask_patch_fortran_indexed(
+pub fn area_judge_apply_mask_patch_one_based(
     seaorland: &mut [Vec<i32>],
     patch_mask: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
 ) -> Option<AreaJudgeMaskPatchReport> {
-    if !area_judge_grid_covers_bounds_fortran_indexed(seaorland, bounds)
-        || !area_judge_grid_covers_bounds_fortran_indexed(patch_mask, bounds)
+    if !area_judge_grid_covers_bounds_one_based(seaorland, bounds)
+        || !area_judge_grid_covers_bounds_one_based(patch_mask, bounds)
     {
         return None;
     }

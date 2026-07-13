@@ -36,12 +36,15 @@ fn v3_geojson_reader_summarizes_hydro_and_coast_source_layers() {
     )
     .expect("write coast geojson");
 
-    let hydro = earthmesh_cli::read_v3_geojson_source_summary(
-        earthmesh_cli::V3DataSourceKind::Hydro,
+    let hydro = earthmesh_cli::v3_data_source_io::read_v3_geojson_source_summary(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Hydro,
         &hydro_path,
     )
     .expect("read hydro geojson source");
-    assert_eq!(hydro.source.kind, earthmesh_cli::V3DataSourceKind::Hydro);
+    assert_eq!(
+        hydro.source.kind,
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Hydro
+    );
     assert_eq!(hydro.feature_count, 2);
     assert_eq!(hydro.classes, vec!["ESTUARY", "R2"]);
     assert_eq!(
@@ -49,12 +52,15 @@ fn v3_geojson_reader_summarizes_hydro_and_coast_source_layers() {
         vec!["river_r2", "river_r3", "estuary"]
     );
 
-    let coast = earthmesh_cli::read_v3_geojson_source_summary(
-        earthmesh_cli::V3DataSourceKind::Coast,
+    let coast = earthmesh_cli::v3_data_source_io::read_v3_geojson_source_summary(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Coast,
         &coast_path,
     )
     .expect("read coast geojson source");
-    assert_eq!(coast.source.kind, earthmesh_cli::V3DataSourceKind::Coast);
+    assert_eq!(
+        coast.source.kind,
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Coast
+    );
     assert_eq!(coast.feature_count, 2);
     assert_eq!(coast.classes, vec!["COAST_LAND", "COAST_OCEAN"]);
     assert_eq!(
@@ -81,17 +87,20 @@ fn v3_geojson_bundle_keeps_hydro_and_coast_sources_together_for_rust_state() {
     )
     .expect("write coast geojson");
 
-    let bundle = earthmesh_cli::read_v3_hydro_coast_source_bundle(&hydro_path, &coast_path)
-        .expect("read hydro/coast bundle");
+    let bundle = earthmesh_cli::v3_data_source_io::read_v3_hydro_coast_source_bundle(
+        &hydro_path,
+        &coast_path,
+    )
+    .expect("read hydro/coast bundle");
 
     assert_eq!(bundle.sources.len(), 2);
     assert_eq!(
         bundle.sources[0].kind,
-        earthmesh_cli::V3DataSourceKind::Hydro
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Hydro
     );
     assert_eq!(
         bundle.sources[1].kind,
-        earthmesh_cli::V3DataSourceKind::Coast
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Coast
     );
     assert_eq!(bundle.hydro.feature_count, 1);
     assert_eq!(bundle.coast.feature_count, 1);
@@ -115,8 +124,8 @@ fn v3_geojson_hydro_summary_accepts_merit_mask_class_outputs() {
     )
     .expect("write MERIT-style hydro geojson");
 
-    let hydro = earthmesh_cli::read_v3_geojson_source_summary(
-        earthmesh_cli::V3DataSourceKind::Hydro,
+    let hydro = earthmesh_cli::v3_data_source_io::read_v3_geojson_source_summary(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Hydro,
         &hydro_path,
     )
     .expect("read MERIT-style hydro geojson source");
@@ -147,8 +156,8 @@ fn v3_geojson_summary_ignores_collection_level_class_metadata() {
     )
     .expect("write hydro geojson with collection metadata");
 
-    let hydro = earthmesh_cli::read_v3_geojson_source_summary(
-        earthmesh_cli::V3DataSourceKind::Hydro,
+    let hydro = earthmesh_cli::v3_data_source_io::read_v3_geojson_source_summary(
+        earthmesh_cli::v3_data_source_io::V3DataSourceKind::Hydro,
         &hydro_path,
     )
     .expect("read hydro geojson source with collection metadata");

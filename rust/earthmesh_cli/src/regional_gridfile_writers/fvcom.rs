@@ -1,8 +1,14 @@
+use crate::read_unstructured_mesh_netcdf;
+use crate::unstructured_mesh_support::{mesh_canonical_id_for_row, mesh_row_for_canonical_id};
+use crate::validate_unstructured_mesh;
+use crate::write_fvcom_mesh_2dm;
+use crate::write_fvcom_ns_records;
+use crate::FvcomMesh2dmWriteReport;
+use crate::LonLatPoint;
+use crate::UnstructuredMesh;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-
-use crate::*;
 
 /// Write an SMS/FVCOM `.2dm` from a carved (`mask_postproc`) ocean mesh, which
 /// uses two leading placeholder rows and a `(0,0)` boundary marker. Real nodes
@@ -16,15 +22,32 @@ pub(crate) fn write_fvcom_2dm_from_carved(
 ) -> io::Result<FvcomMesh2dmWriteReport> {
     crate::ensure_parent_dir(output)?;
     validate_unstructured_mesh(mesh)?;
-    let is_marker = |p: &LonLatPoint| p.lon == 0.0 && p.lat == 0.0;
+    let has_two_placeholders = |points: &[LonLatPoint]| {
+        points.len() > 2
+            && points[0].lon == 0.0
+            && points[0].lat == 0.0
+            && points[1].lon == 0.0
+            && points[1].lat == 0.0
+    };
+    let w_has_two_placeholders = has_two_placeholders(&mesh.w_points);
+    let m_has_two_placeholders = has_two_placeholders(&mesh.m_points);
     let mut new_id = vec![0usize; mesh.w_points.len() + 2];
     let mut nodes: Vec<(usize, LonLatPoint)> = Vec::new();
     let mut next = 1usize;
     for (idx, p) in mesh.w_points.iter().enumerate() {
-        if idx == 0 || is_marker(p) {
+        if idx == 0 {
             continue;
         }
-        new_id[idx + 1] = next;
+        let Some(canonical_id) = mesh_canonical_id_for_row(idx, w_has_two_placeholders) else {
+            continue;
+        };
+        let canonical_id = usize::try_from(canonical_id).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "negative FVCOM canonical node id",
+            )
+        })?;
+        new_id[canonical_id] = next;
         nodes.push((next, *p));
         next += 1;
     }
@@ -32,12 +55,19 @@ pub(crate) fn write_fvcom_2dm_from_carved(
     writeln!(file, "MESH2D")?;
     writeln!(file, "MESHNAME \"FVCOM Mesh\"")?;
     let mut elements = 0usize;
-    for tri in mesh.m_to_w.iter().skip(1) {
+    for (m_row, tri) in mesh.m_to_w.iter().enumerate() {
+        if m_row == 0 {
+            continue;
+        }
+        if mesh_canonical_id_for_row(m_row, m_has_two_placeholders).is_none() {
+            continue;
+        }
         let ids = [tri[0], tri[1], tri[2]];
-        if ids
-            .iter()
-            .any(|&v| v < 1 || (v as usize) >= new_id.len() || new_id[v as usize] == 0)
-        {
+        if ids.iter().any(|&v| {
+            mesh_row_for_canonical_id(v, mesh.w_points.len(), w_has_two_placeholders).is_none()
+                || (v as usize) >= new_id.len()
+                || new_id[v as usize] == 0
+        }) {
             continue;
         }
         elements += 1;

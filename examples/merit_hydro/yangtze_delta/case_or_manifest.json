@@ -4,7 +4,6 @@
   "description": "MERIT-Hydro Yangtze Delta N112 stride5 compact-surface delivery case.",
   "delivery_manifest": "delivery_manifest.json",
   "source_package": "${EARTHMESH_DATA}/merit_yangtze_N112_bridge_stride5_compact_surface",
-  "note": "This case can be inspected through the delivery manifest/package; the scratch runnable_namelist is the current N112 Yangtze hydro-close case used for Rust/Fortran comparison.",
-  "runnable_namelist": "${EARTHMESH_DATA}/Atmos_hex_NXP112_hydro_close_yangtze_r3d3_cst20_smoke.nml",
-  "fortran_result_dir": "${EARTHMESH_DATA}/cases/ATMOS_hydro_N112_r3d3_cst20/result"
+  "note": "This case can be inspected through the delivery manifest/package; the scratch runnable_namelist is the current N112 Yangtze hydro-close case.",
+  "runnable_namelist": "${EARTHMESH_DATA}/Atmos_hex_NXP112_hydro_close_yangtze_r3d3_cst20_smoke.nml"
 }

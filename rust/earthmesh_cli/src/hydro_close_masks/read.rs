@@ -1,3 +1,9 @@
+use crate::geojson_feature_nodes;
+use crate::read_text_maybe_gzip;
+use crate::HydroCloseMaskNmlOptions;
+use crate::HydroCloseMaskSpec;
+use crate::JsonNode;
+use crate::JsonParser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
@@ -8,7 +14,6 @@ use crate::hydro_close_geometry::{
     geojson_close_mask_lines, geojson_close_mask_rings, is_close_mask_ring_too_close, ring_area,
     simplify_closed_ring,
 };
-use crate::*;
 
 /// Read hydro/coast GeoJSON polygon rings into close-mask specs without writing files.
 pub fn read_hydro_close_mask_specs(
@@ -67,7 +72,7 @@ fn geojson_text_to_hydro_close_mask_specs(
             continue;
         };
         let mut geometry_index = 0_usize;
-        for coordinates in geojson_close_mask_rings(geometry) {
+        for coordinates in geojson_close_mask_rings(geometry)? {
             let coordinates = simplify_closed_ring(coordinates, options.simplify_tolerance_deg);
             if coordinates.len() < 3 {
                 continue;

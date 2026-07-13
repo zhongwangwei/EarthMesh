@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_weak_concav_pair_special_fortran_indexed;
+use earthmesh_mesh::refine_weak_concav_pair_special_one_based;
 
 fn base_inputs() -> (
     Vec<Vec<usize>>,
@@ -57,7 +57,7 @@ fn weak_concav_pair_special_marks_outward_triangles_segments_and_deferred_refine
         mut weak_concav_segment,
     ) = base_inputs();
 
-    refine_weak_concav_pair_special_fortran_indexed(
+    refine_weak_concav_pair_special_one_based(
         2,
         4,
         &triangle_neighbors,
@@ -75,6 +75,10 @@ fn weak_concav_pair_special_marks_outward_triangles_segments_and_deferred_refine
     assert_eq!(ref_sjx[10], 1);
     assert_eq!(weak_concav_segment[3][0], 7);
     assert_eq!(weak_concav_segment[4][0], 11);
+    assert_eq!(
+        mrl_new[1], 1,
+        "deferred renewal must not reuse sentinel slot 1"
+    );
     assert_eq!(mrl_new[8], 4);
     assert_eq!(mrl_new[12], 4);
 }
@@ -93,7 +97,7 @@ fn weak_concav_pair_special_uses_even_pair_partner_from_previous_column() {
     // treated as disjoint.  Sharing only with pair-1 triangle proves even k uses k-1.
     cells_on_triangle[11] = [501, 900, 901];
 
-    refine_weak_concav_pair_special_fortran_indexed(
+    refine_weak_concav_pair_special_one_based(
         2,
         4,
         &triangle_neighbors,
@@ -119,7 +123,7 @@ fn weak_concav_pair_special_rejects_odd_pair_without_partner() {
         mut weak_concav_segment,
     ) = base_inputs();
 
-    let err = refine_weak_concav_pair_special_fortran_indexed(
+    let err = refine_weak_concav_pair_special_one_based(
         1,
         3,
         &triangle_neighbors,

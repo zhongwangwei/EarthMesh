@@ -14,24 +14,24 @@ pub struct GetEdgeProductionOutput {
 /// Production wrapper for `MOD_grid_preprocess:GetEdge` plus the immediate
 /// post-processing used before MPAS-style mesh outputs are consumed.
 ///
-/// The sequence matches the migrated workflow surfaces:
+/// The sequence matches the current workflow surfaces:
 /// `GetEdge`, `GetSort_verticesOnEdge`, optional `vp` midpoint generation, and
 /// `orderVertexArrays`.
-pub fn get_edge_production_fortran_indexed(
+pub fn get_edge_production_one_based(
     triangle_neighbors: &[[usize; 3]],
     cells_on_vertex: &[[usize; 3]],
     triangle_lonlat: &[LonLatDegrees],
     cell_lonlat: &[LonLatDegrees],
 ) -> Option<GetEdgeProductionOutput> {
-    let connectivity = get_edge_connectivity_fortran_indexed(triangle_neighbors, cells_on_vertex)?;
-    let vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+    let connectivity = get_edge_connectivity_one_based(triangle_neighbors, cells_on_vertex)?;
+    let vertices_on_edge = order_vertices_on_edge_one_based(
         triangle_lonlat,
         cell_lonlat,
         &connectivity.cells_on_edge,
         &connectivity.vertices_on_edge,
     )?;
     let edge_points =
-        edge_midpoints_from_cells_fortran_indexed(&connectivity.cells_on_edge, cell_lonlat)?;
+        edge_midpoints_from_cells_one_based(&connectivity.cells_on_edge, cell_lonlat)?;
     let triangle_points = triangle_lonlat
         .iter()
         .copied()
@@ -42,7 +42,7 @@ pub fn get_edge_production_fortran_indexed(
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let ordered_vertex_arrays = order_vertex_arrays_fortran_indexed(
+    let ordered_vertex_arrays = order_vertex_arrays_one_based(
         &triangle_points,
         &edge_points_cartesian,
         &connectivity.edges_on_vertex,
@@ -61,9 +61,9 @@ pub fn get_edge_production_fortran_indexed(
 
 /// Port of the optional `vp` midpoint calculation in `MOD_grid_preprocess:GetEdge`.
 ///
-/// For each Fortran-indexed edge id from `2..`, the edge point is the spherical
+/// For each Canonical-indexed edge id from `2..`, the edge point is the spherical
 /// centroid of the two neighboring polygon cell centers `wp(cellsOnEdge(:, k), :)`.
-pub fn edge_midpoints_from_cells_fortran_indexed(
+pub fn edge_midpoints_from_cells_one_based(
     cells_on_edge: &[[usize; 2]],
     cell_lonlat: &[LonLatDegrees],
 ) -> Option<Vec<LonLatDegrees>> {

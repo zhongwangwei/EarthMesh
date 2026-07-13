@@ -6,7 +6,7 @@ use crate::coordinates::{require_grid_coordinate_len, xyz_to_lonlat_degrees, Car
 
 /// State-level port of `mkgrd.F90:grid_xyz2lonlat`.
 ///
-/// The legacy routine allocates `GLONM/GLATM/GLONW/GLATW` for the full
+/// The compatibility routine allocates `GLONM/GLATM/GLONW/GLATW` for the full
 /// one-based grid footprint and fills entries up to `nma` and `nwa`. The Rust
 /// state keeps the same placeholder-inclusive layout using zero-based vectors.
 pub fn grid_xyz2lonlat_state(grid: &mut GridMemory) -> io::Result<()> {
@@ -39,10 +39,10 @@ pub fn grid_xyz2lonlat_state(grid: &mut GridMemory) -> io::Result<()> {
     Ok(())
 }
 
-/// State-level `grid_xyz2lonlat` for direct Fortran one-based arrays.
+/// State-level `grid_xyz2lonlat` for direct Canonical one-based arrays.
 ///
 /// Index `0` is kept unused and records `1..=nma` / `1..=nwa` are filled.
-pub fn grid_xyz2lonlat_fortran_indexed_state(grid: &mut GridMemory) -> io::Result<()> {
+pub fn grid_xyz2lonlat_one_based_state(grid: &mut GridMemory) -> io::Result<()> {
     require_grid_coordinate_len("xem", grid.xem.len(), grid.nma + 1)?;
     require_grid_coordinate_len("yem", grid.yem.len(), grid.nma + 1)?;
     require_grid_coordinate_len("zem", grid.zem.len(), grid.nma + 1)?;
@@ -72,7 +72,7 @@ pub fn grid_xyz2lonlat_fortran_indexed_state(grid: &mut GridMemory) -> io::Resul
     Ok(())
 }
 
-pub fn grid_cartesian_xy_to_lonlat_placeholders_fortran_indexed_state(
+pub fn grid_cartesian_xy_to_lonlat_placeholders_one_based_state(
     grid: &mut GridMemory,
 ) -> io::Result<()> {
     require_grid_coordinate_len("xem", grid.xem.len(), grid.nma + 1)?;

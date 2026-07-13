@@ -41,6 +41,7 @@ pub fn read_cama_nextxy_window(
     let mut handle = fs::File::open(path)?;
     let mut next_x = Vec::with_capacity(window.height);
     let mut next_y = Vec::with_capacity(window.height);
+    let mut terminal_or_ocean = Vec::with_capacity(window.height);
     let mut valid_downstream_links = 0_usize;
     let mut terminal_or_ocean_links = 0_usize;
 
@@ -67,17 +68,21 @@ pub fn read_cama_nextxy_window(
             read_cama_i32_row_window(&mut handle, y_row_base, window_bytes, grid.little_endian)?;
         let mut converted_x = Vec::with_capacity(window.width);
         let mut converted_y = Vec::with_capacity(window.width);
+        let mut terminal_row = Vec::with_capacity(window.width);
         for (raw_x, raw_y) in raw_x_row.into_iter().zip(raw_y_row) {
-            if raw_x > 0 && raw_y > 0 {
-                valid_downstream_links += 1;
-            } else {
+            let is_terminal = raw_x <= 0 || raw_y <= 0;
+            if is_terminal {
                 terminal_or_ocean_links += 1;
+            } else {
+                valid_downstream_links += 1;
             }
             converted_x.push(convert_cama_nextxy_x(raw_x));
             converted_y.push(convert_cama_nextxy_y(raw_y, grid));
+            terminal_row.push(is_terminal);
         }
         next_x.push(converted_x);
         next_y.push(converted_y);
+        terminal_or_ocean.push(terminal_row);
     }
 
     Ok(CamaNextxyWindowReport {
@@ -85,6 +90,7 @@ pub fn read_cama_nextxy_window(
         window,
         next_x,
         next_y,
+        terminal_or_ocean,
         valid_downstream_links,
         terminal_or_ocean_links,
     })

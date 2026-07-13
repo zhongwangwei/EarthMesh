@@ -1,19 +1,22 @@
+use crate::close_mask_netcdf_has_refine;
+use crate::read_close_mask_netcdf;
+use crate::read_close_mesh_netcdf;
+use crate::validate_close_mask;
+use crate::AreaJudgeAreaSourceReport;
+use crate::AreaJudgeSparseAreaSourceReport;
+use crate::CloseMask;
 use std::io;
 use std::path::Path;
 
-use earthmesh_geometry::{
-    area_judge_first_self_intersection_fortran_indexed, Point as AreaJudgePoint,
-};
+use earthmesh_geometry::{area_judge_first_self_intersection_one_based, Point as AreaJudgePoint};
 use earthmesh_mesh::{
-    area_judge_closed_curve_fill_fortran_indexed, area_judge_minmax_range_make_fortran_indexed,
-    LonLatDegrees,
+    area_judge_closed_curve_fill_one_based, area_judge_minmax_range_make_one_based, LonLatDegrees,
 };
 
 use super::dateline::{area_judge_check_crossing, area_judge_close_crosses_dateline};
-use crate::*;
 
 /// Build the close-curve source cells used by domain/refine/patch paths.
-pub fn build_area_judge_close_area_source_cells_fortran_indexed(
+pub fn build_area_judge_close_area_source_cells_one_based(
     inputfile: impl AsRef<Path>,
     lon_vertex: &[f64],
     lat_vertex: &[f64],
@@ -22,13 +25,13 @@ pub fn build_area_judge_close_area_source_cells_fortran_indexed(
     nlats_source: usize,
 ) -> io::Result<AreaJudgeSparseAreaSourceReport> {
     let inputfile = inputfile.as_ref();
-    let mask = match read_close_mask_netcdf(inputfile) {
-        Ok(mask) => mask,
-        Err(err) if err.to_string().contains("close_refine") => CloseMask {
+    let mask = if close_mask_netcdf_has_refine(inputfile)? {
+        read_close_mask_netcdf(inputfile)?
+    } else {
+        CloseMask {
             refine_degree: 0,
             points: read_close_mesh_netcdf(inputfile)?,
-        },
-        Err(err) => return Err(err),
+        }
     };
     validate_close_mask(&mask).map_err(|err| {
         io::Error::new(
@@ -41,8 +44,7 @@ pub fn build_area_judge_close_area_source_cells_fortran_indexed(
         .iter()
         .map(|point| AreaJudgePoint::new(point.lon, point.lat))
         .collect::<Vec<_>>();
-    if let Some(intersection) = area_judge_first_self_intersection_fortran_indexed(&geometry_points)
-    {
+    if let Some(intersection) = area_judge_first_self_intersection_one_based(&geometry_points) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -82,7 +84,7 @@ pub fn build_area_judge_close_area_source_cells_fortran_indexed(
         area_judge_check_crossing(&mut fill_points);
     }
 
-    let bounds = area_judge_minmax_range_make_fortran_indexed(
+    let bounds = area_judge_minmax_range_make_one_based(
         edgew_temp,
         edgee_temp,
         edgen_temp,
@@ -101,7 +103,7 @@ pub fn build_area_judge_close_area_source_cells_fortran_indexed(
             ),
         )
     })?;
-    let fill = area_judge_closed_curve_fill_fortran_indexed(
+    let fill = area_judge_closed_curve_fill_one_based(
         &fill_points,
         lon_vertex,
         lat_vertex,
@@ -133,7 +135,7 @@ pub fn build_area_judge_close_area_source_cells_fortran_indexed(
 }
 
 /// Build the close-curve `IsInArea_grid` source mask used by domain/refine/patch paths.
-pub fn build_area_judge_close_area_source_fortran_indexed(
+pub fn build_area_judge_close_area_source_one_based(
     inputfile: impl AsRef<Path>,
     lon_vertex: &[f64],
     lat_vertex: &[f64],
@@ -141,7 +143,7 @@ pub fn build_area_judge_close_area_source_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgeAreaSourceReport> {
-    let sparse = build_area_judge_close_area_source_cells_fortran_indexed(
+    let sparse = build_area_judge_close_area_source_cells_one_based(
         inputfile,
         lon_vertex,
         lat_vertex,

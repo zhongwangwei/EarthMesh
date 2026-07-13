@@ -1,8 +1,8 @@
 use crate::{polygon_length_angle_metrics, LonLatDegrees};
 
-/// Fortran-style compact cache/update output for `MOD_grid_preprocess:PolyMeshQuality`.
+/// Canonical-style compact cache/update output for `MOD_grid_preprocess:PolyMeshQuality`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PolygonMeshQualityFortranOutput {
+pub struct PolygonMeshQualityCanonicalOutput {
     pub length_cache: Vec<Vec<f64>>,
     pub angle_cache: Vec<Vec<f64>>,
     pub extreme_angles_degrees: (f64, f64),
@@ -14,10 +14,10 @@ pub struct PolygonMeshQualityFortranOutput {
 
 /// Cache-aware port of `MOD_grid_preprocess:PolyMeshQuality`.
 ///
-/// Fortran iterates over cell ids from `2`, skips cells whose `n_ngrwm` does not
+/// Canonical iterates over cell ids from `2`, skips cells whose `n_ngrwm` does not
 /// match `num_edges`, and stores quality caches in a compact `j` index for only
 /// the matching cells. This Rust port preserves that compact-cache contract.
-pub fn polygon_mesh_quality_fortran_indexed(
+pub fn polygon_mesh_quality_metrics_indexed(
     num_edges: usize,
     cell_points: &[LonLatDegrees],
     cells_on_polygon: &[Vec<usize>],
@@ -25,7 +25,7 @@ pub fn polygon_mesh_quality_fortran_indexed(
     adjust_flags: &[bool],
     length_cache: &[Vec<f64>],
     angle_cache: &[Vec<f64>],
-) -> Option<PolygonMeshQualityFortranOutput> {
+) -> Option<PolygonMeshQualityCanonicalOutput> {
     let len = cells_on_polygon.len();
     if num_edges < 3 || len < 3 || polygon_edge_counts.len() != len || adjust_flags.len() != len {
         return None;
@@ -92,7 +92,7 @@ pub fn polygon_mesh_quality_fortran_indexed(
         compact_id += 1;
     }
 
-    Some(PolygonMeshQualityFortranOutput {
+    Some(PolygonMeshQualityCanonicalOutput {
         length_cache: updated_lengths,
         angle_cache: updated_angles,
         extreme_angles_degrees: (global_min, global_max),

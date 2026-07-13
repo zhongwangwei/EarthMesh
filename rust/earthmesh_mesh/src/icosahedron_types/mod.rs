@@ -8,7 +8,7 @@ pub struct IcosahedronCounts {
     pub nwd: usize,
 }
 
-/// Four corner coordinates for one of the ten OLAM/EarthMesh big diamonds.
+/// Four corner coordinates for one of the ten Method-C/EarthMesh big diamonds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IcosahedronDiamondCorners {
     pub south: CartesianPoint,
@@ -112,7 +112,7 @@ impl Default for IcosahedronMPointNeighbors {
     }
 }
 
-/// Minimal Rust equivalent of OLAM `itab_md` refinement/grid metadata.
+/// Minimal Rust equivalent of Method-C `itab_md` refinement/grid metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IcosahedronMPointMetadata {
     pub mrlm: usize,

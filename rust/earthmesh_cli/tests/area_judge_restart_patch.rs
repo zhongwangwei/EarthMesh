@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
 use earthmesh_cli::{
-    build_area_judge_restart_fortran_indexed, write_area_judge_grid_netcdf, write_bbox_mask_netcdf,
-    AreaJudgeGridPayload, AreaJudgePatchConfig, BBoxMask, BBoxPoint,
+    area_judge_branch_builders::build_area_judge_restart_one_based,
+    area_judge_grid_io::write_area_judge_grid_netcdf, area_judge_grid_io::AreaJudgeGridPayload,
+    area_judge_types::AreaJudgePatchConfig, bbox_mask_io::write_bbox_mask_netcdf,
+    bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
@@ -69,7 +71,7 @@ fn restart_area_judge_reads_saved_domain_and_applies_patch_sources() {
     .expect("write patch source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
 
-    let report = build_area_judge_restart_fortran_indexed(
+    let report = build_area_judge_restart_one_based(
         &root,
         &restart_input,
         Some(AreaJudgePatchConfig {
@@ -137,16 +139,18 @@ fn restart_area_judge_can_continue_calculated_refine_from_restored_domain() {
     .expect("write calculated refine source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
 
-    let report = build_area_judge_restart_fortran_indexed(
+    let report = build_area_judge_restart_one_based(
         &root,
         &restart_input,
         None,
         true,
-        Some(earthmesh_cli::AreaJudgeCalculatedRefineConfig {
-            refine_setting: "threshold",
-            mask_refine_cal_type: "bbox",
-            mask_refine_ndm: 1,
-        }),
+        Some(
+            earthmesh_cli::area_judge_types::AreaJudgeCalculatedRefineConfig {
+                refine_setting: "threshold",
+                mask_refine_cal_type: "bbox",
+                mask_refine_ndm: 1,
+            },
+        ),
         &lon_vertex,
         &lat_vertex,
         &lon_i,

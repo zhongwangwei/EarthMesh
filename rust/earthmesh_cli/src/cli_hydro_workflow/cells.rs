@@ -44,7 +44,7 @@ pub(crate) fn run_mpas_cell_polygons(args: impl Iterator<Item = String>) -> Resu
     if positional.len() != 2 {
         return Err(usage("--mpas-cell-polygons needs <mesh.nc> <out.geojson>"));
     }
-    let count = earthmesh_cli::write_mpas_cell_polygons_geojson(
+    let count = earthmesh_cli::hydro_delivery_cells::write_mpas_cell_polygons_geojson(
         &positional[0],
         &positional[1],
         bbox,
@@ -65,15 +65,15 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
     let mut positional: Vec<PathBuf> = Vec::new();
     let mut bbox: Option<[f64; 4]> = None;
     let mut max_cells: Option<usize> = None;
-    let mut kind = earthmesh_cli::GridfileCellKind::Hex;
+    let mut kind = earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
             "--kind" => {
                 i += 1;
                 kind = match rest.get(i).map(String::as_str) {
-                    Some("hex") => earthmesh_cli::GridfileCellKind::Hex,
-                    Some("tri") => earthmesh_cli::GridfileCellKind::Tri,
+                    Some("hex") => earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex,
+                    Some("tri") => earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Tri,
                     _ => return Err(usage("--kind needs hex|tri")),
                 };
             }
@@ -110,7 +110,7 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
             "--gridfile-cell-polygons needs <gridfile.nc4> <out.geojson> [--kind hex|tri]",
         ));
     }
-    let count = earthmesh_cli::write_gridfile_cell_polygons_geojson(
+    let count = earthmesh_cli::hydro_delivery_cells::write_gridfile_cell_polygons_geojson(
         &positional[0],
         &positional[1],
         kind,
@@ -157,10 +157,10 @@ pub(crate) fn run_landtype_cell_mask(args: impl Iterator<Item = String>) -> Resu
     }
     let gridnum_perdegree = match gridnum_perdegree {
         Some(value) => value,
-        None => earthmesh_cli::landtype_gridnum_perdegree(&positional[1])
+        None => earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&positional[1])
             .map_err(|err| format!("landtype cell mask: {err}"))?,
     };
-    let count = earthmesh_cli::write_landtype_cell_mask_geojson(
+    let count = earthmesh_cli::hydro_delivery_coupling_quality::write_landtype_cell_mask_geojson(
         &positional[0],
         &positional[1],
         gridnum_perdegree,
@@ -228,7 +228,7 @@ pub(crate) fn run_coastal_band_geojson(args: impl Iterator<Item = String>) -> Re
         ));
     }
     let bbox = bbox.ok_or_else(|| usage("--coastal-band-geojson requires --bbox W S E N"))?;
-    let count = earthmesh_cli::write_coastal_band_geojson_from_cama(
+    let count = earthmesh_cli::coastal_band_io::write_coastal_band_geojson_from_cama(
         &positional[0],
         &positional[1],
         bbox[0],
@@ -339,7 +339,7 @@ pub(crate) fn run_hydro_cell_intersections(
                     .get(i)
                     .ok_or_else(|| usage("--domain-geojson requires a value"))?;
                 domain = Some(
-                    earthmesh_cli::read_polygon_outer_rings(path)
+                    earthmesh_cli::hydro_delivery_intersections::read_polygon_outer_rings(path)
                         .map_err(|err| format!("read domain geojson: {err}"))?,
                 );
             }
@@ -375,7 +375,7 @@ pub(crate) fn run_hydro_cell_intersections(
             "--hydro-cell-intersections needs <cells.geojson> <corridors.geojson> <out.geojson>",
         ));
     }
-    let count = earthmesh_cli::write_earthmesh_intersection_geojson(
+    let count = earthmesh_cli::hydro_delivery_intersections::write_earthmesh_intersection_geojson(
         &positional[0],
         &positional[1],
         &positional[2],
@@ -410,7 +410,7 @@ pub(crate) fn run_colm_coupling_from_intersections(
             .map_err(|_| usage("min_fraction must be a number in [0,1]"))?,
         None => 0.0,
     };
-    let rows = earthmesh_cli::write_colm_coupling_csv_from_intersections(
+    let rows = earthmesh_cli::hydro_delivery_colm::write_colm_coupling_csv_from_intersections(
         &input_geojson,
         &output_csv,
         min_fraction,

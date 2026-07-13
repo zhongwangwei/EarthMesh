@@ -4,22 +4,22 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 
 use super::{
     groups::{
-        read_area_judge_threshold_2d_group_fortran_indexed,
-        read_area_judge_threshold_2layer_group_fortran_indexed,
+        read_area_judge_threshold_2d_group_one_based,
+        read_area_judge_threshold_2layer_group_one_based,
     },
     AREA_JUDGE_ATMOS_ONELAYER_NAMES, AREA_JUDGE_LAND_ONELAYER_NAMES,
     AREA_JUDGE_LAND_TWOLAYER_NAMES, AREA_JUDGE_OCEAN_ONELAYER_NAMES,
 };
 use crate::{
-    grid_covers_area_judge_bounds_fortran_indexed, AreaJudgeThresholdInputsReport,
+    grid_covers_area_judge_bounds_one_based, AreaJudgeThresholdInputsReport,
     AreaJudgeThresholdReadConfig,
 };
 
-fn crop_area_judge_landtypes_fortran_indexed(
+fn crop_area_judge_landtypes_one_based(
     landtypes_global: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<Vec<Vec<i32>>> {
-    grid_covers_area_judge_bounds_fortran_indexed("landtypes_global", landtypes_global, bounds)?;
+    grid_covers_area_judge_bounds_one_based("landtypes_global", landtypes_global, bounds)?;
     let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
     let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
     let mut landtypes = vec![vec![0; nlats_select + 1]; nlons_select + 1];
@@ -33,7 +33,7 @@ fn crop_area_judge_landtypes_fortran_indexed(
 }
 
 /// Read and crop threshold inputs after calculated `Area_judge` refine bounds are known.
-pub fn read_area_judge_threshold_inputs_fortran_indexed(
+pub fn read_area_judge_threshold_inputs_one_based(
     config: AreaJudgeThresholdReadConfig<'_>,
     landtypes_global: &[Vec<i32>],
     bounds: AreaJudgeSourceBounds,
@@ -52,7 +52,7 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
     }
     let nlons_select = bounds.maxlon_source - bounds.minlon_source + 1;
     let nlats_select = bounds.minlat_source - bounds.maxlat_source + 1;
-    let landtypes = crop_area_judge_landtypes_fortran_indexed(landtypes_global, bounds)?;
+    let landtypes = crop_area_judge_landtypes_one_based(landtypes_global, bounds)?;
 
     let mut land_onelayer = Vec::new();
     let mut land_twolayer = Vec::new();
@@ -61,13 +61,13 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
 
     match config.mesh_type {
         "landmesh" => {
-            land_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+            land_onelayer = read_area_judge_threshold_2d_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_LAND_ONELAYER_NAMES,
                 config.refine_onelayer_lnd,
                 bounds,
             )?;
-            land_twolayer = read_area_judge_threshold_2layer_group_fortran_indexed(
+            land_twolayer = read_area_judge_threshold_2layer_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_LAND_TWOLAYER_NAMES,
                 config.refine_twolayer_lnd,
@@ -75,7 +75,7 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
             )?;
         }
         "oceanmesh" => {
-            ocean_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+            ocean_onelayer = read_area_judge_threshold_2d_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_OCEAN_ONELAYER_NAMES,
                 config.refine_onelayer_ocn,
@@ -83,7 +83,7 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
             )?;
         }
         "atmos" | "atmosmesh" => {
-            atmos_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+            atmos_onelayer = read_area_judge_threshold_2d_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_ATMOS_ONELAYER_NAMES,
                 config.refine_onelayer_atmos,
@@ -91,25 +91,25 @@ pub fn read_area_judge_threshold_inputs_fortran_indexed(
             )?;
         }
         "LOCmesh" | "earthmesh" => {
-            land_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+            land_onelayer = read_area_judge_threshold_2d_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_LAND_ONELAYER_NAMES,
                 config.refine_onelayer_lnd,
                 bounds,
             )?;
-            land_twolayer = read_area_judge_threshold_2layer_group_fortran_indexed(
+            land_twolayer = read_area_judge_threshold_2layer_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_LAND_TWOLAYER_NAMES,
                 config.refine_twolayer_lnd,
                 bounds,
             )?;
-            ocean_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+            ocean_onelayer = read_area_judge_threshold_2d_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_OCEAN_ONELAYER_NAMES,
                 config.refine_onelayer_ocn,
                 bounds,
             )?;
-            atmos_onelayer = read_area_judge_threshold_2d_group_fortran_indexed(
+            atmos_onelayer = read_area_judge_threshold_2d_group_one_based(
                 config.threshold_dir,
                 &AREA_JUDGE_ATMOS_ONELAYER_NAMES,
                 config.refine_onelayer_atmos,

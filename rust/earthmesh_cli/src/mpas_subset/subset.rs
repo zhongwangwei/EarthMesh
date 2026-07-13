@@ -1,6 +1,5 @@
+use crate::MpasMesh;
 use std::io;
-
-use crate::*;
 
 /// Subset a global [`MpasMesh`] to the cells selected by `keep_cell`, producing
 /// a topologically-consistent regional (limited-area) MPAS mesh.

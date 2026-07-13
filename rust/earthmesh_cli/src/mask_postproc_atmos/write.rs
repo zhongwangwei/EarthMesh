@@ -9,7 +9,7 @@ use crate::{
 /// Rust entry point for the `mask_postproc_Atmos` branch when
 /// `output_format == 'MPAS-Simple'`.
 ///
-/// This preserves the legacy result-file names used by
+/// This preserves the standard result-file names used by
 /// `MPAS_Mesh_Cal_Simple`:
 /// `result/gridfile_NXP####_<mode_grid>.nc4`,
 /// `result/cellwidth_NXP####_global.nc4`, and
@@ -59,7 +59,7 @@ pub fn write_mask_postproc_atmos_mpas_simple_netcdf(
 /// Rust entry point for the `mask_postproc_Atmos` branch when
 /// `output_format == 'MPAS'`.
 ///
-/// This preserves the legacy result-file names used by `MPAS_Mesh_Cal`:
+/// This preserves the standard result-file names used by `MPAS_Mesh_Cal`:
 /// `result/gridfile_NXP####_<mode_grid>.nc4`,
 /// `result/cellwidth_NXP####_global.nc4`,
 /// `result/MPASOUT_NXP####_global.nc4`, and

@@ -1,25 +1,25 @@
 use earthmesh_mesh::{
-    arc_length_unit_sphere, area_triangle_reconstruction_error_fortran_indexed,
-    cells_on_edge_from_neighbor_cells, centroid_spherical_mesh_fortran_indexed,
-    circumcenter_spherical_mesh_fortran_indexed, edge_midpoints_from_cells_fortran_indexed,
-    edges_on_edge_tri_fortran_indexed, get_area_production_fortran_indexed,
-    get_area_unit_fortran_indexed, get_edge_connectivity_fortran_indexed,
-    get_edge_production_fortran_indexed, grid_quality_check_global_fortran_indexed, is_ngrmm,
-    lonlat_degrees_to_unit_xyz, next_ccw_edge_candidate_slot, normalize_lon_m180_180,
-    normalize_vertex_rotation, order_vertex_arrays_for_vertex, order_vertex_arrays_fortran_indexed,
-    order_vertices_on_edge_fortran_indexed, polygon_length_angle_metrics,
-    polygon_mesh_quality_fortran_indexed, refine_sjx_regional_make_fortran_indexed,
-    set_dbx_move_regional_step_fortran_indexed, set_dists_on_edge_global_fortran_indexed,
+    arc_length_unit_sphere, area_triangle_reconstruction_error_one_based,
+    cells_on_edge_from_neighbor_cells, centroid_spherical_mesh_one_based,
+    circumcenter_spherical_mesh_one_based, edge_midpoints_from_cells_one_based,
+    edges_on_edge_tri_one_based, get_area_production_one_based, get_area_unit_one_based,
+    get_edge_connectivity_one_based, get_edge_production_one_based,
+    grid_quality_check_global_one_based, is_ngrmm, lonlat_degrees_to_unit_xyz,
+    next_ccw_edge_candidate_slot, normalize_lon_m180_180, normalize_vertex_rotation,
+    order_vertex_arrays_for_vertex, order_vertex_arrays_one_based,
+    order_vertices_on_edge_one_based, polygon_length_angle_metrics,
+    polygon_mesh_quality_metrics_indexed, refine_sjx_regional_make_one_based,
+    set_dbx_move_regional_step_one_based, set_dists_on_edge_global_one_based,
     shared_cell_for_edge_pair, should_swap_vertices_on_edge,
     spherical_cell_area_from_vertices_unit, spherical_kite_area_unit, spherical_triangle_area_unit,
-    spring_dynamics_global_fortran_indexed, spring_dynamics_regional_fortran_indexed,
-    springjustment_global_core_fortran_indexed, springjustment_regional_core_fortran_indexed,
-    springjustment_regional_from_refinement_fortran_indexed,
-    springjustment_regional_from_source_mask_fortran_indexed,
-    triangle_mesh_quality_fortran_indexed, triangle_neighbors_from_cell_membership_fortran_indexed,
-    vertex_cell_position, CartesianPoint, DistanceLayerSpacing, GetAreaUnitInput,
-    GlobalDistanceStep, LonLatDegrees, RefineRegionalMaskInput, RegionalMoveMaskInput,
-    SetDistsOnEdgeGlobalInput, SpringjustmentGlobalCoreInput, SpringjustmentRegionalCoreInput,
+    spring_dynamics_global_one_based, spring_dynamics_regional_one_based,
+    springjustment_global_core_one_based, springjustment_regional_core_one_based,
+    springjustment_regional_from_refinement_one_based,
+    springjustment_regional_from_source_mask_one_based, triangle_mesh_quality_metrics_indexed,
+    triangle_neighbors_from_cell_membership_one_based, vertex_cell_position, CartesianPoint,
+    DistanceLayerSpacing, GetAreaUnitInput, GlobalDistanceStep, LonLatDegrees,
+    RefineRegionalMaskInput, RegionalMoveMaskInput, SetDistsOnEdgeGlobalInput,
+    SpringjustmentGlobalCoreInput, SpringjustmentRegionalCoreInput,
     SpringjustmentRegionalFromRefinementInput, SpringjustmentRegionalFromSourceMaskInput,
 };
 
@@ -36,7 +36,7 @@ fn normalize_lon_matches_mod_grid_preprocess_checklon_single_wrap() {
     approx_eq(normalize_lon_m180_180(-181.0), 179.0, 0.0);
     approx_eq(normalize_lon_m180_180(180.0), 180.0, 0.0);
     approx_eq(normalize_lon_m180_180(-180.0), -180.0, 0.0);
-    // Fortran CheckLon performs one adjustment, not repeated modulo wrapping.
+    // Canonical CheckLon performs one adjustment, not repeated modulo wrapping.
     approx_eq(normalize_lon_m180_180(541.0), 181.0, 0.0);
 }
 
@@ -57,7 +57,7 @@ fn arc_length_matches_mod_grid_preprocess_one_degree_equator() {
 }
 
 #[test]
-fn arc_length_scales_by_input_radius_like_fortran() {
+fn arc_length_scales_by_input_radius_like_canonical() {
     let a = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let b = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
     let scaled_a = earthmesh_mesh::CartesianPoint::new(a.x * 2.0, a.y * 2.0, a.z * 2.0);
@@ -71,7 +71,7 @@ fn arc_length_scales_by_input_radius_like_fortran() {
 }
 
 #[test]
-fn polygon_length_angle_matches_fortran_octant_triangle() {
+fn polygon_length_angle_matches_canonical_octant_triangle() {
     let metrics = earthmesh_mesh::polygon_length_angle_metrics(&[
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(90.0, 0.0),
@@ -104,7 +104,7 @@ fn polygon_length_angle_rejects_degenerate_polygons() {
 }
 
 #[test]
-fn triangle_mesh_quality_matches_fortran_aggregation_for_single_triangle() {
+fn triangle_mesh_quality_matches_canonical_aggregation_for_single_triangle() {
     let quality = earthmesh_mesh::triangle_mesh_quality(&[[
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(90.0, 0.0),
@@ -128,7 +128,7 @@ fn triangle_mesh_quality_rejects_empty_mesh() {
 }
 
 #[test]
-fn polygon_mesh_quality_matches_fortran_thresholds_for_square() {
+fn polygon_mesh_quality_matches_canonical_thresholds_for_square() {
     let quality = earthmesh_mesh::polygon_mesh_quality(&[vec![
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(90.0, 0.0),
@@ -143,7 +143,7 @@ fn polygon_mesh_quality_matches_fortran_thresholds_for_square() {
     assert!(quality.extreme_angles_degrees.0 > 0.0);
     assert!(quality.extreme_angles_degrees.1 > quality.extreme_angles_degrees.0);
 
-    // For four-sided cells, Fortran regular angle is 90 degrees and thresholds are 81/99.
+    // For four-sided cells, Canonical regular angle is 90 degrees and thresholds are 81/99.
     let expected_stddev = (quality.cell_metrics[0]
         .angles_degrees
         .iter()
@@ -173,7 +173,7 @@ fn polygon_mesh_quality_rejects_empty_mesh_and_degenerate_cells() {
 }
 
 #[test]
-fn robust_spherical_area_matches_fortran_equatorial_square() {
+fn robust_spherical_area_matches_canonical_equatorial_square() {
     let area = earthmesh_mesh::robust_spherical_area_unit(&[
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(1.0, 0.0),
@@ -186,7 +186,7 @@ fn robust_spherical_area_matches_fortran_equatorial_square() {
 }
 
 #[test]
-fn robust_spherical_area_matches_fortran_dateline_delta_wrap() {
+fn robust_spherical_area_matches_canonical_dateline_delta_wrap() {
     let area = earthmesh_mesh::robust_spherical_area_unit(&[
         LonLatDegrees::new(179.0, 0.0),
         LonLatDegrees::new(-179.0, 0.0),
@@ -210,7 +210,7 @@ fn robust_spherical_area_rejects_degenerate_polygons() {
 }
 
 #[test]
-fn spherical_triangle_area_matches_fortran_octant_triangle() {
+fn spherical_triangle_area_matches_canonical_octant_triangle() {
     let triangle = [
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(90.0, 0.0)),
@@ -225,7 +225,7 @@ fn spherical_triangle_area_matches_fortran_octant_triangle() {
 }
 
 #[test]
-fn spherical_triangle_area_matches_fortran_small_right_triangle() {
+fn spherical_triangle_area_matches_canonical_small_right_triangle() {
     let triangle = [
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
@@ -240,7 +240,7 @@ fn spherical_triangle_area_matches_fortran_small_right_triangle() {
 }
 
 #[test]
-fn spherical_kite_area_matches_fortran_getarea_two_triangle_sum() {
+fn spherical_kite_area_matches_canonical_getarea_two_triangle_sum() {
     let vertex = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let edge1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
     let edge2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
@@ -254,7 +254,7 @@ fn spherical_kite_area_matches_fortran_getarea_two_triangle_sum() {
 }
 
 #[test]
-fn spherical_cell_area_fans_vertices_like_fortran_getarea() {
+fn spherical_cell_area_fans_vertices_like_canonical_getarea() {
     let vertices = [
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
@@ -284,7 +284,7 @@ fn spherical_cell_area_rejects_degenerate_cells() {
 }
 
 #[test]
-fn shared_cell_for_edge_pair_matches_fortran_getarea_combinations() {
+fn shared_cell_for_edge_pair_matches_canonical_getarea_combinations() {
     assert_eq!(shared_cell_for_edge_pair([12, 30], [7, 12]), Some(12));
     assert_eq!(shared_cell_for_edge_pair([12, 30], [30, 7]), Some(30));
     assert_eq!(shared_cell_for_edge_pair([0, 30], [30, 0]), Some(30));
@@ -292,7 +292,7 @@ fn shared_cell_for_edge_pair_matches_fortran_getarea_combinations() {
 }
 
 #[test]
-fn vertex_cell_position_matches_fortran_cells_on_vertex_scan() {
+fn vertex_cell_position_matches_canonical_cells_on_vertex_scan() {
     assert_eq!(vertex_cell_position([4, 8, 15], 4), Some(0));
     assert_eq!(vertex_cell_position([4, 8, 15], 8), Some(1));
     assert_eq!(vertex_cell_position([4, 8, 15], 15), Some(2));
@@ -300,7 +300,7 @@ fn vertex_cell_position_matches_fortran_cells_on_vertex_scan() {
 }
 
 #[test]
-fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
+fn get_area_unit_matches_one_based_kite_triangle_and_cell_workflow() {
     let zero = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let edge1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
     let edge2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
@@ -308,7 +308,7 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
 
     let vertices = vec![
         zero, // index 0 unused
-        zero, // index 1 skipped by Fortran loops
+        zero, // index 1 skipped by Canonical loops
         zero,
         edge1,
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 1.0)),
@@ -336,7 +336,7 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
     let vertices_on_cell = vec![vec![], vec![], vec![2, 3, 4, 5]];
     let n_edges_on_cell = vec![0, 0, 4];
 
-    let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
+    let output = get_area_unit_one_based(GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cell_points,
@@ -346,7 +346,7 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
         vertices_on_cell: &vertices_on_cell,
         n_edges_on_cell: &n_edges_on_cell,
     })
-    .expect("valid Fortran-indexed area input");
+    .expect("valid Canonical-indexed area input");
 
     approx_eq(
         output.kite_areas_on_vertex[2][0],
@@ -358,7 +358,7 @@ fn get_area_unit_matches_fortran_indexed_kite_triangle_and_cell_workflow() {
 }
 
 #[test]
-fn area_triangle_reconstruction_error_matches_fortran_getarea_summary() {
+fn area_triangle_reconstruction_error_matches_canonical_getarea_summary() {
     let cell_points = vec![
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
@@ -370,7 +370,7 @@ fn area_triangle_reconstruction_error_matches_fortran_getarea_summary() {
     let exact = spherical_triangle_area_unit([cell_points[2], cell_points[3], cell_points[4]]);
     let area_triangle = vec![0.0, 0.0, exact, exact * 1.1];
 
-    let summary = area_triangle_reconstruction_error_fortran_indexed(
+    let summary = area_triangle_reconstruction_error_one_based(
         &area_triangle,
         &cell_points,
         &cells_on_vertex,
@@ -382,7 +382,7 @@ fn area_triangle_reconstruction_error_matches_fortran_getarea_summary() {
 }
 
 #[test]
-fn is_ngrmm_matches_fortran_opposite_vertex_codes() {
+fn is_ngrmm_matches_canonical_opposite_vertex_codes() {
     assert_eq!(is_ngrmm([1, 2, 3], [1, 2, 9]), Some(3));
     assert_eq!(is_ngrmm([1, 2, 3], [1, 8, 3]), Some(2));
     assert_eq!(is_ngrmm([1, 2, 3], [7, 2, 3]), Some(1));
@@ -390,7 +390,7 @@ fn is_ngrmm_matches_fortran_opposite_vertex_codes() {
 }
 
 #[test]
-fn cells_on_edge_from_neighbor_cells_matches_fortran_getedge_mapping() {
+fn cells_on_edge_from_neighbor_cells_matches_canonical_getedge_mapping() {
     assert_eq!(
         cells_on_edge_from_neighbor_cells([3, 1, 2], [1, 3, 9]),
         Some([1, 3])
@@ -410,7 +410,7 @@ fn cells_on_edge_from_neighbor_cells_matches_fortran_getedge_mapping() {
 }
 
 #[test]
-fn should_swap_vertices_on_edge_matches_fortran_cross_product_rule() {
+fn should_swap_vertices_on_edge_matches_canonical_cross_product_rule() {
     assert!(!should_swap_vertices_on_edge(
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(1.0, 0.0),
@@ -432,7 +432,7 @@ fn should_swap_vertices_on_edge_matches_fortran_cross_product_rule() {
 }
 
 #[test]
-fn normalize_vertex_rotation_matches_fortran_min_cell_rotation() {
+fn normalize_vertex_rotation_matches_canonical_min_cell_rotation() {
     assert_eq!(
         normalize_vertex_rotation([7, 3, 5], [70, 30, 50]),
         ([3, 5, 7], [30, 50, 70])
@@ -452,9 +452,9 @@ fn normalize_vertex_rotation_matches_fortran_min_cell_rotation() {
 }
 
 #[test]
-fn next_ccw_edge_candidate_slot_matches_fortran_min_positive_angle_rule() {
+fn next_ccw_edge_candidate_slot_matches_canonical_min_positive_angle_rule() {
     let vertex = CartesianPoint::new(0.0, 0.0, 1.0);
-    let reference_edge = CartesianPoint::new(1.0, 0.0, 1.0);
+    let canonical_edge = CartesianPoint::new(1.0, 0.0, 1.0);
     let candidates = [
         CartesianPoint::new(0.0, -1.0, 1.0),
         CartesianPoint::new(0.2, 0.2, 1.0),
@@ -462,7 +462,7 @@ fn next_ccw_edge_candidate_slot_matches_fortran_min_positive_angle_rule() {
     ];
 
     assert_eq!(
-        next_ccw_edge_candidate_slot(vertex, reference_edge, &candidates),
+        next_ccw_edge_candidate_slot(vertex, canonical_edge, &candidates),
         Some(1)
     );
 }
@@ -470,20 +470,20 @@ fn next_ccw_edge_candidate_slot_matches_fortran_min_positive_angle_rule() {
 #[test]
 fn next_ccw_edge_candidate_slot_rejects_clockwise_or_degenerate_candidates() {
     let vertex = CartesianPoint::new(0.0, 0.0, 1.0);
-    let reference_edge = CartesianPoint::new(1.0, 0.0, 1.0);
+    let canonical_edge = CartesianPoint::new(1.0, 0.0, 1.0);
     let candidates = [
         CartesianPoint::new(0.0, -1.0, 1.0),
         CartesianPoint::new(2.0, 0.0, 1.0),
     ];
 
     assert_eq!(
-        next_ccw_edge_candidate_slot(vertex, reference_edge, &candidates),
+        next_ccw_edge_candidate_slot(vertex, canonical_edge, &candidates),
         None
     );
 }
 
 #[test]
-fn order_vertex_arrays_for_vertex_matches_fortran_edge_sort_and_cell_rebuild() {
+fn order_vertex_arrays_for_vertex_matches_canonical_edge_sort_and_cell_rebuild() {
     let mut edge_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); 13];
     edge_points[10] = CartesianPoint::new(1.0, 0.0, 1.0);
     edge_points[11] = CartesianPoint::new(0.0, 1.0, 1.0);
@@ -514,7 +514,7 @@ fn order_vertex_arrays_for_vertex_matches_fortran_edge_sort_and_cell_rebuild() {
 }
 
 #[test]
-fn order_vertex_arrays_fortran_indexed_processes_vertices_from_two() {
+fn order_vertex_arrays_one_based_processes_vertices_from_two() {
     let zero = CartesianPoint::new(0.0, 0.0, 0.0);
     let vertex_points = vec![zero, zero, CartesianPoint::new(0.0, 0.0, 1.0)];
 
@@ -534,14 +534,14 @@ fn order_vertex_arrays_fortran_indexed_processes_vertices_from_two() {
     cells_on_edge[11] = [110, 210];
     cells_on_edge[12] = [120, 220];
 
-    let output = order_vertex_arrays_fortran_indexed(
+    let output = order_vertex_arrays_one_based(
         &vertex_points,
         &edge_points,
         &edges_on_vertex,
         &vertices_on_edge,
         &cells_on_edge,
     )
-    .expect("valid Fortran-indexed ordering input");
+    .expect("valid Canonical-indexed ordering input");
 
     assert_eq!(output.edges_on_vertex[1], [0, 0, 0]);
     assert_eq!(output.cells_on_vertex[1], [0, 0, 0]);
@@ -550,7 +550,7 @@ fn order_vertex_arrays_fortran_indexed_processes_vertices_from_two() {
 }
 
 #[test]
-fn order_vertices_on_edge_fortran_indexed_matches_getsort_vertices_on_edge() {
+fn order_vertices_on_edge_one_based_matches_getsort_vertices_on_edge() {
     let points = vec![
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(0.0, 0.0),
@@ -572,8 +572,8 @@ fn order_vertices_on_edge_fortran_indexed_matches_getsort_vertices_on_edge() {
     let vertices_on_edge = vec![[0, 0], [9, 9], [2, 3], [2, 4], [5, 6]];
 
     let ordered =
-        order_vertices_on_edge_fortran_indexed(&points, &cells, &cells_on_edge, &vertices_on_edge)
-            .expect("valid Fortran-indexed edge sorting input");
+        order_vertices_on_edge_one_based(&points, &cells, &cells_on_edge, &vertices_on_edge)
+            .expect("valid Canonical-indexed edge sorting input");
 
     assert_eq!(ordered[1], [9, 9]);
     assert_eq!(ordered[2], [2, 3]);
@@ -582,7 +582,7 @@ fn order_vertices_on_edge_fortran_indexed_matches_getsort_vertices_on_edge() {
 }
 
 #[test]
-fn get_edge_connectivity_fortran_indexed_matches_getedge_reuse_and_cell_mapping() {
+fn get_edge_connectivity_one_based_matches_getedge_reuse_and_cell_mapping() {
     let cells_on_vertex = vec![
         [0, 0, 0],
         [0, 0, 0],
@@ -600,8 +600,8 @@ fn get_edge_connectivity_fortran_indexed_matches_getedge_reuse_and_cell_mapping(
         [2, 3, 4],
     ];
 
-    let connectivity = get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_vertex)
-        .expect("valid Fortran-indexed GetEdge input");
+    let connectivity = get_edge_connectivity_one_based(&triangle_neighbors, &cells_on_vertex)
+        .expect("valid Canonical-indexed GetEdge input");
 
     assert_eq!(connectivity.edges_on_vertex[2], [2, 3, 4]);
     assert_eq!(connectivity.edges_on_vertex[3][0], 2);
@@ -633,7 +633,7 @@ fn triangle_neighbors_from_cell_membership_matches_set_ngrmm_slots() {
     triangle_counts_on_cell[12] = 3;
     triangle_counts_on_cell[13] = 3;
 
-    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_one_based(
         &cells_on_triangle,
         &triangles_on_cell,
         &triangle_counts_on_cell,
@@ -647,7 +647,7 @@ fn triangle_neighbors_from_cell_membership_matches_set_ngrmm_slots() {
 }
 
 #[test]
-fn edges_on_edge_tri_matches_fortran_endpoint_cyclic_neighbors() {
+fn edges_on_edge_tri_matches_canonical_endpoint_cyclic_neighbors() {
     let vertices_on_edge = vec![
         [0, 0],
         [0, 0],
@@ -667,7 +667,7 @@ fn edges_on_edge_tri_matches_fortran_endpoint_cyclic_neighbors() {
         [4, 6, 7],
     ];
 
-    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(&vertices_on_edge, &edges_on_vertex)
+    let edges_on_edge_tri = edges_on_edge_tri_one_based(&vertices_on_edge, &edges_on_vertex)
         .expect("valid set_edgesOnEdge_tri inputs");
 
     assert_eq!(edges_on_edge_tri[2], [3, 4, 5, 6]);
@@ -676,7 +676,7 @@ fn edges_on_edge_tri_matches_fortran_endpoint_cyclic_neighbors() {
 }
 
 #[test]
-fn edge_midpoints_from_cells_fortran_indexed_matches_getedge_optional_vp() {
+fn edge_midpoints_from_cells_one_based_matches_getedge_optional_vp() {
     let cells = vec![
         LonLatDegrees::new(0.0, 0.0),
         LonLatDegrees::new(0.0, 0.0),
@@ -687,8 +687,8 @@ fn edge_midpoints_from_cells_fortran_indexed_matches_getedge_optional_vp() {
     ];
     let cells_on_edge = vec![[0, 0], [0, 0], [2, 3], [4, 5]];
 
-    let midpoints = edge_midpoints_from_cells_fortran_indexed(&cells_on_edge, &cells)
-        .expect("valid Fortran-indexed midpoint input");
+    let midpoints = edge_midpoints_from_cells_one_based(&cells_on_edge, &cells)
+        .expect("valid Canonical-indexed midpoint input");
 
     approx_eq(midpoints[2].lon_degrees, 45.0, 1.0e-12);
     approx_eq(midpoints[2].lat_degrees, 0.0, 1.0e-12);
@@ -728,7 +728,7 @@ fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
     cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
     cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
 
-    let output = get_edge_production_fortran_indexed(
+    let output = get_edge_production_one_based(
         &triangle_neighbors,
         &cells_on_vertex,
         &triangle_lonlat,
@@ -736,9 +736,9 @@ fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
     )
     .expect("valid production GetEdge input");
 
-    let connectivity = get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_vertex)
+    let connectivity = get_edge_connectivity_one_based(&triangle_neighbors, &cells_on_vertex)
         .expect("valid connectivity");
-    let expected_vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+    let expected_vertices_on_edge = order_vertices_on_edge_one_based(
         &triangle_lonlat,
         &cell_lonlat,
         &connectivity.cells_on_edge,
@@ -746,7 +746,7 @@ fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
     )
     .expect("sorted verticesOnEdge");
     let expected_edge_points =
-        edge_midpoints_from_cells_fortran_indexed(&connectivity.cells_on_edge, &cell_lonlat)
+        edge_midpoints_from_cells_one_based(&connectivity.cells_on_edge, &cell_lonlat)
             .expect("edge midpoint output");
     let triangle_points = triangle_lonlat
         .iter()
@@ -758,7 +758,7 @@ fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let expected_ordered = order_vertex_arrays_fortran_indexed(
+    let expected_ordered = order_vertex_arrays_one_based(
         &triangle_points,
         &edge_points_cartesian,
         &connectivity.edges_on_vertex,
@@ -775,7 +775,7 @@ fn get_edge_production_wrapper_matches_manual_getedge_pipeline() {
 }
 
 #[test]
-fn springjustment_global_core_matches_manual_migrated_pipeline() {
+fn springjustment_global_core_matches_manual_current_pipeline() {
     let cells_on_triangle = vec![
         [0, 0, 0],
         [0, 0, 0],
@@ -808,7 +808,7 @@ fn springjustment_global_core_matches_manual_migrated_pipeline() {
     cell_lonlat[12] = LonLatDegrees::new(0.0, 1.0);
     cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
 
-    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+    let output = springjustment_global_core_one_based(SpringjustmentGlobalCoreInput {
         triangle_lonlat: &triangle_lonlat,
         cell_lonlat: &cell_lonlat,
         cells_on_triangle: &cells_on_triangle,
@@ -826,38 +826,36 @@ fn springjustment_global_core_matches_manual_migrated_pipeline() {
     })
     .expect("valid springjustment global core input");
 
-    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_one_based(
         &cells_on_triangle,
         &triangles_on_cell,
         &n_edges_on_cell,
     )
     .expect("triangle neighbors");
-    let edge_output = get_edge_production_fortran_indexed(
+    let edge_output = get_edge_production_one_based(
         &triangle_neighbors,
         &cells_on_triangle,
         &triangle_lonlat,
         &cell_lonlat,
     )
     .expect("edge production");
-    let cell_connectivity = earthmesh_mesh::connect_on_cell_fortran_indexed(
+    let cell_connectivity = earthmesh_mesh::connect_on_cell_one_based(
         &n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
         &triangles_on_cell,
     )
     .expect("cell connectivity");
-    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(
-        &edge_output.vertices_on_edge,
-        &edge_output.edges_on_vertex,
-    )
-    .expect("edges on edge tri");
+    let edges_on_edge_tri =
+        edges_on_edge_tri_one_based(&edge_output.vertices_on_edge, &edge_output.edges_on_vertex)
+            .expect("edges on edge tri");
     let dists_on_edge = vec![2.0; edge_output.cells_on_edge.len()];
     let cell_points = cell_lonlat
         .iter()
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let spring_output = spring_dynamics_global_fortran_indexed(
+    let spring_output = spring_dynamics_global_one_based(
         &cell_points,
         &n_edges_on_cell,
         &cell_connectivity.edges_on_cell,
@@ -877,14 +875,14 @@ fn springjustment_global_core_matches_manual_migrated_pipeline() {
         .map(earthmesh_mesh::xyz_to_lonlat_degrees)
         .collect::<Vec<_>>();
     let centroid_lonlat =
-        centroid_spherical_mesh_fortran_indexed(&expected_cell_lonlat, &cells_on_triangle)
+        centroid_spherical_mesh_one_based(&expected_cell_lonlat, &cells_on_triangle)
             .expect("centroids");
     let centroid_cartesian = centroid_lonlat
         .iter()
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+    let circumcenters = circumcenter_spherical_mesh_one_based(
         &centroid_cartesian,
         &spring_output.updated_cell_points,
         &cells_on_triangle,
@@ -944,7 +942,7 @@ fn springjustment_global_core_scales_centroids_for_radius_scaled_circumcenters()
     cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
 
-    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+    let output = springjustment_global_core_one_based(SpringjustmentGlobalCoreInput {
         triangle_lonlat: &triangle_lonlat,
         cell_lonlat: &cell_lonlat,
         cells_on_triangle: &cells_on_triangle,
@@ -963,7 +961,7 @@ fn springjustment_global_core_scales_centroids_for_radius_scaled_circumcenters()
     .expect("valid springjustment global core input");
 
     let centroid_lonlat =
-        centroid_spherical_mesh_fortran_indexed(&output.updated_cell_lonlat, &cells_on_triangle)
+        centroid_spherical_mesh_one_based(&output.updated_cell_lonlat, &cells_on_triangle)
             .expect("centroids");
     let scaled_centroid_cartesian = centroid_lonlat
         .iter()
@@ -971,7 +969,7 @@ fn springjustment_global_core_scales_centroids_for_radius_scaled_circumcenters()
         .map(lonlat_degrees_to_unit_xyz)
         .map(|point| CartesianPoint::new(point.x * radius, point.y * radius, point.z * radius))
         .collect::<Vec<_>>();
-    let expected = circumcenter_spherical_mesh_fortran_indexed(
+    let expected = circumcenter_spherical_mesh_one_based(
         &scaled_centroid_cartesian,
         &output.spring.updated_cell_points,
         &cells_on_triangle,
@@ -986,7 +984,7 @@ fn springjustment_global_core_scales_centroids_for_radius_scaled_circumcenters()
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let unscaled = circumcenter_spherical_mesh_fortran_indexed(
+    let unscaled = circumcenter_spherical_mesh_one_based(
         &unscaled_centroid_cartesian,
         &output.spring.updated_cell_points,
         &cells_on_triangle,
@@ -1036,7 +1034,7 @@ fn springjustment_global_core_scales_cell_points_before_global_spring() {
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
     let target_edge_distance = radius * earthmesh_core::deg_to_rad(1.0);
 
-    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+    let output = springjustment_global_core_one_based(SpringjustmentGlobalCoreInput {
         triangle_lonlat: &triangle_lonlat,
         cell_lonlat: &cell_lonlat,
         cells_on_triangle: &cells_on_triangle,
@@ -1054,31 +1052,29 @@ fn springjustment_global_core_scales_cell_points_before_global_spring() {
     })
     .expect("valid springjustment global core input");
 
-    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_one_based(
         &cells_on_triangle,
         &triangles_on_cell,
         &n_edges_on_cell,
     )
     .expect("triangle neighbors");
-    let edge_output = get_edge_production_fortran_indexed(
+    let edge_output = get_edge_production_one_based(
         &triangle_neighbors,
         &cells_on_triangle,
         &triangle_lonlat,
         &cell_lonlat,
     )
     .expect("edge production");
-    let cell_connectivity = earthmesh_mesh::connect_on_cell_fortran_indexed(
+    let cell_connectivity = earthmesh_mesh::connect_on_cell_one_based(
         &n_edges_on_cell,
         &edge_output.cells_on_edge,
         &edge_output.edges_on_vertex,
         &triangles_on_cell,
     )
     .expect("cell connectivity");
-    let edges_on_edge_tri = edges_on_edge_tri_fortran_indexed(
-        &edge_output.vertices_on_edge,
-        &edge_output.edges_on_vertex,
-    )
-    .expect("edges on edge tri");
+    let edges_on_edge_tri =
+        edges_on_edge_tri_one_based(&edge_output.vertices_on_edge, &edge_output.edges_on_vertex)
+            .expect("edges on edge tri");
     let dists_on_edge = vec![target_edge_distance; edge_output.cells_on_edge.len()];
     let scaled_cell_points = cell_lonlat
         .iter()
@@ -1086,7 +1082,7 @@ fn springjustment_global_core_scales_cell_points_before_global_spring() {
         .map(lonlat_degrees_to_unit_xyz)
         .map(|point| CartesianPoint::new(point.x * radius, point.y * radius, point.z * radius))
         .collect::<Vec<_>>();
-    let expected = spring_dynamics_global_fortran_indexed(
+    let expected = spring_dynamics_global_one_based(
         &scaled_cell_points,
         &n_edges_on_cell,
         &cell_connectivity.edges_on_cell,
@@ -1161,7 +1157,7 @@ fn springjustment_global_core_wires_distance_step_updates() {
         num_center_in: 1,
     }];
 
-    let output = springjustment_global_core_fortran_indexed(SpringjustmentGlobalCoreInput {
+    let output = springjustment_global_core_one_based(SpringjustmentGlobalCoreInput {
         triangle_lonlat: &triangle_lonlat,
         cell_lonlat: &cell_lonlat,
         cells_on_triangle: &cells_on_triangle,
@@ -1179,7 +1175,7 @@ fn springjustment_global_core_wires_distance_step_updates() {
     })
     .expect("valid springjustment global distance input");
 
-    let expected_distance = set_dists_on_edge_global_fortran_indexed(SetDistsOnEdgeGlobalInput {
+    let expected_distance = set_dists_on_edge_global_one_based(SetDistsOnEdgeGlobalInput {
         base_dists_on_edge: 100.0,
         base_cellwidth: Some(200.0),
         num_rc: 0,
@@ -1197,7 +1193,7 @@ fn springjustment_global_core_wires_distance_step_updates() {
 }
 
 #[test]
-fn springjustment_regional_core_matches_manual_migrated_pipeline() {
+fn springjustment_regional_core_matches_manual_current_pipeline() {
     let cells_on_triangle = vec![
         [0, 0, 0],
         [0, 0, 0],
@@ -1232,7 +1228,7 @@ fn springjustment_regional_core_matches_manual_migrated_pipeline() {
     let mut move_mask = vec![false; 14];
     move_mask[10] = true;
 
-    let output = springjustment_regional_core_fortran_indexed(SpringjustmentRegionalCoreInput {
+    let output = springjustment_regional_core_one_based(SpringjustmentRegionalCoreInput {
         triangle_lonlat: &triangle_lonlat,
         cell_lonlat: &cell_lonlat,
         cells_on_triangle: &cells_on_triangle,
@@ -1245,23 +1241,23 @@ fn springjustment_regional_core_matches_manual_migrated_pipeline() {
     })
     .expect("valid regional core input");
 
-    let triangle_neighbors = triangle_neighbors_from_cell_membership_fortran_indexed(
+    let triangle_neighbors = triangle_neighbors_from_cell_membership_one_based(
         &cells_on_triangle,
         &triangles_on_cell,
         &n_edges_on_cell,
     )
     .expect("triangle neighbors");
     let edge_connectivity =
-        get_edge_connectivity_fortran_indexed(&triangle_neighbors, &cells_on_triangle)
+        get_edge_connectivity_one_based(&triangle_neighbors, &cells_on_triangle)
             .expect("edge connectivity");
-    let vertices_on_edge = order_vertices_on_edge_fortran_indexed(
+    let vertices_on_edge = order_vertices_on_edge_one_based(
         &triangle_lonlat,
         &cell_lonlat,
         &edge_connectivity.cells_on_edge,
         &edge_connectivity.vertices_on_edge,
     )
     .expect("sorted vertices");
-    let cell_connectivity = earthmesh_mesh::connect_on_cell_fortran_indexed(
+    let cell_connectivity = earthmesh_mesh::connect_on_cell_one_based(
         &n_edges_on_cell,
         &edge_connectivity.cells_on_edge,
         &edge_connectivity.edges_on_vertex,
@@ -1273,7 +1269,7 @@ fn springjustment_regional_core_matches_manual_migrated_pipeline() {
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let regional = spring_dynamics_regional_fortran_indexed(
+    let regional = spring_dynamics_regional_one_based(
         &cell_points,
         &n_edges_on_cell,
         &cell_connectivity.cells_on_cell,
@@ -1290,14 +1286,14 @@ fn springjustment_regional_core_matches_manual_migrated_pipeline() {
         .map(earthmesh_mesh::xyz_to_lonlat_degrees)
         .collect::<Vec<_>>();
     let centroid_lonlat =
-        centroid_spherical_mesh_fortran_indexed(&expected_cell_lonlat, &cells_on_triangle)
+        centroid_spherical_mesh_one_based(&expected_cell_lonlat, &cells_on_triangle)
             .expect("centroids");
     let centroid_cartesian = centroid_lonlat
         .iter()
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let circumcenters = circumcenter_spherical_mesh_fortran_indexed(
+    let circumcenters = circumcenter_spherical_mesh_one_based(
         &centroid_cartesian,
         &regional.updated_cell_points,
         &cells_on_triangle,
@@ -1358,7 +1354,7 @@ fn springjustment_regional_from_refinement_derives_mask_then_runs_core_pipeline(
     cell_lonlat[13] = LonLatDegrees::new(1.0, 1.0);
     let refined_triangles = vec![false, false, true, true, true, false];
 
-    let output = springjustment_regional_from_refinement_fortran_indexed(
+    let output = springjustment_regional_from_refinement_one_based(
         SpringjustmentRegionalFromRefinementInput {
             triangle_lonlat: &triangle_lonlat,
             cell_lonlat: &cell_lonlat,
@@ -1376,7 +1372,7 @@ fn springjustment_regional_from_refinement_derives_mask_then_runs_core_pipeline(
     )
     .expect("valid regional refinement input");
 
-    let expected_mask = set_dbx_move_regional_step_fortran_indexed(RegionalMoveMaskInput {
+    let expected_mask = set_dbx_move_regional_step_one_based(RegionalMoveMaskInput {
         set_dis: 0,
         refined_triangles: &refined_triangles,
         cells_on_triangle: &cells_on_triangle,
@@ -1386,19 +1382,18 @@ fn springjustment_regional_from_refinement_derives_mask_then_runs_core_pipeline(
         vertex_protect_layers: 0,
     })
     .expect("mask derivation");
-    let expected_core =
-        springjustment_regional_core_fortran_indexed(SpringjustmentRegionalCoreInput {
-            triangle_lonlat: &triangle_lonlat,
-            cell_lonlat: &cell_lonlat,
-            cells_on_triangle: &cells_on_triangle,
-            triangles_on_cell: &triangles_on_cell,
-            n_edges_on_cell: &n_edges_on_cell,
-            move_mask: &expected_mask.move_mask,
-            niter_refine: 1,
-            radius: 1.0,
-            diagnostic_every: 10,
-        })
-        .expect("manual regional core");
+    let expected_core = springjustment_regional_core_one_based(SpringjustmentRegionalCoreInput {
+        triangle_lonlat: &triangle_lonlat,
+        cell_lonlat: &cell_lonlat,
+        cells_on_triangle: &cells_on_triangle,
+        triangles_on_cell: &triangles_on_cell,
+        n_edges_on_cell: &n_edges_on_cell,
+        move_mask: &expected_mask.move_mask,
+        niter_refine: 1,
+        radius: 1.0,
+        diagnostic_every: 10,
+    })
+    .expect("manual regional core");
 
     assert_eq!(output.mask, expected_mask);
     assert_eq!(output.core, expected_core);
@@ -1424,15 +1419,14 @@ fn refine_sjx_regional_make_classifies_triangle_centers_from_source_mask() {
     mask_patch[1][1] = true;
     mask_patch[2][2] = true;
 
-    let refined =
-        earthmesh_mesh::refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
-            triangle_lonlat: &triangle_lonlat,
-            source_lon_vertices: &source_lon_vertices,
-            source_lat_vertices: &source_lat_vertices,
-            mask_patch: &mask_patch,
-            first_triangle_id: 3,
-        })
-        .expect("valid source mask classifier input");
+    let refined = earthmesh_mesh::refine_sjx_regional_make_one_based(RefineRegionalMaskInput {
+        triangle_lonlat: &triangle_lonlat,
+        source_lon_vertices: &source_lon_vertices,
+        source_lat_vertices: &source_lat_vertices,
+        mask_patch: &mask_patch,
+        first_triangle_id: 3,
+    })
+    .expect("valid source mask classifier input");
 
     assert_eq!(refined, vec![false, false, false, true, false]);
 }
@@ -1449,15 +1443,14 @@ fn refine_sjx_regional_make_accepts_global_vertex_axes_one_longer_than_mask() {
     let mut mask_patch = vec![vec![false; 3]; 3];
     mask_patch[1][1] = true;
 
-    let refined =
-        earthmesh_mesh::refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
-            triangle_lonlat: &triangle_lonlat,
-            source_lon_vertices: &source_lon_vertices,
-            source_lat_vertices: &source_lat_vertices,
-            mask_patch: &mask_patch,
-            first_triangle_id: 2,
-        })
-        .expect("global source axes may have one more vertex than source-cell mask rows");
+    let refined = earthmesh_mesh::refine_sjx_regional_make_one_based(RefineRegionalMaskInput {
+        triangle_lonlat: &triangle_lonlat,
+        source_lon_vertices: &source_lon_vertices,
+        source_lat_vertices: &source_lat_vertices,
+        mask_patch: &mask_patch,
+        first_triangle_id: 2,
+    })
+    .expect("global source axes may have one more vertex than source-cell mask rows");
 
     assert_eq!(refined, vec![false, false, true]);
 }
@@ -1472,7 +1465,7 @@ fn dists_on_edge_layers_ignores_zero_padding_in_triangles_on_cell_rows() {
     let refinement_flags = vec![false, false, true, true, true];
     let initial = vec![100.0; 11];
 
-    let expected = earthmesh_mesh::dists_on_edge_layers_fortran_indexed(
+    let expected = earthmesh_mesh::dists_on_edge_layers_one_based(
         1,
         1,
         1,
@@ -1485,7 +1478,7 @@ fn dists_on_edge_layers_ignores_zero_padding_in_triangles_on_cell_rows() {
         &initial,
     )
     .expect("unpadded rows");
-    let actual = earthmesh_mesh::dists_on_edge_layers_fortran_indexed(
+    let actual = earthmesh_mesh::dists_on_edge_layers_one_based(
         1,
         1,
         1,
@@ -1542,7 +1535,7 @@ fn springjustment_regional_from_source_mask_classifies_then_runs_refinement_adap
     mask_patch[1][2] = true;
     mask_patch[2][2] = true;
 
-    let output = springjustment_regional_from_source_mask_fortran_indexed(
+    let output = springjustment_regional_from_source_mask_one_based(
         SpringjustmentRegionalFromSourceMaskInput {
             triangle_lonlat: &triangle_lonlat,
             cell_lonlat: &cell_lonlat,
@@ -1563,7 +1556,7 @@ fn springjustment_regional_from_source_mask_classifies_then_runs_refinement_adap
     )
     .expect("valid regional source-mask input");
 
-    let expected_refined = refine_sjx_regional_make_fortran_indexed(RefineRegionalMaskInput {
+    let expected_refined = refine_sjx_regional_make_one_based(RefineRegionalMaskInput {
         triangle_lonlat: &triangle_lonlat,
         source_lon_vertices: &source_lon_vertices,
         source_lat_vertices: &source_lat_vertices,
@@ -1571,7 +1564,7 @@ fn springjustment_regional_from_source_mask_classifies_then_runs_refinement_adap
         first_triangle_id: 2,
     })
     .expect("source classification");
-    let expected_regional = springjustment_regional_from_refinement_fortran_indexed(
+    let expected_regional = springjustment_regional_from_refinement_one_based(
         SpringjustmentRegionalFromRefinementInput {
             triangle_lonlat: &triangle_lonlat,
             cell_lonlat: &cell_lonlat,
@@ -1595,7 +1588,7 @@ fn springjustment_regional_from_source_mask_classifies_then_runs_refinement_adap
 }
 
 #[test]
-fn triangle_mesh_quality_fortran_indexed_updates_adjusted_triangles_and_reuses_cache() {
+fn triangle_mesh_quality_metrics_indexed_updates_adjusted_triangles_and_reuses_cache() {
     let cell_points = vec![
         LonLatDegrees::new(-999.0, -999.0),
         LonLatDegrees::new(-999.0, -999.0),
@@ -1609,14 +1602,14 @@ fn triangle_mesh_quality_fortran_indexed_updates_adjusted_triangles_and_reuses_c
     let length_cache = vec![[0.0; 3], [0.0; 3], [0.0; 3], [1.0, 2.0, 3.0]];
     let angle_cache = vec![[0.0; 3], [0.0; 3], [0.0; 3], [50.0, 60.0, 70.0]];
 
-    let output = triangle_mesh_quality_fortran_indexed(
+    let output = triangle_mesh_quality_metrics_indexed(
         &cell_points,
         &cells_on_triangle,
         &adjust_flags,
         &length_cache,
         &angle_cache,
     )
-    .expect("valid Fortran-indexed triangle quality inputs");
+    .expect("valid Canonical-indexed triangle quality inputs");
 
     assert_eq!(output.length_cache[3], [1.0, 2.0, 3.0]);
     assert_eq!(output.angle_cache[3], [50.0, 60.0, 70.0]);
@@ -1634,14 +1627,14 @@ fn triangle_mesh_quality_fortran_indexed_updates_adjusted_triangles_and_reuses_c
 }
 
 #[test]
-fn triangle_mesh_quality_fortran_indexed_rejects_mismatched_cache_lengths() {
+fn triangle_mesh_quality_metrics_indexed_rejects_mismatched_cache_lengths() {
     let cell_points = vec![LonLatDegrees::new(0.0, 0.0); 5];
     let cells_on_triangle = vec![[0, 0, 0], [0, 0, 0], [2, 3, 4]];
     let adjust_flags = vec![false, false, false];
     let length_cache = vec![[0.0; 3]; 2];
     let angle_cache = vec![[0.0; 3]; 3];
 
-    assert!(triangle_mesh_quality_fortran_indexed(
+    assert!(triangle_mesh_quality_metrics_indexed(
         &cell_points,
         &cells_on_triangle,
         &adjust_flags,
@@ -1652,7 +1645,7 @@ fn triangle_mesh_quality_fortran_indexed_rejects_mismatched_cache_lengths() {
 }
 
 #[test]
-fn polygon_mesh_quality_fortran_indexed_filters_cells_and_reuses_compact_cache() {
+fn polygon_mesh_quality_metrics_indexed_filters_cells_and_reuses_compact_cache() {
     let cell_points = vec![LonLatDegrees::new(0.0, 0.0); 8];
     let cells_on_polygon = vec![
         vec![],
@@ -1669,7 +1662,7 @@ fn polygon_mesh_quality_fortran_indexed_filters_cells_and_reuses_compact_cache()
         vec![85.0, 90.0, 95.0, 100.0],
     ];
 
-    let output = polygon_mesh_quality_fortran_indexed(
+    let output = polygon_mesh_quality_metrics_indexed(
         4,
         &cell_points,
         &cells_on_polygon,
@@ -1693,7 +1686,7 @@ fn polygon_mesh_quality_fortran_indexed_filters_cells_and_reuses_compact_cache()
 }
 
 #[test]
-fn polygon_mesh_quality_fortran_indexed_updates_adjusted_compact_cache() {
+fn polygon_mesh_quality_metrics_indexed_updates_adjusted_compact_cache() {
     let cell_points = vec![
         LonLatDegrees::new(-999.0, -999.0),
         LonLatDegrees::new(-999.0, -999.0),
@@ -1708,7 +1701,7 @@ fn polygon_mesh_quality_fortran_indexed_updates_adjusted_compact_cache() {
     let length_cache = vec![vec![0.0; 4]];
     let angle_cache = vec![vec![0.0; 4]];
 
-    let output = polygon_mesh_quality_fortran_indexed(
+    let output = polygon_mesh_quality_metrics_indexed(
         4,
         &cell_points,
         &cells_on_polygon,
@@ -1738,7 +1731,7 @@ fn polygon_mesh_quality_fortran_indexed_updates_adjusted_compact_cache() {
 }
 
 #[test]
-fn polygon_mesh_quality_fortran_indexed_rejects_bad_compact_cache_length() {
+fn polygon_mesh_quality_metrics_indexed_rejects_bad_compact_cache_length() {
     let cell_points = vec![LonLatDegrees::new(0.0, 0.0); 6];
     let cells_on_polygon = vec![vec![], vec![], vec![2, 3, 4, 5]];
     let polygon_edge_counts = vec![0, 0, 4];
@@ -1746,7 +1739,7 @@ fn polygon_mesh_quality_fortran_indexed_rejects_bad_compact_cache_length() {
     let length_cache: Vec<Vec<f64>> = Vec::new();
     let angle_cache: Vec<Vec<f64>> = Vec::new();
 
-    assert!(polygon_mesh_quality_fortran_indexed(
+    assert!(polygon_mesh_quality_metrics_indexed(
         4,
         &cell_points,
         &cells_on_polygon,
@@ -1801,7 +1794,7 @@ fn grid_quality_global_wrapper_matches_direct_quality_calls() {
     ];
     let polygon_edge_counts = vec![0, 0, 5, 6, 7];
 
-    let output = grid_quality_check_global_fortran_indexed(
+    let output = grid_quality_check_global_one_based(
         &triangle_cell_points,
         &cells_on_triangle,
         &polygon_points,
@@ -1813,7 +1806,7 @@ fn grid_quality_global_wrapper_matches_direct_quality_calls() {
     let triangle_adjust = vec![true; cells_on_triangle.len()];
     let triangle_lengths = vec![[0.0; 3]; cells_on_triangle.len()];
     let triangle_angles = vec![[0.0; 3]; cells_on_triangle.len()];
-    let expected_triangle = triangle_mesh_quality_fortran_indexed(
+    let expected_triangle = triangle_mesh_quality_metrics_indexed(
         &triangle_cell_points,
         &cells_on_triangle,
         &triangle_adjust,
@@ -1822,7 +1815,7 @@ fn grid_quality_global_wrapper_matches_direct_quality_calls() {
     )
     .expect("direct triangle quality");
     let polygon_adjust = vec![true; cells_on_polygon.len()];
-    let expected_pentagon = polygon_mesh_quality_fortran_indexed(
+    let expected_pentagon = polygon_mesh_quality_metrics_indexed(
         5,
         &polygon_points,
         &cells_on_polygon,
@@ -1871,7 +1864,7 @@ fn get_area_production_wrapper_includes_reconstruction_error_summary() {
     let vertices_on_cell = vec![vec![], vec![]];
     let n_edges_on_cell = vec![0; cell_points.len()];
 
-    let output = get_area_production_fortran_indexed(GetAreaUnitInput {
+    let output = get_area_production_one_based(GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cell_points,
@@ -1883,7 +1876,7 @@ fn get_area_production_wrapper_includes_reconstruction_error_summary() {
     })
     .expect("valid production GetArea input");
 
-    let expected_error = area_triangle_reconstruction_error_fortran_indexed(
+    let expected_error = area_triangle_reconstruction_error_one_based(
         &output.unit.area_triangle,
         &cell_points,
         &cells_on_vertex,
@@ -1904,7 +1897,7 @@ fn get_area_production_wrapper_includes_reconstruction_error_summary() {
 }
 
 #[test]
-fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_fortran() {
+fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_canonical() {
     let zero = CartesianPoint::new(0.0, 0.0, 0.0);
     let vertices = vec![
         zero,
@@ -1927,7 +1920,7 @@ fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_fortran() {
     let vertices_on_cell = vec![vec![], vec![], vec![2, 3, 4, 5, 6, 6, 6, 6, 6, 6]];
     let n_edges_on_cell = vec![0, 0, 4];
 
-    let output = get_area_unit_fortran_indexed(GetAreaUnitInput {
+    let output = get_area_unit_one_based(GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cell_points,
@@ -1937,7 +1930,7 @@ fn get_area_cell_ignores_vertices_on_cell_padding_slots_like_fortran() {
         vertices_on_cell: &vertices_on_cell,
         n_edges_on_cell: &n_edges_on_cell,
     })
-    .expect("valid padded Fortran-indexed area input");
+    .expect("valid padded Canonical-indexed area input");
     let expected = spherical_cell_area_from_vertices_unit(&vertices[2..=5], 4)
         .expect("expected unpadded cell area");
 

@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_isreverse_judge_fortran_indexed;
+use earthmesh_mesh::refine_isreverse_judge_one_based;
 
 #[test]
 fn isreverse_judge_marks_common_neighbors_and_rewrites_next_round_segments() {
@@ -27,7 +27,7 @@ fn isreverse_judge_marks_common_neighbors_and_rewrites_next_round_segments() {
     let mut segments = vec![vec![2, 3, 1], vec![0, 0, 0]];
     let n_segments = vec![2, 0];
 
-    let ref_sjx = refine_isreverse_judge_fortran_indexed(
+    let ref_sjx = refine_isreverse_judge_one_based(
         3,
         2,
         &triangle_neighbors,
@@ -81,7 +81,7 @@ fn isreverse_judge_skips_common_neighbor_without_unrefined_neighbor() {
     let mut segments = vec![vec![2, 3, 1]];
     let n_segments = vec![2];
 
-    let ref_sjx = refine_isreverse_judge_fortran_indexed(
+    let ref_sjx = refine_isreverse_judge_one_based(
         3,
         1,
         &triangle_neighbors,
@@ -110,7 +110,7 @@ fn isreverse_judge_compacts_next_round_segments_after_exhausted_pair() {
     let mut segments = vec![vec![2, 3, 4, 1]];
     let n_segments = vec![3];
 
-    let ref_sjx = refine_isreverse_judge_fortran_indexed(
+    let ref_sjx = refine_isreverse_judge_one_based(
         4,
         1,
         &triangle_neighbors,
@@ -125,12 +125,12 @@ fn isreverse_judge_compacts_next_round_segments_after_exhausted_pair() {
     assert_eq!(
         segments[0],
         vec![7, 1, 1, 1],
-        "next-round forward candidates must stay before the Fortran placeholder"
+        "next-round forward candidates must stay before the Canonical placeholder"
     );
 }
 
 #[test]
-fn isreverse_judge_stops_at_fortran_placeholder_one() {
+fn isreverse_judge_stops_at_canonical_placeholder_one() {
     let triangle_neighbors = vec![
         vec![0, 0, 0],
         vec![0, 0, 0],
@@ -148,7 +148,7 @@ fn isreverse_judge_stops_at_fortran_placeholder_one() {
     let mut segments = vec![vec![2, 1, 3]];
     let n_segments = vec![1];
 
-    let ref_sjx = refine_isreverse_judge_fortran_indexed(
+    let ref_sjx = refine_isreverse_judge_one_based(
         3,
         1,
         &triangle_neighbors,
@@ -180,7 +180,7 @@ fn isreverse_judge_terminates_segment_without_common_triangle() {
     let mut segments = vec![vec![2, 3]];
     let n_segments = vec![2];
 
-    let ref_sjx = refine_isreverse_judge_fortran_indexed(
+    let ref_sjx = refine_isreverse_judge_one_based(
         2,
         1,
         &triangle_neighbors,

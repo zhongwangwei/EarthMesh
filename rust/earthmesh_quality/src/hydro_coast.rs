@@ -1,19 +1,14 @@
 //! MERIT-Hydro / hydro-coast validation report (MVP).
 //!
-//! **INTEGRATION STATUS: EXPERIMENTAL / NOT WIRED.** The CLI MERIT pipeline does not
-//! build [`HydroCoastInputs`] or call [`build_report`] yet — only unit tests do. (The
-//! antimeridian tile-selection bug it diagnoses was fixed directly in the reader,
-//! `merit_bbox_intersects`.) Wiring is future work (R6 report §5).
-//!
-//! A pure, dependency-light diagnostic layer: the caller (CLI MERIT pipeline) feeds
-//! already-extracted facts (selected tiles, bbox, feature counts, close-mask rings…)
-//! into [`HydroCoastInputs`], and [`build_report`] returns a structured
+//! A pure, dependency-light diagnostic layer: callers may feed already-extracted
+//! facts (selected tiles, bbox, feature counts, close-mask rings…) into
+//! [`HydroCoastInputs`], and [`build_report`] returns a structured
 //! [`HydroCoastValidationReport`] with warnings, geometry flags and recommended fixes.
 //! It does **not** read NetCDF, rewrite the MERIT reader, or pull a GIS dependency —
 //! it reuses `earthmesh_geometry::safety` for polygon / buffer / dateline checks.
 //!
-//! Score fields are placeholders for a future optimizer (R7+); they are not computed
-//! into a real refinement plan here.
+//! Score fields are lightweight normalized diagnostics for dashboards/refinement hints;
+//! this module is report-only until a production caller wires it into a pipeline.
 
 use crate::QualityLevel;
 use earthmesh_geometry::safety::{
@@ -300,6 +295,8 @@ pub fn build_report(inputs: &HydroCoastInputs) -> HydroCoastValidationReport {
         );
     }
 
+    let scores = hydro_coast_scores(inputs, coverage_fraction);
+
     HydroCoastValidationReport {
         merit_root_exists: inputs.merit_root_exists,
         bbox: inputs.bbox,
@@ -325,8 +322,26 @@ pub fn build_report(inputs: &HydroCoastInputs) -> HydroCoastValidationReport {
         warnings,
         geometry_flags,
         recommended_fixes: fixes,
-        scores: HydroCoastScores::default(),
+        scores,
         severity,
+    }
+}
+
+fn hydro_coast_scores(inputs: &HydroCoastInputs, coverage_fraction: f64) -> HydroCoastScores {
+    let river = inputs.river_feature_count as f64;
+    let coast = inputs.coast_feature_count as f64;
+    let total = (river + coast).max(1.0);
+    let overlap_penalty = 1.0 - (inputs.overlap_count as f64 / total).clamp(0.0, 1.0);
+    HydroCoastScores {
+        hydro_score: (river / total).clamp(0.0, 1.0),
+        coast_score: (coast / total).clamp(0.0, 1.0),
+        river_mouth_priority: if river > 0.0 {
+            (inputs.river_mouth_candidate_count as f64 / river).clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+        estuary_priority: f64::from(inputs.river_mouth_candidate_count > 0),
+        coupling_priority: (coverage_fraction * overlap_penalty).clamp(0.0, 1.0),
     }
 }
 

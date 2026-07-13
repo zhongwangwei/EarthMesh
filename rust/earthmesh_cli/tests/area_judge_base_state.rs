@@ -1,5 +1,6 @@
 use earthmesh_cli::{
-    build_area_judge_base_state_fortran_indexed, write_bbox_mask_netcdf, BBoxMask, BBoxPoint,
+    area_judge_domain_builders::build_area_judge_base_state_one_based,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -59,7 +60,7 @@ fn base_state_builds_domain_and_seaorland_before_patch_or_refine() {
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
     let landtypes_global = one_based_landtypes(6, 6, &[(2, 2), (3, 3), (6, 6)]);
 
-    let report = build_area_judge_base_state_fortran_indexed(
+    let report = build_area_judge_base_state_one_based(
         &root,
         false,
         "bbox",

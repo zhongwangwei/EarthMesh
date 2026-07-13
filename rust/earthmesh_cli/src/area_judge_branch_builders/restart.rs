@@ -1,10 +1,17 @@
+use crate::apply_area_judge_patch_sources_one_based;
+use crate::build_area_judge_calculated_refine_one_based;
+use crate::run_area_judge_restart_grid_one_based;
+use crate::AreaJudgeCalculatedRefineConfig;
+use crate::AreaJudgeDomainInitializationReport;
+use crate::AreaJudgePatchConfig;
+use crate::AreaJudgeRestartGridRunConfig;
+use crate::AreaJudgeRestartReport;
+use crate::AreaJudgeSeaOrLandReport;
 use std::io;
 use std::path::Path;
 
-use crate::*;
-
 /// Compose the restart `MOD_Area_judge.F90:Area_judge` branch from a saved domain grid.
-pub fn build_area_judge_restart_fortran_indexed(
+pub fn build_area_judge_restart_one_based(
     file_dir: impl AsRef<Path>,
     restart_input: impl AsRef<Path>,
     mask_patch: Option<AreaJudgePatchConfig<'_>>,
@@ -18,7 +25,7 @@ pub fn build_area_judge_restart_fortran_indexed(
     nlons_source: usize,
     nlats_source: usize,
 ) -> io::Result<AreaJudgeRestartReport> {
-    let restart = run_area_judge_restart_grid_fortran_indexed(AreaJudgeRestartGridRunConfig {
+    let restart = run_area_judge_restart_grid_one_based(AreaJudgeRestartGridRunConfig {
         input: restart_input.as_ref(),
         nlons_source,
         nlats_source,
@@ -47,7 +54,7 @@ pub fn build_area_judge_restart_fortran_indexed(
 
     let patch = mask_patch
         .map(|config| {
-            apply_area_judge_patch_sources_fortran_indexed(
+            apply_area_judge_patch_sources_one_based(
                 &file_dir,
                 config.mask_patch_type,
                 0,
@@ -66,7 +73,7 @@ pub fn build_area_judge_restart_fortran_indexed(
 
     let calculated_refine = match (refine, calculated_refine) {
         (true, Some(config)) if config.refine_setting != "specified" => {
-            Some(build_area_judge_calculated_refine_fortran_indexed(
+            Some(build_area_judge_calculated_refine_one_based(
                 &file_dir,
                 0,
                 config.mask_refine_cal_type,

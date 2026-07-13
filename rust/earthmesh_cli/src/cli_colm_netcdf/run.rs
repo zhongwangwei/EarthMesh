@@ -63,7 +63,7 @@ pub(crate) fn run_colm_coupling_csv_to_netcdf(
         }
     }
 
-    let report = earthmesh_cli::write_colm_coupling_netcdf_from_csv(
+    let report = earthmesh_cli::colm_package_io::write_colm_coupling_netcdf_from_csv(
         &input_csv,
         &output_netcdf,
         &case_name,
@@ -75,12 +75,13 @@ pub(crate) fn run_colm_coupling_csv_to_netcdf(
     let mut restart_template_output: Option<PathBuf> = None;
     let mut forcing_template_output: Option<PathBuf> = None;
     if let Some(restart_template_netcdf) = restart_template_netcdf {
-        let restart_report = earthmesh_cli::write_colm_restart_template_netcdf_from_csv(
-            &input_csv,
-            &restart_template_netcdf,
-            &case_name,
-        )
-        .map_err(|err| err.to_string())?;
+        let restart_report =
+            earthmesh_cli::colm_package_io::write_colm_restart_template_netcdf_from_csv(
+                &input_csv,
+                &restart_template_netcdf,
+                &case_name,
+            )
+            .map_err(|err| err.to_string())?;
         println!(
             "colm_restart_template_netcdf={}",
             restart_report.output.display()
@@ -89,12 +90,13 @@ pub(crate) fn run_colm_coupling_csv_to_netcdf(
         restart_template_output = Some(restart_report.output);
     }
     if let Some(forcing_template_netcdf) = forcing_template_netcdf {
-        let forcing_report = earthmesh_cli::write_colm_forcing_template_netcdf_from_csv(
-            &input_csv,
-            &forcing_template_netcdf,
-            &case_name,
-        )
-        .map_err(|err| err.to_string())?;
+        let forcing_report =
+            earthmesh_cli::colm_package_io::write_colm_forcing_template_netcdf_from_csv(
+                &input_csv,
+                &forcing_template_netcdf,
+                &case_name,
+            )
+            .map_err(|err| err.to_string())?;
         println!(
             "colm_forcing_template_netcdf={}",
             forcing_report.output.display()
@@ -103,7 +105,7 @@ pub(crate) fn run_colm_coupling_csv_to_netcdf(
         forcing_template_output = Some(forcing_report.output);
     }
     if !delivery_manifest.as_os_str().is_empty() {
-        let manifest = earthmesh_cli::write_colm_package_delivery_manifest(
+        let manifest = earthmesh_cli::colm_package_io::write_colm_package_delivery_manifest(
             &delivery_manifest,
             &case_name,
             report.rows,

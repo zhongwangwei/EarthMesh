@@ -601,7 +601,7 @@ If no files changed after validation, do not create an empty commit.
 ## Self-Review
 
 - Spec coverage: This plan implements the Phase 2 architecture requirement to formalize `hydro_cama` as a v3 component while keeping existing `util/hydro_mesh/` utilities intact.
-- Scope control: The plan does not migrate CaMa binary readers, corridor generation, coastal-band generation, EarthMesh intersections, or CoLM coupling writers; it wraps and names their v3 product layers first.
+- Scope control: The plan does not change CaMa binary readers, corridor generation, coastal-band generation, EarthMesh intersections, or CoLM coupling writers; it wraps and names their v3 product layers first.
 - Shape compatibility: The component products are semantic layers and do not assume tri or hex cells.
 - CoLM future reserve: The planned products include hydro, coast, and coupling layers that can feed CoLM2024 and future CoLM20XX adapters.
 - Verification: The plan includes focused v3 component tests, existing hydro regression tests, the full test suite, and syntax checks.

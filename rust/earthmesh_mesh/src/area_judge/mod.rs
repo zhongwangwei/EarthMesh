@@ -1,4 +1,4 @@
-fn regional_boundary_mask_fortran_indexed(
+fn regional_boundary_mask_one_based(
     triangle_flags: &[bool],
     triangles_on_cell: &[Vec<usize>],
     n_edges_on_cell: &[usize],
@@ -27,17 +27,14 @@ fn regional_boundary_mask_fortran_indexed(
     Some(boundary)
 }
 
-pub(crate) fn expand_triangles_from_boundary_fortran_indexed(
+pub(crate) fn expand_triangles_from_boundary_one_based(
     mut triangle_flags: Vec<bool>,
     triangles_on_cell: &[Vec<usize>],
     n_edges_on_cell: &[usize],
     expansion_layers: usize,
 ) -> Option<(Vec<bool>, Vec<bool>)> {
-    let mut boundary = regional_boundary_mask_fortran_indexed(
-        &triangle_flags,
-        triangles_on_cell,
-        n_edges_on_cell,
-    )?;
+    let mut boundary =
+        regional_boundary_mask_one_based(&triangle_flags, triangles_on_cell, n_edges_on_cell)?;
     for _ in 0..expansion_layers {
         for cell_id in 2..boundary.len() {
             if !boundary[cell_id] {
@@ -52,25 +49,16 @@ pub(crate) fn expand_triangles_from_boundary_fortran_indexed(
                 *triangle_flags.get_mut(triangle_id)? = true;
             }
         }
-        boundary = regional_boundary_mask_fortran_indexed(
-            &triangle_flags,
-            triangles_on_cell,
-            n_edges_on_cell,
-        )?;
+        boundary =
+            regional_boundary_mask_one_based(&triangle_flags, triangles_on_cell, n_edges_on_cell)?;
     }
     Some((triangle_flags, boundary))
 }
 
-pub(crate) fn source_find_lon_fortran_indexed(
-    source_lon_vertices: &[f64],
-    lon: f64,
-) -> Option<usize> {
+pub(crate) fn source_find_lon_one_based(source_lon_vertices: &[f64], lon: f64) -> Option<usize> {
     (1..source_lon_vertices.len()).find(|&index| lon <= source_lon_vertices[index])
 }
 
-pub(crate) fn source_find_lat_fortran_indexed(
-    source_lat_vertices: &[f64],
-    lat: f64,
-) -> Option<usize> {
+pub(crate) fn source_find_lat_one_based(source_lat_vertices: &[f64], lat: f64) -> Option<usize> {
     (1..source_lat_vertices.len()).find(|&index| lat >= source_lat_vertices[index])
 }

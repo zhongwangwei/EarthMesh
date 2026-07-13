@@ -13,9 +13,9 @@ use crate::{matrix_width, validate_contain_mesh, ContainMesh};
 /// end do
 /// ```
 ///
-/// `num_vertex` is the Fortran one-based last initial vertex id; Rust row `0`
-/// corresponds to Fortran row `1`.
-pub fn apply_ocean_mask_sea_ratio_fortran_indexed(
+/// `num_vertex` is the Canonical one-based last initial vertex id; Rust row `0`
+/// corresponds to Canonical row `1`.
+pub fn apply_ocean_mask_sea_ratio_one_based(
     contain: &ContainMesh,
     num_vertex: usize,
     mask_sea_ratio: f64,
@@ -39,8 +39,8 @@ pub fn apply_ocean_mask_sea_ratio_fortran_indexed(
     }
 
     let mut is_in_domain = contain.is_in_area_ustr.clone();
-    for fortran_id in (num_vertex + 1)..=contain.ustr_id.len() {
-        let row_idx = fortran_id - 1;
+    for canonical_id in (num_vertex + 1)..=contain.ustr_id.len() {
+        let row_idx = canonical_id - 1;
         let selected_pixels = contain.ustr_id[row_idx][0];
         if selected_pixels <= 0 {
             continue;
@@ -50,7 +50,7 @@ pub fn apply_ocean_mask_sea_ratio_fortran_indexed(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "ocean mask ratio row {fortran_id} has non-positive denominator {denominator}"
+                    "ocean mask ratio row {canonical_id} has non-positive denominator {denominator}"
                 ),
             ));
         }

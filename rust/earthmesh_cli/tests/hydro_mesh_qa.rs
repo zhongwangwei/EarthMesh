@@ -1,7 +1,7 @@
 //! Rust port of util/hydro_mesh/qa_gates.py: delivery-package QA gates. Pure JSON
 //! evaluation (no NetCDF data); writes a synthetic manifest + complete-mask geojson.
 
-use earthmesh_cli::evaluate_hydro_mesh_qa;
+use earthmesh_cli::hydro_delivery_qa::evaluate_hydro_mesh_qa;
 use std::path::PathBuf;
 
 fn setup(background: i64, river: i64, coast: i64, surfaces: &[&str]) -> (PathBuf, PathBuf) {
@@ -42,7 +42,10 @@ fn setup(background: i64, river: i64, coast: i64, surfaces: &[&str]) -> (PathBuf
     (manifest, dir)
 }
 
-fn check_status(report: &earthmesh_cli::HydroMeshQaReport, id: &str) -> Option<bool> {
+fn check_status(
+    report: &earthmesh_cli::hydro_workflow_types::HydroMeshQaReport,
+    id: &str,
+) -> Option<bool> {
     report.checks.iter().find(|c| c.id == id).map(|c| c.passed)
 }
 

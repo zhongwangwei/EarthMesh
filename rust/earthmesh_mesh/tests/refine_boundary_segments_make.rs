@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_boundary_segments_make_fortran_indexed;
+use earthmesh_mesh::refine_boundary_segments_make_one_based;
 
 #[test]
 fn boundary_segments_make_splits_each_edge_when_transition_distance_is_one() {
@@ -20,7 +20,7 @@ fn boundary_segments_make_splits_each_edge_when_transition_distance_is_one() {
         edge_counts[cell] = triangles_on_cell[cell].len();
     }
 
-    let segments = refine_boundary_segments_make_fortran_indexed(
+    let segments = refine_boundary_segments_make_one_based(
         1,
         &[vec![10, 11, 12, 13]],
         &triangles_on_cell,
@@ -58,7 +58,7 @@ fn boundary_segments_make_rotates_from_first_turn_and_splits_long_runs() {
         edge_counts[cell] = triangles_on_cell[cell].len();
     }
 
-    let segments = refine_boundary_segments_make_fortran_indexed(
+    let segments = refine_boundary_segments_make_one_based(
         3,
         &[vec![10, 11, 12, 13, 14]],
         &triangles_on_cell,
@@ -90,7 +90,7 @@ fn boundary_segments_make_rejects_edge_without_unrefined_triangle() {
     edge_counts[10] = 2;
     edge_counts[11] = 2;
 
-    let err = refine_boundary_segments_make_fortran_indexed(
+    let err = refine_boundary_segments_make_one_based(
         1,
         &[vec![10, 11]],
         &triangles_on_cell,

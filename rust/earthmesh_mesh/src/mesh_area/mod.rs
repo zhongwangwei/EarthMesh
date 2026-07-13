@@ -1,8 +1,8 @@
 use super::*;
 
-/// Borrowed inputs for the Fortran-indexed subset of `MOD_grid_preprocess:GetArea`.
+/// Borrowed inputs for the Canonical-indexed subset of `MOD_grid_preprocess:GetArea`.
 ///
-/// Index `0` is unused and index `1` is skipped to mirror the Fortran loops
+/// Index `0` is unused and index `1` is skipped to mirror the Canonical loops
 /// that run from `2` through the allocated counts. Positive connectivity ids
 /// are therefore used directly as Rust vector indices.
 #[derive(Debug, Clone, Copy)]
@@ -17,7 +17,7 @@ pub struct GetAreaUnitInput<'a> {
     pub n_edges_on_cell: &'a [usize],
 }
 
-/// Unit-sphere area outputs from the Fortran-indexed `GetArea` subset.
+/// Unit-sphere area outputs from the Canonical-indexed `GetArea` subset.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GetAreaUnitOutput {
     pub kite_areas_on_vertex: Vec<[f64; 3]>,
@@ -34,12 +34,12 @@ pub struct AreaTriangleReconstructionError {
 
 /// Port of the core array workflow in `MOD_grid_preprocess:GetArea`.
 ///
-/// This keeps the Fortran indexing convention and computes:
+/// This keeps the Canonical indexing convention and computes:
 ///
 /// - `kiteAreasOnVertex(icv, i)` from consecutive edge pairs around a vertex.
 /// - `areaTriangle(i)` as the sum of the three kite slots for each vertex.
 /// - `areaCell(i)` by fan-triangulating `verticesOnCell(:, i)`.
-pub fn get_area_unit_fortran_indexed(input: GetAreaUnitInput<'_>) -> Option<GetAreaUnitOutput> {
+pub fn get_area_unit_one_based(input: GetAreaUnitInput<'_>) -> Option<GetAreaUnitOutput> {
     if input.cells_on_vertex.len() < input.vertices.len()
         || input.edges_on_vertex.len() < input.vertices.len()
     {

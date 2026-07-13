@@ -4,7 +4,7 @@
 //! relies on).
 
 use earthmesh_hfield::{HField, HRegion};
-use earthmesh_mesh::{refine_marks_from_target_levels_fortran_indexed, LonLatDegrees};
+use earthmesh_mesh::{refine_marks_from_target_levels_one_based, LonLatDegrees};
 
 #[test]
 fn hfield_levels_drive_nested_contiguous_refinement_marks() {
@@ -22,7 +22,7 @@ fn hfield_levels_drive_nested_contiguous_refinement_marks() {
         .expect("circle region");
     field.limit_gradient(0.2).expect("gradient limit");
 
-    // Fortran-indexed synthetic transect through the region center: rows
+    // Canonical-indexed synthetic transect through the region center: rows
     // 0..=num_vertex are placeholders, then one triangle center per degree of
     // latitude from 30 degrees south of the center to 29 degrees north.
     let num_vertex = 1usize;
@@ -35,7 +35,7 @@ fn hfield_levels_drive_nested_contiguous_refinement_marks() {
 
     let mut per_round: Vec<Vec<i32>> = Vec::new();
     for round in 1..=5u8 {
-        let marks = refine_marks_from_target_levels_fortran_indexed(
+        let marks = refine_marks_from_target_levels_one_based(
             num_vertex,
             &points,
             &mrl_new,
@@ -66,8 +66,8 @@ fn hfield_levels_drive_nested_contiguous_refinement_marks() {
 
     for (r, marks) in per_round.iter().enumerate() {
         // Placeholder rows never marked.
-        for row in 0..=num_vertex {
-            assert_eq!(marks[row], 0, "placeholder row {row} in round {}", r + 1);
+        for (row, &mark) in marks.iter().enumerate().take(num_vertex + 1) {
+            assert_eq!(mark, 0, "placeholder row {row} in round {}", r + 1);
         }
         // Nested subsets: each round marks a subset of the previous round.
         if r > 0 {
@@ -79,8 +79,8 @@ fn hfield_levels_drive_nested_contiguous_refinement_marks() {
         // (gradient-limited cone => interval), except rounds that mark nothing.
         let marked: Vec<usize> = (0..marks.len()).filter(|&i| marks[i] == 1).collect();
         if let (Some(&first), Some(&last)) = (marked.first(), marked.last()) {
-            for i in first..=last {
-                assert_eq!(marks[i], 1, "gap inside round {} ring at row {i}", r + 1);
+            for (i, &mark) in marks.iter().enumerate().take(last + 1).skip(first) {
+                assert_eq!(mark, 1, "gap inside round {} ring at row {i}", r + 1);
             }
         }
     }

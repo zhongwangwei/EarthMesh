@@ -3,7 +3,8 @@
 //! and sort rows by (cell_id, river_class). Pure parsing (no NetCDF data needed).
 
 use earthmesh_cli::{
-    colm_coupling_rows_from_intersections, write_colm_coupling_csv_from_intersections,
+    hydro_delivery_colm::colm_coupling_rows_from_intersections,
+    hydro_delivery_colm::write_colm_coupling_csv_from_intersections,
 };
 
 const INTERSECTIONS: &str = r#"{

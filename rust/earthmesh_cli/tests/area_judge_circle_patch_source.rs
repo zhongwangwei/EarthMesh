@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    apply_area_judge_circle_patch_source_fortran_indexed, read_circle_mask_netcdf,
-    write_circle_mask_netcdf, CircleMask, LonLatPoint,
+    area_judge_circle_sources::apply_area_judge_circle_patch_source_one_based,
+    circle_close_mask_io::read_circle_mask_netcdf, circle_close_mask_io::write_circle_mask_netcdf,
+    circle_close_mask_io::CircleMask, coordinate_types::LonLatPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -55,7 +56,7 @@ fn circle_patch_source_reads_netcdf_and_zeroes_only_cells_inside_radius() {
         .collect::<Vec<_>>();
     let mut seaorland = one_based_seaorland(360, 180);
 
-    let report = apply_area_judge_circle_patch_source_fortran_indexed(
+    let report = apply_area_judge_circle_patch_source_one_based(
         &source,
         &mut seaorland,
         &lon_vertex,

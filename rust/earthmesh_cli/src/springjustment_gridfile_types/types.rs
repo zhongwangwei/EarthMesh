@@ -13,7 +13,7 @@ pub struct SpringjustmentGlobalPersistenceReport {
     pub cellwidth: Option<CellwidthWriteReport>,
 }
 
-/// Runtime controls needed to reproduce the migrated
+/// Runtime controls needed to reproduce the current
 /// `MOD_grid_preprocess.F90:Springjustment_global` calculation from a gridfile.
 #[derive(Debug, Clone, Copy)]
 pub struct SpringjustmentGlobalRunOptions<'a> {
@@ -37,7 +37,7 @@ pub struct SpringjustmentGlobalGridfileReport {
     pub mesh: UnstructuredMesh,
 }
 
-/// Runtime controls needed to reproduce the migrated
+/// Runtime controls needed to reproduce the current
 /// `MOD_grid_preprocess.F90:Springjustment_regional_step` calculation from a
 /// gridfile when the regional move mask has already been resolved.
 #[derive(Debug, Clone, Copy)]

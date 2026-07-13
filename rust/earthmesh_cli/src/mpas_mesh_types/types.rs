@@ -53,7 +53,7 @@ pub struct MpasMeshWriteReport {
 
 /// Topologically-consistent MPAS connectivity for a regionally-carved hex mesh.
 ///
-/// All ids are Fortran-indexed (index `0` is the reserved placeholder row, real
+/// All ids are Canonical-indexed (index `0` is the reserved placeholder row, real
 /// ids start at `2`). Cells outside the region are represented as `0` - the MPAS
 /// "no neighbour" marker wherever a carved cell lost a neighbour. The carved
 /// gridfile's `w_to_m` corner rings are already in cyclic order, so each cell

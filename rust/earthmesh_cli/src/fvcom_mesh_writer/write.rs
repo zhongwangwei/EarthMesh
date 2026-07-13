@@ -15,7 +15,7 @@ pub struct FvcomMesh2dmWriteReport {
     pub boundary_segments: usize,
 }
 
-/// Legacy output path for `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
+/// Compatibility output path for `MOD_file_preprocess.F90:FVCOM_Mesh_Save`.
 pub fn fvcom_mesh_2dm_output_path(file_dir: impl AsRef<Path>) -> PathBuf {
     file_dir.as_ref().join("result/fvcom.2dm")
 }
@@ -81,7 +81,7 @@ fn validate_fvcom_mesh_2dm_connectivity(mesh: &UnstructuredMesh) -> io::Result<(
     if mesh.m_points.is_empty() || mesh.w_points.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "FVCOM .2dm writer expects Fortran-indexed mesh placeholders",
+            "FVCOM .2dm writer expects Canonical-indexed mesh placeholders",
         ));
     }
     let max_vertex = i32::try_from(mesh.w_points.len() - 1).map_err(|_| {
@@ -96,7 +96,7 @@ fn validate_fvcom_mesh_2dm_connectivity(mesh: &UnstructuredMesh) -> io::Result<(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "triangle {triangle} references vertex {vertex}, expected Fortran index 2..{}",
+                        "triangle {triangle} canonicals vertex {vertex}, expected Canonical index 2..{}",
                         max_vertex + 1
                     ),
                 ));

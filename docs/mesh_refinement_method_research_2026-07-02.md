@@ -68,7 +68,7 @@
 - **E3SM 路线（最成体系）**：MOSART 河流路由已原生跑在 MPAS Voronoi 网格上（Liao et al. 2025, JAMES），明确目标"unified mesh framework for coupled land, river, and ocean simulation"；Engwirda & Liao (IMR 2021) 的 "Unified Laguerre-Power Meshes" 提出单一多尺度网格 + 嵌入边界免插值耦合——LANL/PNNL 的多年计划[高置信存在，内部算法细节未验证（PDF 抓取失败）]。
 - **FESOM（海洋判据公式可直接移植）**：SSHV 阈值/线性法（r = max(1, min(s/st, rmax)) + 扩散平滑迭代 rk+1 = rk + R²Δrk）、半 Rossby 半径规则（上限 4/7km）；并有重要负结果——**局地解析 Rossby 半径不充分**，上游粗网格会耗散传入涡旋（Danilov & Wang 2015；Sein 2017 XR 网格在巴西-马尔维纳斯汇流区 SSH 变率反而低于 HR）[高置信/二手高置信]。
 - **陆面判据（Mesher 模式可直接移植）**：逐三角形对 DEM/土地覆盖栅格算 RMSE/Tol/MD 误差阈值 + 多约束加权 W = Σ αr·wr + 河网作为约束边（PSLG）嵌入；自报告可在保留地形异质性下削减 50%–99.9% 单元数（Marsh et al. 2018, GPLv3——只能学思路不能抄代码）[高置信]。
-- **我们自己**：检索路径 4 独立找到了 Fan et al. 2024 (GRL, e2023GL107059)——EarthMesh 的多目标判据（elevation/slope/land cover/LAI）+ CoLM 耦合已是该方向的已发表先行工作之一。本报告的建议本质上是：把这套已发表的多判据能力从"离散标记"升级为"连续密度场"，与 E3SM/OceanMesh2D 的范式合流，同时保住我们独有的 CoLM/FVCOM/MPAS/OLAM 四模式输出面。
+- **我们自己**：检索路径 4 独立找到了 Fan et al. 2024 (GRL, e2023GL107059)——EarthMesh 的多目标判据（elevation/slope/land cover/LAI）+ CoLM 耦合已是该方向的已发表先行工作之一。本报告的建议本质上是：把这套已发表的多判据能力从"离散标记"升级为"连续密度场"，与 E3SM/OceanMesh2D 的范式合流，同时保住我们独有的 CoLM/FVCOM/MPAS/Method-C 四模式输出面。
 
 ### 过渡区证据对比（重要且诚实：文献是矛盾的）
 
@@ -114,7 +114,7 @@
 
 ## 六、诚实的反面：现有离散细化仍占优的场景
 
-1. **位级可验证性**：EarthMesh 对 OLAM Fortran 的表级精确对拍（nmd/nud/nwd、逐级 W 面数、mrow 包络）是离散整数拓扑才做得到的回归保证；连续优化内核只能做统计/拓扑级验收。
+1. **位级可验证性**：EarthMesh 对 Method-C reference implementation 的表级精确对拍（nmd/nud/nwd、逐级 W 面数、mrow 包络）是离散整数拓扑才做得到的回归保证；连续优化内核只能做统计/拓扑级验收。
 2. **cell-id 稳定性与增量细化**：restart_expand、掩膜、landtype 表都挂在 cell id 上；密度场全量重生成会打碎 id 映射，而 1→4 细分的父子关系是可追溯的（ICON："unique relationship between parent and child cells"）。
 3. **时间步经济性**：见上，ICON 原文明确指出连续局部加密网格"time step is restricted by the smallest cell in the domain unless specific measures like sub-stepping are taken"。
 4. **确定性**：JIGSAW/geogram 均无跨平台"同输入→同网格"的文档保证（JIGSAW 有线程并行路径，需实证检验）；现有整数拓扑管线是天然确定的。**若采用阶段 2，须先做 N 次重跑 byte-diff 实证**。

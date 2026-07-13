@@ -1,9 +1,9 @@
-fn sample_layout() -> earthmesh_cli::MaskPostprocLayout {
-    earthmesh_cli::MaskPostprocLayout {
+fn sample_layout() -> earthmesh_cli::mask_postproc_types::MaskPostprocLayout {
+    earthmesh_cli::mask_postproc_types::MaskPostprocLayout {
         ustr_points: 5,
         ustr_bounds: 8,
-        center_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 5],
-        vertex_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }; 8],
+        center_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 5],
+        vertex_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 8],
         center_neighbors: vec![
             vec![1, 1, 1],
             vec![1, 1, 1],
@@ -24,11 +24,17 @@ fn earth_info_writer_uses_earth_plan_result_path_and_builder() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "earthmesh", false)
-        .expect("earth plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        7,
+        "tri",
+        "earthmesh",
+        false,
+    )
+    .expect("earth plan");
     let layout = sample_layout();
 
-    let report = earthmesh_cli::write_mask_postproc_earth_info_netcdf(
+    let report = earthmesh_cli::mask_postproc_patchtypes::write_mask_postproc_earth_info_netcdf(
         &plan,
         &[3],
         5,
@@ -53,11 +59,13 @@ fn earth_info_writer_uses_earth_plan_result_path_and_builder() {
 #[test]
 fn earth_info_writer_rejects_non_earth_plan() {
     let root = std::env::temp_dir().join("earthmesh_cli_land_has_no_earth_info");
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "landmesh", false)
-        .expect("land plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root, 7, "tri", "landmesh", false,
+    )
+    .expect("land plan");
     let layout = sample_layout();
 
-    let err = earthmesh_cli::write_mask_postproc_earth_info_netcdf(
+    let err = earthmesh_cli::mask_postproc_patchtypes::write_mask_postproc_earth_info_netcdf(
         &plan,
         &[3],
         5,

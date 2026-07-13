@@ -6,6 +6,10 @@ use crate::{
     write_unstructured_mesh_netcdf, LonLatPoint, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 
+use super::{
+    detect_connectivity_base, earthmesh_canonical_connectivity_id, validate_connectivity_base,
+};
+
 pub fn convert_mpas_mode_file_to_earthmesh(
     mode_file: impl AsRef<Path>,
     file_dir: impl AsRef<Path>,
@@ -37,6 +41,45 @@ pub fn convert_mpas_mode_file_to_earthmesh(
         n_cells * max_edges,
     )?;
     require_len("nEdgesOnCell", n_edges_on_cell.len(), n_cells)?;
+    let mut active_vertices_on_cell = Vec::new();
+    for (cell, &edge_count) in n_edges_on_cell.iter().enumerate() {
+        let edge_count = usize::try_from(edge_count).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("MPAS nEdgesOnCell[{cell}] must be non-negative"),
+            )
+        })?;
+        if edge_count > max_edges {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("MPAS nEdgesOnCell[{cell}]={edge_count} exceeds maxEdges={max_edges}"),
+            ));
+        }
+        let start = cell * max_edges;
+        active_vertices_on_cell.extend_from_slice(&vertices_on_cell[start..start + edge_count]);
+    }
+    // Active verticesOnCell slots are authoritative: standard MPAS uses
+    // 1..=nVertices there and reserves zero only for inactive padding, while
+    // EarthMesh's historical dialect uses 0..nVertices-1 as real ids.
+    let connectivity_base = detect_connectivity_base(
+        "MPAS active verticesOnCell",
+        &active_vertices_on_cell,
+        n_vertices,
+    )?;
+    validate_connectivity_base(
+        "MPAS cellsOnVertex",
+        &cells_on_vertex,
+        n_cells,
+        connectivity_base,
+        connectivity_base == super::ConnectivityBase::One,
+    )?;
+    validate_connectivity_base(
+        "MPAS verticesOnCell",
+        &vertices_on_cell,
+        n_vertices,
+        connectivity_base,
+        connectivity_base == super::ConnectivityBase::One,
+    )?;
 
     let mut m_points = Vec::with_capacity(n_vertices + 1);
     m_points.push(LonLatPoint { lon: 0.0, lat: 0.0 });
@@ -61,9 +104,9 @@ pub fn convert_mpas_mode_file_to_earthmesh(
     for vertex in 0..n_vertices {
         let base = vertex * 3;
         m_to_w.push([
-            cells_on_vertex[base] + 1,
-            cells_on_vertex[base + 1] + 1,
-            cells_on_vertex[base + 2] + 1,
+            earthmesh_canonical_connectivity_id(cells_on_vertex[base], connectivity_base),
+            earthmesh_canonical_connectivity_id(cells_on_vertex[base + 1], connectivity_base),
+            earthmesh_canonical_connectivity_id(cells_on_vertex[base + 2], connectivity_base),
         ]);
     }
 
@@ -74,7 +117,7 @@ pub fn convert_mpas_mode_file_to_earthmesh(
         w_to_m.push(
             vertices_on_cell[base..base + max_edges]
                 .iter()
-                .map(|value| value + 1)
+                .map(|&value| earthmesh_canonical_connectivity_id(value, connectivity_base))
                 .collect(),
         );
     }

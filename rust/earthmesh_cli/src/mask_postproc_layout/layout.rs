@@ -45,7 +45,7 @@ pub fn mask_postproc_layout_from_unstructured_mesh(
 /// `MOD_mask_postproc.F90:mask_postproc_*`.
 ///
 /// For `tri`, the final center/vertex arrays are written directly.  For `hex`,
-/// the Fortran call swaps center and vertex arguments so the legacy gridfile
+/// the Canonical call swaps center and vertex arguments so the compatibility gridfile
 /// still stores triangles in `m*` variables and polygons in `w*` variables.
 pub fn unstructured_mesh_from_mask_postproc_final(
     final_data: &earthmesh_mesh::MaskPostprocFinalData,

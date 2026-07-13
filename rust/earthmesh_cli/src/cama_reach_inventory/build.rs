@@ -8,8 +8,9 @@ use crate::cama_binary_io::{
 /// Assemble CaMa river reach records from native Rust metric and topology windows.
 ///
 /// This mirrors Python `build_reach_inventory`: only cells with positive
-/// upstream area, river width, and river length become records; downstream 0/0
-/// is treated as an estuary flag; upstream area can be scaled into km2.
+/// upstream area, river width, and river length become records; non-positive
+/// downstream links marked terminal/ocean by the CaMa `nextxy` reader are
+/// treated as estuaries; upstream area can be scaled into km2.
 pub fn build_cama_reach_inventory(
     grid: CamaBinaryGridSpec,
     window: CamaBinaryWindow,
@@ -44,6 +45,8 @@ pub fn build_cama_reach_inventory(
             let y_index = window.y_start + row_offset;
             let downstream_x = nextxy.next_x[row_offset][col_offset];
             let downstream_y = nextxy.next_y[row_offset][col_offset];
+            let is_estuary = nextxy.terminal_or_ocean[row_offset][col_offset]
+                || cama_nextxy_is_estuary_sentinel(downstream_x, downstream_y);
             records.push(CamaReachRecord {
                 reach_id: format!("cama-{y_index}-{x_index}"),
                 x_index,
@@ -54,7 +57,7 @@ pub fn build_cama_reach_inventory(
                 width_m: f64::from(width_value),
                 floodplain_width_m: 0.0,
                 target_dx_km,
-                is_estuary: downstream_x == 0 && downstream_y == 0,
+                is_estuary,
                 river_length_m: f64::from(length_value),
                 downstream_x,
                 downstream_y,
@@ -108,6 +111,7 @@ fn validate_cama_reach_inventory_inputs(
         || !cama_f32_grid_has_shape(&rivlen.values, window.height, window.width)
         || !cama_i32_grid_has_shape(&nextxy.next_x, window.height, window.width)
         || !cama_i32_grid_has_shape(&nextxy.next_y, window.height, window.width)
+        || !cama_bool_grid_has_shape(&nextxy.terminal_or_ocean, window.height, window.width)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -123,4 +127,27 @@ fn cama_f32_grid_has_shape(values: &[Vec<f32>], height: usize, width: usize) -> 
 
 fn cama_i32_grid_has_shape(values: &[Vec<i32>], height: usize, width: usize) -> bool {
     values.len() == height && values.iter().all(|row| row.len() == width)
+}
+
+fn cama_bool_grid_has_shape(values: &[Vec<bool>], height: usize, width: usize) -> bool {
+    values.len() == height && values.iter().all(|row| row.len() == width)
+}
+
+fn cama_nextxy_is_estuary_sentinel(next_x: i32, next_y: i32) -> bool {
+    next_x < 0 || next_y < 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cama_nextxy_is_estuary_sentinel;
+
+    #[test]
+    fn nextxy_estuary_fallback_accepts_negative_sentinels_only() {
+        assert!(cama_nextxy_is_estuary_sentinel(-9, 2));
+        assert!(cama_nextxy_is_estuary_sentinel(2, -9));
+        assert!(!cama_nextxy_is_estuary_sentinel(0, 0));
+        assert!(!cama_nextxy_is_estuary_sentinel(0, 2));
+        assert!(!cama_nextxy_is_estuary_sentinel(2, 0));
+        assert!(!cama_nextxy_is_estuary_sentinel(2, 3));
+    }
 }

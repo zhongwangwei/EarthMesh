@@ -1,5 +1,5 @@
 #[test]
-fn dists_on_edge_writer_preserves_fortran_schema() {
+fn dists_on_edge_writer_preserves_canonical_schema() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_dists_on_edge_{}",
         std::process::id()
@@ -8,17 +8,17 @@ fn dists_on_edge_writer_preserves_fortran_schema() {
     std::fs::create_dir_all(&root).expect("create temp root");
     let output = root.join("distsOnEdge_NXP0009_02_global.nc4");
 
-    let mesh = earthmesh_cli::DistsOnEdgeMesh {
+    let mesh = earthmesh_cli::mesh_metric_writers::DistsOnEdgeMesh {
         edge_points: vec![
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 10.0,
                 lat: -5.0,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 20.0,
                 lat: 15.0,
             },
-            earthmesh_cli::LonLatPoint {
+            earthmesh_cli::coordinate_types::LonLatPoint {
                 lon: 30.0,
                 lat: 25.0,
             },
@@ -26,8 +26,8 @@ fn dists_on_edge_writer_preserves_fortran_schema() {
         dists_on_edge: vec![100.0, 200.0, 300.0],
     };
 
-    let report =
-        earthmesh_cli::write_dists_on_edge_netcdf(&output, &mesh).expect("write distsOnEdge file");
+    let report = earthmesh_cli::mesh_metric_writers::write_dists_on_edge_netcdf(&output, &mesh)
+        .expect("write distsOnEdge file");
 
     assert_eq!(report.output, output);
     assert_eq!(report.num_edge, 3);
@@ -44,12 +44,12 @@ fn dists_on_edge_writer_preserves_fortran_schema() {
 #[test]
 fn dists_on_edge_writer_rejects_length_mismatch() {
     let output = std::env::temp_dir().join("earthmesh_cli_bad_dists_on_edge.nc4");
-    let mesh = earthmesh_cli::DistsOnEdgeMesh {
-        edge_points: vec![earthmesh_cli::LonLatPoint { lon: 0.0, lat: 0.0 }],
+    let mesh = earthmesh_cli::mesh_metric_writers::DistsOnEdgeMesh {
+        edge_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
         dists_on_edge: vec![1.0, 2.0],
     };
 
-    let err = earthmesh_cli::write_dists_on_edge_netcdf(&output, &mesh)
+    let err = earthmesh_cli::mesh_metric_writers::write_dists_on_edge_netcdf(&output, &mesh)
         .expect_err("mismatched distsOnEdge rejected");
     assert!(err.to_string().contains("dists_on_edge length"));
 }

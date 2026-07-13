@@ -3,11 +3,11 @@ use crate::{CartesianPoint, SpringDiagnosticMaxDisplacement, SpringDynamicsRegio
 
 /// Rust port of `MOD_grid_preprocess:spring_dynamics_regionalv2`.
 ///
-/// The Fortran routine builds a compact calculation set from every movable
+/// The Canonical routine builds a compact calculation set from every movable
 /// cell plus its neighbor cells, but only cells flagged by `IsdbxMove` are
 /// updated. Each moved cell is replaced by the average of its neighboring cell
 /// coordinates from the previous iteration and then projected back to `radius`.
-pub fn spring_dynamics_regional_fortran_indexed(
+pub fn spring_dynamics_regional_one_based(
     cell_points: &[CartesianPoint],
     n_edges_on_cell: &[usize],
     cells_on_cell: &[Vec<usize>],

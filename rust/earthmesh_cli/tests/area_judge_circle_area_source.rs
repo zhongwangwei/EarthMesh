@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    build_area_judge_circle_area_source_fortran_indexed, write_circle_mask_netcdf, CircleMask,
-    LonLatPoint,
+    area_judge_circle_sources::build_area_judge_circle_area_source_one_based,
+    circle_close_mask_io::write_circle_mask_netcdf, circle_close_mask_io::CircleMask,
+    coordinate_types::LonLatPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -39,7 +40,7 @@ fn circle_area_source_builds_is_in_area_grid_and_unique_numpatch() {
         .chain((0..180).map(|idx| 89.5 - idx as f64))
         .collect::<Vec<_>>();
 
-    let report = build_area_judge_circle_area_source_fortran_indexed(
+    let report = build_area_judge_circle_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,
@@ -85,7 +86,7 @@ fn circle_area_source_rejects_empty_circle_file() {
     let lat_vertex = vec![f64::NAN, 90.0, 89.0];
     let centers = vec![f64::NAN, 0.5];
 
-    let err = build_area_judge_circle_area_source_fortran_indexed(
+    let err = build_area_judge_circle_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,

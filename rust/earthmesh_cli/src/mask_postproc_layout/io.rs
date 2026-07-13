@@ -6,11 +6,11 @@ use super::{
 use crate::{
     read_contain_netcdf, read_unstructured_mesh_netcdf,
     regional_gridfile_writers::final_refine_levels_from_gridfile_for_mask_postproc,
-    write_unstructured_mesh_netcdf_with_refine_levels, MaskPostprocDomainInputs,
+    write_unstructured_mesh_netcdf_with_method_c_metadata, MaskPostprocDomainInputs,
     MaskPostprocDomainIoPlan, MaskPostprocLayout, UnstructuredMeshWriteReport,
 };
 
-/// Compose final mask-postprocess grid construction with the legacy NetCDF
+/// Compose final mask-postprocess grid construction with the compatibility NetCDF
 /// result path selected by `plan_mask_postproc_domain_io`.
 pub fn write_mask_postproc_final_gridfile(
     plan: &MaskPostprocDomainIoPlan,
@@ -29,11 +29,10 @@ pub fn write_mask_postproc_final_gridfile(
         is_in_domain_ustr,
         layout.ustr_points,
     )?;
-    write_unstructured_mesh_netcdf_with_refine_levels(
+    write_unstructured_mesh_netcdf_with_method_c_metadata(
         &plan.result_gridfile,
         &report.mesh,
-        final_levels.m.as_deref(),
-        final_levels.w.as_deref(),
+        final_levels.slices(),
     )
 }
 

@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_onedivide_four_connection_fortran_indexed;
+use earthmesh_mesh::refine_onedivide_four_connection_one_based;
 
 #[test]
 fn onedivide_four_connection_marks_refined_triangle_and_parent_cells() {
@@ -7,7 +7,7 @@ fn onedivide_four_connection_marks_refined_triangle_and_parent_cells() {
     let mut ref_lbx = vec![0; 11];
     let mut mrl_new = vec![0, 1, 1, 1, 4];
 
-    refine_onedivide_four_connection_fortran_indexed(
+    refine_onedivide_four_connection_one_based(
         1,
         4,
         &cells_on_triangle,
@@ -23,7 +23,7 @@ fn onedivide_four_connection_marks_refined_triangle_and_parent_cells() {
     assert_eq!(&ref_lbx[4..=6], &[1, 1, 1]);
     assert_eq!(
         ref_lbx[8], 0,
-        "already-refined requested triangle is skipped like Fortran"
+        "already-refined requested triangle is skipped like Canonical"
     );
 }
 
@@ -34,7 +34,7 @@ fn onedivide_four_connection_rejects_out_of_range_parent_cell() {
     let mut ref_lbx = vec![0; 10];
     let mut mrl_new = vec![0, 1, 1];
 
-    let err = refine_onedivide_four_connection_fortran_indexed(
+    let err = refine_onedivide_four_connection_one_based(
         1,
         2,
         &cells_on_triangle,

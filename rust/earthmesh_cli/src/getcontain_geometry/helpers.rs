@@ -135,19 +135,19 @@ pub(super) fn getcontain_cell_polygon(
         if *vertex_id <= 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("cell {cell_index} references missing vertex {vertex_id}"),
+                format!("cell {cell_index} canonicals missing vertex {vertex_id}"),
             ));
         }
         let vertex_index = usize::try_from(*vertex_id).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("cell {cell_index} references missing vertex {vertex_id}"),
+                format!("cell {cell_index} canonicals missing vertex {vertex_id}"),
             )
         })?;
         let vertex = vertices.get(vertex_index).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("cell {cell_index} references missing vertex {vertex_id}"),
+                format!("cell {cell_index} canonicals missing vertex {vertex_id}"),
             )
         })?;
         polygon.push(AreaJudgePoint::new(vertex.lon, vertex.lat));

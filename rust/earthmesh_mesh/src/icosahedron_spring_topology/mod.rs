@@ -4,9 +4,9 @@ use super::*;
 /// `icosahedron.F90:spring_dynamics1`.
 ///
 /// It snapshots U-edge endpoint/neighbor ids plus per-M-point polygon edge ids
-/// and direction signs. Fortran stores `+relax` when `itab_ud(iu)%im(2) == im`
+/// and direction signs. Canonical stores `+relax` when `itab_ud(iu)%im(2) == im`
 /// and `-relax` otherwise.
-pub fn icosahedron_spring_topology_fortran(
+pub fn icosahedron_spring_topology_canonical(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     m_neighbors: &[IcosahedronMPointNeighbors],

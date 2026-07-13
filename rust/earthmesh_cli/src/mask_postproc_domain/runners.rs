@@ -1,14 +1,32 @@
+use crate::apply_ocean_mask_sea_ratio_one_based;
+use crate::build_earth_patchtypes_one_based;
+use crate::build_land_patchtypes_one_based;
+use crate::finalize_mask_postproc_layout_with_reindex_report;
+use crate::read_mask_postproc_domain_inputs;
+use crate::renew_mask_postproc_ocean_domain_one_based;
+use crate::write_mask_postproc_earth_info_netcdf;
+use crate::write_mask_postproc_final_gridfile;
+use crate::write_mask_postproc_patchtype_netcdf;
+use crate::write_obc_boundary_netcdf;
+use crate::write_obcv2_boundary_netcdf;
+use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
+use crate::MaskPostprocDomainIoPlan;
+use crate::MaskPostprocEarthDomainReport;
+use crate::MaskPostprocEarthRunOptions;
+use crate::MaskPostprocLandDomainReport;
+use crate::MaskPostprocLandRunOptions;
+use crate::MaskPostprocOceanDomainReport;
+use crate::MaskPostprocOceanRunOptions;
+use crate::UnstructuredMesh;
 use std::collections::HashSet;
 use std::io;
 
-use earthmesh_mesh::classify_boundary_orders_fortran_indexed;
+use earthmesh_mesh::classify_boundary_orders_one_based;
 
-use crate::*;
-
-/// File-backed composition of the migrated
+/// File-backed composition of the current
 /// `MOD_mask_postproc.F90:mask_postproc_Earth` branch.
 ///
-/// This runner intentionally composes already-migrated pure/data helpers:
+/// This runner intentionally composes already-current pure/data helpers:
 /// contain-domain reading, Earth land/sea patchtype classification, `PatchID`
 /// output, final clipped gridfile writing, and `earthmesh_info.nc4` output.
 pub fn run_mask_postproc_earth_domain(
@@ -26,7 +44,7 @@ pub fn run_mask_postproc_earth_domain(
     }
 
     let inputs = read_mask_postproc_domain_inputs(plan)?;
-    let patchtypes = build_earth_patchtypes_fortran_indexed(
+    let patchtypes = build_earth_patchtypes_one_based(
         &inputs.contain,
         options.mask_sea_ratio,
         options.minlon_dm_area,
@@ -63,12 +81,12 @@ pub fn run_mask_postproc_earth_domain(
     })
 }
 
-/// File-backed composition of the migrated
+/// File-backed composition of the current
 /// `MOD_mask_postproc.F90:mask_postproc_Lnd` branch.
 ///
 /// The source-grid clipping uses the contain-domain mask exactly like the
-/// Fortran branch, while land-specific patchtype assignment is delegated to the
-/// already-migrated pure `build_land_patchtypes_fortran_indexed` helper.
+/// Canonical branch, while land-specific patchtype assignment is delegated to the
+/// already-current pure `build_land_patchtypes_one_based` helper.
 pub fn run_mask_postproc_land_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocLandRunOptions<'_>,
@@ -84,7 +102,7 @@ pub fn run_mask_postproc_land_domain(
     }
 
     let inputs = read_mask_postproc_domain_inputs(plan)?;
-    let patchtypes = build_land_patchtypes_fortran_indexed(
+    let patchtypes = build_land_patchtypes_one_based(
         &inputs.contain,
         options.seaorland,
         options.minlon_dm_area,
@@ -112,7 +130,7 @@ pub fn run_mask_postproc_land_domain(
     })
 }
 
-/// File-backed composition of the migrated
+/// File-backed composition of the current
 /// `MOD_mask_postproc.F90:mask_postproc_Ocn` branch.
 ///
 /// This runner composes contain-domain reading, the ocean sea-ratio mask
@@ -133,16 +151,13 @@ pub fn run_mask_postproc_ocean_domain(
     }
 
     let inputs = read_mask_postproc_domain_inputs(plan)?;
-    let ocean_mask = apply_ocean_mask_sea_ratio_fortran_indexed(
+    let ocean_mask = apply_ocean_mask_sea_ratio_one_based(
         &inputs.contain,
         options.num_vertex,
         options.mask_sea_ratio,
     )?;
-    let renewal = renew_mask_postproc_ocean_domain_fortran_indexed(
-        &inputs.layout,
-        &ocean_mask,
-        &plan.mode_grid,
-    )?;
+    let renewal =
+        renew_mask_postproc_ocean_domain_one_based(&inputs.layout, &ocean_mask, &plan.mode_grid)?;
     let finalization = finalize_mask_postproc_layout_with_reindex_report(
         &inputs.layout,
         &renewal.is_in_domain_ustr,
@@ -156,11 +171,10 @@ pub fn run_mask_postproc_ocean_domain(
             &renewal.is_in_domain_ustr,
             inputs.layout.ustr_points,
         )?;
-    let final_gridfile = write_unstructured_mesh_netcdf_with_refine_levels(
+    let final_gridfile = write_unstructured_mesh_netcdf_with_method_c_metadata(
         &plan.result_gridfile,
         &finalization.mesh,
-        final_levels.m.as_deref(),
-        final_levels.w.as_deref(),
+        final_levels.slices(),
     )?;
 
     let mut boundary_orders = None;
@@ -187,7 +201,7 @@ pub fn run_mask_postproc_ocean_domain(
         })?;
         obcv2 = Some(write_obcv2_boundary_netcdf(obcv2_output, boundary)?);
 
-        let orders = classify_boundary_orders_fortran_indexed(
+        let orders = classify_boundary_orders_one_based(
             isolated.num_bdy_long,
             &isolated.bdy_long_order,
             &inputs.layout.vertex_neighbors,

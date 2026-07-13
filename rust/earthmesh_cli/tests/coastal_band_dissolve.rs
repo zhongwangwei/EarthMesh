@@ -1,7 +1,7 @@
 //! coastal_band.py dissolve=True path: merge band grid cells into a MultiPolygon
 //! GeoJSON via exact axis-aligned-box union. Pure geometry (no CaMa data).
 
-use earthmesh_cli::write_coastal_band_dissolve_geojson;
+use earthmesh_cli::coastal_band_io::write_coastal_band_dissolve_geojson;
 
 #[test]
 fn dissolves_2x2_band_into_single_polygon() {

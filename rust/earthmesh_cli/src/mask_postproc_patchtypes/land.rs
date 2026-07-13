@@ -8,9 +8,9 @@ use crate::{
 /// Pure-data port of the `MOD_mask_postproc.F90:mask_postproc_Lnd`
 /// `patchtypes_make` loop.
 ///
-/// Rust row `0` corresponds to Fortran row `1`.  `seaorland` is the selected
+/// Rust row `0` corresponds to Canonical row `1`.  `seaorland` is the selected
 /// domain land mask in the same row-major layout as `patchtypes_select`.
-pub fn build_land_patchtypes_fortran_indexed(
+pub fn build_land_patchtypes_one_based(
     contain: &ContainMesh,
     seaorland: &[Vec<i32>],
     minlon_dm_area: i32,
@@ -48,8 +48,8 @@ pub fn build_land_patchtypes_fortran_indexed(
     let mut seaorland = seaorland.to_vec();
     let mut patchtypes_select = vec![vec![0_i32; nlats_dm_select]; nlons_dm_select];
 
-    for fortran_cell_id in 2..=contain.ustr_id.len() {
-        let cell_idx = fortran_cell_id - 1;
+    for canonical_cell_id in 2..=contain.ustr_id.len() {
+        let cell_idx = canonical_cell_id - 1;
         if contain.is_in_area_ustr[cell_idx] == 0 {
             continue;
         }
@@ -65,14 +65,14 @@ pub fn build_land_patchtypes_fortran_indexed(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "cell {fortran_cell_id} references pixel id {last_pixel_id}, outside 1..={}",
+                    "cell {canonical_cell_id} canonicals pixel id {last_pixel_id}, outside 1..={}",
                     contain.ustr_ii.len()
                 ),
             ));
         }
 
-        for fortran_pixel_id in first_pixel_id..=last_pixel_id {
-            let pixel = &contain.ustr_ii[fortran_pixel_id - 1];
+        for canonical_pixel_id in first_pixel_id..=last_pixel_id {
+            let pixel = &contain.ustr_ii[canonical_pixel_id - 1];
             let (lon_idx, lat_idx) = patchtype_indices(
                 pixel[0],
                 pixel[1],
@@ -82,12 +82,13 @@ pub fn build_land_patchtypes_fortran_indexed(
                 nlats_dm_select,
             )?;
             seaorland[lon_idx][lat_idx] = 0;
-            patchtypes_select[lon_idx][lat_idx] = i32::try_from(fortran_cell_id).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("cell id {fortran_cell_id} does not fit i32"),
-                )
-            })?;
+            patchtypes_select[lon_idx][lat_idx] =
+                i32::try_from(canonical_cell_id).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("cell id {canonical_cell_id} does not fit i32"),
+                    )
+                })?;
         }
     }
 

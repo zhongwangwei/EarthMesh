@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_sharp_concav_lop_judge_fortran_indexed;
+use earthmesh_mesh::refine_sharp_concav_lop_judge_one_based;
 
 fn child_vertices() -> Vec<[usize; 3]> {
     let mut vertices = vec![[0, 0, 0]; 80];
@@ -31,7 +31,7 @@ fn sharp_concav_lop_judge_builds_single_transition_pair() {
     let mut n_ref_temp = vec![0, 1];
     let mut num_ref = 0;
 
-    refine_sharp_concav_lop_judge_fortran_indexed(
+    refine_sharp_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         &mrl_new,
@@ -77,7 +77,7 @@ fn sharp_concav_lop_judge_mirrors_other_end_for_longer_transition_degree() {
     vertices[60] = [80, 81, 82];
     vertices[61] = [30, 31, 33];
 
-    refine_sharp_concav_lop_judge_fortran_indexed(
+    refine_sharp_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         &mrl_new,
@@ -109,7 +109,7 @@ fn sharp_concav_lop_judge_terminates_placeholder_segment() {
     let mut n_ref_temp = vec![0, 2];
     let mut num_ref = 0;
 
-    refine_sharp_concav_lop_judge_fortran_indexed(
+    refine_sharp_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         &mrl_new,
@@ -149,7 +149,7 @@ fn sharp_concav_lop_judge_skips_missing_child_adjacency() {
         .map(|idx| [idx * 3 + 1000, idx * 3 + 1001, idx * 3 + 1002])
         .collect::<Vec<_>>();
 
-    refine_sharp_concav_lop_judge_fortran_indexed(
+    refine_sharp_concav_lop_judge_one_based(
         &mut num_ref,
         1,
         &mrl_new,

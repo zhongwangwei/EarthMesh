@@ -48,6 +48,18 @@ pub fn patchid_mesh_from_selected_domain(
         )
     })?;
     let can_descend_from_maxlat = maxlat_dm_area - nlat_i32 + 1 >= 1;
+    let can_ascend_from_maxlat = maxlat_dm_area >= 0
+        && usize::try_from(maxlat_dm_area + nlat_i32)
+            .map(|end| end < lat_vertex.len() && end <= lat_i.len())
+            .unwrap_or(false);
+    if !can_descend_from_maxlat && !can_ascend_from_maxlat {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "patchtype latitude window maxlat {maxlat_dm_area} cannot cover {nlat} rows in source order"
+            ),
+        ));
+    }
     for lat_offset in 0..nlat {
         let lat_offset_i32 = i32::try_from(lat_offset).map_err(|_| {
             io::Error::new(
@@ -77,7 +89,7 @@ pub fn patchid_mesh_from_selected_domain(
     })
 }
 
-/// Compose `PatchID_Save` coordinate construction with the legacy patchtype
+/// Compose `PatchID_Save` coordinate construction with the compatibility patchtype
 /// output path selected by `plan_mask_postproc_domain_io`.
 pub fn write_mask_postproc_patchtype_netcdf(
     plan: &MaskPostprocDomainIoPlan,

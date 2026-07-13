@@ -5,7 +5,7 @@ use crate::{
     read_cama_elevtn_surface_window, read_cama_grid_spec_from_params_file, CamaSurfaceClass,
 };
 
-use super::cells::coastal_band_cells;
+use super::cells::{coastal_band_cells, coastal_band_cells_periodic_x};
 use super::writer::{write_coastal_band_cells_geojson, write_coastal_band_dissolve_geojson};
 
 /// End-to-end port of `coastal_band.py::write_coastal_band_geojson`: read a CaMa map
@@ -35,7 +35,13 @@ pub fn write_coastal_band_geojson_from_cama(
         .iter()
         .map(|row| row.iter().map(|&c| c == CamaSurfaceClass::Land).collect())
         .collect();
-    let band = coastal_band_cells(&land_mask, radius_cells, true, true)?;
+    let wraps_global_lon =
+        window.width == grid.nx && (grid.nx as f64 * grid.grid_size_deg).abs() >= 359.0;
+    let band = if wraps_global_lon {
+        coastal_band_cells_periodic_x(&land_mask, radius_cells, true, true)?
+    } else {
+        coastal_band_cells(&land_mask, radius_cells, true, true)?
+    };
     if dissolve {
         write_coastal_band_dissolve_geojson(
             &band,

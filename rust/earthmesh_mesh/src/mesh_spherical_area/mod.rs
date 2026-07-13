@@ -3,7 +3,7 @@ use super::*;
 /// Port of `MOD_grid_preprocess:robust_spherical_area`.
 ///
 /// Returns signed area on the unit sphere. The caller can multiply by radius²
-/// when physical area is needed. The formula preserves Fortran's dateline-aware
+/// when physical area is needed. The formula preserves Canonical's dateline-aware
 /// `delta_lon` adjustment and does not take an absolute value.
 pub fn robust_spherical_area_unit(points: &[LonLatDegrees]) -> Option<f64> {
     let num_inter = points.len();

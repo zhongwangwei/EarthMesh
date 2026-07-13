@@ -2,19 +2,19 @@ use super::*;
 
 /// `mem_ijtabs:mloops` used by `mdloopf`, `udloopf`, and `wdloopf`.
 pub const ICOSAHEDRON_MLOOPS: usize = 7;
-pub const OLAM_FORTRAN_EARTH_RADIUS_METERS: f64 = 6_371_220.0;
-// Exact OLAM Fortran single-precision literal; `f32::consts::PI` differs in the last
-// digits and would break bit-for-bit Fortran parity, so keep the literal as-is.
+pub const METHOD_C_CANONICAL_EARTH_RADIUS_METERS: f64 = earthmesh_core::EARTH_RADIUS_METERS;
+// Exact Method-C Canonical single-precision literal; `f32::consts::PI` differs in the last
+// digits and would break bit-for-bit Canonical parity, so keep the literal as-is.
 #[allow(clippy::approx_constant)]
-const OLAM_FORTRAN_PI2: f32 = 3.1415927_f32 * 2.0;
+const METHOD_C_CANONICAL_PI2: f32 = 3.1415927_f32 * 2.0;
 
-pub(crate) fn olam_fortran_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
-    ((beta as f32) * OLAM_FORTRAN_PI2 * (radius as f32) / (5.0 * nxp as f32)) as f64
+pub(crate) fn method_c_canonical_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
+    ((beta as f32) * METHOD_C_CANONICAL_PI2 * (radius as f32) / (5.0 * nxp as f32)) as f64
 }
 
 /// Port of the `nmd/nud/nwd` sizing formulas in
 /// `icosahedron.F90:icosahedron`.
-pub fn icosahedron_counts_fortran(nxp0: usize) -> Option<IcosahedronCounts> {
+pub fn icosahedron_counts_canonical(nxp0: usize) -> Option<IcosahedronCounts> {
     if nxp0 == 0 {
         return None;
     }
@@ -28,10 +28,10 @@ pub fn icosahedron_counts_fortran(nxp0: usize) -> Option<IcosahedronCounts> {
 
 /// Port of the big-diamond corner coordinate initialization in
 /// `icosahedron.F90:icosahedron`.
-pub fn icosahedron_diamond_corners_fortran() -> [IcosahedronDiamondCorners; 10] {
-    let radius = OLAM_FORTRAN_EARTH_RADIUS_METERS as f32;
+pub fn icosahedron_diamond_corners_canonical() -> [IcosahedronDiamondCorners; 10] {
+    let radius = METHOD_C_CANONICAL_EARTH_RADIUS_METERS as f32;
     let erador5 = radius / 5.0_f32.sqrt();
-    let full_turn = OLAM_FORTRAN_PI2;
+    let full_turn = METHOD_C_CANONICAL_PI2;
 
     std::array::from_fn(|slot| {
         let id = slot + 1;
@@ -88,14 +88,14 @@ pub fn icosahedron_diamond_corners_fortran() -> [IcosahedronDiamondCorners; 10] 
 /// This initializes the allocated point counts, the 12 pentagonal M-point
 /// indices, the 10 big-diamond corner coordinates, and the pre-spring M-point
 /// coordinates. Connectivity construction (`fill_diamond`/`tri_neighbors`) and
-/// spring relaxation remain separate migration surfaces.
-pub fn icosahedron_initial_grid_fortran(nxp0: usize) -> Option<IcosahedronInitialGrid> {
-    let counts = icosahedron_counts_fortran(nxp0)?;
-    let diamond_corners = icosahedron_diamond_corners_fortran();
+/// spring relaxation remain separate architecture surfaces.
+pub fn icosahedron_initial_grid_canonical(nxp0: usize) -> Option<IcosahedronInitialGrid> {
+    let counts = icosahedron_counts_canonical(nxp0)?;
+    let diamond_corners = icosahedron_diamond_corners_canonical();
     let mut impent = [0usize; 12];
     let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); counts.nmd + 1];
     let pwrd = 0.9_f32;
-    let radius = OLAM_FORTRAN_EARTH_RADIUS_METERS as f32;
+    let radius = METHOD_C_CANONICAL_EARTH_RADIUS_METERS as f32;
 
     impent[0] = 2;
     impent[11] = counts.nmd;

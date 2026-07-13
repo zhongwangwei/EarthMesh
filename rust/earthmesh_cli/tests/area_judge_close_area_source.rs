@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    build_area_judge_close_area_source_fortran_indexed, write_close_mask_netcdf,
-    write_close_mesh_netcdf, CloseMask, LonLatPoint,
+    area_judge_close_sources::build_area_judge_close_area_source_one_based,
+    circle_close_mask_io::write_close_mask_netcdf, circle_close_mask_io::CloseMask,
+    close_mesh_io::write_close_mesh_netcdf, coordinate_types::LonLatPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 #[test]
-fn close_area_source_builds_is_in_area_grid_and_fortran_numpatch() {
+fn close_area_source_builds_is_in_area_grid_and_canonical_numpatch() {
     let root = temp_root("area_judge_close_area_source");
     let source = root.join("mask_domain_close_0_001.nc4");
     write_close_mask_netcdf(
@@ -43,7 +44,7 @@ fn close_area_source_builds_is_in_area_grid_and_fortran_numpatch() {
         .chain((0..=180).map(|idx| 90.0 - idx as f64))
         .collect::<Vec<_>>();
 
-    let report = build_area_judge_close_area_source_fortran_indexed(
+    let report = build_area_judge_close_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,
@@ -99,7 +100,7 @@ fn close_area_source_accepts_close_mesh_schema_without_refine_degree() {
         .chain((0..=180).map(|idx| 90.0 - idx as f64))
         .collect::<Vec<_>>();
 
-    let report = build_area_judge_close_area_source_fortran_indexed(
+    let report = build_area_judge_close_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,
@@ -138,7 +139,7 @@ fn close_area_source_rejects_self_intersection() {
         .chain((0..=180).map(|idx| 90.0 - idx as f64))
         .collect::<Vec<_>>();
 
-    let err = build_area_judge_close_area_source_fortran_indexed(
+    let err = build_area_judge_close_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,
@@ -152,7 +153,7 @@ fn close_area_source_rejects_self_intersection() {
 }
 
 #[test]
-fn close_area_source_accepts_subcell_polygon_like_fortran_empty_loop() {
+fn close_area_source_accepts_subcell_polygon_like_canonical_empty_loop() {
     let root = temp_root("area_judge_close_area_subcell_empty");
     let source = root.join("mask_refine_close_1_001.nc4");
     write_close_mask_netcdf(
@@ -187,7 +188,7 @@ fn close_area_source_accepts_subcell_polygon_like_fortran_empty_loop() {
         .chain((0..=nlats_source).map(|idx| 90.0 - idx as f64 / gridnum_perdegree as f64))
         .collect::<Vec<_>>();
 
-    let report = build_area_judge_close_area_source_fortran_indexed(
+    let report = build_area_judge_close_area_source_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,
@@ -195,7 +196,7 @@ fn close_area_source_accepts_subcell_polygon_like_fortran_empty_loop() {
         nlons_source,
         nlats_source,
     )
-    .expect("subcell close source should mirror Fortran zero-iteration behavior");
+    .expect("subcell close source should mirror Canonical zero-iteration behavior");
 
     assert_eq!(report.numpatch, 0);
 }
@@ -231,7 +232,7 @@ fn close_area_source_can_return_sparse_cells_without_dense_global_mask() {
         .chain((0..=180).map(|idx| 90.0 - idx as f64))
         .collect::<Vec<_>>();
 
-    let report = earthmesh_cli::build_area_judge_close_area_source_cells_fortran_indexed(
+    let report = earthmesh_cli::area_judge_close_sources::build_area_judge_close_area_source_cells_one_based(
         &source,
         &lon_vertex,
         &lat_vertex,

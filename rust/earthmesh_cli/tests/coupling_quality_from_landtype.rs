@@ -4,11 +4,14 @@
 //! straddle the boundary (MixedCoast), couple to ocean neighbours, and disconnected
 //! cells surface as orphans.
 
-use earthmesh_cli::{landtype_coupling_quality, write_landtype_cell_mask_geojson};
+use earthmesh_cli::{
+    hydro_delivery_coupling_quality::landtype_coupling_quality,
+    hydro_delivery_coupling_quality::write_landtype_cell_mask_geojson,
+};
 
 fn write_landtype_file_with_points(path: &std::path::Path, land_points: &[(usize, usize)]) {
     let (nlons, nlats) = (360, 180);
-    let mut file = netcdf::create(path).expect("create landtype file");
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create landtype file");
     file.add_dimension("longitude", nlons)
         .expect("longitude dim");
     file.add_dimension("latitude", nlats).expect("latitude dim");
@@ -64,8 +67,10 @@ fn synthetic_coastline_classifies_mixed_coast_and_couples_to_ocean() {
         "expected coastline coupling maps, got {}",
         r.coupling_row_count
     );
-    // mass/orphans clean, but coast overlap present -> Warn (not Pass)
-    assert_eq!(r.verdict.as_str(), "warn");
+    // Every fractional coast cell has an explicit coupling path, so no area is
+    // unresolved merely because a conservative fraction is non-zero.
+    assert_eq!(r.unresolved_fractional_area, 0.0);
+    assert_eq!(r.verdict.as_str(), "pass");
 }
 
 #[test]

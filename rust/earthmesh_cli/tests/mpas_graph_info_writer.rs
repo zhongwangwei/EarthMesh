@@ -1,5 +1,5 @@
 #[test]
-fn mpas_graph_info_writer_matches_fortran_placeholder_and_interior_edge_rules() {
+fn mpas_graph_info_writer_matches_canonical_placeholder_and_interior_edge_rules() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_mpas_graph_info_{}",
         std::process::id()
@@ -8,7 +8,7 @@ fn mpas_graph_info_writer_matches_fortran_placeholder_and_interior_edge_rules() 
     std::fs::create_dir_all(&root).expect("create temp root");
     let output = root.join("graph.info");
 
-    let report = earthmesh_cli::write_mpas_graph_info(
+    let report = earthmesh_cli::mpas_graph_info_writer::write_mpas_graph_info(
         &output,
         4,
         &[
@@ -39,7 +39,7 @@ fn mpas_graph_info_writer_matches_fortran_placeholder_and_interior_edge_rules() 
 #[test]
 fn mpas_graph_info_writer_reports_cells_with_missing_neighbors_and_rejects_bad_width() {
     let output = std::env::temp_dir().join("earthmesh_cli_bad_graph.info");
-    let report = earthmesh_cli::write_mpas_graph_info(
+    let report = earthmesh_cli::mpas_graph_info_writer::write_mpas_graph_info(
         &output,
         3,
         &[vec![0, 0, 0], vec![2, 0, 0]],
@@ -54,7 +54,7 @@ fn mpas_graph_info_writer_reports_cells_with_missing_neighbors_and_rejects_bad_w
     );
     let _ = std::fs::remove_file(&output);
 
-    let bad = earthmesh_cli::write_mpas_graph_info(
+    let bad = earthmesh_cli::mpas_graph_info_writer::write_mpas_graph_info(
         &output,
         3,
         &[vec![0, 0], vec![1, 2]],

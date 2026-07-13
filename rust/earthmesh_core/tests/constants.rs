@@ -11,7 +11,7 @@ fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
 }
 
 #[test]
-fn constants_match_fortran_consts_coms_formulas() {
+fn constants_match_canonical_consts_coms_formulas() {
     approx_eq(PIO180, std::f64::consts::PI / 180.0, 1.0e-15);
     approx_eq(PIU180, 180.0 / std::f64::consts::PI, 1.0e-12);
     approx_eq(PI2, 2.0 * std::f64::consts::PI, 1.0e-15);
@@ -29,7 +29,7 @@ fn angle_helpers_round_trip_degrees_and_radians() {
 }
 
 #[test]
-fn default_config_matches_fortran_oname_vars_defaults() {
+fn default_config_matches_canonical_oname_vars_defaults() {
     let cfg = EarthmeshConfig::default();
 
     assert_eq!(cfg.experiment_name, "/tmp");
@@ -83,7 +83,7 @@ fn earth_radius_derivatives_are_initialized_from_single_radius() {
 }
 
 #[test]
-fn lonlat_mesh_defaults_match_fortran_lonlatmesh_coms() {
+fn lonlat_mesh_defaults_match_canonical_lonlatmesh_coms() {
     let mesh = earthmesh_core::LonLatMeshConfig::default();
 
     assert_eq!(mesh.definition, "center");
@@ -98,7 +98,7 @@ fn lonlat_mesh_defaults_match_fortran_lonlatmesh_coms() {
 }
 
 #[test]
-fn fvcom_mesh_defaults_match_fortran_fvcommesh_coms() {
+fn fvcom_mesh_defaults_match_canonical_fvcommesh_coms() {
     let mesh = earthmesh_core::FvcomMeshConfig::default();
 
     assert_eq!(mesh.case_name, "CASENAME");
@@ -179,7 +179,7 @@ fn earthmesh_config_rejects_invalid_read_nl_gridnum_perdegree() {
     let err = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%gridnum_perdegree = 60\n NL%mesh_type = 'landmesh'\n NL%output_format = 'CoLM'\n/\n",
     )
-    .expect_err("gridnum_perdegree must match Fortran read_nl constraints");
+    .expect_err("gridnum_perdegree must match Canonical read_nl constraints");
 
     assert!(err.contains("gridnum_perdegree"));
     assert!(err.contains("120"));
@@ -209,7 +209,7 @@ fn earthmesh_config_accepts_earthmesh_colm_output_like_read_nl() {
 }
 
 #[test]
-fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
+fn refine_config_defaults_match_canonical_refine_vars_state_defaults() {
     let cfg = earthmesh_core::RefineConfig::default();
 
     assert_eq!(cfg.refine_setting, "/tmp");
@@ -254,13 +254,13 @@ fn refine_config_defaults_match_fortran_refine_vars_state_defaults() {
 }
 
 #[test]
-fn refine_config_accepts_fortran_prefix_arrays_for_halo_and_transition_rows() {
+fn refine_config_accepts_canonical_prefix_arrays_for_halo_and_transition_rows() {
     let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
         "&mkrefine\n RL%Istransition=.true.\n RL%HALO=4,4,3\n RL%max_transition_row=5,4,3\n RL%SpringGlobal_type=1\n RL%SpringRegional_type=0\n RL%refine_spc=.true.\n RL%max_iter_spc=2\n/\n",
         "atmosmesh",
         "hex",
     )
-    .expect("Fortran namelist prefix arrays should parse");
+    .expect("Canonical namelist prefix arrays should parse");
 
     assert_eq!(parsed.halo, [0, 4, 4, 3, 0, 0, 0, 0, 0, 0]);
     assert_eq!(parsed.max_transition_row, [0, 5, 4, 3, 0, 0, 0, 0, 0, 0]);
@@ -268,13 +268,13 @@ fn refine_config_accepts_fortran_prefix_arrays_for_halo_and_transition_rows() {
 }
 
 #[test]
-fn refine_config_accepts_fortran_prefix_real_arrays_without_clearing_defaults() {
+fn refine_config_accepts_canonical_prefix_real_arrays_without_clearing_defaults() {
     let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
         "&mkrefine\n RL%Istransition=.true.\n RL%SpringGlobal_type=1\n RL%SpringRegional_type=0\n RL%refine_spc=.true.\n RL%max_iter_spc=2\n RL%th_k_s_m=300.0\n RL%th_sea_ratio=0.2\n/\n",
         "atmosmesh",
         "hex",
     )
-    .expect("Fortran namelist prefix real arrays should parse");
+    .expect("Canonical namelist prefix real arrays should parse");
 
     assert_eq!(parsed.th_twolayer_lnd[0], [300.0, 999.0]);
     assert_eq!(parsed.th_sea_ratio, [0.2, 0.5]);
@@ -366,9 +366,35 @@ fn refine_config_rejects_invalid_core_read_nl_refine_combinations() {
         "atmosmesh",
         "tri",
     )
-    .expect_err("atmosmesh cannot use refine_cal like read_nl");
+    .expect_err("atmosmesh calculate mode needs an atmos threshold switch");
     assert!(atmos_cal.contains("atmosmesh"));
-    assert!(atmos_cal.contains("refine_cal"));
+    assert!(atmos_cal.contains("refine_onelayer_Atmos"));
+}
+
+#[test]
+fn refine_config_accepts_a_validated_external_field_as_the_only_source() {
+    let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist_with_external_field(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_spc = .false.\n RL%refine_cal = .false.\n/\n",
+        "earthmesh",
+        "hex",
+        true,
+    )
+    .expect("validated external h-field is a complete refinement source");
+    assert_eq!(parsed.refine_setting, "external_field");
+}
+
+#[test]
+fn refine_config_allows_atmos_calculate_with_typhoon_threshold() {
+    let parsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_cal = .true.\n RL%max_iter_cal = 1\n RL%refine_typhoon_m = .true.\n RL%th_typhoon_m = 0.5\n/\n",
+        "atmosmesh",
+        "tri",
+    )
+    .expect("atmosmesh typhoon calculate refine should pass core validation");
+
+    assert_eq!(parsed.refine_setting, "calculate");
+    assert!(parsed.refine_onelayer_atmos[0]);
+    approx_eq(parsed.th_onelayer_atmos[0], 0.5, 0.0);
 }
 
 #[test]
@@ -616,7 +642,7 @@ fn delaunay_memory_allocators_match_mem_delaunay_defaults() {
 }
 
 #[test]
-fn delaunay_memory_copy_and_original_buffers_match_fortran_initial_state() {
+fn delaunay_memory_copy_and_original_buffers_match_canonical_initial_state() {
     let memory = earthmesh_core::DelaunayMemory::default();
 
     assert_eq!(memory.nmd_copy, 0);
@@ -633,7 +659,7 @@ fn delaunay_memory_copy_and_original_buffers_match_fortran_initial_state() {
 }
 
 #[test]
-fn runtime_state_wires_configs_and_mesh_memories_without_fortran_globals() {
+fn runtime_state_wires_configs_and_mesh_memories_without_canonical_globals() {
     let config = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%expnme='state_case'\n NL%nxp=42\n NL%base_dir='/tmp/earthmesh/'\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n NL%refine=.true.\n/\n",
     )
@@ -697,7 +723,7 @@ fn runtime_state_try_nxp_rejects_uninitialized_or_negative_nxp() {
 }
 
 #[test]
-fn runtime_state_records_real_mesh_counts_for_fortran_steps() {
+fn runtime_state_records_real_mesh_counts_for_canonical_steps() {
     let config = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%expnme='count_case'\n NL%nxp=4\n NL%base_dir='/tmp/earthmesh/'\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n/\n",
     )
@@ -706,7 +732,7 @@ fn runtime_state_records_real_mesh_counts_for_fortran_steps() {
 
     state
         .record_mesh_counts_for_step(1, 21, 13)
-        .expect("record first Fortran step");
+        .expect("record first Canonical step");
 
     assert_eq!(state.step, 1);
     assert_eq!(state.num_mp_step[0], 21);
@@ -716,7 +742,7 @@ fn runtime_state_records_real_mesh_counts_for_fortran_steps() {
 }
 
 #[test]
-fn runtime_state_records_legacy_num_vertex_boundary() {
+fn runtime_state_records_compatibility_num_vertex_boundary() {
     let config = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%expnme='num_vertex_case'\n NL%nxp=4\n NL%base_dir='/tmp/earthmesh/'\n NL%mesh_type='oceanmesh'\n NL%mode_grid='hex'\n NL%output_format='FVCOM'\n/\n",
     )
@@ -726,14 +752,14 @@ fn runtime_state_records_legacy_num_vertex_boundary() {
     assert_eq!(state.num_vertex, 0);
     state
         .record_num_vertex(6)
-        .expect("record legacy num_vertex boundary");
+        .expect("record stored num_vertex boundary");
 
     assert_eq!(state.num_vertex, 6);
     assert!(state.record_num_vertex(0).is_err());
 }
 
 #[test]
-fn runtime_state_records_legacy_scalar_defaults_from_consts_coms_and_mkgrd() {
+fn runtime_state_records_compatibility_scalar_defaults_from_consts_coms_and_mkgrd() {
     let config = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%expnme='scalar_case'\n NL%nxp=4\n NL%base_dir='/tmp/earthmesh/'\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n/\n",
     )
@@ -769,7 +795,7 @@ fn runtime_state_derives_num_center_from_previous_step_wp_count() {
 }
 
 #[test]
-fn runtime_state_records_legacy_impent_pentagon_indices() {
+fn runtime_state_records_compatibility_impent_pentagon_indices() {
     let config = EarthmeshConfig::from_mkgrd_namelist(
         "&mkgrd\n NL%expnme='impent_case'\n NL%nxp=4\n NL%base_dir='/tmp/earthmesh/'\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n/\n",
     )

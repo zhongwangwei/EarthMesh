@@ -11,7 +11,7 @@ pub struct MaskCountState {
 }
 
 impl MaskCountState {
-    /// Advance counters and return the Fortran bbox output filename.
+    /// Advance counters and return the Canonical bbox output filename.
     pub fn next_bbox_output(
         &mut self,
         mask_select: &str,
@@ -21,7 +21,7 @@ impl MaskCountState {
         self.next_mask_output(mask_select, "bbox", refine_degree, file_dir, 2)
     }
 
-    /// Advance counters and return the Fortran circle output filename.
+    /// Advance counters and return the Canonical circle output filename.
     pub fn next_circle_output(
         &mut self,
         mask_select: &str,
@@ -31,7 +31,7 @@ impl MaskCountState {
         self.next_mask_output(mask_select, "circle", refine_degree, file_dir, 2)
     }
 
-    /// Advance counters and return the Fortran close output filename.
+    /// Advance counters and return the Canonical close output filename.
     pub fn next_close_output(
         &mut self,
         mask_select: &str,
@@ -41,7 +41,7 @@ impl MaskCountState {
         self.next_mask_output(mask_select, "close", refine_degree, file_dir, 3)
     }
 
-    /// Advance counters and return the Fortran lambert output filename.
+    /// Advance counters and return the Canonical lambert output filename.
     pub fn next_lambert_output(
         &mut self,
         mask_select: &str,

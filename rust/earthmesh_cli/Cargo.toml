@@ -1,9 +1,10 @@
 [package]
 name = "earthmesh_cli"
-version = "0.1.0"
+version = "3.0.0-alpha2"
 edition = "2021"
 description = "mkgrd-compatible command-line adapter and workflow library for EarthMesh v3"
-license = "MIT OR Apache-2.0"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
@@ -23,10 +24,9 @@ netcdf = { version = "0.12.0", default-features = false }
 # so the normal CLI build keeps linking the system NetCDF.
 static-netcdf = ["netcdf/static"]
 
-# Much of this crate is a close migration of OLAM's Fortran mkgrd routines. These lints
-# fire on patterns that deliberately mirror the Fortran source (multi-argument
-# subroutine signatures, 1-based index loops over parallel arrays, flattened
-# connectivity/report types, large report enums). Allowed package-wide for traceability.
+# Numeric kernels retain algorithm-shaped data flow (multi-argument routines,
+# 1-based index loops over parallel arrays, flattened connectivity/report types,
+# and large report enums), so these lints are allowed package-wide.
 [lints.clippy]
 too_many_arguments = "allow"
 needless_range_loop = "allow"

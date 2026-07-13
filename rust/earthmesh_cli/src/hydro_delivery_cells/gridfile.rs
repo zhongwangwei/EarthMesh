@@ -1,10 +1,20 @@
 use std::{fs, io, path::Path};
 
 use crate::{
-    mesh_row_for_fortran_id, read_gridfile_mesh_points, GridfileCellKind, GridfileMeshPoints,
+    mesh_canonical_id_for_row, mesh_row_for_canonical_id, read_gridfile_mesh_points,
+    GridfileCellKind, GridfileMeshPoints,
 };
 
-use super::geometry::{convex_hull_ccw, preview_cell_too_large, unwrap_ring_lon};
+use super::geometry::{
+    cell_exceeds_supported_arc, order_around_spherical_center, ring_intersects_directed_bbox,
+    unwrap_ring_lon,
+};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GridfileCellExportReport {
+    pub emitted_cells: usize,
+    pub rejected_unsupported_cells: usize,
+}
 
 pub fn gridfile_cell_polygons_geojson(
     mesh: &GridfileMeshPoints,
@@ -12,14 +22,24 @@ pub fn gridfile_cell_polygons_geojson(
     bbox: Option<[f64; 4]>,
     max_cells: Option<usize>,
 ) -> String {
+    gridfile_cell_polygons_geojson_with_report(mesh, kind, bbox, max_cells).0
+}
+
+pub fn gridfile_cell_polygons_geojson_with_report(
+    mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> (String, GridfileCellExportReport) {
     let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
     let m_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.m_lon, &mesh.m_lat);
     let w_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.w_lon, &mesh.w_lat);
-    let in_bbox = |clon: f64, clat: f64| match bbox {
-        Some(b) => b[0] <= clon && clon <= b[2] && b[1] <= clat && clat <= b[3],
-        None => true,
-    };
-    let make_feature = |idx: usize, ring: &[(f64, f64)], clon: f64, clat: f64| -> String {
+    let make_feature = |_idx: usize,
+                        canonical_id: i32,
+                        ring: &[(f64, f64)],
+                        clon: f64,
+                        clat: f64|
+     -> String {
         let coords = ring
             .iter()
             .map(|(x, y)| format!("[{x}, {y}]"))
@@ -30,14 +50,15 @@ pub fn gridfile_cell_polygons_geojson(
              \"properties\": {{\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
              \"center_lon\": {}, \"center_lat\": {}}}}}",
             coords,
-            idx + 1,
-            idx,
+            canonical_id,
+            canonical_id,
             clon,
             clat
         )
     };
 
     let mut features: Vec<String> = Vec::new();
+    let mut rejected_unsupported_cells = 0usize;
     match kind {
         GridfileCellKind::Tri => {
             let wn = mesh.w_lon.len();
@@ -47,7 +68,7 @@ pub fn gridfile_cell_polygons_geojson(
                 }
                 let idx: Vec<usize> = tri
                     .iter()
-                    .filter_map(|&v| mesh_row_for_fortran_id(v, wn, w_has_two_placeholders))
+                    .filter_map(|&v| mesh_row_for_canonical_id(v, wn, w_has_two_placeholders))
                     .collect();
                 if idx.len() != 3 || idx[0] == idx[1] || idx[1] == idx[2] || idx[0] == idx[2] {
                     continue;
@@ -59,28 +80,24 @@ pub fn gridfile_cell_polygons_geojson(
                     let cy = idx.iter().map(|&i| mesh.w_lat[i]).sum::<f64>() / 3.0;
                     (cx, cy)
                 };
-                if !in_bbox(clon, clat) {
-                    continue;
-                }
                 let mut ring: Vec<(f64, f64)> = idx
                     .iter()
                     .map(|&i| (norm_lon(mesh.w_lon[i]), mesh.w_lat[i]))
                     .collect();
-                if preview_cell_too_large(&ring, clon, clat, 30.0) {
+                if !ring_intersects_directed_bbox(&ring, bbox) {
                     continue;
                 }
-                if ring.iter().any(|&(_, lat)| lat.abs() > 80.0) {
+                if cell_exceeds_supported_arc(&ring, clon, clat, 120.0) {
+                    rejected_unsupported_cells += 1;
                     continue;
                 }
                 unwrap_ring_lon(&mut ring, clon);
-                let (lo, hi) = ring.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &(x, _)| {
-                    (lo.min(x), hi.max(x))
-                });
-                if hi - lo > 45.0 {
-                    continue;
-                }
                 ring.push(ring[0]);
-                features.push(make_feature(ci, &ring, clon, clat));
+                let Some(canonical_id) = mesh_canonical_id_for_row(ci, m_has_two_placeholders)
+                else {
+                    continue;
+                };
+                features.push(make_feature(ci, canonical_id, &ring, clon, clat));
                 if max_cells.is_some_and(|mc| features.len() >= mc) {
                     break;
                 }
@@ -100,7 +117,8 @@ pub fn gridfile_cell_polygons_geojson(
                     }
                     for k in 0..3 {
                         let w1 = mesh.m_to_w[mi * 3 + k];
-                        if let Some(w_row) = mesh_row_for_fortran_id(w1, wn, w_has_two_placeholders)
+                        if let Some(w_row) =
+                            mesh_row_for_canonical_id(w1, wn, w_has_two_placeholders)
                         {
                             incident[w_row].push(mi);
                         }
@@ -115,9 +133,6 @@ pub fn gridfile_cell_polygons_geojson(
                     }
                     let clon = norm_lon(mesh.w_lon[wi]);
                     let clat = mesh.w_lat[wi];
-                    if !in_bbox(clon, clat) {
-                        continue;
-                    }
                     let mut corners: Vec<(f64, f64)> = Vec::new();
                     if use_inverse {
                         for &mi in &incident[wi] {
@@ -133,7 +148,7 @@ pub fn gridfile_cell_polygons_geojson(
                         for k in 0..nv {
                             let mid = mesh.w_to_m[wi * width + k];
                             if let Some(m_row) =
-                                mesh_row_for_fortran_id(mid, mn, m_has_two_placeholders)
+                                mesh_row_for_canonical_id(mid, mn, m_has_two_placeholders)
                             {
                                 let (x, y) = (norm_lon(mesh.m_lon[m_row]), mesh.m_lat[m_row]);
                                 corners.push((x, y));
@@ -143,27 +158,25 @@ pub fn gridfile_cell_polygons_geojson(
                     if corners.len() < 3 {
                         continue;
                     }
-                    if preview_cell_too_large(&corners, clon, clat, 30.0) {
+                    if !ring_intersects_directed_bbox(&corners, bbox) {
                         continue;
                     }
-                    if corners.iter().any(|&(_, lat)| lat.abs() > 80.0) {
+                    if cell_exceeds_supported_arc(&corners, clon, clat, 120.0) {
+                        rejected_unsupported_cells += 1;
                         continue;
                     }
+                    let mut corners = order_around_spherical_center(corners, clon, clat);
                     unwrap_ring_lon(&mut corners, clon);
-                    let (lo, hi) = corners
-                        .iter()
-                        .fold((f64::MAX, f64::MIN), |(lo, hi), &(x, _)| {
-                            (lo.min(x), hi.max(x))
-                        });
-                    if hi - lo > 45.0 {
-                        continue;
-                    }
-                    let mut ring = convex_hull_ccw(corners);
+                    let mut ring = corners;
                     if ring.len() < 3 {
                         continue;
                     }
                     ring.push(ring[0]);
-                    features.push(make_feature(wi, &ring, clon, clat));
+                    let Some(canonical_id) = mesh_canonical_id_for_row(wi, w_has_two_placeholders)
+                    else {
+                        continue;
+                    };
+                    features.push(make_feature(wi, canonical_id, &ring, clon, clat));
                     if max_cells.is_some_and(|mc| features.len() >= mc) {
                         break;
                     }
@@ -172,9 +185,16 @@ pub fn gridfile_cell_polygons_geojson(
         }
     }
 
-    format!(
-        "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
-        features.join(",\n")
+    let emitted_cells = features.len();
+    (
+        format!(
+            "{{\n  \"type\": \"FeatureCollection\",\n  \"features\": [\n{}\n  ]\n}}\n",
+            features.join(",\n")
+        ),
+        GridfileCellExportReport {
+            emitted_cells,
+            rejected_unsupported_cells,
+        },
     )
 }
 
@@ -199,4 +219,18 @@ pub fn write_gridfile_cell_polygons_geojson(
     crate::ensure_parent_dir(output.as_ref())?;
     fs::write(output.as_ref(), json.as_bytes())?;
     Ok(json.matches("\"type\": \"Feature\"").count())
+}
+
+pub fn write_gridfile_cell_polygons_geojson_with_report(
+    gridfile: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> io::Result<GridfileCellExportReport> {
+    let mesh = read_gridfile_mesh_points(gridfile)?;
+    let (json, report) = gridfile_cell_polygons_geojson_with_report(&mesh, kind, bbox, max_cells);
+    crate::ensure_parent_dir(output.as_ref())?;
+    fs::write(output.as_ref(), json.as_bytes())?;
+    Ok(report)
 }

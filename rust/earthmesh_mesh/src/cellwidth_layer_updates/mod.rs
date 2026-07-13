@@ -3,9 +3,9 @@ use crate::boundary_cells_from_triangle_flags;
 /// Port of the cell-width update rule in
 /// `MOD_grid_preprocess:cellwidth_layers_make`.
 ///
-/// `cells_on_triangle` corresponds to Fortran `ngrmw(:, i)` for triangle `i`,
+/// `cells_on_triangle` corresponds to Canonical `ngrmw(:, i)` for triangle `i`,
 /// while `triangles_on_cell` corresponds to `ngrwm(:, k)` for cell `k`.
-pub fn cellwidth_layers_fortran_indexed(
+pub fn cellwidth_layers_one_based(
     num_vertex_in: usize,
     num_center_in: usize,
     num_rc: usize,

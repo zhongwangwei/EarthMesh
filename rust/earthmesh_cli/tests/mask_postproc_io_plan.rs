@@ -1,8 +1,14 @@
 #[test]
-fn ocean_tri_patch_plan_matches_legacy_mask_postproc_paths_and_boundary_outputs() {
+fn ocean_tri_patch_plan_matches_compatibility_mask_postproc_paths_and_boundary_outputs() {
     let root = std::env::temp_dir().join("earthmesh_mask_postproc_io_ocean");
-    let plan = earthmesh_cli::plan_mask_postproc_domain_io(&root, 64, "tri", "oceanmesh", true)
-        .expect("ocean plan");
+    let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        64,
+        "tri",
+        "oceanmesh",
+        true,
+    )
+    .expect("ocean plan");
 
     assert_eq!(plan.mesh_type, "oceanmesh");
     assert_eq!(plan.mode_grid, "tri");
@@ -26,8 +32,10 @@ fn ocean_tri_patch_plan_matches_legacy_mask_postproc_paths_and_boundary_outputs(
 #[test]
 fn land_and_earth_plans_include_patchtype_but_no_boundary_outputs() {
     let root = std::env::temp_dir().join("earthmesh_mask_postproc_io_land");
-    let land = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "hex", "landmesh", false)
-        .expect("land plan");
+    let land = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root, 7, "hex", "landmesh", false,
+    )
+    .expect("land plan");
     assert_eq!(
         land.source_gridfile,
         root.join("result/gridfile_NXP0007_hex.nc4")
@@ -47,8 +55,14 @@ fn land_and_earth_plans_include_patchtype_but_no_boundary_outputs() {
     assert_eq!(land.obc_output, None);
     assert_eq!(land.obcv2_output, None);
 
-    let earth = earthmesh_cli::plan_mask_postproc_domain_io(&root, 7, "tri", "earthmesh", false)
-        .expect("earth plan");
+    let earth = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        7,
+        "tri",
+        "earthmesh",
+        false,
+    )
+    .expect("earth plan");
     assert_eq!(
         earth.patchtype_output,
         Some(root.join("patchtype/patchtype_NXP0007_tri.nc4"))
@@ -60,12 +74,23 @@ fn land_and_earth_plans_include_patchtype_but_no_boundary_outputs() {
 #[test]
 fn mask_postproc_io_plan_rejects_atmos_and_unsupported_grid_shapes() {
     let root = std::env::temp_dir().join("earthmesh_mask_postproc_io_invalid");
-    let atmos = earthmesh_cli::plan_mask_postproc_domain_io(&root, 1, "tri", "atmosmesh", false)
-        .expect_err("atmos is separate MPAS branch");
+    let atmos = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        1,
+        "tri",
+        "atmosmesh",
+        false,
+    )
+    .expect_err("atmos is separate MPAS branch");
     assert!(atmos.to_string().contains("domain mask_postproc"));
 
-    let square =
-        earthmesh_cli::plan_mask_postproc_domain_io(&root, 1, "square", "oceanmesh", false)
-            .expect_err("unsupported grid shape");
+    let square = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+        &root,
+        1,
+        "square",
+        "oceanmesh",
+        false,
+    )
+    .expect_err("unsupported grid shape");
     assert!(square.to_string().contains("tri or hex"));
 }

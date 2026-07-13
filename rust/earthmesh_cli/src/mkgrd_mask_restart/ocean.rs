@@ -1,10 +1,15 @@
+use crate::infer_mask_restart_ocean_num_vertex_from_config;
+use crate::plan_mask_postproc_domain_io;
+use crate::plan_mkgrd_mask_restart_namelist;
+use crate::run_mask_postproc_ocean_domain;
+use crate::MaskPostprocOceanRunOptions;
+use crate::MaskRestartAction;
+use crate::MkgrdMaskRestartOceanRunReport;
 use std::io;
 use std::path::Path;
 
-use crate::*;
-
 /// Execute the direct ocean `mask_restart` postprocess branch while recovering
-/// the legacy `num_vertex` boundary from the persisted contain file.
+/// the compatibility `num_vertex` boundary from the persisted contain file.
 pub fn run_mkgrd_mask_restart_ocean_inferred_namelist(
     namelist_source: impl AsRef<Path>,
     workdir: impl AsRef<Path>,
@@ -36,7 +41,7 @@ pub fn run_mkgrd_mask_restart_ocean_namelist(
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "mask_restart execution is only migrated for oceanmesh without mask_patch_on; got action {:?}",
+                "mask_restart execution is only current for oceanmesh without mask_patch_on; got action {:?}",
                 plan.remask.action
             ),
         ));

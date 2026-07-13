@@ -1,9 +1,10 @@
 [package]
 name = "earthmesh_mesh"
-version = "0.1.0"
+version = "3.0.0-alpha2"
 edition = "2021"
-description = "Rust mesh kernels migrated from EarthMesh Fortran"
-license = "MIT OR Apache-2.0"
+description = "Rust mesh kernels current from EarthMesh"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
 
 [lib]
 name = "earthmesh_mesh"
@@ -12,10 +13,9 @@ path = "src/lib.rs"
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
 
-# This crate is a close migration of OLAM's Fortran mesh routines. These lints fire on
-# patterns that deliberately mirror the Fortran source (multi-argument subroutine
-# signatures, 1-based index loops over parallel connectivity arrays, flattened
-# connectivity-table types). Allowed package-wide (lib + tests) for traceability.
+# Numeric kernels retain algorithm-shaped data flow (multi-argument routines,
+# 1-based loops over parallel connectivity arrays, and flattened connectivity
+# tables), so these lints are allowed package-wide for the library and tests.
 [lints.clippy]
 too_many_arguments = "allow"
 needless_range_loop = "allow"

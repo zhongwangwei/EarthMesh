@@ -62,7 +62,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             *sea_ratio,
         ),
         DomainConfig::Regional {
-            shape: RegionShape::Close { path, format },
+            shape: RegionShape::Close { path, format, .. },
             sea_ratio,
         } => (
             "regional",
@@ -84,6 +84,13 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
     let specified_circle = cfg.refinement.specified_circle.as_ref();
     let specified_bbox = cfg.refinement.specified_bbox.as_ref();
     let specified_close = cfg.refinement.specified_close.as_ref();
+    let domain_close_boundary = match &cfg.domain {
+        DomainConfig::Regional {
+            shape: RegionShape::Close { boundary, .. },
+            ..
+        } => Some(boundary.clone()),
+        _ => None,
+    };
     let hfield_effective = cfg.refinement.hfield.clone().unwrap_or_default();
     let layers = cfg
         .data_layers
@@ -106,7 +113,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         target_kind: target_kind_id(cfg.target.kind).to_string(),
         cell,
         quality_mode,
-        model_format: cfg.target.model_format.try_engine_str()?.to_string(),
+        model_format: cfg.target.model_format.engine_str().to_string(),
         domain: domain.to_string(),
         domain_shape: domain_shape.to_string(),
         nxp,
@@ -116,8 +123,10 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         bbox,
         watershed_path,
         close_format,
+        domain_close_boundary,
         sea_ratio,
         min_angle_deg: cfg.quality.min_angle_deg,
+        auto_refine_batch_cells: cfg.quality.auto_refine_batch_cells,
         on_violation,
         refine_enabled: cfg.refinement.enabled,
         max_passes: cfg.refinement.max_passes,
@@ -137,6 +146,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         specified_refine_radius_km: specified_circle.map(|c| c.radius_km),
         specified_refine_bbox: specified_bbox.map(|b| [b.w, b.e, b.s, b.n]),
         specified_refine_path: specified_close.map(|c| c.path.clone()),
+        specified_refine_close_boundary: specified_close.map(|c| c.boundary.clone()),
         hfield_enabled: hfield_effective.enabled,
         hfield_g: Some(hfield_effective.g),
         hfield_max_level: Some(hfield_effective.max_level),

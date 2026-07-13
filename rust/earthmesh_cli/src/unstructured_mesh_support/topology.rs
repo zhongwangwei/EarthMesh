@@ -1,7 +1,7 @@
 use std::io;
 
 use super::indexing::{
-    mesh_fortran_id_for_row, mesh_points_have_two_placeholder_rows, mesh_row_for_fortran_id,
+    mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id,
 };
 use super::{UnstructuredMesh, UnstructuredMeshTopologyReport};
 
@@ -50,14 +50,15 @@ pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> Unstructured
     };
 
     for (m_row, w_ids) in mesh.m_to_w.iter().enumerate() {
-        let Some(m_id) = mesh_fortran_id_for_row(m_row, m_has_two_placeholders) else {
+        let Some(m_id) = mesh_canonical_id_for_row(m_row, m_has_two_placeholders) else {
             continue;
         };
         for (slot, &w_id) in w_ids.iter().enumerate() {
-            let Some(w_row) = mesh_row_for_fortran_id(w_id, w_rows, w_has_two_placeholders) else {
+            let Some(w_row) = mesh_row_for_canonical_id(w_id, w_rows, w_has_two_placeholders)
+            else {
                 push_violation(
                     &mut violations,
-                    format!("m row {m_row} slot {slot} references invalid w id {w_id}"),
+                    format!("m row {m_row} slot {slot} canonicals invalid w id {w_id}"),
                 );
                 continue;
             };
@@ -84,7 +85,7 @@ pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> Unstructured
     }
 
     for (w_row, m_ids) in mesh.w_to_m.iter().enumerate() {
-        let Some(w_id) = mesh_fortran_id_for_row(w_row, w_has_two_placeholders) else {
+        let Some(w_id) = mesh_canonical_id_for_row(w_row, w_has_two_placeholders) else {
             continue;
         };
         let count = mesh.n_w_to_m[w_row].max(0) as usize;
@@ -99,10 +100,11 @@ pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> Unstructured
             continue;
         }
         for (slot, &m_id) in m_ids.iter().take(count).enumerate() {
-            let Some(m_row) = mesh_row_for_fortran_id(m_id, m_rows, m_has_two_placeholders) else {
+            let Some(m_row) = mesh_row_for_canonical_id(m_id, m_rows, m_has_two_placeholders)
+            else {
                 push_violation(
                     &mut violations,
-                    format!("w row {w_row} slot {slot} references invalid m id {m_id}"),
+                    format!("w row {w_row} slot {slot} canonicals invalid m id {m_id}"),
                 );
                 continue;
             };

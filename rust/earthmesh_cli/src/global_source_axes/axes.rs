@@ -1,12 +1,12 @@
 use std::io;
 
-use crate::{MkgrdRefinePrepareSourceGridOptions, MkgrdRestartAreaJudgeOptions};
+use crate::MkgrdRestartAreaJudgeOptions;
 
 /// One-based global lon/lat source axes reconstructed from source dimensions.
 ///
 /// This is the Rust-owned replacement for restart/refine paths that used to
 /// rebuild `data_preprocess`-style source coordinate arrays in the CLI front-end
-/// before calling migrated `mkgrd` kernels.
+/// before calling current `mkgrd` kernels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlobalSourceAxes {
     pub lon_vertex: Vec<f64>,
@@ -19,22 +19,6 @@ pub struct GlobalSourceAxes {
 }
 
 impl GlobalSourceAxes {
-    pub fn refine_prepare_source_grid(
-        &self,
-        first_triangle_id: usize,
-    ) -> MkgrdRefinePrepareSourceGridOptions<'_> {
-        MkgrdRefinePrepareSourceGridOptions {
-            lon_vertex: &self.lon_vertex,
-            lat_vertex: &self.lat_vertex,
-            lon_i: &self.lon_i,
-            lat_i: &self.lat_i,
-            gridnum_perdegree: self.gridnum_perdegree,
-            nlons_source: self.nlons_source,
-            nlats_source: self.nlats_source,
-            first_triangle_id,
-        }
-    }
-
     pub fn restart_area_judge_options(&self) -> MkgrdRestartAreaJudgeOptions<'_> {
         MkgrdRestartAreaJudgeOptions {
             lon_vertex: &self.lon_vertex,
@@ -48,8 +32,8 @@ impl GlobalSourceAxes {
     }
 }
 
-/// Build Fortran-indexed global source axes for migrated restart/refine handoffs.
-pub fn build_global_source_axes_fortran_indexed(
+/// Build Canonical-indexed global source axes for current restart/refine handoffs.
+pub fn build_global_source_axes_one_based(
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,

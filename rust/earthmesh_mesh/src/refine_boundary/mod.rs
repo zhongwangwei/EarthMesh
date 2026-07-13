@@ -1,6 +1,6 @@
 use std::io;
 
-pub(crate) fn refine_boundary_closed_curves_fortran_indexed(
+pub(crate) fn refine_boundary_closed_curves_one_based(
     num_vertex: usize,
     sjx_points: usize,
     num_center: usize,
@@ -10,7 +10,7 @@ pub(crate) fn refine_boundary_closed_curves_fortran_indexed(
     mrl_new: &[i32],
 ) -> io::Result<Vec<Vec<usize>>> {
     let mut boundary_neighbors = vec![Vec::<usize>::new(); lbx_points + 1];
-    let mut boundary_triangle_count = 1_usize; // Fortran keeps slot 1 empty.
+    let mut boundary_triangle_count = 1_usize; // Canonical keeps slot 1 empty.
 
     for triangle in (num_vertex + 1)..=sjx_points {
         if mrl_new[triangle] != 1 {
@@ -50,7 +50,7 @@ pub(crate) fn refine_boundary_closed_curves_fortran_indexed(
             if cell == 0 || cell > lbx_points {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("boundary triangle {triangle} references invalid boundary cell {cell}"),
+                    format!("boundary triangle {triangle} canonicals invalid boundary cell {cell}"),
                 ));
             }
             shared_cells.push(cell);

@@ -1,17 +1,17 @@
+use crate::AreaJudgeRefineStepReport;
 use std::io;
 use std::path::Path;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 use super::{
-    activation::activate_area_judge_calculated_refine_fortran_indexed,
-    specified::build_area_judge_specified_refine_fortran_indexed,
-    support::count_area_judge_selected_cells_fortran_indexed,
+    activation::activate_area_judge_calculated_refine_one_based,
+    specified::build_area_judge_specified_refine_one_based,
+    support::count_area_judge_selected_cells_one_based,
 };
-use crate::*;
 
 /// Dispatch `MOD_Area_judge.F90:Area_judge_refine(iter)` for iter zero or specified refine steps.
-pub fn run_area_judge_refine_fortran_indexed(
+pub fn run_area_judge_refine_one_based(
     file_dir: impl AsRef<Path>,
     iter: usize,
     calculated_refine: Option<(&[Vec<i32>], AreaJudgeSourceBounds)>,
@@ -34,7 +34,7 @@ pub fn run_area_judge_refine_fortran_indexed(
             )
         })?;
         let activation =
-            activate_area_judge_calculated_refine_fortran_indexed(is_in_refine_calculated, bounds)?;
+            activate_area_judge_calculated_refine_one_based(is_in_refine_calculated, bounds)?;
         return Ok(AreaJudgeRefineStepReport {
             is_in_refine: activation.is_in_refine,
             bounds: activation.bounds,
@@ -45,7 +45,7 @@ pub fn run_area_judge_refine_fortran_indexed(
         });
     }
 
-    let specified = build_area_judge_specified_refine_fortran_indexed(
+    let specified = build_area_judge_specified_refine_one_based(
         file_dir,
         iter,
         mask_refine_spc_type,
@@ -62,7 +62,7 @@ pub fn run_area_judge_refine_fortran_indexed(
     let nlons_select = specified.bounds.maxlon_source - specified.bounds.minlon_source + 1;
     let nlats_select = specified.bounds.minlat_source - specified.bounds.maxlat_source + 1;
     let selected_cells =
-        count_area_judge_selected_cells_fortran_indexed(&specified.is_in_area, specified.bounds);
+        count_area_judge_selected_cells_one_based(&specified.is_in_area, specified.bounds);
 
     Ok(AreaJudgeRefineStepReport {
         is_in_refine: specified.is_in_area,

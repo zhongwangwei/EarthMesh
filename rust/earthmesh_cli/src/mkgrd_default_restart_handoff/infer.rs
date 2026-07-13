@@ -1,8 +1,8 @@
+use crate::plan_mask_postproc_domain_io;
+use crate::read_contain_netcdf;
 use std::{io, path::PathBuf};
 
 use earthmesh_core::EarthmeshConfig;
-
-use crate::*;
 
 pub fn infer_mask_restart_ocean_num_vertex_from_config(
     config: &EarthmeshConfig,
@@ -167,5 +167,5 @@ pub fn namelist_sets_landtype_file(contents: &str) -> bool {
 
 pub fn landtype_file_is_real(landtype_file: &str) -> bool {
     let trimmed = landtype_file.trim();
-    !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("none")
+    !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("none") && trimmed != "/tmp"
 }

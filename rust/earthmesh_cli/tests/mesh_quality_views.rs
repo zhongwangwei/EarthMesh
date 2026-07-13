@@ -1,9 +1,10 @@
-use std::{fs, process::Command, sync::Mutex};
+use std::{fs, path::Path, process::Command, sync::Mutex};
 
 use earthmesh_cli::{
-    write_bbox_mask_netcdf, write_unstructured_mesh_netcdf,
-    write_unstructured_mesh_netcdf_with_refine_levels, BBoxMask, BBoxPoint, LonLatPoint,
-    UnstructuredMesh,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
+    coordinate_types::LonLatPoint, unstructured_mesh_io::write_unstructured_mesh_netcdf,
+    unstructured_mesh_io::write_unstructured_mesh_netcdf_with_refine_levels,
+    unstructured_mesh_support::UnstructuredMesh,
 };
 
 static MESH_QUALITY_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -31,6 +32,18 @@ fn fixture_mesh() -> UnstructuredMesh {
         ],
         n_w_to_m: vec![4, 4, 4, 4],
     }
+}
+
+fn write_threshold_matrix(path: impl AsRef<Path>, var: &str, nlon: usize, nlat: usize, value: f64) {
+    let path = path.as_ref();
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create threshold netcdf");
+    file.add_dimension("lon", nlon).expect("lon dim");
+    file.add_dimension("lat", nlat).expect("lat dim");
+    file.add_variable::<f64>(var, &["lon", "lat"])
+        .expect("threshold variable")
+        .put_values(&vec![value; nlon * nlat], (.., ..))
+        .expect("threshold values");
+    file.close().expect("close threshold netcdf");
 }
 
 #[test]
@@ -186,6 +199,100 @@ fn mesh_quality_cli_attaches_hfield_diagnostics_from_full_namelist() {
     );
     assert!(
         json.contains("\"actual_refine_level_distribution\":[{\"level\":1"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"target_actual_mismatch_count\":0"),
+        "{json}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mesh_quality_cli_attaches_hfield_diagnostics_from_threshold_sources_without_regions() {
+    let _guard = MESH_QUALITY_TEST_LOCK
+        .lock()
+        .expect("mesh quality test lock");
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_quality_hfield_threshold_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("threshold")).expect("create threshold dir");
+    let gridfile = root.join("gridfile.nc4");
+    write_unstructured_mesh_netcdf_with_refine_levels(
+        &gridfile,
+        &fixture_mesh(),
+        Some(&[1, 1, 1, 1]),
+        Some(&[1, 1, 1, 1]),
+    )
+    .expect("write gridfile");
+    write_threshold_matrix(root.join("threshold/lai.nc"), "lai", 4, 2, 10.0);
+
+    let quality_nml = root.join("quality_threshold.nml");
+    fs::write(
+        &quality_nml,
+        format!(
+            r#"
+&mkgrd
+  NL%EXPNME = 'quality'
+  NL%base_dir = '{}/'
+  NL%mesh_type = 'landmesh'
+  NL%mode_grid = 'tri'
+  NL%output_format = 'CoLM'
+  NL%NXP = 16
+  NL%refine = .true.
+/
+&mkrefine
+  RL%Istransition = .true.
+  RL%SpringGlobal_type = 0
+  RL%SpringRegional_type = 0
+  RL%refine_spc = .false.
+  RL%refine_cal = .true.
+  RL%max_iter_cal = 1
+  RL%threshold_dir = '{}/threshold'
+  RL%refine_lai_m = .true.
+  RL%th_lai_m = 5.0
+/
+&hfield
+  NL%hfield_on = .true.
+  NL%hfield_g = 0.2
+  NL%hfield_max_level = 1
+  NL%hfield_base_m = 100000.0
+  NL%hfield_nlon = 4
+  NL%hfield_nlat = 2
+/
+&quality
+  NL%on_violation = 'warn'
+/
+"#,
+            root.display(),
+            root.display()
+        ),
+    )
+    .expect("write namelist");
+
+    let out_dir = root.join("report");
+    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .arg("--mesh-quality")
+        .arg(&gridfile)
+        .arg(&out_dir)
+        .arg(&quality_nml)
+        .arg("--kind")
+        .arg("tri")
+        .output()
+        .expect("run earthmesh_cli");
+    assert!(
+        output.status.success(),
+        "mesh-quality failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json = fs::read_to_string(out_dir.join("quality_summary.json")).expect("json");
+    assert!(
+        json.contains("\"target_level_distribution\":[{\"level\":1"),
         "{json}"
     );
     assert!(

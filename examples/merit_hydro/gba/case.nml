@@ -48,7 +48,7 @@
   RL%niter_refine          = 500       ! iter num for refined-springGlobal mesh ! suggestion: if SpringGlobal:niter_refine can larger than 100 else less than 100
   
   !!!!!!!!!!!!!!!!!!!!!  SpringGlobal !!!!!!!!!!!!!!!!!!!!!!
-  RL%SpringGlobal_type     = 1          ! 0:NoSpring 1: orial OLAM
+  RL%SpringGlobal_type     = 1          ! 0:NoSpring 1:Method-C spring
   RL%num_rc                = 1          ! only use in SpringGlobal
   RL%set_dis_type          = 'linear'   ! 'linear', 'nonlinear1', 'nonlinear2', 'nonlinear3'
   

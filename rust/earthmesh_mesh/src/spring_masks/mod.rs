@@ -5,12 +5,10 @@ use super::*;
 ///
 /// The original routine reads the `mask_patch` NetCDF/file state before this
 /// classification loop. This kernel accepts that mask and the source lon/lat
-/// vertex arrays explicitly, then mirrors the Fortran `Source_Find` lookup and
+/// vertex arrays explicitly, then mirrors the Canonical `Source_Find` lookup and
 /// subsequent `max(1, source - 1)` cell-index shift for each triangle center
 /// from `num_mp_step(iter)` onward.
-pub fn refine_sjx_regional_make_fortran_indexed(
-    input: RefineRegionalMaskInput<'_>,
-) -> Option<Vec<bool>> {
+pub fn refine_sjx_regional_make_one_based(input: RefineRegionalMaskInput<'_>) -> Option<Vec<bool>> {
     if input.source_lon_vertices.len() < 2
         || input.source_lat_vertices.len() < 2
         || input.mask_patch.is_empty()
@@ -21,14 +19,12 @@ pub fn refine_sjx_regional_make_fortran_indexed(
     let mut refined_triangles = vec![false; input.triangle_lonlat.len()];
     for triangle_id in input.first_triangle_id..input.triangle_lonlat.len() {
         let center = input.triangle_lonlat[triangle_id];
-        let lon_source =
-            source_find_lon_fortran_indexed(input.source_lon_vertices, center.lon_degrees)?
-                .saturating_sub(1)
-                .max(1);
-        let lat_source =
-            source_find_lat_fortran_indexed(input.source_lat_vertices, center.lat_degrees)?
-                .saturating_sub(1)
-                .max(1);
+        let lon_source = source_find_lon_one_based(input.source_lon_vertices, center.lon_degrees)?
+            .saturating_sub(1)
+            .max(1);
+        let lat_source = source_find_lat_one_based(input.source_lat_vertices, center.lat_degrees)?
+            .saturating_sub(1)
+            .max(1);
         if *input.mask_patch.get(lon_source)?.get(lat_source)? {
             refined_triangles[triangle_id] = true;
         }
@@ -45,7 +41,7 @@ pub fn refine_sjx_regional_make_fortran_indexed(
 /// refined triangles as movable, freezes mixed boundary cells, then optionally
 /// removes cells in protected seed-vertex neighborhoods for
 /// `vertex_protect_layers`.
-pub fn set_dbx_move_regional_step_fortran_indexed(
+pub fn set_dbx_move_regional_step_one_based(
     input: RegionalMoveMaskInput<'_>,
 ) -> Option<RegionalMoveMaskOutput> {
     if input.refined_triangles.len() != input.cells_on_triangle.len()
@@ -54,13 +50,12 @@ pub fn set_dbx_move_regional_step_fortran_indexed(
         return None;
     }
 
-    let (expanded_refined_triangles, boundary_mask) =
-        expand_triangles_from_boundary_fortran_indexed(
-            input.refined_triangles.to_vec(),
-            input.triangles_on_cell,
-            input.n_edges_on_cell,
-            input.set_dis,
-        )?;
+    let (expanded_refined_triangles, boundary_mask) = expand_triangles_from_boundary_one_based(
+        input.refined_triangles.to_vec(),
+        input.triangles_on_cell,
+        input.n_edges_on_cell,
+        input.set_dis,
+    )?;
 
     let mut move_mask = vec![false; input.triangles_on_cell.len()];
     for triangle_id in 2..expanded_refined_triangles.len() {
@@ -107,7 +102,7 @@ pub fn set_dbx_move_regional_step_fortran_indexed(
                     *protected_triangles.get_mut(triangle_id)? = true;
                 }
             }
-            protected_triangles = expand_triangles_from_boundary_fortran_indexed(
+            protected_triangles = expand_triangles_from_boundary_one_based(
                 protected_triangles,
                 input.triangles_on_cell,
                 input.n_edges_on_cell,

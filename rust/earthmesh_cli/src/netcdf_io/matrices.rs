@@ -2,76 +2,34 @@ use std::io;
 
 use crate::{netcdf_to_io_error, require_len};
 
-pub(crate) fn required_values_f64_any_matrix(
-    file: &netcdf::File,
-    name: &str,
-    outer_len: usize,
-    inner_len: usize,
-) -> io::Result<Vec<f64>> {
-    let variable = file.variable(name).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("missing {name} variable"),
-        )
-    })?;
-    let dimensions = variable.dimensions();
-    if dimensions.len() != 2 || dimensions[0].len() != outer_len || dimensions[1].len() != inner_len
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{name} dimensions must match longitude x latitude"),
-        ));
+fn transpose<T: Copy + Default>(values: &[T], outer_len: usize, inner_len: usize) -> Vec<T> {
+    let mut transposed = vec![T::default(); outer_len * inner_len];
+    for inner in 0..inner_len {
+        for outer in 0..outer_len {
+            transposed[outer * inner_len + inner] = values[inner * outer_len + outer];
+        }
     }
-    if let Ok(values) = variable.get_values::<f64, _>((.., ..)) {
-        require_len(name, values.len(), outer_len * inner_len)?;
-        return Ok(values);
-    }
-    if let Ok(values) = variable.get_values::<f32, _>((.., ..)) {
-        require_len(name, values.len(), outer_len * inner_len)?;
-        return Ok(values.into_iter().map(f64::from).collect());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{name} variable must be readable as f64 or f32"),
-    ))
+    transposed
 }
 
-pub(crate) fn required_values_i32_any_matrix(
-    file: &netcdf::File,
-    name: &str,
-    outer_len: usize,
-    inner_len: usize,
-) -> io::Result<Vec<i32>> {
-    let variable = file.variable(name).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("missing {name} variable"),
-        )
-    })?;
-    let dimensions = variable.dimensions();
-    if dimensions.len() != 2 || dimensions[0].len() != outer_len || dimensions[1].len() != inner_len
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{name} dimensions must match longitude x latitude"),
-        ));
-    }
-    if let Ok(values) = variable.get_values::<i32, _>((.., ..)) {
-        require_len(name, values.len(), outer_len * inner_len)?;
-        return Ok(values);
-    }
-    if let Ok(values) = variable.get_values::<i16, _>((.., ..)) {
-        require_len(name, values.len(), outer_len * inner_len)?;
-        return Ok(values.into_iter().map(i32::from).collect());
-    }
-    if let Ok(values) = variable.get_values::<i8, _>((.., ..)) {
-        require_len(name, values.len(), outer_len * inner_len)?;
-        return Ok(values.into_iter().map(i32::from).collect());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{name} variable must be readable as i32, i16, or i8"),
-    ))
+#[cfg(test)]
+fn is_lon_dim(name: &str) -> bool {
+    is_axis_dim(name, &["lon", "longitude"], "x")
+}
+
+#[cfg(test)]
+fn is_lat_dim(name: &str) -> bool {
+    is_axis_dim(name, &["lat", "latitude"], "y")
+}
+
+#[cfg(test)]
+fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized == short_axis
+        || aliases.contains(&normalized.as_str())
+        || normalized
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|token| aliases.contains(&token))
 }
 
 pub(crate) fn required_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> {
@@ -120,17 +78,35 @@ pub(crate) fn required_values_i8_matrix(
         .map_err(netcdf_to_io_error)?;
     require_len(name, values.len(), outer_len * inner_len)?;
 
-    if dimension_names == [outer_dim, inner_dim] || dimension_lengths == [outer_len, inner_len] {
+    if dimension_names == [outer_dim, inner_dim] {
+        if dimension_lengths != [outer_len, inner_len] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{name} dimensions {:?} have wrong lengths {:?}",
+                    dimension_names, dimension_lengths
+                ),
+            ));
+        }
         return Ok(values);
     }
-    if dimension_names == [inner_dim, outer_dim] || dimension_lengths == [inner_len, outer_len] {
-        let mut transposed = vec![0; outer_len * inner_len];
-        for inner in 0..inner_len {
-            for outer in 0..outer_len {
-                transposed[outer * inner_len + inner] = values[inner * outer_len + outer];
-            }
+    if dimension_names == [inner_dim, outer_dim] {
+        if dimension_lengths != [inner_len, outer_len] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{name} dimensions {:?} have wrong lengths {:?}",
+                    dimension_names, dimension_lengths
+                ),
+            ));
         }
-        return Ok(transposed);
+        return Ok(transpose(&values, outer_len, inner_len));
+    }
+    if dimension_lengths == [outer_len, inner_len] {
+        return Ok(values);
+    }
+    if dimension_lengths == [inner_len, outer_len] {
+        return Ok(transpose(&values, outer_len, inner_len));
     }
 
     Err(io::Error::new(
@@ -170,17 +146,35 @@ pub(crate) fn required_values_i32_matrix(
         .map_err(netcdf_to_io_error)?;
     require_len(name, values.len(), outer_len * inner_len)?;
 
-    if dimension_names == [outer_dim, inner_dim] || dimension_lengths == [outer_len, inner_len] {
+    if dimension_names == [outer_dim, inner_dim] {
+        if dimension_lengths != [outer_len, inner_len] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{name} dimensions {:?} have wrong lengths {:?}",
+                    dimension_names, dimension_lengths
+                ),
+            ));
+        }
         return Ok(values);
     }
-    if dimension_names == [inner_dim, outer_dim] || dimension_lengths == [inner_len, outer_len] {
-        let mut transposed = vec![0; outer_len * inner_len];
-        for inner in 0..inner_len {
-            for outer in 0..outer_len {
-                transposed[outer * inner_len + inner] = values[inner * outer_len + outer];
-            }
+    if dimension_names == [inner_dim, outer_dim] {
+        if dimension_lengths != [inner_len, outer_len] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{name} dimensions {:?} have wrong lengths {:?}",
+                    dimension_names, dimension_lengths
+                ),
+            ));
         }
-        return Ok(transposed);
+        return Ok(transpose(&values, outer_len, inner_len));
+    }
+    if dimension_lengths == [outer_len, inner_len] {
+        return Ok(values);
+    }
+    if dimension_lengths == [inner_len, outer_len] {
+        return Ok(transpose(&values, outer_len, inner_len));
     }
 
     Err(io::Error::new(
@@ -203,4 +197,26 @@ pub(crate) fn optional_values_i32_2d(
         .get_values::<i32, _>((.., ..))
         .map(Some)
         .map_err(netcdf_to_io_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_lat_dim, is_lon_dim};
+
+    #[test]
+    fn axis_dimension_names_are_exact_or_tokenized() {
+        assert!(is_lon_dim("lon"));
+        assert!(is_lon_dim("longitude"));
+        assert!(is_lon_dim("nav_lon"));
+        assert!(is_lon_dim("x"));
+        assert!(is_lat_dim("lat"));
+        assert!(is_lat_dim("latitude"));
+        assert!(is_lat_dim("nav_lat"));
+        assert!(is_lat_dim("y"));
+
+        assert!(!is_lon_dim("pixel"));
+        assert!(!is_lon_dim("x_index"));
+        assert!(!is_lat_dim("quality"));
+        assert!(!is_lat_dim("y_index"));
+    }
 }

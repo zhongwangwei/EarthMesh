@@ -1,4 +1,4 @@
-use earthmesh_mesh::refine_array_length_halo_fortran_indexed;
+use earthmesh_mesh::refine_array_length_halo_one_based;
 
 #[test]
 fn array_length_halo_marks_initial_boundary_and_expands_transition_rows() {
@@ -9,7 +9,7 @@ fn array_length_halo_marks_initial_boundary_and_expands_transition_rows() {
     triangles_on_cell[4] = vec![2, 4];
     let edge_counts = vec![0, 0, 2, 2, 2];
 
-    let sizing = refine_array_length_halo_fortran_indexed(
+    let sizing = refine_array_length_halo_one_based(
         1,
         1,
         4,
@@ -39,7 +39,7 @@ fn array_length_halo_zero_distance_keeps_transition_boundary_as_initial_boundary
     triangles_on_cell[4] = vec![2, 4];
     let edge_counts = vec![0, 0, 2, 2, 2];
 
-    let sizing = refine_array_length_halo_fortran_indexed(
+    let sizing = refine_array_length_halo_one_based(
         0,
         1,
         4,
@@ -62,7 +62,7 @@ fn array_length_halo_rejects_cell_neighbor_count_that_exceeds_row_storage() {
     let triangles_on_cell = vec![vec![], vec![], vec![2]];
     let edge_counts = vec![0, 0, 2];
 
-    let err = refine_array_length_halo_fortran_indexed(
+    let err = refine_array_length_halo_one_based(
         1,
         1,
         2,

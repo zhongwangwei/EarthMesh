@@ -5,9 +5,9 @@ use std::io;
 /// For each active boundary/weak-concavity segment, adjacent segment
 /// triangles determine the shared neighbor that must be refined by reverse
 /// one-into-two.  The segment is rewritten in-place to contain the next round
-/// forward one-into-two candidates, preserving Fortran's placeholder `1`
+/// forward one-into-two candidates, preserving Canonical's placeholder `1`
 /// behavior.
-pub fn refine_isreverse_judge_fortran_indexed(
+pub fn refine_isreverse_judge_one_based(
     set_dis_in: usize,
     num_segment: usize,
     triangle_neighbors: &[Vec<usize>],
@@ -78,7 +78,7 @@ pub fn refine_isreverse_judge_fortran_indexed(
             if m0 == 0 || m0 > sjx_points || w0 == 0 || w0 > sjx_points {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("segment {segment_id} references invalid triangle pair {m0}, {w0}"),
+                    format!("segment {segment_id} canonicals invalid triangle pair {m0}, {w0}"),
                 ));
             }
             let Some(shared_neighbor) = triangle_neighbors[m0]

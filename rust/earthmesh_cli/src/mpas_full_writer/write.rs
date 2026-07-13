@@ -1,13 +1,21 @@
+use crate::netcdf_to_io_error;
+use crate::one_to_n_i32;
+use crate::validate_mpas_mesh;
+use crate::write_f64_1d;
+use crate::write_f64_matrix_rows;
+use crate::write_i32_1d;
+use crate::write_i32_matrix_rows;
+use crate::write_i32_pair_rows;
+use crate::MpasMesh;
+use crate::MpasMeshWriteReport;
 use std::io;
 use std::path::Path;
-
-use crate::*;
 
 /// Write the full MPAS mesh schema produced by
 /// `MOD_file_preprocess.F90:MPAS_Mesh_Save`.
 ///
-/// The Rust data shape preserves the legacy placeholder row at index `0`; all
-/// MPAS-facing variables are written from index `1..`, matching Fortran slices
+/// The Rust data shape preserves the compatibility placeholder row at index `0`; all
+/// MPAS-facing variables are written from index `1..`, matching Canonical slices
 /// such as `2:num_dbx`, `2:num_sjx`, and `2:num_edge`. Connectivity ids have
 /// the internal placeholder row removed before writing, so valid file ids stay
 /// 1-based while `0` remains the no-neighbour/missing marker.

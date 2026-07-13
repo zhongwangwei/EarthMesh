@@ -116,6 +116,15 @@ check(!html.includes('head("",STEPS'), "step header helper must not carry an unu
 log("step header helper has no dummy argument");
 
 check(
+  html.includes('class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed"') &&
+    !html.includes("Watershed (unsupported)") &&
+    !html.includes("流域（未支持）") &&
+    !html.includes("current engine does not accept SHP domains"),
+  "watershed SHP must be selectable and described as supported",
+);
+log("watershed SHP domain entry is enabled");
+
+check(
   !html.includes('value="ProjectConfig"') && !html.includes(">ProjectConfig</b>"),
   "static output placeholders must not show ProjectConfig as a value",
 );
@@ -154,8 +163,8 @@ log("project_summary layer shape documented");
 
 {
   const project = `${projectLib}\n${projectCriteria}`;
-  check(!project.includes('id: "typhoon"'), "project GUI criterion catalog must not expose unsupported typhoon refinement");
-  log("unsupported typhoon criterion stays out of project catalog");
+  check(project.includes('id: "typhoon"'), "project criterion catalog must expose supported typhoon refinement");
+  log("supported typhoon criterion is present in project catalog");
   check(project.includes("id: self.field.stem().to_string()"), "criterion data layers must use engine stems as ids");
   log("criterion data-layer ids use engine stems");
 }
@@ -272,10 +281,10 @@ log("CaMa label check passed");
     ["gui-tauri/README.md", readme],
     ["gui-tauri/dist/index.html", html],
   ]
-    .filter(([, text]) => /\bOLAM\b/.test(text))
+    .filter(([, text]) => /\bMethod-C\b/.test(text))
     .map(([file]) => file);
-  check(!hits.length, "GUI/docs must not expose OLAM as a project output format", hits);
-  log("GUI/docs hide deprecated OLAM project output");
+  check(!hits.length, "GUI/docs must not expose Method-C as a project output format", hits);
+  log("GUI/docs hide deprecated Method-C project output");
 }
 
 {
@@ -410,11 +419,20 @@ log("layer toggles preserve opened project paths");
       body.includes('modeIn.textContent = mode;') &&
       body.includes('readyMode.textContent = mode;') &&
       html.includes('function meshViewKind()') &&
-      qualityBody.includes('invoke("mesh_quality", { gridfile, kind: meshViewKind() });'),
+      qualityBody.includes('invoke("mesh_quality", {') &&
+      qualityBody.includes('kind: meshViewKind()') &&
+      qualityBody.includes('minAngleDeg:') &&
+      qualityBody.includes('onViolation:'),
     "quality mode must render tri-strict/hex-cgrid labels",
   );
   log("quality mode labels render from project summary");
 }
+
+check(
+  html.includes('typeof g.value === "number"') && html.includes(': "N/A";'),
+  "quality gate null values must render as N/A",
+);
+log("quality gate null values render as N/A");
 
 check(
   readme.includes("report `cell_view`") &&
@@ -452,6 +470,29 @@ log("mesh quality view smoke target is documented and wired");
     "quality report values must render as text",
   );
   log("quality report values render as text");
+}
+
+{
+  const body = section(
+    html,
+    /function renderAutoRefineDecisions\(decisions\) \{([\s\S]*?)\n  \}/,
+    "renderAutoRefineDecisions body",
+  );
+  check(
+    html.includes("auto_refine_decisions") &&
+      html.includes('id="autoRefineCard"') &&
+      body.includes("reason.textContent =") &&
+      body.includes("selected.textContent =") &&
+      body.includes("cell.textContent = value == null") &&
+      body.includes("reasonText(decision.reason)") &&
+      body.includes("preferenceText(regression.preferred)") &&
+      body.includes('outcome === "complete"') &&
+      body.includes('outcome === "kept"') &&
+      body.includes('invoke("open_path", { path })') &&
+      !body.includes("innerHTML"),
+    "AutoRefine decisions must be returned and rendered as safe text",
+  );
+  log("AutoRefine decision audit renders as safe text");
 }
 
 {
@@ -551,7 +592,7 @@ log("mesh quality view smoke target is documented and wired");
         "const refinementPasses = refinementEnabled",
       ) &&
       gui.includes("cfg.refinement.max_passes = if enabled { max_passes } else { 0 };") &&
-      projectPresets.includes("max_passes: if d.criteria.is_empty() { 0 } else { 3 }"),
+      projectPresets.includes("max_passes: if refinement_enabled { 3 } else { 0 }"),
     "disabled refinement max_passes must stay zero/inert",
   );
   log("disabled refinement max_passes zero check passed");

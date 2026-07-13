@@ -6,12 +6,12 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 use crate::{netcdf_to_io_error, require_len, AreaJudgeThreshold2D, AreaJudgeThreshold2Layer};
 
 /// Read one 2-D threshold window like `MOD_data_preprocess.F90:data_read_onelayer`.
-pub fn data_read_onelayer_fortran_indexed(
+pub fn data_read_onelayer_one_based(
     inputfile: impl AsRef<Path>,
     var_name: &str,
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<AreaJudgeThreshold2D> {
-    let values = data_read_onelayer_values_fortran_indexed(inputfile, var_name, bounds)?;
+    let values = data_read_onelayer_values_one_based(inputfile, var_name, bounds)?;
     Ok(AreaJudgeThreshold2D {
         name: var_name.to_string(),
         values,
@@ -19,23 +19,21 @@ pub fn data_read_onelayer_fortran_indexed(
 }
 
 /// Read two layer-specific threshold variables like `MOD_data_preprocess.F90:data_read_twolayer`.
-pub fn data_read_twolayer_fortran_indexed(
+pub fn data_read_twolayer_one_based(
     inputfile: impl AsRef<Path>,
     var_name: &str,
     bounds: AreaJudgeSourceBounds,
 ) -> io::Result<AreaJudgeThreshold2Layer> {
     let inputfile = inputfile.as_ref();
-    let first =
-        data_read_onelayer_values_fortran_indexed(inputfile, &format!("{var_name}_l1"), bounds)?;
-    let second =
-        data_read_onelayer_values_fortran_indexed(inputfile, &format!("{var_name}_l2"), bounds)?;
+    let first = data_read_onelayer_values_one_based(inputfile, &format!("{var_name}_l1"), bounds)?;
+    let second = data_read_onelayer_values_one_based(inputfile, &format!("{var_name}_l2"), bounds)?;
     Ok(AreaJudgeThreshold2Layer {
         name: var_name.to_string(),
         layers: vec![first, second],
     })
 }
 
-pub(super) fn data_read_onelayer_values_fortran_indexed(
+pub(super) fn data_read_onelayer_values_one_based(
     inputfile: impl AsRef<Path>,
     var_name: &str,
     bounds: AreaJudgeSourceBounds,
@@ -102,9 +100,41 @@ pub(super) fn data_read_onelayer_values_fortran_indexed(
 }
 
 fn is_lon_dim(name: &str) -> bool {
-    name.contains("lon")
+    is_axis_dim(name, &["lon", "longitude"], "x")
 }
 
 fn is_lat_dim(name: &str) -> bool {
-    name.contains("lat")
+    is_axis_dim(name, &["lat", "latitude"], "y")
+}
+
+fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    if normalized == short_axis || aliases.contains(&normalized.as_str()) {
+        return true;
+    }
+    normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| aliases.contains(&token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_lat_dim, is_lon_dim};
+
+    #[test]
+    fn threshold_data_axis_names_are_exact_or_tokenized() {
+        assert!(is_lon_dim("lon"));
+        assert!(is_lon_dim("longitude"));
+        assert!(is_lon_dim("nav_lon"));
+        assert!(is_lon_dim("x"));
+        assert!(is_lat_dim("lat"));
+        assert!(is_lat_dim("latitude"));
+        assert!(is_lat_dim("nav_lat"));
+        assert!(is_lat_dim("y"));
+
+        assert!(!is_lon_dim("pixel"));
+        assert!(!is_lon_dim("x_index"));
+        assert!(!is_lat_dim("quality"));
+        assert!(!is_lat_dim("y_index"));
+    }
 }

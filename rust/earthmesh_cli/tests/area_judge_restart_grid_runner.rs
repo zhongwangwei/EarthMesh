@@ -1,10 +1,14 @@
 use std::path::PathBuf;
 
 use earthmesh_cli::{
-    read_area_judge_grid_netcdf, run_area_judge_restart_grid_fortran_indexed,
-    run_area_judge_restart_grids_fortran_indexed, write_area_judge_grid_netcdf,
-    write_bbox_mask_netcdf, AreaJudgeCalculatedRefineConfig, AreaJudgeGridPayload,
-    AreaJudgeRestartGridRunConfig, AreaJudgeRestartGridsRunConfig, BBoxMask, BBoxPoint,
+    area_judge_grid_io::read_area_judge_grid_netcdf,
+    area_judge_grid_io::run_area_judge_restart_grid_one_based,
+    area_judge_grid_io::write_area_judge_grid_netcdf, area_judge_grid_io::AreaJudgeGridPayload,
+    area_judge_grid_io::AreaJudgeRestartGridRunConfig,
+    area_judge_grid_runs::run_area_judge_restart_grids_one_based,
+    area_judge_types::AreaJudgeCalculatedRefineConfig,
+    area_judge_types::AreaJudgeRestartGridsRunConfig, bbox_mask_io::write_bbox_mask_netcdf,
+    bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
@@ -48,7 +52,7 @@ fn restart_grid_runner_reads_file_and_expands_selected_domain_state() {
     )
     .expect("write restart input");
 
-    let report = run_area_judge_restart_grid_fortran_indexed(AreaJudgeRestartGridRunConfig {
+    let report = run_area_judge_restart_grid_one_based(AreaJudgeRestartGridRunConfig {
         input: &input,
         nlons_source: 4,
         nlats_source: 4,
@@ -107,7 +111,7 @@ fn restart_grids_runner_continues_iter_zero_refine_and_writes_selected_grid() {
     .expect("write calculated refine source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
 
-    let report = run_area_judge_restart_grids_fortran_indexed(AreaJudgeRestartGridsRunConfig {
+    let report = run_area_judge_restart_grids_one_based(AreaJudgeRestartGridsRunConfig {
         file_dir: &root,
         restart_input: &input,
         mask_patch: None,

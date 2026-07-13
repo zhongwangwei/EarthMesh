@@ -1,6 +1,8 @@
 use earthmesh_cli::{
-    build_area_judge_area_sources_fortran_indexed, write_bbox_mask_netcdf, write_close_mask_netcdf,
-    BBoxMask, BBoxPoint, CloseMask, LonLatPoint,
+    area_judge_sources::build_area_judge_area_sources_one_based,
+    bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
+    circle_close_mask_io::write_close_mask_netcdf, circle_close_mask_io::CloseMask,
+    coordinate_types::LonLatPoint,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -80,7 +82,7 @@ fn area_source_dispatch_reads_numbered_bbox_sources_and_merges_masks() {
     .expect("write second bbox source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
 
-    let report = build_area_judge_area_sources_fortran_indexed(
+    let report = build_area_judge_area_sources_one_based(
         &root,
         "mask_domain",
         "bbox",
@@ -137,7 +139,7 @@ fn area_source_dispatch_uses_three_digit_close_numbering() {
     .expect("write close source");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = global_axes();
 
-    let report = build_area_judge_area_sources_fortran_indexed(
+    let report = build_area_judge_area_sources_one_based(
         &root,
         "mask_refine",
         "close",

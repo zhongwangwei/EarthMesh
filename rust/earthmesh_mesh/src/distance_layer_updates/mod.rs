@@ -30,11 +30,11 @@ pub(crate) fn boundary_cells_from_triangle_flags(
 /// Port of the edge-length update rule in
 /// `MOD_grid_preprocess:distsOnEdge_layers_make`.
 ///
-/// The arrays preserve migrated Fortran indexing: slots `0` and `1` are
+/// The arrays preserve current Canonical indexing: slots `0` and `1` are
 /// placeholders, triangle ids and edge ids are used directly, and the caller
 /// provides `num_vertex_in`/`num_center_in` from `num_mp_step(iter)` and
 /// `num_wp_step(iter)`.
-pub fn dists_on_edge_layers_fortran_indexed(
+pub fn dists_on_edge_layers_one_based(
     num_vertex_in: usize,
     num_center_in: usize,
     num_rc: usize,

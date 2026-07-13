@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A refinement criterion, flattened for the data-layer / quality UI.
 #[derive(Serialize)]
@@ -57,8 +57,10 @@ pub(crate) struct ProjectSummary {
     pub(crate) bbox: Option<[f64; 4]>,
     pub(crate) watershed_path: Option<String>,
     pub(crate) close_format: Option<String>,
+    pub(crate) domain_close_boundary: Option<earthmesh_project::CloseBoundaryMode>,
     pub(crate) sea_ratio: Option<f64>,
     pub(crate) min_angle_deg: f64,
+    pub(crate) auto_refine_batch_cells: usize,
     pub(crate) on_violation: String,
     pub(crate) refine_enabled: bool,
     pub(crate) max_passes: u8,
@@ -69,6 +71,7 @@ pub(crate) struct ProjectSummary {
     pub(crate) specified_refine_radius_km: Option<f64>,
     pub(crate) specified_refine_bbox: Option<[f64; 4]>,
     pub(crate) specified_refine_path: Option<String>,
+    pub(crate) specified_refine_close_boundary: Option<earthmesh_project::CloseBoundaryMode>,
     pub(crate) hfield_enabled: bool,
     pub(crate) hfield_g: Option<f64>,
     pub(crate) hfield_max_level: Option<u8>,
@@ -101,4 +104,43 @@ pub(crate) struct RunResult {
     /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
+    /// Every candidate-selection decision produced by the shared AutoRefine
+    /// loop, ordered by pass and artifact path. Empty for non-AutoRefine runs.
+    pub(crate) auto_refine_decisions: Vec<AutoRefineDecision>,
+}
+
+/// One guarded metric that made an AutoRefine candidate non-acceptable.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct AutoRefineRegression {
+    pub(crate) metric: String,
+    pub(crate) preferred: String,
+    pub(crate) baseline: Option<f64>,
+    pub(crate) candidate: Option<f64>,
+    pub(crate) delta: Option<f64>,
+}
+
+/// Machine-readable candidate-selection record emitted by the CLI.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct AutoRefineDecision {
+    #[serde(default)]
+    pub(crate) schema_version: Option<u32>,
+    pub(crate) kind: String,
+    pub(crate) pass: u8,
+    pub(crate) decision: String,
+    pub(crate) reason: String,
+    #[serde(default)]
+    pub(crate) regressions: Vec<AutoRefineRegression>,
+    pub(crate) baseline_gridfile: Option<String>,
+    pub(crate) candidate_gridfile: String,
+    pub(crate) selected_gridfile: String,
+    pub(crate) baseline_quality_report: Option<String>,
+    pub(crate) candidate_quality_report: String,
+    pub(crate) selected_quality_report: String,
+    pub(crate) baseline_verdict: Option<String>,
+    pub(crate) candidate_verdict: String,
+    pub(crate) selected_verdict: String,
+    /// Full path to the decision JSON, added by the GUI scanner rather than
+    /// stored inside the artifact itself.
+    #[serde(default)]
+    pub(crate) artifact_path: String,
 }

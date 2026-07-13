@@ -1,6 +1,7 @@
 use earthmesh_cli::{
-    apply_area_judge_lambert_patch_source_fortran_indexed, read_mode4_mesh_netcdf,
-    write_mode4_mesh_netcdf, LonLatPoint, Mode4Mesh,
+    area_judge_lambert_sources::apply_area_judge_lambert_patch_source_one_based,
+    coordinate_types::LonLatPoint, lambert_mode4_io::read_mode4_mesh_netcdf,
+    lambert_mode4_io::write_mode4_mesh_netcdf, lambert_mode4_io::Mode4Mesh,
 };
 use earthmesh_mesh::AreaJudgeSourceBounds;
 use std::path::PathBuf;
@@ -64,7 +65,7 @@ fn lambert_patch_source_reads_mode4_mesh_and_applies_convex_cells() {
         .collect::<Vec<_>>();
     let mut seaorland = one_based_seaorland(360, 180);
 
-    let report = apply_area_judge_lambert_patch_source_fortran_indexed(
+    let report = apply_area_judge_lambert_patch_source_one_based(
         &source,
         &mut seaorland,
         &lon_vertex,

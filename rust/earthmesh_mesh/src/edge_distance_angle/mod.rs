@@ -36,7 +36,7 @@ pub struct EdgeDistanceAngleOutput {
 }
 
 /// Port of `MOD_grid_preprocess:Get_Edge_DIS_Angle`.
-pub fn edge_distance_angle_fortran_indexed(
+pub fn edge_distance_angle_one_based(
     vertices: &[CartesianPoint],
     cells: &[CartesianPoint],
     edge_points: &[CartesianPoint],

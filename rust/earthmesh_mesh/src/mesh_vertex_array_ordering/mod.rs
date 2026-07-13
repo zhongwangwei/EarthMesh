@@ -7,7 +7,7 @@ pub struct OrderedVertexArrays {
     pub cells_on_vertex: [usize; 3],
 }
 
-/// Array-level output from the Fortran-indexed `orderVertexArrays` port.
+/// Array-level output from the Canonical-indexed `orderVertexArrays` port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderedVertexArraysOutput {
     pub edges_on_vertex: Vec<[usize; 3]>,
@@ -16,7 +16,7 @@ pub struct OrderedVertexArraysOutput {
 
 /// Port of the per-vertex mutation/rebuild workflow in `MOD_grid_preprocess:orderVertexArrays`.
 ///
-/// This preserves the Fortran algorithm: mutate `edgesOnVertex` by repeatedly
+/// This preserves the Canonical algorithm: mutate `edgesOnVertex` by repeatedly
 /// swapping the next smallest positive-CCW edge into the following slot, then
 /// rebuild `cellsOnVertex` from `verticesOnEdge` and `cellsOnEdge`.
 pub fn order_vertex_arrays_for_vertex(
@@ -34,7 +34,7 @@ pub fn order_vertex_arrays_for_vertex(
         if edge1 == 0 {
             continue;
         }
-        let reference_edge = *edge_points.get(edge1)?;
+        let canonical_edge = *edge_points.get(edge1)?;
         let candidate_slots = ((j + 1)..3)
             .filter(|slot| ordered_edges[*slot] > 0)
             .collect::<Vec<_>>();
@@ -43,7 +43,7 @@ pub fn order_vertex_arrays_for_vertex(
             .map(|slot| edge_points.get(ordered_edges[*slot]).copied())
             .collect::<Option<Vec<_>>>()?;
         let Some(relative_slot) =
-            next_ccw_edge_candidate_slot(vertex, reference_edge, &candidate_points)
+            next_ccw_edge_candidate_slot(vertex, canonical_edge, &candidate_points)
         else {
             continue;
         };
@@ -74,11 +74,11 @@ pub fn order_vertex_arrays_for_vertex(
     })
 }
 
-/// Fortran-indexed array wrapper for `MOD_grid_preprocess:orderVertexArrays`.
+/// Canonical-indexed array wrapper for `MOD_grid_preprocess:orderVertexArrays`.
 ///
-/// Indices `0` and `1` are preserved/skipped so existing Fortran-style ids can
-/// be used directly while the rest of the mesh workflow is migrated.
-pub fn order_vertex_arrays_fortran_indexed(
+/// Indices `0` and `1` are preserved/skipped so existing Canonical-style ids can
+/// be used directly while the rest of the mesh workflow is current.
+pub fn order_vertex_arrays_one_based(
     vertex_points: &[CartesianPoint],
     edge_points: &[CartesianPoint],
     edges_on_vertex: &[[usize; 3]],

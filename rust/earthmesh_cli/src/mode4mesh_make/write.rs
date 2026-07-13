@@ -5,7 +5,7 @@ use crate::{
     lambert_vertices_to_mode4_mesh, read_lambert_vertices_netcdf, write_mode4_mesh_netcdf,
 };
 
-/// Report for the migrated NetCDF branch of `mkgrd.F90:mode4mesh_make`.
+/// Report for the current NetCDF branch of `mkgrd.F90:mode4mesh_make`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mode4MeshMakeReport {
     pub input: PathBuf,
@@ -17,7 +17,7 @@ pub struct Mode4MeshMakeReport {
 
 /// Execute the NetCDF-supported branch of `mode4mesh_make`.
 ///
-/// This currently ports the active Lambert `.nc/.nc4` path. The legacy Fortran
+/// This currently ports the active Lambert `.nc/.nc4` path. The compatibility Canonical
 /// lonlat `.nc` path and Lambert `.nml` path stop immediately, so they are
 /// represented as `InvalidInput` until deliberately enabled with tests.
 pub fn mode4mesh_make_netcdf(
