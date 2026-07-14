@@ -2,6 +2,9 @@ name: Python release artifacts
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "v*"
 
 permissions:
   contents: read
