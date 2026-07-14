@@ -18,8 +18,8 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     let cells = root.join("intersections.geojson");
     let levels = root.join("refinement_plan.json");
     let adapter = root.join("hydro_adapter.nml");
-    let initial_gridfile = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test/22/output/gridfile/gridfile_NXP0080_01_hex.nc4");
+    let initial_gridfile =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hydro_method_c_parent.nc4");
     assert!(initial_gridfile.is_file());
     fs::write(
         &source,

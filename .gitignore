@@ -10,6 +10,7 @@
 /cases/
 *.nc
 *.nc4
+!rust/earthmesh_cli/tests/fixtures/*.nc4
 
 # Rust build outputs
 target/
