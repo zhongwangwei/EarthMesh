@@ -1,0 +1,93 @@
+name: Python release artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux x86_64 wheel
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build manylinux wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --locked --out dist
+          manylinux: auto
+      - name: Smoke-test wheel
+        run: |
+          python3 -m venv /tmp/earthmesh-wheel
+          /tmp/earthmesh-wheel/bin/python -m pip install --no-deps dist/*.whl
+          test "$(/tmp/earthmesh-wheel/bin/earthmesh_cli --version)" = "3.0.0-alpha2"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-linux-x86_64
+          path: dist
+
+  windows:
+    name: Windows x64 wheel
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build Windows wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --locked --out dist
+      - name: Smoke-test wheel
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist\*.whl).FullName
+          py -m pip install --no-deps $wheel
+          if ((earthmesh_cli --version) -ne "3.0.0-alpha2") { exit 1 }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-windows-x64
+          path: dist
+
+  macos:
+    name: macOS ${{ matrix.platform.target }} wheel
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - runner: macos-15-intel
+            target: x86_64
+          - runner: macos-latest
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build macOS wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --locked --out dist
+      - name: Smoke-test wheel
+        run: |
+          python3 -m venv /tmp/earthmesh-wheel
+          /tmp/earthmesh-wheel/bin/python -m pip install --no-deps dist/*.whl
+          test "$(/tmp/earthmesh-wheel/bin/earthmesh_cli --version)" = "3.0.0-alpha2"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-macos-${{ matrix.platform.target }}
+          path: dist
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheels-sdist
+          path: dist
