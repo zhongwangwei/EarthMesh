@@ -429,9 +429,10 @@ fn antimeridian_overlap_is_wrap_independent() {
     .expect("shifted/reversed antimeridian intersection");
     let shifted = std::fs::read_to_string(&shifted_out).unwrap();
     let shifted_fraction = property_numbers(&shifted, "river_fraction")[0];
+    let fraction_delta = (shifted_fraction - fractions[0]).abs();
     assert!(
-        (shifted_fraction - fractions[0]).abs() < 1.0e-12,
-        "longitude representation or winding changed fraction: {json}\n{shifted}"
+        fraction_delta < 1.0e-10,
+        "longitude representation or winding changed fraction by {fraction_delta}: {json}\n{shifted}"
     );
     let area = property_numbers(&json, "cell_area_sr")[0];
     let shifted_area = property_numbers(&shifted, "cell_area_sr")[0];

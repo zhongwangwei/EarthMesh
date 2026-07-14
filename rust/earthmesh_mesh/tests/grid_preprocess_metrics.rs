@@ -969,33 +969,54 @@ fn springjustment_global_core_scales_centroids_for_radius_scaled_circumcenters()
         .map(lonlat_degrees_to_unit_xyz)
         .map(|point| CartesianPoint::new(point.x * radius, point.y * radius, point.z * radius))
         .collect::<Vec<_>>();
-    let expected = circumcenter_spherical_mesh_one_based(
+    let scaled_circumcenters = circumcenter_spherical_mesh_one_based(
         &scaled_centroid_cartesian,
         &output.spring.updated_cell_points,
         &cells_on_triangle,
     )
-    .expect("scaled circumcenters")
-    .into_iter()
-    .map(earthmesh_mesh::xyz_to_lonlat_degrees)
-    .collect::<Vec<_>>();
+    .expect("scaled circumcenters");
+    let expected = scaled_circumcenters
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
 
     let unscaled_centroid_cartesian = centroid_lonlat
         .iter()
         .copied()
         .map(lonlat_degrees_to_unit_xyz)
         .collect::<Vec<_>>();
-    let unscaled = circumcenter_spherical_mesh_one_based(
+    let unscaled_circumcenters = circumcenter_spherical_mesh_one_based(
         &unscaled_centroid_cartesian,
         &output.spring.updated_cell_points,
         &cells_on_triangle,
     )
-    .expect("unscaled circumcenters")
-    .into_iter()
-    .map(earthmesh_mesh::xyz_to_lonlat_degrees)
-    .collect::<Vec<_>>();
+    .expect("unscaled circumcenters");
+    let unscaled = unscaled_circumcenters
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::xyz_to_lonlat_degrees)
+        .collect::<Vec<_>>();
 
     assert_eq!(output.updated_triangle_lonlat, expected);
-    assert_ne!(output.updated_triangle_lonlat[2], unscaled[2]);
+    for point in scaled_circumcenters.iter().skip(2) {
+        let magnitude = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+        approx_eq(magnitude, radius, radius * 1.0e-12);
+    }
+    for point in unscaled_circumcenters.iter().skip(2) {
+        let magnitude = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+        approx_eq(magnitude, 1.0, 1.0e-12);
+    }
+    for (scaled, unscaled) in output
+        .updated_triangle_lonlat
+        .iter()
+        .zip(unscaled.iter())
+        .skip(2)
+    {
+        // Cartesian radius must not change the represented spherical direction.
+        approx_eq(scaled.lon_degrees, unscaled.lon_degrees, 1.0e-10);
+        approx_eq(scaled.lat_degrees, unscaled.lat_degrees, 1.0e-10);
+    }
 }
 
 #[test]
