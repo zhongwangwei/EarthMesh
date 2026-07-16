@@ -2,18 +2,22 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::classify::classify_merit_hydro_window_with_adjacency;
+use super::classify::classify_merit_cell;
 use super::types::{
     MeritHydroGeoJsonLayerWriteReport, MeritHydroWindowReport, MeritMaskThresholds,
 };
 use crate::{json_escape_string, json_number, require_len};
 
-/// Write native MERIT-Hydro classified windows as combined and split GeoJSON layers.
+/// Write native MERIT-Hydro classified windows as GeoJSON layers. CLI exports
+/// request the detailed split layers; Project execution can skip those duplicate
+/// files and losslessly compact consecutive same-class raster cells into disjoint
+/// corridor rectangles for the downstream conservative overlay.
 pub fn write_merit_hydro_mask_geojson_layers(
     windows: &[MeritHydroWindowReport],
     thresholds: MeritMaskThresholds,
     output_dir: impl AsRef<Path>,
     include_surface_masks: bool,
+    write_split_corridor_layers: bool,
 ) -> io::Result<MeritHydroGeoJsonLayerWriteReport> {
     let output_dir = output_dir.as_ref().to_path_buf();
     fs::create_dir_all(&output_dir)?;
@@ -24,52 +28,141 @@ pub fn write_merit_hydro_mask_geojson_layers(
         include_surface_masks.then(|| output_dir.join("merit_surface_masks.geojson"));
     let summary_json = output_dir.join("merit_mask_summary.json");
 
-    let mut combined_features = Vec::new();
-    let mut river_features = Vec::new();
-    let mut coast_features = Vec::new();
-    let mut surface_features = Vec::new();
+    let mut combined_writer = FeatureCollectionWriter::create(&combined_geojson)?;
+    let mut river_writer = write_split_corridor_layers
+        .then(|| FeatureCollectionWriter::create(&river_geojson))
+        .transpose()?;
+    let mut coast_writer = write_split_corridor_layers
+        .then(|| FeatureCollectionWriter::create(&coast_geojson))
+        .transpose()?;
+    let mut surface_writer = surface_geojson
+        .as_ref()
+        .map(|path| FeatureCollectionWriter::create(path))
+        .transpose()?;
     let mut mask_counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut river_feature_count = 0;
+    let mut coast_feature_count = 0;
+    let mut surface_feature_count = 0;
     let coast_adjacency = global_coast_adjacency(windows)?;
+    let compact_project_corridors = !write_split_corridor_layers && !include_surface_masks;
 
     for (window_index, window) in windows.iter().enumerate() {
-        let classification = classify_merit_hydro_window_with_adjacency(
-            window,
-            thresholds,
-            &coast_adjacency[window_index],
-        )?;
+        let expected = window.width.checked_mul(window.height).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MERIT-Hydro window shape overflows usize",
+            )
+        })?;
+        for (name, len) in [
+            ("upa", window.upa_km2.len()),
+            ("elv", window.elv_m.len()),
+            ("wth", window.width_m.len()),
+            ("landtype_igbp", window.landtype_igbp.len()),
+            ("coast adjacency", coast_adjacency[window_index].len()),
+        ] {
+            require_len(name, len, expected)?;
+        }
+        if compact_project_corridors {
+            for lon_index in 0..window.width {
+                let mut run_class: Option<&'static str> = None;
+                let mut run_start = 0;
+                for lat_index in 0..=window.height {
+                    let class = if lat_index < window.height {
+                        let offset = lon_index * window.height + lat_index;
+                        let class = classify_merit_cell(
+                            window.width_m[offset],
+                            window.upa_km2[offset],
+                            window.landtype_igbp[offset],
+                            coast_adjacency[window_index][offset],
+                            thresholds,
+                        );
+                        increment_mask_count(&mut mask_counts, class);
+                        matches!(class, "R2" | "R3" | "COAST_LAND" | "COAST_OCEAN").then_some(class)
+                    } else {
+                        None
+                    };
+                    if class == run_class {
+                        continue;
+                    }
+                    if let Some(previous) = run_class {
+                        let feature = merit_mask_run_feature_json(
+                            window,
+                            lon_index,
+                            run_start,
+                            lat_index - 1,
+                            previous,
+                        );
+                        combined_writer.write_feature(&feature)?;
+                        match previous {
+                            "R2" | "R3" => river_feature_count += 1,
+                            "COAST_LAND" | "COAST_OCEAN" => coast_feature_count += 1,
+                            _ => unreachable!("compact Project corridors use a closed class set"),
+                        }
+                    }
+                    run_class = class;
+                    run_start = lat_index;
+                }
+            }
+            continue;
+        }
         for lon_index in 0..window.width {
             for lat_index in 0..window.height {
                 let offset = lon_index * window.height + lat_index;
-                let class = &classification.classes[offset];
+                let class = classify_merit_cell(
+                    window.width_m[offset],
+                    window.upa_km2[offset],
+                    window.landtype_igbp[offset],
+                    coast_adjacency[window_index][offset],
+                    thresholds,
+                );
                 if class == "UNKNOWN" {
                     continue;
                 }
-                *mask_counts.entry(class.clone()).or_insert(0) += 1;
-                if matches!(class.as_str(), "LAND" | "OCEAN") && !include_surface_masks {
+                increment_mask_count(&mut mask_counts, class);
+                if matches!(class, "LAND" | "OCEAN") && !include_surface_masks {
                     continue;
                 }
                 let feature = merit_mask_feature_json(window, lon_index, lat_index, class);
-                combined_features.push(feature.clone());
-                match class.as_str() {
-                    "R2" | "R3" => river_features.push(feature),
-                    "COAST_LAND" | "COAST_OCEAN" => coast_features.push(feature),
-                    "LAND" | "OCEAN" => surface_features.push(feature),
+                combined_writer.write_feature(&feature)?;
+                match class {
+                    "R2" | "R3" => {
+                        river_feature_count += 1;
+                        if let Some(writer) = &mut river_writer {
+                            writer.write_feature(&feature)?;
+                        }
+                    }
+                    "COAST_LAND" | "COAST_OCEAN" => {
+                        coast_feature_count += 1;
+                        if let Some(writer) = &mut coast_writer {
+                            writer.write_feature(&feature)?;
+                        }
+                    }
+                    "LAND" | "OCEAN" => {
+                        surface_feature_count += 1;
+                        if let Some(writer) = &mut surface_writer {
+                            writer.write_feature(&feature)?;
+                        }
+                    }
                     _ => {}
                 }
             }
         }
     }
 
-    write_geojson_feature_collection(&combined_geojson, &combined_features)?;
-    write_geojson_feature_collection(&river_geojson, &river_features)?;
-    write_geojson_feature_collection(&coast_geojson, &coast_features)?;
-    if let Some(path) = &surface_geojson {
-        write_geojson_feature_collection(path, &surface_features)?;
-    }
+    let combined_feature_count = combined_writer.finish()?;
+    river_writer
+        .map(FeatureCollectionWriter::finish)
+        .transpose()?;
+    coast_writer
+        .map(FeatureCollectionWriter::finish)
+        .transpose()?;
+    surface_writer
+        .map(FeatureCollectionWriter::finish)
+        .transpose()?;
     write_merit_mask_summary_json(
         &summary_json,
         windows.len(),
-        combined_features.len(),
+        combined_feature_count,
         &mask_counts,
         thresholds,
     )?;
@@ -82,18 +175,59 @@ pub fn write_merit_hydro_mask_geojson_layers(
         surface_geojson,
         summary_json,
         window_count: windows.len(),
-        combined_feature_count: combined_features.len(),
-        river_feature_count: river_features.len(),
-        coast_feature_count: coast_features.len(),
-        surface_feature_count: surface_features.len(),
+        combined_feature_count,
+        river_feature_count,
+        coast_feature_count,
+        surface_feature_count,
         mask_counts,
     })
+}
+
+fn increment_mask_count(mask_counts: &mut std::collections::BTreeMap<String, usize>, class: &str) {
+    if class == "UNKNOWN" {
+        return;
+    }
+    if let Some(count) = mask_counts.get_mut(class) {
+        *count += 1;
+    } else {
+        mask_counts.insert(class.to_string(), 1);
+    }
+}
+
+struct FeatureCollectionWriter {
+    file: fs::File,
+    feature_count: usize,
+}
+
+impl FeatureCollectionWriter {
+    fn create(path: &Path) -> io::Result<Self> {
+        let mut file = fs::File::create(path)?;
+        write!(file, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
+        Ok(Self {
+            file,
+            feature_count: 0,
+        })
+    }
+
+    fn write_feature(&mut self, feature: &str) -> io::Result<()> {
+        if self.feature_count > 0 {
+            self.file.write_all(b",")?;
+        }
+        self.file.write_all(feature.as_bytes())?;
+        self.feature_count += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<usize> {
+        self.file.write_all(b"]}\n")?;
+        Ok(self.feature_count)
+    }
 }
 
 fn global_coast_adjacency(windows: &[MeritHydroWindowReport]) -> io::Result<Vec<Vec<bool>>> {
     let lon_fallback = minimum_axis_step(windows, |window| &window.lon);
     let lat_fallback = minimum_axis_step(windows, |window| &window.lat);
-    let mut surfaces = std::collections::HashMap::<(i64, i64), i8>::new();
+    let mut boundary_surfaces = std::collections::HashMap::<(i64, i64), i8>::new();
 
     for window in windows {
         if window.sampling_stride != 1 {
@@ -114,59 +248,129 @@ fn global_coast_adjacency(windows: &[MeritHydroWindowReport]) -> io::Result<Vec<
             )
         })?;
         require_len("landtype_igbp", window.landtype_igbp.len(), expected)?;
-        for lon_index in 0..window.width {
-            for lat_index in 0..window.height {
-                let offset = lon_index * window.height + lat_index;
-                let key = coordinate_key(window.lon[lon_index], window.lat[lat_index])?;
-                let surface = surface_code(window.landtype_igbp[offset]);
-                if let Some(previous) = surfaces.insert(key, surface) {
-                    if previous != surface {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "overlapping MERIT-Hydro windows disagree on land/ocean surface",
-                        ));
-                    }
+        for (lon_index, lat_index) in boundary_indices(window.width, window.height) {
+            let offset = lon_index * window.height + lat_index;
+            let key = coordinate_key(window.lon[lon_index], window.lat[lat_index])?;
+            let surface = surface_code(window.landtype_igbp[offset]);
+            if let Some(previous) = boundary_surfaces.insert(key, surface) {
+                if previous != surface {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "overlapping MERIT-Hydro windows disagree on land/ocean surface",
+                    ));
                 }
             }
         }
     }
 
-    windows
-        .iter()
-        .map(|window| {
-            let mut adjacency = vec![false; window.width * window.height];
-            for lon_index in 0..window.width {
-                let dlon = axis_step(&window.lon, lon_index, lon_fallback)?;
-                for lat_index in 0..window.height {
-                    let offset = lon_index * window.height + lat_index;
-                    let surface = surface_code(window.landtype_igbp[offset]);
-                    if surface == 0 {
+    let adjacency_for_window = |window: &MeritHydroWindowReport| -> io::Result<Vec<bool>> {
+        let mut adjacency = local_coast_adjacency(window);
+        for (lon_index, lat_index) in boundary_indices(window.width, window.height) {
+            let offset = lon_index * window.height + lat_index;
+            let surface = surface_code(window.landtype_igbp[offset]);
+            if surface == 0 || adjacency[offset] {
+                continue;
+            }
+            let dlon = axis_step(&window.lon, lon_index, lon_fallback)?;
+            let dlat = axis_step(&window.lat, lat_index, lat_fallback)?;
+            'neighbors: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    if dx == 0 && dy == 0 {
                         continue;
                     }
-                    let dlat = axis_step(&window.lat, lat_index, lat_fallback)?;
-                    'neighbors: for dx in -1..=1 {
-                        for dy in -1..=1 {
-                            if dx == 0 && dy == 0 {
-                                continue;
-                            }
-                            let key = coordinate_key(
-                                window.lon[lon_index] + f64::from(dx) * dlon,
-                                window.lat[lat_index] + f64::from(dy) * dlat,
-                            )?;
-                            if surfaces
-                                .get(&key)
-                                .is_some_and(|neighbor| *neighbor == -surface)
-                            {
-                                adjacency[offset] = true;
-                                break 'neighbors;
-                            }
-                        }
+                    let key = coordinate_key(
+                        window.lon[lon_index] + f64::from(dx) * dlon,
+                        window.lat[lat_index] + f64::from(dy) * dlat,
+                    )?;
+                    if boundary_surfaces
+                        .get(&key)
+                        .is_some_and(|neighbor| *neighbor == -surface)
+                    {
+                        adjacency[offset] = true;
+                        break 'neighbors;
                     }
                 }
             }
-            Ok(adjacency)
-        })
-        .collect()
+        }
+        Ok(adjacency)
+    };
+    let worker_count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(windows.len().max(1));
+    let chunk_size = windows.len().div_ceil(worker_count);
+    std::thread::scope(|scope| {
+        let handles = windows
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(&adjacency_for_window)
+                        .collect::<io::Result<Vec<_>>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut all = Vec::with_capacity(windows.len());
+        for handle in handles {
+            let chunk = handle
+                .join()
+                .map_err(|_| io::Error::other("MERIT-Hydro coast adjacency worker panicked"))??;
+            all.extend(chunk);
+        }
+        Ok(all)
+    })
+}
+
+fn local_coast_adjacency(window: &MeritHydroWindowReport) -> Vec<bool> {
+    let mut adjacency = vec![false; window.width * window.height];
+    const FORWARD_NEIGHBORS: [(isize, isize); 4] = [(0, 1), (1, -1), (1, 0), (1, 1)];
+    for lon_index in 0..window.width {
+        for lat_index in 0..window.height {
+            let offset = lon_index * window.height + lat_index;
+            let surface = surface_code(window.landtype_igbp[offset]);
+            if surface == 0 {
+                continue;
+            }
+            for (dx, dy) in FORWARD_NEIGHBORS {
+                let next_lon = lon_index as isize + dx;
+                let next_lat = lat_index as isize + dy;
+                if next_lon < 0
+                    || next_lon >= window.width as isize
+                    || next_lat < 0
+                    || next_lat >= window.height as isize
+                {
+                    continue;
+                }
+                let neighbor_offset = next_lon as usize * window.height + next_lat as usize;
+                if surface == -surface_code(window.landtype_igbp[neighbor_offset]) {
+                    adjacency[offset] = true;
+                    adjacency[neighbor_offset] = true;
+                }
+            }
+        }
+    }
+    adjacency
+}
+
+fn boundary_indices(width: usize, height: usize) -> Vec<(usize, usize)> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let mut indices = Vec::with_capacity(2 * width + 2 * height.saturating_sub(2));
+    for lon_index in 0..width {
+        indices.push((lon_index, 0));
+        if height > 1 {
+            indices.push((lon_index, height - 1));
+        }
+    }
+    for lat_index in 1..height.saturating_sub(1) {
+        indices.push((0, lat_index));
+        if width > 1 {
+            indices.push((width - 1, lat_index));
+        }
+    }
+    indices
 }
 
 fn minimum_axis_step(
@@ -263,6 +467,48 @@ fn merit_mask_feature_json(
     )
 }
 
+fn merit_mask_run_feature_json(
+    window: &MeritHydroWindowReport,
+    lon_index: usize,
+    start_lat_index: usize,
+    end_lat_index: usize,
+    mask_class: &str,
+) -> String {
+    let lon = window.lon[lon_index];
+    let dlon = merit_cell_delta(&window.lon, lon_index);
+    let lon0 = lon - dlon / 2.0;
+    let lon1 = lon + dlon / 2.0;
+    let start_lat = window.lat[start_lat_index];
+    let end_lat = window.lat[end_lat_index];
+    let start_delta = merit_cell_delta(&window.lat, start_lat_index);
+    let end_delta = merit_cell_delta(&window.lat, end_lat_index);
+    let lat0 = (start_lat - start_delta / 2.0).min(end_lat - end_delta / 2.0);
+    let lat1 = (start_lat + start_delta / 2.0).max(end_lat + end_delta / 2.0);
+    let stem = window
+        .tile
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| window.tile_name.trim_end_matches(".nc").to_string());
+    let feature_id = format!("{stem}:{lon_index}:{start_lat_index}-{end_lat_index}:{mask_class}");
+    format!(
+        "{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{},{}],[{},{}],[{},{}],[{},{}],[{},{}]]]}},\"properties\":{{\"feature_id\":\"{}\",\"mask_class\":\"{}\",\"source\":\"MERIT-Hydro\",\"source_cell_count\":{},\"tile\":\"{}\"}}}}",
+        json_number(lon0),
+        json_number(lat0),
+        json_number(lon1),
+        json_number(lat0),
+        json_number(lon1),
+        json_number(lat1),
+        json_number(lon0),
+        json_number(lat1),
+        json_number(lon0),
+        json_number(lat0),
+        json_escape_string(&feature_id),
+        json_escape_string(mask_class),
+        end_lat_index - start_lat_index + 1,
+        json_escape_string(&window.tile_name),
+    )
+}
+
 fn merit_cell_delta(values: &[f64], index: usize) -> f64 {
     if values.len() <= 1 {
         return 0.000_833_333_333_333_333_4;
@@ -272,19 +518,6 @@ fn merit_cell_delta(values: &[f64], index: usize) -> f64 {
     } else {
         (values[index] - values[index - 1]).abs()
     }
-}
-
-fn write_geojson_feature_collection(path: &Path, features: &[String]) -> io::Result<()> {
-    let mut handle = fs::File::create(path)?;
-    write!(handle, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
-    for (index, feature) in features.iter().enumerate() {
-        if index > 0 {
-            write!(handle, ",")?;
-        }
-        write!(handle, "{feature}")?;
-    }
-    writeln!(handle, "]}}")?;
-    Ok(())
 }
 
 fn write_merit_mask_summary_json(

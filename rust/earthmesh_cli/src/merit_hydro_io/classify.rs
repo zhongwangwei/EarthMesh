@@ -90,7 +90,7 @@ pub(super) fn classify_merit_hydro_window_with_adjacency(
     Ok(report)
 }
 
-fn classify_merit_cell(
+pub(super) fn classify_merit_cell(
     width_m: f64,
     upa_km2: f64,
     landtype_igbp: i32,

@@ -24,7 +24,7 @@ use crate::cama_reach_inventory::{
     write_cama_reach_inventory_point_geojson,
 };
 use crate::hydro_delivery_cells::write_gridfile_cell_polygons_geojson_with_report;
-use crate::hydro_delivery_refine_workflow::run_hydro_workflow;
+use crate::hydro_delivery_refine_workflow::{run_disjoint_hydro_workflow, run_hydro_workflow};
 use crate::hydro_workflow_types::HydroWorkflowReport;
 use crate::merit_hydro_io::{
     read_merit_hydro_window, write_merit_hydro_mask_geojson_layers, MeritMaskThresholds,
@@ -170,6 +170,10 @@ pub fn run_project_hydro_postprocess(
             ),
         ));
     }
+    eprintln!(
+        "earthmesh_cli: project hydro: exported {} mesh cells; reading native MERIT-Hydro windows",
+        cell_export.emitted_cells
+    );
 
     let mut windows = Vec::new();
     // MERIT-Hydro is a 3 arc-second raster. Read one native cell beyond the
@@ -180,7 +184,12 @@ pub fn run_project_hydro_postprocess(
         let bbox = merit_bbox(query);
         let tiles = select_merit_hydro_tiles(&merit_root, bbox)?;
         for tile in tiles {
-            windows.push(read_merit_hydro_window(tile, bbox, plan.merit_stride)?);
+            let mut window = read_merit_hydro_window(tile, bbox, plan.merit_stride)?;
+            // The mask classifier and exported coupling attributes do not use
+            // flow direction. Release this native-resolution plane before the
+            // multi-tile adjacency pass instead of retaining hundreds of MB.
+            window.dir = Vec::new();
+            windows.push(window);
         }
     }
     if windows.is_empty() {
@@ -192,13 +201,30 @@ pub fn run_project_hydro_postprocess(
             ),
         ));
     }
+    eprintln!(
+        "earthmesh_cli: project hydro: loaded {} MERIT-Hydro windows; classifying native river/coast cells",
+        windows.len()
+    );
     let merit_dir = out_dir.join("merit_masks");
     let thresholds = MeritMaskThresholds {
         r2_width_m: plan.r2_width_m,
         r3_width_m: plan.r3_width_m,
         ..MeritMaskThresholds::default()
     };
-    let merit = write_merit_hydro_mask_geojson_layers(&windows, thresholds, &merit_dir, false)?;
+    let merit_window_count = windows.len();
+    let merit =
+        write_merit_hydro_mask_geojson_layers(&windows, thresholds, &merit_dir, false, false)?;
+    drop(windows);
+    eprintln!(
+        "earthmesh_cli: project hydro: compacted {} native river/coast cells into {} disjoint corridors; intersecting mesh cells",
+        merit
+            .mask_counts
+            .iter()
+            .filter(|(class, _)| matches!(class.as_str(), "R2" | "R3" | "COAST_LAND" | "COAST_OCEAN"))
+            .map(|(_, count)| count)
+            .sum::<usize>(),
+        merit.combined_feature_count
+    );
 
     let (
         cama_reaches_geojson,
@@ -245,20 +271,41 @@ pub fn run_project_hydro_postprocess(
         merit.combined_geojson.clone()
     };
     let workflow_dir = out_dir.join("workflow");
-    let hydro = run_hydro_workflow(
-        &cells_geojson,
-        &corridors_geojson,
-        &workflow_dir,
-        &plan.include_classes,
-        0.0,
-        false,
-        Some(&domain.rings),
-        plan.max_level,
-        None,
-        Some(gridfile),
-        Some(&landtype),
-        landtype_gridnum_perdegree,
-    )?;
+    let hydro = if cama_corridors_geojson.is_some() {
+        run_hydro_workflow(
+            &cells_geojson,
+            &corridors_geojson,
+            &workflow_dir,
+            &plan.include_classes,
+            0.0,
+            false,
+            Some(&domain.rings),
+            plan.max_level,
+            None,
+            Some(gridfile),
+            Some(&landtype),
+            landtype_gridnum_perdegree,
+        )
+    } else {
+        run_disjoint_hydro_workflow(
+            &cells_geojson,
+            &corridors_geojson,
+            &workflow_dir,
+            &plan.include_classes,
+            0.0,
+            false,
+            Some(&domain.rings),
+            plan.max_level,
+            None,
+            Some(gridfile),
+            Some(&landtype),
+            landtype_gridnum_perdegree,
+        )
+    }?;
+    eprintln!(
+        "earthmesh_cli: project hydro: completed {} cell/class intersections and {} coupling rows",
+        hydro.intersection_cells, hydro.coupling_rows
+    );
     let manifest_path = out_dir.join("project_hydro_manifest.json");
     let optional_path = |path: &Option<PathBuf>| {
         path.as_ref()
@@ -277,7 +324,7 @@ pub fn run_project_hydro_postprocess(
             domain.rings.len(),
             cell_export.emitted_cells,
             cell_export.rejected_unsupported_cells,
-            windows.len(),
+            merit_window_count,
             plan.merit_stride,
             cama_reach_count,
             cama_river_mouth_count,

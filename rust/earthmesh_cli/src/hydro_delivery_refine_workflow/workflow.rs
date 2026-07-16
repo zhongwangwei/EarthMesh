@@ -1,3 +1,4 @@
+use crate::hydro_delivery_intersections::write_disjoint_earthmesh_intersection_geojson;
 use crate::write_colm_coupling_csv_from_intersections;
 use crate::write_coupling_quality_from_gridfile;
 use crate::write_earthmesh_intersection_geojson;
@@ -32,6 +33,73 @@ pub fn run_hydro_workflow(
     landtype: Option<&Path>,
     gridnum_perdegree: usize,
 ) -> io::Result<HydroWorkflowReport> {
+    run_hydro_workflow_with_overlap(
+        cells_geojson,
+        corridors_geojson,
+        out_dir,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain,
+        max_level,
+        max_refined_cells,
+        mesh,
+        landtype,
+        gridnum_perdegree,
+        true,
+    )
+}
+
+/// Project-only fast path for a corridor layer whose same-class polygon interiors
+/// are known to be disjoint (the native MERIT-Hydro raster classification).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_disjoint_hydro_workflow(
+    cells_geojson: impl AsRef<Path>,
+    corridors_geojson: impl AsRef<Path>,
+    out_dir: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[Vec<(f64, f64)>]>,
+    max_level: u8,
+    max_refined_cells: Option<usize>,
+    mesh: Option<&Path>,
+    landtype: Option<&Path>,
+    gridnum_perdegree: usize,
+) -> io::Result<HydroWorkflowReport> {
+    run_hydro_workflow_with_overlap(
+        cells_geojson,
+        corridors_geojson,
+        out_dir,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain,
+        max_level,
+        max_refined_cells,
+        mesh,
+        landtype,
+        gridnum_perdegree,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_hydro_workflow_with_overlap(
+    cells_geojson: impl AsRef<Path>,
+    corridors_geojson: impl AsRef<Path>,
+    out_dir: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[Vec<(f64, f64)>]>,
+    max_level: u8,
+    max_refined_cells: Option<usize>,
+    mesh: Option<&Path>,
+    landtype: Option<&Path>,
+    gridnum_perdegree: usize,
+    same_class_overlap_possible: bool,
+) -> io::Result<HydroWorkflowReport> {
     let out_dir = out_dir.as_ref();
     fs::create_dir_all(out_dir)?;
     let intersections_path = out_dir.join("intersections.geojson");
@@ -39,15 +107,27 @@ pub fn run_hydro_workflow(
     let refinement_plan_path = out_dir.join("refinement_plan.json");
     let manifest_path = out_dir.join("workflow_manifest.json");
 
-    let intersection_cells = write_earthmesh_intersection_geojson(
-        cells_geojson,
-        corridors_geojson,
-        &intersections_path,
-        include_classes,
-        min_fraction,
-        unit_sphere_area,
-        domain,
-    )?;
+    let intersection_cells = if same_class_overlap_possible {
+        write_earthmesh_intersection_geojson(
+            cells_geojson,
+            corridors_geojson,
+            &intersections_path,
+            include_classes,
+            min_fraction,
+            unit_sphere_area,
+            domain,
+        )?
+    } else {
+        write_disjoint_earthmesh_intersection_geojson(
+            cells_geojson,
+            corridors_geojson,
+            &intersections_path,
+            include_classes,
+            min_fraction,
+            unit_sphere_area,
+            domain,
+        )?
+    };
     let coupling_rows = write_colm_coupling_csv_from_intersections(
         &intersections_path,
         &coupling_csv_path,

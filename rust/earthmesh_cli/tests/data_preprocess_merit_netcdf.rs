@@ -378,6 +378,7 @@ fn merit_hydro_writer_exports_combined_and_split_geojson_layers_from_native_wind
         earthmesh_cli::merit_hydro_io::MeritMaskThresholds::default(),
         &output_dir,
         true,
+        true,
     )
     .expect("write MERIT GeoJSON layers");
 
@@ -448,6 +449,7 @@ fn merit_hydro_writer_classifies_coast_across_window_seams() {
         earthmesh_cli::merit_hydro_io::MeritMaskThresholds::default(),
         root.join("out"),
         true,
+        true,
     )
     .expect("classify seam with all windows in one native adjacency grid");
 
@@ -460,6 +462,44 @@ fn merit_hydro_writer_classifies_coast_across_window_seams() {
     assert!(coast.contains(r#""feature_id":"left:1:0:COAST_LAND""#));
     assert!(coast.contains(r#""feature_id":"right:0:0:COAST_OCEAN""#));
 
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn merit_hydro_writer_can_skip_duplicate_split_layers_for_project_runs() {
+    let root = temp_root("data_preprocess_merit_combined_only");
+    let windows = vec![earthmesh_cli::merit_hydro_io::MeritHydroWindowReport {
+        tile: PathBuf::from("combined.nc"),
+        tile_name: "combined.nc".to_string(),
+        lon: vec![0.0],
+        lat: vec![0.0, 1.0, 2.0],
+        width: 1,
+        height: 3,
+        sampling_stride: 1,
+        dir: Vec::new(),
+        upa_km2: vec![6_000.0; 3],
+        elv_m: vec![0.0; 3],
+        width_m: vec![0.0; 3],
+        landtype_igbp: vec![1; 3],
+    }];
+
+    let report = earthmesh_cli::merit_hydro_io::write_merit_hydro_mask_geojson_layers(
+        &windows,
+        earthmesh_cli::merit_hydro_io::MeritMaskThresholds::default(),
+        root.join("out"),
+        false,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report.combined_feature_count, 1);
+    assert_eq!(report.river_feature_count, 1);
+    assert_eq!(report.mask_counts.get("R2"), Some(&3));
+    assert!(report.combined_geojson.is_file());
+    assert!(!report.river_geojson.exists());
+    assert!(!report.coast_geojson.exists());
+    let combined = fs::read_to_string(report.combined_geojson).unwrap();
+    assert!(combined.contains(r#""source_cell_count":3"#), "{combined}");
     let _ = fs::remove_dir_all(root);
 }
 

@@ -255,7 +255,7 @@ impl ProjectConfig {
             quality: QualityConfig {
                 min_angle_deg: d.min_angle_deg,
                 auto_refine_batch_cells: crate::DEFAULT_AUTO_REFINE_BATCH_CELLS,
-                on_violation: ViolationPolicy::Warn,
+                on_violation: ViolationPolicy::AutoRefine,
             },
             expert: ExpertOverrides::default(),
             hydro_coast: None,

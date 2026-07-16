@@ -769,6 +769,16 @@ fn preset_yaml(name: &str, intent: MeshIntentPreset) -> String {
     )
     .expect("scaffold project")
 }
+
+#[test]
+fn new_gui_projects_enable_auto_refine_by_default() {
+    let yaml = preset_yaml("auto_refine_default", MeshIntentPreset::MeritHydroCoast);
+    let project = ProjectConfig::from_yaml(&yaml).unwrap();
+    assert_eq!(
+        project.quality.on_violation,
+        ViolationPolicy::AutoRefine
+    );
+}
 fn hydrology_yaml(name: &str) -> String {
     preset_yaml(name, MeshIntentPreset::HydrologyLand)
 }

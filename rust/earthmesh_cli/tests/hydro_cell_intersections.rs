@@ -6,7 +6,9 @@
 use earthmesh_cli::{
     hydro_delivery_colm::colm_coupling_rows_from_intersections,
     hydro_delivery_colm::write_colm_coupling_csv_from_intersections,
-    hydro_delivery_intersections::write_earthmesh_intersection_geojson,
+    hydro_delivery_intersections::{
+        write_disjoint_earthmesh_intersection_geojson, write_earthmesh_intersection_geojson,
+    },
 };
 use flate2::{write::GzEncoder, Compression};
 use std::io::Write;
@@ -89,6 +91,62 @@ fn cell_river_overlap_fraction_and_coupling_chain() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn disjoint_corridor_fast_path_matches_union_area() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_disjoint_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"mask_class":"R3","source":"MERIT-Hydro"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}},
+        {"type":"Feature","properties":{"river_class":"R3","source":"MERIT-Hydro"},
+         "geometry":{"type":"Polygon","coordinates":[[[1,0],[2,0],[2,1],[1,1],[1,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    let union = dir.join("union.geojson");
+    let disjoint = dir.join("disjoint.geojson");
+    write_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &union,
+        &["R3".to_string()],
+        0.0,
+        false,
+        None,
+    )
+    .unwrap();
+    write_disjoint_earthmesh_intersection_geojson(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &disjoint,
+        &["R3".to_string()],
+        0.0,
+        false,
+        None,
+    )
+    .unwrap();
+
+    let union_fraction =
+        property_numbers(&std::fs::read_to_string(union).unwrap(), "river_fraction")[0];
+    let disjoint_text = std::fs::read_to_string(disjoint).unwrap();
+    let disjoint_fraction = property_numbers(&disjoint_text, "river_fraction")[0];
+    assert!((union_fraction - disjoint_fraction).abs() < 1.0e-12);
+    assert!((disjoint_fraction - 0.5).abs() < 2.0e-4);
+    assert!(disjoint_text.contains("\"same_class_overlap_handling\": \"disjoint_area_sum\""));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

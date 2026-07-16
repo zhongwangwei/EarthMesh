@@ -365,7 +365,7 @@ impl Default for QualityConfig {
         Self {
             min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
             auto_refine_batch_cells: DEFAULT_AUTO_REFINE_BATCH_CELLS,
-            on_violation: ViolationPolicy::Warn,
+            on_violation: ViolationPolicy::AutoRefine,
         }
     }
 }

@@ -838,7 +838,14 @@ mod tests {
             radius_km: 100.0,
         });
 
+        project.quality.on_violation = ViolationPolicy::Warn;
         assert_eq!(project_triangle_budget(&project).unwrap(), 821_249_280);
+
+        project.quality.on_violation = ViolationPolicy::AutoRefine;
+        assert_eq!(
+            project_triangle_budget(&project).unwrap(),
+            20 * 801 * 801 * 4usize.pow(5)
+        );
     }
 
     #[test]

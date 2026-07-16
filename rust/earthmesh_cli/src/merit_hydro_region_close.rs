@@ -53,7 +53,8 @@ pub fn write_merit_hydro_region_close_masks(
             "no MERIT-Hydro window overlapped the region",
         ));
     }
-    let geojson = write_merit_hydro_mask_geojson_layers(&windows, thresholds, &output_dir, true)?;
+    let geojson =
+        write_merit_hydro_mask_geojson_layers(&windows, thresholds, &output_dir, true, true)?;
     let river_nml = write_hydro_close_mask_nmls(
         &geojson.river_geojson,
         output_dir.join("refine_spc_river"),

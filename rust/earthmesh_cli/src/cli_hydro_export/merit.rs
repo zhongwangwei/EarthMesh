@@ -107,6 +107,7 @@ pub(crate) fn run_merit_hydro_geojson(
         thresholds,
         &output_dir,
         include_surface_masks,
+        true,
     )
     .map_err(|err| err.to_string())?;
     println!("merit_tile_count={}", report.window_count);

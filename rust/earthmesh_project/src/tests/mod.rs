@@ -106,6 +106,31 @@ fn yaml_round_trips() {
 }
 
 #[test]
+fn new_projects_default_to_auto_refine_without_reinterpreting_legacy_yaml() {
+    assert_eq!(
+        QualityConfig::default().on_violation,
+        ViolationPolicy::AutoRefine
+    );
+    let preset = ProjectConfig::scaffold(
+        "auto-refine-default",
+        MeshIntentPreset::MeritHydroCoast,
+        DomainConfig::Global,
+        ResolutionSpec::ApproxKm(100.0),
+    );
+    assert_eq!(preset.quality.on_violation, ViolationPolicy::AutoRefine);
+
+    let legacy = preset
+        .to_yaml()
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("on_violation:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reopened = ProjectConfig::from_yaml(&legacy).unwrap();
+    assert_eq!(reopened.quality.on_violation, ViolationPolicy::Warn);
+}
+
+#[test]
 fn project_validation_rejects_invalid_regional_shapes() {
     let mut p = sample();
     p.domain = DomainConfig::Regional {

@@ -3,6 +3,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+
 use crate::{
     geojson_feature_nodes, json_escape_string, read_text_maybe_gzip, JsonNode, JsonParser,
     HYDRO_EARTH_RADIUS_M,
@@ -21,35 +24,201 @@ struct CorridorRing {
     reach_id: Option<String>,
 }
 
-fn feature_river_class(props: Option<&BTreeMap<String, JsonNode>>) -> String {
-    props
-        .and_then(|p| {
-            p.get("river_class")
-                .and_then(JsonNode::as_str)
-                .filter(|s| !s.is_empty())
-                .or_else(|| p.get("mask_class").and_then(JsonNode::as_str))
-        })
-        .unwrap_or("")
-        .to_string()
+#[derive(Clone, Copy)]
+enum SameClassOverlap {
+    Possible,
+    Disjoint,
 }
 
-fn feature_string_property(
-    props: Option<&BTreeMap<String, JsonNode>>,
-    name: &str,
-) -> Option<String> {
-    match props.and_then(|values| values.get(name)) {
-        Some(JsonNode::String(value)) if !value.is_empty() => Some(value.clone()),
-        Some(JsonNode::Number(value)) => Some(crate::format_coupling_number(*value)),
-        _ => None,
+#[derive(Clone, Copy)]
+struct LonLat(earthmesh_geometry::Point);
+
+impl<'de> Deserialize<'de> for LonLat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct LonLatVisitor;
+
+        impl<'de> Visitor<'de> for LonLatVisitor {
+            type Value = LonLat;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a GeoJSON coordinate with at least longitude and latitude")
+            }
+
+            fn visit_seq<A>(self, mut values: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let lon = values
+                    .next_element::<f64>()?
+                    .ok_or_else(|| serde::de::Error::custom("missing longitude"))?;
+                let lat = values
+                    .next_element::<f64>()?
+                    .ok_or_else(|| serde::de::Error::custom("missing latitude"))?;
+                while values.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(LonLat(earthmesh_geometry::Point::new(lon, lat)))
+            }
+        }
+
+        deserializer.deserialize_seq(LonLatVisitor)
     }
 }
 
-fn feature_bool_property(props: Option<&BTreeMap<String, JsonNode>>, name: &str) -> bool {
-    match props.and_then(|values| values.get(name)) {
-        Some(JsonNode::Bool(value)) => *value,
-        Some(JsonNode::String(value)) => value.eq_ignore_ascii_case("true"),
-        _ => false,
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TextProperty {
+    Text(String),
+    Number(f64),
+}
+
+impl TextProperty {
+    fn into_nonempty_string(self) -> Option<String> {
+        match self {
+            Self::Text(value) => (!value.is_empty()).then_some(value),
+            Self::Number(value) => Some(crate::format_coupling_number(value)),
+        }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BoolProperty {
+    Bool(bool),
+    Text(String),
+}
+
+impl BoolProperty {
+    fn value(&self) -> bool {
+        match self {
+            Self::Bool(value) => *value,
+            Self::Text(value) => value.eq_ignore_ascii_case("true"),
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct CorridorProperties {
+    #[serde(default)]
+    river_class: String,
+    #[serde(default)]
+    mask_class: String,
+    source: Option<TextProperty>,
+    is_estuary: Option<BoolProperty>,
+    reach_id: Option<TextProperty>,
+}
+
+impl CorridorProperties {
+    fn class(&self) -> &str {
+        if self.river_class.is_empty() {
+            &self.mask_class
+        } else {
+            &self.river_class
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum CorridorGeometry {
+    Polygon {
+        coordinates: Vec<Vec<LonLat>>,
+    },
+    MultiPolygon {
+        coordinates: Vec<Vec<Vec<LonLat>>>,
+    },
+    #[serde(other)]
+    Unsupported,
+}
+
+impl CorridorGeometry {
+    fn into_outer_rings(self) -> Vec<Vec<earthmesh_geometry::Point>> {
+        let points = |ring: Vec<LonLat>| ring.into_iter().map(|point| point.0).collect();
+        match self {
+            Self::Polygon { coordinates } => coordinates
+                .into_iter()
+                .next()
+                .map(|ring| vec![points(ring)])
+                .unwrap_or_default(),
+            Self::MultiPolygon { coordinates } => coordinates
+                .into_iter()
+                .filter_map(|polygon| polygon.into_iter().next())
+                .map(points)
+                .collect(),
+            Self::Unsupported => Vec::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CorridorFeature {
+    geometry: Option<CorridorGeometry>,
+    #[serde(default)]
+    properties: Option<CorridorProperties>,
+}
+
+#[derive(Deserialize)]
+struct CorridorFeatureCollection {
+    features: Vec<CorridorFeature>,
+}
+
+fn read_corridor_rings(
+    path: &Path,
+    included: &std::collections::BTreeSet<&str>,
+    validate_ring: &impl Fn(&[earthmesh_geometry::Point], &str) -> io::Result<f64>,
+) -> io::Result<BTreeMap<String, Vec<CorridorRing>>> {
+    let text = read_text_maybe_gzip(path)?;
+    let collection: CorridorFeatureCollection = serde_json::from_str(&text).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid corridor GeoJSON {}: {error}", path.display()),
+        )
+    })?;
+    let mut class_rings: BTreeMap<String, Vec<CorridorRing>> = BTreeMap::new();
+    for feature in collection.features {
+        let properties = feature.properties.unwrap_or_default();
+        let class = properties.class().to_string();
+        if class.is_empty() || !included.contains(class.as_str()) {
+            continue;
+        }
+        let source = properties
+            .source
+            .and_then(TextProperty::into_nonempty_string);
+        let is_estuary = properties
+            .is_estuary
+            .as_ref()
+            .is_some_and(BoolProperty::value);
+        let reach_id = properties
+            .reach_id
+            .and_then(TextProperty::into_nonempty_string);
+        let Some(geometry) = feature.geometry else {
+            continue;
+        };
+        for ring in geometry.into_outer_rings() {
+            if ring.len() < 3 {
+                continue;
+            }
+            validate_ring(&ring, "corridor")?;
+            let cap = SphericalCap::for_rings(std::slice::from_ref(&ring)).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "corridor has no spherical center",
+                )
+            })?;
+            class_rings
+                .entry(class.clone())
+                .or_default()
+                .push(CorridorRing {
+                    ring,
+                    cap,
+                    source: source.clone(),
+                    is_estuary,
+                    reach_id: reach_id.clone(),
+                });
+        }
+    }
+    Ok(class_rings)
 }
 
 /// Conservative cell×corridor overlay on the sphere.
@@ -68,6 +237,56 @@ pub fn write_earthmesh_intersection_geojson(
     min_fraction: f64,
     unit_sphere_area: bool,
     domain: Option<&[Vec<(f64, f64)>]>,
+) -> io::Result<usize> {
+    write_earthmesh_intersection_geojson_with_overlap(
+        cell_geojson,
+        corridor_geojson,
+        output_geojson,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain,
+        SameClassOverlap::Possible,
+    )
+}
+
+/// Exact fast path for inputs whose same-class polygons have disjoint interiors,
+/// such as the native MERIT-Hydro classification where every raster cell owns one
+/// class. Shared boundaries have zero area, so summing clipped pieces is identical
+/// to a polygon union and avoids quadratic edge-pair enumeration.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn write_disjoint_earthmesh_intersection_geojson(
+    cell_geojson: impl AsRef<Path>,
+    corridor_geojson: impl AsRef<Path>,
+    output_geojson: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[Vec<(f64, f64)>]>,
+) -> io::Result<usize> {
+    write_earthmesh_intersection_geojson_with_overlap(
+        cell_geojson,
+        corridor_geojson,
+        output_geojson,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain,
+        SameClassOverlap::Disjoint,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_earthmesh_intersection_geojson_with_overlap(
+    cell_geojson: impl AsRef<Path>,
+    corridor_geojson: impl AsRef<Path>,
+    output_geojson: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[Vec<(f64, f64)>]>,
+    same_class_overlap: SameClassOverlap,
 ) -> io::Result<usize> {
     use earthmesh_geometry::{
         clip_convex_polygon, polygon_area, polygon_intersection_pieces, polygon_union_area,
@@ -99,50 +318,9 @@ pub fn write_earthmesh_intersection_geojson(
         ));
     }
     let cells_root = JsonParser::new(&read_text_maybe_gzip(cell_geojson.as_ref())?).parse()?;
-    let corridors_root =
-        JsonParser::new(&read_text_maybe_gzip(corridor_geojson.as_ref())?).parse()?;
     let included: std::collections::BTreeSet<&str> =
         include_classes.iter().map(|s| s.as_str()).collect();
-
-    let mut class_rings: BTreeMap<String, Vec<CorridorRing>> = BTreeMap::new();
-    for feature in geojson_feature_nodes(&corridors_root) {
-        let obj = feature.as_object();
-        let corridor_props = obj
-            .and_then(|o| o.get("properties"))
-            .and_then(JsonNode::as_object);
-        let class = feature_river_class(corridor_props);
-        if class.is_empty() || !included.contains(class.as_str()) {
-            continue;
-        }
-        let source = feature_string_property(corridor_props, "source");
-        let is_estuary = feature_bool_property(corridor_props, "is_estuary");
-        let reach_id = feature_string_property(corridor_props, "reach_id");
-        if let Some(geom) = obj.and_then(|o| o.get("geometry")) {
-            for ring in geometry_outer_rings(geom) {
-                if ring.len() < 3 {
-                    continue;
-                }
-                validate_ring(&ring, "corridor")?;
-                let cap =
-                    SphericalCap::for_rings(std::slice::from_ref(&ring)).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "corridor has no spherical center",
-                        )
-                    })?;
-                class_rings
-                    .entry(class.clone())
-                    .or_default()
-                    .push(CorridorRing {
-                        ring,
-                        cap,
-                        source: source.clone(),
-                        is_estuary,
-                        reach_id: reach_id.clone(),
-                    });
-            }
-        }
-    }
+    let class_rings = read_corridor_rings(corridor_geojson.as_ref(), &included, &validate_ring)?;
 
     let mut features = Vec::new();
     for (cell_index, cell) in geojson_feature_nodes(&cells_root).into_iter().enumerate() {
@@ -243,6 +421,8 @@ pub fn write_earthmesh_intersection_geojson(
         for (class, rings) in &class_rings {
             let mut clipped: Vec<Vec<earthmesh_geometry::Point>> = Vec::new();
             let mut estuary_clipped: Vec<Vec<earthmesh_geometry::Point>> = Vec::new();
+            let mut disjoint_area = 0.0;
+            let mut disjoint_estuary_area = 0.0;
             let mut corridor_sources = std::collections::BTreeSet::new();
             let mut reach_ids = std::collections::BTreeSet::new();
             for corridor in rings {
@@ -281,7 +461,14 @@ pub fn write_earthmesh_intersection_geojson(
                         }
                     }
                 }
-                if polygon_union_area(&corridor_clipped) <= 0.0 {
+                let corridor_area = match same_class_overlap {
+                    SameClassOverlap::Possible => polygon_union_area(&corridor_clipped),
+                    SameClassOverlap::Disjoint => corridor_clipped
+                        .iter()
+                        .map(|piece| polygon_area(piece))
+                        .sum(),
+                };
+                if corridor_area <= 0.0 {
                     continue;
                 }
                 if let Some(source) = &corridor.source {
@@ -291,11 +478,23 @@ pub fn write_earthmesh_intersection_geojson(
                     reach_ids.insert(reach_id.clone());
                 }
                 if corridor.is_estuary {
-                    estuary_clipped.extend(corridor_clipped.iter().cloned());
+                    match same_class_overlap {
+                        SameClassOverlap::Possible => {
+                            estuary_clipped.extend(corridor_clipped.iter().cloned())
+                        }
+                        SameClassOverlap::Disjoint => disjoint_estuary_area += corridor_area,
+                    }
                 }
-                clipped.extend(corridor_clipped);
+                match same_class_overlap {
+                    SameClassOverlap::Possible => clipped.extend(corridor_clipped),
+                    SameClassOverlap::Disjoint => disjoint_area += corridor_area,
+                }
             }
-            let projected_intersection = polygon_union_area(&clipped).min(projected_cell_area);
+            let projected_intersection = match same_class_overlap {
+                SameClassOverlap::Possible => polygon_union_area(&clipped),
+                SameClassOverlap::Disjoint => disjoint_area,
+            }
+            .min(projected_cell_area);
             if projected_intersection <= 0.0 {
                 continue;
             }
@@ -327,6 +526,13 @@ pub fn write_earthmesh_intersection_geojson(
             );
             props.insert("overlay_max_geodesic_step_deg".into(), "0.1".into());
             props.insert("area_conservation".into(), "\"cell_normalized\"".into());
+            props.insert(
+                "same_class_overlap_handling".into(),
+                match same_class_overlap {
+                    SameClassOverlap::Possible => "\"polygon_union\"".into(),
+                    SameClassOverlap::Disjoint => "\"disjoint_area_sum\"".into(),
+                },
+            );
             props.insert("cell_area_sr".into(), format!("{cell_area_sr}"));
             props.insert(
                 "intersection_area_sr".into(),
@@ -362,8 +568,11 @@ pub fn write_earthmesh_intersection_geojson(
                 },
             );
             if class.to_ascii_uppercase().starts_with('R') {
-                let estuary_fraction = (polygon_union_area(&estuary_clipped)
-                    .min(projected_intersection)
+                let estuary_area = match same_class_overlap {
+                    SameClassOverlap::Possible => polygon_union_area(&estuary_clipped),
+                    SameClassOverlap::Disjoint => disjoint_estuary_area,
+                };
+                let estuary_fraction = (estuary_area.min(projected_intersection)
                     / projected_cell_area)
                     .clamp(0.0, fraction);
                 props.insert(
