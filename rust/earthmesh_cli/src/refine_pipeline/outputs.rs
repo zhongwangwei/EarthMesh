@@ -331,15 +331,9 @@ fn method_c_source_gridnum_perdegree(
 ) -> io::Result<usize> {
     let value = match source_gridnum_perdegree {
         Some(value) => value,
-        None => usize::try_from(config.gridnum_perdegree).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "NL%gridnum_perdegree must be positive for {purpose}, got {}",
-                    config.gridnum_perdegree
-                ),
-            )
-        })?,
+        None => crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(Path::new(
+            config.landtype_file.trim(),
+        ))?,
     };
     if value == 0 {
         return Err(io::Error::new(
@@ -348,4 +342,43 @@ fn method_c_source_gridnum_perdegree(
         ));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn method_c_infers_landtype_resolution_instead_of_using_the_source_grid_default() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_method_c_landtype_resolution_{}_{}.nc",
+            std::process::id(),
+            stamp
+        ));
+        let mut file = netcdf::create_with(&path, netcdf::Options::default()).unwrap();
+        file.add_dimension("lon", 720).unwrap();
+        file.add_dimension("lat", 360).unwrap();
+        drop(file);
+
+        let config = EarthmeshConfig {
+            gridnum_perdegree: 120,
+            landtype_file: path.display().to_string(),
+            ..EarthmeshConfig::default()
+        };
+        assert_eq!(
+            method_c_source_gridnum_perdegree(None, &config, "test").unwrap(),
+            2
+        );
+        assert_eq!(
+            method_c_source_gridnum_perdegree(Some(3), &config, "test").unwrap(),
+            3
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
 }

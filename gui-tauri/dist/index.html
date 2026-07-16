@@ -1211,7 +1211,7 @@ if(MAP_WINDOW_MODE){
   // ---- live project model ----------------------------------------------------
   const layerEdits = {};   // layer id -> { path, enabled }
   const thresholdEdits = {}; // threshold layer id -> number|null (null = catalog default)
-  let thresholdRefine = { enabled: true }; // independent of data-layer availability
+  let thresholdRefine = { enabled: false }; // explicit strategy; data availability does not opt in
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
   let cellEdit = null;     // null | "hex" | "tri"; null means template default
@@ -1480,7 +1480,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       domainEdit = null;
       domainCloseBoundary = normalizeCloseBoundary(null);
       qualityEdit = null;
-      thresholdRefine = { enabled: true };
+      thresholdRefine = { enabled: false };
       lastSummary = null;
       cellEdit = null;
       maxPasses = null;
@@ -2292,7 +2292,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         hfieldMaxLevel: sum.hfield_max_level ?? null,
         hfieldBaseM: sum.hfield_base_m ?? null,
       };
-      thresholdRefine = { enabled: sum.threshold_refine_enabled !== false };
+      thresholdRefine = { enabled: !!sum.threshold_refine_enabled };
       if ((expertEdit.enabled || specifiedRefine.hfieldEnabled === false) && typeof setExpertMode === "function") setExpertMode(true);
       qualityEdit = { minAngle: sum.min_angle_deg, policy: sum.on_violation || "warn", batchCells: sum.auto_refine_batch_cells || 1 };
       maxPasses = sum.max_passes;
@@ -2337,7 +2337,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
-    thresholdRefine = { enabled: true };
+    thresholdRefine = { enabled: false };
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
     specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);

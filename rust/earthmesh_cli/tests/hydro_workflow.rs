@@ -107,6 +107,53 @@ fn cells_and_corridors_to_coupling_and_plan() {
 }
 
 #[test]
+fn disabled_refinement_still_writes_hydro_coupling_without_requesting_method_c() {
+    let dir = std::env::temp_dir().join(format!("em3_wf_no_refine_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"cell_id":"c0"},
+           "geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+          {"type":"Feature","properties":{"river_class":"R3"},
+           "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,2],[0,2],[0,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let report = run_hydro_workflow(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        dir.join("workflow"),
+        &["R3".to_string()],
+        0.0,
+        false,
+        None,
+        0,
+        None,
+        None,
+        None,
+        1,
+    )
+    .expect("hydro coupling without refinement");
+    assert_eq!(report.cells_refined, 0);
+    assert_eq!(report.refinement_max_level, 0);
+    let plan = std::fs::read_to_string(report.refinement_plan_path).unwrap();
+    assert!(plan.contains("\"total_cells\": 1"), "{plan}");
+    assert!(plan.contains("\"target_level\": 0"), "{plan}");
+    assert!(plan.contains("\"why\": \"refinement disabled\""), "{plan}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn class_specific_coupling_rows_share_one_refinement_cell() {
     let dir = std::env::temp_dir().join(format!("em3_wf_unique_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -10,7 +10,37 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use super::feature_table::hydro_refine_feature_set;
 use super::plan::plan_refinement_from_hydro_geojson;
+
+fn write_disabled_refinement_plan(
+    intersections_geojson: &Path,
+    output_json: &Path,
+) -> io::Result<usize> {
+    let features = hydro_refine_feature_set(&read_text_maybe_gzip(intersections_geojson)?)?;
+    let rows = features
+        .table
+        .cell_ids
+        .iter()
+        .enumerate()
+        .map(|(cell, cell_id)| {
+            format!(
+                "    {{\"cell\": {cell}, \"cell_id\": \"{}\", \"target_level\": 0, \"composite_score\": 0, \"why\": \"refinement disabled\"}}",
+                json_escape_string(cell_id)
+            )
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        output_json,
+        format!(
+            "{{\n  \"kind\": \"earthmesh_refinement_plan\",\n  \"total_cells\": {},\n  \"cells_refined\": 0,\n  \"max_level\": 0,\n  \"budget_hit\": false,\n  \"level_histogram\": {{\"0\": {}}},\n  \"cells\": [\n{}\n  ]\n}}\n",
+            rows.len(),
+            rows.len(),
+            rows.join(",\n"),
+        ),
+    )?;
+    Ok(rows.len())
+}
 
 /// End-to-end hydro workflow: cells (from a mesh, e.g. `--mpas-cell-polygons`) ×
 /// corridors → conservative spherical intersection GeoJSON → CoLM coupling CSV +
@@ -150,20 +180,27 @@ fn run_hydro_workflow_with_overlap(
                     .is_some_and(|fraction| fraction > 0.0)
         })
         .count();
-    let report = plan_refinement_from_hydro_geojson(
-        &intersections_path,
-        &refinement_plan_path,
-        max_level,
-        max_refined_cells,
-    )?;
-    let cells_refined = report.budget_used.cells_refined_after;
-    let refinement_max_level = report
-        .target_levels
-        .level
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0);
+    let (cells_refined, refinement_max_level) = if max_level == 0 {
+        write_disabled_refinement_plan(&intersections_path, &refinement_plan_path)?;
+        (0, 0)
+    } else {
+        let report = plan_refinement_from_hydro_geojson(
+            &intersections_path,
+            &refinement_plan_path,
+            max_level,
+            max_refined_cells,
+        )?;
+        (
+            report.budget_used.cells_refined_after,
+            report
+                .target_levels
+                .level
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(0),
+        )
+    };
 
     let mut coupling_quality_path = None;
     let mut coupling_quality_verdict = None;

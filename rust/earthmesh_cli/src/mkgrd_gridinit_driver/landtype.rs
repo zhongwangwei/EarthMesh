@@ -13,13 +13,24 @@ use crate::{first_existing_dimension_len, netcdf_to_io_error};
 pub fn landtype_gridnum_perdegree(landtype_file: &Path) -> io::Result<usize> {
     let file = crate::open_netcdf(landtype_file).map_err(netcdf_to_io_error)?;
     let lon_dim = first_existing_dimension_len(&file, &["lon", "longitude"])?;
-    if lon_dim == 0 || lon_dim % 360 != 0 {
+    let lat_dim = first_existing_dimension_len(&file, &["lat", "latitude"])?;
+    if lon_dim == 0 || lat_dim == 0 || lon_dim % 360 != 0 || lat_dim % 180 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "landtype_file longitude dimension {lon_dim} is not a positive multiple of 360"
+                "landtype_file dimensions {lon_dim}x{lat_dim} are not positive multiples of 360x180"
             ),
         ));
     }
-    Ok(lon_dim / 360)
+    let lon_gridnum = lon_dim / 360;
+    let lat_gridnum = lat_dim / 180;
+    if lon_gridnum != lat_gridnum {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "landtype_file dimensions {lon_dim}x{lat_dim} imply inconsistent resolutions {lon_gridnum}/degree longitude and {lat_gridnum}/degree latitude"
+            ),
+        ));
+    }
+    Ok(lon_gridnum)
 }

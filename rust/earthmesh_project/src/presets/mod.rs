@@ -215,19 +215,6 @@ impl ProjectConfig {
                 threshold_value: None,
             });
         }
-        let refinement_enabled = data_layers.iter().any(|layer| {
-            if !layer.enabled {
-                return false;
-            }
-            match layer.role {
-                ProjectLayerRole::LandType => matches!(
-                    d.kind,
-                    MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth
-                ),
-                ProjectLayerRole::Threshold(_) => true,
-                ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
-            }
-        });
         ProjectConfig {
             schema_version: crate::PROJECT_SCHEMA_VERSION.to_string(),
             metadata: ProjectMetadata {
@@ -244,13 +231,13 @@ impl ProjectConfig {
             },
             data_layers,
             refinement: RefinementRecipe {
-                enabled: refinement_enabled,
-                threshold_enabled: true,
-                max_passes: if refinement_enabled { 3 } else { 0 },
+                enabled: false,
+                threshold_enabled: false,
+                max_passes: 0,
                 specified_circle: None,
                 specified_bbox: None,
                 specified_close: None,
-                hfield: refinement_enabled.then(Default::default),
+                hfield: None,
             },
             quality: QualityConfig {
                 min_angle_deg: d.min_angle_deg,

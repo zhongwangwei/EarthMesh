@@ -61,10 +61,13 @@ impl ProjectConfig {
                 "COAST_LAND".to_string(),
                 "COAST_OCEAN".to_string(),
             ],
-            max_level: self
-                .refinement
-                .max_passes
-                .clamp(1, METHOD_C_MAX_AUTO_REFINE_LEVEL),
+            max_level: if self.refinement.enabled {
+                self.refinement
+                    .max_passes
+                    .clamp(1, METHOD_C_MAX_AUTO_REFINE_LEVEL)
+            } else {
+                0
+            },
         }))
     }
 }

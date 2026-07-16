@@ -70,7 +70,9 @@ log("niter_refine default remains engine-owned");
 check(
   html.includes('id="thresholdRefineOn"') &&
     html.includes("thresholdRefine.enabled && hasEnabledThresholdLayer(summary)") &&
-    html.includes("thresholdEnabled: !!thresholdRefine.enabled"),
+    html.includes("thresholdEnabled: !!thresholdRefine.enabled") &&
+    html.includes("let thresholdRefine = { enabled: false }") &&
+    html.includes("thresholdRefine = { enabled: !!sum.threshold_refine_enabled }"),
   "threshold refinement must have an independent persisted master switch",
 );
 log("threshold refinement master switch is wired");

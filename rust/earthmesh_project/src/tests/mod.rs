@@ -118,6 +118,9 @@ fn new_projects_default_to_auto_refine_without_reinterpreting_legacy_yaml() {
         ResolutionSpec::ApproxKm(100.0),
     );
     assert_eq!(preset.quality.on_violation, ViolationPolicy::AutoRefine);
+    assert!(!preset.refinement.enabled);
+    assert!(!preset.refinement.threshold_enabled);
+    assert_eq!(preset.refinement.max_passes, 0);
 
     let legacy = preset
         .to_yaml()
@@ -1270,6 +1273,11 @@ fn regional_bbox_hydro_coast_builds_an_explicit_postprocess_plan() {
         vec!["R2", "R3", "COAST_LAND", "COAST_OCEAN"]
     );
     assert_eq!(plan.max_level, 3);
+    p.refinement.enabled = false;
+    p.refinement.max_passes = 0;
+    assert_eq!(p.hydro_execution_plan().unwrap().unwrap().max_level, 0);
+    p.refinement.enabled = true;
+    p.refinement.max_passes = 3;
     p.target.resolution = ResolutionSpec::ApproxDegree(1.0);
     assert_eq!(
         p.hydro_execution_plan().unwrap().unwrap().target_dx_km,

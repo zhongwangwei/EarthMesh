@@ -775,6 +775,9 @@ fn new_gui_projects_enable_auto_refine_by_default() {
     let yaml = preset_yaml("auto_refine_default", MeshIntentPreset::MeritHydroCoast);
     let project = ProjectConfig::from_yaml(&yaml).unwrap();
     assert_eq!(project.quality.on_violation, ViolationPolicy::AutoRefine);
+    assert!(!project.refinement.enabled);
+    assert!(!project.refinement.threshold_enabled);
+    assert_eq!(project.refinement.max_passes, 0);
 }
 fn hydrology_yaml(name: &str) -> String {
     preset_yaml(name, MeshIntentPreset::HydrologyLand)
