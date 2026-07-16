@@ -264,7 +264,7 @@ body.normal .expert{display:none}
         </div>
         <div class="map-cap"><span data-i18n="map.hint">Domain on a satellite base (no borders)</span><span data-i18n="map.scroll">scroll to zoom · drag to pan</span></div>
         <div style="margin-top:10px" class="pill-row">
-          <span class="pill" id="mapEnlargeBtn" data-i18n="map.enlarge">⛶ Enlarge</span>
+          <button type="button" class="pill" id="mapEnlargeBtn" aria-haspopup="dialog" aria-controls="mapModal" data-i18n="map.enlarge">⛶ Enlarge</button>
         </div>
       </div>
       <!-- QUALITY -->
@@ -300,10 +300,10 @@ body.normal .expert{display:none}
 </div>
 
 <!-- MAP MODAL (detailed inspection) -->
-<div id="mapModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
+<div id="mapModal" role="dialog" aria-modal="true" aria-labelledby="mapModalTitle" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
   <div id="mapModalPanel" style="background:var(--panel,var(--bg,#fff));border:1px solid var(--border);border-radius:14px;padding:18px;width:min(92vw,920px);height:min(82vh,700px);min-width:460px;min-height:340px;max-width:98vw;max-height:96vh;overflow:hidden;resize:both;display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(0,0,0,.45)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px">
-      <h3 style="margin:0" data-i18n="map.inspect">Inspect map</h3>
+      <h3 id="mapModalTitle" style="margin:0" data-i18n="map.inspect">Inspect map</h3>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="icon-btn" id="mapModalCloseBtn" title="close">✕</button>
       </div>

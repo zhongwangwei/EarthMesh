@@ -114,6 +114,13 @@ check(
 log("project actions stay horizontal");
 
 check(
+  /<button[^>]+id="mapEnlargeBtn"[^>]+aria-haspopup="dialog"/.test(html) &&
+    html.includes('document.getElementById("mapEnlargeBtn").onclick=openMapModal;'),
+  "the enlarged map must remain a native button wired to the map dialog",
+);
+log("enlarged map opens from a native button");
+
+check(
   /<input class="proj-name"[^>]*\breadonly\b/.test(html) &&
     html.includes('id="projectNameStep"') &&
     html.includes("if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; };"),
