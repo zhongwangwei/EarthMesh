@@ -3,9 +3,9 @@
 //!
 //! The first hydro pass is evaluated on a generated mesh. Its cell polygons
 //! and target levels are converted to a gradient-limited `HField`, then the
-//! normal refine pipeline is rerun from the Project namelist. This preserves
-//! every pre-existing region/threshold source and makes hydro another field
-//! contribution instead of a separate mesh algorithm.
+//! normal refine pipeline is rerun from the realized parent mesh. Existing
+//! sources stay embodied in that parent; the adapter adds only the new target
+//! field instead of replaying global inputs.
 
 use std::fs;
 use std::io;
@@ -15,10 +15,11 @@ use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_hfield::{great_circle_distance_m, HField, HRegion, EARTH_RADIUS_METERS};
 use earthmesh_project::{content_addressed_stage_key, StageCache};
 
+use crate::hfield_refine::HfieldDomainMask;
 use crate::{
     geometry_outer_rings, hydro_delivery_refine_workflow::hydro_cell_feature_groups,
-    json_node_to_string, json_node_to_usize, read_text_maybe_gzip, HfieldRefineOptions, JsonNode,
-    JsonParser, RefinePipelineRunReport,
+    json_node_to_string, json_node_to_usize, read_text_maybe_gzip, GridRegion, HfieldRefineOptions,
+    JsonNode, JsonParser, RefinePipelineRunReport,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -315,11 +316,33 @@ pub fn load_hydro_target_field(
     nlon: usize,
     nlat: usize,
 ) -> io::Result<HydroTargetField> {
+    load_hydro_target_field_in_domain(
+        cells_geojson,
+        target_levels_json,
+        base_m,
+        g,
+        nlon,
+        nlat,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_hydro_target_field_in_domain(
+    cells_geojson: impl AsRef<Path>,
+    target_levels_json: impl AsRef<Path>,
+    base_m: f64,
+    g: f64,
+    nlon: usize,
+    nlat: usize,
+    domain: Option<&GridRegion>,
+) -> io::Result<HydroTargetField> {
     if !base_m.is_finite() || base_m <= 0.0 {
         return Err(invalid(
             "hydro h-field base size must be positive and finite",
         ));
     }
+    let domain = domain.map(|domain| HfieldDomainMask::new(nlon, nlat, domain));
     let cells_geojson = cells_geojson.as_ref();
     let target_levels_json = target_levels_json.as_ref();
     let cells_text = read_text_maybe_gzip(cells_geojson)?;
@@ -338,9 +361,11 @@ pub fn load_hydro_target_field(
         nlon,
         nlat,
     );
-    if let Ok(Some(bytes)) = cache.load(&cache_key) {
-        if let Ok(target) = decode_cached_target(&bytes, nlon, nlat) {
-            return Ok(target);
+    if domain.is_none() {
+        if let Ok(Some(bytes)) = cache.load(&cache_key) {
+            if let Ok(target) = decode_cached_target(&bytes, nlon, nlat) {
+                return Ok(target);
+            }
         }
     }
 
@@ -390,20 +415,39 @@ pub fn load_hydro_target_field(
                 .iter()
                 .map(|point| (point.x, point.y))
                 .collect::<Vec<_>>();
-            field.min_with_region(&HRegion::Polygon { points }, h_inside)?;
+            let region = HRegion::Polygon { points };
+            field.min_with_fn(|lon, lat| {
+                if domain
+                    .as_ref()
+                    .is_none_or(|domain| domain.contains(lon, lat))
+                    && region.contains(lon, lat)
+                {
+                    h_inside
+                } else {
+                    f64::INFINITY
+                }
+            });
             polygon_count += 1;
         }
         if let Some((lon, lat)) = feature_center(feature, &rings) {
             let dlon_m = great_circle_distance_m(lon, lat, lon + 360.0 / nlon as f64, lat);
             let seed_radius_m = 0.55 * dlon_m.hypot(dlat_m);
-            field.min_with_region(
-                &HRegion::Circle {
-                    lon,
-                    lat,
-                    radius_m: seed_radius_m,
-                },
-                h_inside,
-            )?;
+            let seed = HRegion::Circle {
+                lon,
+                lat,
+                radius_m: seed_radius_m,
+            };
+            field.min_with_fn(|sample_lon, sample_lat| {
+                if domain
+                    .as_ref()
+                    .is_none_or(|domain| domain.contains(sample_lon, sample_lat))
+                    && seed.contains(sample_lon, sample_lat)
+                {
+                    h_inside
+                } else {
+                    f64::INFINITY
+                }
+            });
         }
     }
     if refined_rows == 0 {
@@ -420,7 +464,9 @@ pub fn load_hydro_target_field(
             cache_hit: false,
         },
     };
-    let _ = cache.store(&cache_key, &encode_cached_target(&target));
+    if domain.is_none() {
+        let _ = cache.store(&cache_key, &encode_cached_target(&target));
+    }
     Ok(target)
 }
 
@@ -440,12 +486,20 @@ pub(crate) fn apply_hydro_target_to_field(
     field: &mut HField,
     options: &HfieldRefineOptions,
     base_m: f64,
+    domain: Option<&GridRegion>,
 ) -> io::Result<Option<HydroTargetFieldSummary>> {
     let Some((cells, levels)) = options.hydro_target_paths() else {
         return Ok(None);
     };
-    let hydro =
-        load_hydro_target_field(cells, levels, base_m, options.g, options.nlon, options.nlat)?;
+    let hydro = load_hydro_target_field_in_domain(
+        cells,
+        levels,
+        base_m,
+        options.g,
+        options.nlon,
+        options.nlat,
+        domain,
+    )?;
     field.min_with_field(&hydro.field)?;
     field.limit_gradient(options.g)?;
     Ok(Some(hydro.summary))
@@ -750,6 +804,10 @@ fn run_refinement_adapter_with_controls(
         quote_path(&cells_geojson)?,
         quote_path(&target_levels_json)?,
     );
+    // `mode_file` is the already-realized parent. Replaying its threshold or
+    // specified sources would rescan global rasters and duplicate old nests;
+    // this adapter must add only the absolute target field above.
+    disable_realized_refinement_sources(&mut refine);
     let text = format!(
         "{}\n{}\n{}",
         config.to_mkgrd_namelist(),
@@ -769,6 +827,11 @@ fn run_refinement_adapter_with_controls(
         target: target.summary,
         pipeline,
     })
+}
+
+fn disable_realized_refinement_sources(refine: &mut RefineConfig) {
+    refine.refine_spc = false;
+    refine.refine_cal = false;
 }
 
 fn apply_minimum_spring_iterations(refine: &mut RefineConfig, minimum: Option<i32>) {
@@ -813,6 +876,18 @@ mod tests {
         assert_eq!(expert.niter_refine, 40);
     }
 
+    #[test]
+    fn adapter_does_not_replay_sources_already_realized_in_the_parent() {
+        let mut refine = RefineConfig {
+            refine_spc: true,
+            refine_cal: true,
+            ..RefineConfig::default()
+        };
+        disable_realized_refinement_sources(&mut refine);
+        assert!(!refine.refine_spc);
+        assert!(!refine.refine_cal);
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "earthmesh_hydro_refinement_adapter_{name}_{}",
@@ -845,6 +920,44 @@ mod tests {
         assert_eq!(hydro.field.level_at(0.0, 0.0, 1_000_000.0, 5), 2);
         assert_eq!(hydro.field.level_at(100.0, 0.0, 1_000_000.0, 5), 0);
         assert!(hydro.field.level_at(4.0, 0.0, 1_000_000.0, 5) > 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn regional_hydro_targets_are_scoped_before_gradient_limiting() {
+        let root = temp_path("regional_field");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cells = root.join("cells.geojson");
+        let levels = root.join("levels.json");
+        fs::write(
+            &cells,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"outside","center_lon":107,"center_lat":22},"geometry":{"type":"Polygon","coordinates":[[[106.8,21.8],[107.2,21.8],[107.2,22.2],[106.8,22.2],[106.8,21.8]]]}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &levels,
+            r#"{"kind":"earthmesh_refinement_plan","total_cells":1,"cells":[{"cell_id":"outside","target_level":2}]}"#,
+        )
+        .unwrap();
+        let domain = GridRegion::Bbox {
+            west: 108.0,
+            east: 120.0,
+            south: 18.0,
+            north: 26.0,
+        };
+        let target = load_hydro_target_field_in_domain(
+            &cells,
+            &levels,
+            100_000.0,
+            0.2,
+            360,
+            180,
+            Some(&domain),
+        )
+        .unwrap();
+
+        assert_eq!(target.field.level_at(108.5, 22.5, 100_000.0, 2), 0);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -139,18 +139,19 @@ impl MethodCDelaunayMesh {
         )?;
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
 
-        let perimeter =
-            self.method_c_perimeter_from_selected_faces(&selected, &method_c_m_neighbors)?;
-        if perimeter.len() % 3 != 0 {
+        let perimeters =
+            self.method_c_perimeters_from_selected_faces(&selected, &method_c_m_neighbors)?;
+        if !Self::method_c_perimeters_are_triplets(&perimeters) {
             return Err(method_c_repairable_error(
                 MethodCRepairableKind::NonTripletPerimeter,
                 None,
                 format!(
-                    "Method-C perimeter length invalid: perimeter length {} cannot be grouped into transition triples",
-                    perimeter.len()
+                    "Method-C perimeter length invalid: perimeter lengths {:?} cannot be grouped into transition triples",
+                    perimeters.iter().map(Vec::len).collect::<Vec<_>>()
                 ),
             ));
         }
+        let perimeter = perimeters.into_iter().flatten().collect::<Vec<_>>();
         let mut nest_wd =
             self.method_c_nest_wd_from_selected_and_perimeter(&selected, &perimeter)?;
         self.emit_method_c_tables(

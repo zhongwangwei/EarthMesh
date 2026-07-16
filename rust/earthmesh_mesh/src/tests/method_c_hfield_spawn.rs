@@ -101,6 +101,112 @@ fn edge_midpoint_demand_is_not_missed_between_hfield_vertex_samples() {
 }
 
 #[test]
+fn mixed_point_and_edge_midpoint_corridor_is_not_silently_truncated() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let first = (2..=mesh.nmd)
+        .find(|im| !mesh.impent.contains(im))
+        .expect("regular M point");
+    let first_ll = xyz_to_lonlat_degrees(mesh.m_points[first]);
+    let last = (2..=mesh.nmd)
+        .filter(|im| !mesh.impent.contains(im))
+        .max_by(|a, b| {
+            let distance = |im| {
+                let point = xyz_to_lonlat_degrees(mesh.m_points[im]);
+                gc_distance_m(
+                    first_ll.lon_degrees,
+                    first_ll.lat_degrees,
+                    point.lon_degrees,
+                    point.lat_degrees,
+                )
+            };
+            distance(*a).total_cmp(&distance(*b))
+        })
+        .expect("distant regular M point");
+    let mut previous = vec![0usize; mesh.nmd + 1];
+    let mut queue = std::collections::VecDeque::from([first]);
+    previous[first] = first;
+    while let Some(im) = queue.pop_front() {
+        if im == last {
+            break;
+        }
+        let neighbors = mesh.m_neighbors[im];
+        for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+            let edge = mesh.u_edges[iu];
+            let next = if edge.im[0] == im {
+                edge.im[1]
+            } else {
+                edge.im[0]
+            };
+            if next > 1 && previous[next] == 0 && !mesh.impent.contains(&next) {
+                previous[next] = im;
+                queue.push_back(next);
+            }
+        }
+    }
+    let mut path = vec![last];
+    while *path.last().expect("path point") != first {
+        path.push(previous[*path.last().expect("path point")]);
+    }
+    path.reverse();
+    assert!(path.len() > 8);
+    let midpoints = path
+        .windows(2)
+        .map(|pair| {
+            let a = mesh.m_points[pair[0]];
+            let b = mesh.m_points[pair[1]];
+            xyz_to_lonlat_degrees(CartesianPoint::new(
+                0.5 * (a.x + b.x),
+                0.5 * (a.y + b.y),
+                0.5 * (a.z + b.z),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let nearest_vertex = midpoints
+        .iter()
+        .flat_map(|midpoint| {
+            (2..=mesh.nmd).map(|im| {
+                let point = xyz_to_lonlat_degrees(mesh.m_points[im]);
+                gc_distance_m(
+                    midpoint.lon_degrees,
+                    midpoint.lat_degrees,
+                    point.lon_degrees,
+                    point.lat_degrees,
+                )
+            })
+        })
+        .fold(f64::INFINITY, f64::min);
+    let radius_m = 0.15 * nearest_vertex;
+    let demand = |lon: f64, lat: f64| {
+        u8::from(
+            gc_distance_m(lon, lat, first_ll.lon_degrees, first_ll.lat_degrees) <= radius_m
+                || midpoints.iter().any(|point| {
+                    gc_distance_m(lon, lat, point.lon_degrees, point.lat_degrees) <= radius_m
+                }),
+        )
+    };
+    assert_eq!(
+        (2..=mesh.nmd)
+            .filter(|&im| {
+                let point = xyz_to_lonlat_degrees(mesh.m_points[im]);
+                demand(point.lon_degrees, point.lat_degrees) > 0
+            })
+            .count(),
+        1
+    );
+
+    let error = mesh
+        .spawn_nest_from_target_levels(demand, 1, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .expect_err("an infeasible edge-only corridor must not return a truncated success");
+    assert!(
+        error.to_string().contains("perimeter length invalid")
+            || error.to_string().contains("parent boundary")
+            || error.to_string().contains("edge-midpoint demand"),
+        "{error}"
+    );
+}
+
+#[test]
 fn disconnected_hfield_demands_select_every_component() {
     let mesh = base_mesh();
     let first = (2..=mesh.nmd)
@@ -162,6 +268,14 @@ fn disconnected_hfield_demands_select_every_component() {
             "demand component at M point {center} was dropped"
         );
     }
+
+    let refined = mesh
+        .spawn_nest_from_target_levels(demand, 1, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .expect("disconnected h-field components must refine independently");
+    refined
+        .validate_topology()
+        .expect("disconnected h-field topology");
+    assert!(refined.nwd > mesh.nwd);
 }
 
 #[test]
@@ -334,6 +448,113 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
     assert_eq!(five.nmd, two.nmd);
     assert_eq!(five.nud, two.nud);
     assert_eq!(five.nwd, two.nwd);
+}
+
+#[test]
+fn deeper_hfield_demand_touching_the_parent_boundary_is_clipped_to_legal_interior() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let field = two_ring_levels(4_000_000.0, 4_000_000.0);
+    let refined = mesh
+        .spawn_nest_from_target_levels(&field, 2, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .expect("boundary-touching level-2 demand should retain its legal parent interior");
+
+    refined
+        .validate_topology()
+        .expect("boundary-clipped h-field topology");
+    assert!(refined.nwd > mesh.nwd);
+    assert_eq!(
+        (2..=refined.nwd).map(|iw| refined.w_faces[iw].ngr).max(),
+        Some(3),
+        "boundary clipping must retain a real second refinement pass"
+    );
+}
+
+#[test]
+fn persisted_parent_advances_to_the_next_absolute_target_level() {
+    let mesh = base_mesh();
+    let parent = mesh
+        .spawn_nest_from_target_levels(
+            |lon, lat| u8::from(gc_distance_m(lon, lat, 115.0, 25.0) <= 4_000_000.0),
+            1,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
+        .expect("level-1 parent");
+    assert_eq!(
+        (2..=parent.nwd).map(|iw| parent.w_faces[iw].mrlw).max(),
+        Some(2)
+    );
+
+    let refined = parent
+        .spawn_nest_from_target_levels(
+            |lon, lat| {
+                if gc_distance_m(lon, lat, 115.0, 25.0) <= 1_000_000.0 {
+                    2
+                } else {
+                    0
+                }
+            },
+            2,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
+        .expect("absolute level-2 target on persisted parent");
+    assert_eq!(
+        (2..=refined.nwd).map(|iw| refined.w_faces[iw].mrlw).max(),
+        Some(3)
+    );
+}
+
+#[test]
+fn boundary_only_persisted_target_is_rejected_instead_of_silent_noop() {
+    let mesh = base_mesh();
+    let parent = mesh
+        .spawn_nest_from_target_levels(
+            |lon, lat| u8::from(gc_distance_m(lon, lat, 115.0, 25.0) <= 4_000_000.0),
+            1,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
+        .expect("level-1 parent");
+    let boundary = (2..=parent.nmd)
+        .find(|&im| {
+            parent.m_metadata[im].mrlm == 2
+                && parent.m_neighbors[im]
+                    .iu
+                    .iter()
+                    .take(parent.m_neighbors[im].npoly)
+                    .any(|&iu| parent.u_edges[iu].mrlu != 2)
+        })
+        .expect("level-2 M point on the parent transition boundary");
+    let center = xyz_to_lonlat_degrees(parent.m_points[boundary]);
+    let nearest_m = (2..=parent.nmd)
+        .filter(|&im| im != boundary)
+        .map(|im| {
+            let point = xyz_to_lonlat_degrees(parent.m_points[im]);
+            gc_distance_m(
+                center.lon_degrees,
+                center.lat_degrees,
+                point.lon_degrees,
+                point.lat_degrees,
+            )
+        })
+        .fold(f64::INFINITY, f64::min);
+    let radius_m = 0.1 * nearest_m;
+    let error = parent
+        .spawn_nest_from_target_levels(
+            |lon, lat| {
+                if gc_distance_m(lon, lat, center.lon_degrees, center.lat_degrees) <= radius_m {
+                    2
+                } else {
+                    0
+                }
+            },
+            2,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
+        .expect_err("boundary-only target must not return an unchanged success");
+    assert!(
+        error.to_string().contains("parent transition boundary"),
+        "{error}"
+    );
 }
 
 #[test]

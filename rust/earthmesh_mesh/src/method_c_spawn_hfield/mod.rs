@@ -51,17 +51,27 @@ impl MethodCDelaunayMesh {
     ) -> usize {
         let mut level = self.m_point_target_level(im, target_level, use_cartesian_xy);
         for &iu in neighbors.iu.iter().take(neighbors.npoly) {
-            let [im1, im2] = self.u_edges[iu].im;
-            let p1 = self.m_points[im1];
-            let p2 = self.m_points[im2];
-            let midpoint = CartesianPoint::new(
-                0.5 * (p1.x + p2.x),
-                0.5 * (p1.y + p2.y),
-                0.5 * (p1.z + p2.z),
-            );
-            level = level.max(self.sample_target_level(midpoint, target_level, use_cartesian_xy));
+            level =
+                level.max(self.u_edge_midpoint_target_level(iu, target_level, use_cartesian_xy));
         }
         level
+    }
+
+    fn u_edge_midpoint_target_level<F: Fn(f64, f64) -> u8>(
+        &self,
+        iu: usize,
+        target_level: &F,
+        use_cartesian_xy: bool,
+    ) -> usize {
+        let [im1, im2] = self.u_edges[iu].im;
+        let p1 = self.m_points[im1];
+        let p2 = self.m_points[im2];
+        let midpoint = CartesianPoint::new(
+            0.5 * (p1.x + p2.x),
+            0.5 * (p1.y + p2.y),
+            0.5 * (p1.z + p2.z),
+        );
+        self.sample_target_level(midpoint, target_level, use_cartesian_xy)
     }
 
     /// True when the M point's sampled target level demands refinement at
@@ -104,11 +114,36 @@ impl MethodCDelaunayMesh {
                 use_cartesian_xy,
             );
         }
-        let mut component_seen = vec![false; self.nmd + 1];
-        for root in 2..=self.nmd {
-            if component_seen[root] || levels[root] < pass {
+        // A deeper H-field level may touch the transition apron produced by
+        // the previous pass. Only current-parent interior M points can seed a
+        // legal Method-C perimeter; clipping that boundary row preserves the
+        // valid demand instead of aborting the whole refinement.
+        let mut eligible = vec![false; self.nmd + 1];
+        for im in 2..=self.nmd {
+            if levels[im] < pass {
                 continue;
             }
+            let mrlo = self.m_metadata[im].mrlm;
+            if mrlo != pass {
+                continue;
+            }
+            let neighbors = method_c_m_neighbors[im];
+            let mut parent_interior = true;
+            for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                require_method_c_id("Method-C h-field eligibility U edge", iu, self.nud)?;
+                if self.u_edges[iu].mrlu != mrlo {
+                    parent_interior = false;
+                    break;
+                }
+            }
+            eligible[im] = parent_interior;
+        }
+        let mut component_seen = vec![false; self.nmd + 1];
+        for root in 2..=self.nmd {
+            if component_seen[root] || !eligible[root] {
+                continue;
+            }
+            let component_mrl = self.m_metadata[root].mrlm;
             let mut component = Vec::new();
             let mut queue = std::collections::VecDeque::from([root]);
             component_seen[root] = true;
@@ -123,7 +158,11 @@ impl MethodCDelaunayMesh {
                     } else {
                         edge.im[0]
                     };
-                    if next > 1 && next <= self.nmd && !component_seen[next] && levels[next] >= pass
+                    if next > 1
+                        && next <= self.nmd
+                        && !component_seen[next]
+                        && eligible[next]
+                        && self.m_metadata[next].mrlm == component_mrl
                     {
                         component_seen[next] = true;
                         queue.push_back(next);
@@ -144,22 +183,18 @@ impl MethodCDelaunayMesh {
                         .expect("demand component is non-empty")
                 });
             let mrlo = self.m_metadata[start].mrlm;
+            let has_point_demand = component
+                .iter()
+                .copied()
+                .any(|im| self.m_point_demands_pass(im, target_level, pass, use_cartesian_xy));
+            let mut component_member = vec![false; self.nmd + 1];
+            for &im in &component {
+                component_member[im] = true;
+            }
             let mut seeds = std::collections::BTreeSet::new();
             let mut jdone = vec![[false; 6]; self.nmd + 1];
             let mut lista = vec![start];
             while let Some(im) = lista.pop() {
-                let neighbors = method_c_m_neighbors[im];
-                for &iu in neighbors.iu.iter().take(neighbors.npoly) {
-                    require_method_c_id("Method-C refinement boundary U edge", iu, self.nud)?;
-                    if self.u_edges[iu].mrlu != mrlo {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "Method-C perimeter length invalid: h-field level set crosses the parent boundary / next coarser grid boundary at M point {im}"
-                            ),
-                        ));
-                    }
-                }
                 seeds.insert(im);
                 for neighbor in self.method_c_thirdm_neighbors_canonical_with_neighbors(
                     im,
@@ -168,7 +203,14 @@ impl MethodCDelaunayMesh {
                 )? {
                     let traversed_count = jdone[neighbor].iter().filter(|&&done| done).count();
                     if traversed_count < 2
-                        && self.m_point_demands_pass(neighbor, target_level, pass, use_cartesian_xy)
+                        && component_member[neighbor]
+                        && self.m_metadata[neighbor].mrlm == mrlo
+                        && (self.m_point_demands_pass(
+                            neighbor,
+                            target_level,
+                            pass,
+                            use_cartesian_xy,
+                        ) || (!has_point_demand && levels[neighbor] >= pass))
                     {
                         lista.push(neighbor);
                     }
@@ -188,8 +230,71 @@ impl MethodCDelaunayMesh {
                     }
                 }
             }
+            for &im in &component {
+                let neighbors = method_c_m_neighbors[im];
+                if self.m_point_demands_pass(im, target_level, pass, use_cartesian_xy)
+                    && !neighbors
+                        .iw
+                        .iter()
+                        .take(neighbors.npoly)
+                        .any(|&iw| selected[iw])
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C h-field point demand at M point {im} is not covered by the aligned refinement footprint"
+                        ),
+                    ));
+                }
+                for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                    let edge = self.u_edges[iu];
+                    if edge.mrlu == pass
+                        && self.u_edge_midpoint_target_level(iu, target_level, use_cartesian_xy)
+                            >= pass
+                        && !edge.iw[..2].iter().any(|&iw| selected[iw])
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Method-C h-field edge-midpoint demand on U edge {iu} is not covered by the aligned refinement footprint"
+                            ),
+                        ));
+                    }
+                }
+            }
         }
         Ok(selected)
+    }
+
+    fn hfield_has_demand_at_or_above<F: Fn(f64, f64) -> u8>(
+        &self,
+        target_level: &F,
+        level: usize,
+        use_cartesian_xy: bool,
+    ) -> io::Result<bool> {
+        let m_neighbors = self.method_c_m_neighbors()?;
+        Ok((2..=self.nmd).any(|im| {
+            self.m_point_or_edge_target_level(im, &m_neighbors[im], target_level, use_cartesian_xy)
+                >= level
+        }))
+    }
+
+    fn hfield_has_current_parent_demand<F: Fn(f64, f64) -> u8>(
+        &self,
+        target_level: &F,
+        pass: usize,
+        use_cartesian_xy: bool,
+    ) -> io::Result<bool> {
+        let m_neighbors = self.method_c_m_neighbors()?;
+        Ok((2..=self.nmd).any(|im| {
+            self.m_metadata[im].mrlm == pass
+                && self.m_point_or_edge_target_level(
+                    im,
+                    &m_neighbors[im],
+                    target_level,
+                    use_cartesian_xy,
+                ) >= pass
+        }))
     }
 
     pub(crate) fn spawn_nest_from_target_levels_internal<F: Fn(f64, f64) -> u8>(
@@ -230,12 +335,28 @@ impl MethodCDelaunayMesh {
             .max(1)
             + 1;
 
-        for (grid_number, pass) in (first_grid_number..).zip(1..=max_level) {
+        let mut grid_number = first_grid_number;
+        for pass in 1..=max_level {
             let selected_faces =
                 mesh.selected_faces_from_target_levels(target_level, pass, use_cartesian_xy)?;
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
-                // The field demands nothing at this depth; deeper level sets
-                // are subsets, so descending further cannot select anything.
+                if mesh.hfield_has_current_parent_demand(target_level, pass, use_cartesian_xy)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C h-field pass {pass} demand is entirely on the parent transition boundary"
+                        ),
+                    ));
+                }
+                if pass < max_level
+                    && mesh.hfield_has_demand_at_or_above(
+                        target_level,
+                        pass + 1,
+                        use_cartesian_xy,
+                    )?
+                {
+                    continue;
+                }
                 break;
             }
             match mesh.spawn_nest_pass_with_max_mrows(&selected_faces, grid_number, max_mrows, true)
@@ -271,6 +392,7 @@ impl MethodCDelaunayMesh {
                     spring_passes += 1;
                 }
             }
+            grid_number += 1;
         }
 
         Ok((mesh, spring_passes))

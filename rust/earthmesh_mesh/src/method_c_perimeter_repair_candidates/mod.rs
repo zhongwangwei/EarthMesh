@@ -24,10 +24,12 @@ impl MethodCDelaunayMesh {
         {
             return Ok(None);
         }
-        let Ok(trial_perimeter) = self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+        let Ok(trial_perimeters) =
+            self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)
         else {
             return Ok(None);
         };
+        let trial_perimeter = trial_perimeters.into_iter().flatten().collect();
         Ok(Some((trial, trial_perimeter)))
     }
 
@@ -76,12 +78,13 @@ impl MethodCDelaunayMesh {
             {
                 continue;
             }
-            let Ok(trial_perimeter) =
-                self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+            let Ok(trial_perimeters) =
+                self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)
             else {
                 continue;
             };
-            let remainder = trial_perimeter.len() % 3;
+            let remainder = Self::method_c_perimeter_remainder_score(&trial_perimeters);
+            let trial_perimeter = trial_perimeters.into_iter().flatten().collect::<Vec<_>>();
             let score = (
                 added,
                 remainder,

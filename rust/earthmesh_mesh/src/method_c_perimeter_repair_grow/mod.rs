@@ -64,17 +64,22 @@ impl MethodCDelaunayMesh {
             {
                 continue;
             }
-            let Ok(trial_perimeter) =
-                self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+            let Ok(trial_perimeters) =
+                self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)
             else {
                 continue;
             };
+            let trial_perimeter = trial_perimeters
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
             let added = trial.iter().filter(|&&item| item).count() - selected_count;
             if added == 0 {
                 continue;
             }
-            let remainder = trial_perimeter.len() % 3;
-            if remainder == 0 {
+            let remainder = Self::method_c_perimeter_remainder_score(&trial_perimeters);
+            if Self::method_c_perimeters_are_triplets(&trial_perimeters) {
                 return Ok(Some((trial, trial_perimeter)));
             }
             let score = (

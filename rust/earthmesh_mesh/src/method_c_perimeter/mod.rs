@@ -3,17 +3,32 @@ use std::{collections::BTreeSet, io};
 use super::*;
 
 impl MethodCDelaunayMesh {
+    #[cfg(test)]
     pub(crate) fn perim_map2_method_c(
         &self,
         nest_wd: &[MethodCNestWd],
         m_neighbors: &[IcosahedronMPointNeighbors],
     ) -> io::Result<Vec<MethodCPerimeterPoint>> {
+        Ok(self
+            .perim_maps2_method_c(nest_wd, m_neighbors)?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    pub(crate) fn perim_maps2_method_c(
+        &self,
+        nest_wd: &[MethodCNestWd],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
         require_method_c_len("Method-C nest_wd", nest_wd.len(), self.nwd + 1)?;
         require_method_c_len(
             "Method-C perim M-neighbors",
             m_neighbors.len(),
             self.nmd + 1,
         )?;
+        let mut perimeters = Vec::new();
+        let mut seen = BTreeSet::new();
         for im in 2..=self.nmd {
             let neighbors = m_neighbors[im];
             let mut nwdiv = 0usize;
@@ -23,14 +38,20 @@ impl MethodCDelaunayMesh {
                     nwdiv += 1;
                 }
             }
-            if nwdiv == 2 {
-                return self.perim_map2_method_c_from(im, nest_wd, m_neighbors);
+            if nwdiv == 2 && !seen.contains(&im) {
+                let perimeter = self.perim_map2_method_c_from(im, nest_wd, m_neighbors)?;
+                seen.extend(perimeter.iter().map(|point| point.im));
+                perimeters.push(perimeter);
             }
         }
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Method-C perimeter has no nwdiv == 2 convex start point",
-        ))
+        if perimeters.is_empty() {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Method-C perimeter has no nwdiv == 2 convex start point",
+            ))
+        } else {
+            Ok(perimeters)
+        }
     }
 
     fn perim_map2_method_c_from(

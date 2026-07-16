@@ -4,7 +4,8 @@ use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_quality::{HfieldConfigDiagnostics, MeshQualityReport, QualityMeshInput};
 
 use crate::hfield_refine::{
-    build_composed_hfield, has_threshold_hfield_sources, read_hfield_refine_options,
+    build_composed_hfield, constrain_hfield_to_domain, has_threshold_hfield_sources,
+    read_hfield_refine_options,
 };
 
 use super::gridfile::{
@@ -133,6 +134,7 @@ pub fn attach_hfield_diagnostics_from_namelist(
         2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64)
     });
     let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
+    let domain = crate::read_method_c_domain_region(&config)?;
     let mut field = build_composed_hfield(
         &regions,
         &refine,
@@ -141,8 +143,15 @@ pub fn attach_hfield_diagnostics_from_namelist(
         base_m,
         &hfield,
         max_cal_level.clamp(1, field_max_level),
+        domain.as_ref(),
     )?;
-    crate::hydro_refinement_adapter::apply_hydro_target_to_field(&mut field, &hfield, base_m)?;
+    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
+        &mut field,
+        &hfield,
+        base_m,
+        domain.as_ref(),
+    )?;
+    constrain_hfield_to_domain(&mut field, domain.as_ref(), base_m, hfield.g)?;
     let target_levels = hfield_target_levels_for_quality_cells(mesh, kind, |lon, lat| {
         field.level_at(lon, lat, base_m, field_max_level as u8) as u32
     })?;

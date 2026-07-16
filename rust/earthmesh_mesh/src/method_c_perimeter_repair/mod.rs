@@ -24,28 +24,31 @@ impl MethodCDelaunayMesh {
 
         let mut last_error = None;
         for _ in 0..MAX_REPAIR_PASSES {
-            let perimeter = match self.method_c_perimeter_from_selected_faces(selected, m_neighbors)
-            {
-                Ok(perimeter) if perimeter.len() % 3 == 0 => return Ok(perimeter),
-                Ok(perimeter) => Some(perimeter),
-                Err(error) => {
-                    last_error = Some(error);
-                    None
-                }
-            };
-            let Some((repaired, repaired_perimeter)) = self
-                .try_grow_method_c_non_triplet_perimeter_once(
-                    selected,
-                    m_neighbors,
-                    child_level,
-                    perimeter.as_deref(),
-                )?
+            let perimeter =
+                match self.method_c_perimeters_from_selected_faces(selected, m_neighbors) {
+                    Ok(perimeters) if Self::method_c_perimeters_are_triplets(&perimeters) => {
+                        return Ok(perimeters.into_iter().flatten().collect());
+                    }
+                    Ok(perimeters) => Some(perimeters.into_iter().flatten().collect::<Vec<_>>()),
+                    Err(error) => {
+                        last_error = Some(error);
+                        None
+                    }
+                };
+            let Some((repaired, _)) = self.try_grow_method_c_non_triplet_perimeter_once(
+                selected,
+                m_neighbors,
+                child_level,
+                perimeter.as_deref(),
+            )?
             else {
                 break;
             };
             selected.clone_from_slice(&repaired);
-            if repaired_perimeter.len() % 3 == 0 {
-                return Ok(repaired_perimeter);
+            let repaired_perimeters =
+                self.method_c_perimeters_from_selected_faces(selected, m_neighbors)?;
+            if Self::method_c_perimeters_are_triplets(&repaired_perimeters) {
+                return Ok(repaired_perimeters.into_iter().flatten().collect());
             }
         }
 
@@ -53,13 +56,13 @@ impl MethodCDelaunayMesh {
             return Err(error);
         }
 
-        let perimeter = self.method_c_perimeter_from_selected_faces(selected, m_neighbors)?;
+        let perimeters = self.method_c_perimeters_from_selected_faces(selected, m_neighbors)?;
         Err(method_c_repairable_error(
             MethodCRepairableKind::NonTripletPerimeter,
             None,
             format!(
-                "Method-C perimeter length invalid: perimeter length {} cannot be grouped into transition triples without crossing the parent boundary",
-                perimeter.len()
+                "Method-C perimeter length invalid: perimeter lengths {:?} cannot be grouped into transition triples without crossing the parent boundary",
+                perimeters.iter().map(Vec::len).collect::<Vec<_>>()
             ),
         ))
     }

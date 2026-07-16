@@ -197,6 +197,7 @@ pub fn run_refine_pipeline_namelist(
     let method_c_nxp = usize::try_from(config.nxp)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
     let active_hfield_options = hfield_options.as_ref();
+    let domain_region = read_method_c_domain_region(&config)?;
     let use_hfield_regions = active_hfield_options.is_some();
     let mesh_type = config.mesh_type.trim();
     let has_threshold_hfield_sources = use_hfield_regions
@@ -436,6 +437,7 @@ pub fn run_refine_pipeline_namelist(
                     base_m,
                     hfield,
                     max_cal_level.clamp(1, field_max_level),
+                    None,
                 )?)
             } else {
                 None
@@ -485,9 +487,19 @@ pub fn run_refine_pipeline_namelist(
                 base_m,
                 hfield,
                 max_cal_level.clamp(1, field_max_level),
+                domain_region.as_ref(),
             )?;
             crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-                &mut field, hfield, base_m,
+                &mut field,
+                hfield,
+                base_m,
+                domain_region.as_ref(),
+            )?;
+            crate::hfield_refine::constrain_hfield_to_domain(
+                &mut field,
+                domain_region.as_ref(),
+                base_m,
+                hfield.g,
             )?;
             mesh.spawn_nest_from_target_levels_with_spring(
                 |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
@@ -564,7 +576,6 @@ pub fn run_refine_pipeline_namelist(
     };
 
     let file_dir = PathBuf::from(config.file_dir());
-    let domain_region = read_method_c_domain_region(&config)?;
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let m_refine_levels = method_c_m_refine_levels_zero_based(&state)?;
     let m_refine_levels_orig = method_c_m_refine_levels_orig_zero_based(&state)?;

@@ -3,26 +3,30 @@ use std::io;
 use super::*;
 
 impl MethodCDelaunayMesh {
-    pub(crate) fn method_c_perimeter_from_selected_faces(
+    pub(crate) fn method_c_perimeters_from_selected_faces(
         &self,
         selected: &[bool],
         m_neighbors: &[IcosahedronMPointNeighbors],
-    ) -> io::Result<Vec<MethodCPerimeterPoint>> {
+    ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
         let mut probe_nest_wd = vec![MethodCNestWd::default(); self.nwd + 1];
         for iw in 2..=self.nwd {
             if selected[iw] {
                 probe_nest_wd[iw].iw[2] = 1;
             }
         }
+        self.perim_maps2_method_c(&probe_nest_wd, m_neighbors)
+    }
 
-        let perimeter = self.perim_map2_method_c(&probe_nest_wd, m_neighbors)?;
-        if perimeter.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Method-C perimeter is empty",
-            ));
-        }
-        Ok(perimeter)
+    pub(crate) fn method_c_perimeters_are_triplets(
+        perimeters: &[Vec<MethodCPerimeterPoint>],
+    ) -> bool {
+        perimeters.iter().all(|perimeter| perimeter.len() % 3 == 0)
+    }
+
+    pub(crate) fn method_c_perimeter_remainder_score(
+        perimeters: &[Vec<MethodCPerimeterPoint>],
+    ) -> usize {
+        perimeters.iter().map(|perimeter| perimeter.len() % 3).sum()
     }
 
     pub(crate) fn method_c_nest_wd_from_selected_and_perimeter(

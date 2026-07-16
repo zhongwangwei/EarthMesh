@@ -23,6 +23,7 @@ use crate::area_judge_threshold_inputs::{
     LatitudeOrder,
 };
 use crate::namelist_reader::{namelist_assignments, namelist_has_section};
+use crate::GridRegion;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HfieldRefineOptions {
@@ -45,6 +46,41 @@ pub struct HfieldRefineOptions {
 
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HfieldDomainMask {
+    nlon: usize,
+    nlat: usize,
+    active: Vec<bool>,
+}
+
+impl HfieldDomainMask {
+    pub(crate) fn new(nlon: usize, nlat: usize, domain: &GridRegion) -> Self {
+        let mut active = vec![false; nlon * nlat];
+        for i in 0..nlon {
+            let lon = -180.0 + (i as f64 + 0.5) * 360.0 / nlon as f64;
+            for j in 0..nlat {
+                let lat = -90.0 + (j as f64 + 0.5) * 180.0 / nlat as f64;
+                active[i * nlat + j] = domain.contains(lon, lat);
+            }
+        }
+        Self { nlon, nlat, active }
+    }
+
+    pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
+        let i = (((earthmesh_hfield::wrap_lon_degrees(lon) + 180.0) / 360.0) * self.nlon as f64)
+            .floor()
+            .clamp(0.0, (self.nlon - 1) as f64) as usize;
+        let j = (((lat + 90.0) / 180.0) * self.nlat as f64)
+            .floor()
+            .clamp(0.0, (self.nlat - 1) as f64) as usize;
+        self.active[i * self.nlat + j]
+    }
+
+    fn is_active(&self, i: usize, j: usize) -> bool {
+        self.active[i * self.nlat + j]
+    }
 }
 
 fn parse_hfield_f64(field: &str, value: &str) -> io::Result<f64> {
@@ -233,6 +269,17 @@ pub fn build_hfield_from_regions(
     nlon: usize,
     nlat: usize,
 ) -> io::Result<HField> {
+    build_hfield_from_regions_in_domain(regions, base_m, g, nlon, nlat, None)
+}
+
+fn build_hfield_from_regions_in_domain(
+    regions: &[MethodCRefinementRegion],
+    base_m: f64,
+    g: f64,
+    nlon: usize,
+    nlat: usize,
+    domain: Option<&HfieldDomainMask>,
+) -> io::Result<HField> {
     if !base_m.is_finite() || base_m <= 0.0 {
         return Err(invalid(format!(
             "h-field base cell size must be positive, got {base_m}"
@@ -255,7 +302,9 @@ pub fn build_hfield_from_regions(
         }
         let h_inside = base_m / 2f64.powi(level);
         field.min_with_fn(|lon, lat| {
-            if region.contains_lonlat_canonical(LonLatDegrees::new(lon, lat)) {
+            if domain.is_none_or(|domain| domain.contains(lon, lat))
+                && region.contains_lonlat_canonical(LonLatDegrees::new(lon, lat))
+            {
                 h_inside
             } else {
                 f64::INFINITY
@@ -329,6 +378,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
     target_level: usize,
     g: f64,
     landtype_mask: Option<&LandtypeMaskSource>,
+    domain: Option<&HfieldDomainMask>,
 ) -> io::Result<usize> {
     let specs = enabled_mean_threshold_field_specs(refine, mesh_type);
     if specs.is_empty() {
@@ -342,7 +392,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
         let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
         let stats =
             read_threshold_stats_on_hfield_masked(&file, &spec.var_name, field, landtype_mask)?;
-        min_with_threshold_matrix(field, &stats.mean, spec.threshold, h_inside);
+        min_with_threshold_matrix(field, &stats.mean, spec.threshold, h_inside, domain);
         applied += 1;
     }
     if applied > 0 {
@@ -368,6 +418,7 @@ pub(crate) fn apply_std_threshold_hfield_contributions(
         target_level,
         g,
         None,
+        None,
     )
 }
 
@@ -379,6 +430,7 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
     target_level: usize,
     g: f64,
     landtype_mask: Option<&LandtypeMaskSource>,
+    domain: Option<&HfieldDomainMask>,
 ) -> io::Result<usize> {
     let specs = enabled_std_threshold_field_specs(refine, mesh_type);
     if specs.is_empty() {
@@ -392,7 +444,7 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
         let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
         let stats =
             read_threshold_stats_on_hfield_masked(&file, &spec.var_name, field, landtype_mask)?;
-        min_with_threshold_matrix(field, &stats.stddev, spec.threshold, h_inside);
+        min_with_threshold_matrix(field, &stats.stddev, spec.threshold, h_inside, domain);
         applied += 1;
     }
     if applied > 0 {
@@ -432,6 +484,7 @@ fn apply_landtype_basic_threshold_hfield_contributions(
     base_m: f64,
     target_level: usize,
     g: f64,
+    domain: Option<&HfieldDomainMask>,
 ) -> io::Result<usize> {
     if !has_landtype_basic_threshold_hfield_sources(refine, mesh_type) {
         return Ok(0);
@@ -446,8 +499,9 @@ fn apply_landtype_basic_threshold_hfield_contributions(
     }
     let bins = read_landtype_source_for_hfield(Path::new(config.landtype_file.trim()), field)?;
     let h_inside = base_m / 2f64.powi(target_level.clamp(1, 5) as i32);
-    let applied =
-        apply_landtype_basic_thresholds_from_bins(field, &bins, refine, mesh_type, h_inside)?;
+    let applied = apply_landtype_basic_thresholds_from_bins(
+        field, &bins, refine, mesh_type, h_inside, domain,
+    )?;
     if applied > 0 {
         field.limit_gradient(g)?;
     }
@@ -487,10 +541,10 @@ impl LandtypeBinStats {
         }
     }
 
-    fn record(&mut self, out: usize, landtype: i32, maxlc: i32) -> io::Result<()> {
-        if !(0..=maxlc).contains(&landtype) {
+    fn record(&mut self, out: usize, landtype: i32) -> io::Result<()> {
+        if landtype < 0 {
             return Err(invalid(format!(
-                "landtype value {landtype} outside 0..=maxlc {maxlc}"
+                "landtype value {landtype} must be non-negative"
             )));
         }
         self.total[out] += 1;
@@ -498,12 +552,19 @@ impl LandtypeBinStats {
             self.ocean[out] += 1;
         } else {
             self.land[out] += 1;
-            if landtype != maxlc {
-                self.distinct[out].insert(landtype);
-                *self.class_counts[out].entry(landtype).or_insert(0) += 1;
-            }
+            self.distinct[out].insert(landtype);
+            *self.class_counts[out].entry(landtype).or_insert(0) += 1;
         }
         Ok(())
+    }
+
+    fn exclude_class(&mut self, landtype: i32) {
+        for classes in &mut self.distinct {
+            classes.remove(&landtype);
+        }
+        for counts in &mut self.class_counts {
+            counts.remove(&landtype);
+        }
     }
 }
 
@@ -645,28 +706,9 @@ fn read_landtype_source_for_hfield(path: &Path, field: &HField) -> io::Result<La
     // Longitude stripes keep the production tile near 11 MiB at
     // 86400x43200 while avoiding tens of thousands of tiny NetCDF reads.
     const TILE_LON: usize = 256;
+    let mut bins = LandtypeBinStats::new(field);
     let mut maxlc = 0_i32;
     let mut has_valid = false;
-    for lon_start in (0..src_nlon).step_by(TILE_LON) {
-        let lon_count = TILE_LON.min(src_nlon - lon_start);
-        for value in landtype_tile(&variable, lat_lon, lon_start, lon_count, 0, src_nlat)? {
-            if is_missing_numeric(value, &missing) {
-                continue;
-            }
-            if value < 0 {
-                return Err(invalid(format!(
-                    "landtype value {value} must be non-negative"
-                )));
-            }
-            has_valid = true;
-            maxlc = maxlc.max(i32::from(value));
-        }
-    }
-    if !has_valid {
-        return Err(invalid("landtype contains no valid values".to_string()));
-    }
-
-    let mut bins = LandtypeBinStats::new(field);
     for lon_start in (0..src_nlon).step_by(TILE_LON) {
         let lon_count = TILE_LON.min(src_nlon - lon_start);
         let raw = landtype_tile(&variable, lat_lon, lon_start, lon_count, 0, src_nlat)?;
@@ -683,12 +725,18 @@ fn read_landtype_source_for_hfield(path: &Path, field: &HField) -> io::Result<La
                 if is_missing_numeric(value, &missing) {
                     continue;
                 }
+                has_valid = true;
+                maxlc = maxlc.max(i32::from(value));
                 let lon = source_longitude(lon_start + local_i, src_nlon, longitudes.as_deref());
                 let out = landtype_hfield_bin(lon, src_j, src_nlat, field);
-                bins.record(out, i32::from(value), maxlc)?;
+                bins.record(out, i32::from(value))?;
             }
         }
     }
+    if !has_valid {
+        return Err(invalid("landtype contains no valid values".to_string()));
+    }
+    bins.exclude_class(maxlc);
     Ok(bins)
 }
 
@@ -783,11 +831,12 @@ fn apply_landtype_basic_thresholds_from_source(
         let lon = source_longitude(src_i, src_nlon, None);
         for src_j in 0..src_nlat {
             let out = landtype_hfield_bin(lon, src_j, src_nlat, field);
-            bins.record(out, landtypes[src_i + 1][src_j + 1], maxlc)?;
+            bins.record(out, landtypes[src_i + 1][src_j + 1])?;
         }
     }
+    bins.exclude_class(maxlc);
 
-    apply_landtype_basic_thresholds_from_bins(field, &bins, refine, mesh_type, h_inside)
+    apply_landtype_basic_thresholds_from_bins(field, &bins, refine, mesh_type, h_inside, None)
 }
 
 fn apply_landtype_basic_thresholds_from_bins(
@@ -796,6 +845,7 @@ fn apply_landtype_basic_thresholds_from_bins(
     refine: &RefineConfig,
     mesh_type: &str,
     h_inside: f64,
+    domain: Option<&HfieldDomainMask>,
 ) -> io::Result<usize> {
     let len = field.nlon() * field.nlat();
     if bins.total.len() != len
@@ -816,7 +866,7 @@ fn apply_landtype_basic_thresholds_from_bins(
             .iter()
             .map(|classes| classes.len() as i32 > refine.th_num_landtypes)
             .collect::<Vec<_>>();
-        min_with_bool_matrix(field, &active, h_inside);
+        min_with_bool_matrix(field, &active, h_inside, domain);
         applied += 1;
     }
     if has_land_thresholds(refine, mesh_type) && refine.refine_area_mainland {
@@ -828,7 +878,7 @@ fn apply_landtype_basic_thresholds_from_bins(
                         < refine.th_area_mainland
             })
             .collect::<Vec<_>>();
-        min_with_bool_matrix(field, &active, h_inside);
+        min_with_bool_matrix(field, &active, h_inside, domain);
         applied += 1;
     }
     if has_ocean_thresholds(refine, mesh_type) {
@@ -840,7 +890,7 @@ fn apply_landtype_basic_thresholds_from_bins(
                 }
             })
             .collect::<Vec<_>>();
-        min_with_bool_matrix(field, &active, h_inside);
+        min_with_bool_matrix(field, &active, h_inside, domain);
         applied += 1;
     }
     Ok(applied)
@@ -854,11 +904,25 @@ pub(crate) fn build_composed_hfield(
     base_m: f64,
     options: &HfieldRefineOptions,
     threshold_level: usize,
+    domain: Option<&GridRegion>,
 ) -> io::Result<HField> {
-    let mut field =
-        build_hfield_from_regions(regions, base_m, options.g, options.nlon, options.nlat)?;
+    let domain = domain.map(|domain| HfieldDomainMask::new(options.nlon, options.nlat, domain));
+    let mut field = build_hfield_from_regions_in_domain(
+        regions,
+        base_m,
+        options.g,
+        options.nlon,
+        options.nlat,
+        domain.as_ref(),
+    )?;
     if refine.refine_cal {
-        let landtype_mask = hfield_landtype_mask_source(config)?;
+        let needs_landtype_mask = has_mean_threshold_hfield_sources(refine, mesh_type)
+            || !enabled_std_threshold_field_specs(refine, mesh_type).is_empty();
+        let landtype_mask = if needs_landtype_mask {
+            hfield_landtype_mask_source(config)?
+        } else {
+            None
+        };
         apply_mean_threshold_hfield_contributions_with_landtype_mask(
             &mut field,
             refine,
@@ -867,6 +931,7 @@ pub(crate) fn build_composed_hfield(
             threshold_level,
             options.g,
             landtype_mask.as_ref(),
+            domain.as_ref(),
         )?;
         apply_std_threshold_hfield_contributions_with_landtype_mask(
             &mut field,
@@ -876,6 +941,7 @@ pub(crate) fn build_composed_hfield(
             threshold_level,
             options.g,
             landtype_mask.as_ref(),
+            domain.as_ref(),
         )?;
         apply_landtype_basic_threshold_hfield_contributions(
             &mut field,
@@ -885,9 +951,35 @@ pub(crate) fn build_composed_hfield(
             base_m,
             threshold_level,
             options.g,
+            domain.as_ref(),
         )?;
     }
     Ok(field)
+}
+
+/// Keep refinement sources local to the requested output domain while leaving
+/// the Method-C transition apron free to extend into the surrounding parent
+/// mesh. Regional outputs discard that surrounding mesh after refinement, so
+/// refining unrelated global threshold features is both wasteful and unsafe.
+pub(crate) fn constrain_hfield_to_domain(
+    field: &mut HField,
+    domain: Option<&GridRegion>,
+    base_m: f64,
+    g: f64,
+) -> io::Result<()> {
+    let Some(domain) = domain else {
+        return Ok(());
+    };
+    let domain = HfieldDomainMask::new(field.nlon(), field.nlat(), domain);
+    for j in 0..field.nlat() {
+        for i in 0..field.nlon() {
+            if !domain.is_active(i, j) {
+                field.set(i, j, base_m);
+            }
+        }
+    }
+    field.limit_gradient(g)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -1283,7 +1375,13 @@ fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {
         .any(|token| aliases.contains(&token))
 }
 
-fn min_with_threshold_matrix(field: &mut HField, values: &[f64], threshold: f64, h_inside: f64) {
+fn min_with_threshold_matrix(
+    field: &mut HField,
+    values: &[f64],
+    threshold: f64,
+    h_inside: f64,
+    domain: Option<&HfieldDomainMask>,
+) {
     let nlon = field.nlon();
     let nlat = field.nlat();
     field.min_with_fn(|lon, lat| {
@@ -1293,7 +1391,8 @@ fn min_with_threshold_matrix(field: &mut HField, values: &[f64], threshold: f64,
         let j = (((lat + 90.0) / 180.0) * nlat as f64)
             .floor()
             .clamp(0.0, (nlat - 1) as f64) as usize;
-        if values[i * nlat + j] > threshold {
+        if domain.is_none_or(|domain| domain.contains(lon, lat)) && values[i * nlat + j] > threshold
+        {
             h_inside
         } else {
             f64::INFINITY
@@ -1301,7 +1400,12 @@ fn min_with_threshold_matrix(field: &mut HField, values: &[f64], threshold: f64,
     });
 }
 
-fn min_with_bool_matrix(field: &mut HField, active: &[bool], h_inside: f64) {
+fn min_with_bool_matrix(
+    field: &mut HField,
+    active: &[bool],
+    h_inside: f64,
+    domain: Option<&HfieldDomainMask>,
+) {
     let nlon = field.nlon();
     let nlat = field.nlat();
     field.min_with_fn(|lon, lat| {
@@ -1311,7 +1415,7 @@ fn min_with_bool_matrix(field: &mut HField, active: &[bool], h_inside: f64) {
         let j = (((lat + 90.0) / 180.0) * nlat as f64)
             .floor()
             .clamp(0.0, (nlat - 1) as f64) as usize;
-        if active[i * nlat + j] {
+        if domain.is_none_or(|domain| domain.contains(lon, lat)) && active[i * nlat + j] {
             h_inside
         } else {
             f64::INFINITY
@@ -1511,7 +1615,7 @@ mod tests {
         let mut field = HField::uniform(4, 2, 100.0).unwrap();
         let values = vec![0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
-        min_with_threshold_matrix(&mut field, &values, 5.0, 25.0);
+        min_with_threshold_matrix(&mut field, &values, 5.0, 25.0, None);
 
         assert_eq!(field.get(1, 0), 25.0);
         assert_eq!(field.get(0, 0), 100.0);
@@ -2093,6 +2197,7 @@ mod tests {
                 &refine,
                 "earthmesh",
                 25.0,
+                None,
             )
             .unwrap();
 
@@ -2319,12 +2424,79 @@ mod tests {
             target_levels_json: None,
         };
 
-        let field =
-            build_composed_hfield(&[], &refine, "oceanmesh", Some(&config), 100.0, &options, 1)
-                .unwrap();
+        let field = build_composed_hfield(
+            &[],
+            &refine,
+            "oceanmesh",
+            Some(&config),
+            100.0,
+            &options,
+            1,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(field.get(2, 1), 50.0);
         assert_eq!(field.get(0, 1), 100.0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn regional_domain_discards_unrelated_global_hfield_demand() {
+        let mut field = HField::uniform(360, 180, 25.0).unwrap();
+        let domain = GridRegion::Bbox {
+            west: 108.0,
+            east: 120.0,
+            south: 18.0,
+            north: 26.0,
+        };
+
+        constrain_hfield_to_domain(&mut field, Some(&domain), 100.0, 0.2).unwrap();
+
+        assert_eq!(field.level_at(114.0, 22.0, 100.0, 2), 2);
+        assert_eq!(field.level_at(8.5, 43.8, 100.0, 2), 0);
+    }
+
+    #[test]
+    fn regional_thresholds_are_scoped_before_gradient_limiting() {
+        let mut field = HField::uniform(360, 180, 100_000.0).unwrap();
+        let domain = GridRegion::Bbox {
+            west: 108.0,
+            east: 120.0,
+            south: 18.0,
+            north: 26.0,
+        };
+        let domain = HfieldDomainMask::new(360, 180, &domain);
+        min_with_bool_matrix(&mut field, &vec![true; 360 * 180], 25_000.0, Some(&domain));
+        field.limit_gradient(0.2).unwrap();
+
+        assert_eq!(field.level_at(114.0, 22.0, 100_000.0, 2), 2);
+        assert_eq!(field.level_at(8.5, 43.8, 100_000.0, 2), 0);
+    }
+
+    #[test]
+    fn regional_specified_sources_are_scoped_before_gradient_limiting() {
+        let domain = GridRegion::Bbox {
+            west: 108.0,
+            east: 120.0,
+            south: 18.0,
+            north: 26.0,
+        };
+        let outside = MethodCRefinementRegion::Circle {
+            center: LonLatDegrees::new(107.0, 22.0),
+            radius_meters: 50_000.0,
+            level: 2,
+        };
+        let field = build_hfield_from_regions_in_domain(
+            &[outside],
+            100_000.0,
+            0.2,
+            360,
+            180,
+            Some(&HfieldDomainMask::new(360, 180, &domain)),
+        )
+        .unwrap();
+
+        assert_eq!(field.level_at(108.5, 22.5, 100_000.0, 2), 0);
     }
 }

@@ -55,13 +55,18 @@ impl MethodCDelaunayMesh {
             {
                 continue;
             }
-            let Ok(trial_perimeter) =
-                self.method_c_perimeter_from_selected_faces(&trial, m_neighbors)
+            let Ok(trial_perimeters) =
+                self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)
             else {
                 continue;
             };
+            let trial_perimeter = trial_perimeters
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
             let removed = selected_count - trial_count;
-            let remainder = trial_perimeter.len() % 3;
+            let remainder = Self::method_c_perimeter_remainder_score(&trial_perimeters);
             let score = (
                 removed,
                 remainder,
