@@ -7,7 +7,7 @@ use earthmesh_project::{
 };
 use std::{
     env, fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     process::{self, Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -108,6 +108,22 @@ fn staged_engine_paths_are_process_specific_and_published_from_a_temp_copy() {
             .contains(".tmp-")
     }));
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn bundled_engine_directory_precedes_a_stale_repository_build() {
+    let repo = Path::new("/repo");
+    let executable =
+        Path::new("/Applications/EarthMesh Studio.app/Contents/MacOS/earthmesh_studio");
+    let roots = engine::engine_search_roots(repo, Some(executable));
+
+    assert_eq!(
+        roots.first().map(PathBuf::as_path),
+        Some(Path::new(
+            "/Applications/EarthMesh Studio.app/Contents/MacOS"
+        ))
+    );
+    assert_eq!(roots.get(1).map(PathBuf::as_path), Some(repo));
 }
 
 #[test]
@@ -317,6 +333,17 @@ fn gui_resolves_preset_inputs_from_the_nearest_working_directory_ancestor() {
 }
 
 #[test]
+fn bundled_gui_resolves_preset_inputs_when_finder_cwd_is_root() {
+    let resolved = mesh_runner::resolve_gui_input_path(
+        Path::new("input/landtype_igbp_update.nc"),
+        Path::new("/"),
+    );
+
+    assert!(resolved.is_file(), "{}", resolved.display());
+    assert!(resolved.ends_with("input/landtype_igbp_update.nc"));
+}
+
+#[test]
 fn opened_project_paths_are_bound_to_the_project_directory() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -356,10 +383,13 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
 fn failed_kill_keeps_the_running_pid_for_a_retry() {
     let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
     let run = mesh_process::begin_run().expect("reserve run");
-    mesh_process::record_running_child(run.id(), u32::MAX).expect("record impossible PID");
+    // Keep the fake PID positive after conversion to Linux pid_t. u32::MAX
+    // becomes -1 there, and `kill(-1, SIGKILL)` targets every permitted process.
+    let impossible_pid = i32::MAX as u32;
+    mesh_process::record_running_child(run.id(), impossible_pid).expect("record impossible PID");
     assert!(mesh_process::kill_run().is_err());
-    assert_eq!(mesh_process::running_child_pid(), Some(u32::MAX));
-    mesh_process::clear_running_child(run.id(), u32::MAX);
+    assert_eq!(mesh_process::running_child_pid(), Some(impossible_pid));
+    mesh_process::clear_running_child(run.id(), impossible_pid);
     drop(run);
 }
 
@@ -1661,14 +1691,14 @@ fn set_quality_accepts_auto_refine_policy() {
     assert_eq!(summary.on_violation, "auto_refine");
     assert_eq!(summary.auto_refine_batch_cells, 3);
 
-    let err = set_quality(
+    let global = set_quality(
         hydrology_yaml("quality_auto_refine_global"),
         25.0,
         "auto_refine".to_string(),
         1,
     )
-    .unwrap_err();
-    assert!(err.contains("auto_refine requires a regional domain"));
+    .expect("global AutoRefine");
+    assert_eq!(project_summary(global).unwrap().on_violation, "auto_refine");
 }
 
 #[test]

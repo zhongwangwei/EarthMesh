@@ -10,10 +10,10 @@ static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Locate the mesh-generator binary, in priority order:
 ///   1. `$EARTHMESH_MKGRD` (explicit override),
-///   2. well-known build outputs relative to the repo root — `make build` copies
+///   2. next to the running executable (installed / bundled case),
+///   3. well-known build outputs relative to the repo root — `make build` copies
 ///      the CLI to `<repo>/mkgrd.x`; cargo leaves `earthmesh_cli` in its target
 ///      dirs — so a freshly built tree "just works" with no configuration,
-///   3. next to the running executable (installed / bundled case),
 ///   4. bare `mkgrd.x`, letting the OS search `PATH`.
 pub(crate) fn resolve_mkgrd() -> Result<String, String> {
     // Run the engine from a clean temp dir. The static netcdf/HDF5 build SIGKILLs
@@ -115,18 +115,7 @@ fn resolve_mkgrd_path() -> String {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..");
-    let mut roots: Vec<PathBuf> = vec![
-        repo.clone(),
-        repo.join("rust/earthmesh_cli/target/release"),
-        repo.join("rust/earthmesh_cli/target/debug"),
-        repo.join("target/release"),
-        repo.join("target/debug"),
-    ];
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            roots.push(dir.to_path_buf());
-        }
-    }
+    let roots = engine_search_roots(&repo, env::current_exe().ok().as_deref());
     let names = ["mkgrd.x", "earthmesh_cli", "earthmesh_cli.exe", "mkgrd.exe"];
     for root in &roots {
         for n in &names {
@@ -141,4 +130,19 @@ fn resolve_mkgrd_path() -> String {
         }
     }
     "mkgrd.x".to_string()
+}
+
+pub(crate) fn engine_search_roots(repo: &Path, current_exe: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = current_exe
+        .and_then(Path::parent)
+        .map(|dir| vec![dir.to_path_buf()])
+        .unwrap_or_default();
+    roots.extend([
+        repo.to_path_buf(),
+        repo.join("rust/earthmesh_cli/target/release"),
+        repo.join("rust/earthmesh_cli/target/debug"),
+        repo.join("target/release"),
+        repo.join("target/debug"),
+    ]);
+    roots
 }

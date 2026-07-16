@@ -955,21 +955,19 @@ fn quality_auto_refine_policy_lowers_to_namelist() {
 }
 
 #[test]
-fn quality_auto_refine_rejects_domains_that_cannot_be_repaired() {
+fn quality_auto_refine_accepts_global_regional_and_uniform_baselines() {
     let mut p = sample();
     p.quality.on_violation = ViolationPolicy::AutoRefine;
     p.domain = DomainConfig::Global;
-    assert!(p
-        .validate()
-        .unwrap_err()
-        .contains("auto_refine requires a regional domain"));
+    assert!(p.validate().is_ok());
 
     p.domain = sample().domain;
     p.refinement.enabled = false;
-    assert!(p
-        .validate()
-        .unwrap_err()
-        .contains("auto_refine requires refinement.enabled"));
+    p.refinement.max_passes = 0;
+    p.refinement.specified_circle = None;
+    p.refinement.specified_bbox = None;
+    p.refinement.specified_close = None;
+    assert!(p.validate().is_ok());
 }
 
 #[test]
@@ -1352,6 +1350,13 @@ fn project_declares_only_topology_expectations_known_before_masking() {
 
 #[test]
 fn auto_refine_state_machine_covers_pass_retry_cap_and_engine_failure() {
+    let mut uniform = AutoRefineState::new(0, 40);
+    assert_eq!(uniform.current_pass(), 0);
+    assert_eq!(
+        uniform.transition(AutoRefineEvent::QualityViolation),
+        AutoRefineAction::Retry { next_pass: 1 }
+    );
+
     let mut passed = AutoRefineState::new(1, 40);
     assert_eq!(
         passed.transition(AutoRefineEvent::QualityPassed),

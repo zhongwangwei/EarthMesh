@@ -15,10 +15,15 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fast:
     name: fast (fmt + no-netcdf crates)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Install rustfmt + clippy
@@ -40,6 +45,7 @@ jobs:
   gui:
     name: gui (JS + Tauri fmt/clippy/tests)
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Install Tauri v2 Linux dependencies
@@ -69,6 +75,7 @@ jobs:
   heavy:
     name: heavy (cli, system NetCDF)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Install NetCDF system deps

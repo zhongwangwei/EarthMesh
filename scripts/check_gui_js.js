@@ -75,6 +75,18 @@ check(
 log("threshold refinement master switch is wired");
 
 check(
+  html.includes('id="refinementStrategySwitches"') &&
+    html.includes('id="specifiedRefineOn"') &&
+    html.includes('id="thresholdRefineOn"') &&
+    html.includes('id="specifiedRefinementPanel"') &&
+    html.includes('id="thresholdRefinementPanel"') &&
+    html.includes('(specifiedRefine.enabled ? specified : "")') &&
+    html.includes('(thresholdRefine.enabled ? threshold : "")'),
+  "specified and threshold refinement must be separate panels opened by strategy switches",
+);
+log("refinement strategies open independent panels");
+
+check(
   html.includes('id="qualityAutoRefineOn"') &&
     html.includes('id="qualityViolationPolicy"') &&
     html.includes('<div class="quality-detail"><span class="quality-tag">') &&
@@ -86,11 +98,28 @@ check(
 log("AutoRefine is visible in normal quality controls");
 
 check(
+  html.includes("const autoEligible = !!s;") &&
+    html.includes("支持全球、区域、流域；也可从未细化网格开始") &&
+    !html.includes('s.domain === "regional" && s.refine_enabled') &&
+    !html.includes('qualityEdit.policy = "warn"'),
+  "AutoRefine must support every domain and must not be disabled with initial refinement",
+);
+log("AutoRefine covers all domains and uniform baselines");
+
+check(
   html.includes('.proj-actions{display:flex;flex-direction:row;flex-wrap:nowrap') &&
     html.includes('<div class="proj-actions">'),
   "New/Open/Save must stay in one horizontal project action row",
 );
 log("project actions stay horizontal");
+
+check(
+  /<input class="proj-name"[^>]*\breadonly\b/.test(html) &&
+    html.includes('id="projectNameStep"') &&
+    html.includes("if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; };"),
+  "case name must be a read-only mirror of the editable project name",
+);
+log("case name follows the project name and is read-only");
 
 check(
   html.includes('${u.ticks.map(t=>`<span>${t}${u.suffix}</span>`).join("")}'),
@@ -632,7 +661,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
       !html.includes("regionalAutoPasses") &&
       html.includes("const shownPasses") &&
       html.includes("no threshold criteria for this template") &&
-      html.includes('if (crits.length) anchor.insertAdjacentHTML("afterend", mp);') &&
+      html.includes('anchor.insertAdjacentHTML("afterend", mp);') &&
       html.includes(
         "const refinementPasses = refinementEnabled",
       ),

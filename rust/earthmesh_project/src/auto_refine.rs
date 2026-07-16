@@ -27,7 +27,13 @@ pub struct AutoRefineState {
 impl AutoRefineState {
     pub fn new(requested_pass: u8, target_nxp: i32) -> Self {
         Self {
-            current_pass: effective_auto_refine_pass(requested_pass, target_nxp),
+            // Pass zero is a valid uniform baseline. A quality violation then
+            // creates the first local refinement candidate at pass one.
+            current_pass: if requested_pass == 0 {
+                0
+            } else {
+                effective_auto_refine_pass(requested_pass, target_nxp)
+            },
             target_nxp,
         }
     }

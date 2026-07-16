@@ -3,7 +3,7 @@ use crate::{
     HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat, ProjectConfig,
     ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe, RegionShape,
     ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
-    ThresholdField, ViolationPolicy, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
+    ThresholdField, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 
@@ -48,14 +48,6 @@ impl ProjectConfig {
         self.refinement.validate()?;
         self.validate_refinement_sources()?;
         self.quality.validate()?;
-        if self.quality.on_violation == ViolationPolicy::AutoRefine {
-            if !matches!(self.domain, DomainConfig::Regional { .. }) {
-                return Err("quality auto_refine requires a regional domain".to_string());
-            }
-            if !self.refinement.enabled {
-                return Err("quality auto_refine requires refinement.enabled = true".to_string());
-            }
-        }
         self.expert.validate()?;
         self.validate_expert_refinement_levels()?;
         if let Some(hydro_coast) = &self.hydro_coast {

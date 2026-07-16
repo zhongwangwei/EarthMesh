@@ -68,7 +68,7 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .proj-actions .menu-btn{flex:0 0 auto;justify-content:center}
 .proj-name{padding:5px 10px;border:1px solid transparent;border-radius:var(--r-sm);
   background:var(--bg);min-width:160px;color:var(--text);font-weight:600}
-.proj-name:focus{outline:none;border-color:var(--accent)}
+.proj-name[readonly]{cursor:default;color:var(--muted)}
 .grow{flex:1}
 .seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;background:var(--bg)}
 .seg button{padding:5px 11px;border:0;background:transparent;color:var(--muted)}
@@ -223,7 +223,7 @@ body.normal .expert{display:none}
   <header class="top">
     <div class="brand"><span class="glyph">◈</span><span>EarthMesh <span style="color:var(--muted);font-weight:500">Studio</span></span></div>
     <div class="sep"></div>
-    <input class="proj-name" value="earthmesh-project" spellcheck="false" title="Project name">
+    <input class="proj-name" value="earthmesh-project" readonly aria-label="Case name" title="Case name — follows the project name">
     <div class="grow"></div>
     <div class="seg" id="langSeg">
       <button class="on" data-lang="zh" data-i18n="lang.zh">中文</button>
@@ -668,18 +668,18 @@ function renderStep(i){
       </tbody></table></div>`;
   }
   else if(i===4){
-    html=head(STEPS[4].t[lang],lang?"设置指定细化与阈值细化；阈值判据连着数据图层。":"Set specified and threshold refinement; threshold criteria tie to data layers.")
+    html=head(STEPS[4].t[lang],lang?"先选择细化策略；开启指定细化或阈值细化后，分别显示对应设置栏。":"Choose refinement strategies first; each enabled strategy opens its own settings panel.")
     +`<div class="card"><h3>${lang?"细化策略":"Refinement strategy"}</h3><div class="ch">${lang?"正在读取项目细化配置…":"loading refinement settings…"}</div></div>`;
   }
   else if(i===5){
-    html=head(STEPS[5].t[lang],lang?"设置质量门限与违规策略；符合条件的区域网格可直接启用 AutoRefine。":"Set quality gates and violation behavior; eligible regional meshes can enable AutoRefine here.")
+    html=head(STEPS[5].t[lang],lang?"设置质量门限与违规策略；AutoRefine 支持全球、区域和流域，也支持从未细化网格开始。":"Set quality gates and violation behavior; AutoRefine supports global, regional, and watershed domains, including uniform baselines.")
     +`<div class="card"><h3>${lang?"违规处理":"Violation behavior"}</h3>
       ${field(lang?"违规时":"On violation",`<select class="select" id="qualityViolationPolicy"><option value="warn" selected>${lang?"警告并继续":"Warn & continue"}</option><option value="block">${lang?"直接失败":"Fail"}</option></select>`)}
     </div>
     <div class="quality-detail"><span class="quality-tag">${lang?"质量门禁与 AutoRefine":"Quality gates and AutoRefine"}</span>
       <div class="grid2">
         ${field(lang?"最小角 ≥":"Min angle ≥",inp(`${DEFAULT_MIN_ANGLE_DEG}°`))}
-        ${field("AutoRefine",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="qualityAutoRefineOn"> <span>${lang?"质量不达标时自动生成并比较修复候选":"Generate and compare a repair candidate after a quality violation"}</span></label>`,lang?"仅区域网格且已有细化来源时可用":"Available for regional meshes with a refinement source")}
+        ${field("AutoRefine",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="qualityAutoRefineOn"> <span>${lang?"质量不达标时自动生成并比较局部修复候选":"Generate and compare a local repair candidate after a quality violation"}</span></label>`,lang?"全球、区域、流域均可；初始细化可开可关":"Global, regional, and watershed domains; initial refinement may be on or off")}
         <div id="qualityAutoRefineOptions">${field(lang?"每轮局部修复单元":"Local repair cells / pass",`<input class="input" id="qualityBatchCells" type="number" min="1" step="1" value="1">`,lang?"只处理同一缺陷连通分量；默认 1，便于严格比较和回滚。":"Only one connected defect component is touched; default 1 keeps comparison and rollback attributable.")}</div>
       </div></div>`;
   }
@@ -1700,8 +1700,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (!qualityEdit) {
       if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn", batchCells: s.auto_refine_batch_cells || 1 };
     }
-    const autoEligible = !!(s && s.domain === "regional" && s.refine_enabled);
-    if (qualityEdit && qualityEdit.policy === "auto_refine" && !autoEligible) qualityEdit.policy = "warn";
+    const autoEligible = !!s;
     const readQ = () => {
       let minAngle = 0, policy = "warn", batchCells = 1;
       if (minIn) { const v = num(minIn); if (minIn.value.trim() && !isNaN(v)) minAngle = v; }
@@ -1729,8 +1728,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       autoIn.disabled = !autoEligible;
       autoIn.checked = autoEligible && !!qualityEdit && qualityEdit.policy === "auto_refine";
       autoIn.title = autoEligible
-        ? (zh() ? "当前项目可使用 AutoRefine" : "AutoRefine is available for this project")
-        : (zh() ? "需要区域网格和已启用的细化来源" : "Requires a regional mesh and an enabled refinement source");
+        ? (zh() ? "支持全球、区域、流域；也可从未细化网格开始" : "Supports global, regional, and watershed domains, including uniform baselines")
+        : (zh() ? "正在读取项目配置" : "Loading project configuration");
     }
     paintAutoRefine();
   }
@@ -1806,10 +1805,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const shownCalPasses = Math.min(nMax, Math.max(1, expertEdit.maxIterCal ?? shownPasses));
     const fineAt = (n) => (cellKm() / Math.pow(2, n));
     const fmtKm = (v) => v.toFixed(v < 10 ? 2 : 1) + " km";
-    const specified = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <div style="font-weight:700;margin-bottom:10px">${z ? "指定细化" : "Specified refinement"}</div>
+    const specified = `<div class="card" id="specifiedRefinementPanel" style="margin-top:12px">
+      <h3>${z ? "指定细化" : "Specified refinement"}</h3>
       <div class="grid2">
-        ${field(z?"开关":"Switch",`<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用":"Enable"}</label>`)}
         ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合掩膜":"Close mask"}</option></select>`)}
       </div>
       <div class="grid2" id="specifiedRadiusFields" style="margin-top:10px">
@@ -1871,13 +1869,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       ? (z ? "判据随模板自动列出 · " : "criteria from the template · ")
         + active + "/" + crits.length + (z ? " 个有数据启用" : " active")
       : (z ? "此模板没有阈值细化判据" : "no threshold criteria for this template");
-    const threshold = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+    const threshold = `<div class="card" id="thresholdRefinementPanel" style="margin-top:12px">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px">
         <div><div style="font-weight:700">${z ? "阈值细化" : "Threshold refinement"}</div>
         <div style="color:var(--muted);font-size:11px;margin-top:2px">${thresholdSummary}</div></div>
-        <label style="display:flex;gap:8px;align-items:center;font-size:12px;font-weight:650"><input type="checkbox" id="thresholdRefineOn" ${thresholdRefine.enabled ? "checked" : ""}>${z ? "启用" : "Enable"}</label>
       </div>
-      <div id="thresholdRefineControls" style="opacity:${thresholdRefine.enabled ? "1" : "0.5"}">
+      <div id="thresholdRefineControls">
       <div id="thresholdRows"></div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
@@ -1885,7 +1882,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
           <div style="color:var(--muted);font-size:11px">RL%max_iter_cal</div></div>
           <span style="font-weight:750;font-size:16px;color:var(--accent)"><span id="calPassVal">${shownCalPasses}</span> <span id="calPassFine" style="font-size:11px;color:var(--muted)">→ ≈${fmtKm(fineAt(shownCalPasses))}</span></span>
         </div>
-        <input type="range" id="calPassRange" min="1" max="${nMax}" value="${shownCalPasses}" style="width:100%" ${thresholdRefine.enabled ? "" : "disabled"}>
+        <input type="range" id="calPassRange" min="1" max="${nMax}" value="${shownCalPasses}" style="width:100%">
         <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax}</span></div>
       </div>
       </div>
@@ -1894,13 +1891,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const ch = critCard.querySelector(".ch");
     while (ch && ch.nextSibling) ch.nextSibling.remove();
     if (ch) {
-      ch.textContent = regionalRefine
-        ? (z ? "区域 bbox 默认使用内缩矩形局部细化，指定圆形可覆盖；非 bbox 区域从域轮廓派生细化。指定 bbox 在区域模式中会被忽略。" : "Regional bbox defaults to inset bbox refinement and specified circles override it; non-bbox regions derive refinement from the domain outline. Specified bboxes are ignored in regional mode.")
-        : (z ? "细化策略分为指定细化和阈值细化。" : "Refinement is split into specified and threshold refinement.");
+      ch.textContent = z ? "两个策略可独立启用，也可同时启用。" : "The two strategies can be enabled independently or together.";
       const anchor = ch;
-      const mp = specified + hfieldBlock + threshold + expertRefine;
-      if (crits.length) anchor.insertAdjacentHTML("afterend", mp);
-      else anchor.insertAdjacentHTML("afterend", mp);
+      const switches = `<div class="grid2" id="refinementStrategySwitches" style="margin-top:12px">
+        ${field(z?"指定细化":"Specified refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用后显示指定区域设置":"Show specified-region settings"}</label>`)}
+        ${field(z?"阈值细化":"Threshold refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="thresholdRefineOn" ${thresholdRefine.enabled ? "checked" : ""}>${z?"启用后显示数据判据设置":"Show data-criterion settings"}</label>`)}
+      </div>`;
+      const strategyEnabled = specifiedRefine.enabled || thresholdRefine.enabled;
+      const mp = switches
+        + (specifiedRefine.enabled ? specified : "")
+        + (thresholdRefine.enabled ? threshold : "")
+        + (strategyEnabled ? hfieldBlock + expertRefine : "");
+      anchor.insertAdjacentHTML("afterend", mp);
       const rows = document.getElementById("thresholdRows");
       if (rows) crits.forEach((l) => rows.appendChild(criterionRow(l)));
       const specifiedCloseText = document.getElementById("specifiedClosePathText");
@@ -1908,7 +1910,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const thresholdOn = document.getElementById("thresholdRefineOn");
       if (thresholdOn) thresholdOn.onchange = () => {
         thresholdRefine.enabled = thresholdOn.checked;
-        if (!thresholdRefine.enabled && qualityEdit && qualityEdit.policy === "auto_refine" && !specifiedRefine.enabled) qualityEdit.policy = "warn";
         clearRunArtifacts();
         enhanceRefinementStep();
       };
@@ -2018,11 +2019,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (closeFields) closeFields.style.display = kind === "close" ? "" : "none";
       if (specCloseText) specCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z?"📄 点击选择 SHP/NML/NetCDF/TXT":"📄 Choose SHP/NML/NetCDF/TXT");
     };
+    if (specOn) specOn.onchange = () => {
+      specifiedRefine.enabled = specOn.checked;
+      clearRunArtifacts();
+      enhanceRefinementStep();
+    };
     const syncSpecified = () => {
       const kind = specKind ? specKind.value : "radius";
       specifiedRefine = {
         ...specifiedRefine,
-        enabled: !!(specOn && specOn.checked),
         kind,
         lon: readNum(specLon),
         lat: readNum(specLat),
@@ -2036,7 +2041,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       paintSpecifiedKind(kind);
       clearRunArtifacts();
     };
-    [specOn, specKind, specLon, specLat, specRadius, specW, specE, specS, specN].forEach((el) => {
+    [specKind, specLon, specLat, specRadius, specW, specE, specS, specN].forEach((el) => {
       if (el) el.addEventListener("input", syncSpecified);
       if (el) el.addEventListener("change", syncSpecified);
     });

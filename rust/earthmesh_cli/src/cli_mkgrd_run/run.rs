@@ -41,9 +41,14 @@ fn run_prepared_mkgrd(
     prepared: PreparedMkgrdInput,
     mut args: impl Iterator<Item = String>,
 ) -> Result<(), String> {
+    let project_workdir = prepared.project_run_dir.clone();
     let mut namelist = prepared.namelist;
     let mut project = prepared.project;
-    let mut max_tris = 100_000usize;
+    let mut max_tris = project
+        .as_ref()
+        .map(|spec| project_triangle_budget(&spec.config))
+        .transpose()?
+        .unwrap_or(100_000);
     let mut run_refine_passthrough = false;
     let mut run_refine_landtype_source = false;
     let mut run_mask_restart_ocean = false;
@@ -150,7 +155,10 @@ fn run_prepared_mkgrd(
         usize::try_from(config.openmp).map_err(|_| "NL%openmp must be positive".to_string())?;
     earthmesh_mesh::configure_global_thread_pool(worker_count).map_err(|err| err.to_string())?;
 
-    let workdir = env::current_dir().map_err(|err| err.to_string())?;
+    let workdir = match project_workdir {
+        Some(path) => path,
+        None => env::current_dir().map_err(|err| err.to_string())?,
+    };
     let has_explicit_execution_mode = run_refine_passthrough
         || run_refine_landtype_source
         || run_mask_restart_ocean
@@ -657,6 +665,26 @@ fn run_prepared_mkgrd(
     Err("internal error: explicit mkgrd execution mode was not dispatched".to_string())
 }
 
+fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<usize, String> {
+    let target_nxp = config.try_lower()?.mkgrd.nxp;
+    let nxp =
+        usize::try_from(target_nxp).map_err(|_| "project NXP must be positive".to_string())?;
+    let base = 20usize
+        .checked_mul(nxp)
+        .and_then(|value| value.checked_mul(nxp))
+        .ok_or_else(|| "project base triangle count exceeds this platform".to_string())?;
+    let passes = if config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine {
+        earthmesh_project::auto_refine_level_cap(target_nxp)
+    } else if config.refinement.enabled {
+        config.refinement.max_passes
+    } else {
+        0
+    };
+    base.checked_shl(u32::from(passes) * 2)
+        .map(|budget| budget.max(100_000))
+        .ok_or_else(|| "project refined triangle budget exceeds this platform".to_string())
+}
+
 fn final_gridfile(
     report: &earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport,
 ) -> Option<&std::path::Path> {
@@ -687,6 +715,9 @@ fn refinement_parent_gridfile(
         DefaultReport::RefinePipeline(run)
         | DefaultReport::Dispatch(DispatchReport::RefinePipeline(run)) => {
             Some(run.refinement_parent_gridfile())
+        }
+        DefaultReport::Dispatch(DispatchReport::Gridinit(run)) => {
+            Some(run.gridfile.output.as_path())
         }
         _ => None,
     }
@@ -789,6 +820,25 @@ mod tests {
         let err = enforce_project_quality_policy(ViolationPolicy::AutoRefine, QualityLevel::Fail)
             .unwrap_err();
         assert!(err.contains("on_violation=auto_refine"), "{err}");
+    }
+
+    #[test]
+    fn project_triangle_budget_covers_requested_resolution_and_refinement() {
+        let mut project = ProjectConfig::scaffold(
+            "budget",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(801),
+        );
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 3;
+        project.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinement {
+            lon: 0.0,
+            lat: 0.0,
+            radius_km: 100.0,
+        });
+
+        assert_eq!(project_triangle_budget(&project).unwrap(), 821_249_280);
     }
 
     #[test]

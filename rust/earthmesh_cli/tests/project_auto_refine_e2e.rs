@@ -303,3 +303,39 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let project_path = root.join("project.yaml");
+    let quickstart = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects/quickstart.yaml"),
+    )
+    .unwrap();
+    let project = quickstart
+        .replace("min_angle_deg: 25.0", "min_angle_deg: 120.0")
+        .replace("on_violation: Warn", "on_violation: AutoRefine")
+        .replace("expert: {}", "expert:\n  niter: 1\n  niter_refine: 1");
+    fs::write(&project_path, project).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["--project", project_path.to_str().unwrap(), "--quiet"])
+        .output()
+        .expect("run global uniform AutoRefine project");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("auto_refine quality=warn level=0")
+            && stderr.contains("auto_refine applying 1 local quality targets at pass 1"),
+        "pass-zero uniform baseline must produce a pass-one local repair:\n{stderr}"
+    );
+    let mut decisions = Vec::new();
+    find_named(&root, "auto_refine_decision.json", &mut decisions);
+    assert!(decisions.iter().any(|path| path
+        .to_string_lossy()
+        .contains("quality_auto_refine/pass_1")));
+
+    let _ = fs::remove_dir_all(root);
+}

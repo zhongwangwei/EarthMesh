@@ -137,10 +137,10 @@ make build                                # produces <repo>/mkgrd.x
 cd gui-tauri/src-tauri && cargo run        # Run just works
 ```
 
-`resolve_mkgrd()` searches, in order: a real `$EARTHMESH_MKGRD` file →
-`<repo>/mkgrd.x` → `rust/earthmesh_cli/target/{release,debug}/earthmesh_cli` →
-`target/{release,debug}/earthmesh_cli` → the app's own dir (including the
-bundled sidecar) → `mkgrd.x` on `PATH`. When it finds a real file, the backend
+`resolve_mkgrd()` searches, in order: a real `$EARTHMESH_MKGRD` file → the
+app's own dir (including the bundled sidecar) → `<repo>/mkgrd.x` →
+`rust/earthmesh_cli/target/{release,debug}/earthmesh_cli` →
+`target/{release,debug}/earthmesh_cli` → `mkgrd.x` on `PATH`. When it finds a real file, the backend
 runs a refreshed temp copy (`earthmesh_studio_engine-$PID-$SOURCE_HASH.x`) so
 concurrent runs and different engine sources do not share a stale staged binary,
 while source-tree C-library quirks do not affect GUI runs. Set `EARTHMESH_MKGRD`
@@ -171,6 +171,10 @@ automatically.
   is authoritative; legacy artifacts without `schema_version` remain readable
   with a warning, while unknown future versions are skipped rather than decoded
   against an incompatible DTO.
+- AutoRefine accepts global, regional bbox/close, and watershed domains. It can
+  repair either an already-refined mesh or a uniform pass-zero baseline; its
+  generated quality repair remains local and is accepted only when guarded
+  quality metrics strictly improve.
 - The quality dashboard treats polygon side counts as observed cell makeup, not
   topology failures; failures come from gates and topology issues.
 

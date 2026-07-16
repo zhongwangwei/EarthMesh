@@ -171,11 +171,26 @@ pub(crate) fn resolve_gui_input_path(configured: &Path, cwd: &Path) -> PathBuf {
 
     // Development builds normally start in gui-tauri/src-tauri while preset
     // inputs live at the repository root.
-    cwd.ancestors()
+    if let Some(candidate) = cwd
+        .ancestors()
         .skip(1)
         .map(|ancestor| ancestor.join(configured))
         .find(|candidate| candidate.exists())
-        .unwrap_or(local)
+    {
+        return candidate;
+    }
+
+    // Bundled apps launched by Finder commonly inherit `/` as their cwd. A
+    // locally built bundle still knows its source tree, so resolve preset data
+    // there before turning a valid relative input into `/input/...`.
+    let source_tree = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(configured);
+    if source_tree.exists() {
+        source_tree
+    } else {
+        local
+    }
 }
 
 pub(crate) fn project_run_dir(

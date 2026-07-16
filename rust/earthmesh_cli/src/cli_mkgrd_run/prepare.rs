@@ -74,7 +74,9 @@ fn compile_project_arg(
     } else {
         ProjectConfig::from_yaml(&text)?
     };
-    if project.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine {
+    if project.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
+        && project.refinement.enabled
+    {
         let target_nxp = project.try_lower()?.mkgrd.nxp;
         project.refinement.max_passes = earthmesh_project::effective_auto_refine_pass(
             project.refinement.max_passes,
@@ -411,6 +413,36 @@ mod tests {
         assert!(!refine.refine_cal);
         assert!(!refine.refine_num_landtypes);
         assert!(!root.join("project.earthmesh-thresholds").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_prepare_keeps_auto_refine_uniform_baseline_unrefined() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_auto_refine_uniform_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "auto_refine_uniform",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(16),
+        );
+        project.quality.on_violation = earthmesh_project::ViolationPolicy::AutoRefine;
+        assert!(!project.refinement.enabled);
+        assert_eq!(project.refinement.max_passes, 0);
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+
+        let prepared = prepare_mkgrd_namelist("--project".to_string(), &mut args).unwrap();
+        let nml = fs::read_to_string(prepared.namelist).unwrap();
+        let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
+        assert!(!mkgrd.refine);
+        assert!(nml.contains("NL%on_violation = 'auto_refine'"));
 
         let _ = fs::remove_dir_all(root);
     }
