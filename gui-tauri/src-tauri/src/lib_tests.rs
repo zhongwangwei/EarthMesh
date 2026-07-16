@@ -334,13 +334,26 @@ fn gui_resolves_preset_inputs_from_the_nearest_working_directory_ancestor() {
 
 #[test]
 fn bundled_gui_resolves_preset_inputs_when_finder_cwd_is_root() {
-    let resolved = mesh_runner::resolve_gui_input_path(
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_bundled_input_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let landtype = root.join("input/landtype_igbp_update.nc");
+    fs::create_dir_all(landtype.parent().unwrap()).unwrap();
+    fs::write(&landtype, b"fixture").unwrap();
+
+    let resolved = mesh_runner::resolve_gui_input_path_from(
         Path::new("input/landtype_igbp_update.nc"),
         Path::new("/"),
+        &root,
     );
 
-    assert!(resolved.is_file(), "{}", resolved.display());
-    assert!(resolved.ends_with("input/landtype_igbp_update.nc"));
+    assert_eq!(resolved, landtype);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

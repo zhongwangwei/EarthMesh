@@ -160,6 +160,15 @@ pub(crate) fn absolutize_input_path(path: &mut String, cwd: &Path) {
 }
 
 pub(crate) fn resolve_gui_input_path(configured: &Path, cwd: &Path) -> PathBuf {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    resolve_gui_input_path_from(configured, cwd, &source_root)
+}
+
+pub(crate) fn resolve_gui_input_path_from(
+    configured: &Path,
+    cwd: &Path,
+    source_root: &Path,
+) -> PathBuf {
     if configured.is_absolute() {
         return configured.to_path_buf();
     }
@@ -183,9 +192,7 @@ pub(crate) fn resolve_gui_input_path(configured: &Path, cwd: &Path) -> PathBuf {
     // Bundled apps launched by Finder commonly inherit `/` as their cwd. A
     // locally built bundle still knows its source tree, so resolve preset data
     // there before turning a valid relative input into `/input/...`.
-    let source_tree = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(configured);
+    let source_tree = source_root.join(configured);
     if source_tree.exists() {
         source_tree
     } else {
