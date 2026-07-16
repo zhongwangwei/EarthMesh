@@ -120,6 +120,8 @@ check(
     html.includes('url: `index.html?view=map&lang=${lang ? "zh" : "en"}`') &&
     html.includes('tauriEvent.emitTo("map", "earthmesh-map-state"') &&
     html.includes('map._resizeObserver=new ResizeObserver(()=>map.invalidateSize({pan:false}))') &&
+    html.includes('grid-template-rows:auto minmax(0,1fr)') &&
+    html.includes('body.map-window #mapsvgModal{height:100%!important;min-height:0!important') &&
     capability.includes('"map"') &&
     capability.includes('"core:webview:allow-create-webview-window"'),
   "the enlarged map must open a state-synchronized Tauri window",

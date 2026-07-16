@@ -201,9 +201,9 @@ body.normal .expert{display:none}
 .leaflet-container{font:inherit;background:var(--bg)}
 body.map-window .app{display:none}
 body.map-window #mapModal{display:flex!important;background:var(--bg)!important}
-body.map-window #mapModalPanel{width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;border:0!important;border-radius:0!important;padding:12px!important;resize:none!important;box-shadow:none!important}
+body.map-window #mapModalPanel{width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;border:0!important;border-radius:0!important;padding:12px!important;resize:none!important;box-shadow:none!important;display:grid!important;grid-template-rows:auto minmax(0,1fr)}
 body.map-window #mapModalCloseBtn{display:none}
-body.map-window #mapsvgModal{border-radius:0}
+body.map-window #mapsvgModal{height:100%!important;min-height:0!important;border-radius:0}
 .cz-legend{padding:7px 9px;background:var(--elevated);border:1px solid var(--border);
   border-radius:var(--r-sm);box-shadow:var(--shadow);color:var(--text);font-size:11px;line-height:1.4}
 .cz-legend .row{display:flex;align-items:center;gap:6px;white-space:nowrap}
