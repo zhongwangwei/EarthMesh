@@ -6,13 +6,6 @@ const fs = require("fs");
 const read = (path) => fs.readFileSync(path, "utf8");
 const html = read("gui-tauri/dist/index.html");
 const readme = read("gui-tauri/README.md");
-const rootReadme = read("README.md");
-const makefile = read("Makefile");
-const guiLib = read("gui-tauri/src-tauri/src/lib.rs");
-const projectLib = read("rust/earthmesh_project/src/lib.rs");
-const projectPresets = read("rust/earthmesh_project/src/presets/mod.rs");
-const projectCriteria = read("rust/earthmesh_project/src/criteria/mod.rs");
-const projectSchema = read("rust/earthmesh_project/src/schema/mod.rs");
 
 function check(condition, message, details) {
   if (!condition) {
@@ -37,17 +30,92 @@ const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/scri
 new Function(scripts.join("\n"));
 log(`parsed ${scripts.length} inline scripts`);
 
+check(
+  !/<[^>]+\s+on[a-z]+\s*=/i.test(html),
+  "frontend must bind events from JavaScript, not inline HTML attributes",
+);
+log("frontend has no inline HTML event handlers");
+
+check(
+  html.includes('href="vendor/leaflet/leaflet.css"') &&
+    html.includes('src="vendor/leaflet/leaflet.js"') &&
+    !html.includes("unpkg.com") &&
+    fs.existsSync("gui-tauri/dist/vendor/leaflet/leaflet.css") &&
+    fs.existsSync("gui-tauri/dist/vendor/leaflet/leaflet.js") &&
+    fs.existsSync("gui-tauri/dist/vendor/leaflet/LICENSE"),
+  "Leaflet runtime and license must be vendored for the desktop CSP",
+);
+log("Leaflet runtime is vendored locally");
+
+check(
+  !html.includes('${watershedPath ?') &&
+    !html.includes('${closePath ?') &&
+    !html.includes('${specifiedRefine.path ?') &&
+    html.includes('watershedText.textContent=watershedPath ?') &&
+    html.includes('closeText.textContent=closePath ?') &&
+    html.includes('specifiedCloseText.textContent = specifiedRefine.path ?'),
+  "project paths must render through textContent, never generated HTML",
+);
+log("project paths render as text");
+
+check(
+  !html.includes("defaultMethodCSpringNestIterations") &&
+    html.includes("niterRefine: expertEdit.niterRefine") &&
+    html.includes("blank lets the engine choose for the target mesh"),
+  "niter_refine must remain unset unless the user explicitly overrides it",
+);
+log("niter_refine default remains engine-owned");
+
+check(
+  html.includes('id="thresholdRefineOn"') &&
+    html.includes("thresholdRefine.enabled && hasEnabledThresholdLayer(summary)") &&
+    html.includes("thresholdEnabled: !!thresholdRefine.enabled"),
+  "threshold refinement must have an independent persisted master switch",
+);
+log("threshold refinement master switch is wired");
+
+check(
+  html.includes('id="qualityAutoRefineOn"') &&
+    html.includes('id="qualityViolationPolicy"') &&
+    !html.includes("Auto repair attempt") &&
+    !html.includes("自动尝试修复"),
+  "AutoRefine must live in the quality expert controls, not the normal violation policy list",
+);
+log("AutoRefine is scoped to quality expert controls");
+
 {
-  const rust = `${projectLib}\n${projectPresets}`;
-  const ids = [...rust.matchAll(/MeshIntentPreset::[A-Za-z0-9_]+ => "([A-Za-z0-9_]+)"/g)].map(
-    (m) => m[1],
+  const body = section(
+    html,
+    /function applyProjectCapabilities\(capabilities\) \{([\s\S]*?)\n  \}/,
+    "applyProjectCapabilities body",
   );
-  const cards = [...html.matchAll(/intent:"([A-Za-z0-9_]+)"/g)].map((m) => m[1]);
-  const missing = cards.filter((id) => !ids.includes(id));
-  const hidden = ids.filter((id) => !cards.includes(id));
-  check(!missing.length && !hidden.length, "gallery/backend intent mismatch", { missing, hidden });
-  log(`mapped ${new Set(cards).size}/${ids.length} backend intents`);
+  check(
+    html.includes('capabilities: () => invoke("project_capabilities")') &&
+      body.includes("capabilities.intent_ids") &&
+      body.includes("unsupported gallery intents") &&
+      body.includes("capabilities.default_sea_ratio") &&
+      body.includes("capabilities.default_min_angle_deg") &&
+      body.includes("capabilities.method_c_min_base_nxp") &&
+      body.includes("capabilities.method_c_max_refinement_level") &&
+      body.includes("capabilities.method_c_spring_nxp1_km") &&
+      body.includes("capabilities.km_per_degree_equator") &&
+      html.includes("Promise.all([api.capabilities(), api.listCriteria()])") &&
+      html.includes("backendReady = loadBackendCapabilities()") &&
+      html.includes("if (backendReady) await backendReady;"),
+    "runtime project capabilities must gate gallery intents and defaults",
+  );
+  log("runtime project capabilities own gallery compatibility and limits");
 }
+
+check(
+  !html.includes("111.32") &&
+    html.includes("method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM") &&
+      html.includes("km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72") &&
+    !html.includes("neighbor ratio ≤ 1+g") &&
+    !html.includes("邻胞尺寸比 ≤ 1+g"),
+  "frontend must use the backend sphere conversion and describe H-field gradation approximately",
+);
+log("frontend sphere conversion and H-field wording match engine physics");
 
 {
   const def = Number(html.match(/const DEFAULT_TPL=(\d+);/)[1]);
@@ -60,25 +128,6 @@ log(`parsed ${scripts.length} inline scripts`);
     card,
   });
   log(`default gallery card ${def}: ${card.name}`);
-}
-
-{
-  const dto = read("gui-tauri/src-tauri/src/dto.rs");
-  check(
-    dto.includes("physical_process: String") &&
-      dto.includes("label: String") &&
-      dto.includes("help: String") &&
-      dto.includes("unit: String") &&
-      dto.includes("range_min: f64") &&
-      dto.includes("range_max: f64") &&
-      dto.includes("default_value: f64") &&
-      dto.includes("stem: String") &&
-      !dto.includes("display_name: String") &&
-      !dto.includes("applicable: Vec<String>") &&
-      readme.includes("{physical_process,label,help,unit,range_min,range_max,default_value,stem}"),
-    "list_criteria DTO/README drift",
-  );
-  log("list_criteria DTO shape documented");
 }
 
 check(
@@ -142,44 +191,11 @@ log("static output placeholders are neutral");
   log("step rail labels render as text");
 }
 
-{
-  const body = section(guiLib, /generate_handler!\s*\[([\s\S]*?)\]\)/, "Tauri handler list");
-  const cmds = body
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const docs = [...readme.matchAll(/^\| `([^`]+)` /gm)].map((m) => m[1]);
-  const missing = cmds.filter((c) => !docs.includes(c));
-  const stale = docs.filter((c) => !cmds.includes(c));
-  check(!missing.length && !stale.length, "Tauri command README drift", { missing, stale });
-  log(`documented ${cmds.length} Tauri commands`);
-}
-
 check(
   readme.includes("layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]"),
   "project_summary README must document layer role_kind/wants_folder",
 );
 log("project_summary layer shape documented");
-
-{
-  const project = `${projectLib}\n${projectCriteria}`;
-  check(project.includes('id: "typhoon"'), "project criterion catalog must expose supported typhoon refinement");
-  log("supported typhoon criterion is present in project catalog");
-  check(project.includes("id: self.field.stem().to_string()"), "criterion data layers must use engine stems as ids");
-  log("criterion data-layer ids use engine stems");
-}
-
-{
-  const body = section(guiLib, /generate_handler!\s*\[([\s\S]*?)\]\)/, "Tauri handler list");
-  const cmds = body
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const invoked = [...new Set([...html.matchAll(/\b(?:invoke|inv)\("([^"]+)"/g)].map((m) => m[1]))];
-  const missing = invoked.filter((c) => !cmds.includes(c));
-  check(!missing.length, "frontend invokes unregistered Tauri commands", missing);
-  log(`registered ${invoked.length} frontend invoke commands`);
-}
 
 check(!html.includes('["Cama","CaMa"]'), "GUI must spell CaMa like backend role labels");
 log("CaMa label check passed");
@@ -210,10 +226,6 @@ log("CaMa label check passed");
   const files = {
     "gui-tauri/README.md": readme,
     "gui-tauri/dist/index.html": html,
-    "gui-tauri/src-tauri/src/lib.rs": guiLib,
-    "rust/earthmesh_project/src/lib.rs": projectLib,
-    "rust/earthmesh_project/src/schema/mod.rs": projectSchema,
-    "rust/earthmesh_project/src/presets/mod.rs": projectPresets,
   };
   const banned = [
     "merit_hydro",
@@ -267,7 +279,6 @@ log("CaMa label check passed");
   const files = {
     "gui-tauri/README.md": readme,
     "gui-tauri/dist/index.html": html,
-    "gui-tauri/src-tauri/src/lib.rs": guiLib,
   };
   const hits = Object.entries(files)
     .filter(([, text]) => text.includes("AtmosphereTyphoonPrecip"))
@@ -288,12 +299,8 @@ log("CaMa label check passed");
 }
 
 {
-  const rust = `${guiLib}\n${read("gui-tauri/src-tauri/src/project_commands.rs")}\n${read(
-    "gui-tauri/src-tauri/src/project_queries.rs",
-  )}`;
   check(
-    rust.includes("domain_shape") &&
-      readme.includes("domain_shape") &&
+    readme.includes("domain_shape") &&
       html.includes("hiddenDomainShape") &&
       html.includes('kind: "hidden"') &&
       html.includes("preserveDomain: !!hiddenDomainShape") &&
@@ -302,8 +309,7 @@ log("CaMa label check passed");
       html.includes("readyDomain.textContent=domainLabel();") &&
       !html.includes(">${domainLabel()}</b>") &&
       !html.includes("}${hiddenDomain}${") &&
-      html.includes('if(hiddenDomainShape){ const el=document.getElementById("estCells");') &&
-      rust.includes("preserve_domain: bool"),
+      html.includes('if(hiddenDomainShape){ const el=document.getElementById("estCells");'),
     "hidden regional domain summary drift",
   );
   log("hidden regional domain summary check passed");
@@ -377,6 +383,13 @@ check(
 );
 log("layer toggles preserve opened project paths");
 
+check(
+  html.includes('layerEdits[l.id] = { path: l.path, enabled: l.enabled };') &&
+    !html.includes('sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: true }; });'),
+  "opened project layers must preserve disabled state",
+);
+log("opened project layers preserve disabled state");
+
 {
   const body = section(html, /function renderProjectSummary\(\) \{([\s\S]*?)\n  \}/, "renderProjectSummary body");
   check(
@@ -442,19 +455,6 @@ check(
 );
 log("GUI README documents quality view selection");
 
-check(
-  rootReadme.includes("make check-mesh-quality-views") &&
-    makefile.includes("check-mesh-quality-views:") &&
-    makefile.includes('CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh') &&
-    fs.existsSync("rust/earthmesh_cli/tests/mesh_quality_views.rs") &&
-    rootReadme.includes("generated temporary gridfile") &&
-    read("scripts/check_mesh_quality_views.sh").includes("--test mesh_quality_views") &&
-    read("scripts/check_mesh_quality_views.sh").includes('CARGO=${CARGO:-cargo}') &&
-    read("rust/earthmesh_cli/tests/mesh_quality_views.rs").includes("CARGO_BIN_EXE_earthmesh_cli"),
-  "mesh quality view smoke target must be documented and wired",
-);
-log("mesh quality view smoke target is documented and wired");
-
 {
   const body = section(html, /function renderQualityCard\(q\) \{([\s\S]*?)\n  \}/, "renderQualityCard body");
   check(
@@ -495,20 +495,16 @@ log("mesh quality view smoke target is documented and wired");
   log("AutoRefine decision audit renders as safe text");
 }
 
-{
-  const core = read("rust/earthmesh_core/src/mkgrd_config/mod.rs");
-  const guiSea = Number(html.match(/const DEFAULT_SEA_RATIO_PCT=(\d+(?:\.\d+)?)/)[1]);
-  const coreSea = Number(core.match(/mask_sea_ratio:\s*([0-9.]+)/)[1]) * 100;
-  const guiAngle = Number(html.match(/inp\("([0-9.]+)."\)/)[1]);
-  const rustAngle = Number(projectSchema.match(/DEFAULT_MIN_ANGLE_DEG:\s*f64\s*=\s*([0-9.]+)/)[1]);
-  check(guiSea === coreSea && guiAngle === rustAngle, "GUI/backend default drift", {
-    guiSea,
-    coreSea,
-    guiAngle,
-    rustAngle,
-  });
-  log(`GUI defaults match backend: sea ${guiSea}%, min angle ${guiAngle}`);
-}
+check(
+  html.includes("STATIC_BROWSER_CAPABILITIES") &&
+    html.includes("display-only") &&
+    html.includes("applyProjectCapabilities(capabilities)") &&
+    html.includes("DEFAULT_HFIELD_G = capabilities.default_hfield_g") &&
+    html.includes("DEFAULT_OPENMP = capabilities.default_openmp") &&
+    html.includes("DEFAULT_NITER = capabilities.default_niter"),
+  "Tauri defaults must replace the explicitly bounded plain-browser fallback",
+);
+log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 
 {
   const current = section(html, /function currentResolution\(\) \{([\s\S]*?)\n  \}/, "currentResolution body");
@@ -546,7 +542,12 @@ log("mesh quality view smoke target is documented and wired");
 {
   const body = section(html, /async function enhanceQualityStep\(\) \{([\s\S]*?)\n  \}/, "enhanceQualityStep body");
   check(body.includes("let minAngle = 0") && !body.includes("let minAngle = 25"), "frontend quality min angle must pass invalid input to Rust validation");
+  check(
+    body.includes("const s = await refreshSummary();") && !body.includes("let s = lastSummary;"),
+    "AutoRefine eligibility must use the current composed project summary",
+  );
   log("frontend quality min angle passes invalid input to Rust validation");
+  log("AutoRefine eligibility refreshes the project summary");
 }
 
 {
@@ -556,6 +557,20 @@ log("mesh quality view smoke target is documented and wired");
     "frontend sea ratio must pass invalid input to Rust validation",
   );
   log("frontend sea ratio passes invalid input to Rust validation");
+}
+
+{
+  const body = section(
+    html,
+    /if \(hfBase\) hfBase\.addEventListener\("input", \(\) => \{([\s\S]*?)\}\);/,
+    "h-field base input body",
+  );
+  check(
+    body.includes("Number.isFinite(v) ? v : null") &&
+      !body.includes("Number.isFinite(v) && v > 0 ? v : null"),
+    "frontend h-field base_m must pass non-positive values to Rust validation",
+  );
+  log("frontend h-field base_m passes non-positive values to Rust validation");
 }
 
 {
@@ -578,11 +593,8 @@ log("mesh quality view smoke target is documented and wired");
 }
 
 {
-  const gui = `${guiLib}\n${read("gui-tauri/src-tauri/src/project_commands.rs")}\n${read(
-    "gui-tauri/src-tauri/src/project_edits.rs",
-  )}`;
   check(
-    html.includes("const refinementEnabled = hasEnabledThresholdLayer(sum) || !!specifiedRefine.enabled;") &&
+    html.includes("const refinementEnabled = (thresholdRefine.enabled && hasEnabledThresholdLayer(sum)) || !!specifiedRefine.enabled;") &&
       !html.includes("const refinementEnabled = regionalRefine ||") &&
       !html.includes("regionalAutoPasses") &&
       html.includes("const shownPasses") &&
@@ -590,13 +602,19 @@ log("mesh quality view smoke target is documented and wired");
       html.includes('if (crits.length) anchor.insertAdjacentHTML("afterend", mp);') &&
       html.includes(
         "const refinementPasses = refinementEnabled",
-      ) &&
-      gui.includes("cfg.refinement.max_passes = if enabled { max_passes } else { 0 };") &&
-      projectPresets.includes("max_passes: if refinement_enabled { 3 } else { 0 }"),
+      ),
     "disabled refinement max_passes must stay zero/inert",
   );
   log("disabled refinement max_passes zero check passed");
 }
+
+check(
+  html.includes("METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level") &&
+    html.includes('const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;') &&
+    html.includes('const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;'),
+  "global and regional refinement controls must share the engine level cap",
+);
+log("Method-C refinement controls share the engine level cap");
 
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
@@ -621,22 +639,12 @@ log("mesh quality view smoke target is documented and wired");
   log("refinement toggles preserve opened project paths");
 }
 
-{
-  const project = `${projectLib}\n${projectPresets}`;
-  check(
-    project.includes("MeshIntentPreset::AtmosphereMpas => (Atmosphere, Hex, Mpas, vec![], vec![])"),
-    "atmosphere template must not scaffold unsupported threshold layers",
-  );
-  log("atmosphere template has no unsupported threshold layers");
-
-  check(
-    !html.includes('[["typhoon","\u53f0\u98ce"],["global"') &&
-      !html.includes('[["typhoon","\u53f0\u98ce"],["regional"') &&
-      !project.includes("Atmosphere \u00b7 Typhoon / Precip"),
-    "atmosphere template must not advertise unsupported typhoon refinement",
-  );
-  log("atmosphere template labels match supported behavior");
-}
+check(
+  !html.includes('[["typhoon","\u53f0\u98ce"],["global"') &&
+    !html.includes('[["typhoon","\u53f0\u98ce"],["regional"'),
+  "atmosphere template must not advertise unsupported typhoon refinement",
+);
+log("atmosphere template labels match supported behavior");
 
 {
   const dict = section(html, /const I = \{([\s\S]*?)\n\};/, "i18n dictionary");

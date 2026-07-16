@@ -21,9 +21,9 @@ use std::{io, path::Path};
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 fn select_area_judge_source_window_canonical_order(
-    values: &[Vec<i32>],
+    values: &[Vec<bool>],
     bounds: AreaJudgeSourceBounds,
-) -> io::Result<Vec<Vec<i32>>> {
+) -> io::Result<Vec<Vec<bool>>> {
     if bounds.maxlon_source < bounds.minlon_source || bounds.minlat_source < bounds.maxlat_source {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

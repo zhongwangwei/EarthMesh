@@ -38,6 +38,14 @@ pub fn build_area_judge_lambert_area_source_one_based(
             format!("invalid lambert area source: {err}"),
         )
     })?;
+    for cell_index in 1..mesh.mode_points() {
+        if mesh.n_ngr[cell_index] < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("lambert mode4 cell {cell_index} must have at least four vertices"),
+            ));
+        }
+    }
 
     let mesh_points = &mesh.lonlat_bound[1..];
     let mut edgew_temp = mesh_points
@@ -88,16 +96,9 @@ pub fn build_area_judge_lambert_area_source_one_based(
         )
     })?;
 
-    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![false; nlats_source + 1]; nlons_source + 1];
     let mut numpatch = 0_usize;
     for cell_index in 1..mesh.mode_points() {
-        if mesh.n_ngr[cell_index] < 4 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("lambert mode4 cell {cell_index} must have at least four vertices"),
-            ));
-        }
-
         let mut cell_points = mesh.ngr_bound[cell_index]
             .iter()
             .map(|&bound_index| {
@@ -239,7 +240,7 @@ pub fn build_area_judge_lambert_area_source_one_based(
                     is_in_area[restored_lon_index].len(),
                     lat_index + 1,
                 )?;
-                is_in_area[restored_lon_index][lat_index] = 1;
+                is_in_area[restored_lon_index][lat_index] = true;
                 numpatch += 1;
             }
         }

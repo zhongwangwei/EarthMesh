@@ -13,6 +13,50 @@ pub struct CamaBinaryGridSpec {
 }
 
 impl CamaBinaryGridSpec {
+    pub fn validate(&self) -> io::Result<()> {
+        if self.nx == 0 || self.ny == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa grid dimensions must be positive",
+            ));
+        }
+        if self.nx > i32::MAX as usize || self.ny > i32::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa grid dimensions exceed the safe nextxy/isize index range",
+            ));
+        }
+        if !self.west.is_finite()
+            || !self.south.is_finite()
+            || !self.grid_size_deg.is_finite()
+            || self.grid_size_deg <= 0.0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa west, south, and grid_size_deg must be finite and grid_size_deg must be positive",
+            ));
+        }
+        let lon_span = self.nx as f64 * self.grid_size_deg;
+        let lat_span = self.ny as f64 * self.grid_size_deg;
+        let east = self.west + lon_span;
+        let north = self.south + lat_span;
+        let tolerance = self.grid_size_deg.abs().max(1.0) * 1.0e-9;
+        if !lon_span.is_finite()
+            || !lat_span.is_finite()
+            || !east.is_finite()
+            || !north.is_finite()
+            || lon_span > 360.0 + tolerance
+            || self.south < -90.0 - tolerance
+            || north > 90.0 + tolerance
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CaMa grid geometry must describe a finite Earth lon/lat extent",
+            ));
+        }
+        Ok(())
+    }
+
     /// Longitude at the center of a zero-based CaMa x index.
     pub fn lon_center(&self, x_index: usize) -> f64 {
         self.west + (x_index as f64 + 0.5) * self.grid_size_deg
@@ -31,18 +75,31 @@ impl CamaBinaryGridSpec {
         south: f64,
         north: f64,
     ) -> io::Result<CamaBinaryWindow> {
-        if self.nx == 0 || self.ny == 0 || self.grid_size_deg <= 0.0 {
+        self.validate()?;
+        if !west.is_finite()
+            || !east.is_finite()
+            || !south.is_finite()
+            || !north.is_finite()
+            || west >= east
+            || south >= north
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "CaMa grid dimensions and grid_size_deg must be positive",
+                "CaMa bbox bounds must be finite and ordered west < east, south < north",
             ));
         }
-        let x0 = (((west - self.west) / self.grid_size_deg).floor() as isize).max(0) as usize;
-        let x1 = (((east - self.west) / self.grid_size_deg).ceil() as isize)
-            .clamp(0, self.nx as isize) as usize;
-        let y0 = (((south - self.south) / self.grid_size_deg).floor() as isize).max(0) as usize;
-        let y1 = (((north - self.south) / self.grid_size_deg).ceil() as isize)
-            .clamp(0, self.ny as isize) as usize;
+        let x0 = ((west - self.west) / self.grid_size_deg)
+            .floor()
+            .clamp(0.0, self.nx as f64) as usize;
+        let x1 = ((east - self.west) / self.grid_size_deg)
+            .ceil()
+            .clamp(0.0, self.nx as f64) as usize;
+        let y0 = ((south - self.south) / self.grid_size_deg)
+            .floor()
+            .clamp(0.0, self.ny as f64) as usize;
+        let y1 = ((north - self.south) / self.grid_size_deg)
+            .ceil()
+            .clamp(0.0, self.ny as f64) as usize;
         if x1 <= x0 || y1 <= y0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

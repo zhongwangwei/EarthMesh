@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use earthmesh_core::EarthmeshConfig;
+use earthmesh_core::{rewrite_namelist_group_fields, EarthmeshConfig};
 
 use super::infer::{
     infer_restart_refine_initial_gridfile_from_config, landtype_file_is_real,
@@ -194,6 +194,31 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline)
 }
 
+/// Rewrite the restart handoff fields in the single `&mkgrd` group.
+///
+/// This is shared by the library dispatch and the CLI compatibility entry so
+/// inline and multiline namelists follow exactly the same quote-aware path.
+#[doc(hidden)]
+pub fn rewrite_restart_refine_namelist_contents(
+    contents: &str,
+    initial_gridfile: &Path,
+) -> Result<String, String> {
+    let quoted_gridfile = format!(
+        "'{}'",
+        initial_gridfile.display().to_string().replace('\'', "''")
+    );
+    rewrite_namelist_group_fields(
+        contents,
+        "mkgrd",
+        "NL",
+        &[
+            ("mask_restart", ".false."),
+            ("mode_file", quoted_gridfile.as_str()),
+            ("mode_file_description", "'EarthMesh'"),
+        ],
+    )
+}
+
 fn rewrite_restart_refine_namelist_for_refine_pipeline(
     namelist_source: &Path,
     workdir: &Path,
@@ -201,41 +226,8 @@ fn rewrite_restart_refine_namelist_for_refine_pipeline(
 ) -> io::Result<PathBuf> {
     fs::metadata(initial_gridfile)?;
     let contents = fs::read_to_string(namelist_source)?;
-    let mut saw_mode_file = false;
-    let mut saw_mode_file_description = false;
-    let mut in_mkgrd = false;
-    let initial_gridfile = initial_gridfile.display().to_string();
-    let mut rewritten = Vec::new();
-    for line in contents.lines() {
-        let trimmed_lower = line.trim_start().to_ascii_lowercase();
-        if trimmed_lower.starts_with("&mkgrd") {
-            in_mkgrd = true;
-            rewritten.push(line.to_string());
-            continue;
-        }
-        if in_mkgrd && line.trim() == "/" {
-            if !saw_mode_file {
-                rewritten.push(format!("  NL%mode_file='{initial_gridfile}'"));
-            }
-            if !saw_mode_file_description {
-                rewritten.push("  NL%mode_file_description='EarthMesh'".to_string());
-            }
-            in_mkgrd = false;
-            rewritten.push(line.to_string());
-            continue;
-        }
-        rewritten.push(if trimmed_lower.starts_with("nl%mask_restart") {
-            "  NL%mask_restart=.false.".to_string()
-        } else if trimmed_lower.starts_with("nl%mode_file_description") {
-            saw_mode_file_description = true;
-            "  NL%mode_file_description='EarthMesh'".to_string()
-        } else if trimmed_lower.starts_with("nl%mode_file") {
-            saw_mode_file = true;
-            format!("  NL%mode_file='{initial_gridfile}'")
-        } else {
-            line.to_string()
-        });
-    }
+    let rewritten = rewrite_restart_refine_namelist_contents(&contents, initial_gridfile)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(io::Error::other)?
@@ -245,6 +237,6 @@ fn rewrite_restart_refine_namelist_for_refine_pipeline(
         std::process::id(),
         stamp
     ));
-    fs::write(&path, format!("{}\n", rewritten.join("\n")))?;
+    fs::write(&path, format!("{rewritten}\n"))?;
     Ok(path)
 }

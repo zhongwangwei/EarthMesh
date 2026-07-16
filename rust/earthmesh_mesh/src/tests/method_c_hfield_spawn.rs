@@ -1,18 +1,18 @@
 use super::super::*;
 
-const EARTH_RADIUS_METERS: f64 = 6_371_229.0;
-
 fn base_mesh() -> MethodCDelaunayMesh {
     MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh")
 }
 
-/// Great-circle distance in meters between two (lon, lat) degree points on the
-/// Earth-radius sphere (matches the Method-C region containment convention).
+/// Great-circle distance in meters between two (lon, lat) degree points.
+/// Haversine keeps identical sample points exactly at zero distance.
 fn gc_distance_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let (l1, p1) = (lon1.to_radians(), lat1.to_radians());
     let (l2, p2) = (lon2.to_radians(), lat2.to_radians());
-    let cos_angle = p1.sin() * p2.sin() + p1.cos() * p2.cos() * (l1 - l2).cos();
-    cos_angle.clamp(-1.0, 1.0).acos() * EARTH_RADIUS_METERS
+    let sin_dlat = (0.5 * (p2 - p1)).sin();
+    let sin_dlon = (0.5 * (l2 - l1)).sin();
+    let a = sin_dlat * sin_dlat + p1.cos() * p2.cos() * sin_dlon * sin_dlon;
+    2.0 * a.sqrt().asin() * earthmesh_core::EARTH_RADIUS_METERS
 }
 
 /// Quantized target-level closure for concentric circular demand: level 2

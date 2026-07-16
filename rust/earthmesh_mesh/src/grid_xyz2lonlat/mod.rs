@@ -20,21 +20,21 @@ pub fn grid_xyz2lonlat_state(grid: &mut GridMemory) -> io::Result<()> {
     grid.allocate_grid_lonlatmw(grid.nma, grid.nva, grid.nwa);
     for im in 0..grid.nma {
         let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
-            f64::from(grid.xem[im]),
-            f64::from(grid.yem[im]),
-            f64::from(grid.zem[im]),
+            grid.xem[im],
+            grid.yem[im],
+            grid.zem[im],
         ));
-        grid.glonm[im] = lonlat.lon_degrees as f32;
-        grid.glatm[im] = lonlat.lat_degrees as f32;
+        grid.glonm[im] = lonlat.lon_degrees;
+        grid.glatm[im] = lonlat.lat_degrees;
     }
     for iw in 0..grid.nwa {
         let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
-            f64::from(grid.xew[iw]),
-            f64::from(grid.yew[iw]),
-            f64::from(grid.zew[iw]),
+            grid.xew[iw],
+            grid.yew[iw],
+            grid.zew[iw],
         ));
-        grid.glonw[iw] = lonlat.lon_degrees as f32;
-        grid.glatw[iw] = lonlat.lat_degrees as f32;
+        grid.glonw[iw] = lonlat.lon_degrees;
+        grid.glatw[iw] = lonlat.lat_degrees;
     }
     Ok(())
 }
@@ -53,21 +53,21 @@ pub fn grid_xyz2lonlat_one_based_state(grid: &mut GridMemory) -> io::Result<()> 
     grid.allocate_grid_lonlatmw(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
     for im in 1..=grid.nma {
         let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
-            f64::from(grid.xem[im]),
-            f64::from(grid.yem[im]),
-            f64::from(grid.zem[im]),
+            grid.xem[im],
+            grid.yem[im],
+            grid.zem[im],
         ));
-        grid.glonm[im] = lonlat.lon_degrees as f32;
-        grid.glatm[im] = lonlat.lat_degrees as f32;
+        grid.glonm[im] = lonlat.lon_degrees;
+        grid.glatm[im] = lonlat.lat_degrees;
     }
     for iw in 1..=grid.nwa {
         let lonlat = xyz_to_lonlat_degrees(CartesianPoint::new(
-            f64::from(grid.xew[iw]),
-            f64::from(grid.yew[iw]),
-            f64::from(grid.zew[iw]),
+            grid.xew[iw],
+            grid.yew[iw],
+            grid.zew[iw],
         ));
-        grid.glonw[iw] = lonlat.lon_degrees as f32;
-        grid.glatw[iw] = lonlat.lat_degrees as f32;
+        grid.glonw[iw] = lonlat.lon_degrees;
+        grid.glatw[iw] = lonlat.lat_degrees;
     }
     Ok(())
 }

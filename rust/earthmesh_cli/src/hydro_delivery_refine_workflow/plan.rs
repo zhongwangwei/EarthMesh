@@ -63,13 +63,19 @@ pub fn plan_refinement_from_hydro_geojson(
     max_level: u8,
     max_refined_cells: Option<usize>,
 ) -> io::Result<earthmesh_refine_planner::RefinementReport> {
+    if max_level == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refinement max_level must be in 1..=255",
+        ));
+    }
     use earthmesh_refine_planner as rp;
     let features = hydro_refine_feature_set(&read_text_maybe_gzip(geojson.as_ref())?)?;
     let criteria = vec![rp::hydro_coast_score_criterion()];
     let cfg = rp::CompositeScoreConfig {
         weights: vec![("hydro_coast_score".to_string(), 1.0)],
         combine: rp::CombineRule::WeightedMax,
-        max_passes: max_level.max(1),
+        max_passes: max_level,
     };
     let budget = rp::RefinementBudget {
         max_refined_cells,

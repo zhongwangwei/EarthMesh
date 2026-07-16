@@ -3,7 +3,7 @@ use crate::{
     HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat, ProjectConfig,
     ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe, RegionShape,
     ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
-    ThresholdField, ViolationPolicy, PROJECT_SCHEMA_VERSION,
+    ThresholdField, ViolationPolicy, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 
@@ -36,6 +36,9 @@ impl ProjectConfig {
         if self.metadata.name.trim().is_empty() {
             return Err("project metadata.name must not be empty".to_string());
         }
+        if matches!(self.metadata.name.trim(), "." | "..") {
+            return Err("project metadata.name must not be '.' or '..'".to_string());
+        }
         if self.metadata.name.chars().any(|c| matches!(c, '/' | '\\')) {
             return Err("project metadata.name must not contain path separators".to_string());
         }
@@ -54,6 +57,7 @@ impl ProjectConfig {
             }
         }
         self.expert.validate()?;
+        self.validate_expert_refinement_levels()?;
         if let Some(hydro_coast) = &self.hydro_coast {
             hydro_coast.validate()?;
             self.hydro_execution_plan()?;
@@ -71,10 +75,17 @@ impl ProjectConfig {
 
     fn validate_data_layers(&self) -> Result<(), String> {
         let mut ids = HashSet::new();
+        let mut threshold_fields = HashSet::new();
         for layer in &self.data_layers {
             layer.validate()?;
             if let ProjectLayerRole::Threshold(field) = layer.role {
                 self.validate_threshold_layer(layer, field)?;
+                if layer.enabled && !threshold_fields.insert(field.stem()) {
+                    return Err(format!(
+                        "enabled threshold field '{}' is duplicated",
+                        field.stem()
+                    ));
+                }
             }
             if !ids.insert(layer.id.as_str()) {
                 return Err(format!("data layer id '{}' is duplicated", layer.id));
@@ -87,23 +98,7 @@ impl ProjectConfig {
         if !self.refinement.enabled {
             return Ok(());
         }
-        let has_specified_shape = self.refinement.specified_circle.is_some()
-            || self.refinement.specified_bbox.is_some()
-            || self.refinement.specified_close.is_some();
-        let has_layer_source = self.data_layers.iter().any(|layer| {
-            if !layer.enabled {
-                return false;
-            }
-            match layer.role {
-                ProjectLayerRole::LandType => matches!(
-                    self.target.kind,
-                    MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth
-                ),
-                ProjectLayerRole::Threshold(_) => true,
-                ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
-            }
-        });
-        if has_specified_shape || has_layer_source {
+        if self.has_specified_refinement_source() || self.has_calculated_refinement_source() {
             Ok(())
         } else {
             Err(
@@ -111,6 +106,48 @@ impl ProjectConfig {
                     .to_string(),
             )
         }
+    }
+
+    fn has_specified_refinement_source(&self) -> bool {
+        self.refinement.specified_circle.is_some()
+            || self.refinement.specified_bbox.is_some()
+            || self.refinement.specified_close.is_some()
+    }
+
+    fn has_calculated_refinement_source(&self) -> bool {
+        self.refinement.threshold_enabled
+            && self.data_layers.iter().any(|layer| {
+                if !layer.enabled {
+                    return false;
+                }
+                match layer.role {
+                    ProjectLayerRole::LandType => matches!(
+                        self.target.kind,
+                        MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth
+                    ),
+                    ProjectLayerRole::Threshold(_) => true,
+                    ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
+                }
+            })
+    }
+
+    fn validate_expert_refinement_levels(&self) -> Result<(), String> {
+        if !self.refinement.enabled {
+            return Ok(());
+        }
+        if self.has_specified_refinement_source() && self.expert.max_iter_spc == Some(0) {
+            return Err(
+                "expert max_iter_spc override must be > 0 when specified refinement is enabled"
+                    .to_string(),
+            );
+        }
+        if self.has_calculated_refinement_source() && self.expert.max_iter_cal == Some(0) {
+            return Err(
+                "expert max_iter_cal override must be > 0 when calculated refinement is enabled"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn validate_threshold_layer(
@@ -193,7 +230,8 @@ impl RegionShape {
                 if *radius_km <= 0.0 {
                     return Err("circle radius_km must be > 0".to_string());
                 }
-                const MAX_MINOR_CIRCLE_RADIUS_KM: f64 = std::f64::consts::FRAC_PI_2 * 6_371.008_8;
+                const MAX_MINOR_CIRCLE_RADIUS_KM: f64 =
+                    std::f64::consts::FRAC_PI_2 * (earthmesh_core::EARTH_RADIUS_METERS / 1000.0);
                 if *radius_km > MAX_MINOR_CIRCLE_RADIUS_KM {
                     return Err(format!(
                         "circle radius_km must be <= {MAX_MINOR_CIRCLE_RADIUS_KM:.3} for minor-hemisphere domains"
@@ -247,6 +285,9 @@ impl QualityConfig {
         }
         if self.min_angle_deg <= 0.0 {
             return Err("quality min_angle_deg must be > 0".to_string());
+        }
+        if self.min_angle_deg >= 180.0 {
+            return Err("quality min_angle_deg must be < 180".to_string());
         }
         if self.auto_refine_batch_cells == 0 {
             return Err("quality auto_refine_batch_cells must be > 0".to_string());
@@ -327,8 +368,10 @@ impl RefinementRecipe {
         if self.max_passes == 0 {
             return Err("refinement max_passes must be > 0 when refinement is enabled".to_string());
         }
-        if self.max_passes > 9 {
-            return Err("refinement max_passes must be <= 9".to_string());
+        if self.max_passes > METHOD_C_MAX_AUTO_REFINE_LEVEL {
+            return Err(format!(
+                "refinement max_passes must be <= {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
+            ));
         }
         Ok(())
     }
@@ -473,11 +516,16 @@ impl ExpertOverrides {
         if matches!(self.niter_refine, Some(n) if n <= 0) {
             return Err("expert niter_refine override must be > 0".to_string());
         }
-        if matches!(self.max_iter_spc, Some(n) if !(0..=9).contains(&n)) {
-            return Err("expert max_iter_spc override must be between 0 and 9".to_string());
+        let max_refine_level = i32::from(METHOD_C_MAX_AUTO_REFINE_LEVEL);
+        if matches!(self.max_iter_spc, Some(n) if !(0..=max_refine_level).contains(&n)) {
+            return Err(format!(
+                "expert max_iter_spc override must be between 0 and {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
+            ));
         }
-        if matches!(self.max_iter_cal, Some(n) if !(0..=9).contains(&n)) {
-            return Err("expert max_iter_cal override must be between 0 and 9".to_string());
+        if matches!(self.max_iter_cal, Some(n) if !(0..=max_refine_level).contains(&n)) {
+            return Err(format!(
+                "expert max_iter_cal override must be between 0 and {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
+            ));
         }
         validate_expert_i32_list(&self.halo, "expert HALO override")?;
         validate_expert_i32_list(
@@ -527,8 +575,8 @@ fn validate_expert_i32_list(values: &Option<Vec<i32>>, label: &str) -> Result<()
     let Some(values) = values else {
         return Ok(());
     };
-    if values.is_empty() || values.len() > 10 {
-        return Err(format!("{label} must contain 1 to 10 values"));
+    if values.is_empty() || values.len() > 9 {
+        return Err(format!("{label} must contain 1 to 9 values"));
     }
     if values.iter().any(|value| *value < 0) {
         return Err(format!("{label} values must be >= 0"));

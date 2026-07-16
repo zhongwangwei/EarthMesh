@@ -22,17 +22,17 @@ fn one_cell_connectivity() -> (Vec<Vec<i32>>, Vec<i32>, Vec<i32>) {
     (vec![vec![0], vec![1, 2, 3, 4]], vec![0, 4], vec![0, 1])
 }
 
-fn source_grid() -> (Vec<f64>, Vec<f64>, Vec<Vec<i32>>, Vec<Vec<i32>>) {
+fn source_grid() -> (Vec<f64>, Vec<f64>, Vec<Vec<bool>>, Vec<Vec<i32>>) {
     let lon_i = vec![f64::NAN, 0.5, 1.5, 2.5, 3.5];
     let lat_i = vec![f64::NAN, 0.5, 1.5, 2.5, 3.5];
-    let mut is_in_area_grid = vec![vec![0; 5]; 5];
+    let mut is_in_area_grid = vec![vec![false; 5]; 5];
     let mut seaorland = vec![vec![0; 5]; 5];
     for i in 1..=3 {
         for j in 1..=3 {
-            is_in_area_grid[i][j] = 1;
+            is_in_area_grid[i][j] = true;
         }
     }
-    is_in_area_grid[3][3] = 0;
+    is_in_area_grid[3][3] = false;
     seaorland[1][1] = 1;
     seaorland[2][1] = 1;
     seaorland[1][2] = 1;
@@ -210,10 +210,10 @@ fn dateline_containment_shifts_test_points_and_restores_source_indices() {
         165.0,
     ];
     let lat_i = vec![f64::NAN, 15.0, 5.0, -5.0];
-    let mut is_in_area_grid = vec![vec![0; lat_i.len()]; lon_i.len()];
+    let mut is_in_area_grid = vec![vec![false; lat_i.len()]; lon_i.len()];
     let seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
-    is_in_area_grid[12][2] = 1;
-    is_in_area_grid[1][2] = 1;
+    is_in_area_grid[12][2] = true;
+    is_in_area_grid[1][2] = true;
 
     let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,
@@ -267,10 +267,10 @@ fn south_pole_pentagon_splits_virtual_wedges_and_merges_back_to_original_cell() 
     let is_in_area_ustr = vec![0, 1];
     let lon_i = vec![f64::NAN, -150.0, -90.0, -30.0, 30.0, 90.0, 150.0];
     let lat_i = vec![f64::NAN, -85.0, -75.0];
-    let mut is_in_area_grid = vec![vec![0; lat_i.len()]; lon_i.len()];
+    let mut is_in_area_grid = vec![vec![false; lat_i.len()]; lon_i.len()];
     let seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
     for row in is_in_area_grid.iter_mut().take(6).skip(2) {
-        row[1] = 1;
+        row[1] = true;
     }
 
     let contain = getcontain_containment_matrix_one_based(
@@ -320,9 +320,9 @@ fn south_pole_triangle_reshapes_to_canonical_rectangle_before_scanning() {
     let is_in_area_ustr = vec![0, 1];
     let lon_i = vec![f64::NAN, -8.0, 0.0, 8.0];
     let lat_i = vec![f64::NAN, -85.0, -75.0];
-    let mut is_in_area_grid = vec![vec![0; lat_i.len()]; lon_i.len()];
+    let mut is_in_area_grid = vec![vec![false; lat_i.len()]; lon_i.len()];
     let seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
-    is_in_area_grid[3][1] = 1;
+    is_in_area_grid[3][1] = true;
 
     let contain = getcontain_containment_matrix_one_based(
         GetContainMeshKind::Ocean,

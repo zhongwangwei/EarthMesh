@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use earthmesh_cli::resolve_project_path;
 use earthmesh_project::{
     read_lonlat_text_points, read_shapefile_polygon_rings, write_close_mask_nml, CloseMaskFormat,
     DomainConfig, LoweredProject, ProjectConfig, RegionShape,
@@ -8,31 +11,55 @@ use earthmesh_project::{
 
 use super::super::cli_args::usage;
 
-#[derive(Clone)]
+static PROJECT_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Debug)]
 pub(super) struct ProjectRunSpec {
     pub path: PathBuf,
     pub config: ProjectConfig,
 }
 
+#[derive(Debug)]
 pub(super) struct PreparedMkgrdInput {
     pub namelist: String,
     pub project: Option<ProjectRunSpec>,
+    pub project_run_dir: Option<PathBuf>,
+    pub cleanup_dir: Option<PathBuf>,
+}
+
+struct LoweredNamelist {
+    path: String,
+    cleanup_dir: PathBuf,
 }
 
 pub(super) fn prepare_mkgrd_namelist(
     first: String,
     args: &mut impl Iterator<Item = String>,
 ) -> Result<PreparedMkgrdInput, String> {
-    let (mut namelist, project) = if first == "--project" {
-        let compiled = compile_project_arg(args)?;
-        (compiled.namelist, compiled.project)
+    let mut prepared = if first == "--project" {
+        compile_project_arg(args)?
     } else {
-        (first, None)
+        PreparedMkgrdInput {
+            namelist: first,
+            project: None,
+            project_run_dir: None,
+            cleanup_dir: None,
+        }
     };
-    if let Some(lowered) = lower_datalayers_namelist_if_present(&namelist)? {
-        namelist = lowered;
+    match lower_datalayers_namelist_if_present(&prepared.namelist) {
+        Ok(Some(lowered)) => {
+            prepared.namelist = lowered.path;
+            prepared.cleanup_dir = Some(lowered.cleanup_dir);
+        }
+        Ok(None) => {}
+        Err(err) => {
+            if let Some(path) = &prepared.project_run_dir {
+                let _ = fs::remove_dir_all(path);
+            }
+            return Err(err);
+        }
     }
-    Ok(PreparedMkgrdInput { namelist, project })
+    Ok(prepared)
 }
 
 fn compile_project_arg(
@@ -59,63 +86,99 @@ fn compile_project_arg(
         config: project,
     };
     let namelist = compile_project_spec(&spec)?;
+    let project_run_dir = Path::new(&namelist).parent().map(Path::to_path_buf);
     Ok(PreparedMkgrdInput {
         namelist,
         project: Some(spec),
+        project_run_dir,
+        cleanup_dir: None,
     })
 }
 
 pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, String> {
-    spec.config.validate()?;
-    let mut lowered = spec.config.try_lower()?;
-    prepare_project_close_sources(&spec.config, &spec.path, &mut lowered)?;
-    let nml_path = format!("{}.nml", spec.path.display());
-    fs::write(&nml_path, lowered.to_namelist()).map_err(|e| format!("write {nml_path}: {e}"))?;
-    eprintln!("earthmesh_cli: compiled project -> {nml_path}");
-    Ok(nml_path)
+    let mut config = spec.config.clone();
+    for layer in &mut config.data_layers {
+        if !layer.path.trim().is_empty() {
+            layer.path = resolve_project_path(&spec.path, &layer.path)
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    if let Some(coupling) = &mut config.coupling {
+        if let Some(root) = coupling
+            .cama_root
+            .as_mut()
+            .filter(|root| !root.trim().is_empty())
+        {
+            *root = resolve_project_path(&spec.path, root)
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    config.validate()?;
+    let mut lowered = config.try_lower()?;
+    let run_dir = create_project_run_dir(&spec.path)?;
+    let result = (|| {
+        lowered.mkgrd.base_dir = format!("{}{}", run_dir.display(), std::path::MAIN_SEPARATOR);
+        prepare_project_close_sources(&config, &spec.path, &run_dir.join("inputs"), &mut lowered)?;
+        if lowered.data_layers.layers.iter().any(|layer| {
+            layer.enabled
+                && !layer.path.trim().is_empty()
+                && matches!(layer.role, earthmesh_core::DataLayerRole::ThresholdField(_))
+        }) {
+            lowered.refine.threshold_dir =
+                run_dir.join("thresholds").to_string_lossy().into_owned();
+        }
+        let nml_path = run_dir.join("project.nml");
+        fs::write(&nml_path, lowered.to_namelist())
+            .map_err(|e| format!("write {}: {e}", nml_path.display()))?;
+        eprintln!("earthmesh_cli: compiled project -> {}", nml_path.display());
+        Ok(nml_path.to_string_lossy().into_owned())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+    result
+}
+
+fn create_project_run_dir(project_path: &Path) -> Result<PathBuf, String> {
+    create_sibling_run_dir(project_path, "earthmesh-run")
+}
+
+fn create_sibling_run_dir(source_path: &Path, tag: &str) -> Result<PathBuf, String> {
+    let parent = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let name = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = PROJECT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let dir = parent.join(format!(
+        "{name}.{tag}-{}-{nanos}-{sequence}",
+        std::process::id()
+    ));
+    fs::create_dir(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
+    fs::canonicalize(&dir).map_err(|err| format!("resolve {}: {err}", dir.display()))
 }
 
 fn prepare_project_close_sources(
     project: &ProjectConfig,
     project_path: &Path,
+    stage_dir: &Path,
     lowered: &mut LoweredProject,
 ) -> Result<(), String> {
-    let parent = project_path.parent().unwrap_or_else(|| Path::new("."));
-    let stage_dir = project_path.with_extension("earthmesh-inputs");
-    let resolve = |path: &str| {
-        let source = PathBuf::from(path);
-        if source.is_absolute() {
-            source
-        } else {
-            parent.join(source)
-        }
-    };
+    let resolve = |path: &str| resolve_project_path(project_path, path);
     let mut prepared_stage_dir: Option<PathBuf> = None;
     let mut ensure_stage_dir = || -> Result<PathBuf, String> {
         if let Some(dir) = &prepared_stage_dir {
             return Ok(dir.clone());
         }
-        fs::create_dir_all(&stage_dir)
+        fs::create_dir_all(stage_dir)
             .map_err(|err| format!("create {}: {err}", stage_dir.display()))?;
-        for entry in fs::read_dir(&stage_dir)
-            .map_err(|err| format!("read {}: {err}", stage_dir.display()))?
-        {
-            let path = entry
-                .map_err(|err| format!("read {} entry: {err}", stage_dir.display()))?
-                .path();
-            let generated = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    (name.starts_with("domain_close_") || name.starts_with("specified_close_"))
-                        && name.ends_with(".nml")
-                });
-            if generated {
-                fs::remove_file(&path)
-                    .map_err(|err| format!("remove stale {}: {err}", path.display()))?;
-            }
-        }
-        let dir = fs::canonicalize(&stage_dir)
+        let dir = fs::canonicalize(stage_dir)
             .map_err(|err| format!("resolve {}: {err}", stage_dir.display()))?;
         prepared_stage_dir = Some(dir.clone());
         Ok(dir)
@@ -189,7 +252,7 @@ fn prepare_project_close_sources(
     Ok(())
 }
 
-fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<String>, String> {
+fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<LoweredNamelist>, String> {
     let Ok(text) = fs::read_to_string(namelist) else {
         return Ok(None);
     };
@@ -197,38 +260,395 @@ fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<String>
         return Ok(None);
     }
 
-    let fallback = Path::new(namelist)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("threshold");
-    let fallback = fallback.display().to_string();
-    let lowered = earthmesh_core::lower_datalayers_namelist(&text, Some(fallback.as_str()))?;
-    if !lowered.threshold_files.is_empty() {
-        let th_dir = PathBuf::from(&lowered.threshold_dir);
-        fs::create_dir_all(&th_dir)
-            .map_err(|e| format!("create threshold dir {}: {e}", th_dir.display()))?;
-        for (stem, src) in &lowered.threshold_files {
-            let dst = th_dir.join(format!("{stem}.nc"));
-            fs::copy(src, &dst)
-                .map_err(|e| format!("stage threshold {src} -> {}: {e}", dst.display()))?;
+    let stage_dir = create_sibling_run_dir(Path::new(namelist), "earthmesh-lowered")?;
+    let result = (|| {
+        let fallback = stage_dir.join("thresholds");
+        let fallback = fallback.to_string_lossy();
+        let lowered = earthmesh_core::lower_datalayers_namelist(&text, Some(&fallback))?;
+        if !lowered.threshold_files.is_empty() {
+            let th_dir = PathBuf::from(&lowered.threshold_dir);
+            fs::create_dir_all(&th_dir)
+                .map_err(|e| format!("create threshold dir {}: {e}", th_dir.display()))?;
+            for (stem, src) in &lowered.threshold_files {
+                let dst = th_dir.join(format!("{stem}.nc"));
+                fs::copy(src, &dst)
+                    .map_err(|e| format!("stage threshold {src} -> {}: {e}", dst.display()))?;
+            }
         }
+        for warning in &lowered.warnings {
+            eprintln!("earthmesh_cli: warning: {warning}");
+        }
+        let lowered_path = stage_dir.join("lowered.nml");
+        fs::write(&lowered_path, &lowered.namelist)
+            .map_err(|e| format!("write lowered namelist {}: {e}", lowered_path.display()))?;
+        Ok(LoweredNamelist {
+            path: lowered_path.to_string_lossy().into_owned(),
+            cleanup_dir: stage_dir.clone(),
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&stage_dir);
     }
-    for warning in &lowered.warnings {
-        eprintln!("earthmesh_cli: warning: {warning}");
-    }
-    let lowered_path = format!("{namelist}.lowered.nml");
-    fs::write(&lowered_path, &lowered.namelist)
-        .map_err(|e| format!("write lowered namelist {lowered_path}: {e}"))?;
-    Ok(Some(lowered_path))
+    result.map(Some)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use earthmesh_project::{
-        CloseBoundaryMode, MeshIntentPreset, RefinementRecipe, ResolutionSpec,
-        SpecifiedCircleRefinement, SpecifiedCloseRefinement, ViolationPolicy,
+        CloseBoundaryMode, HfieldRefinementRecipe, MeshIntentPreset, RefinementRecipe,
+        ResolutionSpec, SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
+        ViolationPolicy,
     };
+
+    #[test]
+    fn project_prepare_preserves_hfield_and_quality_after_datalayer_lowering() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_project_groups_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "project_groups",
+            MeshIntentPreset::CoastalOcean,
+            DomainConfig::Regional {
+                shape: RegionShape::Bbox {
+                    w: 100.0,
+                    e: 102.0,
+                    s: 10.0,
+                    n: 12.0,
+                },
+                sea_ratio: None,
+            },
+            ResolutionSpec::Nxp(40),
+        );
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 2;
+        project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
+            lon: 101.0,
+            lat: 11.0,
+            radius_km: 50.0,
+        });
+        project.refinement.hfield = Some(HfieldRefinementRecipe {
+            g: 0.15,
+            max_level: 2,
+            ..HfieldRefinementRecipe::default()
+        });
+        project.quality.min_angle_deg = 31.0;
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+
+        let prepared = prepare_mkgrd_namelist("--project".to_string(), &mut args).unwrap();
+        let nml = fs::read_to_string(&prepared.namelist).unwrap();
+
+        assert!(prepared.namelist.ends_with("lowered.nml"));
+        assert!(nml.contains("&hfield"), "{nml}");
+        assert!(nml.contains("NL%hfield_g = 0.15"), "{nml}");
+        assert!(nml.contains("&quality"), "{nml}");
+        assert!(nml.contains("NL%min_angle_warn_deg = 31"), "{nml}");
+        assert!(!nml.contains("&datalayers"), "{nml}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_prepare_keeps_threshold_master_switch_off_and_landtype() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_threshold_off_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let landtype = root.join("landtype.nc");
+        let lai = root.join("lai.nc");
+        fs::write(&landtype, []).unwrap();
+        fs::write(&lai, []).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "threshold_off",
+            MeshIntentPreset::CarbonLand,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.data_layers = vec![
+            earthmesh_project::ProjectDataLayer {
+                id: "landtype".to_string(),
+                role: earthmesh_project::ProjectLayerRole::LandType,
+                path: landtype.to_string_lossy().into_owned(),
+                enabled: true,
+                threshold_value: None,
+            },
+            earthmesh_project::ProjectDataLayer {
+                id: "lai".to_string(),
+                role: earthmesh_project::ProjectLayerRole::Threshold(ThresholdField::Lai),
+                path: lai.to_string_lossy().into_owned(),
+                enabled: true,
+                threshold_value: None,
+            },
+        ];
+        project.refinement.enabled = true;
+        project.refinement.threshold_enabled = false;
+        project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
+            lon: 0.0,
+            lat: 0.0,
+            radius_km: 50.0,
+        });
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+
+        let prepared = prepare_mkgrd_namelist("--project".to_string(), &mut args).unwrap();
+        let nml = fs::read_to_string(prepared.namelist).unwrap();
+        let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
+        let refine = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+            &nml,
+            &mkgrd.mesh_type,
+            &mkgrd.mode_grid,
+        )
+        .unwrap();
+        assert_eq!(mkgrd.landtype_file, landtype.to_string_lossy());
+        assert!(!refine.refine_cal);
+        assert!(!refine.refine_num_landtypes);
+        assert!(!root.join("project.earthmesh-thresholds").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_thresholds_resolve_relative_to_project_and_isolate_runs() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_threshold_stage_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let input_dir = root.join("input");
+        fs::create_dir_all(&input_dir).unwrap();
+        let source = input_dir.join("typhoon.nc");
+        fs::write(&source, b"threshold").unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "threshold_stage",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.data_layers = vec![earthmesh_project::ProjectDataLayer {
+            id: "typhoon".to_string(),
+            role: earthmesh_project::ProjectLayerRole::Threshold(ThresholdField::Typhoon),
+            path: "input/typhoon.nc".to_string(),
+            enabled: true,
+            threshold_value: None,
+        }];
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        project.refinement.threshold_enabled = true;
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let run = || {
+            let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+            prepare_mkgrd_namelist("--project".to_string(), &mut args).unwrap()
+        };
+
+        let first = run();
+        let second = run();
+        assert_ne!(first.namelist, second.namelist);
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        let mut output_dirs = Vec::new();
+        for prepared in [first, second] {
+            let nml = fs::read_to_string(&prepared.namelist).unwrap();
+            let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
+            let refine = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+                &nml,
+                &mkgrd.mesh_type,
+                &mkgrd.mode_grid,
+            )
+            .unwrap();
+            let threshold_dir = PathBuf::from(refine.threshold_dir);
+            assert!(threshold_dir.starts_with(&canonical_root));
+            assert_eq!(
+                fs::read(threshold_dir.join("typhoon.nc")).unwrap(),
+                b"threshold"
+            );
+            let output_dir = PathBuf::from(mkgrd.file_dir());
+            assert!(output_dir.starts_with(&canonical_root));
+            output_dirs.push(output_dir);
+        }
+        assert_ne!(output_dirs[0], output_dirs[1]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_coupling_cama_root_resolves_relative_to_project() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_coupling_path_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("cama")).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "coupling_path",
+            MeshIntentPreset::MeritHydroCoast,
+            DomainConfig::Regional {
+                shape: RegionShape::Bbox {
+                    w: 100.0,
+                    e: 102.0,
+                    s: 10.0,
+                    n: 12.0,
+                },
+                sea_ratio: None,
+            },
+            ResolutionSpec::Nxp(40),
+        );
+        project.coupling = Some(earthmesh_project::CoupledMeshConfig {
+            identify_river_mouth: true,
+            cama_root: Some("cama".into()),
+            ..earthmesh_project::CoupledMeshConfig::default()
+        });
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let spec = ProjectRunSpec {
+            path: project_path,
+            config: project,
+        };
+
+        let namelist = compile_project_spec(&spec).unwrap();
+        let text = fs::read_to_string(namelist).unwrap();
+        let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&text).unwrap();
+        assert_eq!(PathBuf::from(mkgrd.coupling_cama_root), root.join("cama"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_project_lowering_removes_unique_run_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_project_cleanup_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "cleanup",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.data_layers = vec![earthmesh_project::ProjectDataLayer {
+            id: "typhoon".into(),
+            role: earthmesh_project::ProjectLayerRole::Threshold(ThresholdField::Typhoon),
+            path: "missing.nc".into(),
+            enabled: true,
+            threshold_value: None,
+        }];
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+
+        let error = prepare_mkgrd_namelist("--project".into(), &mut args).unwrap_err();
+        assert!(error.contains("stage threshold"));
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("earthmesh-run")
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn raw_namelist_explicit_threshold_dir_is_honored() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_threshold_explicit_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("typhoon.nc");
+        let explicit = root.join("chosen-thresholds");
+        fs::write(&source, b"threshold").unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "threshold_explicit",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.data_layers = vec![earthmesh_project::ProjectDataLayer {
+            id: "typhoon".to_string(),
+            role: earthmesh_project::ProjectLayerRole::Threshold(ThresholdField::Typhoon),
+            path: source.to_string_lossy().into_owned(),
+            enabled: true,
+            threshold_value: None,
+        }];
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        let mut lowered = project.try_lower().unwrap();
+        lowered.refine.threshold_dir = explicit.to_string_lossy().into_owned();
+        let namelist = root.join("raw.nml");
+        fs::write(&namelist, lowered.to_namelist()).unwrap();
+
+        lower_datalayers_namelist_if_present(namelist.to_str().unwrap()).unwrap();
+        assert_eq!(fs::read(explicit.join("typhoon.nc")).unwrap(), b"threshold");
+        assert!(!root.join("raw.nml.thresholds").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn raw_namelist_lowering_uses_unique_staging_directories() {
+        let root =
+            std::env::temp_dir().join(format!("earthmesh_cli_raw_lowering_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("typhoon.nc");
+        fs::write(&source, b"threshold").unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "raw_lowering",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.data_layers = vec![earthmesh_project::ProjectDataLayer {
+            id: "typhoon".into(),
+            role: earthmesh_project::ProjectLayerRole::Threshold(ThresholdField::Typhoon),
+            path: source.to_string_lossy().into_owned(),
+            enabled: true,
+            threshold_value: None,
+        }];
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        let mut lowered = project.try_lower().unwrap();
+        lowered.refine.threshold_dir.clear();
+        let namelist = root.join("raw.nml");
+        fs::write(&namelist, lowered.to_namelist()).unwrap();
+
+        let first = lower_datalayers_namelist_if_present(namelist.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let second = lower_datalayers_namelist_if_present(namelist.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(first.path, second.path);
+        assert_ne!(first.cleanup_dir, second.cleanup_dir);
+        assert_eq!(
+            fs::read(first.cleanup_dir.join("thresholds/typhoon.nc")).unwrap(),
+            b"threshold"
+        );
+        assert_eq!(
+            fs::read(second.cleanup_dir.join("thresholds/typhoon.nc")).unwrap(),
+            b"threshold"
+        );
+        assert!(!root.join("raw.nml.lowered.nml").exists());
+        assert!(!root.join("raw.nml.thresholds").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn project_cli_stages_domain_and_specified_close_text_as_nml() {
@@ -263,16 +683,16 @@ mod tests {
         };
         let project_path = root.join("project.yaml");
         fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
-        let stage_dir = root.join("project.earthmesh-inputs");
-        fs::create_dir_all(&stage_dir).unwrap();
-        fs::write(stage_dir.join("keep.txt"), "not generated").unwrap();
         let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
 
         let prepared = compile_project_arg(&mut args).unwrap();
+        let stage_dir = Path::new(&prepared.namelist)
+            .parent()
+            .unwrap()
+            .join("inputs");
         let nml = fs::read_to_string(prepared.namelist).unwrap();
         assert!(stage_dir.join("domain_close_001.nml").is_file());
         assert!(stage_dir.join("specified_close_001.nml").is_file());
-        assert!(stage_dir.join("keep.txt").is_file());
         assert!(nml.contains(&stage_dir.join("domain_close_").display().to_string()));
         assert!(nml.contains(&stage_dir.join("specified_close_").display().to_string()));
     }
@@ -342,8 +762,8 @@ mod tests {
 
         let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
         let nml_path = compile_project_arg(&mut args).unwrap().namelist;
+        let stage_dir = Path::new(&nml_path).parent().unwrap().join("inputs");
         let nml = fs::read_to_string(nml_path).unwrap();
-        let stage_dir = root.join("project.earthmesh-inputs");
         assert!(stage_dir.join("domain_close_001.nml").is_file());
         assert!(nml.contains("mask_domain_type = 'close'"));
         assert!(nml.contains(&stage_dir.join("domain_close_").display().to_string()));

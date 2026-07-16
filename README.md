@@ -255,6 +255,17 @@ For questions or support, please contact:
 
 ## Revision History
 
+- 2026.07.16 - The v3 alpha Rust API removed unused `core::paths`, Project
+  reproducibility-manifest/prelude, `quality::hydro_coast`, and planner `io`
+  modules. These experimental facades had no production callers; alpha API
+  consumers must use the active owner APIs instead of relying on compatibility
+  shims. There is no general replacement for Project's removed fingerprint
+  manifest: integrations should use the command-specific manifests or own their
+  input hashing. Planner integrations should consume `RefinementReport` directly
+  and serialize it at their CLI/application boundary instead of calling the
+  removed generic `io` writers. The diagnostic `run_manifest.json` contract is
+  now explicitly versioned as schema 1; its current minimal fields replace the
+  earlier experimental manifest shape.
 - 2026.07.14 - v3.0.0-alpha2 closes the AutoRefine/Hydro quality loops, adds
   auditable GUI decisions, and introduces the maturin/PyPI binary package.
 - 2026.06.29 - v3.0.0-alpha1 README refresh for Rust CLI, project schema,

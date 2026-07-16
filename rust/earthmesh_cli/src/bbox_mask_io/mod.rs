@@ -9,4 +9,4 @@ pub use netcdf::{
     write_bbox_mesh_netcdf,
 };
 pub use types::{BBoxMask, BBoxMesh, BBoxPoint};
-pub(crate) use validation::validate_bbox_mask;
+pub(crate) use validation::{validate_bbox_mask, validate_bbox_mask_geographic};

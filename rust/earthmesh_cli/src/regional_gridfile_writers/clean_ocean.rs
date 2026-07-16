@@ -118,7 +118,7 @@ pub fn write_clean_regional_ocean_gridfile(
                 1;
         }
     }
-    let mut seaorland = vec![vec![0_i32; nlats_select + 1]; nlons_select + 1];
+    let mut seaorland = vec![vec![false; nlats_select + 1]; nlons_select + 1];
     for lon_offset in 0..nlons_select {
         for lat_offset in 0..nlats_select {
             if is_in_area_select[lon_offset][lat_offset] == 0 {
@@ -126,7 +126,7 @@ pub fn write_clean_regional_ocean_gridfile(
             }
             let value = landtype.values[lon_offset * nlats_select + lat_offset];
             if value != 0 {
-                seaorland[lon_offset + 1][lat_offset + 1] = 1;
+                seaorland[lon_offset + 1][lat_offset + 1] = true;
             }
         }
     }

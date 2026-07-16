@@ -1,7 +1,7 @@
 //! File-system and native dialog command handlers.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
@@ -90,10 +90,26 @@ pub(crate) fn open_path(path: String) -> Result<(), String> {
 /// a recent project. Returns canonical YAML.
 #[tauri::command]
 pub(crate) fn read_project(path: String) -> Result<OpenedProject, String> {
-    let text = fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
-    let cfg = ProjectConfig::from_yaml(&text)
+    let path = PathBuf::from(path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("resolve current directory: {e}"))?
+            .join(path)
+    };
+    let display_path = path.to_string_lossy().into_owned();
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {display_path}: {e}"))?;
+    let mut cfg = ProjectConfig::from_yaml(&text)
         .or_else(|_| ProjectConfig::from_json(&text))
-        .map_err(|e| format!("parse {path}: {e}"))?;
+        .map_err(|e| format!("parse {display_path}: {e}"))?;
+    let project_dir = path
+        .parent()
+        .ok_or_else(|| format!("project path has no parent: {display_path}"))?;
+    crate::mesh_runner::absolutize_opened_project_inputs(&mut cfg, project_dir);
     let yaml = cfg.to_yaml()?;
-    Ok(OpenedProject { path, yaml })
+    Ok(OpenedProject {
+        path: display_path,
+        yaml,
+    })
 }

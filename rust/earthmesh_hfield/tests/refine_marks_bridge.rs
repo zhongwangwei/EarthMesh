@@ -86,14 +86,14 @@ fn hfield_levels_drive_nested_contiguous_refinement_marks() {
     }
 
     // Round-1 ring must extend beyond the raw circle (the limiter grows a
-    // slope-g skirt): the circle spans ~3.6 degrees of latitude radius, while
-    // level >= 1 persists until h grows back to h_base, i.e. ~900 km further.
+    // conservative g/sqrt(2) skirt): the circle spans ~3.6 degrees of latitude
+    // radius, while level >= 1 persists for ~1270 km further.
     let ring1: Vec<usize> = (0..per_round[0].len())
         .filter(|&i| per_round[0][i] == 1)
         .collect();
     let ring1_rows = ring1.len();
     assert!(
-        (18..=28).contains(&ring1_rows),
-        "round-1 ring spans {ring1_rows} rows; expected ~23 (2 * (400 + 900) km / 111 km)"
+        (27..=35).contains(&ring1_rows),
+        "round-1 ring spans {ring1_rows} rows; expected ~30 (2 * (400 + 1270) km / 111 km)"
     );
 }

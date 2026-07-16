@@ -1,7 +1,7 @@
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 pub(super) fn count_area_judge_selected_cells_one_based(
-    grid: &[Vec<i32>],
+    grid: &[Vec<bool>],
     bounds: AreaJudgeSourceBounds,
 ) -> usize {
     (bounds.maxlat_source..=bounds.minlat_source)
@@ -9,6 +9,6 @@ pub(super) fn count_area_judge_selected_cells_one_based(
             (bounds.minlon_source..=bounds.maxlon_source)
                 .map(move |lon_index| (lon_index, lat_index))
         })
-        .filter(|(lon_index, lat_index)| grid[*lon_index][*lat_index] != 0)
+        .filter(|(lon_index, lat_index)| grid[*lon_index][*lat_index])
         .count()
 }

@@ -4,7 +4,7 @@ use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_quality::{HfieldConfigDiagnostics, MeshQualityReport, QualityMeshInput};
 
 use crate::hfield_refine::{
-    build_composed_hfield, has_threshold_hfield_sources, read_hfield_refine_options_or_default,
+    build_composed_hfield, has_threshold_hfield_sources, read_hfield_refine_options,
 };
 
 use super::gridfile::{
@@ -42,7 +42,7 @@ pub fn attach_hfield_diagnostics_from_namelist(
             "NL%NXP must be positive for h-field diagnostics",
         ));
     }
-    let Some(hfield) = read_hfield_refine_options_or_default(namelist_contents, nxp)? else {
+    let Some(hfield) = read_hfield_refine_options(namelist_contents)? else {
         return Ok(false);
     };
     let has_hydro_target = hfield.hydro_target_paths().is_some();
@@ -188,11 +188,11 @@ fn hfield_target_levels_for_quality_cells(
     mut level_at: impl FnMut(f64, f64) -> u32,
 ) -> io::Result<Vec<u32>> {
     match kind.trim() {
-        "tri" => Ok(tri_quality_cells_from_gridfile(mesh)
+        "tri" => Ok(tri_quality_cells_from_gridfile(mesh)?
             .into_iter()
             .map(|(mi, _)| level_at(mesh.m_lon[mi], mesh.m_lat[mi]))
             .collect()),
-        "hex" => Ok(hex_quality_cells_from_gridfile(mesh)
+        "hex" => Ok(hex_quality_cells_from_gridfile(mesh)?
             .into_iter()
             .map(|(_wi, corners)| max_corner_level(mesh, &corners, &mut level_at))
             .collect()),
@@ -296,7 +296,7 @@ mod tests {
             w_refine_level_orig: Vec::new(),
             w_ngr: Vec::new(),
         };
-        let input = super::super::gridfile::quality_input_from_gridfile(&mesh);
+        let input = super::super::gridfile::quality_input_from_gridfile(&mesh).unwrap();
         let mut report =
             earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
         let namelist = format!(

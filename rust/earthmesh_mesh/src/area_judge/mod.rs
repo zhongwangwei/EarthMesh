@@ -56,9 +56,54 @@ pub(crate) fn expand_triangles_from_boundary_one_based(
 }
 
 pub(crate) fn source_find_lon_one_based(source_lon_vertices: &[f64], lon: f64) -> Option<usize> {
-    (1..source_lon_vertices.len()).find(|&index| lon <= source_lon_vertices[index])
+    if lon.is_nan() {
+        return None;
+    }
+    let vertices = source_lon_vertices.get(1..)?;
+    let offset = vertices.partition_point(|&vertex| vertex < lon);
+    (offset < vertices.len()).then_some(offset + 1)
 }
 
 pub(crate) fn source_find_lat_one_based(source_lat_vertices: &[f64], lat: f64) -> Option<usize> {
-    (1..source_lat_vertices.len()).find(|&index| lat >= source_lat_vertices[index])
+    if lat.is_nan() {
+        return None;
+    }
+    let vertices = source_lat_vertices.get(1..)?;
+    let offset = vertices.partition_point(|&vertex| vertex > lat);
+    (offset < vertices.len()).then_some(offset + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{source_find_lat_one_based, source_find_lon_one_based};
+
+    #[test]
+    fn source_axis_binary_search_matches_first_canonical_vertex() {
+        let lon = vec![0.0, -180.0, -179.0, -179.0, -178.0, 0.0, 180.0];
+        let lat = vec![0.0, 90.0, 89.0, 89.0, 88.0, 0.0, -90.0];
+
+        for query in [
+            -181.0, -180.0, -179.5, -179.0, -178.5, 0.0, 179.9, 180.0, 181.0,
+        ] {
+            let expected = (1..lon.len()).find(|&index| query <= lon[index]);
+            assert_eq!(source_find_lon_one_based(&lon, query), expected);
+        }
+        for query in [91.0, 90.0, 89.5, 89.0, 88.5, 0.0, -89.9, -90.0, -91.0] {
+            let expected = (1..lat.len()).find(|&index| query >= lat[index]);
+            assert_eq!(source_find_lat_one_based(&lat, query), expected);
+        }
+    }
+
+    #[test]
+    fn source_axis_binary_search_preserves_non_finite_behavior() {
+        let lon = [0.0, -180.0, 0.0, 180.0];
+        let lat = [0.0, 90.0, 0.0, -90.0];
+
+        assert_eq!(source_find_lon_one_based(&lon, f64::NEG_INFINITY), Some(1));
+        assert_eq!(source_find_lon_one_based(&lon, f64::INFINITY), None);
+        assert_eq!(source_find_lon_one_based(&lon, f64::NAN), None);
+        assert_eq!(source_find_lat_one_based(&lat, f64::INFINITY), Some(1));
+        assert_eq!(source_find_lat_one_based(&lat, f64::NEG_INFINITY), None);
+        assert_eq!(source_find_lat_one_based(&lat, f64::NAN), None);
+    }
 }

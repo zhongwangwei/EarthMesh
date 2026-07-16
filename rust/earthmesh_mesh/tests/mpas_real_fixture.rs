@@ -183,10 +183,10 @@ fn get_area_matches_real_mpas_fixture_for_cell_and_vertex_areas() {
     })
     .expect("valid compact MPAS GetArea fixture");
 
-    approx_eq(output.area_triangle[6], 1.456_537_400_479_642e-4, 1.0e-12);
-    approx_eq(output.area_cell[2], 2.893_344_929_200_777e-4, 1.0e-12);
-    approx_eq(output.area_cell[3], 2.895_650_029_526_825_7e-4, 1.0e-12);
-    approx_eq(output.area_cell[4], 2.917_605_346_433_557_5e-4, 1.0e-12);
+    approx_eq(output.area_triangle[6], 1.456_537_411_369_754e-4, 1.0e-15);
+    approx_eq(output.area_cell[2], 2.893_344_967_073_004_3e-4, 1.0e-15);
+    approx_eq(output.area_cell[3], 2.895_649_967_250_554_3e-4, 1.0e-15);
+    approx_eq(output.area_cell[4], 2.917_605_338_803_966_6e-4, 1.0e-15);
 }
 
 #[test]

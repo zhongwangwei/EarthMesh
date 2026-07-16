@@ -2,7 +2,7 @@ mod dispatch;
 mod infer;
 
 pub use dispatch::{
-    infer_default_restart_refine_handoff_from_config,
+    infer_default_restart_refine_handoff_from_config, rewrite_restart_refine_namelist_contents,
     run_mkgrd_top_level_namelist_with_default_restart_refine_handoff,
 };
 pub use infer::{

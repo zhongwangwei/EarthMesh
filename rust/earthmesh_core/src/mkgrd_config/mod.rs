@@ -1,6 +1,6 @@
 use crate::{
-    canonical_quote, parse_canonical_bool, parse_canonical_string, parse_f32, parse_f64, parse_i32,
-    strip_canonical_comment,
+    canonical_quote, namelist_assignments, parse_canonical_bool, parse_canonical_string, parse_f64,
+    parse_i32,
 };
 
 /// Typed equivalent of `consts_coms:oname_vars` defaults.
@@ -19,8 +19,8 @@ pub struct EarthmeshConfig {
     pub niter: i32,
     pub gridnum_perdegree: i32,
     pub mask_sea_ratio: f64,
-    pub beta: f32,
-    pub relax: f32,
+    pub beta: f64,
+    pub relax: f64,
     pub isolated_ocean: bool,
     pub mask_restart: bool,
     pub mask_domain_type: String,
@@ -96,34 +96,9 @@ impl EarthmeshConfig {
     /// Canonical driver manages after `read_nl`.
     pub fn from_mkgrd_namelist(input: &str) -> Result<Self, String> {
         let mut config = Self::default();
-        let mut in_mkgrd = false;
-
-        for raw_line in input.lines() {
-            let line = strip_canonical_comment(raw_line)
-                .trim()
-                .trim_end_matches(',');
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with('&') {
-                in_mkgrd = line.eq_ignore_ascii_case("&mkgrd");
-                continue;
-            }
-            if line == "/" {
-                in_mkgrd = false;
-                continue;
-            }
-            if !in_mkgrd {
-                continue;
-            }
-
-            let Some((left, right)) = line.split_once('=') else {
-                continue;
-            };
-            let Some(field) = left.trim().split_once('%').map(|(_, field)| field.trim()) else {
-                continue;
-            };
-            let value = right.trim().trim_end_matches(',');
+        for assignment in namelist_assignments(input, "mkgrd")? {
+            let field = assignment.field.as_str();
+            let value = assignment.value.as_str();
 
             match field.to_ascii_lowercase().as_str() {
                 "expnme" => config.experiment_name = parse_canonical_string(value),
@@ -141,8 +116,8 @@ impl EarthmeshConfig {
                 "niter" => config.niter = parse_i32(field, value)?,
                 "gridnum_perdegree" => config.gridnum_perdegree = parse_i32(field, value)?,
                 "mask_sea_ratio" => config.mask_sea_ratio = parse_f64(field, value)?,
-                "beta" => config.beta = parse_f32(field, value)?,
-                "relax" => config.relax = parse_f32(field, value)?,
+                "beta" => config.beta = parse_f64(field, value)?,
+                "relax" => config.relax = parse_f64(field, value)?,
                 "isolated_ocean" => config.isolated_ocean = parse_canonical_bool(field, value)?,
                 "mask_restart" => config.mask_restart = parse_canonical_bool(field, value)?,
                 "mask_domain_type" => config.mask_domain_type = parse_canonical_string(value),
@@ -168,7 +143,8 @@ impl EarthmeshConfig {
                     config.coupling_identify_river_mouth = parse_canonical_bool(field, value)?
                 }
                 "coupling_cama_root" => config.coupling_cama_root = parse_canonical_string(value),
-                _ => {}
+                _ if is_native_method_c_field(field) => {}
+                _ => return Err(format!("unknown &mkgrd field '{field}'")),
             }
         }
 
@@ -328,4 +304,30 @@ impl EarthmeshConfig {
             )),
         }
     }
+}
+
+pub(crate) fn is_native_method_c_field(field: &str) -> bool {
+    let base = field
+        .split_once('(')
+        .map_or(field, |(base, _)| base)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "mdomain"
+            | "deltax"
+            | "ngrids"
+            | "ngrdll"
+            | "grdrad"
+            | "grdlat"
+            | "grdlon"
+            | "gridplot_base"
+            | "nsfcgrids"
+            | "nsfcgrdll"
+            | "sfcgrdrad"
+            | "sfcgrdlat"
+            | "sfcgrdlon"
+            | "sfcgridplot_base"
+            | "sfcgrid_res_factor"
+    )
 }

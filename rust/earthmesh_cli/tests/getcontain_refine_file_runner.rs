@@ -63,11 +63,11 @@ fn getcontain_refine_file_runner_reads_grid_and_area_then_writes_compatibility_c
     let area_grid = root.join("result/IsInRfArea_grid_iter1.nc4");
     write_area_judge_grid_netcdf(&area_grid, &payload).expect("write area grid");
 
-    let mut seaorland = vec![vec![0; lat_i.len()]; lon_i.len()];
-    seaorland[1][1] = 1;
-    seaorland[1][2] = 1;
-    seaorland[2][1] = 0;
-    seaorland[2][2] = 1;
+    let mut seaorland = vec![vec![false; lat_i.len()]; lon_i.len()];
+    seaorland[1][1] = true;
+    seaorland[1][2] = true;
+    seaorland[2][1] = false;
+    seaorland[2][2] = true;
     let output = root.join("contain/contain_landmesh_refine_spc_NXP0004_01_tri.nc4");
 
     let report = run_getcontain_refine_file_one_based(GetContainRefineFileRunConfig {

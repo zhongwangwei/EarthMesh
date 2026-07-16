@@ -13,7 +13,7 @@ pub(crate) fn f64_matrix_width(name: &str, rows: &[Vec<f64>]) -> io::Result<usiz
     Ok(width)
 }
 
-pub(crate) fn matrix_width(name: &str, rows: &[Vec<i32>]) -> io::Result<usize> {
+pub(crate) fn matrix_width<T>(name: &str, rows: &[Vec<T>]) -> io::Result<usize> {
     let width = rows.first().map(Vec::len).unwrap_or(0);
     if rows.iter().any(|row| row.len() != width) {
         return Err(io::Error::new(

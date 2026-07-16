@@ -8,6 +8,24 @@ use std::{
 
 use earthmesh_core::{deg_to_rad, rad_to_deg};
 
+/// Configure the worker count used by EarthMesh's parallel numeric kernels.
+///
+/// The CLI calls this once, before any mesh work starts, using `NL%openmp`.
+pub fn configure_global_thread_pool(thread_count: usize) -> io::Result<()> {
+    if thread_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "EarthMesh worker count must be positive",
+        ));
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build_global()
+        .map_err(|error| {
+            io::Error::other(format!("failed to configure EarthMesh workers: {error}"))
+        })
+}
+
 mod coordinates;
 use coordinates::{cross, dot, magnitude, normalize_cartesian_to_radius, vector_between};
 pub use coordinates::{

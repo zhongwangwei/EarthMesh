@@ -33,7 +33,7 @@ pub fn build_area_judge_area_sources_one_based(
         ));
     }
 
-    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![false; nlats_source + 1]; nlons_source + 1];
     let mut bounds = None;
     let mut numpatch = 0usize;
 
@@ -50,7 +50,7 @@ pub fn build_area_judge_area_sources_one_based(
                 nlats_source,
             )?;
             for (lon_index, lat_index) in &report.cells {
-                is_in_area[*lon_index][*lat_index] = 1;
+                is_in_area[*lon_index][*lat_index] = true;
             }
             bounds = Some(merge_area_judge_source_bounds(bounds, report.bounds));
             numpatch += report.numpatch;
@@ -109,8 +109,8 @@ pub fn build_area_judge_area_sources_one_based(
                 nlats_source + 1,
             )?;
             for lat_index in 1..=nlats_source {
-                if report.is_in_area[lon_index][lat_index] != 0 {
-                    is_in_area[lon_index][lat_index] = 1;
+                if report.is_in_area[lon_index][lat_index] {
+                    is_in_area[lon_index][lat_index] = true;
                 }
             }
         }

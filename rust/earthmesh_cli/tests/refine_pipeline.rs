@@ -912,7 +912,7 @@ fn default_atmos_native_method_c_mdomain_five_overrides_compatibility_global_fla
     .expect("write native atmosphere mdomain=5 namelist");
 
     let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
-        &namelist, &root, 0, 0, None, None, 1, None,
+        &namelist, &root, 20_000, 0, None, None, 1, None,
     )
     .expect("mdomain=5 should use regional/cartesian native Method-C semantics");
 
@@ -980,7 +980,7 @@ fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
     )
     .expect("write native atmosphere mdomain=5 hfield namelist");
 
-    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 0, None)
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 100_000, None)
         .expect("explicit hfield should drive Cartesian-XY Method-C refinement");
 
     assert_eq!(run.max_level, 1);
@@ -1034,7 +1034,7 @@ fn cartesian_native_method_c_samples_geographic_threshold_hfield_from_origin() {
     )
     .expect("write Cartesian geographic threshold namelist");
 
-    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 0, None)
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 100_000, None)
         .expect("geographic threshold hfield should refine Cartesian-XY mesh");
 
     let cartesian_base = earthmesh_mesh::MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0)

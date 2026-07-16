@@ -171,6 +171,46 @@ fn cama_nextxy_reader_reads_planar_int32_topology_and_converts_to_logical_zero_b
 }
 
 #[test]
+fn cama_nextxy_reader_rejects_positive_out_of_range_downstream_links() {
+    let root = temp_root("data_preprocess_cama_nextxy_out_of_range");
+    let nextxy_path = root.join("nextxy.bin");
+    let grid = earthmesh_cli::cama_binary_io::CamaBinaryGridSpec {
+        nx: 2,
+        ny: 2,
+        west: 100.0,
+        south: 10.0,
+        grid_size_deg: 0.5,
+        little_endian: true,
+        y_reversed_storage: false,
+    };
+    let window = earthmesh_cli::cama_binary_io::CamaBinaryWindow {
+        x_start: 0,
+        y_start: 0,
+        width: 2,
+        height: 2,
+    };
+    write_i32_planes(
+        &nextxy_path,
+        &[
+            vec![vec![1, 3], vec![1, 2]], // raw x=3 exceeds nx=2
+            vec![vec![1, 1], vec![3, 2]], // raw y=3 exceeds ny=2
+        ],
+    );
+
+    let error = earthmesh_cli::cama_binary_window_readers::read_cama_nextxy_window(
+        &nextxy_path,
+        grid,
+        window,
+    )
+    .expect_err("positive out-of-range downstream links must fail");
+    assert!(
+        error.to_string().contains("2 invalid positive downstream"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn cama_metric_reader_reads_float32_windows_for_width_uparea_and_rivlen() {
     let root = temp_root("data_preprocess_cama_metric_binary");
     let width_path = root.join("width.bin");
@@ -311,9 +351,9 @@ fn cama_reach_inventory_combines_metrics_and_nextxy_into_river_source_records() 
         window,
         next_x: vec![vec![0, 1], vec![2, -9]],
         next_y: vec![vec![0, 1], vec![0, -9]],
-        terminal_or_ocean: vec![vec![false, false], vec![false, true]],
-        valid_downstream_links: 3,
-        terminal_or_ocean_links: 1,
+        terminal_or_ocean: vec![vec![true, false], vec![false, true]],
+        valid_downstream_links: 2,
+        terminal_or_ocean_links: 2,
     };
 
     let inventory = earthmesh_cli::cama_reach_inventory::build_cama_reach_inventory(
@@ -333,7 +373,10 @@ fn cama_reach_inventory_combines_metrics_and_nextxy_into_river_source_records() 
     assert_eq!(inventory.records[0].width_m, 5.0);
     assert_eq!(inventory.records[0].river_length_m, 100.0);
     assert_eq!(inventory.records[0].target_dx_km, 2.5);
-    assert!(!inventory.records[0].is_estuary);
+    assert!(
+        !inventory.records[0].is_estuary,
+        "zero-valued endorheic/terminal downstream links are not ocean estuaries"
+    );
 
     assert_eq!(inventory.records[1].reach_id, "cama-1-2");
     assert_eq!(inventory.records[1].x_index, 2);

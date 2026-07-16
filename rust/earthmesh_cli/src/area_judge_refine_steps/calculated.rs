@@ -6,12 +6,12 @@ use std::path::Path;
 use super::validation::validate_area_judge_refine_within_domain_one_based;
 
 /// Build calculated `mask_refine` sources and validate they stay inside domain.
-pub fn build_area_judge_calculated_refine_one_based(
+pub fn build_area_judge_calculated_refine_one_based<T>(
     file_dir: impl AsRef<Path>,
     iter: usize,
     mask_refine_cal_type: &str,
     mask_refine_ndm: usize,
-    is_in_domain: &[Vec<i32>],
+    is_in_domain: &[Vec<T>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     lon_i: &[f64],
@@ -19,7 +19,10 @@ pub fn build_area_judge_calculated_refine_one_based(
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,
-) -> io::Result<AreaJudgeAreaSourceReport> {
+) -> io::Result<AreaJudgeAreaSourceReport>
+where
+    T: Copy + Into<i32>,
+{
     let refine = build_area_judge_area_sources_one_based(
         file_dir,
         "mask_refine",

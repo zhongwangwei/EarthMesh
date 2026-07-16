@@ -45,8 +45,8 @@ fn default_config_matches_canonical_oname_vars_defaults() {
     assert_eq!(cfg.niter, 5000);
     assert_eq!(cfg.gridnum_perdegree, 120);
     approx_eq(cfg.mask_sea_ratio, 0.5, 0.0);
-    approx_eq(cfg.beta as f64, 1.2, 1.0e-6);
-    approx_eq(cfg.relax as f64, 0.04, 1.0e-7);
+    approx_eq(cfg.beta, 1.2, 1.0e-12);
+    approx_eq(cfg.relax, 0.04, 1.0e-12);
     assert!(!cfg.isolated_ocean);
     assert!(!cfg.mask_restart);
     assert_eq!(cfg.mask_domain_type, "/tmp");
@@ -160,8 +160,8 @@ fn earthmesh_config_parses_mkgrd_namelist_assignments_like_read_nl() {
     assert_eq!(parsed.niter, 5000);
     assert_eq!(parsed.gridnum_perdegree, 240);
     approx_eq(parsed.mask_sea_ratio, 0.75, 0.0);
-    approx_eq(parsed.beta as f64, 1.0, 1.0e-6);
-    approx_eq(parsed.relax as f64, 0.035, 1.0e-7);
+    approx_eq(parsed.beta, 1.0, 1.0e-12);
+    approx_eq(parsed.relax, 0.035, 1.0e-12);
     assert!(parsed.isolated_ocean);
     assert!(!parsed.mask_restart);
     assert!(!parsed.mask_domain_global);

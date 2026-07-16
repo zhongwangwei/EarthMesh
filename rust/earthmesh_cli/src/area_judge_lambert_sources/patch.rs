@@ -9,7 +9,7 @@ use super::build_area_judge_lambert_area_source_one_based;
 /// Build the Lambert/mode4 `IsInPaArea_grid` patch mask and apply it to `seaorland`.
 pub fn apply_area_judge_lambert_patch_source_one_based(
     inputfile: impl AsRef<Path>,
-    seaorland: &mut [Vec<i32>],
+    seaorland: &mut [Vec<bool>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     lon_i: &[f64],

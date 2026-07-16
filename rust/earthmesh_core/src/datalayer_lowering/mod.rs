@@ -1,6 +1,10 @@
+use std::collections::HashSet;
 use std::path::Path;
 
-use crate::{DataLayerRole, DataLayersNamelist, EarthmeshConfig, RefineConfig, ThresholdVar};
+use crate::{
+    namelist_assignments, DataLayerRole, DataLayersNamelist, EarthmeshConfig, RefineConfig,
+    ThresholdVar,
+};
 
 /// Which `RefineConfig` switch array a threshold criterion lives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,16 +126,18 @@ pub struct LoweredDatalayers {
 
 /// Parse a namelist's `&mkgrd` / `&mkrefine` / `&datalayers` blocks, apply the
 /// data layers to the config ([`DataLayersNamelist::lower_into`]), and re-emit a
-/// `&mkgrd` + `&mkrefine` namelist with the lowered values, so a plain
-/// `mkgrd.x`-style run honours the declared layers without a GUI. The engine run
-/// path consumes only `&mkgrd`/`&mkrefine`, so other blocks are not re-emitted.
+/// `&mkgrd` + `&mkrefine` namelist with the lowered values, while preserving
+/// additional execution groups such as `&hfield` and `&quality`. This lets a
+/// plain `mkgrd.x`-style run honour declared layers without silently changing
+/// the refinement or quality backend selected by the project compiler.
 ///
-/// `threshold_dir_fallback` is used only when the parsed `&mkrefine` leaves
-/// `threshold_dir` empty (the caller typically passes `<namelist_dir>/threshold`).
+/// `threshold_dir_fallback` is used when `RL%threshold_dir` is omitted or
+/// explicitly empty (the caller typically passes `<namelist_dir>/threshold`).
 pub fn lower_datalayers_namelist(
     text: &str,
     threshold_dir_fallback: Option<&str>,
 ) -> Result<LoweredDatalayers, String> {
+    let threshold_dir_was_explicit = namelist_group_has_field(text, "mkrefine", "threshold_dir")?;
     let mut mkgrd = EarthmeshConfig::from_mkgrd_namelist(text)?;
     let mut refine = if text.to_ascii_lowercase().contains("&mkrefine") {
         RefineConfig::from_mkrefine_namelist(text, &mkgrd.mesh_type, &mkgrd.mode_grid)?
@@ -139,8 +145,21 @@ pub fn lower_datalayers_namelist(
         RefineConfig::default()
     };
     let dl = DataLayersNamelist::from_datalayers_namelist(text);
+    let mut threshold_fields = HashSet::new();
+    for layer in &dl.layers {
+        if layer.enabled {
+            if let DataLayerRole::ThresholdField(field) = layer.role {
+                if !threshold_fields.insert(field.file_stem()) {
+                    return Err(format!(
+                        "enabled threshold field '{}' is duplicated",
+                        field.file_stem()
+                    ));
+                }
+            }
+        }
+    }
     let report = dl.lower_into(&mut mkgrd, &mut refine);
-    if refine.threshold_dir.trim().is_empty() {
+    if !threshold_dir_was_explicit || refine.threshold_dir.trim().is_empty() {
         if let Some(fb) = threshold_dir_fallback {
             refine.threshold_dir = fb.to_string();
         }
@@ -160,14 +179,70 @@ pub fn lower_datalayers_namelist(
             }
         })
         .collect();
+    let native_method_c_assignments = preserve_native_method_c_assignments(text)?;
+    let mut mkgrd_namelist = mkgrd.to_mkgrd_namelist();
+    if !native_method_c_assignments.is_empty() {
+        let insert_at = mkgrd_namelist
+            .rfind("/\n")
+            .ok_or_else(|| "rewritten &mkgrd group has no terminator".to_string())?;
+        mkgrd_namelist.insert_str(insert_at, &native_method_c_assignments);
+    }
+    let preserved_groups = preserve_unlowered_namelist_groups(text)?;
+    let mut namelist = format!("{}\n{}", mkgrd_namelist, refine.to_mkrefine_namelist());
+    if !preserved_groups.is_empty() {
+        namelist.push('\n');
+        namelist.push_str(&preserved_groups);
+    }
     Ok(LoweredDatalayers {
-        namelist: format!(
-            "{}\n{}",
-            mkgrd.to_mkgrd_namelist(),
-            refine.to_mkrefine_namelist()
-        ),
+        namelist,
         threshold_dir: refine.threshold_dir.clone(),
         threshold_files,
         warnings: report.warnings,
     })
+}
+
+fn preserve_native_method_c_assignments(text: &str) -> Result<String, String> {
+    let mut out = String::new();
+    for assignment in namelist_assignments(text, "mkgrd")? {
+        if crate::mkgrd_config::is_native_method_c_field(&assignment.field) {
+            out.push_str("  NL%");
+            out.push_str(&assignment.field);
+            if !assignment.indices.is_empty() {
+                out.push('(');
+                out.push_str(
+                    &assignment
+                        .indices
+                        .iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+                out.push(')');
+            }
+            out.push_str(" = ");
+            out.push_str(&assignment.value);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+fn namelist_group_has_field(text: &str, group: &str, wanted_field: &str) -> Result<bool, String> {
+    Ok(namelist_assignments(text, group)?
+        .iter()
+        .any(|assignment| assignment.field.eq_ignore_ascii_case(wanted_field)))
+}
+
+fn preserve_unlowered_namelist_groups(text: &str) -> Result<String, String> {
+    let mut out = String::new();
+    for span in crate::namelist_syntax::namelist_group_spans(text)? {
+        if !matches!(
+            span.name.to_ascii_lowercase().as_str(),
+            "mkgrd" | "mkrefine" | "datalayers"
+        ) {
+            out.push_str(span.text);
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }

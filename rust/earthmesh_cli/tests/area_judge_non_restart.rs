@@ -104,9 +104,9 @@ fn non_restart_area_judge_applies_patch_before_calculated_refine() {
         }
     );
     assert_eq!(report.seaorland.sum_land_grid, 2);
-    assert_eq!(report.seaorland.seaorland[2][2], 0);
-    assert_eq!(report.seaorland.seaorland[3][3], 0);
-    assert_eq!(report.seaorland.seaorland[6][6], 0);
+    assert!(!report.seaorland.seaorland[2][2]);
+    assert!(!report.seaorland.seaorland[3][3]);
+    assert!(!report.seaorland.seaorland[6][6]);
     assert_eq!(
         report.patch.as_ref().expect("patch report").patched_cells,
         4
@@ -116,7 +116,7 @@ fn non_restart_area_judge_applies_patch_before_calculated_refine() {
         .as_ref()
         .expect("calculated refine");
     assert_eq!(refine.bounds, report.domain.bounds);
-    assert_eq!(refine.is_in_area[2][2], 1);
+    assert!(refine.is_in_area[2][2]);
 }
 
 #[test]

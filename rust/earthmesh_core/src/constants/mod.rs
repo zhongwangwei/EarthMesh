@@ -7,6 +7,13 @@ pub const PATH_LEN: usize = 256;
 /// Earth radius used by `mkgrd.F90:init_consts`, matching MPAS.
 pub const EARTH_RADIUS_METERS: f64 = 6_371_229.0;
 
+/// Shared default warning threshold for minimum mesh angles.
+pub const DEFAULT_MIN_ANGLE_WARN_DEG: f64 = 25.0;
+
+/// Equatorial kilometers per degree on EarthMesh's configured sphere.
+pub const KM_PER_DEGREE_EQUATOR: f64 =
+    2.0 * std::f64::consts::PI * (EARTH_RADIUS_METERS / 1000.0) / 360.0;
+
 /// Maximum number of non-parallel M/V/W loops in `mem_ijtabs`.
 pub const MLOOPS: usize = 7;
 pub const NLOOPS_M: usize = MLOOPS + MAX_REMOTE;

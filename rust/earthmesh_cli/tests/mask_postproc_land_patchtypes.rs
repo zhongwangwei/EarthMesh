@@ -7,7 +7,7 @@ fn land_patchtypes_map_active_cells_and_fill_ignored_land_pixels_from_previous_l
         ustr_ii: vec![vec![10, 20], vec![11, 20], vec![10, 22]],
         is_in_area_ustr: vec![0, 1, -1],
     };
-    let seaorland = vec![vec![1, 0, 1], vec![1, 1, 0]];
+    let seaorland = vec![vec![true, false, true], vec![true, true, false]];
 
     let result = earthmesh_cli::mask_postproc_patchtypes::build_land_patchtypes_one_based(
         &contain, &seaorland, 10, 20, 2, 3,
@@ -15,7 +15,10 @@ fn land_patchtypes_map_active_cells_and_fill_ignored_land_pixels_from_previous_l
     .expect("land patchtypes");
 
     assert_eq!(result.patchtypes_select, vec![vec![2, 0, 3], vec![2, 2, 0]]);
-    assert_eq!(result.seaorland, vec![vec![0, 0, 0], vec![0, 0, 0]]);
+    assert_eq!(
+        result.seaorland,
+        vec![vec![false, false, false], vec![false, false, false]]
+    );
     assert_eq!(result.filled_ignored_land_pixels, 1);
 }
 
@@ -26,7 +29,7 @@ fn land_patchtypes_reject_bad_schema_and_fill_or_reject_unmapped_latitude_land_p
         ustr_ii: vec![vec![10]],
         is_in_area_ustr: vec![0, 1],
     };
-    let seaorland = vec![vec![0]];
+    let seaorland = vec![vec![false]];
     let err = earthmesh_cli::mask_postproc_patchtypes::build_land_patchtypes_one_based(
         &short_pixels,
         &seaorland,
@@ -43,7 +46,7 @@ fn land_patchtypes_reject_bad_schema_and_fill_or_reject_unmapped_latitude_land_p
         ustr_ii: vec![vec![10, 21]],
         is_in_area_ustr: vec![0, 1],
     };
-    let first_row_land = vec![vec![1, 0]];
+    let first_row_land = vec![vec![true, false]];
     let result = earthmesh_cli::mask_postproc_patchtypes::build_land_patchtypes_one_based(
         &first_row_contain,
         &first_row_land,
@@ -61,7 +64,7 @@ fn land_patchtypes_reject_bad_schema_and_fill_or_reject_unmapped_latitude_land_p
         ustr_ii: vec![vec![10, 20]],
         is_in_area_ustr: vec![0],
     };
-    let first_row_land = vec![vec![1]];
+    let first_row_land = vec![vec![true]];
     let err = earthmesh_cli::mask_postproc_patchtypes::build_land_patchtypes_one_based(
         &no_active_cells,
         &first_row_land,

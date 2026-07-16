@@ -11,13 +11,13 @@ use super::{
 };
 
 /// Dispatch `MOD_Area_judge.F90:Area_judge_refine(iter)` for iter zero or specified refine steps.
-pub fn run_area_judge_refine_one_based(
+pub fn run_area_judge_refine_one_based<D>(
     file_dir: impl AsRef<Path>,
     iter: usize,
-    calculated_refine: Option<(&[Vec<i32>], AreaJudgeSourceBounds)>,
+    calculated_refine: Option<(&[Vec<bool>], AreaJudgeSourceBounds)>,
     mask_refine_spc_type: &str,
     mask_refine_ndm: usize,
-    is_in_domain: &[Vec<i32>],
+    is_in_domain: &[Vec<D>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     lon_i: &[f64],
@@ -25,7 +25,10 @@ pub fn run_area_judge_refine_one_based(
     gridnum_perdegree: usize,
     nlons_source: usize,
     nlats_source: usize,
-) -> io::Result<AreaJudgeRefineStepReport> {
+) -> io::Result<AreaJudgeRefineStepReport>
+where
+    D: Copy + Into<i32>,
+{
     if iter == 0 {
         let (is_in_refine_calculated, bounds) = calculated_refine.ok_or_else(|| {
             io::Error::new(

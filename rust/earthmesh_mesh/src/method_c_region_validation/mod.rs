@@ -6,6 +6,28 @@ use crate::{
 };
 
 impl MethodCRefinementRegion {
+    /// Compatibility warning for geometry whose Canonical interpretation is
+    /// intentionally planar rather than spherical.
+    ///
+    /// Callers that accept user-authored polygons should surface this warning,
+    /// especially for high-latitude or pole-enclosing inputs. The legacy
+    /// semantics remain available and validation does not silently reinterpret
+    /// polygon edges as geodesics.
+    pub fn canonical_geometry_warning(&self) -> Option<&'static str> {
+        match self {
+            Self::Polygon { points, .. }
+                if points
+                    .iter()
+                    .any(|point| point.lat_degrees.abs() >= 75.0) =>
+            {
+                Some(
+                    "Canonical high-latitude polygon containment is planar lon/lat, not spherical; distortion grows toward either pole",
+                )
+            }
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         let level = self.level();
         if !(1..=5).contains(&level) {

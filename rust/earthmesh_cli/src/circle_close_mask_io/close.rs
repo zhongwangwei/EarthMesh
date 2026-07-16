@@ -109,3 +109,44 @@ pub(crate) fn validate_close_mask(mask: &CloseMask) -> io::Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn validate_close_mask_geographic(mask: &CloseMask) -> io::Result<()> {
+    validate_close_mask(mask)?;
+    for (index, point) in mask.points.iter().enumerate() {
+        if !(-90.0..=90.0).contains(&point.lat) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "close point {} latitude must be within [-90, 90] degrees",
+                    index + 1
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_mask_defers_latitude_range_to_geographic_context() {
+        let mask = CloseMask {
+            refine_degree: 1,
+            points: vec![
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 1.0, lat: 0.0 },
+                LonLatPoint {
+                    lon: 0.0,
+                    lat: -90.1,
+                },
+            ],
+        };
+
+        validate_close_mask(&mask).expect("Cartesian close coordinates are not latitudes");
+        let error = validate_close_mask_geographic(&mask)
+            .expect_err("invalid geographic latitude must fail");
+        assert!(error.to_string().contains("[-90, 90]"));
+    }
+}

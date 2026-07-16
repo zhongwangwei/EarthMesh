@@ -42,17 +42,10 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
             ));
         }
 
-        let barycenter = CartesianPoint::new(
-            f64::from(state.grid.xem[im]),
-            f64::from(state.grid.yem[im]),
-            f64::from(state.grid.zem[im]),
-        );
+        let barycenter =
+            CartesianPoint::new(state.grid.xem[im], state.grid.yem[im], state.grid.zem[im]);
         let vertices = vertex_ids.map(|iw| {
-            CartesianPoint::new(
-                f64::from(state.grid.xew[iw]),
-                f64::from(state.grid.yew[iw]),
-                f64::from(state.grid.zew[iw]),
-            )
+            CartesianPoint::new(state.grid.xew[iw], state.grid.yew[iw], state.grid.zew[iw])
         });
         let circumcenter =
             spherical_circumcenter_from_barycenter_with_radius(barycenter, vertices, earth_radius)
@@ -68,9 +61,9 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
                 format!("M point {im} has a non-local spherical circumcenter"),
             ));
         }
-        state.grid.xem[im] = circumcenter.x as f32;
-        state.grid.yem[im] = circumcenter.y as f32;
-        state.grid.zem[im] = circumcenter.z as f32;
+        state.grid.xem[im] = circumcenter.x;
+        state.grid.yem[im] = circumcenter.y;
+        state.grid.zem[im] = circumcenter.z;
     }
 
     Ok(())
@@ -78,11 +71,7 @@ pub fn pcvt_adjust_voronoi_grid_state(state: &mut VoronoiGridState) -> io::Resul
 
 fn active_voronoi_grid_radius(state: &VoronoiGridState) -> io::Result<f64> {
     for iw in 2..=state.grid.nwa {
-        let point = CartesianPoint::new(
-            f64::from(state.grid.xew[iw]),
-            f64::from(state.grid.yew[iw]),
-            f64::from(state.grid.zew[iw]),
-        );
+        let point = CartesianPoint::new(state.grid.xew[iw], state.grid.yew[iw], state.grid.zew[iw]);
         let radius = magnitude(point);
         if radius.is_finite() && radius > 0.0 {
             return Ok(radius);

@@ -2,6 +2,16 @@ use std::path::PathBuf;
 
 use super::usage;
 
+fn parse_refinement_max_level(value: Option<&String>) -> Result<u8, String> {
+    let max_level = value
+        .and_then(|value| value.parse::<u8>().ok())
+        .ok_or_else(|| usage("--max-level requires an integer 1..=255"))?;
+    if max_level == 0 {
+        return Err(usage("--max-level requires an integer 1..=255"));
+    }
+    Ok(max_level)
+}
+
 /// `--coupling-quality-from-mesh <gridfile.nc> <landtype.nc> <out.json>
 /// [--gridnum-perdegree N]`: classify each mesh cell's land/ocean fraction from the
 /// land-type grid + derive neighbours, then run the R7 coupling-quality validator and
@@ -71,10 +81,7 @@ pub(crate) fn run_plan_refinement_from_hydro(
         match rest[i].as_str() {
             "--max-level" => {
                 i += 1;
-                max_level = rest
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .ok_or_else(|| usage("--max-level requires an integer 1..=255"))?;
+                max_level = parse_refinement_max_level(rest.get(i))?;
             }
             "--max-refined-cells" => {
                 i += 1;
@@ -203,10 +210,7 @@ pub(crate) fn run_hydro_workflow(args: impl Iterator<Item = String>) -> Result<(
             "--unit-sphere-area" => unit_sphere = true,
             "--max-level" => {
                 i += 1;
-                max_level = rest
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .ok_or_else(|| usage("--max-level requires an integer 1..=255"))?;
+                max_level = parse_refinement_max_level(rest.get(i))?;
             }
             "--max-refined-cells" => {
                 i += 1;

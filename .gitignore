@@ -15,6 +15,13 @@
 # Rust build outputs
 target/
 dist/
+!gui-tauri/dist/
+gui-tauri/dist/*
+!gui-tauri/dist/index.html
+!gui-tauri/dist/vendor/
+gui-tauri/dist/vendor/*
+!gui-tauri/dist/vendor/leaflet/
+!gui-tauri/dist/vendor/leaflet/**
 
 # Brainstorming companion working dir
 .superpowers/

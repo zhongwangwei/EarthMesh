@@ -47,6 +47,36 @@ fn mkgrd_namelist_round_trips_through_writer() {
 }
 
 #[test]
+fn mkgrd_namelist_rejects_unknown_fields() {
+    let input = SAMPLE_MKGRD.replace("NL%relax = 0.035", "NL%relxa = 0.035");
+    let error = EarthmeshConfig::from_mkgrd_namelist(&input).unwrap_err();
+    assert!(error.contains("unknown &mkgrd field 'relxa'"), "{error}");
+}
+
+#[test]
+fn mkgrd_namelist_accepts_native_method_c_extension_fields() {
+    let input = SAMPLE_MKGRD.replace(
+        "/\n",
+        "  NL%mdomain = 5\n\
+         NL%deltax = 1000.0\n\
+         NL%ngrids = 2\n\
+         NL%ngrdll(2) = 1\n\
+         NL%grdrad(2,1) = 2500000.0\n\
+         NL%grdlat(2,1) = 25.0\n\
+         NL%grdlon(2,1) = 115.0\n\
+         NL%gridplot_base = 2\n\
+         NL%nsfcgrids = 1\n\
+         NL%nsfcgrdll(1) = 1\n\
+         NL%sfcgrdrad(1,1) = 500000.0\n\
+         NL%sfcgrdlat(1,1) = 25.0\n\
+         NL%sfcgrdlon(1,1) = 115.0\n\
+         NL%sfcgridplot_base = 1\n\
+         NL%sfcgrid_res_factor = 2\n/\n",
+    );
+    EarthmeshConfig::from_mkgrd_namelist(&input).expect("native Method-C fields must parse");
+}
+
+#[test]
 fn mkgrd_close_boundary_spec_round_trips_when_non_default() {
     let mut original = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).expect("sample parses");
     original.mask_domain_close_boundary =
@@ -138,6 +168,16 @@ fn mkrefine_namelist_round_trips_through_writer() {
     let reparsed = RefineConfig::from_mkrefine_namelist(&rendered, "landmesh", "hex")
         .expect("rendered output re-parses");
     assert_eq!(original, reparsed, "parse → write → parse must be identity");
+}
+
+#[test]
+fn mkrefine_namelist_rejects_unknown_fields() {
+    let input = SAMPLE_MKREFINE.replace("RL%niter_refine", "RL%niter_refin");
+    let error = RefineConfig::from_mkrefine_namelist(&input, "landmesh", "hex").unwrap_err();
+    assert!(
+        error.contains("unknown &mkrefine field 'niter_refin'"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -238,12 +278,22 @@ fn quality_namelist_round_trips_through_writer() {
 }
 
 #[test]
+fn quality_namelist_rejects_unknown_fields() {
+    let input = SAMPLE_QUALITY.replace("NL%area_cv_warn", "NL%area_cv_wran");
+    let error = QualityNamelist::from_quality_namelist(&input).unwrap_err();
+    assert!(
+        error.contains("unknown &quality field 'area_cv_wran'"),
+        "{error}"
+    );
+}
+
+#[test]
 fn quality_namelist_absent_block_yields_defaults() {
     // A namelist without a &quality block parses to defaults that mirror
     // earthmesh_quality::QualityThresholds::default() (back-compat for old files).
     let parsed = QualityNamelist::from_quality_namelist("&mkgrd\n/\n").expect("parses");
     assert_eq!(parsed, QualityNamelist::default());
-    assert_eq!(parsed.min_angle_warn_deg, 20.0);
+    assert_eq!(parsed.min_angle_warn_deg, 25.0);
     assert_eq!(parsed.min_angle_fail_deg, 5.0);
     assert_eq!(parsed.angle_deviation_warn_deg, 35.0);
     assert_eq!(parsed.aspect_ratio_warn, 4.0);
@@ -253,6 +303,36 @@ fn quality_namelist_absent_block_yields_defaults() {
     assert_eq!(parsed.on_violation, "warn");
 }
 
+#[test]
+fn quality_namelist_rejects_semantically_invalid_gates() {
+    for (input, expected) in [
+        (
+            "&quality NL%on_violation='blok' /",
+            "on_violation must be warn, block, or auto_refine",
+        ),
+        (
+            "&quality NL%min_angle_fail_deg=NaN /",
+            "min_angle_fail_deg must be finite",
+        ),
+        (
+            "&quality NL%worst_cells_limit=-1 /",
+            "worst_cells_limit must be non-negative",
+        ),
+        (
+            "&quality NL%min_angle_fail_deg=30, NL%min_angle_warn_deg=20 /",
+            "min_angle_fail_deg must not exceed min_angle_warn_deg",
+        ),
+        (
+            "&quality NL%aspect_ratio_warn=5, NL%aspect_ratio_fail=4 /",
+            "aspect_ratio_warn must not exceed aspect_ratio_fail",
+        ),
+    ] {
+        let error = QualityNamelist::from_quality_namelist(input)
+            .expect_err("invalid quality gates must not fail open");
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
 const SAMPLE_DATALAYERS: &str = "\
 &datalayers
   NL%layer = 'landcover|landtype|./input/landtype.nc|landtype|T|T'
@@ -260,6 +340,53 @@ const SAMPLE_DATALAYERS: &str = "\
   NL%layer = 'ks|threshold:k_s|./threshold/k_s.nc||T|F'
 /
 ";
+
+#[test]
+fn core_namelist_parsers_accept_inline_groups_and_assignments() {
+    let mkgrd = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd NL%expnme='inline,case', NL%nxp=4, NL%mesh_type='landmesh', NL%mode_grid='tri', NL%output_format='CoLM' /",
+    )
+    .expect("inline mkgrd");
+    assert_eq!(mkgrd.experiment_name, "inline,case");
+    assert_eq!(mkgrd.nxp, 4);
+
+    let refine = RefineConfig::from_mkrefine_namelist(
+        "&mkrefine RL%Istransition=.true., RL%HALO=4,4,3, RL%SpringGlobal_type=1, RL%SpringRegional_type=0, RL%refine_spc=.true., RL%max_iter_spc=2 /",
+        "landmesh",
+        "hex",
+    )
+    .expect("inline mkrefine");
+    assert_eq!(&refine.halo[1..4], &[4, 4, 3]);
+    assert_eq!(refine.refine_setting, "specified");
+
+    let quality = QualityNamelist::from_quality_namelist(
+        "&quality NL%min_angle_warn_deg=24, NL%worst_cells_limit=12, NL%on_violation='block' /",
+    )
+    .expect("inline quality");
+    assert_eq!(quality.min_angle_warn_deg, 24.0);
+    assert_eq!(quality.worst_cells_limit, 12);
+    assert_eq!(quality.on_violation, "block");
+
+    let layers = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers NL%layer='lc|landtype|./land.nc|landtype|T|T', NL%layer='lai|threshold:lai|./lai.nc||T|F' /",
+    );
+    assert_eq!(layers.layers.len(), 2);
+    assert_eq!(
+        layers.layers[1].role,
+        DataLayerRole::ThresholdField(ThresholdVar::Lai)
+    );
+}
+
+#[test]
+fn core_namelist_parser_preserves_multiline_array_continuations() {
+    let refine = RefineConfig::from_mkrefine_namelist(
+        "&mkrefine\n RL%Istransition=.true.\n RL%HALO=4,4,\n 3\n RL%SpringGlobal_type=1\n RL%SpringRegional_type=0\n RL%refine_spc=.true.\n RL%max_iter_spc=2\n/\n",
+        "landmesh",
+        "hex",
+    )
+    .expect("multiline mkrefine");
+    assert_eq!(&refine.halo[1..4], &[4, 4, 3]);
+}
 
 #[test]
 fn datalayers_namelist_round_trips_through_writer() {
@@ -385,9 +512,177 @@ fn lower_datalayers_namelist_applies_and_reemits() {
         out.namelist.contains("landtype_file = './in/landtype.nc'"),
         "LandType layer drives landtype_file"
     );
-    assert!(!out.threshold_dir.trim().is_empty());
+    assert_eq!(out.threshold_dir, "/fallback/th/");
     assert_eq!(
         out.threshold_files,
         vec![("lai".to_string(), "./th/lai.nc".to_string())]
+    );
+}
+
+#[test]
+fn lower_datalayers_namelist_rejects_duplicate_threshold_outputs() {
+    let nml = format!(
+        "{SAMPLE_MKGRD}\
+&datalayers
+  NL%layer = 'lai-a|threshold:lai|./th/lai-a.nc||T|F'
+  NL%layer = 'lai-b|threshold:lai|./th/lai-b.nc||T|F'
+/
+"
+    );
+
+    let error = lower_datalayers_namelist(&nml, Some("/fallback/th/")).unwrap_err();
+    assert!(error.contains("enabled threshold field 'lai' is duplicated"));
+}
+
+#[test]
+fn lower_datalayers_namelist_preserves_hfield_and_quality_groups() {
+    let nml = format!(
+        "{SAMPLE_MKGRD}{SAMPLE_MKREFINE}\
+&hfield
+  NL%hfield_on = .true.
+  NL%hfield_g = 0.2
+  NL%hfield_max_level = 3
+/
+{SAMPLE_QUALITY}\
+&datalayers
+  NL%layer = 'lai|threshold:lai|./th/lai.nc||T|F'
+/
+"
+    );
+
+    let out = lower_datalayers_namelist(&nml, Some("/fallback/th/"))
+        .expect("datalayer lowering should succeed");
+
+    assert!(out.namelist.contains("&hfield"), "{}", out.namelist);
+    assert!(
+        out.namelist.contains("NL%hfield_g = 0.2"),
+        "{}",
+        out.namelist
+    );
+    assert!(out.namelist.contains("&quality"), "{}", out.namelist);
+    assert!(
+        out.namelist.contains("NL%min_angle_warn_deg = 25"),
+        "{}",
+        out.namelist
+    );
+    assert!(
+        !out.namelist.contains("&datalayers"),
+        "the execution namelist must contain only engine-consumed groups: {}",
+        out.namelist
+    );
+}
+
+#[test]
+fn lower_datalayers_namelist_preserves_native_method_c_assignments() {
+    let native = "  NL%mdomain = 5\n\
+                  NL%deltax = 1000.0\n\
+                  NL%ngrids = 2\n\
+                  NL%ngrdll(2) = 1\n\
+                  NL%grdrad(2,1) = 2500000.0\n\
+                  NL%grdlat(2,1) = 25.0\n\
+                  NL%grdlon(2,1) = 115.0\n\
+                  NL%gridplot_base = 2\n\
+                  NL%nsfcgrids = 1\n\
+                  NL%nsfcgrdll(1) = 1\n\
+                  NL%sfcgrdrad(1,1) = 500000.0\n\
+                  NL%sfcgrdlat(1,1) = 25.0\n\
+                  NL%sfcgrdlon(1,1) = 115.0\n\
+                  NL%sfcgridplot_base = 1\n\
+                  NL%sfcgrid_res_factor = 2\n";
+    let nml = format!(
+        "{}&datalayers\n  NL%layer = 'lc|landtype|./in/landtype.nc|landtype|T|T'\n/\n",
+        SAMPLE_MKGRD.replace("/\n", &format!("{native}/\n"))
+    );
+
+    let out = lower_datalayers_namelist(&nml, Some("/fallback/th/"))
+        .expect("datalayer lowering should preserve native Method-C controls");
+
+    for field in [
+        "mdomain",
+        "deltax",
+        "ngrids",
+        "ngrdll(2)",
+        "grdrad(2,1)",
+        "grdlat(2,1)",
+        "grdlon(2,1)",
+        "gridplot_base",
+        "nsfcgrids",
+        "nsfcgrdll(1)",
+        "sfcgrdrad(1,1)",
+        "sfcgrdlat(1,1)",
+        "sfcgrdlon(1,1)",
+        "sfcgridplot_base",
+        "sfcgrid_res_factor",
+    ] {
+        assert!(
+            out.namelist.contains(field),
+            "missing {field}: {}",
+            out.namelist
+        );
+    }
+}
+
+#[test]
+fn lower_datalayers_inline_preserves_native_method_c_fields_without_duplicate_groups() {
+    let nml = "&mkgrd NL%expnme='inline', NL%nxp=4, NL%mesh_type='landmesh', NL%mode_grid='tri', NL%output_format='CoLM', NL%mdomain=5, NL%ngrids=2, NL%ngrdll(2)=1, NL%grdrad(2,1)=2500000.0 /\n&datalayers NL%layer='lc|landtype|./in/landtype.nc|landtype|T|T' /";
+
+    let out = lower_datalayers_namelist(nml, Some("/fallback/th/"))
+        .expect("inline datalayer lowering should preserve native controls");
+
+    assert_eq!(
+        out.namelist.matches("&mkgrd").count(),
+        1,
+        "{}",
+        out.namelist
+    );
+    assert_eq!(
+        out.namelist.matches("&mkrefine").count(),
+        1,
+        "{}",
+        out.namelist
+    );
+    for field in ["mdomain", "ngrids", "ngrdll(2)", "grdrad(2,1)"] {
+        assert!(
+            out.namelist.contains(field),
+            "missing {field}: {}",
+            out.namelist
+        );
+    }
+}
+
+#[test]
+fn lower_datalayers_inline_mkrefine_keeps_explicit_threshold_dir() {
+    let nml = "&mkgrd NL%expnme='inline', NL%nxp=4, NL%mesh_type='landmesh', NL%mode_grid='tri', NL%output_format='CoLM', NL%refine=.false. /\n&mkrefine RL%threshold_dir='/explicit,threshold', RL%refine_spc=.true. /\n&datalayers NL%layer='lc|landtype|./in/landtype.nc|landtype|T|T' /";
+
+    let out = lower_datalayers_namelist(nml, Some("/fallback/th/"))
+        .expect("inline threshold_dir should be recognized");
+
+    assert_eq!(out.threshold_dir, "/explicit,threshold");
+    assert!(
+        out.namelist
+            .contains("threshold_dir = '/explicit,threshold'"),
+        "{}",
+        out.namelist
+    );
+}
+
+#[test]
+fn lower_datalayers_inline_removes_data_group_and_preserves_other_inline_groups_once() {
+    let nml = "&mkgrd NL%expnme='inline', NL%nxp=4, NL%mesh_type='landmesh', NL%mode_grid='tri', NL%output_format='CoLM' /\n&quality NL%min_angle_warn_deg=24, NL%worst_cells_limit=12 /\n&datalayers NL%layer='lai|threshold:lai|./th/lai.nc||T|F' /";
+
+    let out = lower_datalayers_namelist(nml, Some("/fallback/th/"))
+        .expect("inline non-execution groups should be filtered correctly");
+
+    assert!(!out.namelist.contains("&datalayers"), "{}", out.namelist);
+    assert_eq!(
+        out.namelist.matches("&quality").count(),
+        1,
+        "{}",
+        out.namelist
+    );
+    assert!(
+        out.namelist.contains("NL%min_angle_warn_deg=24"),
+        "{}",
+        out.namelist
     );
 }

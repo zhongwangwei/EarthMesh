@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build build-python clean test test-fast test-gui check-gui-js check-architecture check-mesh-quality-views test-slow test-full test-real-hydro release-full-real fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
+.PHONY: all build build-python build-gui-bundle clean test test-fast test-gui check-gui-js check-architecture check-mesh-quality-views test-slow test-full test-real-hydro release-full-real fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
 
 all: build
 
@@ -34,9 +34,15 @@ build:
 build-python:
 	maturin build --release --out dist
 
+# `cargo tauri build` runs the configured sidecar staging hook before bundling.
+# Drop the Makefile-wide target override so both workspaces use their own target.
+build-gui-bundle:
+	env -u CARGO_TARGET_DIR sh -c 'cd gui-tauri && cargo tauri build --config src-tauri/tauri.bundle.conf.json'
+
 fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_core/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_geometry/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_hfield/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_mesh/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_quality/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_planner/Cargo.toml --check
@@ -53,6 +59,7 @@ fmt-gui:
 clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_core/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_hfield/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets -- -D warnings
@@ -69,6 +76,7 @@ clippy-full: clippy
 test-fast:
 	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_hfield/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
@@ -78,7 +86,7 @@ check-gui-js:
 	node scripts/check_gui_js.js
 
 check-architecture:
-	@if rg -n '^pub use .*\*' rust --glob '*.rs'; then \
+	@if rg -n '^[[:space:]]*pub use .*\*' rust --glob '*.rs'; then \
 		echo 'wildcard public re-exports are forbidden'; exit 1; \
 	fi
 	@if rg -n '#\[deprecated' rust --glob '*.rs'; then \
@@ -87,6 +95,7 @@ check-architecture:
 	@if rg -n -i '\breference\b|reference_' rust --glob '*.rs'; then \
 		echo 'source-origin reference naming is forbidden'; exit 1; \
 	fi
+	@python3 scripts/check_architecture.py .
 
 check-mesh-quality-views:
 	CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh
@@ -98,6 +107,7 @@ test-gui: check-gui-js
 test:
 	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_hfield/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
@@ -124,7 +134,7 @@ release-full-real: test-full test-real-hydro
 # Release fast gate: format + no-netcdf crates. Run before tagging a release; the
 # full gate adds `make test-full` (GUI + CLI/static-netcdf + ignored slow tests) on top.
 release-check: check-architecture fmt test-fast
-	@echo 'Release fast gate PASSED: fmt clean + core/geometry/mesh/quality/refine_planner/project green.'
+	@echo 'Release fast gate PASSED: fmt clean + core/geometry/hfield/mesh/quality/refine_planner/project green.'
 	@echo 'Full gate (needs NetCDF): make test-full'
 
 check-method-c-neighbors:

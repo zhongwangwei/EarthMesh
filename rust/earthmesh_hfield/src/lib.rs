@@ -7,10 +7,11 @@
 //!    and user-specified regions (bbox/circle/polygon/corridor) — contributes
 //!    its own target-cell-size field `h_i(lon, lat)` in meters.
 //! 2. Fields compose by pointwise minimum (`min_with_*`).
-//! 3. A spherical gradient limiter enforces `|∇h| <= g` (Persson 2004/2006),
-//!    which mathematically bounds neighbor cell-size ratios by `1 + g` and, in
-//!    cell units, guarantees every quantized refinement ring is at least
-//!    `~0.7/g` rows wide — so Method-C nesting legality holds by construction.
+//! 3. A spherical lat-lon fast-sweeping limiter reduces the discrete field
+//!    toward `|∇h| <= g` (Persson 2004/2006). It constrains the raster stencil
+//!    and closes the outer rows in the exact spherical metric; it is not an exact
+//!    global Lipschitz extension between arbitrary samples, so realized mesh
+//!    gradation and Method-C nesting still require downstream quality checks.
 //! 4. `level_map` quantizes `h` back to discrete power-of-two levels for the
 //!    existing subdivision engines; `sample` feeds continuous targets to the
 //!    spring relaxers ("split between levels, stretch within levels").
@@ -19,7 +20,7 @@
 //! pure f64. All longitudes are degrees in [-180, 180) (inputs are wrapped),
 //! latitudes are degrees in [-90, 90].
 
-use std::f64::consts::PI;
+use std::f64::consts::{PI, SQRT_2};
 use std::io;
 
 /// Canonical EarthMesh radius (`erad = 6_371_229 m`). Re-exporting the core
@@ -82,17 +83,26 @@ pub fn great_circle_distance_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f6
     gc_angle(lonlat_to_unit(lon1, lat1), lonlat_to_unit(lon2, lat2)) * EARTH_RADIUS_METERS
 }
 
-/// Great-circle distance in meters from point `p` to the segment `a..b`.
-fn point_segment_distance_m(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+/// Great-circle distance in meters from point `p` to the segment `a..b`, plus
+/// the clamped along-segment fraction used to interpolate endpoint metadata.
+fn point_segment_distance_and_fraction_m(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> (f64, f64) {
     let seg_angle = gc_angle(a, b);
-    let end_dist = gc_angle(p, a).min(gc_angle(p, b));
+    let start_dist = gc_angle(p, a);
+    let end_dist = gc_angle(p, b);
+    let closest_endpoint = || {
+        if start_dist <= end_dist {
+            (start_dist * EARTH_RADIUS_METERS, 0.0)
+        } else {
+            (end_dist * EARTH_RADIUS_METERS, 1.0)
+        }
+    };
     if seg_angle < 1e-12 {
-        return end_dist * EARTH_RADIUS_METERS;
+        return closest_endpoint();
     }
     let n = cross3(a, b);
     let nn = norm3(n);
     if nn < 1e-15 {
-        return end_dist * EARTH_RADIUS_METERS;
+        return closest_endpoint();
     }
     let n_hat = [n[0] / nn, n[1] / nn, n[2] / nn];
     let sin_xt = dot3(p, n_hat).clamp(-1.0, 1.0);
@@ -105,16 +115,24 @@ fn point_segment_distance_m(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
     let fn3 = norm3(f);
     if fn3 < 1e-12 {
         // p is (anti)parallel to the circle normal: quarter turn to the circle.
-        return end_dist.min(PI / 2.0) * EARTH_RADIUS_METERS;
+        return closest_endpoint();
     }
     let f_hat = [f[0] / fn3, f[1] / fn3, f[2] / fn3];
     let within = gc_angle(a, f_hat) + gc_angle(f_hat, b) <= seg_angle + 1e-9;
-    let angle = if within {
-        sin_xt.abs().asin()
+    if within {
+        (
+            sin_xt.abs().asin() * EARTH_RADIUS_METERS,
+            (gc_angle(a, f_hat) / seg_angle).clamp(0.0, 1.0),
+        )
     } else {
-        end_dist
-    };
-    angle * EARTH_RADIUS_METERS
+        closest_endpoint()
+    }
+}
+
+fn corridor_radius_at_segment(radius_meters: &[f64], index: usize, t: f64) -> Option<f64> {
+    let start = *radius_meters.get(index)?;
+    let end = *radius_meters.get(index + 1)?;
+    Some(start + t.clamp(0.0, 1.0) * (end - start))
 }
 
 /// A user-specified refinement region on the sphere (degrees).
@@ -127,21 +145,20 @@ pub enum HRegion {
         south: f64,
         north: f64,
     },
-    Circle {
-        lon: f64,
-        lat: f64,
-        radius_m: f64,
-    },
+    /// Great-circle disk. This metric is intentionally explicit and differs
+    /// from the legacy Method-C polar-stereographic compatibility metric.
+    Circle { lon: f64, lat: f64, radius_m: f64 },
     /// Simple polygon (no self-intersection), vertices (lon, lat) in degrees.
-    /// Longitudes are unwrapped around the first vertex, so polygons narrower
-    /// than 180 degrees work across the dateline.
-    Polygon {
-        points: Vec<(f64, f64)>,
-    },
-    /// Polyline buffered by a constant great-circle radius.
+    /// This intentionally preserves Canonical planar lon/lat ray casting; its
+    /// edges are not spherical geodesics. Longitudes are unwrapped around the
+    /// first vertex, so polygons narrower than 180 degrees work across the
+    /// dateline, but callers should not use this representation for polar caps.
+    Polygon { points: Vec<(f64, f64)> },
+    /// Polyline buffered by great-circle radii linearly interpolated between
+    /// endpoints. `radius_meters` must contain one radius per point.
     Corridor {
         points: Vec<(f64, f64)>,
-        radius_m: f64,
+        radius_meters: Vec<f64>,
     },
 }
 
@@ -156,6 +173,10 @@ impl HRegion {
             } => {
                 if lat_deg < *south || lat_deg > *north {
                     return false;
+                }
+                if west.is_finite() && east.is_finite() && (*east - *west).abs() >= 360.0 - 1.0e-12
+                {
+                    return true;
                 }
                 let w = wrap_lon_degrees(*west);
                 let e = wrap_lon_degrees(*east);
@@ -193,8 +214,28 @@ impl HRegion {
                 }
                 inside
             }
-            HRegion::Corridor { points, radius_m } => {
-                self.distance_m(lon_deg, lat_deg) <= *radius_m && !points.is_empty()
+            HRegion::Corridor {
+                points,
+                radius_meters,
+            } => {
+                if points.len() != radius_meters.len() || points.is_empty() {
+                    return false;
+                }
+                let p = lonlat_to_unit(lon_deg, lat_deg);
+                if points.len() == 1 {
+                    return gc_angle(p, lonlat_to_unit(points[0].0, points[0].1))
+                        * EARTH_RADIUS_METERS
+                        <= radius_meters[0];
+                }
+                points.windows(2).enumerate().any(|(index, segment)| {
+                    let (distance, t) = point_segment_distance_and_fraction_m(
+                        p,
+                        lonlat_to_unit(segment[0].0, segment[0].1),
+                        lonlat_to_unit(segment[1].0, segment[1].1),
+                    );
+                    corridor_radius_at_segment(radius_meters, index, t)
+                        .is_some_and(|radius| distance <= radius)
+                })
             }
         }
     }
@@ -221,7 +262,7 @@ impl HRegion {
                 for w in points.windows(2) {
                     let a = lonlat_to_unit(w[0].0, w[0].1);
                     let b = lonlat_to_unit(w[1].0, w[1].1);
-                    best = best.min(point_segment_distance_m(p, a, b));
+                    best = best.min(point_segment_distance_and_fraction_m(p, a, b).0);
                 }
                 best
             }
@@ -245,35 +286,42 @@ pub struct HField {
     values: Vec<f64>,
 }
 
+fn hfield_len(nlon: usize, nlat: usize) -> io::Result<usize> {
+    if nlon < 4 || nlat < 2 {
+        return Err(invalid(format!(
+            "HField grid {nlon}x{nlat} too small (need >= 4x2)"
+        )));
+    }
+    let len = nlon
+        .checked_mul(nlat)
+        .ok_or_else(|| invalid("HField dimensions overflow usize".into()))?;
+    if len > isize::MAX as usize / std::mem::size_of::<f64>() {
+        return Err(invalid(format!(
+            "HField grid {nlon}x{nlat} exceeds the platform allocation limit"
+        )));
+    }
+    Ok(len)
+}
+
 impl HField {
     pub fn uniform(nlon: usize, nlat: usize, h_meters: f64) -> io::Result<Self> {
-        if nlon < 4 || nlat < 2 {
-            return Err(invalid(format!(
-                "HField grid {nlon}x{nlat} too small (need >= 4x2)"
-            )));
-        }
+        let len = hfield_len(nlon, nlat)?;
         if !h_meters.is_finite() || h_meters <= 0.0 {
             return Err(invalid(format!(
                 "HField uniform value {h_meters} must be positive and finite"
             )));
         }
-        Ok(Self {
-            nlon,
-            nlat,
-            values: vec![h_meters; nlon * nlat],
-        })
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(len)
+            .map_err(|error| invalid(format!("cannot allocate HField {nlon}x{nlat}: {error}")))?;
+        values.resize(len, h_meters);
+        Ok(Self { nlon, nlat, values })
     }
 
     /// Restore a persisted field after validating its exact shape and values.
     pub fn from_values(nlon: usize, nlat: usize, values: Vec<f64>) -> io::Result<Self> {
-        if nlon < 4 || nlat < 2 {
-            return Err(invalid(format!(
-                "HField grid {nlon}x{nlat} too small (need >= 4x2)"
-            )));
-        }
-        let expected = nlon
-            .checked_mul(nlat)
-            .ok_or_else(|| invalid("HField dimensions overflow usize".into()))?;
+        let expected = hfield_len(nlon, nlat)?;
         if values.len() != expected {
             return Err(invalid(format!(
                 "HField values length {} must equal {nlon}x{nlat}={expected}",
@@ -333,7 +381,15 @@ impl HField {
     }
 
     /// Bilinear sample at (lon, lat) degrees; longitude wraps, latitude clamps.
+    /// Between either outer row and its geographic pole, values converge to
+    /// the row midrange so the pole is unique and sampling remains continuous.
     pub fn sample(&self, lon_deg: f64, lat_deg: f64) -> f64 {
+        if lat_deg >= 90.0 {
+            return self.polar_row_midrange(self.nlat - 1);
+        }
+        if lat_deg <= -90.0 {
+            return self.polar_row_midrange(0);
+        }
         let dlon = self.dlon_degrees();
         let dlat = self.dlat_degrees();
         let x = (wrap_lon_degrees(lon_deg) + 180.0) / dlon - 0.5;
@@ -341,18 +397,40 @@ impl HField {
         let fx = x - i0f;
         let i0 = (i0f as i64).rem_euclid(self.nlon as i64) as usize;
         let i1 = (i0 + 1) % self.nlon;
+        let row_sample = |j| {
+            let v0 = self.get(i0, j);
+            v0 + (self.get(i1, j) - v0) * fx
+        };
+        let south_center = self.lat_center(0);
+        if lat_deg < south_center {
+            let pole = self.polar_row_midrange(0);
+            let fraction = ((lat_deg + 90.0) / (south_center + 90.0)).clamp(0.0, 1.0);
+            return pole + (row_sample(0) - pole) * fraction;
+        }
+        let north_row = self.nlat - 1;
+        let north_center = self.lat_center(north_row);
+        if lat_deg > north_center {
+            let pole = self.polar_row_midrange(north_row);
+            let fraction = ((90.0 - lat_deg) / (90.0 - north_center)).clamp(0.0, 1.0);
+            return pole + (row_sample(north_row) - pole) * fraction;
+        }
         let y = ((lat_deg + 90.0) / dlat - 0.5).clamp(0.0, (self.nlat - 1) as f64);
         let j0 = y.floor() as usize;
         let j0 = j0.min(self.nlat - 1);
         let j1 = (j0 + 1).min(self.nlat - 1);
         let fy = y - j0 as f64;
-        let v00 = self.get(i0, j0);
-        let v10 = self.get(i1, j0);
-        let v01 = self.get(i0, j1);
-        let v11 = self.get(i1, j1);
-        let v0 = v00 + (v10 - v00) * fx;
-        let v1 = v01 + (v11 - v01) * fx;
+        let v0 = row_sample(j0);
+        let v1 = row_sample(j1);
         v0 + (v1 - v0) * fy
+    }
+
+    fn polar_row_midrange(&self, jlat: usize) -> f64 {
+        let start = jlat * self.nlon;
+        let (minimum, maximum) = self.values[start..start + self.nlon].iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(minimum, maximum), value| (minimum.min(*value), maximum.max(*value)),
+        );
+        minimum + 0.5 * (maximum - minimum)
     }
 
     /// Pointwise `h = min(h, f(lon, lat))` over cell centers. Non-finite or
@@ -408,21 +486,26 @@ impl HField {
         Ok(())
     }
 
-    /// Enforce `|∇h| <= g` on the sphere (g dimensionless, meters per meter):
-    /// afterwards `h(x) <= h(y) + g * d(x, y)` for all x, y, i.e. the largest
-    /// field below the input with bounded gradation (Persson 2004, Thm 2.1;
-    /// the MESH-neighbor cell-size ratio is then bounded by `1 + g`, since one
-    /// mesh cell of size h spans distance h and may change h by at most g*h).
+    /// Reduce raster values toward `|∇h| <= g` (g dimensionless, meters per
+    /// meter) with a spherical lat-lon fast-sweeping approximation. Grid-edge
+    /// updates use physical row spacing and the outer rows additionally use
+    /// their exact pairwise great-circle metric.
     ///
-    /// Raster resolution requirement: the per-mesh-cell ratio bound and the
-    /// "quantized levels never jump by 2" property hold where the raster
-    /// resolves the target sizes, i.e. raster spacing <= the local h (ideally
-    /// <= h/2). For sub-raster targets (very fine refinement), build the field
-    /// on a finer raster or a regional window.
+    /// This bounds the discrete update stencil; bilinear samples are not an
+    /// exact global Lipschitz extension of every raster value. Downstream mesh
+    /// quality checks remain authoritative for the realized cell-size ratio.
+    /// The stencil uses `g / sqrt(2)` as a conservative per-direction budget so
+    /// two bilinear derivatives cannot independently consume the full `g`.
+    ///
+    /// Raster resolution requirement: use spacing <= the local h (ideally
+    /// <= h/2). For sub-raster targets, build the field on a finer raster or a
+    /// regional window rather than treating this approximation as a proof of
+    /// the realized mesh gradation.
     ///
     /// Solved by deterministic fast sweeping of the eikonal update with
-    /// longitude periodicity and per-row `cos(lat)` metric. Returns the number
-    /// of 4-ordering sweep rounds performed.
+    /// longitude periodicity, exact spherical metric closure on the top and
+    /// bottom rows, and a per-row `cos(lat)` metric. Returns the number of
+    /// 4-ordering sweep rounds performed.
     pub fn limit_gradient(&mut self, g: f64) -> io::Result<usize> {
         if !g.is_finite() || g <= 0.0 {
             return Err(invalid(format!(
@@ -436,6 +519,10 @@ impl HField {
                 ));
             }
         }
+        // Bilinear sampling blends the two orthogonal raster derivatives. Give
+        // each direction a g/sqrt(2) budget so their vector sum cannot spend
+        // the full requested gradation twice at off-center sample locations.
+        let stencil_g = g / SQRT_2;
         let nlon = self.nlon;
         let nlat = self.nlat;
         let radius = EARTH_RADIUS_METERS;
@@ -443,6 +530,16 @@ impl HField {
         let dlon_rad = (PI / 180.0) * self.dlon_degrees();
         let dx: Vec<f64> = (0..nlat)
             .map(|j| (dlon_rad * radius * self.lat_center(j).to_radians().cos()).max(1e-9))
+            .collect();
+        let polar_distances: Vec<f64> = (0..nlon)
+            .map(|i| {
+                great_circle_distance_m(
+                    self.lon_center(0),
+                    self.lat_center(0),
+                    self.lon_center(i),
+                    self.lat_center(0),
+                )
+            })
             .collect();
 
         let h_scale = self.values.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
@@ -455,6 +552,17 @@ impl HField {
             let mut max_change = 0.0_f64;
             // Four deterministic sweep orderings (fast sweeping).
             for ordering in 0..4 {
+                let south_polar_cap = self.values[..nlon]
+                    .iter()
+                    .copied()
+                    .fold(f64::INFINITY, f64::min)
+                    + stencil_g * dy;
+                let north_start = (nlat - 1) * nlon;
+                let north_polar_cap = self.values[north_start..north_start + nlon]
+                    .iter()
+                    .copied()
+                    .fold(f64::INFINITY, f64::min)
+                    + stencil_g * dy;
                 for jj in 0..nlat {
                     let j = if ordering & 1 == 0 { jj } else { nlat - 1 - jj };
                     for ii in 0..nlon {
@@ -474,7 +582,29 @@ impl HField {
                             f64::INFINITY
                         };
                         let b = south.min(north);
-                        let h_new = eikonal_update(a, dx[j], b, dy, g);
+                        let mut h_new = eikonal_update(a, dx[j], b, dy, stencil_g);
+                        if j == 0 || j + 1 == nlat {
+                            // A meridian continues through a pole at longitude
+                            // +180 degrees. Without this edge the top/bottom
+                            // rows behave like artificial circular boundaries
+                            // and can violate the spherical Lipschitz bound.
+                            for offset in [nlon / 2, nlon.div_ceil(2)] {
+                                let opposite_i = (i + offset) % nlon;
+                                let opposite = self.values[j * nlon + opposite_i];
+                                let cross_pole_distance = great_circle_distance_m(
+                                    self.lon_center(i),
+                                    self.lat_center(j),
+                                    self.lon_center(opposite_i),
+                                    self.lat_center(j),
+                                );
+                                h_new = h_new.min(opposite + stencil_g * cross_pole_distance);
+                            }
+                            h_new = h_new.min(if j == 0 {
+                                south_polar_cap
+                            } else {
+                                north_polar_cap
+                            });
+                        }
                         let h_cur = self.values[k];
                         if h_new < h_cur - tol {
                             self.values[k] = h_new;
@@ -485,6 +615,13 @@ impl HField {
                         }
                     }
                 }
+            }
+            for start in [0, (nlat - 1) * nlon] {
+                max_change = max_change.max(limit_metric_row(
+                    &mut self.values[start..start + nlon],
+                    &polar_distances,
+                    stencil_g,
+                ));
             }
             if max_change <= tol {
                 break;
@@ -538,6 +675,24 @@ impl HField {
     }
 }
 
+fn limit_metric_row(row: &mut [f64], distances: &[f64], g: f64) -> f64 {
+    // Local longitude edges overestimate polar great-circle distances, so the
+    // two outer rows need their exact metric lower envelope.
+    let source = row.to_vec();
+    let len = row.len();
+    let mut max_change = 0.0_f64;
+    for (i, value) in row.iter_mut().enumerate() {
+        let limited = source.iter().enumerate().fold(*value, |best, (j, source)| {
+            best.min(source + g * distances[(i + len - j) % len])
+        });
+        if limited < *value {
+            max_change = max_change.max(*value - limited);
+            *value = limited;
+        }
+    }
+    max_change
+}
+
 /// Local eikonal solver for `|∇h| = g` with axis spacings `dxa` (lon) and
 /// `dyb` (lat); `a`/`b` are the best (smallest) upwind neighbor values, or
 /// `f64::INFINITY` when the axis has no neighbor.
@@ -588,6 +743,23 @@ mod tests {
     }
 
     #[test]
+    fn constructors_reject_overflow_and_unallocatable_grids() {
+        assert!(HField::uniform(usize::MAX, 2, 42.0)
+            .unwrap_err()
+            .to_string()
+            .contains("overflow"));
+        let too_many = isize::MAX as usize / std::mem::size_of::<f64>() / 2 + 1;
+        assert!(HField::uniform(too_many, 2, 42.0)
+            .unwrap_err()
+            .to_string()
+            .contains("allocation limit"));
+        assert!(HField::from_values(too_many, 2, Vec::new())
+            .unwrap_err()
+            .to_string()
+            .contains("allocation limit"));
+    }
+
+    #[test]
     fn bilinear_sample_wraps_dateline() {
         let mut f = HField::uniform(360, 180, 100_000.0).unwrap();
         // Cells straddling the dateline: i = 359 (lon 179.5) and i = 0 (lon -179.5).
@@ -602,11 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn gradient_limit_cone_matches_analytic_solution() {
+    fn gradient_limit_cone_matches_conservative_analytic_solution() {
         let mut f = HField::uniform(360, 180, 1_000_000.0).unwrap();
         let (si, sj) = (180usize, 90usize); // lon 0.5, lat 0.5
         f.set(si, sj, 10_000.0);
         let g = 0.2;
+        let raster_g = g / SQRT_2;
         f.limit_gradient(g).unwrap();
 
         let slon = f.lon_center(si);
@@ -616,7 +789,7 @@ mod tests {
             let i = (si as isize + di).rem_euclid(360) as usize;
             let j = (sj as isize + dj) as usize;
             let d = great_circle_distance_m(f.lon_center(i), f.lat_center(j), slon, slat);
-            let expected = (10_000.0 + g * d).min(1_000_000.0);
+            let expected = (10_000.0 + raster_g * d).min(1_000_000.0);
             let got = f.get(i, j);
             let rel = (got - expected).abs() / expected;
             assert!(
@@ -686,6 +859,133 @@ mod tests {
     }
 
     #[test]
+    fn polar_rows_obey_spherical_lipschitz_and_pole_samples_are_unique() {
+        let mut field = HField::uniform(8, 4, 10_000_000.0).unwrap();
+        let top = field.nlat() - 1;
+        field.set(0, top, 10_000.0);
+        let g = 0.2;
+
+        field.limit_gradient(g).unwrap();
+
+        let opposite = field.nlon() / 2;
+        let spherical_distance = great_circle_distance_m(
+            field.lon_center(0),
+            field.lat_center(top),
+            field.lon_center(opposite),
+            field.lat_center(top),
+        );
+        let difference = (field.get(0, top) - field.get(opposite, top)).abs();
+        assert!(
+            difference <= g * spherical_distance + 1.0e-6,
+            "cross-pole Lipschitz bound violated: |dh|={difference}, g*d={}",
+            g * spherical_distance
+        );
+
+        let north = field.sample(0.0, 90.0);
+        let distance_to_pole = 0.5 * field.dlat_degrees().to_radians() * EARTH_RADIUS_METERS;
+        for i in 0..field.nlon() {
+            assert!(
+                (field.get(i, top) - north).abs() <= g * distance_to_pole + 1.0e-6,
+                "north-pole sample violates the row-to-pole Lipschitz bound at longitude index {i}"
+            );
+        }
+        for lon in [-180.0, -90.0, 45.0, 179.0] {
+            assert_eq!(
+                field.sample(lon, 90.0),
+                north,
+                "the geographic north pole must not depend on longitude"
+            );
+        }
+        let south = field.sample(0.0, -90.0);
+        for lon in [-180.0, -90.0, 45.0, 179.0] {
+            assert_eq!(
+                field.sample(lon, -90.0),
+                south,
+                "the geographic south pole must not depend on longitude"
+            );
+        }
+    }
+
+    #[test]
+    fn near_pole_samples_obey_spherical_lipschitz_for_arbitrary_longitudes() {
+        let mut field = HField::uniform(12, 6, 10_000_000.0).unwrap();
+        field.set(0, 0, 10_000.0);
+        let g = 0.2;
+        field.limit_gradient(g).unwrap();
+
+        for lat in [-89.0, -85.0, -80.0, field.lat_center(0)] {
+            for i in 0..2 * field.nlon() {
+                for j in 0..2 * field.nlon() {
+                    let lon_a = -180.0 + (i as f64 + 0.5) * field.dlon_degrees() / 2.0;
+                    let lon_b = -180.0 + (j as f64 + 0.5) * field.dlon_degrees() / 2.0;
+                    let difference = (field.sample(lon_a, lat) - field.sample(lon_b, lat)).abs();
+                    let distance = great_circle_distance_m(lon_a, lat, lon_b, lat);
+                    assert!(
+                        difference <= g * distance + 1.0e-6,
+                        "near-pole Lipschitz bound violated at latitude {lat}: |dh|={difference}, g*d={}",
+                        g * distance
+                    );
+                }
+            }
+        }
+
+        let pole = field.sample(0.0, -90.0);
+        for lon in [-165.0, -45.0, 75.0] {
+            assert!(
+                (field.sample(lon, -90.0 + 1.0e-9) - pole).abs() <= 1.0e-3,
+                "sampling must converge continuously to the geographic pole"
+            );
+        }
+    }
+
+    #[test]
+    fn bilinear_samples_respect_requested_spherical_gradation() {
+        let mut seed = 1_u64;
+        let values = (0..12 * 6)
+            .map(|_| {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                4_000_000.0 + ((seed >> 11) as f64 / (1_u64 << 53) as f64) * 8_000_000.0
+            })
+            .collect();
+        let mut field = HField::from_values(12, 6, values).unwrap();
+        let g = 0.2;
+        field.limit_gradient(g).unwrap();
+
+        let a = (-135.0, -15.0);
+        let b = (-110.0, 10.0);
+        let difference = (field.sample(a.0, a.1) - field.sample(b.0, b.1)).abs();
+        let distance = great_circle_distance_m(a.0, a.1, b.0, b.1);
+        assert!(
+            difference <= g * distance + 1.0e-6,
+            "bilinear samples exceed the requested spherical gradation: |dh|={difference}, g*d={}",
+            g * distance
+        );
+    }
+
+    #[test]
+    fn odd_longitude_count_checks_both_cross_pole_neighbors() {
+        let mut field = HField::uniform(5, 4, 10_000_000.0).unwrap();
+        let top = field.nlat() - 1;
+        field.set(0, top, 10_000.0);
+        let g = 0.2;
+
+        field.limit_gradient(g).unwrap();
+
+        for opposite in [field.nlon() / 2, field.nlon().div_ceil(2)] {
+            let distance = great_circle_distance_m(
+                field.lon_center(0),
+                field.lat_center(top),
+                field.lon_center(opposite),
+                field.lat_center(top),
+            );
+            assert!(
+                (field.get(0, top) - field.get(opposite, top)).abs() <= g * distance + 1.0e-6,
+                "odd nlon missed cross-pole neighbor {opposite}"
+            );
+        }
+    }
+
+    #[test]
     fn level_rings_have_width_h_over_g() {
         let mut f = HField::uniform(360, 180, 1_000_000.0).unwrap();
         let (si, sj) = (180usize, 90usize);
@@ -696,7 +996,8 @@ mod tests {
         let levels = f.level_map(h_base, 10).unwrap();
 
         // Walk due north from the source; the level-2 ring spans
-        // h in [h_base/4, h_base/2) whose cone width is (h_base/4)/g.
+        // h in [h_base/4, h_base/2). The raster cone uses g/sqrt(2) so
+        // bilinear samples retain the requested two-dimensional budget.
         let level_at = |j: usize| levels[j * 360 + si];
         let mut first2: Option<usize> = None;
         let mut last2: Option<usize> = None;
@@ -710,7 +1011,7 @@ mod tests {
         }
         let (j0, j1) = (first2.expect("ring exists"), last2.unwrap());
         let measured = (j1 - j0 + 1) as f64 * meters_per_degree_lat();
-        let expected = (h_base / 4.0) / g;
+        let expected = (h_base / 4.0) / (g / SQRT_2);
         let rel = (measured - expected).abs() / expected;
         assert!(
             rel < 0.20,
@@ -730,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn circle_region_center_keeps_target_and_grows_at_slope_g() {
+    fn circle_region_center_keeps_target_and_grows_at_conservative_raster_slope() {
         let mut f = HField::uniform(360, 180, 400_000.0).unwrap();
         f.min_with_region(
             &HRegion::Circle {
@@ -745,11 +1046,12 @@ mod tests {
         f.limit_gradient(g).unwrap();
         let center = f.sample(0.0, 0.0);
         assert!((center - 25_000.0).abs() < 1.0, "center {center}");
-        // 1500 km from the edge: expected 25km + 0.2 * 1000km = 225km.
+        // The raster spends g/sqrt(2) per direction so off-center bilinear
+        // samples cannot combine two full g gradients.
         let d_total = 1_500_000.0;
         let probe_lat = d_total / meters_per_degree_lat();
         let got = f.sample(0.0, probe_lat);
-        let expected = 25_000.0 + g * (d_total - 500_000.0);
+        let expected = 25_000.0 + (g / SQRT_2) * (d_total - 500_000.0);
         assert!(
             (got - expected).abs() / expected < 0.12,
             "got {got} expected {expected}"
@@ -770,6 +1072,26 @@ mod tests {
         assert!(!bbox.contains(0.0, 0.0));
         assert!(!bbox.contains(175.0, 6.0));
 
+        for (west, east) in [
+            (-180.0, 180.0),
+            (10.0, 369.999_999_999_999_94),
+            (180.0, -180.0),
+        ] {
+            let global_band = HRegion::Bbox {
+                west,
+                east,
+                south: -5.0,
+                north: 5.0,
+            };
+            for lon in [-179.9, -90.0, 0.0, 90.0, 179.9] {
+                assert!(
+                    global_band.contains(lon, 0.0),
+                    "full-longitude bbox {west}..{east} missed {lon}"
+                );
+            }
+            assert!(!global_band.contains(0.0, 6.0));
+        }
+
         let poly = HRegion::Polygon {
             points: vec![(178.0, -3.0), (-178.0, -3.0), (-178.0, 3.0), (178.0, 3.0)],
         };
@@ -783,7 +1105,7 @@ mod tests {
     fn corridor_distance_matches_cross_track_on_equator() {
         let corridor = HRegion::Corridor {
             points: vec![(0.0, 0.0), (10.0, 0.0)],
-            radius_m: 100_000.0,
+            radius_meters: vec![100_000.0, 100_000.0],
         };
         // Cross-track: 3 degrees due north of the segment interior.
         let d = corridor.distance_m(5.0, 3.0);
@@ -801,6 +1123,23 @@ mod tests {
         );
         assert!(corridor.contains(5.0, 0.5));
         assert!(!corridor.contains(5.0, 3.0));
+    }
+
+    #[test]
+    fn corridor_interpolates_each_endpoint_radius_instead_of_using_the_maximum() {
+        let corridor = HRegion::Corridor {
+            points: vec![(0.0, 0.0), (10.0, 0.0)],
+            radius_meters: vec![50_000.0, 500_000.0],
+        };
+
+        assert!(
+            !corridor.contains(1.0, 2.0),
+            "the narrow start must not inherit the far endpoint's maximum radius"
+        );
+        assert!(
+            corridor.contains(9.0, 2.0),
+            "the wide end must use its interpolated segment radius"
+        );
     }
 
     #[test]

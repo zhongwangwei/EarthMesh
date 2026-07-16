@@ -80,8 +80,14 @@ pub fn lonlat_points_to_unit_xyz(points: &[LonLatDegrees]) -> Vec<CartesianPoint
 #[inline]
 pub fn xyz_to_lonlat_degrees(point: CartesianPoint) -> LonLatDegrees {
     let raxis = point.x.hypot(point.y);
+    let scale = point.x.abs().max(point.y.abs()).max(point.z.abs());
+    let lon_degrees = if raxis <= 16.0 * f64::EPSILON * scale {
+        0.0
+    } else {
+        rad_to_deg(point.y.atan2(point.x))
+    };
     LonLatDegrees {
-        lon_degrees: rad_to_deg(point.y.atan2(point.x)),
+        lon_degrees,
         lat_degrees: rad_to_deg(point.z.atan2(raxis)),
     }
 }

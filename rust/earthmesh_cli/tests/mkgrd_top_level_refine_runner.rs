@@ -46,7 +46,7 @@ fn default_dispatcher_runs_atmos_specified_refine_without_landtype_source() {
     let report = earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         &namelist,
         &root,
-        2_000,
+        10_000,
         0,
         None,
         Some(16),

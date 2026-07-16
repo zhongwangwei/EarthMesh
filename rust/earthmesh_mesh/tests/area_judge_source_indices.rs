@@ -110,6 +110,29 @@ fn minmax_range_make_preserves_canonical_eastern_and_southern_edge_adjustments()
 }
 
 #[test]
+fn minmax_range_make_rejects_subcell_bbox_instead_of_returning_inverted_bounds() {
+    let lon_vertices = one_degree_lon_vertices_one_based();
+    let lat_vertices = one_degree_lat_vertices_one_based();
+
+    let bounds = area_judge_minmax_range_make_one_based(
+        0.1,
+        0.2,
+        1.2,
+        1.1,
+        &lon_vertices,
+        &lat_vertices,
+        1,
+        360,
+        180,
+    );
+
+    assert_eq!(
+        bounds, None,
+        "subcell bbox must not produce reversed ranges"
+    );
+}
+
+#[test]
 fn closed_curve_fill_marks_cells_between_sorted_ray_intersections() {
     let lon_vertices = one_degree_lon_vertices_one_based();
     let lat_vertices = one_degree_lat_vertices_one_based();

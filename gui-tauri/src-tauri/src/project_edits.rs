@@ -2,16 +2,13 @@
 
 use earthmesh_project::{
     default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, DomainConfig,
-    HfieldRefinementRecipe, MeshCellKind, ProjectConfig, ProjectLayerRole, RegionShape,
-    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
-    ViolationPolicy,
+    HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind, MeshIntentPreset, ProjectConfig,
+    ProjectLayerRole, RegionShape, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
+    SpecifiedCloseRefinement, ThresholdField, ViolationPolicy,
 };
 use std::path::{Path, PathBuf};
 
-fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
-    cfg.validate()?;
-    cfg.to_yaml()
-}
+use crate::project_commands::validated_yaml;
 
 /// Set a data layer's path + enabled flag, returning the updated YAML.
 #[tauri::command]
@@ -22,13 +19,32 @@ pub(crate) fn set_layer_path(
     enabled: bool,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
-    let layer = cfg
-        .data_layers
-        .iter_mut()
-        .find(|layer| layer.id == id)
-        .ok_or_else(|| format!("no data layer with id '{id}'"))?;
-    layer.path = path;
-    layer.enabled = enabled;
+    let role = {
+        let layer = cfg
+            .data_layers
+            .iter_mut()
+            .find(|layer| layer.id == id)
+            .ok_or_else(|| format!("no data layer with id '{id}'"))?;
+        layer.path = path.clone();
+        layer.enabled = enabled;
+        layer.role
+    };
+    if role == ProjectLayerRole::MeritHydro
+        && (cfg.target.intent == MeshIntentPreset::MeritHydroCoast || cfg.hydro_coast.is_some())
+    {
+        if enabled {
+            let hydro = cfg.hydro_coast.get_or_insert(HydroCoastConfig {
+                merit_root: path.clone(),
+                cama_root: None,
+                merit_stride: 1,
+                r3_width_m: 300.0,
+                r2_width_m: 50.0,
+            });
+            hydro.merit_root = path;
+        } else {
+            cfg.hydro_coast = None;
+        }
+    }
     validated_yaml(cfg)
 }
 
@@ -230,15 +246,17 @@ pub(crate) fn set_quality(
 }
 
 /// Set whether refinement runs and how many passes. `enabled=false` yields a
-/// uniform mesh (no source data needed); enabled runs must fit engine levels 1..=9.
+/// uniform mesh (no source data needed); enabled runs must fit Method-C levels 1..=5.
 #[tauri::command]
 pub(crate) fn set_refinement(
     yaml: String,
     enabled: bool,
+    threshold_enabled: bool,
     max_passes: u8,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.refinement.enabled = enabled;
+    cfg.refinement.threshold_enabled = threshold_enabled;
     cfg.refinement.max_passes = if enabled { max_passes } else { 0 };
     validated_yaml(cfg)
 }
@@ -352,6 +370,15 @@ pub(crate) fn set_hfield_refinement(
     base_m: Option<f64>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let (origin_lon, origin_lat) = cfg
+        .refinement
+        .hfield
+        .as_ref()
+        .map(|recipe| (recipe.origin_lon, recipe.origin_lat))
+        .unwrap_or((None, None));
+    if matches!(base_m, Some(base) if !base.is_finite() || base <= 0.0) {
+        return Err("h-field base_m must be positive when set".to_string());
+    }
     cfg.refinement.hfield = if enabled {
         let g = g.unwrap_or(0.2);
         if !g.is_finite() || g <= 0.0 {
@@ -365,13 +392,15 @@ pub(crate) fn set_hfield_refinement(
             enabled: true,
             g,
             max_level,
-            base_m: base_m.filter(|base| base.is_finite() && *base > 0.0),
-            origin_lon: None,
-            origin_lat: None,
+            base_m,
+            origin_lon,
+            origin_lat,
         })
     } else {
         Some(HfieldRefinementRecipe {
             enabled: false,
+            origin_lon,
+            origin_lat,
             ..HfieldRefinementRecipe::default()
         })
     };
@@ -396,8 +425,8 @@ pub(crate) fn set_expert(
     vertex_pretect_layers: Option<i32>,
     spring_global_type: Option<i32>,
     spring_regional_type: Option<i32>,
-    beta: Option<f32>,
-    relax: Option<f32>,
+    beta: Option<f64>,
+    relax: Option<f64>,
     weak_concav_eliminate: Option<bool>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;

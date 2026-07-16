@@ -596,7 +596,7 @@ fn data_preprocess_source_state_can_be_built_from_mkgrd_config_with_grid_overrid
     assert_eq!(source_state.first_triangle_id, 17);
     assert_eq!(source_state.num_vertex, 1);
     assert_eq!(source_state.sources[0].path, landtype_file);
-    assert_eq!(source_state.seaorland[2][1], 1);
+    assert!(source_state.seaorland[2][1]);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -771,10 +771,10 @@ fn data_preprocess_area_judge_source_builds_seaorland_from_landtype_file() {
     assert_eq!(report.preprocess.landtypes_global[2][1], 2);
     assert_eq!(report.preprocess.landtypes_global[3][2], 7);
     assert_eq!(report.seaorland.sum_land_grid, 2);
-    assert_eq!(report.seaorland.seaorland[1][1], 0);
-    assert_eq!(report.seaorland.seaorland[2][1], 1);
-    assert_eq!(report.seaorland.seaorland[3][2], 1);
-    assert_eq!(report.seaorland.seaorland[360][180], 0);
+    assert!(!report.seaorland.seaorland[1][1]);
+    assert!(report.seaorland.seaorland[2][1]);
+    assert!(report.seaorland.seaorland[3][2]);
+    assert!(!report.seaorland.seaorland[360][180]);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -803,10 +803,10 @@ fn data_preprocess_area_judge_base_state_reads_landtype_file_before_domain_seaor
     assert_eq!(report.domain.bounds.minlat_source, 180);
     assert_eq!(report.domain.numpatch, 360 * 180);
     assert_eq!(report.seaorland.sum_land_grid, 3);
-    assert_eq!(report.seaorland.seaorland[1][1], 0);
-    assert_eq!(report.seaorland.seaorland[2][1], 1);
-    assert_eq!(report.seaorland.seaorland[3][2], 1);
-    assert_eq!(report.seaorland.seaorland[360][180], 1);
+    assert!(!report.seaorland.seaorland[1][1]);
+    assert!(report.seaorland.seaorland[2][1]);
+    assert!(report.seaorland.seaorland[3][2]);
+    assert!(report.seaorland.seaorland[360][180]);
 
     let _ = fs::remove_dir_all(root);
 }

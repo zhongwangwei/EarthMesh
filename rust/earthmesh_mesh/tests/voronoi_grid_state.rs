@@ -7,9 +7,9 @@ use earthmesh_mesh::{
     CartesianPoint, LonLatDegrees, MethodCDelaunayMesh,
 };
 
-fn approx_eq(actual: f32, expected: f64, tolerance: f64) {
+fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
     assert!(
-        (f64::from(actual) - expected).abs() <= tolerance,
+        (actual - expected).abs() <= tolerance,
         "actual={actual} expected={expected} tolerance={tolerance}"
     );
 }
@@ -44,9 +44,9 @@ fn voronoi_grid_from_relaxed_icosahedron_swaps_delaunay_counts_and_keeps_one_bas
         .map(|&value| value as i32)
         .collect();
     assert_eq!(&state.tabs.w[3].im[..npoly], expected_w_im.as_slice());
-    assert_eq!(state.grid.xew[2], relaxed.m_points[2].x as f32);
-    assert_eq!(state.grid.yew[2], relaxed.m_points[2].y as f32);
-    assert_eq!(state.grid.zew[2], relaxed.m_points[2].z as f32);
+    assert_eq!(state.grid.xew[2], relaxed.m_points[2].x);
+    assert_eq!(state.grid.yew[2], relaxed.m_points[2].y);
+    assert_eq!(state.grid.zew[2], relaxed.m_points[2].z);
 }
 
 #[test]
@@ -64,9 +64,9 @@ fn voronoi_grid_from_relaxed_icosahedron_initializes_m_barycenters_on_sphere() {
     let z = (relaxed.m_points[iw1].z + relaxed.m_points[iw2].z + relaxed.m_points[iw3].z) / 3.0;
     let scale = METHOD_C_CANONICAL_EARTH_RADIUS_METERS / (x * x + y * y + z * z).sqrt();
 
-    approx_eq(state.grid.xem[2], x * scale, 0.5);
-    approx_eq(state.grid.yem[2], y * scale, 0.5);
-    approx_eq(state.grid.zem[2], z * scale, 0.5);
+    approx_eq(state.grid.xem[2], x * scale, 1.0e-6);
+    approx_eq(state.grid.yem[2], y * scale, 1.0e-6);
+    approx_eq(state.grid.zem[2], z * scale, 1.0e-6);
 }
 
 #[test]
@@ -101,36 +101,26 @@ fn pcvt_adjusts_voronoi_m_points_to_spherical_circumcenters() {
         .find(|&candidate| {
             let iw = state.tabs.m[candidate].iw;
             iw.iter().all(|&value| value >= 2)
-                && state.grid.xem[candidate].abs() > f32::EPSILON
+                && state.grid.xem[candidate].abs() > f64::EPSILON
                 && state.grid.xem[candidate].hypot(state.grid.yem[candidate]) > 1.0
         })
         .expect("non-degenerate triangle away from projection pole");
-    let initial = CartesianPoint::new(
-        f64::from(state.grid.xem[im]),
-        f64::from(state.grid.yem[im]),
-        f64::from(state.grid.zem[im]),
-    );
+    let initial = CartesianPoint::new(state.grid.xem[im], state.grid.yem[im], state.grid.zem[im]);
     let vertex_ids = state.tabs.m[im].iw.map(|value| value as usize);
-    let vertices = vertex_ids.map(|iw| {
-        CartesianPoint::new(
-            f64::from(state.grid.xew[iw]),
-            f64::from(state.grid.yew[iw]),
-            f64::from(state.grid.zew[iw]),
-        )
-    });
+    let vertices = vertex_ids
+        .map(|iw| CartesianPoint::new(state.grid.xew[iw], state.grid.yew[iw], state.grid.zew[iw]));
     let expected = spherical_circumcenter_from_barycenter(initial, vertices)
         .expect("non-degenerate circumcenter");
 
     pcvt_adjust_voronoi_grid_state(&mut state).expect("pcvt adjustment");
 
-    approx_eq(state.grid.xem[im], expected.x, 0.5);
-    approx_eq(state.grid.yem[im], expected.y, 0.5);
-    approx_eq(state.grid.zem[im], expected.z, 0.5);
-    let radius = (f64::from(state.grid.xem[im]).powi(2)
-        + f64::from(state.grid.yem[im]).powi(2)
-        + f64::from(state.grid.zem[im]).powi(2))
-    .sqrt();
-    assert!((radius - METHOD_C_CANONICAL_EARTH_RADIUS_METERS).abs() <= 0.5);
+    approx_eq(state.grid.xem[im], expected.x, 1.0e-6);
+    approx_eq(state.grid.yem[im], expected.y, 1.0e-6);
+    approx_eq(state.grid.zem[im], expected.z, 1.0e-6);
+    let radius =
+        (state.grid.xem[im].powi(2) + state.grid.yem[im].powi(2) + state.grid.zem[im].powi(2))
+            .sqrt();
+    assert!((radius - METHOD_C_CANONICAL_EARTH_RADIUS_METERS).abs() <= 1.0e-6);
 }
 
 #[test]
@@ -156,14 +146,14 @@ fn pcvt_rejects_nonlocal_near_collinear_circumcenter() {
     state.tabs.m[2].iw = [2, 3, 4];
     for (iw, point) in (2..=4).zip(triangle) {
         let point = scale(lonlat_degrees_to_unit_xyz(point));
-        state.grid.xew[iw] = point.x as f32;
-        state.grid.yew[iw] = point.y as f32;
-        state.grid.zew[iw] = point.z as f32;
+        state.grid.xew[iw] = point.x;
+        state.grid.yew[iw] = point.y;
+        state.grid.zew[iw] = point.z;
     }
     let barycenter = scale(lonlat_degrees_to_unit_xyz(barycenter));
-    state.grid.xem[2] = barycenter.x as f32;
-    state.grid.yem[2] = barycenter.y as f32;
-    state.grid.zem[2] = barycenter.z as f32;
+    state.grid.xem[2] = barycenter.x;
+    state.grid.yem[2] = barycenter.y;
+    state.grid.zem[2] = barycenter.z;
 
     let err = pcvt_adjust_voronoi_grid_state(&mut state).expect_err("non-local circumcenter");
     assert!(err.to_string().contains("non-local spherical circumcenter"));
@@ -182,12 +172,11 @@ fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
     assert_eq!(state.grid.glatw[0], 0.0);
 
     for im in 2..=state.grid.nma {
-        let radius = (f64::from(state.grid.xem[im]).powi(2)
-            + f64::from(state.grid.yem[im]).powi(2)
-            + f64::from(state.grid.zem[im]).powi(2))
-        .sqrt();
+        let radius =
+            (state.grid.xem[im].powi(2) + state.grid.yem[im].powi(2) + state.grid.zem[im].powi(2))
+                .sqrt();
         assert!(
-            (radius - METHOD_C_CANONICAL_EARTH_RADIUS_METERS).abs() <= 0.5,
+            (radius - METHOD_C_CANONICAL_EARTH_RADIUS_METERS).abs() <= 1.0e-6,
             "im={im} radius={radius}"
         );
         assert!(state.grid.glatm[im] >= -90.0 && state.grid.glatm[im] <= 90.0);
@@ -198,6 +187,17 @@ fn gridinit_voronoi_state_runs_relax_voronoi_pcvt_and_lonlat_fill() {
         assert!(state.grid.glatw[iw] >= -90.0 && state.grid.glatw[iw] <= 90.0);
         assert!(state.grid.glonw[iw] >= -180.0 && state.grid.glonw[iw] <= 180.0);
     }
+}
+
+#[test]
+fn gridinit_voronoi_state_enforces_max_tris() {
+    let err = gridinit_voronoi_state_canonical(1, 0, 1.0, 0.25, 1)
+        .expect_err("NXP=1 needs 20 active triangles");
+    assert!(err.to_string().contains("exceeds max_tris 1"));
+
+    let state = gridinit_voronoi_state_canonical(1, 0, 1.0, 0.25, 20)
+        .expect("the exact triangle limit must pass");
+    assert_eq!(state.grid.nma - 1, 20);
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn gridinit_voronoi_state_uses_method_c_factor2_expansion_when_selected() {
     grid_xyz2lonlat_one_based_state(&mut expected.grid).expect("expected lonlat fill");
 
     let actual =
-        gridinit_voronoi_state_canonical(48, 0, 1.0, 0.25, 100).expect("factorized gridinit");
+        gridinit_voronoi_state_canonical(48, 0, 1.0, 0.25, 100_000).expect("factorized gridinit");
 
     assert_eq!(actual.grid.nma, expected.grid.nma);
     assert_eq!(actual.grid.nua, expected.grid.nua);
@@ -223,17 +223,17 @@ fn gridinit_voronoi_state_uses_method_c_factor2_expansion_when_selected() {
     let first_inserted_midpoint = base.nmd + 1;
     approx_eq(
         actual.grid.xew[first_inserted_midpoint],
-        f64::from(expected.grid.xew[first_inserted_midpoint]),
-        0.5,
+        expected.grid.xew[first_inserted_midpoint],
+        1.0e-6,
     );
     approx_eq(
         actual.grid.yew[first_inserted_midpoint],
-        f64::from(expected.grid.yew[first_inserted_midpoint]),
-        0.5,
+        expected.grid.yew[first_inserted_midpoint],
+        1.0e-6,
     );
     approx_eq(
         actual.grid.zew[first_inserted_midpoint],
-        f64::from(expected.grid.zew[first_inserted_midpoint]),
-        0.5,
+        expected.grid.zew[first_inserted_midpoint],
+        1.0e-6,
     );
 }

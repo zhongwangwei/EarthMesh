@@ -1,9 +1,8 @@
 //! Experimental score-based / physics-aware refinement planner for EarthMesh v3.
 //!
-//! **INTEGRATION STATUS: EXPERIMENTAL / PARTIALLY WIRED.** The hydro-delivery CLI
-//! can produce a score plan, but the main mesh-generation/refinement pipeline does
-//! not consume that plan yet. General feature extraction and engine lowering remain
-//! future work.
+//! **INTEGRATION STATUS:** Hydro-delivery and project hydro closed-loop workflows
+//! produce and consume score plans through the h-field adapter. General non-hydro
+//! feature extraction and engine lowering remain future work.
 //!
 //! This does NOT replace the existing refinement workflow — it is an additive layer
 //! that turns per-cell features into a `target_level` map via pluggable
@@ -18,8 +17,6 @@ use earthmesh_geometry::{haversine_km, Point};
 use earthmesh_quality::topology::{
     enforce_max_adjacent_level_jump, remove_isolated_refined_cells, smooth_target_levels,
 };
-
-pub mod io;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeshDomain {
@@ -487,6 +484,7 @@ pub fn plan(
         ));
     }
     for (cell, neighbors) in features.neighbors.iter().enumerate() {
+        let mut unique_neighbors = BTreeSet::new();
         for &neighbor in neighbors {
             if neighbor >= n {
                 return Err(format!(
@@ -495,6 +493,16 @@ pub fn plan(
             }
             if neighbor == cell {
                 return Err(format!("cell {cell} must not list itself as a neighbor"));
+            }
+            if !unique_neighbors.insert(neighbor) {
+                return Err(format!(
+                    "cell {cell} lists neighbor {neighbor} more than once"
+                ));
+            }
+            if !features.neighbors[neighbor].contains(&cell) {
+                return Err(format!(
+                    "cell {cell} lists neighbor {neighbor}, but cell {neighbor} does not reciprocate"
+                ));
             }
         }
     }
@@ -528,9 +536,12 @@ pub fn plan(
         return Err("quality min_cell_area_m2 must be finite and non-negative".into());
     }
     if !quality.max_adjacent_resolution_ratio.is_finite()
-        || quality.max_adjacent_resolution_ratio < 1.0
+        || quality.max_adjacent_resolution_ratio < 2.0
     {
-        return Err("quality max_adjacent_resolution_ratio must be finite and at least 1".into());
+        return Err(
+            "quality max_adjacent_resolution_ratio must be finite and at least 2 for discrete refinement levels"
+                .into(),
+        );
     }
     if quality.min_cell_area_m2 > 0.0 {
         let areas = features.columns.get("cell_area_m2").ok_or_else(|| {
@@ -548,6 +559,29 @@ pub fn plan(
             );
         }
     }
+    let mut criterion_ids = BTreeSet::new();
+    for criterion in criteria {
+        let id = criterion.metadata().id;
+        if !criterion_ids.insert(id.clone()) {
+            return Err(format!("criterion id '{id}' is duplicated"));
+        }
+    }
+    let mut weight_ids = BTreeSet::new();
+    for (id, weight) in &cfg.weights {
+        if !criterion_ids.contains(id) {
+            return Err(format!("weight references unknown criterion '{id}'"));
+        }
+        if !weight_ids.insert(id.as_str()) {
+            return Err(format!("criterion weight '{id}' is duplicated"));
+        }
+        if !weight.is_finite() {
+            return Err(format!("criterion weight '{id}' must be finite"));
+        }
+        if *weight < 0.0 {
+            return Err(format!("criterion weight '{id}' must be non-negative"));
+        }
+    }
+
     let ctx = CriterionContext { features, domain };
     let weight_of = |id: &str| cfg.weights.iter().find(|(c, _)| c == id).map(|(_, w)| *w);
     let total_weight: f64 = cfg.weights.iter().map(|(_, w)| *w).sum::<f64>().max(1e-12);
@@ -603,6 +637,30 @@ pub fn plan(
                 continue;
             }
             let s = crit.score(&ctx, cell);
+            if !s.raw.is_finite() {
+                return Err(format!(
+                    "criterion '{}' cell {cell} raw must be finite",
+                    meta.id
+                ));
+            }
+            if !s.demand.is_finite() {
+                return Err(format!(
+                    "criterion '{}' cell {cell} demand must be finite",
+                    meta.id
+                ));
+            }
+            if !(0.0..=1.0).contains(&s.demand) {
+                return Err(format!(
+                    "criterion '{}' cell {cell} demand must be between 0 and 1",
+                    meta.id
+                ));
+            }
+            if !s.confidence.is_finite() {
+                return Err(format!(
+                    "criterion '{}' cell {cell} confidence must be finite",
+                    meta.id
+                ));
+            }
             raw_scores.push((meta.id.clone(), s.raw));
             normalized.push((meta.id.clone(), s.demand));
             let contribution = match cfg.combine {
@@ -615,8 +673,9 @@ pub fn plan(
                     composite = (contribution / total_weight).max(composite)
                 }
             }
-            if s.demand > top.0 {
-                top = (s.demand, meta.id.clone(), s.reason.clone());
+            let weighted_demand = w * s.demand;
+            if weighted_demand > top.0 {
+                top = (weighted_demand, meta.id.clone(), s.reason.clone());
             }
         }
         let composite = composite.clamp(0.0, 1.0);
@@ -800,6 +859,25 @@ mod tests {
         }
     }
 
+    struct FixedScoreCriterion(CellScore);
+
+    impl RefinementCriterion for FixedScoreCriterion {
+        fn metadata(&self) -> CriterionMetadata {
+            CriterionMetadata {
+                id: "fixed_score".into(),
+                display_name: "Fixed score".into(),
+                physical_process: "validation test".into(),
+                applicable_domains: vec![MeshDomain::Any],
+                units: "test".into(),
+                version: "test".into(),
+            }
+        }
+
+        fn score(&self, _ctx: &CriterionContext, _cell: usize) -> CellScore {
+            self.0.clone()
+        }
+    }
+
     #[test]
     fn one_criterion_score() {
         let mut f = grid_features(3);
@@ -864,6 +942,146 @@ mod tests {
         // cell0: entropy 1 + exp(0)=1 -> composite 1.0; cell1: entropy 0 + exp(-10)~0 -> ~0
         assert!((r.decisions[0].composite_score - 1.0).abs() < 1e-9);
         assert!(r.decisions[1].composite_score < 0.01);
+    }
+
+    #[test]
+    fn planner_rejects_unknown_duplicate_or_nonfinite_weights() {
+        let mut f = grid_features(1);
+        f.columns.insert("landcover_entropy".into(), vec![1.0]);
+        let criteria = vec![land_cover_entropy_criterion()];
+
+        for (weights, expected) in [
+            (vec![("unknown", 1.0)], "unknown criterion"),
+            (
+                vec![("land_cover_entropy", 1.0), ("land_cover_entropy", 2.0)],
+                "duplicated",
+            ),
+            (vec![("land_cover_entropy", f64::NAN)], "finite"),
+            (vec![("land_cover_entropy", -1.0)], "non-negative"),
+        ] {
+            let error = plan(
+                &f,
+                &criteria,
+                &cfg(weights, 3),
+                &RefinementBudget::default(),
+                &QualityConstraint::default(),
+                MeshDomain::Land,
+            )
+            .expect_err("invalid planner weights must be rejected");
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn planner_rejects_nonfinite_criterion_scores_with_cell_context() {
+        let mut features = grid_features(1);
+        features
+            .columns
+            .insert("distance_to_river_km".into(), vec![0.0]);
+        let criteria = vec![distance_to_river_criterion(0.0)];
+
+        let error = plan(
+            &features,
+            &criteria,
+            &cfg(vec![("distance_to_river", 1.0)], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Land,
+        )
+        .expect_err("non-finite criterion scores must not fail open");
+
+        assert!(error.contains("distance_to_river"), "{error}");
+        assert!(error.contains("cell 0"), "{error}");
+        assert!(error.contains("raw must be finite"), "{error}");
+    }
+
+    #[test]
+    fn planner_rejects_invalid_normalized_criterion_scores() {
+        for (score, expected) in [
+            (
+                CellScore {
+                    demand: f64::NAN,
+                    confidence: 1.0,
+                    ..Default::default()
+                },
+                "demand must be finite",
+            ),
+            (
+                CellScore {
+                    demand: -0.1,
+                    confidence: 1.0,
+                    ..Default::default()
+                },
+                "demand must be between 0 and 1",
+            ),
+            (
+                CellScore {
+                    demand: 1.1,
+                    confidence: 1.0,
+                    ..Default::default()
+                },
+                "demand must be between 0 and 1",
+            ),
+            (
+                CellScore {
+                    demand: 0.5,
+                    confidence: f64::NAN,
+                    ..Default::default()
+                },
+                "confidence must be finite",
+            ),
+        ] {
+            let criteria: Vec<Box<dyn RefinementCriterion>> =
+                vec![Box::new(FixedScoreCriterion(score))];
+            let error = plan(
+                &grid_features(1),
+                &criteria,
+                &cfg(vec![("fixed_score", 1.0)], 1),
+                &RefinementBudget::default(),
+                &QualityConstraint::default(),
+                MeshDomain::Any,
+            )
+            .expect_err("invalid normalized criterion score must be rejected");
+            assert!(error.contains("fixed_score"), "{error}");
+            assert!(error.contains("cell 0"), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn dominant_reason_uses_weighted_contribution() {
+        let mut f = grid_features(1);
+        f.columns.insert("landcover_entropy".into(), vec![1.0]);
+        f.columns
+            .insert("distance_to_river_km".into(), vec![1.0536051566]);
+        let criteria = vec![
+            land_cover_entropy_criterion(),
+            distance_to_river_criterion(10.0),
+        ];
+        let report = plan(
+            &f,
+            &criteria,
+            &cfg(
+                vec![("land_cover_entropy", 0.01), ("distance_to_river", 1.0)],
+                3,
+            ),
+            &RefinementBudget::default(),
+            &QualityConstraint {
+                no_isolated_refined: false,
+                smooth_transition: false,
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .expect("valid weighted plan");
+
+        assert!(
+            report.decisions[0]
+                .top_reason
+                .starts_with("distance_to_river:"),
+            "{}",
+            report.decisions[0].top_reason
+        );
     }
 
     #[test]
@@ -1034,6 +1252,19 @@ mod tests {
         )
         .expect_err("neighbor indices must be in range");
         assert!(err.contains("neighbor index 2"), "{err}");
+
+        let mut f = grid_features(2);
+        f.neighbors = vec![vec![1], vec![]];
+        let err = plan(
+            &f,
+            &[],
+            &cfg(vec![], 1),
+            &RefinementBudget::default(),
+            &QualityConstraint::default(),
+            MeshDomain::Any,
+        )
+        .expect_err("adjacency must be reciprocal before transition repair");
+        assert!(err.contains("does not reciprocate"), "{err}");
     }
 
     #[test]
@@ -1142,6 +1373,34 @@ mod tests {
     }
 
     #[test]
+    fn quality_resolution_ratio_below_two_is_rejected_instead_of_flattening_refinement() {
+        let mut f = grid_features(2);
+        f.columns.insert("landcover_entropy".into(), vec![1.0, 0.0]);
+        let error = plan(
+            &f,
+            &[land_cover_entropy_criterion()],
+            &cfg(vec![("land_cover_entropy", 1.0)], 2),
+            &RefinementBudget {
+                max_adjacent_level_jump: 2,
+                ..Default::default()
+            },
+            &QualityConstraint {
+                max_adjacent_resolution_ratio: 1.5,
+                no_isolated_refined: false,
+                smooth_transition: false,
+                ..Default::default()
+            },
+            MeshDomain::Land,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("at least 2 for discrete refinement levels"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn quality_constraint_rejection_min_area() {
         let mut f = grid_features(1);
         f.columns.insert("landcover_entropy".into(), vec![1.0]);
@@ -1199,43 +1458,5 @@ mod tests {
         let lv = &r.target_levels.level;
         assert!(lv[0].abs_diff(lv[1]) <= 1);
         assert!(r.decisions[0].final_level < r.decisions[0].target_level);
-    }
-
-    #[test]
-    fn report_output_csv_geojson_json() {
-        let mut f = grid_features(2);
-        f.regions = vec![RegionSpec::Bbox {
-            west: -0.5,
-            east: 0.5,
-            south: -1.0,
-            north: 1.0,
-        }];
-        let crits: Vec<Box<dyn RefinementCriterion>> = vec![Box::new(SpecifiedRegionCriterion)];
-        let r = plan(
-            &f,
-            &crits,
-            &cfg(vec![("specified_region", 1.0)], 2),
-            &RefinementBudget {
-                max_adjacent_level_jump: 2,
-                ..Default::default()
-            },
-            &QualityConstraint {
-                no_isolated_refined: false,
-                smooth_transition: false,
-                ..Default::default()
-            },
-            MeshDomain::Any,
-        )
-        .expect("valid feature table");
-        let csv = io::to_refinement_score_csv(&r);
-        assert!(csv.starts_with(
-            "cell,composite_score,target_level,final_level,rejection_reason,top_reason\n"
-        ));
-        let geojson = io::to_target_levels_geojson(&r, &f);
-        assert!(geojson.contains("FeatureCollection"));
-        assert!(geojson.contains("earthmesh_target_levels"));
-        let json = io::to_refinement_decision_report_json(&r);
-        assert!(json.contains("earthmesh_refinement_decision"));
-        assert!(json.contains("cells_refined_after"));
     }
 }

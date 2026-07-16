@@ -79,12 +79,12 @@ fn lambert_area_source_builds_is_in_area_grid_and_canonical_numpatch() {
         }
     );
     assert_eq!(report.numpatch, 4);
-    assert_eq!(report.is_in_area[181][89], 1);
-    assert_eq!(report.is_in_area[182][89], 1);
-    assert_eq!(report.is_in_area[181][90], 1);
-    assert_eq!(report.is_in_area[182][90], 1);
-    assert_eq!(report.is_in_area[180][89], 0);
-    assert_eq!(report.is_in_area[183][89], 0);
+    assert!(report.is_in_area[181][89]);
+    assert!(report.is_in_area[182][89]);
+    assert!(report.is_in_area[181][90]);
+    assert!(report.is_in_area[182][90]);
+    assert!(!report.is_in_area[180][89]);
+    assert!(!report.is_in_area[183][89]);
 }
 
 #[test]

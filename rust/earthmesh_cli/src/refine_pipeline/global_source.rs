@@ -79,11 +79,7 @@ pub fn run_refine_pipeline_namelist(
             "NXP must be positive for Method-C specified refine",
         ));
     }
-    let explicit_hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
-    let hfield_options = crate::hfield_refine::read_hfield_refine_options_or_default(
-        &contents,
-        config.nxp as usize,
-    )?;
+    let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
     let hydro_hfield_max_level = hfield_options
         .as_ref()
         .map(crate::hydro_refinement_adapter::hydro_target_max_level)
@@ -200,13 +196,7 @@ pub fn run_refine_pipeline_namelist(
     ) || native_mdomain == Some(5);
     let method_c_nxp = usize::try_from(config.nxp)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
-    // Keep historical Cartesian Method-C behavior when &hfield is absent;
-    // an explicit group opts into the native x/y analytic h-field.
-    let active_hfield_options = if native_cartesian_xy {
-        explicit_hfield_options.as_ref()
-    } else {
-        hfield_options.as_ref()
-    };
+    let active_hfield_options = hfield_options.as_ref();
     let use_hfield_regions = active_hfield_options.is_some();
     let mesh_type = config.mesh_type.trim();
     let has_threshold_hfield_sources = use_hfield_regions
@@ -270,8 +260,8 @@ pub fn run_refine_pipeline_namelist(
             usize::try_from(config.niter).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "NL%niter must fit usize")
             })?,
-            f64::from(config.beta),
-            f64::from(config.relax),
+            config.beta,
+            config.relax,
             max_tris,
         )?
     };

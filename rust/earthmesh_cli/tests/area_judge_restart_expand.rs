@@ -25,16 +25,17 @@ fn restart_payload_expands_selected_domain_and_seaorland_into_full_source_grids(
     assert_eq!(report.bounds, payload.bounds);
     assert_eq!(report.nlons_select, 2);
     assert_eq!(report.nlats_select, 2);
-    assert_eq!(report.is_in_domain[2][1], 21);
-    assert_eq!(report.is_in_domain[2][2], 22);
-    assert_eq!(report.is_in_domain[3][1], 31);
-    assert_eq!(report.is_in_domain[3][2], 32);
-    assert_eq!(report.is_in_domain[1][1], 0);
-    assert_eq!(report.seaorland[2][1], 1);
-    assert_eq!(report.seaorland[2][2], 0);
-    assert_eq!(report.seaorland[3][1], 0);
-    assert_eq!(report.seaorland[3][2], 1);
-    assert_eq!(report.seaorland[4][4], 0);
+    assert!(report.is_in_domain[2][1]);
+    assert!(report.is_in_domain[2][2]);
+    assert!(report.is_in_domain[3][1]);
+    assert!(report.is_in_domain[3][2]);
+    assert!(!report.is_in_domain[1][1]);
+    let _: &[Vec<bool>] = &report.seaorland;
+    assert!(report.seaorland[2][1]);
+    assert!(!report.seaorland[2][2]);
+    assert!(!report.seaorland[3][1]);
+    assert!(report.seaorland[3][2]);
+    assert!(!report.seaorland[4][4]);
 }
 
 #[test]

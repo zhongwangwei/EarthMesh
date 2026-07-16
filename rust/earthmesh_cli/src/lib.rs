@@ -11,6 +11,8 @@ pub mod coordinate_types;
 use coordinate_types::{GridRegion, LonLatPoint};
 mod fs_support;
 pub(crate) use fs_support::ensure_parent_dir;
+#[doc(hidden)]
+pub use fs_support::resolve_project_path;
 mod json_support;
 pub(crate) use json_support::{
     geojson_feature_nodes, json_escape_string, json_node_to_f64, json_node_to_usize, json_number,
@@ -24,8 +26,10 @@ use v3_data_source_io::{
 pub mod global_source_axes;
 use global_source_axes::build_global_source_axes_one_based;
 pub mod unstructured_mesh_support;
-pub(crate) use unstructured_mesh_support::mesh_row_for_canonical_id;
-pub(crate) use unstructured_mesh_support::{unstructured_dimc, validate_unstructured_mesh};
+pub(crate) use unstructured_mesh_support::{
+    gridfile_m_row_layout, gridfile_w_row_layout, mesh_row_for_canonical_id, unstructured_dimc,
+    validate_unstructured_mesh, GridfileRowLayout,
+};
 use unstructured_mesh_support::{
     GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileMetadataSlices,
     UnstructuredMesh, UnstructuredMeshWriteReport,
@@ -79,9 +83,6 @@ pub mod hydro_sweep;
 pub mod project_hydro;
 pub mod project_hydro_closed_loop;
 pub mod project_quality;
-pub(crate) use hydro_delivery_cells::{
-    convex_hull_order_indices, gridfile_lonlat_has_two_placeholders,
-};
 use hydro_delivery_colm::write_colm_coupling_csv_from_intersections;
 pub(crate) use hydro_delivery_common::{
     format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
@@ -93,7 +94,6 @@ use hydro_delivery_coupling_quality::{
 };
 use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
 pub(crate) use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
-pub(crate) use unstructured_mesh_support::mesh_canonical_id_for_row;
 pub mod colm_types;
 use colm_types::{
     ColmCouplingNetcdfWriteReport, ColmForcingTemplateNetcdfWriteReport,
@@ -137,7 +137,7 @@ use cama_binary_params::read_cama_grid_spec_from_params_file;
 use cama_binary_window_readers::read_cama_elevtn_surface_window;
 pub mod bbox_mask_io;
 pub mod coastal_band_io;
-pub(crate) use bbox_mask_io::validate_bbox_mask;
+pub(crate) use bbox_mask_io::validate_bbox_mask_geographic;
 use bbox_mask_io::{
     parse_bbox_mask_nml, read_bbox_mask_netcdf, read_bbox_refine_netcdf, write_bbox_mask_netcdf,
 };
@@ -149,7 +149,9 @@ use circle_close_mask_io::{
     read_circle_mask_netcdf, read_circle_refine_netcdf, read_close_mask_netcdf,
     read_close_refine_netcdf, write_circle_mask_netcdf, write_close_mask_netcdf, CloseMask,
 };
-pub(crate) use circle_close_mask_io::{validate_circle_mask, validate_close_mask};
+pub(crate) use circle_close_mask_io::{
+    validate_circle_mask_geographic, validate_close_mask_geographic,
+};
 pub mod mode4mesh_make;
 pub mod mode_file_io;
 use mode_file_io::{
@@ -446,15 +448,3 @@ mod refine_pipeline;
 pub use refine_pipeline::run_refine_pipeline_namelist;
 pub mod mkgrd_top_level_dispatch;
 use mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist;
-
-/// Stable facade for new CLI/GUI integrations. Prefer this over glob-importing
-/// the architecture internals from the crate root.
-pub mod prelude {
-    pub use crate::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff;
-    pub use crate::mkgrd_run_types::{
-        MkgrdTopLevelDefaultRestartRefineRunReport, MkgrdTopLevelDispatchRunReport,
-    };
-    pub use crate::mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist;
-    pub use earthmesh_core::DomainMarker;
-    pub use earthmesh_project::prelude::*;
-}

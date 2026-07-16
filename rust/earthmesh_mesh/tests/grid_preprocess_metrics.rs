@@ -41,19 +41,23 @@ fn normalize_lon_matches_mod_grid_preprocess_checklon_single_wrap() {
 }
 
 #[test]
-fn arc_length_matches_mod_grid_preprocess_equator_quarter_turn() {
+fn arc_length_retains_f64_precision_for_equator_quarter_turn() {
     let a = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let b = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(90.0, 0.0));
 
-    approx_eq(arc_length_unit_sphere(a, b), 1.5707962671902518, 1.0e-12);
+    approx_eq(
+        arc_length_unit_sphere(a, b),
+        std::f64::consts::FRAC_PI_2,
+        1.0e-15,
+    );
 }
 
 #[test]
-fn arc_length_matches_mod_grid_preprocess_one_degree_equator() {
+fn arc_length_retains_f64_precision_for_one_degree_equator() {
     let a = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let b = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
 
-    approx_eq(arc_length_unit_sphere(a, b), 0.01745329238890877, 1.0e-12);
+    approx_eq(arc_length_unit_sphere(a, b), 1.0_f64.to_radians(), 1.0e-15);
 }
 
 #[test]
@@ -86,7 +90,11 @@ fn polygon_length_angle_matches_canonical_octant_triangle() {
         approx_eq(angle, 90.0, 1.0e-5);
     }
     for length in metrics.edge_lengths_meters {
-        approx_eq(length, 10_007_902.73061428, 1.0e-3);
+        approx_eq(
+            length,
+            earthmesh_core::EARTH_RADIUS_METERS * std::f64::consts::FRAC_PI_2,
+            1.0e-6,
+        );
     }
 }
 
@@ -210,7 +218,7 @@ fn robust_spherical_area_rejects_degenerate_polygons() {
 }
 
 #[test]
-fn spherical_triangle_area_matches_canonical_octant_triangle() {
+fn spherical_triangle_area_retains_f64_precision_for_octant_triangle() {
     let triangle = [
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(90.0, 0.0)),
@@ -219,13 +227,13 @@ fn spherical_triangle_area_matches_canonical_octant_triangle() {
 
     approx_eq(
         spherical_triangle_area_unit(triangle),
-        1.5707961479809727,
-        1.0e-12,
+        std::f64::consts::FRAC_PI_2,
+        2.0e-15,
     );
 }
 
 #[test]
-fn spherical_triangle_area_matches_canonical_small_right_triangle() {
+fn spherical_triangle_area_retains_f64_precision_for_small_right_triangle() {
     let triangle = [
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0)),
         lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0)),
@@ -234,13 +242,13 @@ fn spherical_triangle_area_matches_canonical_small_right_triangle() {
 
     approx_eq(
         spherical_triangle_area_unit(triangle),
-        0.00015231644029306792,
+        0.0001523164425802842,
         1.0e-15,
     );
 }
 
 #[test]
-fn spherical_kite_area_matches_canonical_getarea_two_triangle_sum() {
+fn spherical_kite_area_retains_f64_precision_for_two_triangle_sum() {
     let vertex = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
     let edge1 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
     let edge2 = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
@@ -248,7 +256,7 @@ fn spherical_kite_area_matches_canonical_getarea_two_triangle_sum() {
 
     approx_eq(
         spherical_kite_area_unit(vertex, edge1, edge2, cell),
-        0.00015230773702390324,
+        0.00015230774318603324,
         1.0e-15,
     );
 }
@@ -265,9 +273,32 @@ fn spherical_cell_area_fans_vertices_like_canonical_getarea() {
 
     approx_eq(
         spherical_cell_area_from_vertices_unit(&vertices, 4).expect("valid cell"),
-        0.000304609680288118,
+        0.00030460968486220184,
         1.0e-15,
     );
+}
+
+#[test]
+fn spherical_cell_area_subtracts_reverse_fan_pieces_for_concave_cells() {
+    let vertices = [
+        (0.0, 0.0),
+        (3.0, 0.0),
+        (3.0, 3.0),
+        (2.0, 3.0),
+        (2.0, 1.0),
+        (1.0, 1.0),
+        (1.0, 3.0),
+        (0.0, 3.0),
+    ]
+    .map(|(lon, lat)| lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat)));
+    let fan = (0..vertices.len() - 2)
+        .map(|j| spherical_triangle_area_unit([vertices[0], vertices[j + 1], vertices[j + 2]]))
+        .collect::<Vec<_>>();
+    let expected = (fan[0] + fan[1] - fan[2] + fan[3] + fan[4] + fan[5]).abs();
+    let actual = spherical_cell_area_from_vertices_unit(&vertices, vertices.len()).unwrap();
+
+    assert!((actual - expected).abs() < 1.0e-15);
+    assert!(actual < fan.iter().sum::<f64>());
 }
 
 #[test]
@@ -350,11 +381,11 @@ fn get_area_unit_matches_one_based_kite_triangle_and_cell_workflow() {
 
     approx_eq(
         output.kite_areas_on_vertex[2][0],
-        0.00015230773702390324,
+        0.00015230774318603324,
         1.0e-15,
     );
-    approx_eq(output.area_triangle[2], 0.00015230773702390324, 1.0e-15);
-    approx_eq(output.area_cell[2], 0.000304609680288118, 1.0e-15);
+    approx_eq(output.area_triangle[2], 0.00015230774318603324, 1.0e-15);
+    approx_eq(output.area_cell[2], 0.00030460968486220184, 1.0e-15);
 }
 
 #[test]

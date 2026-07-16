@@ -1,52 +1,12 @@
 //! Engine discovery and launch-input preparation helpers.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs};
 
-use earthmesh_project::{ProjectConfig, ProjectLayerRole};
-
-use crate::mesh_paths::existing_file_path;
-
-pub(crate) fn stage_threshold_layers(
-    cfg: &ProjectConfig,
-    threshold_dir: &Path,
-    source_base: &Path,
-) -> Result<bool, String> {
-    let mut staged_any = false;
-    for layer in &cfg.data_layers {
-        if !layer.enabled {
-            continue;
-        }
-        let ProjectLayerRole::Threshold(field) = layer.role else {
-            continue;
-        };
-        if !staged_any {
-            fs::create_dir_all(threshold_dir)
-                .map_err(|e| format!("mkdir {}: {e}", threshold_dir.display()))?;
-            staged_any = true;
-        }
-        let src = resolve_source_path(&layer.path, source_base);
-        let dst = threshold_dir.join(format!("{}.nc", field.stem()));
-        fs::copy(&src, &dst).map_err(|e| {
-            format!(
-                "stage threshold layer '{}' to {}: {e}",
-                layer.id,
-                dst.display()
-            )
-        })?;
-    }
-    Ok(staged_any)
-}
-
-fn resolve_source_path(path: &str, source_base: &Path) -> PathBuf {
-    let path = Path::new(path.trim());
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        existing_file_path(path.to_string_lossy().as_ref(), source_base)
-            .unwrap_or_else(|| source_base.join(path))
-    }
-}
+static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Locate the mesh-generator binary, in priority order:
 ///   1. `$EARTHMESH_MKGRD` (explicit override),
@@ -65,7 +25,7 @@ pub(crate) fn resolve_mkgrd() -> Result<String, String> {
     if !src.is_file() {
         return Ok(found);
     }
-    let dst = env::temp_dir().join("earthmesh_studio_engine.x");
+    let dst = staged_engine_path(src, std::process::id());
     let stale = match (fs::metadata(src), fs::metadata(&dst)) {
         (Ok(s), Ok(d)) => {
             // Refresh when the built engine differs in size OR is newer than the
@@ -81,24 +41,64 @@ pub(crate) fn resolve_mkgrd() -> Result<String, String> {
         _ => true,
     };
     if stale {
-        fs::copy(src, &dst).map_err(|err| {
-            format!(
-                "stage mesh engine {} -> {}: {err}",
-                src.display(),
-                dst.display()
-            )
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&dst, fs::Permissions::from_mode(0o755))
-                .map_err(|err| format!("chmod {}: {err}", dst.display()))?;
-        }
+        stage_engine_copy(src, &dst)?;
     }
     if dst.is_file() {
         return Ok(dst.to_string_lossy().into_owned());
     }
     Ok(found)
+}
+
+pub(crate) fn staged_engine_path(src: &Path, pid: u32) -> PathBuf {
+    let source = fs::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    env::temp_dir().join(format!(
+        "earthmesh_studio_engine-{pid}-{:016x}.x",
+        hasher.finish()
+    ))
+}
+
+pub(crate) fn stage_engine_copy(src: &Path, dst: &Path) -> Result<(), String> {
+    let sequence = ENGINE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = dst.with_file_name(format!(
+        ".{}.tmp-{}-{sequence}",
+        dst.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("earthmesh_studio_engine"),
+        std::process::id()
+    ));
+    let result = (|| {
+        fs::copy(src, &temp).map_err(|err| {
+            format!(
+                "stage mesh engine {} -> {}: {err}",
+                src.display(),
+                temp.display()
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temp, fs::Permissions::from_mode(0o755))
+                .map_err(|err| format!("chmod {}: {err}", temp.display()))?;
+        }
+        #[cfg(windows)]
+        if dst.exists() {
+            fs::remove_file(dst)
+                .map_err(|err| format!("replace staged engine {}: {err}", dst.display()))?;
+        }
+        fs::rename(&temp, dst).map_err(|err| {
+            format!(
+                "publish staged mesh engine {} -> {}: {err}",
+                temp.display(),
+                dst.display()
+            )
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 fn resolve_mkgrd_path() -> String {

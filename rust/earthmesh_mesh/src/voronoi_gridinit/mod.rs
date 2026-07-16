@@ -1,5 +1,7 @@
 use super::*;
 
+const METHOD_C_DIAGNOSTIC_EVERY: usize = 100;
+
 /// In-memory Rust orchestration for the global `mkgrd.F90:gridinit` mesh path.
 ///
 /// This composes the current deterministic kernels without writing NetCDF:
@@ -15,6 +17,23 @@ pub fn gridinit_voronoi_state_canonical(
     spring_relax: f64,
     max_tris: usize,
 ) -> io::Result<VoronoiGridState> {
+    let triangle_count = crate::icosahedron_counts_canonical(nxp0)
+        .map(|counts| counts.nwd - 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid Method-C gridinit NXP {nxp0}"),
+            )
+        })?;
+    if triangle_count > max_tris {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Method-C gridinit triangle count {triangle_count} exceeds max_tris {max_tris}"
+            ),
+        ));
+    }
+
     let factors = crate::method_c_gridinit_factorization_canonical(nxp0).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -26,7 +45,7 @@ pub fn gridinit_voronoi_state_canonical(
         nspring,
         beta,
         spring_relax,
-        max_tris,
+        METHOD_C_DIAGNOSTIC_EVERY,
     )
     .ok_or_else(|| {
         io::Error::new(

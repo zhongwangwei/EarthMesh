@@ -147,3 +147,44 @@ fn complete_mask_keeps_low_fraction_river_as_overlay_only() {
     assert!(!json.contains("\"mask_class\": \"R3\""), "{json}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn complete_mask_surface_overlay_is_dateline_safe() {
+    let dir = std::env::temp_dir().join(format!("em3_complete_dateline_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("bg.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"dateline"},
+         "geometry":{"type":"Polygon","coordinates":[[[179,0],[-179,0],[-179,2],[179,2],[179,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("surface.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"surface_class":"LAND"},
+         "geometry":{"type":"Polygon","coordinates":[[[179,0],[180,0],[180,2],[179,2],[179,0]]]}},
+        {"type":"Feature","properties":{"surface_class":"OCEAN"},
+         "geometry":{"type":"Polygon","coordinates":[[[-170,0],[-168,0],[-168,2],[-170,2],[-170,0]]]}}
+        ]}"#,
+    )
+    .unwrap();
+
+    let out = dir.join("complete.geojson");
+    write_complete_cell_mask_geojson(
+        dir.join("bg.geojson"),
+        &out,
+        None,
+        None,
+        Some(&dir.join("surface.geojson")),
+    )
+    .expect("dateline complete mask");
+
+    let json = std::fs::read_to_string(&out).unwrap();
+    assert!(json.contains("\"surface_class\": \"LAND\""), "{json}");
+    assert!(json.contains("\"mask_class\": \"LAND\""), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

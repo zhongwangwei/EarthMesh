@@ -50,6 +50,12 @@ fn voronoi_grid_from_method_c_delaunay_mesh_with_projection(
     radius: f64,
     project_cell_centers_to_radius: bool,
 ) -> io::Result<VoronoiGridState> {
+    if project_cell_centers_to_radius && (!radius.is_finite() || radius <= 0.0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Voronoi projection radius {radius} must be positive and finite"),
+        ));
+    }
     mesh.validate_topology()?;
 
     let mut grid = GridMemory {
@@ -68,9 +74,9 @@ fn voronoi_grid_from_method_c_delaunay_mesh_with_projection(
 
     for iw in 1..=grid.nwa {
         let point = mesh.m_points[iw];
-        grid.xew[iw] = point.x as f32;
-        grid.yew[iw] = point.y as f32;
-        grid.zew[iw] = point.z as f32;
+        grid.xew[iw] = point.x;
+        grid.yew[iw] = point.y;
+        grid.zew[iw] = point.z;
     }
 
     for im in 2..=grid.nma {
@@ -95,9 +101,9 @@ fn voronoi_grid_from_method_c_delaunay_mesh_with_projection(
         } else {
             barycenter
         };
-        grid.xem[im] = point.x as f32;
-        grid.yem[im] = point.y as f32;
-        grid.zem[im] = point.z as f32;
+        grid.xem[im] = point.x;
+        grid.yem[im] = point.y;
+        grid.zem[im] = point.z;
     }
 
     let mut tabs = IjTabs::allocate(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
@@ -136,4 +142,20 @@ fn voronoi_grid_from_method_c_delaunay_mesh_with_projection(
         tabs,
         impent: mesh.impent,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spherical_voronoi_rejects_invalid_radius() {
+        let mesh = MethodCDelaunayMesh::from_icosahedron(1, 0, 1.0, 0.25, 100)
+            .expect("valid Method-C mesh");
+        for radius in [-1.0, 0.0, f64::NAN, f64::INFINITY] {
+            let error = voronoi_grid_from_method_c_delaunay_mesh(&mesh, radius)
+                .expect_err("invalid spherical radius must be rejected");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
 }

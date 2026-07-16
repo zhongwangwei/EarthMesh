@@ -8,13 +8,39 @@ use super::super::cli_mkgrd_output::{
     print_mask_restart_ocean_report, print_mask_restart_patch_report, print_refine_pipeline_report,
     print_top_level_dispatch_report, write_restart_refine_namelist,
 };
-use super::prepare::{prepare_mkgrd_namelist, ProjectRunSpec};
+use super::prepare::{prepare_mkgrd_namelist, PreparedMkgrdInput, ProjectRunSpec};
 
 pub(crate) fn run_mkgrd_or_project(
     first: String,
     mut args: impl Iterator<Item = String>,
 ) -> Result<(), String> {
     let prepared = prepare_mkgrd_namelist(first, &mut args)?;
+    let cleanup_dir = prepared.cleanup_dir.clone();
+    let project_run_dir = prepared.project_run_dir.clone();
+    let result = run_prepared_mkgrd(prepared, args);
+    if let Some(path) = cleanup_dir {
+        if let Err(err) = fs::remove_dir_all(&path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("earthmesh_cli: warning: cleanup {}: {err}", path.display());
+            }
+        }
+    }
+    if result.is_err() {
+        if let Some(path) = project_run_dir {
+            if let Err(err) = fs::remove_dir_all(&path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("earthmesh_cli: warning: cleanup {}: {err}", path.display());
+                }
+            }
+        }
+    }
+    result
+}
+
+fn run_prepared_mkgrd(
+    prepared: PreparedMkgrdInput,
+    mut args: impl Iterator<Item = String>,
+) -> Result<(), String> {
     let mut namelist = prepared.namelist;
     let mut project = prepared.project;
     let mut max_tris = 100_000usize;
@@ -115,6 +141,14 @@ pub(crate) fn run_mkgrd_or_project(
             other => return Err(usage(&format!("unknown argument {other}"))),
         }
     }
+
+    let contents = fs::read_to_string(&namelist)
+        .map_err(|err| format!("failed to read namelist {namelist}: {err}"))?;
+    let config = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|err| format!("failed to parse namelist {namelist}: {err}"))?;
+    let worker_count =
+        usize::try_from(config.openmp).map_err(|_| "NL%openmp must be positive".to_string())?;
+    earthmesh_mesh::configure_global_thread_pool(worker_count).map_err(|err| err.to_string())?;
 
     let workdir = env::current_dir().map_err(|err| err.to_string())?;
     let has_explicit_execution_mode = run_refine_passthrough
@@ -241,10 +275,14 @@ pub(crate) fn run_mkgrd_or_project(
                         &regressions,
                     )?;
                     eprintln!(
-                        "earthmesh_cli: warning: auto_refine rejected pass {current_pass} because the candidate did not strictly improve quality ({} -> {}); keeping the previous valid mesh",
+                        "earthmesh_cli: warning: auto_refine rejected pass {current_pass} because the candidate did not strictly improve quality ({} -> {}); keeping the previous mesh",
                         previous_quality.verdict.as_str(),
                         verdict.as_str()
                     );
+                    enforce_project_quality_policy(
+                        spec.config.quality.on_violation,
+                        previous_quality.verdict,
+                    )?;
                     break fallback;
                 }
                 let baseline_gridfile = last_acceptable_report
@@ -710,14 +748,17 @@ fn record_auto_refine_decision(
     Ok(())
 }
 
-fn enforce_project_quality_policy(
+pub(crate) fn enforce_project_quality_policy(
     policy: earthmesh_project::ViolationPolicy,
     verdict: earthmesh_quality::QualityLevel,
 ) -> Result<(), String> {
-    if policy == earthmesh_project::ViolationPolicy::Block
+    if policy != earthmesh_project::ViolationPolicy::Warn
         && verdict == earthmesh_quality::QualityLevel::Fail
     {
-        return Err("project quality gate failed (verdict=fail, on_violation=block)".to_string());
+        return Err(format!(
+            "project quality gate failed (verdict=fail, on_violation={})",
+            policy.as_str()
+        ));
     }
     Ok(())
 }
@@ -725,7 +766,9 @@ fn enforce_project_quality_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use earthmesh_project::ViolationPolicy;
+    use earthmesh_project::{
+        DomainConfig, MeshIntentPreset, ProjectConfig, ResolutionSpec, ViolationPolicy,
+    };
     use earthmesh_quality::QualityLevel;
 
     #[test]
@@ -739,5 +782,46 @@ mod tests {
     fn project_warn_policy_keeps_failed_mesh() {
         enforce_project_quality_policy(ViolationPolicy::Warn, QualityLevel::Fail)
             .expect("warn policy must not block");
+    }
+
+    #[test]
+    fn project_auto_refine_policy_rejects_failed_selected_mesh() {
+        let err = enforce_project_quality_policy(ViolationPolicy::AutoRefine, QualityLevel::Fail)
+            .unwrap_err();
+        assert!(err.contains("on_violation=auto_refine"), "{err}");
+    }
+
+    #[test]
+    fn failed_project_command_removes_staging_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_project_command_cleanup_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let project = ProjectConfig::scaffold(
+            "cleanup",
+            MeshIntentPreset::AtmosphereMpas,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        let path = root.join("project.yaml");
+        fs::write(&path, project.to_yaml().unwrap()).unwrap();
+
+        let error = run_mkgrd_or_project(
+            "--project".into(),
+            vec![path.to_string_lossy().into_owned(), "--unknown".into()].into_iter(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("unknown argument"));
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("earthmesh-run")
+        }));
+        let _ = fs::remove_dir_all(root);
     }
 }

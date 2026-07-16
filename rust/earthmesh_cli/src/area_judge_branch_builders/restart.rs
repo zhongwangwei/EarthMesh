@@ -36,7 +36,7 @@ pub fn build_area_judge_restart_one_based(
             (bounds.maxlat_source..=bounds.minlat_source)
                 .map(move |lat_index| (lon_index, lat_index))
         })
-        .filter(|(lon_index, lat_index)| restart.expanded.is_in_domain[*lon_index][*lat_index] != 0)
+        .filter(|(lon_index, lat_index)| restart.expanded.is_in_domain[*lon_index][*lat_index])
         .count();
     let domain = AreaJudgeDomainInitializationReport {
         is_in_domain: restart.expanded.is_in_domain,
@@ -49,8 +49,15 @@ pub fn build_area_judge_restart_one_based(
     let sum_land_grid = seaorland
         .iter()
         .flat_map(|row| row.iter())
-        .copied()
-        .sum::<i32>();
+        .filter(|value| **value)
+        .count()
+        .try_into()
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Area_judge land source-cell count exceeds i32",
+            )
+        })?;
 
     let patch = mask_patch
         .map(|config| {

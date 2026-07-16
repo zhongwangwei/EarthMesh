@@ -48,9 +48,9 @@ fn refine_step_iter_zero_activates_calculated_grid_without_reading_sources() {
     let root = temp_root("area_judge_refine_step_iter0");
     let (lon_vertex, lat_vertex, lon_i, lat_i) = small_axes();
     let domain = full_domain(6, 6);
-    let mut calculated = vec![vec![0; 7]; 7];
-    calculated[2][2] = 1;
-    calculated[3][3] = 1;
+    let mut calculated = vec![vec![false; 7]; 7];
+    calculated[2][2] = true;
+    calculated[3][3] = true;
     let calculated_bounds = AreaJudgeSourceBounds {
         minlon_source: 2,
         maxlon_source: 3,
@@ -80,8 +80,8 @@ fn refine_step_iter_zero_activates_calculated_grid_without_reading_sources() {
     assert_eq!(report.nlats_select, 2);
     assert_eq!(report.selected_cells, 2);
     assert_eq!(report.source_numpatch, None);
-    assert_eq!(report.is_in_refine[2][2], 1);
-    assert_eq!(report.is_in_refine[3][3], 1);
+    assert!(report.is_in_refine[2][2]);
+    assert!(report.is_in_refine[3][3]);
 }
 
 #[test]
@@ -131,6 +131,6 @@ fn refine_step_iter_positive_reads_specified_sources() {
     );
     assert_eq!(report.selected_cells, 4);
     assert_eq!(report.source_numpatch, Some(4));
-    assert_eq!(report.is_in_refine[2][2], 1);
-    assert_eq!(report.is_in_refine[3][3], 1);
+    assert!(report.is_in_refine[2][2]);
+    assert!(report.is_in_refine[3][3]);
 }

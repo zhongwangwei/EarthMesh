@@ -92,6 +92,12 @@ jobs:
         with:
           command: sdist
           args: --out dist
+      - name: Smoke-test locked sdist build and install
+        run: |
+          tar -tzf dist/*.tar.gz | grep -Eq '^[^/]+/Cargo\.lock$'
+          python3 -m venv /tmp/earthmesh-sdist
+          /tmp/earthmesh-sdist/bin/python -m pip install --no-deps dist/*.tar.gz
+          test "$(/tmp/earthmesh-sdist/bin/earthmesh_cli --version)" = "3.0.0-alpha2"
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist

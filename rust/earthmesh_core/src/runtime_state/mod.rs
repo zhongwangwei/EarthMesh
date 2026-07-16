@@ -63,7 +63,7 @@ pub struct MaskCounterState {
 /// globals or top-level `mkgrd` initialization assignments.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RuntimeScalarState {
-    pub rinit: f32,
+    pub rinit: f64,
     pub rinit8: f64,
     pub iunit: i32,
     pub io6: i32,

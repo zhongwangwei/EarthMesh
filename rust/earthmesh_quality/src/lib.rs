@@ -16,7 +16,6 @@ use earthmesh_geometry::{
 };
 
 pub mod coupling;
-pub mod hydro_coast;
 pub mod io;
 pub mod topology;
 
@@ -335,7 +334,7 @@ impl Default for QualityThresholds {
     fn default() -> Self {
         // Conservative: catastrophic topology = fail; suspicious geometry = warn.
         Self {
-            min_angle_warn_deg: 20.0,
+            min_angle_warn_deg: earthmesh_core::DEFAULT_MIN_ANGLE_WARN_DEG,
             min_angle_fail_deg: 5.0,
             angle_deviation_warn_deg: 35.0,
             aspect_ratio_warn: 4.0,
@@ -400,8 +399,9 @@ impl MeshQualityReport {
     /// Structured reasons why this candidate may not replace `baseline`.
     ///
     /// Level-valued metrics use ranks `pass=0`, `warn=1`, `fail=2`; a missing
-    /// candidate gate is rank `3`. Count and shape metrics retain their native
-    /// numeric values. This is the same guarded set used by
+    /// candidate gate is rank `3`; a candidate-only non-pass gate is compared
+    /// with an implicit pass baseline. Count and shape metrics retain their
+    /// native numeric values. This is the same guarded set used by
     /// [`Self::is_strict_improvement_over`].
     pub fn guarded_metric_regressions(&self, baseline: &Self) -> Vec<QualityMetricRegression> {
         fn push(
@@ -456,19 +456,28 @@ impl MeshQualityReport {
                 );
             }
         }
+        for candidate in &self.gates {
+            if candidate.level != QualityLevel::Pass
+                && !baseline
+                    .gates
+                    .iter()
+                    .any(|prior| prior.metric == candidate.metric)
+            {
+                push(
+                    &mut regressions,
+                    format!("gate.{}.level", candidate.metric),
+                    QualityMetricPreference::Lower,
+                    f64::from(quality_level_rank(QualityLevel::Pass)),
+                    f64::from(quality_level_rank(candidate.level)),
+                );
+            }
+        }
 
         let fail_gates = |report: &Self| {
             report
                 .gates
                 .iter()
                 .filter(|gate| gate.level == QualityLevel::Fail)
-                .count()
-        };
-        let warn_gates = |report: &Self| {
-            report
-                .gates
-                .iter()
-                .filter(|gate| gate.level == QualityLevel::Warn)
                 .count()
         };
         let fail_issues = |report: &Self| {
@@ -487,7 +496,6 @@ impl MeshQualityReport {
         };
         let discrete = [
             ("fail_gate_count", fail_gates(baseline), fail_gates(self)),
-            ("warn_gate_count", warn_gates(baseline), warn_gates(self)),
             (
                 "fail_topology_issue_count",
                 fail_issues(baseline),
@@ -1682,7 +1690,7 @@ fn collect_worst_cells(
                 ("zero_area".to_string(), 0.0, QualityLevel::Fail)
             }
             Err(_) => ("invalid_polygon".to_string(), 0.0, QualityLevel::Fail),
-            Ok(area) if area.minor_sr <= 1.0e-12 => {
+            Ok(area) if area.minor_sr * EARTH_RADIUS_KM * EARTH_RADIUS_KM <= 1.0e-12 => {
                 ("zero_area".to_string(), 0.0, QualityLevel::Fail)
             }
             Ok(area) => match worst_local_shape_defect(&ring, area, th) {
@@ -1929,6 +1937,26 @@ mod tests {
     }
 
     #[test]
+    fn small_positive_area_uses_one_zero_area_threshold() {
+        let delta = 5.0e-5;
+        let mesh = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(delta, 0.0),
+                Point::new(delta, delta),
+                Point::new(0.0, delta),
+            ],
+            cells: vec![square_cell(0, 1, 2, 3)],
+        };
+        let report = compute(&mesh, &QualityThresholds::default());
+        assert_eq!(report.geometry.zero_area_cell_count, 0);
+        assert!(!report
+            .worst_cells
+            .iter()
+            .any(|cell| cell.metric == "zero_area"));
+    }
+
+    #[test]
     fn invalid_vertex_index_is_fail() {
         let mut m = two_square_mesh();
         m.cells[0].vertices = vec![0, 1, 2, 99];
@@ -2131,6 +2159,40 @@ mod tests {
         assert!(regressions
             .iter()
             .any(|item| item.metric == "gate.cell_area_cv.level"));
+
+        let mut failed_baseline = baseline.clone();
+        failed_baseline.verdict = QualityLevel::Fail;
+        failed_baseline
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "aspect_ratio_max")
+            .unwrap()
+            .level = QualityLevel::Fail;
+        let mut warned_candidate = failed_baseline.clone();
+        warned_candidate.verdict = QualityLevel::Warn;
+        warned_candidate
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "aspect_ratio_max")
+            .unwrap()
+            .level = QualityLevel::Warn;
+        assert!(warned_candidate
+            .guarded_metric_regressions(&failed_baseline)
+            .is_empty());
+        assert!(warned_candidate.is_strict_improvement_over(&failed_baseline));
+
+        let mut added_warning = warned_candidate.clone();
+        added_warning.gates.push(GateResult {
+            metric: "candidate_only_warning".to_string(),
+            value: 1.0,
+            level: QualityLevel::Warn,
+            detail: "new warning".to_string(),
+        });
+        assert!(!added_warning.is_strict_improvement_over(&failed_baseline));
+
+        let mut topology_regressed = warned_candidate;
+        topology_regressed.topology.isolated_refined_cell_count += 1;
+        assert!(!topology_regressed.is_strict_improvement_over(&failed_baseline));
     }
 
     #[test]

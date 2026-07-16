@@ -13,8 +13,8 @@ pub struct AreaJudgeGridPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaJudgeExpandedGridReport {
-    pub is_in_domain: Vec<Vec<i32>>,
-    pub seaorland: Vec<Vec<i32>>,
+    pub is_in_domain: Vec<Vec<bool>>,
+    pub seaorland: Vec<Vec<bool>>,
     pub bounds: AreaJudgeSourceBounds,
     pub nlons_select: usize,
     pub nlats_select: usize,

@@ -3,11 +3,12 @@
 
 mod constants;
 pub use constants::{
-    deg_to_rad, rad_to_deg, EARTH_RADIUS_METERS, JTM_GRID, JTM_INIT, JTM_LBCP, JTM_PROG, JTM_VADJ,
-    JTM_WADJ, JTM_WSTN, JTU_GRID, JTU_INIT, JTU_LBCP, JTU_PROG, JTU_WADJ, JTU_WALL, JTU_WSTN,
-    JTV_GRID, JTV_INIT, JTV_LBCP, JTV_PROG, JTV_WADJ, JTV_WALL, JTV_WSTN, JTW_GRID, JTW_INIT,
-    JTW_LBCP, JTW_PROG, JTW_VADJ, JTW_WADJ, JTW_WSTN, MAX_REMOTE, MLOOPS, NLOOPS_M, NLOOPS_V,
-    NLOOPS_W, PATH_LEN, PI2, PI2_R8, PIO180, PIO180_R8, PIU180, PIU180_R8, PI_R8,
+    deg_to_rad, rad_to_deg, DEFAULT_MIN_ANGLE_WARN_DEG, EARTH_RADIUS_METERS, JTM_GRID, JTM_INIT,
+    JTM_LBCP, JTM_PROG, JTM_VADJ, JTM_WADJ, JTM_WSTN, JTU_GRID, JTU_INIT, JTU_LBCP, JTU_PROG,
+    JTU_WADJ, JTU_WALL, JTU_WSTN, JTV_GRID, JTV_INIT, JTV_LBCP, JTV_PROG, JTV_WADJ, JTV_WALL,
+    JTV_WSTN, JTW_GRID, JTW_INIT, JTW_LBCP, JTW_PROG, JTW_VADJ, JTW_WADJ, JTW_WSTN,
+    KM_PER_DEGREE_EQUATOR, MAX_REMOTE, MLOOPS, NLOOPS_M, NLOOPS_V, NLOOPS_W, PATH_LEN, PI2, PI2_R8,
+    PIO180, PIO180_R8, PIU180, PIU180_R8, PI_R8,
 };
 mod datalayers;
 pub use datalayers::{DataLayerConfig, DataLayerRole, DataLayersNamelist, ThresholdVar};
@@ -16,7 +17,13 @@ pub use datalayer_lowering::{
     lower_datalayers_namelist, LowerReport, LoweredDatalayers, RefineSwitchArray,
 };
 mod namelist_syntax;
-pub(crate) use namelist_syntax::*;
+pub(crate) use namelist_syntax::{
+    canonical_quote, parse_canonical_bool, parse_canonical_string, parse_f64, parse_f64_array,
+    parse_i32, parse_i32_canonical_1_based_array,
+};
+pub use namelist_syntax::{
+    namelist_assignments, namelist_has_section, rewrite_namelist_group_fields, NamelistAssignment,
+};
 mod mesh_memory;
 pub use mesh_memory::{
     DelaunayMemory, GridMemory, IjTabs, ItabM, ItabMd, ItabUd, ItabV, ItabW, ItabWd,
@@ -41,11 +48,9 @@ pub use runtime_state::{
     EarthRadii, EarthmeshRuntimeState, MaskCounterState, RuntimeScalarState, SourceGridState,
 };
 
-/// Unified path resolution + pre-run input checks shared by CLI and GUI.
-pub mod paths;
 /// Opt-in progress callback used by long engine loops.
 pub mod progress;
-/// Reproducible `run_manifest.json` record for one run.
+/// Diagnostic `run_manifest.json` record for one run.
 pub mod run_manifest;
 
 #[cfg(test)]

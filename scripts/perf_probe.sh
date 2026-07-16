@@ -23,8 +23,10 @@ echo "== 1/4 release 构建（本次加了 debug 符号，LTO 全量重建需要
 cargo build --manifest-path rust/earthmesh_cli/Cargo.toml --release || exit 1
 # macOS 内核按 inode 缓存代码签名，原地覆盖已存在的二进制会导致其被 SIGKILL。
 # 必须先删除再拷贝，换到新 inode。
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+[[ "$TARGET_DIR" = /* ]] || TARGET_DIR="$PWD/$TARGET_DIR"
 rm -f ./mkgrd.x
-cp rust/earthmesh_cli/target/release/earthmesh_cli ./mkgrd.x
+cp "$TARGET_DIR/release/earthmesh_cli" ./mkgrd.x
 
 echo "== 2/4 冒烟运行（quickstart 小算例，确认二进制正常启动）=="
 if ! ./mkgrd.x "$SMOKE" --quiet; then

@@ -44,12 +44,25 @@ pub fn read_cama_nextxy_window(
     let mut terminal_or_ocean = Vec::with_capacity(window.height);
     let mut valid_downstream_links = 0_usize;
     let mut terminal_or_ocean_links = 0_usize;
+    let mut invalid_downstream_links = 0_usize;
 
-    for logical_y in window.y_start..window.y_start + window.height {
+    let logical_y_end = window.y_start.checked_add(window.height).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa nextxy logical y overflow",
+        )
+    })?;
+    let x_byte_offset = window.x_start.checked_mul(item_size).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa nextxy x byte offset overflow",
+        )
+    })?;
+    for logical_y in window.y_start..logical_y_end {
         let storage_y = grid.storage_y_index(logical_y);
         let row_base = storage_y
             .checked_mul(row_stride)
-            .and_then(|offset| offset.checked_add(window.x_start * item_size))
+            .and_then(|offset| offset.checked_add(x_byte_offset))
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -71,7 +84,11 @@ pub fn read_cama_nextxy_window(
         let mut terminal_row = Vec::with_capacity(window.width);
         for (raw_x, raw_y) in raw_x_row.into_iter().zip(raw_y_row) {
             let is_terminal = raw_x <= 0 || raw_y <= 0;
-            if is_terminal {
+            let invalid = (raw_x > 0 && i64::from(raw_x) > grid.nx as i64)
+                || (raw_y > 0 && i64::from(raw_y) > grid.ny as i64);
+            if invalid {
+                invalid_downstream_links += 1;
+            } else if is_terminal {
                 terminal_or_ocean_links += 1;
             } else {
                 valid_downstream_links += 1;
@@ -83,6 +100,16 @@ pub fn read_cama_nextxy_window(
         next_x.push(converted_x);
         next_y.push(converted_y);
         terminal_or_ocean.push(terminal_row);
+    }
+
+    if invalid_downstream_links > 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "CaMa nextxy contains {invalid_downstream_links} invalid positive downstream links outside the {}x{} grid",
+                grid.nx, grid.ny
+            ),
+        ));
     }
 
     Ok(CamaNextxyWindowReport {

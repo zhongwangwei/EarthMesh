@@ -123,6 +123,9 @@ pub fn area_judge_minmax_range_make_one_based(
     if minlat_source == nlats_source.saturating_sub(1) {
         minlat_source += 1;
     }
+    if minlon_source > maxlon_source || maxlat_source > minlat_source {
+        return None;
+    }
 
     Some(AreaJudgeSourceBounds {
         minlon_source,

@@ -1,5 +1,4 @@
 use super::*;
-use std::{env, fs, process};
 
 fn sample() -> ProjectConfig {
     ProjectConfig {
@@ -43,6 +42,7 @@ fn sample() -> ProjectConfig {
         ],
         refinement: RefinementRecipe {
             enabled: true,
+            threshold_enabled: true,
             max_passes: 3,
             specified_circle: None,
             specified_bbox: None,
@@ -189,6 +189,11 @@ fn project_validation_rejects_empty_name() {
     p.metadata.name = "bad/name".into();
     let err = yaml_err(&p);
     assert!(err.contains("project metadata.name must not contain path separators"));
+
+    let mut p = sample();
+    p.metadata.name = "..".into();
+    let err = yaml_err(&p);
+    assert!(err.contains("project metadata.name must not be '.' or '..'"));
 }
 
 #[test]
@@ -205,6 +210,14 @@ fn project_validation_rejects_invalid_quality_gate() {
     p.quality.min_angle_deg = 0.0;
     let err = yaml_err(&p);
     assert!(err.contains("quality min_angle_deg must be > 0"));
+
+    for min_angle_deg in [180.0, 181.0] {
+        let mut p = sample();
+        p.quality.min_angle_deg = min_angle_deg;
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("quality min_angle_deg must be < 180"), "{err}");
+        assert!(p.try_lower().is_err());
+    }
 
     let mut p = sample();
     p.quality.auto_refine_batch_cells = 0;
@@ -233,6 +246,13 @@ fn project_validation_rejects_invalid_data_layers() {
     p.data_layers[1].id = p.data_layers[0].id.clone();
     let err = json_err(&p);
     assert!(err.contains("data layer id 'lc' is duplicated"));
+
+    let mut p = sample();
+    let mut duplicate = p.data_layers[1].clone();
+    duplicate.id = "lai_second".into();
+    p.data_layers.push(duplicate);
+    let err = json_err(&p);
+    assert!(err.contains("enabled threshold field 'lai' is duplicated"));
 
     let mut p = sample();
     p.data_layers.push(ProjectDataLayer {
@@ -331,11 +351,21 @@ fn project_validation_rejects_invalid_resolution() {
     assert!(err.contains("expert niter_refine override must be > 0"));
 
     p.expert.niter_refine = None;
-    p.expert.max_iter_spc = Some(10);
+    p.expert.max_iter_spc = Some(6);
     let err = yaml_err(&p);
-    assert!(err.contains("expert max_iter_spc override must be between 0 and 9"));
+    assert!(err.contains("expert max_iter_spc override must be between 0 and 5"));
 
     p.expert.max_iter_spc = None;
+    p.expert.halo = Some(vec![1; 10]);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert HALO override must contain 1 to 9 values"));
+
+    p.expert.halo = None;
+    p.expert.max_transition_row = Some(vec![1; 10]);
+    let err = yaml_err(&p);
+    assert!(err.contains("expert max_transition_row override must contain 1 to 9 values"));
+
+    p.expert.max_transition_row = None;
     p.expert.beta = Some(0.0);
     let err = yaml_err(&p);
     assert!(err.contains("expert beta override must be finite and > 0"));
@@ -344,6 +374,43 @@ fn project_validation_rejects_invalid_resolution() {
     p.expert.relax = Some(0.0);
     let err = yaml_err(&p);
     assert!(err.contains("expert relax override must be finite and > 0"));
+}
+
+#[test]
+fn enabled_refinement_rejects_zero_expert_level_overrides() {
+    let mut calculated = sample();
+    calculated.expert.max_iter_cal = Some(0);
+    let err = yaml_err(&calculated);
+    assert!(
+        err.contains(
+            "expert max_iter_cal override must be > 0 when calculated refinement is enabled"
+        ),
+        "{err}"
+    );
+
+    let mut specified = sample();
+    specified.refinement.threshold_enabled = false;
+    specified.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: 112.5,
+        e: 113.0,
+        s: 22.0,
+        n: 22.5,
+    });
+    specified.expert.max_iter_spc = Some(0);
+    let err = yaml_err(&specified);
+    assert!(
+        err.contains(
+            "expert max_iter_spc override must be > 0 when specified refinement is enabled"
+        ),
+        "{err}"
+    );
+
+    // Canonical namelists keep the inactive source at level zero. Preserve that
+    // representation when the corresponding source is not enabled.
+    specified.expert.max_iter_spc = None;
+    specified.expert.max_iter_cal = Some(0);
+    ProjectConfig::from_yaml(&specified.to_yaml().expect("yaml"))
+        .expect("zero is valid for the inactive calculated source");
 }
 
 #[test]
@@ -390,9 +457,9 @@ fn project_validation_rejects_invalid_refinement_passes() {
     let err = yaml_err(&p);
     assert!(err.contains("refinement max_passes must be > 0"));
 
-    p.refinement.max_passes = 10;
+    p.refinement.max_passes = 6;
     let err = json_err(&p);
-    assert!(err.contains("refinement max_passes must be <= 9"));
+    assert!(err.contains("refinement max_passes must be <= 5"));
 }
 
 #[test]
@@ -469,8 +536,8 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.refine.max_iter_cal, 3);
     assert_eq!(lowered.refine.niter_refine, 120);
     assert!(lowered.refine.niter_refine_specified);
-    assert_eq!(&lowered.refine.halo[..3], &[4, 4, 3]);
-    assert_eq!(&lowered.refine.max_transition_row[..3], &[5, 4, 3]);
+    assert_eq!(&lowered.refine.halo[1..4], &[4, 4, 3]);
+    assert_eq!(&lowered.refine.max_transition_row[1..4], &[5, 4, 3]);
     assert_eq!(lowered.refine.set_dis_type, "linear");
     assert_eq!(lowered.refine.num_rc, 1);
     assert_eq!(lowered.refine.vertex_pretect_layers, 2);
@@ -489,6 +556,42 @@ fn lower_maps_to_engine_config() {
     assert!(nml.contains("&hfield"));
     assert!(nml.contains("&quality"));
     assert!(nml.contains("&datalayers"));
+
+    let reparsed_quality = earthmesh_core::QualityNamelist::from_quality_namelist(&nml)
+        .expect("compiled project quality config should reparse");
+    assert_eq!(reparsed_quality, lowered.quality);
+
+    let reparsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        &nml,
+        &lowered.mkgrd.mesh_type,
+        &lowered.mkgrd.mode_grid,
+    )
+    .expect("compiled project refine config should reparse");
+    assert_eq!(&reparsed.halo[1..4], &[4, 4, 3]);
+    assert_eq!(&reparsed.max_transition_row[1..4], &[5, 4, 3]);
+}
+
+#[test]
+fn threshold_master_switch_keeps_landtype_available_without_calculated_refinement() {
+    let mut project = sample();
+    project.refinement.threshold_enabled = false;
+    project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
+        lon: 113.0,
+        lat: 22.5,
+        radius_km: 100.0,
+    });
+
+    let lowered = project.lower();
+    assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
+    assert!(!lowered.refine.refine_cal);
+    assert!(!lowered.refine.refine_num_landtypes);
+    assert!(!lowered.refine.refine_onelayer_lnd[0]);
+    assert!(lowered.refine.refine_spc);
+    assert_eq!(lowered.data_layers.layers.len(), 1);
+    assert!(matches!(
+        lowered.data_layers.layers[0].role,
+        earthmesh_core::DataLayerRole::LandType
+    ));
 }
 
 #[test]
@@ -1040,7 +1143,8 @@ fn km_resolution_and_coupling_round_trip() {
     assert_eq!(p, back);
     assert_eq!(p.lower().mkgrd.nxp, 80);
 
-    p.target.resolution = ResolutionSpec::ApproxDegree(100.0 / 111.32);
+    p.target.resolution =
+        ResolutionSpec::ApproxDegree(100.0 / earthmesh_core::KM_PER_DEGREE_EQUATOR);
     assert_eq!(p.lower().mkgrd.nxp, 80);
 }
 
@@ -1090,43 +1194,6 @@ fn coupling_config_lowers_overlay_and_feature_detection_options() {
     p.data_layers
         .retain(|layer| layer.role != ProjectLayerRole::LandType);
     assert!(p.try_lower().unwrap_err().contains("landtype layer"));
-}
-
-#[test]
-fn reproducibility_manifest_hashes_inputs() {
-    let dir = env::temp_dir().join(format!("em_repro_{}", process::id()));
-    fs::create_dir_all(&dir).expect("temp dir");
-    let f = dir.join("lai.nc");
-    fs::write(&f, b"hello").expect("write input");
-
-    let mut p = sample();
-    for l in p.data_layers.iter_mut() {
-        if l.id == "lai" {
-            l.path = f.display().to_string();
-            l.enabled = true;
-        } else if l.enabled {
-            l.path = f.display().to_string();
-        }
-    }
-    let m = p.reproducibility_manifest();
-    assert_eq!(m.schema_version, "3.0.0");
-    assert!(!m.tool_version.is_empty());
-    assert!(m.lowered_namelist.contains("&mkgrd"));
-
-    let lai = m
-        .inputs
-        .iter()
-        .find(|i| i.path.ends_with("lai.nc"))
-        .expect("lai input hashed");
-    assert_eq!(lai.bytes, 5);
-    // sha256("hello")
-    assert_eq!(
-        lai.sha256,
-        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-    );
-    assert!(m.to_json().expect("json").contains("sha256"));
-
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1180,17 +1247,23 @@ fn regional_bbox_hydro_coast_builds_an_explicit_postprocess_plan() {
         vec!["R2", "R3", "COAST_LAND", "COAST_OCEAN"]
     );
     assert_eq!(plan.max_level, 3);
+    p.target.resolution = ResolutionSpec::ApproxDegree(1.0);
+    assert_eq!(
+        p.hydro_execution_plan().unwrap().unwrap().target_dx_km,
+        earthmesh_core::KM_PER_DEGREE_EQUATOR
+    );
     p.hydro_coast.as_mut().unwrap().merit_stride = 2;
     assert!(p
         .validate()
         .unwrap_err()
         .contains("physical coast adjacency"));
     p.hydro_coast.as_mut().unwrap().merit_stride = 1;
-    p.refinement.max_passes = 9;
+    p.refinement.max_passes = 6;
     assert_eq!(
         p.hydro_execution_plan().unwrap().unwrap().max_level,
         METHOD_C_MAX_AUTO_REFINE_LEVEL
     );
+    p.refinement.max_passes = METHOD_C_MAX_AUTO_REFINE_LEVEL;
     p.try_lower().expect("hydro routing is a post-mesh stage");
     assert_eq!(
         project_hydro_output_dir("/runs/gba/output/gridfile.nc4"),
@@ -1312,23 +1385,4 @@ fn coupling_cama_root_round_trips_with_compatibility_alias() {
     let yaml = "fraction_method: PointSample\nidentify_coastline: false\nidentify_river_mouth: true\nriver_mouth_cama_root: /data/cama\n";
     let parsed: CoupledMeshConfig = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(parsed.cama_root.as_deref(), Some("/data/cama"));
-}
-
-#[test]
-fn reproducibility_manifest_rejects_unreadable_enabled_inputs() {
-    let mut p = sample();
-    for layer in &mut p.data_layers {
-        layer.enabled = false;
-    }
-    let layer = p
-        .data_layers
-        .iter_mut()
-        .find(|layer| layer.id == "lai")
-        .expect("lai layer");
-    layer.enabled = true;
-    layer.path = "/definitely/missing/earthmesh-input.nc".into();
-
-    let err = p.try_reproducibility_manifest().unwrap_err();
-    assert!(err.contains("earthmesh-input.nc"));
-    assert!(err.contains("fingerprint enabled input"));
 }

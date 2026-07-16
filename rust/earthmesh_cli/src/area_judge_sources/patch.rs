@@ -15,7 +15,7 @@ pub fn apply_area_judge_patch_sources_one_based(
     mask_patch_type: &str,
     iter: usize,
     ndm: usize,
-    seaorland: &mut [Vec<i32>],
+    seaorland: &mut [Vec<bool>],
     lon_vertex: &[f64],
     lat_vertex: &[f64],
     lon_i: &[f64],

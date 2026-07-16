@@ -50,16 +50,17 @@ pub fn expand_area_judge_grid_payload_one_based(
         ));
     }
 
-    let mut is_in_domain = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
-    let mut seaorland = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_domain = vec![vec![false; nlats_source + 1]; nlons_source + 1];
+    let mut seaorland = vec![vec![false; nlats_source + 1]; nlons_source + 1];
     for (lon_offset, lon_index) in
         (payload.bounds.minlon_source..=payload.bounds.maxlon_source).enumerate()
     {
         for (lat_offset, lat_index) in
             (payload.bounds.maxlat_source..=payload.bounds.minlat_source).enumerate()
         {
-            is_in_domain[lon_index][lat_index] = payload.is_in_area_select[lon_offset][lat_offset];
-            seaorland[lon_index][lat_index] = seaorland_select[lon_offset][lat_offset];
+            is_in_domain[lon_index][lat_index] =
+                payload.is_in_area_select[lon_offset][lat_offset] != 0;
+            seaorland[lon_index][lat_index] = seaorland_select[lon_offset][lat_offset] != 0;
         }
     }
 

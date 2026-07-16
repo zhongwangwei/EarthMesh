@@ -64,12 +64,12 @@ fn close_area_source_builds_is_in_area_grid_and_canonical_numpatch() {
         }
     );
     assert_eq!(report.numpatch, 4);
-    assert_eq!(report.is_in_area[181][90], 1);
-    assert_eq!(report.is_in_area[182][90], 1);
-    assert_eq!(report.is_in_area[181][91], 1);
-    assert_eq!(report.is_in_area[182][91], 1);
-    assert_eq!(report.is_in_area[180][90], 0);
-    assert_eq!(report.is_in_area[183][90], 0);
+    assert!(report.is_in_area[181][90]);
+    assert!(report.is_in_area[182][90]);
+    assert!(report.is_in_area[181][91]);
+    assert!(report.is_in_area[182][91]);
+    assert!(!report.is_in_area[180][90]);
+    assert!(!report.is_in_area[183][90]);
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn close_area_source_accepts_close_mesh_schema_without_refine_degree() {
     .expect("build close area source from close_Mesh_Save schema");
 
     assert_eq!(report.numpatch, 4);
-    assert_eq!(report.is_in_area[181][90], 1);
+    assert!(report.is_in_area[181][90]);
 }
 
 #[test]
@@ -199,6 +199,8 @@ fn close_area_source_accepts_subcell_polygon_like_canonical_empty_loop() {
     .expect("subcell close source should mirror Canonical zero-iteration behavior");
 
     assert_eq!(report.numpatch, 0);
+    assert!(report.bounds.minlon_source <= report.bounds.maxlon_source);
+    assert!(report.bounds.maxlat_source <= report.bounds.minlat_source);
 }
 
 #[test]

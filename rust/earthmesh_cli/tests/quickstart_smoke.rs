@@ -69,12 +69,12 @@ fn quickstart_runs_and_produces_gridfile() {
         tmp.display()
     );
 
-    // R2: every CLI run writes a reproducible manifest to the cwd.
-    assert!(
-        tmp.join("run_manifest.json").exists(),
-        "run_manifest.json not written to {}",
-        tmp.display()
-    );
+    // Every CLI run writes a versioned diagnostic manifest to the cwd.
+    let manifest_path = tmp.join("run_manifest.json");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", manifest_path.display()));
+    assert!(manifest.contains("\"schema_version\": 1"));
+    assert!(manifest.contains("\"reproducible\": false"));
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

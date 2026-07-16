@@ -3,7 +3,7 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 /// Source-mask state produced by an `IsInArea_*_Calculation` input file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaJudgeAreaSourceReport {
-    pub is_in_area: Vec<Vec<i32>>,
+    pub is_in_area: Vec<Vec<bool>>,
     pub bounds: AreaJudgeSourceBounds,
     pub numpatch: usize,
 }
@@ -34,7 +34,7 @@ pub struct AreaJudgePatchModifyReport {
 /// Domain mask state produced by `Area_judge` when `mask_domain_global` is true.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaJudgeDomainInitializationReport {
-    pub is_in_domain: Vec<Vec<i32>>,
+    pub is_in_domain: Vec<Vec<bool>>,
     pub bounds: AreaJudgeSourceBounds,
     pub numpatch: usize,
     pub nlons_select: usize,
@@ -44,7 +44,7 @@ pub struct AreaJudgeDomainInitializationReport {
 /// Result of the `Area_judge` sea/land classification over the domain bounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaJudgeSeaOrLandReport {
-    pub seaorland: Vec<Vec<i32>>,
+    pub seaorland: Vec<Vec<bool>>,
     pub sum_land_grid: i32,
 }
 

@@ -82,7 +82,7 @@ fn land_runner_reads_inputs_and_writes_patchtype_and_final_gridfile() {
     let report = earthmesh_cli::mask_postproc_domain::run_mask_postproc_land_domain(
         &plan,
         earthmesh_cli::mask_postproc_types::MaskPostprocLandRunOptions {
-            seaorland: &[vec![0, 0], vec![0, 0]],
+            seaorland: &[vec![false, false], vec![false, false]],
             minlon_dm_area: 10,
             maxlat_dm_area: 20,
             nlons_dm_select: 2,
@@ -134,7 +134,7 @@ fn land_runner_rejects_non_land_plan_before_writing_outputs() {
     let err = earthmesh_cli::mask_postproc_domain::run_mask_postproc_land_domain(
         &plan,
         earthmesh_cli::mask_postproc_types::MaskPostprocLandRunOptions {
-            seaorland: &[vec![0, 0], vec![0, 0]],
+            seaorland: &[vec![false, false], vec![false, false]],
             minlon_dm_area: 10,
             maxlat_dm_area: 20,
             nlons_dm_select: 2,

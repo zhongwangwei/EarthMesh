@@ -2,6 +2,7 @@ name: CI
 
 # Minimal-but-effective regression gate for EarthMesh v3.
 # - `fast`  : fmt + pure Rust crates (no NetCDF, no GUI). Seconds, no system deps.
+# - `gui`   : frontend syntax + Tauri fmt/clippy/tests with Linux webview deps.
 # - `heavy` : cli with system NetCDF (dynamic link, no source build).
 # Large MERIT-Hydro / external-data tests stay `#[ignore]` and never run here.
 
@@ -26,15 +27,44 @@ jobs:
         run: make fmt
       - name: Lint gate — clippy -D warnings, no-netcdf crates (reproduce with `make clippy`)
         run: make clippy
-      - name: Fast tests — core/geometry/mesh/quality/refine_planner (reproduce with `make test-fast`)
+      - name: Fast tests — core/geometry/hfield/mesh/quality/refine_planner/project
         run: make test-fast
       - name: How to reproduce a failure
         if: failure()
         run: |
           echo "::error::Fast gate failed. Reproduce locally:"
           echo "  make fmt        # formatting"
-          echo "  make clippy     # clippy -D warnings (core/geometry/mesh/quality/refine_planner)"
-          echo "  make test-fast  # core/geometry/mesh/quality/refine_planner (no NetCDF needed)"
+          echo "  make clippy     # clippy -D warnings (core/geometry/hfield/mesh/quality/refine_planner/project)"
+          echo "  make test-fast  # core/geometry/hfield/mesh/quality/refine_planner/project (no NetCDF needed)"
+
+  gui:
+    name: gui (JS + Tauri fmt/clippy/tests)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Tauri v2 Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Install rustfmt + clippy
+        run: rustup component add rustfmt clippy
+      - name: Frontend JavaScript drift/syntax gate
+        run: make check-gui-js
+      - name: Tauri format check
+        run: make fmt-gui
+      - name: Tauri lint gate
+        run: make clippy-gui
+      - name: Tauri command tests
+        run: make test-gui
 
   heavy:
     name: heavy (cli, system NetCDF)

@@ -1,4 +1,4 @@
-use earthmesh_cli::prelude::MkgrdTopLevelDispatchRunReport;
+use earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDispatchRunReport;
 
 pub(crate) fn print_top_level_dispatch_report(report: &MkgrdTopLevelDispatchRunReport) {
     match report {

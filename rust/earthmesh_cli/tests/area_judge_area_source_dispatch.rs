@@ -108,11 +108,11 @@ fn area_source_dispatch_reads_numbered_bbox_sources_and_merges_masks() {
         }
     );
     assert_eq!(report.numpatch, 8);
-    assert_eq!(report.is_in_area[2][2], 1);
-    assert_eq!(report.is_in_area[3][3], 1);
-    assert_eq!(report.is_in_area[5][5], 1);
-    assert_eq!(report.is_in_area[1][1], 0);
-    assert_eq!(report.is_in_area[6][6], 1);
+    assert!(report.is_in_area[2][2]);
+    assert!(report.is_in_area[3][3]);
+    assert!(report.is_in_area[5][5]);
+    assert!(!report.is_in_area[1][1]);
+    assert!(report.is_in_area[6][6]);
 }
 
 #[test]
@@ -156,8 +156,8 @@ fn area_source_dispatch_uses_three_digit_close_numbering() {
     .expect("dispatch close area source");
 
     assert_eq!(report.numpatch, 4);
-    assert_eq!(report.is_in_area[181][90], 1);
-    assert_eq!(report.is_in_area[182][90], 1);
-    assert_eq!(report.is_in_area[181][91], 1);
-    assert_eq!(report.is_in_area[182][91], 1);
+    assert!(report.is_in_area[181][90]);
+    assert!(report.is_in_area[182][90]);
+    assert!(report.is_in_area[181][91]);
+    assert!(report.is_in_area[182][91]);
 }

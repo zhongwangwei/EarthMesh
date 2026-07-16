@@ -5,11 +5,35 @@
 
 use earthmesh_cli::{
     hydro_delivery_cells::{
-        gridfile_cell_polygons_geojson, gridfile_cell_polygons_geojson_with_report,
+        gridfile_cell_polygons_geojson as try_gridfile_cell_polygons_geojson,
+        gridfile_cell_polygons_geojson_with_report as try_gridfile_cell_polygons_geojson_with_report,
     },
     unstructured_mesh_support::GridfileCellKind,
     unstructured_mesh_support::GridfileMeshPoints,
 };
+
+fn gridfile_cell_polygons_geojson(
+    mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> String {
+    try_gridfile_cell_polygons_geojson(mesh, kind, bbox, max_cells)
+        .expect("valid gridfile cell arrays")
+}
+
+fn gridfile_cell_polygons_geojson_with_report(
+    mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+) -> (
+    String,
+    earthmesh_cli::hydro_delivery_cells::GridfileCellExportReport,
+) {
+    try_gridfile_cell_polygons_geojson_with_report(mesh, kind, bbox, max_cells)
+        .expect("valid gridfile cell arrays")
+}
 
 fn empty_mesh() -> GridfileMeshPoints {
     GridfileMeshPoints {
@@ -62,6 +86,22 @@ fn tri_skips_degenerate_sentinel_triangles() {
     let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None);
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+}
+
+#[test]
+fn tri_skips_single_compact_sentinel_row() {
+    let mut mesh = empty_mesh();
+    mesh.m_lon = vec![0.0, 10.33];
+    mesh.m_lat = vec![0.0, 20.33];
+    mesh.w_lon = vec![0.0, 10.0, 11.0, 10.0];
+    mesh.w_lat = vec![0.0, 20.0, 20.0, 21.0];
+    mesh.m_to_w = vec![1, 1, 1, 2, 3, 4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"cell_id\": \"2\""), "{json}");
+    assert!(!json.contains("[0, 0]"), "sentinel corner leaked:\n{json}");
 }
 
 #[test]
@@ -139,6 +179,48 @@ fn hex_view_emits_polygon_from_w_to_m_corners() {
         assert!(json.contains(needle), "missing {needle} in:\n{json}");
     }
     assert!(json.contains("\"center_lon\": 10.5"), "{json}");
+}
+
+#[test]
+fn hex_skips_single_compact_sentinel_row() {
+    let mut mesh = empty_mesh();
+    mesh.m_lon = vec![0.0, 0.0, 1.0, 1.0, 0.0];
+    mesh.m_lat = vec![0.0, 0.0, 0.0, 1.0, 1.0];
+    mesh.w_lon = vec![0.0, 0.5];
+    mesh.w_lat = vec![0.0, 0.5];
+    mesh.w_to_m = vec![1, 1, 1, 1, 2, 3, 4, 5];
+    mesh.w_to_m_width = 4;
+    mesh.n_w = vec![1, 4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"cell_id\": \"2\""), "{json}");
+    assert!(
+        json.contains("[0, 0]"),
+        "physical origin corner missing:\n{json}"
+    );
+}
+
+#[test]
+fn hex_keeps_first_physical_w_cell_at_origin_after_single_sentinel() {
+    let mut mesh = empty_mesh();
+    mesh.m_lon = vec![0.0, -1.0, 1.0, 1.0, -1.0];
+    mesh.m_lat = vec![0.0, -1.0, -1.0, 1.0, 1.0];
+    mesh.w_lon = vec![0.0, 0.0];
+    mesh.w_lat = vec![0.0, 0.0];
+    mesh.w_to_m = vec![1, 1, 1, 1, 2, 3, 4, 5];
+    mesh.w_to_m_width = 4;
+    mesh.n_w = vec![1, 4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"cell_id\": \"2\""), "{json}");
+    assert!(
+        json.contains("\"center_lon\": 0"),
+        "physical origin cell missing:\n{json}"
+    );
 }
 
 #[test]
@@ -307,4 +389,26 @@ fn full_longitude_bbox_does_not_collapse_to_a_meridian() {
     );
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+}
+
+#[test]
+fn gridfile_export_rejects_mismatched_non_finite_and_invalid_arrays() {
+    let mut mesh = empty_mesh();
+    mesh.m_lon = vec![0.0];
+    mesh.m_lat = vec![];
+    mesh.w_lon = vec![0.0, 1.0, 0.0];
+    mesh.w_lat = vec![0.0, 0.0, 1.0];
+    mesh.m_to_w = vec![1, 2, 3];
+    assert!(try_gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None).is_err());
+
+    mesh.m_lat = vec![0.0];
+    mesh.w_lon[2] = f64::NAN;
+    assert!(try_gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None).is_err());
+
+    mesh.w_lon[2] = 0.0;
+    mesh.m_to_w = vec![1, 2];
+    assert!(try_gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None).is_err());
+
+    mesh.m_to_w = vec![1, 2, 4];
+    assert!(try_gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None).is_err());
 }

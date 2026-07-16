@@ -19,15 +19,16 @@ use cli_runtime::{now_epoch_secs, write_cli_run_manifest};
 
 fn main() -> ExitCode {
     let started = now_epoch_secs();
-    let command = env::args().collect::<Vec<_>>().join(" ");
-    // Skip pure help / no-arg invocations; every real run records a manifest.
-    let is_help = matches!(
-        env::args().nth(1).as_deref(),
-        None | Some("-h") | Some("--help")
+    let argv = env::args().collect::<Vec<_>>();
+    // Informational invocations have no run to reproduce and must not mutate
+    // the caller's working directory.
+    let is_informational = matches!(
+        argv.get(1).map(String::as_str),
+        None | Some("-h") | Some("--help") | Some("-V") | Some("--version")
     );
     let result = run_cli_command();
-    if !is_help {
-        write_cli_run_manifest(&command, started, &result);
+    if !is_informational {
+        write_cli_run_manifest(&argv, started, &result);
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,

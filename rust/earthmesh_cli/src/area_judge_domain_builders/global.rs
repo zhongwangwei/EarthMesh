@@ -15,10 +15,10 @@ pub fn initialize_area_judge_global_domain_one_based(
         ));
     }
 
-    let mut is_in_domain = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_domain = vec![vec![false; nlats_source + 1]; nlons_source + 1];
     for row in is_in_domain.iter_mut().take(nlons_source + 1).skip(1) {
         for value in row.iter_mut().take(nlats_source + 1).skip(1) {
-            *value = 1;
+            *value = true;
         }
     }
 

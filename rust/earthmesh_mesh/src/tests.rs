@@ -10,6 +10,7 @@ mod method_c_internal_u_ordering;
 mod method_c_local_refinement;
 mod method_c_nest_mrows;
 mod method_c_outputs;
+mod method_c_parallel_spring;
 mod method_c_parent_mrl;
 mod method_c_perim_fill3;
 mod method_c_perimeter;

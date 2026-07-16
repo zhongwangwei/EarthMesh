@@ -48,6 +48,14 @@ pub fn boundary_closed_curves_one_based(
     }
 
     let mut boundary_available = vec![true; boundary_order.len()];
+    let mut boundary_position = vec![usize::MAX; boundary_neighbors.len()];
+    for (position, &vertex) in boundary_order.iter().enumerate().skip(1) {
+        if let Some(slot) = boundary_position.get_mut(vertex) {
+            if *slot == usize::MAX {
+                *slot = position;
+            }
+        }
+    }
     let mut num_bdy_long = [0usize; 3];
     let mut close_curves = vec![Vec::new()];
     let mut n_close_curve = vec![0usize];
@@ -77,11 +85,10 @@ pub fn boundary_closed_curves_one_based(
                 io::Error::new(io::ErrorKind::InvalidInput, "empty boundary queue")
             })?;
             boundary_queue.push(selected_neighbor);
-            let selected_pos = boundary_order
-                .iter()
-                .enumerate()
-                .skip(1)
-                .find_map(|(pos, &vertex)| (vertex == selected_neighbor).then_some(pos))
+            let selected_pos = boundary_position
+                .get(selected_neighbor)
+                .copied()
+                .filter(|&position| position != usize::MAX)
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -98,11 +105,10 @@ pub fn boundary_closed_curves_one_based(
         }
 
         boundary_queue.push(boundary_end);
-        let end_pos = boundary_order
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find_map(|(pos, &vertex)| (vertex == boundary_end).then_some(pos))
+        let end_pos = boundary_position
+            .get(boundary_end)
+            .copied()
+            .filter(|&position| position != usize::MAX)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,

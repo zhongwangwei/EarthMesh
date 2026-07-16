@@ -93,10 +93,10 @@ fn restart_area_judge_reads_saved_domain_and_applies_patch_sources() {
     assert_eq!(report.domain.bounds.minlon_source, 2);
     assert_eq!(report.domain.numpatch, 4);
     assert_eq!(report.seaorland.sum_land_grid, 3);
-    assert_eq!(report.seaorland.seaorland[2][2], 0);
-    assert_eq!(report.seaorland.seaorland[2][3], 0);
-    assert_eq!(report.seaorland.seaorland[3][2], 0);
-    assert_eq!(report.seaorland.seaorland[3][3], 0);
+    assert!(!report.seaorland.seaorland[2][2]);
+    assert!(!report.seaorland.seaorland[2][3]);
+    assert!(!report.seaorland.seaorland[3][2]);
+    assert!(!report.seaorland.seaorland[3][3]);
     assert_eq!(
         report.patch.as_ref().expect("patch report").patched_cells,
         4
@@ -165,6 +165,6 @@ fn restart_area_judge_can_continue_calculated_refine_from_restored_domain() {
     let refine = report.calculated_refine.expect("calculated refine");
     assert_eq!(refine.bounds, report.domain.bounds);
     assert_eq!(refine.numpatch, 4);
-    assert_eq!(refine.is_in_area[2][2], 1);
-    assert_eq!(refine.is_in_area[3][3], 1);
+    assert!(refine.is_in_area[2][2]);
+    assert!(refine.is_in_area[3][3]);
 }

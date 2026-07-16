@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
+rayon = "1"
 
 # Numeric kernels retain algorithm-shaped data flow (multi-argument routines,
 # 1-based loops over parallel connectivity arrays, and flattened connectivity

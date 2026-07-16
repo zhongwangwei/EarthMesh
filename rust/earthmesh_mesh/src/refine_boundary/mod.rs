@@ -90,6 +90,11 @@ pub(crate) fn refine_boundary_closed_curves_one_based(
         ));
     }
 
+    let mut boundary_position = vec![usize::MAX; lbx_points + 1];
+    for (position, &cell) in boundary_order.iter().enumerate().skip(1) {
+        boundary_position[cell] = position;
+    }
+
     let mut available = vec![false; boundary_order.len()];
     for item in available.iter_mut().skip(1) {
         *item = true;
@@ -110,9 +115,10 @@ pub(crate) fn refine_boundary_closed_curves_one_based(
         let mut previous = start;
         while selected != end {
             curve.push(selected);
-            let selected_pos = boundary_order
-                .iter()
-                .position(|&cell| cell == selected)
+            let selected_pos = boundary_position
+                .get(selected)
+                .copied()
+                .filter(|&position| position != usize::MAX)
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -141,9 +147,10 @@ pub(crate) fn refine_boundary_closed_curves_one_based(
             selected = next;
         }
         curve.push(end);
-        let end_pos = boundary_order
-            .iter()
-            .position(|&cell| cell == end)
+        let end_pos = boundary_position
+            .get(end)
+            .copied()
+            .filter(|&position| position != usize::MAX)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,

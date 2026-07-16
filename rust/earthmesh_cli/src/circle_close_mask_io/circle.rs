@@ -238,3 +238,41 @@ pub(crate) fn validate_circle_mask(mask: &CircleMask) -> io::Result<()> {
         radius_km: mask.radius_km.clone(),
     })
 }
+
+pub(crate) fn validate_circle_mask_geographic(mask: &CircleMask) -> io::Result<()> {
+    validate_circle_mask(mask)?;
+    for (index, point) in mask.points.iter().enumerate() {
+        if !(-90.0..=90.0).contains(&point.lat) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "circle point {} latitude must be within [-90, 90] degrees",
+                    index + 1
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn circle_mask_defers_latitude_range_to_geographic_context() {
+        let mask = CircleMask {
+            refine_degree: 1,
+            points: vec![LonLatPoint {
+                lon: 0.0,
+                lat: 90.1,
+            }],
+            radius_km: vec![10.0],
+        };
+
+        validate_circle_mask(&mask).expect("Cartesian circle coordinates are not latitudes");
+        let error = validate_circle_mask_geographic(&mask)
+            .expect_err("invalid geographic latitude must fail");
+        assert!(error.to_string().contains("[-90, 90]"));
+    }
+}

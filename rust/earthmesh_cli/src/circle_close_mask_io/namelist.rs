@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::shared::parse_float_row;
 use super::types::{CircleMask, CloseMask};
+use super::{validate_circle_mask, validate_close_mask};
 use crate::{parse_value_after_equals, LonLatPoint};
 
 /// Parse the text `.nml` branch of `mkgrd.F90:circle_mask_make`.
@@ -45,11 +46,18 @@ pub fn parse_circle_mask_nml(
         });
         radius_km.push(values[2]);
     }
-    Ok(Some(CircleMask {
+    let mask = CircleMask {
         refine_degree,
         points,
         radius_km,
-    }))
+    };
+    validate_circle_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid circle mask namelist: {err}"),
+        )
+    })?;
+    Ok(Some(mask))
 }
 
 /// Parse the text `.nml` branch of `mkgrd.F90:close_mask_make`.
@@ -89,8 +97,52 @@ pub fn parse_close_mask_nml(
             lat: values[1],
         });
     }
-    Ok(Some(CloseMask {
+    let mask = CloseMask {
         refine_degree,
         points,
-    }))
+    };
+    validate_close_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid close mask namelist: {err}"),
+        )
+    })?;
+    Ok(Some(mask))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_case(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_{name}_{}_{}.nml",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn circle_namelist_preserves_cartesian_y_for_contextual_validation() {
+        let path = write_case(
+            "circle_invalid_lat",
+            "circle_num = 1\ncircle_refine = 1\n0 91 10\n",
+        );
+        let mask = parse_circle_mask_nml(&path, 5).unwrap().unwrap();
+        assert_eq!(mask.points[0].lat, 91.0);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn close_namelist_preserves_cartesian_y_for_contextual_validation() {
+        let path = write_case(
+            "close_invalid_lat",
+            "close_num = 3\nclose_refine = 1\n0 0\n1 0\n0 -91\n",
+        );
+        let mask = parse_close_mask_nml(&path, 5).unwrap().unwrap();
+        assert_eq!(mask.points[2].lat, -91.0);
+        let _ = fs::remove_file(path);
+    }
 }

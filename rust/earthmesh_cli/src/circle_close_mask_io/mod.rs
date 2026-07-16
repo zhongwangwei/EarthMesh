@@ -12,5 +12,7 @@ pub use close::{read_close_mask_netcdf, read_close_refine_netcdf, write_close_ma
 pub use namelist::{parse_circle_mask_nml, parse_close_mask_nml};
 pub use types::{CircleMask, CircleMesh, CloseMask};
 
-pub(crate) use circle::validate_circle_mask;
-pub(crate) use close::{close_mask_netcdf_has_refine, validate_close_mask};
+pub(crate) use circle::{validate_circle_mask, validate_circle_mask_geographic};
+pub(crate) use close::{
+    close_mask_netcdf_has_refine, validate_close_mask, validate_close_mask_geographic,
+};

@@ -12,11 +12,11 @@ fn temp_root(name: &str) -> PathBuf {
     path
 }
 
-fn one_based_seaorland(nx: usize, ny: usize) -> Vec<Vec<i32>> {
-    let mut values = vec![vec![0; ny + 1]; nx + 1];
+fn one_based_seaorland(nx: usize, ny: usize) -> Vec<Vec<bool>> {
+    let mut values = vec![vec![false; ny + 1]; nx + 1];
     for i in 1..=nx {
         for j in 1..=ny {
-            values[i][j] = 1;
+            values[i][j] = true;
         }
     }
     values
@@ -98,9 +98,9 @@ fn patch_dispatch_reads_canonical_numbered_bbox_sources_and_merges_bounds() {
             minlat_source: 6,
         })
     );
-    assert_eq!(seaorland[2][2], 0);
-    assert_eq!(seaorland[3][3], 0);
-    assert_eq!(seaorland[5][5], 0);
-    assert_eq!(seaorland[1][1], 1);
-    assert_eq!(seaorland[6][6], 0);
+    assert!(!seaorland[2][2]);
+    assert!(!seaorland[3][3]);
+    assert!(!seaorland[5][5]);
+    assert!(seaorland[1][1]);
+    assert!(!seaorland[6][6]);
 }

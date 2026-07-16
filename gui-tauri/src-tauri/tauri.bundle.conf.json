@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeBuildCommand": "node ../scripts/stage_tauri_sidecar.js"
+  },
+  "bundle": {
+    "externalBin": [
+      "binaries/earthmesh_cli"
+    ]
+  }
+}

@@ -13,11 +13,11 @@ fn temp_root(name: &str) -> PathBuf {
     path
 }
 
-fn one_based_seaorland(nx: usize, ny: usize) -> Vec<Vec<i32>> {
-    let mut values = vec![vec![0; ny + 1]; nx + 1];
+fn one_based_seaorland(nx: usize, ny: usize) -> Vec<Vec<bool>> {
+    let mut values = vec![vec![false; ny + 1]; nx + 1];
     for i in 1..=nx {
         for j in 1..=ny {
-            values[i][j] = 1;
+            values[i][j] = true;
         }
     }
     values
@@ -79,8 +79,8 @@ fn circle_patch_source_reads_netcdf_and_zeroes_only_cells_inside_radius() {
         }
     );
     assert_eq!(report.patched_cells, 1);
-    assert_eq!(seaorland[181][90], 0);
-    assert_eq!(seaorland[180][90], 1);
-    assert_eq!(seaorland[181][89], 1);
-    assert_eq!(seaorland[182][90], 1);
+    assert!(!seaorland[181][90]);
+    assert!(seaorland[180][90]);
+    assert!(seaorland[181][89]);
+    assert!(seaorland[182][90]);
 }

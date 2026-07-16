@@ -26,7 +26,7 @@ fn ngr_renew_core_deduplicates_new_vertices_compacts_triangles_and_maps_boundari
     cells_on_triangle[1] = [1, 2, 3];
     cells_on_triangle[2] = [2, 3, 4];
     cells_on_triangle[3] = [3, 4, 2];
-    cells_on_triangle[4] = [2, 5, 6];
+    cells_on_triangle[4] = [2, 5, 4];
     cells_on_triangle[5] = [1, 1, 1];
     cells_on_triangle[6] = [4, 6, 7];
     let bdy_refine = vec![5, 6, 7];
@@ -50,13 +50,44 @@ fn ngr_renew_core_deduplicates_new_vertices_compacts_triangles_and_maps_boundari
     assert_eq!(renewed.vertex_mapping[6], 5);
     assert_eq!(renewed.vertex_mapping[7], 6);
     assert_eq!(renewed.num_sjx, 5);
-    assert_eq!(renewed.cells_on_triangle[4], [2, 5, 5]);
+    assert_eq!(renewed.cells_on_triangle[4], [2, 5, 4]);
     assert_eq!(renewed.cells_on_triangle[5], [4, 5, 6]);
     assert_eq!(renewed.triangle_points[5], ll(6.0, 6.0));
     assert_eq!(renewed.boundary_refine, vec![5, 5, 6]);
     assert_eq!(renewed.boundary_refine_transition, vec![5, 6]);
-    assert_eq!(renewed.n_triangles_on_cell[5], 3);
-    assert_eq!(renewed.triangles_on_cell[5], vec![4, 4, 5]);
+    assert_eq!(renewed.n_triangles_on_cell[5], 2);
+    assert_eq!(renewed.triangles_on_cell[5], vec![4, 5]);
+}
+
+#[test]
+fn ngr_renew_core_rejects_triangle_collapsed_by_vertex_deduplication() {
+    let num_mp = vec![0, 1, 2];
+    let num_wp = vec![0, 2, 4];
+    let triangle_points = vec![ll(0.0, 0.0); 3];
+    let mut cell_points = vec![ll(0.0, 0.0); 5];
+    cell_points[1] = ll(0.0, 0.0);
+    cell_points[2] = ll(1.0, 0.0);
+    cell_points[3] = ll(2.0, 0.0);
+    cell_points[4] = cell_points[3];
+    let cells_on_triangle = vec![[0, 0, 0], [1, 2, 2], [2, 3, 4]];
+
+    let error = refine_ngr_renew_core_one_based(
+        2,
+        1,
+        &num_mp,
+        &num_wp,
+        &triangle_points,
+        &cell_points,
+        &cells_on_triangle,
+        &[],
+        &[],
+    )
+    .expect_err("deduplication must not leave a triangle with repeated vertices");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error
+        .to_string()
+        .contains("collapses after vertex deduplication"));
 }
 
 #[test]

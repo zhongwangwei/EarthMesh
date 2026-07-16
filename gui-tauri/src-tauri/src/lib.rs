@@ -5,9 +5,10 @@
 //! `window.__TAURI__.core.invoke(...)`.
 //!
 //! Deliberately hdf5-free: this process only builds/validates the project
-//! intent and lowers it to the engine namelist. Actual mesh generation is
-//! delegated to the discovered CLI; AutoRefine uses its authoritative
-//! `--project` closed loop, so the GUI never links netcdf.
+//! intent. Actual lowering and mesh generation are delegated to the discovered
+//! CLI through its authoritative `--project` workflow, so every quality policy,
+//! refinement source, and hydro mode has one implementation and the GUI never
+//! links netcdf.
 
 mod auto_refine;
 mod dto;
@@ -36,6 +37,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_criteria,
+            project_capabilities,
             scaffold_project,
             validate_project,
             set_project_metadata,

@@ -3,13 +3,85 @@
 //! both sides of the dateline. `select_merit_hydro_tiles` only reads file *names*
 //! (5° tile bounds), so this needs no NetCDF data — empty files suffice.
 
-use earthmesh_cli::{
-    merit_tile_selection::select_merit_hydro_tiles, merit_tile_selection::MeritLonLatBbox,
+use earthmesh_cli::merit_tile_selection::{
+    clip_merit_bbox_to_tile, select_merit_hydro_tiles, split_merit_query_bbox, MeritLonLatBbox,
 };
 use std::path::Path;
 
 fn touch(dir: &Path, name: &str) {
     std::fs::write(dir.join(name), b"").expect("touch tile file");
+}
+
+#[test]
+fn dateline_query_splits_and_clips_to_each_tile() {
+    let query = MeritLonLatBbox {
+        west: 178.0,
+        east: -178.0,
+        south: 11.0,
+        north: 14.0,
+    };
+    let windows = split_merit_query_bbox(query).expect("split crossing query");
+    assert_eq!(windows.len(), 2);
+    assert_eq!(windows[0].west, 178.0);
+    assert_eq!(windows[0].east, 180.0);
+    assert_eq!(windows[1].west, -180.0);
+    assert_eq!(windows[1].east, -178.0);
+
+    let east_tile = MeritLonLatBbox {
+        west: 175.0,
+        east: 180.0,
+        south: 10.0,
+        north: 15.0,
+    };
+    let west_tile = MeritLonLatBbox {
+        west: -180.0,
+        east: -175.0,
+        south: 10.0,
+        north: 15.0,
+    };
+    assert_eq!(
+        clip_merit_bbox_to_tile(windows[0], east_tile).expect("clip east"),
+        Some(windows[0])
+    );
+    assert_eq!(
+        clip_merit_bbox_to_tile(windows[1], west_tile).expect("clip west"),
+        Some(windows[1])
+    );
+    assert!(clip_merit_bbox_to_tile(windows[0], west_tile)
+        .expect("disjoint clip")
+        .is_none());
+}
+
+#[test]
+fn merit_query_rejects_non_finite_and_unphysical_bounds() {
+    for query in [
+        MeritLonLatBbox {
+            west: f64::NAN,
+            east: 1.0,
+            south: 0.0,
+            north: 1.0,
+        },
+        MeritLonLatBbox {
+            west: -181.0,
+            east: 1.0,
+            south: 0.0,
+            north: 1.0,
+        },
+        MeritLonLatBbox {
+            west: 0.0,
+            east: 1.0,
+            south: 2.0,
+            north: 1.0,
+        },
+        MeritLonLatBbox {
+            west: 1.0,
+            east: 1.0,
+            south: 0.0,
+            north: 1.0,
+        },
+    ] {
+        assert!(split_merit_query_bbox(query).is_err(), "accepted {query:?}");
+    }
 }
 
 fn names(paths: &[std::path::PathBuf]) -> Vec<String> {

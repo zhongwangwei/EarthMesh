@@ -27,12 +27,12 @@ fn method_c_one_based_state() -> (GridMemory, IjTabs) {
     grid.allocate_grid_lonlatmw(grid.nma + 1, grid.nva + 1, grid.nwa + 1);
 
     for im in 1..=grid.nma {
-        grid.glonm[im] = im as f32;
-        grid.glatm[im] = (im as f32) * 2.0;
+        grid.glonm[im] = im as f64;
+        grid.glatm[im] = (im as f64) * 2.0;
     }
     for iw in 1..=grid.nwa {
-        grid.glonw[iw] = (iw as f32) * 10.0;
-        grid.glatw[iw] = (iw as f32) * 20.0;
+        grid.glonw[iw] = (iw as f64) * 10.0;
+        grid.glatw[iw] = (iw as f64) * 20.0;
     }
 
     let mut tabs = IjTabs::allocate(grid.nma + 1, grid.nva + 1, grid.nwa + 1);

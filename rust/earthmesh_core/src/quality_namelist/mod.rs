@@ -1,5 +1,6 @@
 use crate::{
-    canonical_quote, parse_canonical_string, parse_f64, parse_i32, strip_canonical_comment,
+    canonical_quote, namelist_assignments, parse_canonical_string, parse_f64, parse_i32,
+    DEFAULT_MIN_ANGLE_WARN_DEG,
 };
 
 /// Quality-gate thresholds + on-violation policy, carried in an optional
@@ -28,7 +29,7 @@ impl Default for QualityNamelist {
     fn default() -> Self {
         // Keep in lock-step with earthmesh_quality::QualityThresholds::default().
         Self {
-            min_angle_warn_deg: 20.0,
+            min_angle_warn_deg: DEFAULT_MIN_ANGLE_WARN_DEG,
             min_angle_fail_deg: 5.0,
             angle_deviation_warn_deg: 35.0,
             aspect_ratio_warn: 4.0,
@@ -44,39 +45,14 @@ impl Default for QualityNamelist {
 }
 
 impl QualityNamelist {
-    /// Parse a `&quality` block. Lenient like the `&mkgrd` parser: unknown keys
-    /// are ignored and missing keys keep their default, so old namelists (no
-    /// `&quality` block) yield `default()`.
+    /// Parse a `&quality` block. Unknown keys are rejected so misspellings do
+    /// not silently select defaults. Missing known keys keep their default, and
+    /// old namelists without a `&quality` block still yield `default()`.
     pub fn from_quality_namelist(input: &str) -> Result<Self, String> {
         let mut config = Self::default();
-        let mut in_block = false;
-
-        for raw_line in input.lines() {
-            let line = strip_canonical_comment(raw_line)
-                .trim()
-                .trim_end_matches(',');
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with('&') {
-                in_block = line.eq_ignore_ascii_case("&quality");
-                continue;
-            }
-            if line == "/" {
-                in_block = false;
-                continue;
-            }
-            if !in_block {
-                continue;
-            }
-
-            let Some((left, right)) = line.split_once('=') else {
-                continue;
-            };
-            let Some(field) = left.trim().split_once('%').map(|(_, field)| field.trim()) else {
-                continue;
-            };
-            let value = right.trim().trim_end_matches(',');
+        for assignment in namelist_assignments(input, "quality")? {
+            let field = assignment.field.as_str();
+            let value = assignment.value.as_str();
 
             match field.to_ascii_lowercase().as_str() {
                 "min_angle_warn_deg" => config.min_angle_warn_deg = parse_f64(field, value)?,
@@ -94,11 +70,74 @@ impl QualityNamelist {
                 "worst_cells_limit" => config.worst_cells_limit = parse_i32(field, value)?,
                 "repair_batch_limit" => config.repair_batch_limit = parse_i32(field, value)?,
                 "on_violation" => config.on_violation = parse_canonical_string(value),
-                _ => {}
+                _ => return Err(format!("unknown &quality field '{field}'")),
             }
         }
 
+        config.validate()?;
+        config.on_violation = config.on_violation.trim().to_ascii_lowercase();
         Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("min_angle_warn_deg", self.min_angle_warn_deg),
+            ("min_angle_fail_deg", self.min_angle_fail_deg),
+            ("angle_deviation_warn_deg", self.angle_deviation_warn_deg),
+            ("aspect_ratio_warn", self.aspect_ratio_warn),
+            ("aspect_ratio_fail", self.aspect_ratio_fail),
+            ("cell_edge_cv_warn", self.cell_edge_cv_warn),
+            ("area_cv_warn", self.area_cv_warn),
+            (
+                "max_adjacent_resolution_ratio_warn",
+                self.max_adjacent_resolution_ratio_warn,
+            ),
+        ] {
+            if !value.is_finite() {
+                return Err(format!("quality {name} must be finite"));
+            }
+        }
+        if !(0.0..180.0).contains(&self.min_angle_warn_deg) {
+            return Err("quality min_angle_warn_deg must be between 0 and 180".to_string());
+        }
+        if !(0.0..180.0).contains(&self.min_angle_fail_deg) {
+            return Err("quality min_angle_fail_deg must be between 0 and 180".to_string());
+        }
+        if self.min_angle_fail_deg > self.min_angle_warn_deg {
+            return Err(
+                "quality min_angle_fail_deg must not exceed min_angle_warn_deg".to_string(),
+            );
+        }
+        if !(0.0..=180.0).contains(&self.angle_deviation_warn_deg) {
+            return Err("quality angle_deviation_warn_deg must be between 0 and 180".to_string());
+        }
+        if self.aspect_ratio_warn < 1.0 || self.aspect_ratio_fail < 1.0 {
+            return Err("quality aspect-ratio thresholds must be at least 1".to_string());
+        }
+        if self.aspect_ratio_warn > self.aspect_ratio_fail {
+            return Err("quality aspect_ratio_warn must not exceed aspect_ratio_fail".to_string());
+        }
+        if self.cell_edge_cv_warn < 0.0 || self.area_cv_warn < 0.0 {
+            return Err("quality coefficient-of-variation thresholds must be non-negative".into());
+        }
+        if self.max_adjacent_resolution_ratio_warn < 1.0 {
+            return Err(
+                "quality max_adjacent_resolution_ratio_warn must be at least 1".to_string(),
+            );
+        }
+        if self.worst_cells_limit < 0 {
+            return Err("quality worst_cells_limit must be non-negative".to_string());
+        }
+        if self.repair_batch_limit < 0 {
+            return Err("quality repair_batch_limit must be non-negative".to_string());
+        }
+        if !matches!(
+            self.on_violation.trim().to_ascii_lowercase().as_str(),
+            "warn" | "block" | "auto_refine"
+        ) {
+            return Err("quality on_violation must be warn, block, or auto_refine".to_string());
+        }
+        Ok(())
     }
 
     /// Serialize to a `&quality` block; `from_quality_namelist(&x.to_quality_namelist())`

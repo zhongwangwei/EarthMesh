@@ -6,6 +6,10 @@ mod read;
 use earthmesh_core::RefineConfig;
 
 pub use data_read::{data_read_onelayer_one_based, data_read_twolayer_one_based};
+pub(crate) use data_read::{
+    numeric_missing_values, reject_invalid_threshold_values, threshold_latitude_order,
+    threshold_longitude_coordinates, LatitudeOrder,
+};
 pub use groups::{
     threshold_read_atmos_one_based, threshold_read_lnd_one_based, threshold_read_ocn_one_based,
 };

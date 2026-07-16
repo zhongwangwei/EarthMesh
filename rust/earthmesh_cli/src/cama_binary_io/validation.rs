@@ -6,12 +6,7 @@ pub(crate) fn validate_cama_binary_window(
     grid: CamaBinaryGridSpec,
     window: CamaBinaryWindow,
 ) -> io::Result<()> {
-    if grid.nx == 0 || grid.ny == 0 || grid.grid_size_deg <= 0.0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "CaMa grid dimensions and grid_size_deg must be positive",
-        ));
-    }
+    grid.validate()?;
     if window.width == 0 || window.height == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

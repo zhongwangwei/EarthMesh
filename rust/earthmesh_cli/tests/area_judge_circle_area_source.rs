@@ -62,10 +62,10 @@ fn circle_area_source_builds_is_in_area_grid_and_unique_numpatch() {
         }
     );
     assert_eq!(report.numpatch, 1);
-    assert_eq!(report.is_in_area[181][90], 1);
-    assert_eq!(report.is_in_area[180][90], 0);
-    assert_eq!(report.is_in_area[181][89], 0);
-    assert_eq!(report.is_in_area[182][90], 0);
+    assert!(report.is_in_area[181][90]);
+    assert!(!report.is_in_area[180][90]);
+    assert!(!report.is_in_area[181][89]);
+    assert!(!report.is_in_area[182][90]);
 }
 
 #[test]

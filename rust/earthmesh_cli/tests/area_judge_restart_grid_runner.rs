@@ -63,15 +63,15 @@ fn restart_grid_runner_reads_file_and_expands_selected_domain_state() {
     assert_eq!(report.payload.bounds.minlon_source, 2);
     assert_eq!(report.expanded.nlons_select, 2);
     assert_eq!(report.expanded.nlats_select, 2);
-    assert_eq!(report.expanded.is_in_domain[2][1], 21);
-    assert_eq!(report.expanded.is_in_domain[2][2], 22);
-    assert_eq!(report.expanded.is_in_domain[3][1], 31);
-    assert_eq!(report.expanded.is_in_domain[3][2], 32);
-    assert_eq!(report.expanded.is_in_domain[1][1], 0);
-    assert_eq!(report.expanded.seaorland[2][1], 1);
-    assert_eq!(report.expanded.seaorland[2][2], 0);
-    assert_eq!(report.expanded.seaorland[3][1], 0);
-    assert_eq!(report.expanded.seaorland[3][2], 1);
+    assert!(report.expanded.is_in_domain[2][1]);
+    assert!(report.expanded.is_in_domain[2][2]);
+    assert!(report.expanded.is_in_domain[3][1]);
+    assert!(report.expanded.is_in_domain[3][2]);
+    assert!(!report.expanded.is_in_domain[1][1]);
+    assert!(report.expanded.seaorland[2][1]);
+    assert!(!report.expanded.seaorland[2][2]);
+    assert!(!report.expanded.seaorland[3][1]);
+    assert!(report.expanded.seaorland[3][2]);
 }
 
 #[test]

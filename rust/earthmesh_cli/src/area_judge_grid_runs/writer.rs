@@ -8,8 +8,8 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 
 pub(crate) fn write_area_judge_selected_grid_report(
     output: &Path,
-    is_in_area: &[Vec<i32>],
-    seaorland: Option<&[Vec<i32>]>,
+    is_in_area: &[Vec<bool>],
+    seaorland: Option<&[Vec<bool>]>,
     lon_i: &[f64],
     lat_i: &[f64],
     bounds: AreaJudgeSourceBounds,

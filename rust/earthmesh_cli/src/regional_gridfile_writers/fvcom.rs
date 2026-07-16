@@ -1,5 +1,7 @@
 use crate::read_unstructured_mesh_netcdf;
-use crate::unstructured_mesh_support::{mesh_canonical_id_for_row, mesh_row_for_canonical_id};
+use crate::unstructured_mesh_support::{
+    mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id,
+};
 use crate::validate_unstructured_mesh;
 use crate::write_fvcom_mesh_2dm;
 use crate::write_fvcom_ns_records;
@@ -22,15 +24,8 @@ pub(crate) fn write_fvcom_2dm_from_carved(
 ) -> io::Result<FvcomMesh2dmWriteReport> {
     crate::ensure_parent_dir(output)?;
     validate_unstructured_mesh(mesh)?;
-    let has_two_placeholders = |points: &[LonLatPoint]| {
-        points.len() > 2
-            && points[0].lon == 0.0
-            && points[0].lat == 0.0
-            && points[1].lon == 0.0
-            && points[1].lat == 0.0
-    };
-    let w_has_two_placeholders = has_two_placeholders(&mesh.w_points);
-    let m_has_two_placeholders = has_two_placeholders(&mesh.m_points);
+    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
+    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
     let mut new_id = vec![0usize; mesh.w_points.len() + 2];
     let mut nodes: Vec<(usize, LonLatPoint)> = Vec::new();
     let mut next = 1usize;

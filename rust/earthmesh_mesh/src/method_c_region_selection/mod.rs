@@ -1,8 +1,9 @@
 use crate::{
-    method_c_cartesian_xy_segment_distance, method_c_closed_corridor_contains_cartesian,
-    method_c_corridor_radius_at_segment, method_c_corridor_segment_distance_meters,
-    method_c_ec_ps_distance_meters, method_c_open_corridor_contains_cartesian,
-    xyz_to_lonlat_degrees, CartesianPoint, LonLatDegrees, MethodCRefinementRegion,
+    lonlat_degrees_to_unit_xyz, method_c_cartesian_xy_segment_distance,
+    method_c_closed_corridor_contains_cartesian, method_c_corridor_radius_at_segment,
+    method_c_corridor_segment_distance_meters, method_c_ec_ps_distance_meters,
+    method_c_open_corridor_contains_cartesian, xyz_to_lonlat_degrees, CartesianPoint,
+    LonLatDegrees, MethodCRefinementRegion,
 };
 
 impl MethodCRefinementRegion {
@@ -55,6 +56,24 @@ impl MethodCRefinementRegion {
             }
             Self::Polygon { points, .. } => lonlat_in_polygon(xyz_to_lonlat_degrees(point), points),
         }
+    }
+
+    /// Test a geographic point with the explicit Canonical Method-C metric.
+    ///
+    /// Circle radii use the legacy `ec_ps` polar-stereographic distance and
+    /// corridor radii use the legacy per-segment stereographic projection with
+    /// endpoint-radius interpolation. Bboxes and polygons preserve Canonical
+    /// lon/lat containment; polygon edges are planar after longitude unwrapping,
+    /// not spherical geodesics, and are unsuitable for polar-cap geometry.
+    ///
+    /// This entry point intentionally fixes the Earth radius to EarthMesh's
+    /// shared core constant so feature toggles cannot silently change the
+    /// interpretation of `radius_meters`.
+    pub fn contains_lonlat_canonical(&self, point: LonLatDegrees) -> bool {
+        self.contains_cartesian(
+            lonlat_degrees_to_unit_xyz(point),
+            earthmesh_core::EARTH_RADIUS_METERS,
+        )
     }
 
     pub(crate) fn close_to_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {

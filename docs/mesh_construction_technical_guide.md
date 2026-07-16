@@ -52,7 +52,7 @@
 | U 边 | `{ im[2], iw[..], iu[..], mrlu }` | 两端点、两侧面、邻边、边细化级 |
 | W 面（三角形） | `{ im[3], iu[3], iw[9], npoly, mrlw, mrlw_orig, mrow, ngr }` | 顶点/边/邻面、面细化级、过渡行号(isize)、代数 |
 
-不变量（`validate_topology` 强制）：`face.iu` 与 `edge.iw` 互逆互指；活跃三元组唯一；全球网格 Euler 示性数 χ=2。**12 个五边形顶点**（`impent[12]`）是二十面体拓扑的必然（Σ(6−npoly)=12），永不移动、永不消除。
+不变量（`validate_topology` 强制）：`face.iu` 与 `edge.iw` 互逆互指；活跃三元组唯一；全球网格 Euler 示性数 χ=2。**12 个五边形顶点**（`impent[12]`）是二十面体拓扑的必然（Σ(6−npoly)=12），其五价拓扑不会消除；它们与其他活跃 M 点一样参与弹簧位移（Canonical Fortran 中冻结 `impent` 的语句已被注释）。
 
 ### 1.3 grid_preprocess 侧结构
 
@@ -78,16 +78,16 @@
 
 目标：把菱形展开的非均匀三角边长驱向准均匀。**逐迭代计算**：
 
-1. 名义边长 `dist00 = β · 2πR / (5·NXP)`，其中 β=1.25（namelist beta），R 为网格半径；`disto12 = dist00 / 1.2`。平面模式（mdomain≥2）`dist00 = Δx·√(2/√3)`。
+1. 名义边长 `dist00 = β · 2πR / (5·NXP)`，其中 β 由 namelist 控制（当前配置默认 1.2；canonical 对拍案例常显式使用 1.0），R 为网格半径；`disto12 = dist00 / 1.2`。平面模式（mdomain≥2）`dist00 = Δx·√(2/√3)`。
 2. 每条边：`dx = f32(x₂−x₁)`（**刻意单精度截断**，模拟 EarthMesh canonical algorithm 无 kind 的 `real()`；下同），`dist = √(dx²+dy²+dz²)`。
 3. 对边的四条邻边（`EdgesOnedge_tri`/`iuun` 给出 iu1..iu4，即共享该边的两三角形的另四条边），用余弦定理算两对顶角的 2cos：
    `twocosphi₃ = (d₁²+d₂²−d²)/(d₁d₂)`，`twocosphi₄ = (d₃²+d₄²−d²)/(d₃d₄)`。
 4. `ratio = clamp(twocosphi₃+twocosphi₄, 0.15, 1.2)`；目标长 `distm = disto12 · ratio`（等边三角形时 2cos60°×2 = 2→clamp 到 1.2→distm=dist00，即上限恢复名义长；钝角/退化则收缩到最低 0.15/1.2·dist00≈0.125·dist00）。
 5. `frac_change = (distm − dist)/dist`；位移分量 `dx ← dx·frac_change`。
-6. 每个 M 点累加 `x += Σⱼ dirs(j)·dx(iuⱼ)`，`dirs = ±relax`（relax=0.035，符号取决于该点是边的 im[1] 还是 im[2]——两端点反向受力）。**Jacobi 结构**：位移全部来自迭代开始时的快照。
+6. 每个 M 点累加 `x += Σⱼ dirs(j)·dx(iuⱼ)`，`dirs = ±relax`（relax 由 namelist 控制，当前配置默认 0.04；canonical 对拍常用 0.035；符号取决于该点是边的 im[1] 还是 im[2]——两端点反向受力）。**Jacobi 结构**：位移全部来自迭代开始时的快照。
 7. 球面模式逐点投影回半径：`expansion = R/‖x‖`。
-8. 12 个五边形点（impent）**钉死不动**。
-9. 坐标以 f64 累加（r8 模拟），每迭代的 delta 经 f32 截断；全部迭代结束后整体 `x = f64(f32(x))` 一次（对应 EarthMesh canonical algorithm `xem(:) = real(xem8(:))`）。
+8. 包括 12 个五边形点（impent）在内的所有活跃 M 点都更新；Canonical Fortran 的五边形冻结分支是注释代码。
+9. 坐标以 f64 累加（r8 模拟），每迭代的边差分、距离、目标长和 delta 保留 Canonical default-`real` 的 f32 舍入；全部迭代结束后整体 `x = f64(f32(x))` 一次（对应 EarthMesh canonical algorithm `xem(:) = real(xem8(:))`）。
 
 迭代次数 namelist 控制（典型数千次）。已知理论性质：该法仅一阶最大范数收敛（Peixoto & Barros 2013 证伪了原论文的二阶声明）；自然弹簧长超临界值无稳定平衡——本实现的 clamp 与固定 β 避开该区。
 
@@ -206,11 +206,11 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 | 约定 | 细节 |
 |---|---|
 | 地球半径 | `earthmesh_core::EARTH_RADIUS_METERS = 6_371_229.0`（EarthMesh canonical algorithm `erad`），geometry 由其换算 km，hfield 直接复用/导出该常量 |
-| 混合精度 | 存储 f64；凡 EarthMesh canonical algorithm 写 `real(expr)`（无 kind）处，Rust 以 `as f32 as f64` 精确复刻（弹簧坐标差、投影 `_f32` 变体、迭代尾整体截断）。这是对拍的一部分，**不是**可随手"修复"的精度损失 |
+| 混合精度 | 公共坐标接口存储 f64；与 EarthMesh canonical default-real 直接对拍的 source-grid、global spring 和 nest spring 路径，在坐标差、距离、目标长、位移累加和最终坐标写回处以 `as f32 as f64` 复刻单精度语义。`_f32` 投影变体同样保持该契约；h-field nest 复用同一兼容 kernel，输入边长先量化到 f32。精度截断是对拍的一部分，不能静默替换为全 f64 |
 | 日界线 | 统一 ±360 单步校正（`CheckCrossing`/`unwrap_lon_around`/锚点展开）；跨界判据 = 极差 >180° |
 | 极点/反对径 | 所有 `acos/asin` 与 haversine 中间量显式 clamp 到合法区间；测地距优先 atan2 形式；反对径质心/中点因不唯一而返回 None/Err |
 | 定向 | CCW 基准 = `cross(v_i−c, v_{i+1}−c)·ĉ > 0`（球外视角），负则反转；退化面积 `max(0,·)` |
-| 确定性 | 无线程、固定遍历序、BTreeSet/稳定序打破平手；同输入逐位同输出是显式测试项 |
+| 确定性 | 拓扑与集合构造使用固定遍历序、BTreeSet/稳定序打破平手；global/nest spring 采用 Jacobi 双缓冲，并仅把互不重叠的 edge/point 输出槽交给 Rayon 并行，不做浮点并行归约。单槽内累加顺序固定，且有 1/2/4 线程逐位一致测试 |
 | 除零守卫 | 距离/面积/模长为零一律显式返回 None/Err（比两份 参考基线都严格） |
 
 ---

@@ -113,8 +113,8 @@ pub fn run_mkgrd_gridinit_global_namelist(
         let state = earthmesh_mesh::gridinit_voronoi_state_canonical(
             nxp,
             niter,
-            f64::from(config.beta),
-            f64::from(config.relax),
+            config.beta,
+            config.relax,
             max_tris,
         )?;
         let gridfile = write_gridfile_from_one_based_state(

@@ -28,8 +28,8 @@ fn area_judge_grid_writer_saves_canonical_selected_bounds_and_restart_aliases() 
     let root = temp_root("area_judge_grid_writer");
     let output = root.join("IsInDmArea_grid.nc4");
     let area_grid = one_based_grid(4, 4);
-    let mut seaorland = one_based_grid(4, 4);
-    seaorland[2][2] = 0;
+    let mut seaorland = vec![vec![true; 5]; 5];
+    seaorland[2][2] = false;
     let longitude = vec![f64::NAN, 10.0, 20.0, 30.0, 40.0];
     let latitude = vec![f64::NAN, 50.0, 40.0, 30.0, 20.0];
 
@@ -67,7 +67,7 @@ fn area_judge_grid_writer_saves_canonical_selected_bounds_and_restart_aliases() 
     );
     assert_eq!(
         read_i32_2d(&file, "seaorland_select"),
-        vec![21, 0, 23, 31, 32, 33]
+        vec![1, 0, 1, 1, 1, 1]
     );
 }
 

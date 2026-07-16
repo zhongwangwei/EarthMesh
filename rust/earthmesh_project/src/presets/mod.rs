@@ -245,6 +245,7 @@ impl ProjectConfig {
             data_layers,
             refinement: RefinementRecipe {
                 enabled: refinement_enabled,
+                threshold_enabled: true,
                 max_passes: if refinement_enabled { 3 } else { 0 },
                 specified_circle: None,
                 specified_bbox: None,

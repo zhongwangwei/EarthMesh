@@ -2,6 +2,7 @@ use crate::cama_binary_io::{CamaLonLatBbox, CamaReachClassificationThresholds};
 use crate::cama_reach_inventory::{
     classify_cama_reach_record, read_cama_reach_inventory_from_map_dir,
 };
+use crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows;
 use crate::{
     classify_area_judge_landtype_one_based, read_unstructured_mesh_netcdf,
     sample_landtype_values_for_points_one_based, AreaJudgeLandtypeClass, ColmSurfaceCounts,
@@ -38,6 +39,17 @@ struct RiverMouthSignal {
     class: String,
     fraction: f64,
     area_m2: f64,
+}
+
+/// CoLM's coupling contract defines `coastal_fraction` as the ocean share of a
+/// mixed cell, so `land_fraction = 1 - coastal_fraction` remains valid for both
+/// land-dominant and ocean-dominant coast cells.
+fn colm_coastal_fraction(has_coast: bool, ocean_fraction: f64) -> f64 {
+    if has_coast {
+        ocean_fraction
+    } else {
+        0.0
+    }
 }
 
 pub fn write_colm_coupling_csv_from_mesh(
@@ -168,11 +180,7 @@ pub fn write_colm_coupling_csv_from_mesh_with_options(
             lon = cell.center.lon,
             lat = cell.center.lat,
             coast_class = if has_coast { "COAST" } else { "none" },
-            coastal_fraction = if has_coast {
-                land_fraction.min(ocean_fraction)
-            } else {
-                0.0
-            },
+            coastal_fraction = colm_coastal_fraction(has_coast, ocean_fraction),
         ));
     }
     crate::ensure_parent_dir(output_csv.as_ref())?;
@@ -187,15 +195,8 @@ struct CouplingCell {
 }
 
 fn coupling_cells(mesh: &UnstructuredMesh, mode_grid: &str) -> io::Result<Vec<CouplingCell>> {
-    let has_two_placeholders = |points: &[LonLatPoint]| {
-        points.len() > 2
-            && points[0].lon == 0.0
-            && points[0].lat == 0.0
-            && points[1].lon == 0.0
-            && points[1].lat == 0.0
-    };
-    let m_has_two_placeholders = has_two_placeholders(&mesh.m_points);
-    let w_has_two_placeholders = has_two_placeholders(&mesh.w_points);
+    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
+    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
     let mut cells = Vec::new();
     match mode_grid.trim() {
         "tri" => {
@@ -426,7 +427,7 @@ fn load_river_mouth_signals(
 
 #[cfg(test)]
 mod tests {
-    use super::{conservative_land_fraction, point_in_polygon};
+    use super::{colm_coastal_fraction, conservative_land_fraction, point_in_polygon};
     use crate::LonLatPoint;
     use earthmesh_geometry::Point;
 
@@ -462,5 +463,15 @@ mod tests {
             ],
             Point::new(1.0, 1.0)
         ));
+    }
+
+    #[test]
+    fn colm_coastal_fraction_preserves_land_fraction_for_either_dominance() {
+        let land_dominant_ocean_fraction = colm_coastal_fraction(true, 0.2);
+        let ocean_dominant_ocean_fraction = colm_coastal_fraction(true, 0.8);
+
+        assert!((1.0 - land_dominant_ocean_fraction - 0.8).abs() < f64::EPSILON);
+        assert!((1.0 - ocean_dominant_ocean_fraction - 0.2).abs() < f64::EPSILON);
+        assert_eq!(colm_coastal_fraction(false, 0.8), 0.0);
     }
 }

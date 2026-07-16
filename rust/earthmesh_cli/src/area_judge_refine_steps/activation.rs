@@ -6,10 +6,13 @@ use earthmesh_mesh::AreaJudgeSourceBounds;
 
 /// Copy calculated refine state into the active refine state for
 /// `MOD_Area_judge.F90:Area_judge_refine(iter == 0)`.
-pub fn activate_area_judge_calculated_refine_one_based(
-    is_in_refine_calculated: &[Vec<i32>],
+pub fn activate_area_judge_calculated_refine_one_based<T>(
+    is_in_refine_calculated: &[Vec<T>],
     bounds: AreaJudgeSourceBounds,
-) -> io::Result<AreaJudgeRefineActivationReport> {
+) -> io::Result<AreaJudgeRefineActivationReport>
+where
+    T: Copy + Into<i32>,
+{
     if bounds.maxlon_source < bounds.minlon_source || bounds.minlat_source < bounds.maxlat_source {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -35,11 +38,17 @@ pub fn activate_area_judge_calculated_refine_one_based(
             (bounds.minlon_source..=bounds.maxlon_source)
                 .map(move |lon_index| (lon_index, lat_index))
         })
-        .filter(|(lon_index, lat_index)| is_in_refine_calculated[*lon_index][*lat_index] != 0)
+        .filter(|(lon_index, lat_index)| {
+            is_in_refine_calculated[*lon_index][*lat_index].into() != 0
+        })
         .count();
+    let is_in_refine = is_in_refine_calculated
+        .iter()
+        .map(|row| row.iter().map(|value| (*value).into() != 0).collect())
+        .collect();
 
     Ok(AreaJudgeRefineActivationReport {
-        is_in_refine: is_in_refine_calculated.to_vec(),
+        is_in_refine,
         bounds,
         nlons_select,
         nlats_select,

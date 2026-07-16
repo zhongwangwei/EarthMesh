@@ -3,7 +3,8 @@ use crate::{
     ProjectConfig, ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
 };
 use earthmesh_core::{
-    DataLayerConfig, DataLayersNamelist, EarthmeshConfig, QualityNamelist, RefineConfig,
+    DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
+    RefineConfig,
 };
 
 /// The L3 engine execution plan produced by [`ProjectConfig::lower`].
@@ -155,8 +156,22 @@ impl ProjectConfig {
 
         // Data layers drive landtype_file + refine switches (core lowering).
         let dl = self.data_layers_namelist();
-        dl.lower_into(&mut mkgrd, &mut refine);
-        apply_threshold_values(&mut refine, self.target.kind, &self.data_layers);
+        let lowering_layers = if self.refinement.threshold_enabled {
+            dl.clone()
+        } else {
+            DataLayersNamelist {
+                layers: dl
+                    .layers
+                    .iter()
+                    .filter(|layer| !matches!(layer.role, DataLayerRole::ThresholdField(_)))
+                    .cloned()
+                    .collect(),
+            }
+        };
+        lowering_layers.lower_into(&mut mkgrd, &mut refine);
+        if self.refinement.threshold_enabled {
+            apply_threshold_values(&mut refine, self.target.kind, &self.data_layers);
+        }
         // Refinement runs only when a real source supplies data: thresholds,
         // landcover class-count refinement for land/coupled/earth targets, or a
         // specified mask. Hydro folders still do not drive mkgrd refinement.
@@ -266,7 +281,7 @@ impl ProjectConfig {
             mkgrd,
             refine,
             hfield,
-            data_layers: dl,
+            data_layers: lowering_layers,
             quality: self.quality_namelist(),
         })
     }
@@ -279,7 +294,7 @@ impl ProjectConfig {
 }
 
 fn apply_i32_prefix(target: &mut [i32; 10], values: &[i32]) {
-    for (slot, value) in target.iter_mut().zip(values.iter().copied()) {
+    for (slot, value) in target.iter_mut().skip(1).zip(values.iter().copied()) {
         *slot = value;
     }
 }

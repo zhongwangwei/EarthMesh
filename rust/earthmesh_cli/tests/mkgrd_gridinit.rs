@@ -600,7 +600,7 @@ fn run_mkgrd_gridinit_global_matches_canonical_nxp64_gridfile_fixture() {
     .expect("write NXP64 namelist");
 
     let report = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist(
-        &namelist, &root, 100,
+        &namelist, &root, 100_000,
     )
     .expect("run Rust NXP64 mkgrd gridinit path");
     assert_eq!(report.gridfile.sjx_points, 81921);
@@ -635,21 +635,35 @@ fn run_mkgrd_gridinit_global_matches_canonical_nxp64_gridfile_fixture() {
             .expect("produced variable")
             .get_values::<f64, _>(..)
             .expect("read produced variable");
-        let expected = expected
+        let expected_latitudes = match var_name {
+            "GLONM" => Some("GLATM"),
+            "GLONW" => Some("GLATW"),
+            _ => None,
+        }
+        .map(|latitude_name| {
+            expected
+                .variable(latitude_name)
+                .expect("expected latitude variable")
+                .get_values::<f64, _>(..)
+                .expect("read expected latitude variable")
+        });
+        let expected_values = expected
             .variable(var_name)
             .expect("expected variable")
             .get_values::<f64, _>(..)
             .expect("read expected variable");
         for index in [0usize, 1, 2, 3, 4, actual.len() / 2, actual.len() - 1] {
-            let tolerance = if var_name.starts_with("GLO") && expected[index].abs() > 179.9 {
+            let tolerance = if var_name.starts_with("GLO") && expected_values[index].abs() > 179.9 {
                 5.0e-4
             } else {
                 2.0e-4
             };
-            if (var_name.starts_with("GLO") && expected[index].abs() < 89.999)
-                || var_name.starts_with("GLA")
+            let longitude_is_defined = expected_latitudes
+                .as_ref()
+                .is_none_or(|latitudes| latitudes[index].abs() < 89.999);
+            if var_name.starts_with("GLA") || (var_name.starts_with("GLO") && longitude_is_defined)
             {
-                assert_close(actual[index], expected[index], tolerance);
+                assert_close(actual[index], expected_values[index], tolerance);
             }
         }
     }

@@ -12,7 +12,7 @@ use crate::{
 /// domain land mask in the same row-major layout as `patchtypes_select`.
 pub fn build_land_patchtypes_one_based(
     contain: &ContainMesh,
-    seaorland: &[Vec<i32>],
+    seaorland: &[Vec<bool>],
     minlon_dm_area: i32,
     maxlat_dm_area: i32,
     nlons_dm_select: usize,
@@ -81,7 +81,7 @@ pub fn build_land_patchtypes_one_based(
                 nlons_dm_select,
                 nlats_dm_select,
             )?;
-            seaorland[lon_idx][lat_idx] = 0;
+            seaorland[lon_idx][lat_idx] = false;
             patchtypes_select[lon_idx][lat_idx] =
                 i32::try_from(canonical_cell_id).map_err(|_| {
                     io::Error::new(
@@ -95,7 +95,7 @@ pub fn build_land_patchtypes_one_based(
     let mut filled_ignored_land_pixels = 0usize;
     for lat_idx in 0..nlats_dm_select {
         for lon_idx in 0..nlons_dm_select {
-            if seaorland[lon_idx][lat_idx] == 0 {
+            if !seaorland[lon_idx][lat_idx] {
                 continue;
             }
             let mut inherited_patch = if lat_idx > 0 {
@@ -123,7 +123,7 @@ pub fn build_land_patchtypes_one_based(
                 ));
             }
             patchtypes_select[lon_idx][lat_idx] = inherited_patch;
-            seaorland[lon_idx][lat_idx] = 0;
+            seaorland[lon_idx][lat_idx] = false;
             filled_ignored_land_pixels += 1;
         }
     }

@@ -68,6 +68,90 @@ fn method_c_circle_region_uses_canonical_polar_stereographic_distance() {
 }
 
 #[test]
+fn canonical_lonlat_entrypoint_makes_radius_metric_explicit() {
+    let region = MethodCRefinementRegion::Circle {
+        center: LonLatDegrees::new(0.0, 0.0),
+        radius_meters: 5_000_000.0,
+        level: 1,
+    };
+    let point = LonLatDegrees::new(rad_to_deg(0.75), 0.0);
+
+    assert_eq!(
+        region.contains_lonlat_canonical(point),
+        region.contains_cartesian(
+            lonlat_degrees_to_unit_xyz(point),
+            earthmesh_core::EARTH_RADIUS_METERS
+        )
+    );
+    assert!(!region.contains_lonlat_canonical(point));
+}
+
+#[test]
+fn canonical_polygon_exposes_planar_high_latitude_warning_without_changing_semantics() {
+    let polygon = MethodCRefinementRegion::Polygon {
+        points: vec![
+            LonLatDegrees::new(-20.0, 80.0),
+            LonLatDegrees::new(20.0, 80.0),
+            LonLatDegrees::new(0.0, 85.0),
+        ],
+        level: 1,
+    };
+
+    polygon
+        .validate()
+        .expect("legacy planar polygon stays valid");
+    let warning = polygon
+        .canonical_geometry_warning()
+        .expect("Canonical polygons must disclose planar lon/lat semantics");
+    assert!(warning.contains("planar"));
+    assert!(warning.contains("pole"));
+}
+
+#[test]
+fn method_c_circle_region_resolves_sub_f32_boundary_offsets() {
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let center = LonLatDegrees::new(0.0, 0.0);
+    let inner = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
+    let outer = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.000_000_01, 0.0));
+    let inner_distance = method_c_ec_ps_distance_meters(inner, center, radius);
+    let outer_distance = method_c_ec_ps_distance_meters(outer, center, radius);
+    let region = MethodCRefinementRegion::Circle {
+        center,
+        radius_meters: 0.5 * (inner_distance + outer_distance),
+        level: 1,
+    };
+
+    assert!(outer_distance > inner_distance);
+    assert!(region.contains_cartesian(inner, radius));
+    assert!(!region.contains_cartesian(outer, radius));
+}
+
+#[test]
+fn method_c_stereographic_regions_reject_antipodal_singularity() {
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let antipode = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(180.0, 0.0));
+    let near_antipode = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(179.999_999, 0.0));
+    let center = LonLatDegrees::new(0.0, 0.0);
+    let circle = MethodCRefinementRegion::Circle {
+        center,
+        radius_meters: 2_000_000.0,
+        level: 1,
+    };
+    let corridor = MethodCRefinementRegion::Corridor {
+        points: vec![LonLatDegrees::new(-1.0, 0.0), LonLatDegrees::new(1.0, 0.0)],
+        radius_meters: vec![2_000_000.0, 2_000_000.0],
+        level: 1,
+    };
+
+    assert!(method_c_ec_ps_distance_meters(antipode, center, radius).is_infinite());
+    assert!(method_c_ec_ps_distance_meters(near_antipode, center, radius).is_infinite());
+    assert!(!circle.contains_cartesian(antipode, radius));
+    assert!(!circle.contains_cartesian(near_antipode, radius));
+    assert!(!corridor.contains_cartesian(antipode, radius));
+    assert!(!corridor.contains_cartesian(near_antipode, radius));
+}
+
+#[test]
 fn method_c_region_boundaries_use_canonical_strict_less_than_radius() {
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
     let center = LonLatDegrees::new(0.0, 0.0);

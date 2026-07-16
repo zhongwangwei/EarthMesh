@@ -176,7 +176,10 @@ pub fn build_coupling_map(
             class,
             CoupledCellClass::RiverMouth | CoupledCellClass::Estuary
         ) {
-            if let Some(ocean) = cell.outlet_ocean_cell {
+            if let Some(ocean) = cell
+                .outlet_ocean_cell
+                .filter(|&ocean| valid_outlet_ocean_cell(cells, classes, ci, ocean))
+            {
                 maps.push(CouplingMap {
                     land_cell_id: ci,
                     ocean_cell_id: ocean,
@@ -229,6 +232,23 @@ pub fn build_coupling_map(
         }
     }
     maps
+}
+
+fn valid_outlet_ocean_cell(
+    cells: &[CoupledCellInput],
+    classes: &[CoupledCellClass],
+    source: usize,
+    outlet: usize,
+) -> bool {
+    source != outlet
+        && outlet < cells.len()
+        && cells
+            .get(source)
+            .is_some_and(|cell| cell.neighbors.contains(&outlet))
+        && matches!(
+            classes.get(outlet),
+            Some(CoupledCellClass::Ocean | CoupledCellClass::MixedCoast)
+        )
 }
 
 /// Max over source cells of `(sum of outgoing exchange weight) - 1`, clamped at
@@ -361,7 +381,10 @@ pub fn build_coupling_quality(
 
         if cell.is_river_mouth {
             river_mouth_total += 1;
-            if cell.outlet_ocean_cell.is_some() {
+            if cell
+                .outlet_ocean_cell
+                .is_some_and(|outlet| valid_outlet_ocean_cell(cells, classes, ci, outlet))
+            {
                 river_mouth_matched += 1;
             }
         }
@@ -674,6 +697,73 @@ mod tests {
         let r = build_coupling_quality(&cells, &classes, &[], &CoupledThresholds::default());
         assert!(r.outlet_matching_error > 0.0);
         assert!(r.river_ocean_connectivity_score < 1.0);
+    }
+
+    #[test]
+    fn invalid_outlet_id_is_not_counted_as_an_ocean_match() {
+        let cells = vec![
+            CoupledCellInput {
+                fractions: CoupledCellFractions {
+                    land_fraction: 0.7,
+                    ocean_fraction: 0.3,
+                    river_fraction: 0.4,
+                    ..Default::default()
+                },
+                neighbors: vec![1],
+                is_river_mouth: true,
+                outlet_ocean_cell: Some(99),
+                ..Default::default()
+            },
+            CoupledCellInput {
+                neighbors: vec![0],
+                ..cell(0.0, 1.0)
+            },
+        ];
+        let classes = classify_all(&cells, &CoupledThresholds::default());
+        let maps = build_coupling_map(&cells, &classes);
+        assert!(
+            maps.iter()
+                .all(|map| map.coupling_type != CouplingType::RiverOutlet),
+            "out-of-range outlet must not enter the coupling map"
+        );
+        let report = build_coupling_quality(&cells, &classes, &maps, &CoupledThresholds::default());
+        assert_eq!(report.outlet_matching_error, 1.0);
+        assert_eq!(report.river_ocean_connectivity_score, 0.0);
+    }
+
+    #[test]
+    fn non_ocean_or_non_adjacent_outlet_is_not_a_match() {
+        let mut source = CoupledCellInput {
+            fractions: CoupledCellFractions {
+                land_fraction: 0.7,
+                ocean_fraction: 0.3,
+                river_fraction: 0.4,
+                ..Default::default()
+            },
+            neighbors: vec![1],
+            is_river_mouth: true,
+            outlet_ocean_cell: Some(1),
+            ..Default::default()
+        };
+        let land_target = CoupledCellInput {
+            neighbors: vec![0],
+            ..cell(1.0, 0.0)
+        };
+        let ocean_target = CoupledCellInput {
+            neighbors: vec![0],
+            ..cell(0.0, 1.0)
+        };
+
+        let cells = vec![source.clone(), land_target];
+        let classes = classify_all(&cells, &CoupledThresholds::default());
+        assert!(build_coupling_map(&cells, &classes).is_empty());
+
+        source.neighbors.clear();
+        let cells = vec![source, ocean_target];
+        let classes = classify_all(&cells, &CoupledThresholds::default());
+        assert!(build_coupling_map(&cells, &classes).is_empty());
+        let report = build_coupling_quality(&cells, &classes, &[], &CoupledThresholds::default());
+        assert_eq!(report.river_ocean_connectivity_score, 0.0);
     }
 
     #[test]

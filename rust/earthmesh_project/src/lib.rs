@@ -9,6 +9,8 @@
 //! Owns the project schema, validation, intent presets, criteria catalog, and
 //! lowering into engine namelists.
 
+pub use earthmesh_core::KM_PER_DEGREE_EQUATOR;
+
 mod schema;
 pub use schema::{
     auto_refine_level_cap, default_mask_sea_ratio, degree_to_nxp, effective_auto_refine_pass,
@@ -47,8 +49,6 @@ mod hydro_plan;
 pub use hydro_plan::{project_hydro_output_dir, HydroExecutionPlan};
 mod lowering;
 pub use lowering::LoweredProject;
-mod manifest;
-pub use manifest::{InputFingerprint, ReproducibilityManifest};
 mod presets;
 pub use presets::{PresetDefaults, DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID};
 mod stage_cache;
@@ -59,11 +59,3 @@ mod validation;
 
 #[cfg(test)]
 mod tests;
-
-/// Stable project-layer facade for GUI/CLI callers.
-pub mod prelude {
-    pub use crate::{
-        CloseBoundaryMode, DomainConfig, GeometryIr, MeshTargetConfig, ProjectConfig,
-        RefinementRecipe, RegionShape,
-    };
-}

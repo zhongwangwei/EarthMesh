@@ -12,7 +12,9 @@ gui-tauri/
 └── src-tauri/
     ├── Cargo.toml        # own workspace; deps: tauri v2 + earthmesh_project (NO hdf5)
     ├── build.rs          # tauri_build::build()
-    ├── tauri.conf.json   # frontendDist=../dist, withGlobalTauri, window, bundle
+    ├── tauri.conf.json   # frontendDist=../dist, CSP, window, base bundle config
+    ├── tauri.bundle.conf.json # release-only engine sidecar overlay
+    ├── binaries/         # generated target-suffixed earthmesh_cli sidecar
     ├── capabilities/default.json
     ├── icons/icon.png    # bundle icon
     └── src/
@@ -28,10 +30,15 @@ to real project commands. No CSS/colour porting, no immediate-mode constraints.
 The frontend is plain static HTML/CSS/JS (no npm, no bundler). `tauri.conf.json`
 sets `app.withGlobalTauri: true`, so the page calls Rust over IPC through
 `window.__TAURI__.core.invoke(...)`. The Rust side stays **hdf5-free**: it only
-builds/validates the project *intent* and lowers it to the engine namelist.
-Actual mesh generation is delegated to the prebuilt engine: the backend lowers
-the project to a namelist and runs the discovered engine with `<mkgrd.nml>` as
-its positional input, so the GUI process never links netcdf/hdf5.
+builds/validates the project *intent* and exposes project capabilities. Actual
+mesh generation is delegated to the discovered CLI through `--project`; the CLI
+owns lowering, quality policy, AutoRefine, and hydro orchestration, so the GUI
+process never links netcdf/hdf5.
+
+When opened as plain HTML there is no IPC backend, so the page keeps a small set
+of display-only fallback values to remain renderable. Inside Tauri,
+`project_capabilities` replaces those values before project composition, save,
+or run; the browser fallback is not an execution contract.
 
 ```
 static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
@@ -43,11 +50,12 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | command | args | returns |
 |---|---|---|
 | `list_criteria` | – | refinement criteria `{physical_process,label,help,unit,range_min,range_max,default_value,stem}` |
+| `project_capabilities` | – | backend-owned intent ids, project defaults, and refinement level limits used by the runtime UI |
 | `scaffold_project` | `name, intent, nxp?, approxKm?` | project **YAML** |
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
 | `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
-| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]}` |
+| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
 | `set_threshold_value` | `yaml, id, value?` | updated **YAML** (per-criterion threshold; null uses default) |
 | `autofill_data_layers_from_folder` | `yaml, folder` | updated **YAML** with matching NetCDF layer paths |
@@ -58,7 +66,7 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `set_domain_close` | `yaml, path, format, seaRatio?` | updated **YAML** (close boundary source) |
 | `set_close_boundary` | `yaml, target, mode, iterations?, marginKm?, maxRadiusDeg?, maxSegmentAngleDeg?` | updated **YAML** (expert close boundary mode) |
 | `set_quality` | `yaml, minAngleDeg, policy, autoRefineBatchCells` | updated **YAML** (min angle + policy + connected local repair batch) |
-| `set_refinement` | `yaml, enabled, maxPasses` | updated **YAML** (validated pass count) |
+| `set_refinement` | `yaml, enabled, thresholdEnabled, maxPasses` | updated **YAML** (independent threshold switch + validated pass count) |
 | `set_specified_refinement` | `yaml, enabled, kind?, lon?, lat?, radiusKm?, w?, e?, s?, n?, path?` | updated **YAML** (radius, bbox, or close refinement) |
 | `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (default h-field; `enabled=false` stores discrete mask mode) |
 | `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?` | updated **YAML** (expert overrides) |
@@ -93,12 +101,20 @@ Or, with the Tauri CLI (adds packaging + dev conveniences):
 
 ```bash
 cargo install tauri-cli --version "^2.0"   # once
-cd gui-tauri && cargo tauri dev            # run
-cd gui-tauri && cargo tauri build          # package installers
+(cd gui-tauri && cargo tauri dev)          # run
+make build-gui-bundle                       # stage engine + package installers
 ```
 
+The Make target applies `tauri.bundle.conf.json` and runs
+`scripts/stage_tauri_sidecar.js`, which builds the CLI with
+`--locked --features static-netcdf` and copies it to
+`src-tauri/binaries/earthmesh_cli-$TARGET_TRIPLE[.exe]`. Tauri v2 then packages
+it through `bundle.externalBin`; installed apps discover that bundled
+`earthmesh_cli` beside the Studio executable. Node is only needed for packaging
+and the existing frontend verification script, not for `cargo run`.
+
 **System prerequisites** (Tauri webview):
-- **Linux**: `webkit2gtk-4.1`, `libgtk-3-dev`, `libsoup-3.0`, `librsvg2-dev`, `build-essential` (see tauri.app prerequisites for your distro).
+- **Linux (Debian/Ubuntu)**: `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`.
 - **macOS**: Xcode Command Line Tools.
 - **Windows**: WebView2 runtime (preinstalled on Win 11) + MSVC build tools.
 
@@ -123,10 +139,12 @@ cd gui-tauri/src-tauri && cargo run        # Run just works
 
 `resolve_mkgrd()` searches, in order: a real `$EARTHMESH_MKGRD` file →
 `<repo>/mkgrd.x` → `rust/earthmesh_cli/target/{release,debug}/earthmesh_cli` →
-`target/{release,debug}/earthmesh_cli` → the app's own dir → `mkgrd.x` on
-`PATH`. When it finds a real file, the backend runs a refreshed temp copy
-(`earthmesh_studio_engine.x`) so source-tree C-library quirks do not affect GUI
-runs. Set `EARTHMESH_MKGRD` only to override.
+`target/{release,debug}/earthmesh_cli` → the app's own dir (including the
+bundled sidecar) → `mkgrd.x` on `PATH`. When it finds a real file, the backend
+runs a refreshed temp copy (`earthmesh_studio_engine-$PID-$SOURCE_HASH.x`) so
+concurrent runs and different engine sources do not share a stale staged binary,
+while source-tree C-library quirks do not affect GUI runs. Set `EARTHMESH_MKGRD`
+only to override.
 
 Outputs land in `<base>/<project name>/`, where `<base>` is either a fresh
 `earthmesh_run_<ts>` temp dir or the explicit `outdir` passed to `run_project`.
@@ -157,16 +175,17 @@ automatically.
   topology failures; failures come from gates and topology issues.
 
 Known gaps: circle domains remain preserved-but-not-editable in the GUI; polygon
-domains need project-schema support first; release bundles still need an explicit
-engine sidecar strategy and full platform icon set.
+domains need project-schema support first; release bundles still need a full
+platform icon set.
 
 ## Caveats
 
 - **Verification here covers syntax, drift checks, and Rust command behavior.**
-  `make test-gui` uses Node to parse inline JS and fail fast on GUI/backend
-  drift (intent gallery coverage, default template/default values, command docs,
-  frontend invokes, text-safe rendering, run-state wiring, placeholders, and i18n
-  keys), then exercises the Tauri command layer.
+  `make test-gui` uses Node to parse inline JS and check frontend-only invariants
+  such as capability consumption, text-safe rendering, run-state wiring,
+  placeholders, and i18n keys. Rust tests exercise the structured capability
+  contract and Tauri command layer directly; the Node check does not scrape Rust
+  source text.
   Packaging still depends on the local Tauri/webview prerequisites listed above.
 - **Icons.** Only `icons/icon.png` is included (enough for `cargo run`/dev). For
   release bundles run `cargo tauri icon icons/icon.png` to generate the full

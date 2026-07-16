@@ -111,6 +111,21 @@ fn ray_segment_intersection_matches_canonical_sentinel_cases() {
 }
 
 #[test]
+fn ray_segment_intersection_counts_shared_vertices_once() {
+    let ray = Point::new(-200.0, 1.0);
+    assert_eq!(
+        earthmesh_geometry::ray_segment_intersection_lon(ray, 0.0, 0.0, 1.0, 1.0),
+        None,
+        "edge ending on the ray is excluded by the half-open rule"
+    );
+    assert_eq!(
+        earthmesh_geometry::ray_segment_intersection_lon(ray, 1.0, 1.0, 2.0, 2.0),
+        Some(1.0),
+        "the adjacent edge starting on the ray owns the shared vertex"
+    );
+}
+
+#[test]
 fn strict_segment_intersection_matches_canonical_cross_product_rule() {
     assert!(earthmesh_geometry::segments_intersect_strict(
         Point::new(0.0, 0.0),

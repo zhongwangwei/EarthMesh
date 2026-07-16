@@ -1,47 +1,47 @@
-//! `run_manifest.json` — a minimal, reproducible record of one EarthMesh run.
+//! `run_manifest.json` — a minimal diagnostic record of one EarthMesh run.
 //!
 //! Dependency-free (manual JSON, matching the project's existing hand-rolled JSON
 //! writers in `earthmesh_cli`) so it lives in `earthmesh_core` and is testable
 //! without serde or the `netcdf`-linked crates. Timestamps and git SHA are passed
 //! in by the caller (CLI/GUI) to keep this module pure and its tests deterministic.
+//! This record intentionally does not claim full reproducibility: command-specific
+//! manifests own content hashes and lowered configuration snapshots.
 
 use std::io;
 use std::path::Path;
 
+/// Version of the machine-readable `run_manifest.json` contract.
+pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 /// Lifecycle status of a run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunStatus {
-    #[default]
-    Started,
     Completed,
     Failed,
-    DryRun,
 }
 
 impl RunStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            RunStatus::Started => "started",
             RunStatus::Completed => "completed",
             RunStatus::Failed => "failed",
-            RunStatus::DryRun => "dry_run",
         }
     }
 }
 
-/// One reproducible run record. Build it incrementally over a run, then
+/// One diagnostic run record. Build it incrementally over a run, then
 /// [`RunManifest::write_json`] it to `<workdir>/run_manifest.json`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RunManifest {
-    pub case_name: String,
+    /// Exact process arguments. Unlike `command`, this is unambiguous when an
+    /// argument contains whitespace or shell metacharacters.
+    pub argv: Vec<String>,
     pub command: String,
     pub cwd: String,
     /// Path to the input namelist / project config.
     pub input_config: String,
     /// `(role, resolved absolute path)` for each input.
     pub resolved_inputs: Vec<(String, String)>,
-    /// `(role, path)` for each produced output.
-    pub outputs: Vec<(String, String)>,
     /// Tool version, e.g. `earthmesh_cli` `CARGO_PKG_VERSION`.
     pub software_version: String,
     pub git_sha: Option<String>,
@@ -49,28 +49,29 @@ pub struct RunManifest {
     pub completed_at: Option<String>,
     pub status: RunStatus,
     pub warnings: Vec<String>,
-    pub quality_report: Option<String>,
 }
 
 impl RunManifest {
     /// Start a manifest with the essentials filled in.
-    pub fn new(case_name: &str, command: &str, cwd: &str) -> Self {
+    pub fn new(command: &str, cwd: &str) -> Self {
         Self {
-            case_name: case_name.to_string(),
+            argv: Vec::new(),
             command: command.to_string(),
             cwd: cwd.to_string(),
+            input_config: String::new(),
+            resolved_inputs: Vec::new(),
             software_version: env!("CARGO_PKG_VERSION").to_string(),
-            ..Default::default()
+            git_sha: None,
+            started_at: None,
+            completed_at: None,
+            status: RunStatus::Completed,
+            warnings: Vec::new(),
         }
     }
 
     pub fn add_input(&mut self, role: &str, path: &str) {
         self.resolved_inputs
             .push((role.to_string(), path.to_string()));
-    }
-
-    pub fn add_output(&mut self, role: &str, path: &str) {
-        self.outputs.push((role.to_string(), path.to_string()));
     }
 
     pub fn add_warning(&mut self, warning: &str) {
@@ -81,8 +82,12 @@ impl RunManifest {
     pub fn to_json(&self) -> String {
         let mut s = String::new();
         s.push_str("{\n");
+        s.push_str(&format!(
+            "  \"schema_version\": {RUN_MANIFEST_SCHEMA_VERSION},\n"
+        ));
         s.push_str("  \"kind\": \"earthmesh_run_manifest\",\n");
-        s.push_str(&kv("case_name", &self.case_name));
+        s.push_str("  \"reproducible\": false,\n");
+        s.push_str(&list("argv", &self.argv, false));
         s.push_str(&kv("command", &self.command));
         s.push_str(&kv("cwd", &self.cwd));
         s.push_str(&kv("input_config", &self.input_config));
@@ -91,9 +96,7 @@ impl RunManifest {
         s.push_str(&kv_opt("started_at", &self.started_at));
         s.push_str(&kv_opt("completed_at", &self.completed_at));
         s.push_str(&kv("status", self.status.as_str()));
-        s.push_str(&kv_opt("quality_report", &self.quality_report));
         s.push_str(&pairs("resolved_inputs", &self.resolved_inputs));
-        s.push_str(&pairs("outputs", &self.outputs));
         s.push_str(&list("warnings", &self.warnings, true));
         s.push_str("}\n");
         s
@@ -169,17 +172,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifest_written_for_dry_run_has_required_fields() {
-        let mut m = RunManifest::new("gba_smoke", "earthmesh refine plan case.nml", "/work");
+    fn completed_manifest_has_cli_runtime_fields_only() {
+        let mut m = RunManifest::new("earthmesh refine plan case.nml", "/work");
+        m.argv = vec!["earthmesh".into(), "case with spaces.nml".into()];
         m.input_config = "case.nml".to_string();
-        m.status = RunStatus::DryRun;
+        m.status = RunStatus::Completed;
         m.started_at = Some("2026-06-22T00:00:00Z".to_string());
         m.completed_at = Some("2026-06-22T00:00:01Z".to_string());
         m.git_sha = Some("abc1234".to_string());
         m.add_input("landtype_file", "/data/landtype.nc");
-        m.add_output("gridfile", "/work/gridfile.nc4");
         m.add_warning("merit_root not set; hydro masks skipped");
-        m.quality_report = Some("/work/quality.nc4".to_string());
 
         let dir = std::env::temp_dir().join(format!("em3_manifest_test_{}", std::process::id()));
         let path = dir.join("run_manifest.json");
@@ -189,17 +191,17 @@ mod tests {
 
         for needle in [
             "earthmesh_run_manifest",
-            "gba_smoke",
+            "\"schema_version\": 1",
+            "\"reproducible\": false",
+            "case with spaces.nml",
             "\"command\"",
             "\"cwd\": \"/work\"",
-            "\"status\": \"dry_run\"",
+            "\"status\": \"completed\"",
             "landtype_file",
-            "/work/gridfile.nc4",
             "abc1234",
             "started_at",
             "completed_at",
             "merit_root not set",
-            "quality_report",
             "software_version",
         ] {
             assert!(
@@ -207,15 +209,19 @@ mod tests {
                 "manifest JSON missing: {needle}\n{text}"
             );
         }
+        for removed in ["case_name", "outputs", "quality_report"] {
+            assert!(!text.contains(removed), "removed field leaked: {removed}");
+        }
     }
 
     #[test]
     fn json_escapes_quotes_and_newlines() {
-        let mut m = RunManifest::new("c\"a\\se", "cmd\nline", "/w");
-        m.status = RunStatus::Completed;
+        let mut m = RunManifest::new("cmd\nline", "/w");
+        m.input_config = "c\"a\\se".into();
+        m.status = RunStatus::Failed;
         let j = m.to_json();
         assert!(j.contains("c\\\"a\\\\se"));
         assert!(j.contains("cmd\\nline"));
-        assert!(j.contains("\"status\": \"completed\""));
+        assert!(j.contains("\"status\": \"failed\""));
     }
 }

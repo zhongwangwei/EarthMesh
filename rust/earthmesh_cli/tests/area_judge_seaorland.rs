@@ -57,11 +57,12 @@ fn seaorland_builder_treats_ocean_land_river_and_coast_codes_like_canonical_bina
     )
     .expect("build seaorland classification parity report");
 
+    let _: &[Vec<bool>] = &report.seaorland;
     assert_eq!(report.sum_land_grid, 3);
-    assert_eq!(report.seaorland[1][1], 0);
-    assert_eq!(report.seaorland[2][1], 1);
-    assert_eq!(report.seaorland[3][1], 1);
-    assert_eq!(report.seaorland[4][1], 1);
+    assert!(!report.seaorland[1][1]);
+    assert!(report.seaorland[2][1]);
+    assert!(report.seaorland[3][1]);
+    assert!(report.seaorland[4][1]);
 }
 
 #[test]
@@ -94,10 +95,10 @@ fn seaorland_builder_marks_only_domain_land_cells_and_counts_them() {
     .expect("build seaorland");
 
     assert_eq!(report.sum_land_grid, 2);
-    assert_eq!(report.seaorland[2][2], 1);
-    assert_eq!(report.seaorland[3][2], 0);
-    assert_eq!(report.seaorland[3][3], 1);
-    assert_eq!(report.seaorland[4][4], 0);
+    assert!(report.seaorland[2][2]);
+    assert!(!report.seaorland[3][2]);
+    assert!(report.seaorland[3][3]);
+    assert!(!report.seaorland[4][4]);
 }
 
 #[test]
@@ -120,5 +121,5 @@ fn seaorland_builder_skips_atmosmesh_without_refine_like_canonical() {
     .expect("build atmos seaorland");
 
     assert_eq!(report.sum_land_grid, 0);
-    assert_eq!(report.seaorland, vec![vec![0; 3]; 3]);
+    assert_eq!(report.seaorland, vec![vec![false; 3]; 3]);
 }

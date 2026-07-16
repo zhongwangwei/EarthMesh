@@ -89,7 +89,7 @@ fn base_state_builds_domain_and_seaorland_before_patch_or_refine() {
     );
     assert_eq!(report.domain.numpatch, 4);
     assert_eq!(report.seaorland.sum_land_grid, 2);
-    assert_eq!(report.seaorland.seaorland[2][2], 1);
-    assert_eq!(report.seaorland.seaorland[3][3], 1);
-    assert_eq!(report.seaorland.seaorland[6][6], 0);
+    assert!(report.seaorland.seaorland[2][2]);
+    assert!(report.seaorland.seaorland[3][3]);
+    assert!(!report.seaorland.seaorland[6][6]);
 }

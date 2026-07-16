@@ -28,7 +28,7 @@ fn cell_neighbors_are_derived_from_shared_edges() {
         w_ngr: vec![],
     };
 
-    let input = quality_input_from_gridfile(&mesh);
+    let input = quality_input_from_gridfile(&mesh).unwrap();
     assert_eq!(input.cells.len(), 3, "three valid triangles");
 
     // A and B are reciprocal neighbors; C is isolated.

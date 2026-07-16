@@ -23,16 +23,49 @@ pub(super) fn area_judge_circle_scan_bounds_canonical(
     let mut edgen_temp = center.lat + (radius_km / temp) * 1.2;
     let mut edges_temp = center.lat - (radius_km / temp) * 1.2;
 
-    if edgee_temp > 180.0 || edgew_temp < -180.0 || !(-90.0..=90.0).contains(&edgen_temp) {
+    if edgee_temp > 180.0
+        || edgew_temp < -180.0
+        || !(-90.0..=90.0).contains(&edgen_temp)
+        || !(-90.0..=90.0).contains(&edges_temp)
+    {
         edgew_temp = -180.0;
         edgee_temp = 180.0;
     }
     if edgen_temp > 90.0 {
-        edges_temp = edges_temp.min(edgen_temp);
         edgen_temp = 90.0;
-    } else if edges_temp < -90.0 {
-        edgen_temp = edges_temp.max(edgen_temp);
+    }
+    if edges_temp < -90.0 {
         edges_temp = -90.0;
     }
     Ok((edgew_temp, edgee_temp, edgen_temp, edges_temp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polar_circles_scan_all_longitudes_symmetrically() {
+        let north = area_judge_circle_scan_bounds_canonical(
+            LonLatPoint {
+                lon: 0.0,
+                lat: 85.0,
+            },
+            667.0,
+        )
+        .expect("north-pole circle bounds");
+        let south = area_judge_circle_scan_bounds_canonical(
+            LonLatPoint {
+                lon: 0.0,
+                lat: -85.0,
+            },
+            667.0,
+        )
+        .expect("south-pole circle bounds");
+
+        assert_eq!((north.0, north.1), (-180.0, 180.0));
+        assert_eq!((south.0, south.1), (-180.0, 180.0));
+        assert_eq!(north.2, 90.0);
+        assert_eq!(south.3, -90.0);
+    }
 }

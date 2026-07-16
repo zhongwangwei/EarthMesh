@@ -35,11 +35,11 @@ fn small_axes() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     (lon_vertex, lat_vertex, lon_i, lat_i)
 }
 
-fn full_domain(nx: usize, ny: usize) -> Vec<Vec<i32>> {
-    let mut values = vec![vec![0; ny + 1]; nx + 1];
+fn full_domain(nx: usize, ny: usize) -> Vec<Vec<bool>> {
+    let mut values = vec![vec![false; ny + 1]; nx + 1];
     for lon in 1..=nx {
         for lat in 1..=ny {
-            values[lon][lat] = 1;
+            values[lon][lat] = true;
         }
     }
     values

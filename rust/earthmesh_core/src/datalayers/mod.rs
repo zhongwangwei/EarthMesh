@@ -1,4 +1,4 @@
-use crate::{canonical_quote, parse_canonical_string, strip_canonical_comment};
+use crate::{canonical_quote, namelist_assignments, parse_canonical_string};
 
 /// A NetCDF criterion field that calculated refinement reads from
 /// `threshold_dir/<file_stem>.nc`. The stem is the **authoritative engine name**
@@ -136,33 +136,9 @@ impl DataLayersNamelist {
     /// or unknown-role lines are skipped; an absent block yields an empty list.
     pub fn from_datalayers_namelist(input: &str) -> Self {
         let mut layers = Vec::new();
-        let mut in_block = false;
-        for raw_line in input.lines() {
-            let line = strip_canonical_comment(raw_line)
-                .trim()
-                .trim_end_matches(',');
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with('&') {
-                in_block = line.eq_ignore_ascii_case("&datalayers");
-                continue;
-            }
-            if line == "/" {
-                in_block = false;
-                continue;
-            }
-            if !in_block {
-                continue;
-            }
-            let Some((left, right)) = line.split_once('=') else {
-                continue;
-            };
-            let Some(field) = left.trim().split_once('%').map(|(_, f)| f.trim()) else {
-                continue;
-            };
-            if field.eq_ignore_ascii_case("layer") {
-                let token = parse_canonical_string(right.trim().trim_end_matches(','));
+        for assignment in namelist_assignments(input, "datalayers").unwrap_or_default() {
+            if assignment.field.eq_ignore_ascii_case("layer") {
+                let token = parse_canonical_string(&assignment.value);
                 if let Some(layer) = parse_data_layer_token(&token) {
                     layers.push(layer);
                 }

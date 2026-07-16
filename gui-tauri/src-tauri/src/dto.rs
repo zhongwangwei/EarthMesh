@@ -15,6 +15,23 @@ pub(crate) struct CriterionInfo {
     pub(crate) stem: String,
 }
 
+/// Backend-owned project defaults and refinement limits consumed at GUI startup.
+#[derive(Serialize)]
+pub(crate) struct ProjectCapabilities {
+    pub(crate) intent_ids: Vec<String>,
+    pub(crate) default_sea_ratio: f64,
+    pub(crate) default_min_angle_deg: f64,
+    pub(crate) method_c_min_base_nxp: i32,
+    pub(crate) method_c_max_refinement_level: u8,
+    pub(crate) default_openmp: i32,
+    pub(crate) default_niter: i32,
+    pub(crate) default_beta: f64,
+    pub(crate) default_relax: f64,
+    pub(crate) default_hfield_g: f64,
+    pub(crate) method_c_spring_nxp1_km: f64,
+    pub(crate) km_per_degree_equator: f64,
+}
+
 /// A loaded project: canonical YAML plus the path it came from.
 #[derive(Serialize)]
 pub(crate) struct OpenedProject {
@@ -63,6 +80,7 @@ pub(crate) struct ProjectSummary {
     pub(crate) auto_refine_batch_cells: usize,
     pub(crate) on_violation: String,
     pub(crate) refine_enabled: bool,
+    pub(crate) threshold_refine_enabled: bool,
     pub(crate) max_passes: u8,
     pub(crate) specified_refine_enabled: bool,
     pub(crate) specified_refine_kind: String,
@@ -89,8 +107,8 @@ pub(crate) struct ProjectSummary {
     pub(crate) expert_vertex_pretect_layers: Option<i32>,
     pub(crate) expert_spring_global_type: Option<i32>,
     pub(crate) expert_spring_regional_type: Option<i32>,
-    pub(crate) expert_beta: Option<f32>,
-    pub(crate) expert_relax: Option<f32>,
+    pub(crate) expert_beta: Option<f64>,
+    pub(crate) expert_relax: Option<f64>,
     pub(crate) expert_weak_concav_eliminate: Option<bool>,
     pub(crate) layers: Vec<LayerSummary>,
 }

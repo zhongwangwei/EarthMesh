@@ -18,9 +18,8 @@ impl MethodCDelaunayMesh {
     ///
     /// Method-C's global spring is a Delaunay-edge relaxation pass: U-edge lengths
     /// are pushed toward `beta * 2*pi*R / (5*nxp) / 1.2`, the target is adjusted
-    /// by the two opposite triangle angles, all M points are projected back to
-    /// the sphere, and the twelve original pentagon points (`impent`) are kept
-    /// fixed.
+    /// by the two opposite triangle angles, and all M points are projected back
+    /// to the sphere.
     pub fn spring_global(&self, nxp: usize, niter: usize) -> io::Result<Self> {
         self.spring_global_with_controls(nxp, niter, 1.25, 0.035)
     }
@@ -111,16 +110,11 @@ impl MethodCDelaunayMesh {
             )
         })?;
         let dist00 = dist00_override.unwrap_or(method_c_canonical_global_dist00(beta, radius, nxp));
-        // Double buffering: pentagon/dummy slots are never written by the
-        // iteration, so both buffers keep their initial positions there
-        // forever, exactly like the historical clone-per-iteration version.
+        // Double buffering keeps each relaxation step Jacobi-style. Dummy
+        // slots are never written and retain their initial values.
         let mut m_points = self.m_points.clone();
         let mut next_m_points = self.m_points.clone();
-        let mut scratch = MethodCGlobalSpringScratch::new(
-            m_points.len(),
-            topology.edge_m_points.len(),
-            &self.impent,
-        );
+        let mut scratch = MethodCGlobalSpringScratch::new(topology.edge_m_points.len());
 
         for iteration in 1..=niter {
             if (iteration == 1 || iteration == niter || iteration % 20 == 0)
@@ -152,6 +146,8 @@ impl MethodCDelaunayMesh {
             std::mem::swap(&mut m_points, &mut next_m_points);
         }
 
+        // Canonical storage is default Fortran `real`: the spring workspace
+        // accumulates in r8, then writes the completed grid back through f32.
         for point in m_points.iter_mut().skip(2) {
             point.x = point.x as f32 as f64;
             point.y = point.y as f32 as f64;

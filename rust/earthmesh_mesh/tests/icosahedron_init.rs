@@ -68,6 +68,17 @@ fn icosahedron_initial_grid_projects_all_active_points_to_earth_radius() {
 }
 
 #[test]
+fn icosahedron_initial_grid_uses_canonical_single_precision_storage() {
+    let grid = icosahedron_initial_grid_canonical(4).expect("valid nxp");
+
+    for point in grid.m_points.iter().skip(2) {
+        assert_eq!(point.x, point.x as f32 as f64);
+        assert_eq!(point.y, point.y as f32 as f64);
+        assert_eq!(point.z, point.z as f32 as f64);
+    }
+}
+
+#[test]
 fn icosahedron_fill_diamonds_matches_canonical_first_southern_diamond_nxp1() {
     let connectivity = earthmesh_mesh::icosahedron_fill_diamonds_canonical(1)
         .expect("valid nxp fill_diamond connectivity");
@@ -407,9 +418,9 @@ fn icosahedron_relaxed_grid_matches_canonical_nxp64_glonw_glatw_fixture() {
 
     for (point_id, expected_lon, expected_lat) in expected {
         let lonlat = earthmesh_mesh::xyz_to_lonlat_degrees(relaxed.m_points[point_id]);
-        approx_eq(lonlat.lat_degrees, expected_lat, 2.0e-4);
+        approx_eq(lonlat.lat_degrees, expected_lat, 2.0e-6);
         if expected_lat.abs() < 89.999 {
-            approx_eq(lonlat.lon_degrees, expected_lon, 2.0e-4);
+            approx_eq(lonlat.lon_degrees, expected_lon, 2.0e-6);
         }
     }
 }

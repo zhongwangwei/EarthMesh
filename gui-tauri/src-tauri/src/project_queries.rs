@@ -1,9 +1,11 @@
 //! Read-only project catalog and summary command handlers.
 
-use crate::dto::{CriterionInfo, LayerSummary, ProjectSummary};
+use crate::dto::{CriterionInfo, LayerSummary, ProjectCapabilities, ProjectSummary};
 use earthmesh_project::{
-    criterion_catalog, CloseMaskFormat, DomainConfig, MeshDomainKind, ProjectConfig, RegionShape,
-    ResolutionSpec,
+    criterion_catalog, default_mask_sea_ratio, CloseMaskFormat, DomainConfig,
+    HfieldRefinementRecipe, MeshDomainKind, MeshIntentPreset, ProjectConfig, RegionShape,
+    ResolutionSpec, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS, KM_PER_DEGREE_EQUATOR,
+    METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
 };
 
 /// List every registered refinement criterion (self-describing GUI specs).
@@ -22,6 +24,35 @@ pub(crate) fn list_criteria() -> Vec<CriterionInfo> {
             stem: c.field.stem().to_string(),
         })
         .collect()
+}
+
+/// Return defaults and limits that affect GUI runtime decisions.
+#[tauri::command]
+pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
+    let baseline = ProjectConfig::scaffold(
+        "earthmesh-capabilities",
+        MeshIntentPreset::Custom,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    )
+    .try_lower()?;
+    Ok(ProjectCapabilities {
+        intent_ids: INTENT_PRESETS
+            .iter()
+            .map(|intent| intent.id().to_string())
+            .collect(),
+        default_sea_ratio: default_mask_sea_ratio(),
+        default_min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
+        method_c_min_base_nxp: METHOD_C_MIN_BASE_NXP,
+        method_c_max_refinement_level: METHOD_C_MAX_AUTO_REFINE_LEVEL,
+        default_openmp: baseline.mkgrd.openmp,
+        default_niter: baseline.mkgrd.niter,
+        default_beta: baseline.mkgrd.beta,
+        default_relax: baseline.mkgrd.relax,
+        default_hfield_g: HfieldRefinementRecipe::default().g,
+        method_c_spring_nxp1_km: METHOD_C_SPRING_NXP1_KM,
+        km_per_degree_equator: KM_PER_DEGREE_EQUATOR,
+    })
 }
 
 /// Summarize a project YAML for the UI (name, intent, resolution, data layers).
@@ -129,6 +160,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         auto_refine_batch_cells: cfg.quality.auto_refine_batch_cells,
         on_violation,
         refine_enabled: cfg.refinement.enabled,
+        threshold_refine_enabled: cfg.refinement.threshold_enabled,
         max_passes: cfg.refinement.max_passes,
         specified_refine_enabled: specified_circle.is_some()
             || specified_bbox.is_some()

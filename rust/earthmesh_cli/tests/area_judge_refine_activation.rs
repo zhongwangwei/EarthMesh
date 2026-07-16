@@ -20,9 +20,15 @@ fn refine_activation_iter_zero_copies_calculated_grid_and_bounds() {
     assert_eq!(report.nlons_select, 2);
     assert_eq!(report.nlats_select, 2);
     assert_eq!(report.selected_cells, 2);
-    assert_eq!(report.is_in_refine[2][2], 1);
-    assert_eq!(report.is_in_refine[3][3], 1);
-    assert_eq!(report.is_in_refine, calculated);
+    assert!(report.is_in_refine[2][2]);
+    assert!(report.is_in_refine[3][3]);
+    assert_eq!(
+        report.is_in_refine,
+        calculated
+            .iter()
+            .map(|row| row.iter().map(|value| *value != 0).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

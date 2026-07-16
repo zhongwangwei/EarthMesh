@@ -62,13 +62,6 @@ pub fn write_auto_refine_decision(
             .map(|verdict| format!("\"{}\"", verdict.as_str()))
             .unwrap_or_else(|| "null".to_string())
     }
-    fn json_number(value: f64) -> String {
-        if value.is_finite() {
-            value.to_string()
-        } else {
-            "null".to_string()
-        }
-    }
     fn regressions_json(items: &[earthmesh_quality::QualityMetricRegression]) -> String {
         if items.is_empty() {
             return "[]".to_string();
@@ -80,9 +73,9 @@ pub fn write_auto_refine_decision(
                     "    {{\"metric\": \"{}\", \"preferred\": \"{}\", \"baseline\": {}, \"candidate\": {}, \"delta\": {}}}",
                     crate::json_escape_string(&item.metric),
                     item.preference.as_str(),
-                    json_number(item.baseline),
-                    json_number(item.candidate),
-                    json_number(item.delta()),
+                    crate::json_number(item.baseline),
+                    crate::json_number(item.candidate),
+                    crate::json_number(item.delta()),
                 )
             })
             .collect::<Vec<_>>()
@@ -147,7 +140,8 @@ pub fn write_project_quality_report_with_namelist(
     let input = match project.target.cell {
         MeshCellKind::Hex => crate::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh),
         MeshCellKind::Tri => crate::grid_quality_pipeline::quality_input_from_gridfile(&mesh),
-    };
+    }
+    .map_err(|err| format!("project quality validate {}: {err}", gridfile.display()))?;
     let target_nxp = project.try_lower()?.mkgrd.nxp;
     let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
     let thresholds = earthmesh_quality::QualityThresholds {
@@ -249,6 +243,27 @@ mod tests {
         improved.geometry.aspect_ratio.max *= 0.9;
         assert_eq!(
             select_auto_refine_candidate(&baseline, &improved),
+            AutoRefineCandidateSelection::Candidate
+        );
+
+        let mut failed = baseline;
+        failed.verdict = earthmesh_quality::QualityLevel::Fail;
+        failed
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "aspect_ratio_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Fail;
+        let mut warned = failed.clone();
+        warned.verdict = earthmesh_quality::QualityLevel::Warn;
+        warned
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "aspect_ratio_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        assert_eq!(
+            select_auto_refine_candidate(&failed, &warned),
             AutoRefineCandidateSelection::Candidate
         );
     }

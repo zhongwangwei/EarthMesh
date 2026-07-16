@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::cli_args::usage;
+use super::cli_mkgrd_run::enforce_project_quality_policy;
 use super::cli_project_hydro::parse_project;
 
 pub(crate) fn run_project_quality(mut args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -38,5 +39,6 @@ pub(crate) fn run_project_quality(mut args: impl Iterator<Item = String>) -> Res
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string())
     );
+    enforce_project_quality_policy(project.quality.on_violation, report.verdict)?;
     Ok(())
 }

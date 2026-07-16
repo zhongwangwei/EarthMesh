@@ -36,6 +36,30 @@ fn method_c_delaunay_mesh_from_icosahedron_has_closed_muw_topology() {
 }
 
 #[test]
+fn method_c_topology_rejects_duplicate_or_non_pentagonal_protected_points() {
+    let mesh = MethodCDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100)
+        .expect("valid Method-C icosahedron mesh");
+
+    let mut duplicate = mesh.clone();
+    duplicate.impent[1] = duplicate.impent[0];
+    let error = duplicate.validate_topology().unwrap_err();
+    assert!(
+        error.to_string().contains("duplicate protected point"),
+        "{error}"
+    );
+
+    let mut wrong_degree = mesh;
+    let hex_point = (2..=wrong_degree.nmd)
+        .find(|point| {
+            !wrong_degree.impent.contains(point) && wrong_degree.m_neighbors[*point].npoly == 6
+        })
+        .expect("uniform icosahedron contains a six-sided point");
+    wrong_degree.impent[0] = hex_point;
+    let error = wrong_degree.validate_topology().unwrap_err();
+    assert!(error.to_string().contains("expected 5"), "{error}");
+}
+
+#[test]
 fn method_c_cart_hex_mdomain_five_uses_canonical_planar_counts_and_coordinates() {
     let mesh = MethodCDelaunayMesh::from_cart_hex(2, 1000.0).expect("valid Method-C cart_hex mesh");
 
@@ -174,18 +198,19 @@ fn method_c_cart_hex_orders_outer_w_faces_for_fill_rad3_sectors() {
 }
 
 #[test]
-fn method_c_delaunay_mesh_from_icosahedron_uses_method_c_global_spring_pentagon_rule() {
+fn method_c_global_spring_preserves_nxp2_equilibrium_within_canonical_storage_precision() {
     let unsprung = MethodCDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100)
         .expect("unsprung Method-C icosahedron mesh");
     let sprung = MethodCDelaunayMesh::from_icosahedron(2, 2, 1.0, 0.25, 100)
         .expect("sprung Method-C icosahedron mesh");
 
-    for &pentagon_id in &unsprung.impent {
-        assert_eq!(
-            sprung.m_points[pentagon_id], unsprung.m_points[pentagon_id],
-            "Method-C global spring must not move impent pentagon point {pentagon_id}"
-        );
-    }
+    let max_displacement = (2..=unsprung.nmd)
+        .map(|point_id| distance(sprung.m_points[point_id], unsprung.m_points[point_id]))
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_displacement <= 2.0,
+        "NXP2 equilibrium moved by {max_displacement} meters"
+    );
 }
 
 #[test]
@@ -206,9 +231,9 @@ fn method_c_delaunay_mesh_can_drive_voronoi_grid_generation() {
         mesh.w_faces[2].im.map(|value| value as i32)
     );
     assert_eq!(state.tabs.w[2].npoly, mesh.m_neighbors[2].npoly as i32);
-    assert_eq!(state.grid.xew[2], mesh.m_points[2].x as f32);
-    assert_eq!(state.grid.yew[2], mesh.m_points[2].y as f32);
-    assert_eq!(state.grid.zew[2], mesh.m_points[2].z as f32);
+    assert_eq!(state.grid.xew[2], mesh.m_points[2].x);
+    assert_eq!(state.grid.yew[2], mesh.m_points[2].y);
+    assert_eq!(state.grid.zew[2], mesh.m_points[2].z);
 }
 
 #[test]
@@ -303,12 +328,17 @@ fn method_c_expand_by_factor_applies_factor2_and_rejects_unsupported_products() 
 }
 
 #[test]
-fn method_c_global_spring_preserves_topology_radius_and_pentagons() {
+fn method_c_global_spring_preserves_topology_radius_and_moves_fortran_pentagons() {
     let mut mesh =
         MethodCDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
-    let regular_point_id = (2..=mesh.nmd)
-        .find(|point_id| !mesh.impent.contains(point_id))
-        .expect("non-pentagon M point");
+    let pentagon_id = mesh.impent[0];
+    let adjacent_edge = mesh.m_neighbors[pentagon_id].iu[0];
+    let [edge_start, edge_end] = mesh.u_edges[adjacent_edge].im;
+    let regular_point_id = if edge_start == pentagon_id {
+        edge_end
+    } else {
+        edge_start
+    };
     let regular_point = mesh.m_points[regular_point_id];
     let perturbed = CartesianPoint::new(
         regular_point.x + 50_000.0,
@@ -340,12 +370,10 @@ fn method_c_global_spring_preserves_topology_radius_and_pentagons() {
         );
     }
 
-    for &pentagon_id in &mesh.impent {
-        assert_eq!(
-            adjusted.m_points[pentagon_id], original_points[pentagon_id],
-            "Method-C global spring must keep impent pentagon point {pentagon_id} fixed"
-        );
-    }
+    assert!(
+        distance(adjusted.m_points[pentagon_id], original_points[pentagon_id]) > 1.0e-3,
+        "Fortran spring_dynamics1 updates pentagons; its freeze statement is commented out"
+    );
 
     assert!(
         magnitude(CartesianPoint::new(
@@ -355,6 +383,11 @@ fn method_c_global_spring_preserves_topology_radius_and_pentagons() {
         )) > 1.0e-3,
         "Method-C global spring should move the perturbed non-pentagon M point"
     );
+    for point in adjusted.m_points.iter().skip(2) {
+        assert_eq!(point.x, point.x as f32 as f64);
+        assert_eq!(point.y, point.y as f32 as f64);
+        assert_eq!(point.z, point.z as f32 as f64);
+    }
 }
 
 #[test]

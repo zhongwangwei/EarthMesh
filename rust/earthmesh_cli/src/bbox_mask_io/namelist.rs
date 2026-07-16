@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::parse_value_after_equals;
 
 use super::types::{BBoxMask, BBoxPoint};
+use super::validate_bbox_mask;
 
 /// Parse the text `.nml` branch of `mkgrd.F90:bbox_mask_make`.
 ///
@@ -59,23 +60,35 @@ pub fn parse_bbox_mask_nml(
             north: values[2],
             south: values[3],
         };
-        if point.west > point.east {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "bbox west must be <= east like bbox_mask_make",
-            ));
-        }
-        if point.north < point.south {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "bbox north must be >= south like bbox_mask_make",
-            ));
-        }
         points.push(point);
     }
 
-    Ok(Some(BBoxMask {
+    let mask = BBoxMask {
         refine_degree,
         points,
-    }))
+    };
+    validate_bbox_mask(&mask).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid bbox mask namelist: {err}"),
+        )
+    })?;
+    Ok(Some(mask))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bbox_namelist_preserves_cartesian_y_for_contextual_validation() {
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_bbox_invalid_lat_{}.nml",
+            std::process::id()
+        ));
+        fs::write(&path, "bbox_num = 1\nbbox_refine = 1\n170 -170 91 -10\n").unwrap();
+        let mask = parse_bbox_mask_nml(&path, 5).unwrap().unwrap();
+        assert_eq!(mask.points[0].north, 91.0);
+        let _ = fs::remove_file(path);
+    }
 }

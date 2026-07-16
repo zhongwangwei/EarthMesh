@@ -4,6 +4,7 @@ use crate::{
     nxp_to_km, DomainConfig, ProjectConfig, RegionShape, ResolutionSpec,
     METHOD_C_MAX_AUTO_REFINE_LEVEL,
 };
+use earthmesh_core::KM_PER_DEGREE_EQUATOR;
 
 /// Data-only plan for the post-mesh hydro workflow. Execution belongs to the CLI;
 /// GUI callers invoke that same CLI stage instead of reimplementing it.
@@ -44,7 +45,7 @@ impl ProjectConfig {
         let target_dx_km = match self.target.resolution {
             ResolutionSpec::Nxp(nxp) => nxp_to_km(nxp),
             ResolutionSpec::ApproxKm(km) => km,
-            ResolutionSpec::ApproxDegree(degrees) => degrees * 111.2,
+            ResolutionSpec::ApproxDegree(degrees) => degrees * KM_PER_DEGREE_EQUATOR,
         };
         Ok(Some(HydroExecutionPlan {
             merit_root: hydro.merit_root.clone(),

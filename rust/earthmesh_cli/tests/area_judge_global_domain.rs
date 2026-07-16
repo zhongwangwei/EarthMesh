@@ -21,13 +21,13 @@ fn global_domain_initializer_marks_every_one_based_source_cell() {
     assert_eq!(report.is_in_domain.len(), 5);
     assert_eq!(
         report.is_in_domain[0],
-        vec![0; 4],
+        vec![false; 4],
         "Canonical slot zero stays unused"
     );
     for lon_index in 1..=4 {
-        assert_eq!(report.is_in_domain[lon_index][0], 0);
+        assert!(!report.is_in_domain[lon_index][0]);
         for lat_index in 1..=3 {
-            assert_eq!(report.is_in_domain[lon_index][lat_index], 1);
+            assert!(report.is_in_domain[lon_index][lat_index]);
         }
     }
 }

@@ -1,33 +1,27 @@
 use earthmesh_core::deg_to_rad;
 
-use super::{CartesianPoint, LonLatDegrees, PlanePoint};
+use super::{magnitude, CartesianPoint, LonLatDegrees, PlanePoint};
 
 pub(crate) fn method_c_ec_ps_distance_meters(
     point: CartesianPoint,
     pole: LonLatDegrees,
     radius: f64,
 ) -> f64 {
-    let projected = method_c_ec_ps_project_canonical_real(point, pole, radius);
+    let projected = method_c_ec_ps_project(point, pole, radius);
     projected.x.hypot(projected.y)
 }
 
-fn method_c_ec_ps_project_canonical_real(
-    point: CartesianPoint,
-    pole: LonLatDegrees,
-    radius: f64,
-) -> PlanePoint {
-    let radius = radius as f32;
-    let point_radius =
-        ((point.x as f32).powi(2) + (point.y as f32).powi(2) + (point.z as f32).powi(2)).sqrt();
+fn method_c_ec_ps_project(point: CartesianPoint, pole: LonLatDegrees, radius: f64) -> PlanePoint {
+    let point_radius = magnitude(point);
     if point_radius == 0.0 {
         return PlanePoint::new(f64::INFINITY, f64::INFINITY);
     }
     let scale = radius / point_radius;
-    let xeq = point.x as f32 * scale;
-    let yeq = point.y as f32 * scale;
-    let zeq = point.z as f32 * scale;
-    let pole_lat = deg_to_rad(pole.lat_degrees) as f32;
-    let pole_lon = deg_to_rad(pole.lon_degrees) as f32;
+    let xeq = point.x * scale;
+    let yeq = point.y * scale;
+    let zeq = point.z * scale;
+    let pole_lat = deg_to_rad(pole.lat_degrees);
+    let pole_lon = deg_to_rad(pole.lon_degrees);
     let sinplat = pole_lat.sin();
     let cosplat = pole_lat.cos();
     let sinplon = pole_lon.sin();
@@ -44,50 +38,29 @@ fn method_c_ec_ps_project_canonical_real(
     let yq = cosplat * dze - sinplat * (cosplon * dxe + sinplon * dye);
     let zq = sinplat * dze + cosplat * (cosplon * dxe + sinplon * dye);
     let earth_diameter = 2.0 * radius;
-    let t = earth_diameter / (earth_diameter + zq).max(1.0);
+    let denominator = earth_diameter + zq;
+    if !denominator.is_finite() || denominator <= 1.0 {
+        // Stereographic distance diverges at the antipode. Clamping the
+        // denominator to one metre turns the 0/0 limit at the exact antipode
+        // into a near-zero projected distance, which can select the opposite
+        // side of the globe for a local refinement region. Treat the guarded
+        // near-singular cap as infinitely far instead.
+        return PlanePoint::new(f64::INFINITY, f64::INFINITY);
+    }
+    let t = earth_diameter / denominator;
 
-    PlanePoint::new((xq * t) as f64, (yq * t) as f64)
+    PlanePoint::new(xq * t, yq * t)
 }
 
-fn method_c_ll_ps_project_canonical_real(
-    point: LonLatDegrees,
-    pole: LonLatDegrees,
-    radius: f64,
-) -> PlanePoint {
-    let radius = radius as f32;
-    let qlat = deg_to_rad(point.lat_degrees) as f32;
-    let qlon = deg_to_rad(point.lon_degrees) as f32;
+fn method_c_ll_ps_project(point: LonLatDegrees, pole: LonLatDegrees, radius: f64) -> PlanePoint {
+    let qlat = deg_to_rad(point.lat_degrees);
+    let qlon = deg_to_rad(point.lon_degrees);
     let cartesian = CartesianPoint::new(
-        (radius * qlat.cos() * qlon.cos()) as f64,
-        (radius * qlat.cos() * qlon.sin()) as f64,
-        (radius * qlat.sin()) as f64,
+        radius * qlat.cos() * qlon.cos(),
+        radius * qlat.cos() * qlon.sin(),
+        radius * qlat.sin(),
     );
-    method_c_ec_ps_project_canonical_real(cartesian, pole, radius as f64)
-}
-
-fn plane_segment_distance_canonical_real(
-    point: PlanePoint,
-    start: PlanePoint,
-    end: PlanePoint,
-) -> (f64, f64) {
-    let x0 = point.x as f32;
-    let y0 = point.y as f32;
-    let x1 = start.x as f32;
-    let y1 = start.y as f32;
-    let x2 = end.x as f32;
-    let y2 = end.y as f32;
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let xp = x0 - x1;
-    let yp = y0 - y1;
-    let denom = dx * dx + dy * dy;
-    let t = if denom <= f32::EPSILON {
-        0.0
-    } else {
-        ((xp * dx + yp * dy) / denom).clamp(0.0, 1.0)
-    };
-    let dist = ((xp - t * dx).powi(2) + (yp - t * dy).powi(2)).sqrt();
-    (dist as f64, t as f64)
+    method_c_ec_ps_project(cartesian, pole, radius)
 }
 
 pub(crate) fn method_c_corridor_segment_distance_meters(
@@ -105,10 +78,10 @@ pub(crate) fn method_c_corridor_segment_distance_meters(
         }
     }
     let pole = LonLatDegrees::new(segment_lon, 0.5 * (start.lat_degrees + end.lat_degrees));
-    let a = method_c_ll_ps_project_canonical_real(start, pole, radius);
-    let b = method_c_ll_ps_project_canonical_real(end, pole, radius);
-    let p = method_c_ec_ps_project_canonical_real(point, pole, radius);
-    plane_segment_distance_canonical_real(p, a, b)
+    let a = method_c_ll_ps_project(start, pole, radius);
+    let b = method_c_ll_ps_project(end, pole, radius);
+    let p = method_c_ec_ps_project(point, pole, radius);
+    plane_segment_distance(p, a, b)
 }
 
 pub(crate) fn plane_segment_distance(
@@ -116,6 +89,15 @@ pub(crate) fn plane_segment_distance(
     start: PlanePoint,
     end: PlanePoint,
 ) -> (f64, f64) {
+    if !point.x.is_finite()
+        || !point.y.is_finite()
+        || !start.x.is_finite()
+        || !start.y.is_finite()
+        || !end.x.is_finite()
+        || !end.y.is_finite()
+    {
+        return (f64::INFINITY, 0.0);
+    }
     let dx = end.x - start.x;
     let dy = end.y - start.y;
     let denom = dx * dx + dy * dy;

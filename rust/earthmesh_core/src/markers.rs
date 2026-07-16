@@ -21,7 +21,11 @@ impl DomainMarker {
     }
 
     pub fn from_area_judge_values(is_in_domain: i32, seaorland: i32) -> Self {
-        if is_in_domain == 0 {
+        Self::from_area_judge_mask(is_in_domain != 0, seaorland)
+    }
+
+    pub fn from_area_judge_mask(is_in_domain: bool, seaorland: i32) -> Self {
+        if !is_in_domain {
             DomainMarker::Outside
         } else if seaorland == 0 {
             DomainMarker::Ocean

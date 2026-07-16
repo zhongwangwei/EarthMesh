@@ -66,7 +66,7 @@ fn write_small_cama_map_dir(root: &Path) -> PathBuf {
     write_i32_planes(
         &map_dir.join("nextxy.bin"),
         &[
-            vec![vec![0, 1, 2, 3], vec![0, 1, 2, 3], vec![0, 1, 0, 3]],
+            vec![vec![0, 1, 2, 3], vec![0, 1, 2, 3], vec![0, 1, -9, 3]],
             vec![vec![0, 3, 2, 1], vec![0, 2, 1, 3], vec![0, 1, 0, 3]],
         ],
     );
@@ -129,7 +129,8 @@ fn binary_can_export_cama_map_dir_to_point_geojson() {
     let text = fs::read_to_string(&output).expect("read exported geojson");
     assert!(text.starts_with("{\"type\":\"FeatureCollection\",\"features\":["));
     assert!(text.contains(r#""geometry":{"type":"Point","coordinates":[100.75,10.25]}"#));
-    assert!(text.contains(r#""downstream_x":0,"downstream_y":0"#));
+    assert!(text.contains(r#""downstream_x":-9,"downstream_y":0"#));
+    assert!(text.contains(r#""is_estuary":true"#));
     assert!(text.contains(r#""reach_id":"cama-0-1""#));
     assert!(text.contains(r#""upstream_area_km2":10000"#));
     assert!(text.contains(r#""river_class":"R2""#));

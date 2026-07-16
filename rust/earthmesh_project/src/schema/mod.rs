@@ -1,9 +1,11 @@
-use earthmesh_core::{EarthmeshConfig, EARTH_RADIUS_METERS};
+use earthmesh_core::{
+    EarthmeshConfig, DEFAULT_MIN_ANGLE_WARN_DEG, EARTH_RADIUS_METERS, KM_PER_DEGREE_EQUATOR,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::CloseBoundaryMode;
 
-pub const DEFAULT_MIN_ANGLE_DEG: f64 = 25.0;
+pub const DEFAULT_MIN_ANGLE_DEG: f64 = DEFAULT_MIN_ANGLE_WARN_DEG;
 pub const DEFAULT_AUTO_REFINE_BATCH_CELLS: usize = 1;
 pub const PROJECT_SCHEMA_VERSION: &str = "3.0.0";
 pub const METHOD_C_MIN_BASE_NXP: i32 = 10;
@@ -239,11 +241,15 @@ pub enum ThresholdField {
 
 // ----------------------------- refinement / quality / expert -----------------------------
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefinementRecipe {
     #[serde(default)]
     pub enabled: bool,
+    /// Master switch for calculated refinement from threshold/landcover data.
+    /// Data layers remain available to mesh output when this is disabled.
+    #[serde(default = "default_true")]
+    pub threshold_enabled: bool,
     #[serde(default)]
     pub max_passes: u8,
     #[serde(default)]
@@ -257,6 +263,20 @@ pub struct RefinementRecipe {
     /// (emits the `&hfield` namelist group).
     #[serde(default)]
     pub hfield: Option<HfieldRefinementRecipe>,
+}
+
+impl Default for RefinementRecipe {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold_enabled: true,
+            max_passes: 0,
+            specified_circle: None,
+            specified_bbox: None,
+            specified_close: None,
+            hfield: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -401,9 +421,9 @@ pub struct ExpertOverrides {
     #[serde(default)]
     pub spring_regional_type: Option<i32>,
     #[serde(default)]
-    pub beta: Option<f32>,
+    pub beta: Option<f64>,
     #[serde(default)]
-    pub relax: Option<f32>,
+    pub relax: Option<f64>,
     #[serde(default)]
     pub weak_concav_eliminate: Option<bool>,
 }
@@ -490,7 +510,7 @@ pub fn nxp_to_km(nxp: i32) -> f64 {
 }
 
 pub fn degree_to_nxp(degrees_at_equator: f64) -> i32 {
-    km_to_nxp(degrees_at_equator * 111.32)
+    km_to_nxp(degrees_at_equator * KM_PER_DEGREE_EQUATOR)
 }
 
 pub fn auto_refine_level_cap(target_nxp: i32) -> u8 {

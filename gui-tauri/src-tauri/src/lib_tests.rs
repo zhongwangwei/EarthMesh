@@ -1,10 +1,114 @@
 use super::*;
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, CoupledMeshConfig, DomainConfig,
-    HydroCoastConfig, MeshIntentPreset, ProjectConfig, ProjectLayerRole, RegionShape,
-    ResolutionSpec, SpecifiedCircleRefinement, SpecifiedCloseRefinement, ViolationPolicy,
+    default_mask_sea_ratio, CloseBoundaryMode, CoupledMeshConfig, DomainConfig, HydroCoastConfig,
+    MeshIntentPreset, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    SpecifiedCloseRefinement, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
 };
-use std::{env, fs, path::Path, process};
+use std::{
+    env, fs, io,
+    path::Path,
+    process::{self, Child, Command, Stdio},
+    sync::{Arc, Mutex},
+    thread,
+};
+
+static RUN_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn gui_run_state_rejects_overlap_and_ignores_stale_pid_cleanup() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let first = mesh_process::begin_run().expect("reserve first run");
+    let first_id = first.id();
+    assert!(mesh_process::begin_run()
+        .unwrap_err()
+        .contains("already starting"));
+    mesh_process::record_running_child(first_id, 101).expect("record first child");
+    assert!(mesh_process::begin_run().unwrap_err().contains("PID 101"));
+    assert!(mesh_process::record_running_child(first_id, 102)
+        .unwrap_err()
+        .contains("PID 101"));
+    mesh_process::clear_running_child(first_id, 999);
+    assert_eq!(mesh_process::running_child_pid(), Some(101));
+    mesh_process::clear_running_child(first_id, 101);
+    drop(first);
+
+    let second = mesh_process::begin_run().expect("reserve second run");
+    let second_id = second.id();
+    mesh_process::record_running_child(second_id, 202).expect("record second child");
+    mesh_process::clear_running_child(first_id, 101);
+    assert_eq!(mesh_process::running_child_pid(), Some(202));
+    mesh_process::clear_running_child(second_id, 202);
+    drop(second);
+    assert_eq!(mesh_process::running_child_pid(), None);
+}
+
+#[test]
+fn gui_run_directories_are_unique_even_under_an_explicit_output_base() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_unique_runs_{}_{}",
+        process::id(),
+        nonce
+    ));
+    let output_base = root.join("chosen-output");
+    let cfg = circle_project("same project");
+    let chosen = output_base.to_string_lossy().into_owned();
+
+    let first = mesh_runner::project_run_dir(&cfg, Some(chosen.clone())).expect("first run dir");
+    let second = mesh_runner::project_run_dir(&cfg, Some(chosen)).expect("second run dir");
+
+    assert_ne!(first, second);
+    let canonical_base = fs::canonicalize(&output_base).unwrap();
+    assert!(first.starts_with(&canonical_base));
+    assert!(second.starts_with(&canonical_base));
+    assert!(first.is_dir() && second.is_dir());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn staged_engine_paths_are_process_specific_and_published_from_a_temp_copy() {
+    let first_source = Path::new("/tmp/earthmesh-engine-one");
+    let second_source = Path::new("/tmp/earthmesh-engine-two");
+    assert_ne!(
+        engine::staged_engine_path(first_source, 101),
+        engine::staged_engine_path(first_source, 202)
+    );
+    assert_ne!(
+        engine::staged_engine_path(first_source, 101),
+        engine::staged_engine_path(second_source, 101),
+        "different source binaries must never share a staged cache path"
+    );
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_engine_stage_{}_{}",
+        process::id(),
+        nonce
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("source-engine");
+    let destination = root.join("staged-engine");
+    fs::write(&source, b"new-engine").unwrap();
+    fs::write(&destination, b"old-engine").unwrap();
+
+    engine::stage_engine_copy(&source, &destination).expect("publish engine copy");
+
+    assert_eq!(fs::read(&destination).unwrap(), b"new-engine");
+    assert!(fs::read_dir(&root).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp-")
+    }));
+    let _ = fs::remove_dir_all(root);
+}
 
 #[test]
 fn gui_scans_valid_auto_refine_decisions_and_keeps_malformed_artifacts_nonfatal() {
@@ -185,6 +289,87 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
     assert!(Path::new(hydro.cama_root.as_deref().unwrap()).is_absolute());
     assert!(Path::new(cfg.coupling.unwrap().cama_root.as_deref().unwrap()).is_absolute());
 }
+
+#[test]
+fn gui_resolves_preset_inputs_from_the_nearest_working_directory_ancestor() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_ancestor_input_{}_{}",
+        process::id(),
+        nonce
+    ));
+    let cwd = root.join("gui-tauri/src-tauri");
+    let landtype = root.join("input/landtype_igbp_update.nc");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(landtype.parent().unwrap()).unwrap();
+    fs::write(&landtype, b"fixture").unwrap();
+
+    let resolved =
+        mesh_runner::resolve_gui_input_path(Path::new("input/landtype_igbp_update.nc"), &cwd);
+    assert_eq!(resolved, landtype);
+    let stale_absolute = cwd.join("input/landtype_igbp_update.nc");
+    let unchanged = mesh_runner::resolve_gui_input_path(&stale_absolute, &cwd);
+    assert_eq!(unchanged, stale_absolute);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opened_project_paths_are_bound_to_the_project_directory() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_opened_paths_{}_{}",
+        process::id(),
+        nonce
+    ));
+    let project_dir = root.join("projects");
+    fs::create_dir_all(&project_dir).unwrap();
+    let absolute_missing = root.join("missing/refine.txt");
+    let mut cfg = circle_project("opened_paths");
+    cfg.data_layers[0].path = "data/layer.nc".to_string();
+    cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
+        path: absolute_missing.to_string_lossy().into_owned(),
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    let project_path = project_dir.join("project.yaml");
+    fs::write(&project_path, cfg.to_yaml().unwrap()).unwrap();
+
+    let opened = read_project(project_path.to_string_lossy().into_owned()).expect("open project");
+    let opened_cfg = ProjectConfig::from_yaml(&opened.yaml).expect("opened yaml");
+    assert_eq!(
+        Path::new(&opened_cfg.data_layers[0].path),
+        project_dir.join("data/layer.nc")
+    );
+    assert_eq!(
+        Path::new(&opened_cfg.refinement.specified_close.unwrap().path),
+        absolute_missing
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn failed_kill_keeps_the_running_pid_for_a_retry() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    mesh_process::record_running_child(run.id(), u32::MAX).expect("record impossible PID");
+    assert!(mesh_process::kill_run().is_err());
+    assert_eq!(mesh_process::running_child_pid(), Some(u32::MAX));
+    mesh_process::clear_running_child(run.id(), u32::MAX);
+    drop(run);
+}
+
+#[test]
+fn gui_keeps_empty_optional_input_paths_empty() {
+    let mut path = String::new();
+    mesh_runner::absolutize_input_path(&mut path, Path::new("/tmp"));
+    assert!(path.is_empty());
+}
+
 #[test]
 fn parses_quality_summary_fields() {
     let json = r#"{
@@ -218,6 +403,210 @@ fn parses_quality_summary_fields() {
     assert!(q.cell_sides.contains(&("pentagon".to_string(), 2)));
     assert!(q.cell_sides.contains(&("hexagon".to_string(), 1188)));
     assert!(q.report_path.is_none());
+}
+
+#[test]
+fn quality_summary_rejects_missing_or_unknown_verdict() {
+    let missing = r#"{
+        "cell_view": "hex",
+        "geometry": { "cell_count": 1, "vertex_count": 2, "edge_count": 3 },
+        "topology": {},
+        "gates": []
+    }"#;
+    assert!(
+        quality::parse_quality_summary(missing, Path::new("/unused"))
+            .unwrap_err()
+            .contains("verdict")
+    );
+
+    let unknown = r#"{
+        "verdict": "unknown",
+        "cell_view": "hex",
+        "geometry": { "cell_count": 1, "vertex_count": 2, "edge_count": 3 },
+        "topology": {},
+        "gates": []
+    }"#;
+    assert!(
+        quality::parse_quality_summary(unknown, Path::new("/unused"))
+            .unwrap_err()
+            .contains("verdict")
+    );
+}
+
+#[test]
+fn quality_summary_rejects_missing_required_geometry_counts() {
+    let json = r#"{
+        "verdict": "pass",
+        "cell_view": "hex",
+        "geometry": { "cell_count": 1, "vertex_count": 2 },
+        "topology": {},
+        "gates": []
+    }"#;
+    assert!(quality::parse_quality_summary(json, Path::new("/unused"))
+        .unwrap_err()
+        .contains("edge_count"));
+
+    let missing_gate_value = r#"{
+        "verdict": "pass",
+        "cell_view": "hex",
+        "geometry": { "cell_count": 1, "vertex_count": 2, "edge_count": 3 },
+        "topology": {},
+        "gates": [{ "metric": "min_angle_deg", "level": "pass" }]
+    }"#;
+    assert!(
+        quality::parse_quality_summary(missing_gate_value, Path::new("/unused"))
+            .unwrap_err()
+            .contains("value")
+    );
+}
+
+struct FailingReader;
+
+impl io::Read for FailingReader {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::other("synthetic read failure"))
+    }
+}
+
+#[test]
+fn child_output_read_and_join_failures_are_not_silenced() {
+    let read_error =
+        mesh_runner::read_child_lines(io::BufReader::new(FailingReader), "stdout", |_| Ok(()))
+            .unwrap_err();
+    assert!(read_error.contains("stdout"));
+    assert!(read_error.contains("synthetic read failure"));
+
+    let join_error = mesh_runner::join_output_thread(
+        thread::spawn(|| -> Result<(), String> { panic!("synthetic panic") }),
+        "stderr",
+    )
+    .unwrap_err();
+    assert!(join_error.contains("stderr"));
+    assert!(join_error.contains("panicked"));
+}
+
+fn spawn_test_sidecar(stdout: &str, stderr: &str, code: i32) -> Child {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("printf '%s\\n' \"$1\"; printf '%s\\n' \"$2\" >&2; exit \"$3\"")
+            .arg("earthmesh-test-sidecar")
+            .arg(stdout)
+            .arg(stderr)
+            .arg(code.to_string());
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg(format!(
+            "echo {stdout} & echo {stderr} 1>&2 & exit /B {code}"
+        ));
+        command
+    };
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn synthetic sidecar")
+}
+
+#[test]
+fn sidecar_success_reports_exit_and_gridfile() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&logs);
+    let child = spawn_test_sidecar("gridfile=/tmp/gui-success.nc", "sidecar warning", 0);
+
+    let (ok, code, gridfile) =
+        mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
+            captured.lock().unwrap().push(line)
+        })
+        .expect("capture successful sidecar");
+
+    assert!(ok);
+    assert_eq!(code, Some(0));
+    assert_eq!(gridfile.as_deref(), Some("/tmp/gui-success.nc"));
+    assert!(logs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|line| line == "— exited with 0"));
+}
+
+#[test]
+fn sidecar_nonzero_exit_is_a_completed_failed_result() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&logs);
+    let child = spawn_test_sidecar("no grid", "synthetic failure", 7);
+
+    let (ok, code, gridfile) =
+        mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
+            captured.lock().unwrap().push(line)
+        })
+        .expect("capture nonzero sidecar");
+
+    assert!(!ok);
+    assert_eq!(code, Some(7));
+    assert_eq!(gridfile, None);
+    let logs = logs.lock().unwrap();
+    assert!(logs.iter().any(|line| line == "[stderr] synthetic failure"));
+    assert!(logs.iter().any(|line| line == "— exited with 7"));
+}
+
+#[test]
+fn project_capabilities_expose_authoritative_runtime_limits() {
+    let capabilities = project_capabilities().expect("project capabilities");
+    assert_eq!(
+        capabilities.intent_ids,
+        INTENT_PRESETS
+            .iter()
+            .map(|intent| intent.id().to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(capabilities.default_sea_ratio, default_mask_sea_ratio());
+    assert_eq!(capabilities.default_min_angle_deg, DEFAULT_MIN_ANGLE_DEG);
+    assert_eq!(capabilities.method_c_min_base_nxp, METHOD_C_MIN_BASE_NXP);
+    assert_eq!(
+        capabilities.method_c_max_refinement_level,
+        METHOD_C_MAX_AUTO_REFINE_LEVEL
+    );
+    assert_eq!(capabilities.default_openmp, 16);
+    assert_eq!(capabilities.default_niter, 5000);
+    assert_eq!(capabilities.default_beta, 1.2);
+    assert_eq!(capabilities.default_relax, 0.04);
+    assert_eq!(capabilities.default_hfield_g, 0.2);
+    assert_eq!(
+        capabilities.method_c_spring_nxp1_km,
+        earthmesh_project::METHOD_C_SPRING_NXP1_KM
+    );
+    assert_eq!(
+        capabilities.km_per_degree_equator,
+        earthmesh_project::KM_PER_DEGREE_EQUATOR
+    );
+}
+
+#[test]
+fn mesh_analysis_workspaces_are_unique() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_analysis_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let first = mesh_outputs::create_unique_analysis_dir(&root, "quality").unwrap();
+    let second = mesh_outputs::create_unique_analysis_dir(&root, "quality").unwrap();
+    assert_ne!(first, second);
+    assert!(first.is_dir() && second.is_dir());
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -259,6 +648,40 @@ fn mesh_kind_rejects_invalid_values() {
 }
 
 #[test]
+fn explicit_missing_landtype_file_is_not_silently_replaced_by_merit_surface_data() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_missing_landtype_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let merit_root = root.join("merit");
+    let gridfile = root.join("mesh.nc");
+    let missing_landtype = root.join("missing-landtype.nc");
+    fs::create_dir_all(&merit_root).unwrap();
+    fs::write(&gridfile, b"grid fixture").unwrap();
+
+    let error = mesh_outputs::mesh_merit_cells(
+        gridfile.to_string_lossy().into_owned(),
+        "hex".to_string(),
+        merit_root.to_string_lossy().into_owned(),
+        112.0,
+        115.0,
+        21.0,
+        24.0,
+        None,
+        Some(missing_landtype.to_string_lossy().into_owned()),
+    )
+    .expect_err("an explicit missing landtype file must fail before MERIT fallback");
+
+    assert!(error.contains("landtype file not found"), "{error}");
+    assert!(error.contains("missing-landtype.nc"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn gui_quality_config_uses_project_threshold_and_policy() {
     let block = mesh_outputs::quality_namelist_for_gui(27.5, "block").unwrap();
     assert!(block.contains("NL%min_angle_warn_deg = 27.5"));
@@ -270,32 +693,28 @@ fn gui_quality_config_uses_project_threshold_and_policy() {
 }
 
 #[test]
-fn gui_output_directory_creation_propagates_filesystem_errors() {
-    let root = env::temp_dir().join(format!("earthmesh_gui_mkdir_error_{}", process::id()));
-    let _ = fs::remove_file(&root);
-    fs::write(&root, b"not a directory").expect("create blocking file");
-    let err = mesh_runner::create_output_directories(&root)
-        .expect_err("a file cannot be used as an output directory");
-    assert!(err.contains("create output directory"));
-    let _ = fs::remove_file(&root);
-}
+fn every_quality_policy_is_preserved_for_the_shared_project_cli() {
+    for policy in [
+        ViolationPolicy::Warn,
+        ViolationPolicy::Block,
+        ViolationPolicy::AutoRefine,
+    ] {
+        let mut cfg = circle_project("backend_shared_project_cli");
+        cfg.quality.on_violation = policy;
+        let yaml = mesh_runner::project_cli_yaml(&cfg).unwrap();
+        let staged = ProjectConfig::from_yaml(&yaml).unwrap();
+        assert_eq!(staged.quality.on_violation, policy);
+    }
 
-#[test]
-fn backend_block_policy_requires_a_quality_target() {
-    let mut cfg = circle_project("backend_block");
-    cfg.quality.on_violation = ViolationPolicy::Block;
-    let err =
-        mesh_runner::enforce_backend_quality_policy(&cfg, None, Path::new("unused-project.yaml"))
-            .unwrap_err();
-    assert!(err.contains("requires the engine to report gridfile"));
-}
-
-#[test]
-fn backend_auto_refine_routes_to_the_shared_project_cli_loop() {
-    let mut cfg = circle_project("backend_shared_auto_refine");
-    assert!(!mesh_runner::uses_standard_project_cli(&cfg));
-    cfg.quality.on_violation = ViolationPolicy::AutoRefine;
-    assert!(mesh_runner::uses_standard_project_cli(&cfg));
+    let project_path = Path::new("/tmp/earthmesh-project.yaml");
+    let run_dir = Path::new("/tmp/earthmesh-run");
+    let command = mesh_runner::project_cli_command("mkgrd.x", project_path, run_dir);
+    let args = command
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(args, ["--project", "/tmp/earthmesh-project.yaml"]);
+    assert_eq!(command.get_current_dir(), Some(run_dir));
 }
 fn preset_yaml(name: &str, intent: MeshIntentPreset) -> String {
     scaffold_project(
@@ -381,13 +800,16 @@ fn project_summary_reports_approx_degree_resolution() {
         "HydrologyLand".to_string(),
         None,
         None,
-        Some(100.0 / 111.32),
+        Some(100.0 / earthmesh_project::KM_PER_DEGREE_EQUATOR),
     )
     .expect("scaffold project");
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.nxp, None);
     assert_eq!(summary.approx_km, None);
-    assert_eq!(summary.approx_degree, Some(100.0 / 111.32));
+    assert_eq!(
+        summary.approx_degree,
+        Some(100.0 / earthmesh_project::KM_PER_DEGREE_EQUATOR)
+    );
     assert_eq!(summary.effective_nxp, 80);
 }
 
@@ -469,694 +891,6 @@ fn set_domain_close_reports_mask_source() {
         Some("input/Ocean/Ocean_ChinaSea_boundary.nml".to_string())
     );
     assert_eq!(summary.sea_ratio, Some(0.3));
-}
-
-#[test]
-fn close_domain_masks_resolve_repo_relative_input_paths() {
-    let root = env::temp_dir().join(format!("earthmesh_close_domain_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("mkdir temp");
-
-    let (domain_prefix, refine_prefix) = mesh_runner::write_close_domain_masks(
-        "input/Ocean/Ocean_ChinaSea_boundary.nml",
-        CloseMaskFormat::Nml,
-        &root,
-        2,
-        48,
-    )
-    .expect("write close masks")
-    .expect("nml close should write masks");
-
-    assert!(root.join("domain_close_001.nml").is_file());
-    assert!(root.join("refine_close_001_001.nml").is_file());
-    assert_eq!(domain_prefix, root.join("domain_close"));
-    assert_eq!(refine_prefix, root.join("refine_close"));
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn regional_close_domain_only_ignores_stale_refine_passes_when_refine_disabled() {
-    let root = env::temp_dir().join(format!("earthmesh_close_domain_only_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("mkdir temp");
-
-    let mut cfg = ProjectConfig::from_yaml(&preset_yaml(
-        "close_no_refine",
-        MeshIntentPreset::CoastalOcean,
-    ))
-    .expect("project");
-    cfg.domain = DomainConfig::Regional {
-        shape: RegionShape::Close {
-            path: "input/Ocean/Ocean_ChinaSea_boundary.nml".to_string(),
-            format: CloseMaskFormat::Nml,
-            boundary: CloseBoundaryMode::Polyline,
-        },
-        sea_ratio: None,
-    };
-    cfg.refinement.enabled = false;
-    cfg.refinement.max_passes = 3;
-    let mut lowered = cfg.try_lower().expect("lower");
-    let domain_prefix = mesh_runner::write_close_domain_only_masks(
-        "input/Ocean/Ocean_ChinaSea_boundary.nml",
-        CloseMaskFormat::Nml,
-        &root,
-    )
-    .expect("write close domain mask")
-    .expect("nml close should write masks");
-    mesh_runner::configure_regional_close_domain_only(&mut lowered, &domain_prefix);
-
-    assert!(!lowered.mkgrd.refine);
-    assert!(!lowered.refine.refine_spc);
-    assert!(!lowered.refine.refine_cal);
-    assert_eq!(lowered.refine.max_iter_spc, 0);
-    assert_eq!(lowered.mkgrd.mask_domain_type, "close");
-    assert_eq!(
-        lowered.mkgrd.mask_domain_fprefix,
-        root.join("domain_close").to_string_lossy()
-    );
-    let domain = fs::read_to_string(root.join("domain_close_001.nml")).expect("domain mask");
-    assert!(domain.contains("close_refine = 0"));
-    assert!(!root.join("refine_close_001_001.nml").exists());
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn shapefile_polygon_converts_to_close_mask_nml() {
-    let root = env::temp_dir().join(format!("earthmesh_studio_shp_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-    let shp = root.join("watershed.shp");
-    write_test_polygon_shp(&shp, &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
-
-    let (domain_prefix, refine_prefix) =
-        mesh_runner::write_shapefile_close_masks(&shp, &root, 2, 30).expect("convert shp");
-    assert_eq!(domain_prefix, root.join("domain_shp"));
-    assert_eq!(refine_prefix, root.join("refine_shp"));
-    let nml = fs::read_to_string(root.join("domain_shp_001.nml")).expect("read close nml");
-    assert!(nml.contains("close_num = 4"));
-    assert!(nml.contains("close_refine = 2"));
-    assert!(nml.contains("4.0000000000 4.0000000000"));
-    let refine_nml = fs::read_to_string(root.join("refine_shp_001_001.nml")).expect("refine 1");
-    assert!(refine_nml.contains("close_refine = 1"));
-    let refine_nml = fs::read_to_string(root.join("refine_shp_002_001.nml")).expect("refine 2");
-    assert!(refine_nml.contains("close_refine = 2"));
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn hfield_close_mask_family_skips_discrete_parent_masks() {
-    let root = env::temp_dir().join(format!("earthmesh_studio_hfield_shp_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-    let shp = root.join("watershed.shp");
-    write_test_polygon_shp(&shp, &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
-
-    let (_domain_prefix, refine_prefix) =
-        mesh_runner::write_shapefile_close_masks_with_parent_masks(&shp, &root, 2, 30, false)
-            .expect("convert shp for hfield");
-
-    assert_eq!(refine_prefix, root.join("refine_shp"));
-    assert!(!root.join("refine_shp_001_001.nml").exists());
-    assert!(root.join("refine_shp_002_001.nml").is_file());
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn lonlat_text_converts_to_close_domain_masks() {
-    let root = env::temp_dir().join(format!("earthmesh_studio_close_txt_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-    let txt = root.join("ring.txt");
-    fs::write(&txt, "0 0\n4 0\n4 4\n0 4\n").expect("write txt");
-
-    let (domain_prefix, refine_prefix) = mesh_runner::write_close_domain_masks(
-        txt.to_str().unwrap(),
-        CloseMaskFormat::LonLatText,
-        &root,
-        2,
-        30,
-    )
-    .expect("convert txt")
-    .expect("fast path");
-    assert_eq!(domain_prefix, root.join("domain_close"));
-    assert_eq!(refine_prefix, root.join("refine_close"));
-    let nml = fs::read_to_string(root.join("domain_close_001.nml")).expect("read close nml");
-    assert!(nml.contains("close_refine = 2"));
-    assert!(nml.contains("4.0000000000 4.0000000000"));
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn shapefile_close_mask_simplifies_dense_boundary() {
-    let root = env::temp_dir().join(format!("earthmesh_studio_shp_dense_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-    let shp = root.join("watershed.shp");
-    let mut ring = Vec::new();
-    for i in 0..=1000 {
-        ring.push((i as f64 / 250.0, 0.0));
-    }
-    for i in 1..=1000 {
-        ring.push((4.0, i as f64 / 250.0));
-    }
-    for i in (0..1000).rev() {
-        ring.push((i as f64 / 250.0, 4.0));
-    }
-    for i in (1..1000).rev() {
-        ring.push((0.0, i as f64 / 250.0));
-    }
-    write_test_polygon_shp(&shp, &ring);
-
-    mesh_runner::write_shapefile_close_masks(&shp, &root, 3, 50).expect("convert dense shp");
-    let nml = fs::read_to_string(root.join("domain_shp_001.nml")).expect("read close nml");
-    let close_num = nml
-        .lines()
-        .find_map(|line| line.strip_prefix("close_num = "))
-        .and_then(|value| value.parse::<usize>().ok())
-        .expect("close_num");
-    assert!(
-        close_num < 20,
-        "dense rectangle should simplify before engine input, got {close_num}"
-    );
-    assert!(nml.contains("close_refine = 3"));
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn engine_input_path_resolves_project_relative_file() {
-    let root = env::temp_dir().join(format!("earthmesh_studio_run_path_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    let input = root.join("input");
-    fs::create_dir_all(&input).expect("input dir");
-    fs::write(input.join("landtype_igbp_update.nc"), b"landcover").expect("write landcover");
-
-    let resolved = mesh_runner::existing_run_file("input/landtype_igbp_update.nc", &root)
-        .expect("relative input should resolve under project dir");
-    assert_eq!(
-        resolved,
-        input
-            .join("landtype_igbp_update.nc")
-            .canonicalize()
-            .expect("canonical input")
-            .to_string_lossy()
-            .into_owned()
-    );
-    assert!(mesh_runner::existing_run_file("input/missing.nc", &root).is_none());
-    assert!(mesh_runner::existing_run_file("none", &root).is_none());
-    let cargo_toml =
-        mesh_runner::existing_run_file("Cargo.toml", &root).expect("repo-root fallback");
-    let expected_cargo_toml = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("Cargo.toml")
-        .canonicalize()
-        .expect("canonical repository Cargo.toml");
-    assert_eq!(
-        Path::new(&cargo_toml),
-        expected_cargo_toml.as_path(),
-        "repo-root fallback must not depend on the checkout directory name"
-    );
-
-    let cfg = ProjectConfig::from_yaml(&hydrology_yaml("path_normalize")).expect("project");
-    let mut lowered = cfg.try_lower().expect("lower");
-    mesh_runner::normalize_engine_input_paths(&mut lowered, &root);
-    assert_eq!(
-        lowered.mkgrd.landtype_file,
-        input
-            .join("landtype_igbp_update.nc")
-            .canonicalize()
-            .expect("canonical landtype")
-            .to_string_lossy()
-            .into_owned()
-    );
-    assert_eq!(
-        lowered.data_layers.layers[0].path,
-        lowered.mkgrd.landtype_file
-    );
-    assert_eq!(lowered.mkgrd.gridnum_perdegree, 240);
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn regional_method_c_plan_keeps_local_target_resolution() {
-    assert_eq!(mesh_runner::regional_method_c_plan(40), (20, 1));
-    assert_eq!(mesh_runner::regional_method_c_plan(120), (30, 2));
-    assert_eq!(mesh_runner::regional_method_c_plan(360), (45, 3));
-}
-
-#[test]
-fn regional_method_c_project_plan_uses_user_refine_passes() {
-    let mut cfg = ProjectConfig::from_yaml(&hydrology_yaml("regional_refine")).expect("project");
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 4;
-    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-        lon: 113.0,
-        lat: 22.0,
-        radius_km: 100.0,
-    });
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(320, &cfg),
-        (20, 4)
-    );
-}
-
-#[test]
-fn regional_method_c_project_plan_caps_user_passes_to_supported_target() {
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("regional_refine_cap")).expect("project");
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 9;
-    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-        lon: 113.0,
-        lat: 22.0,
-        radius_km: 100.0,
-    });
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(40, &cfg),
-        (10, 2)
-    );
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(768, &cfg),
-        (24, 5)
-    );
-}
-
-#[test]
-fn regional_method_c_project_plan_ignores_disabled_refine_passes() {
-    let mut cfg = ProjectConfig::from_yaml(&hydrology_yaml("regional_auto_plan")).expect("project");
-    cfg.refinement.enabled = false;
-    cfg.refinement.max_passes = 1;
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(320, &cfg),
-        (40, 3)
-    );
-}
-
-#[test]
-fn regional_method_c_project_plan_uses_expert_spc_passes_without_recipe_refine() {
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("regional_expert_refine")).expect("project");
-    cfg.refinement.enabled = false;
-    cfg.refinement.max_passes = 0;
-    cfg.expert.max_iter_spc = Some(2);
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(40, &cfg),
-        (10, 2)
-    );
-}
-
-#[test]
-fn regional_method_c_project_plan_preserves_target_nxp_with_requested_level() {
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("regional_target_nxp")).expect("project");
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 2;
-    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-        lon: 114.0,
-        lat: 22.0,
-        radius_km: 400.0,
-    });
-
-    let (base_nxp, level) = mesh_runner::regional_method_c_project_plan(40, &cfg);
-    assert_eq!((base_nxp, level), (10, 2));
-    assert_eq!(base_nxp * (1_i32 << level), 40);
-}
-
-#[test]
-fn regional_bbox_method_c_plan_uses_requested_nxp_as_base_resolution() {
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("regional_bbox_base_nxp")).expect("project");
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 2;
-    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-        lon: 114.0,
-        lat: 22.0,
-        radius_km: 400.0,
-    });
-
-    let (base_nxp, level) = mesh_runner::regional_bbox_method_c_project_plan(40, &cfg);
-    assert_eq!((base_nxp, level), (40, 2));
-    assert_eq!(base_nxp * (1_i32 << level), 160);
-}
-
-#[test]
-fn regional_method_c_project_plan_ignores_stale_passes_without_refine_source() {
-    let mut cfg = ProjectConfig::from_yaml(&preset_yaml(
-        "regional_close",
-        MeshIntentPreset::CoastalOcean,
-    ))
-    .expect("project");
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 3;
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(40, &cfg),
-        (20, 1)
-    );
-}
-
-#[test]
-fn ocean_close_method_c_defaults_to_smooth_two_level_plan() {
-    let mut cfg = ProjectConfig::from_yaml(&preset_yaml(
-        "smooth_ocean_close",
-        MeshIntentPreset::CoastalOcean,
-    ))
-    .expect("project");
-    cfg.domain = DomainConfig::Regional {
-        shape: RegionShape::Close {
-            path: "input/Ocean/Ocean_ChinaSea_boundary.nml".to_string(),
-            format: CloseMaskFormat::Nml,
-            boundary: CloseBoundaryMode::Polyline,
-        },
-        sea_ratio: None,
-    };
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 3;
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(400, &cfg),
-        (100, 2)
-    );
-}
-
-#[test]
-fn ocean_close_method_c_respects_explicit_refinement_source() {
-    let mut cfg = ProjectConfig::from_yaml(&preset_yaml(
-        "explicit_ocean_close_refine",
-        MeshIntentPreset::CoastalOcean,
-    ))
-    .expect("project");
-    cfg.domain = DomainConfig::Regional {
-        shape: RegionShape::Close {
-            path: "input/Ocean/Ocean_ChinaSea_boundary.nml".to_string(),
-            format: CloseMaskFormat::Nml,
-            boundary: CloseBoundaryMode::Polyline,
-        },
-        sea_ratio: None,
-    };
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 3;
-    cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-        lon: 113.0,
-        lat: 22.0,
-        radius_km: 100.0,
-    });
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(400, &cfg),
-        (50, 3)
-    );
-}
-
-#[test]
-fn v2_ocean_o1_o2_o3_fixtures_pin_smooth_method_c_defaults() {
-    let ocean_close = |name: &str, nxp| {
-        let mut cfg = ProjectConfig::from_yaml(&preset_yaml(name, MeshIntentPreset::CoastalOcean))
-            .expect("project");
-        cfg.target.resolution = ResolutionSpec::Nxp(nxp);
-        cfg.domain = DomainConfig::Regional {
-            shape: RegionShape::Close {
-                path: "input/Ocean/Ocean_ChinaSea_boundary.nml".to_string(),
-                format: CloseMaskFormat::Nml,
-                boundary: CloseBoundaryMode::Polyline,
-            },
-            sea_ratio: None,
-        };
-        cfg.refinement.enabled = false;
-        cfg.refinement.max_passes = 0;
-        cfg
-    };
-
-    let o1 = ocean_close("v2_o1_chinasea_lr", 192);
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(192, &o1),
-        (48, 2)
-    );
-
-    let o2 = ocean_close("v2_o2_chinasea_hr", 768);
-    let (base_nxp, level) = mesh_runner::regional_method_c_project_plan(768, &o2);
-    assert_eq!((base_nxp, level), (192, 2));
-
-    let mut lowered = o2.try_lower().expect("lower");
-    mesh_runner::enable_regional_method_c_fast_path(
-        &mut lowered,
-        "close",
-        Path::new("/tmp/domain_close"),
-        Path::new("/tmp/refine_close"),
-        base_nxp,
-        level,
-    );
-    assert_eq!(lowered.refine.max_iter_spc, 2);
-    assert_eq!(lowered.refine.halo[1], 3);
-    assert_eq!(lowered.refine.halo[2], 3);
-    assert_eq!(lowered.refine.max_transition_row[1], 3);
-    assert_eq!(lowered.refine.max_transition_row[2], 3);
-    assert_eq!(lowered.refine.spring_global_type, 0);
-    assert_eq!(lowered.refine.spring_regional_type, 1);
-    assert_eq!(lowered.refine.niter_refine, 2000);
-
-    let mut o3 = ocean_close("v2_o3_chinasea_vr", 192);
-    o3.refinement.enabled = true;
-    o3.refinement.max_passes = 2;
-    o3.refinement.specified_close = Some(SpecifiedCloseRefinement {
-        path: "input/Ocean/refine_spc_close01.nml".to_string(),
-        boundary: CloseBoundaryMode::Polyline,
-    });
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(192, &o3),
-        (48, 2)
-    );
-}
-
-#[test]
-fn regional_method_c_project_plan_keeps_auto_refine_level_in_the_shared_cli() {
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("regional_auto_refine")).expect("project");
-    cfg.refinement.enabled = true;
-    cfg.refinement.max_passes = 2;
-    cfg.quality.on_violation = ViolationPolicy::AutoRefine;
-
-    assert_eq!(
-        mesh_runner::regional_method_c_project_plan(320, &cfg),
-        (40, 3)
-    );
-}
-
-#[test]
-fn regional_bbox_circle_mask_family_writes_domain_and_local_refine_masks() {
-    let root = env::temp_dir().join(format!("earthmesh_bbox_circle_family_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-
-    let (lon, lat, radius_km) = (114.0_f64, 22.0_f64, 400.32_f64);
-    assert_eq!(lon, 114.0);
-    assert_eq!(lat, 22.0);
-    assert!((radius_km - 400.32).abs() < 0.001);
-
-    let (domain_prefix, refine_prefix) = mesh_runner::write_regional_bbox_circle_mask_family(
-        108.0,
-        120.0,
-        26.0,
-        18.0,
-        lon,
-        lat,
-        radius_km,
-        &root,
-        "domain_bbox",
-        "refine_circle",
-        2,
-    )
-    .expect("write bbox/circle mask family");
-
-    assert_eq!(domain_prefix, root.join("domain_bbox"));
-    assert_eq!(refine_prefix, root.join("refine_circle"));
-    let domain = fs::read_to_string(root.join("domain_bbox_001.nml")).expect("domain mask");
-    let refine = fs::read_to_string(root.join("refine_circle_001.nml")).expect("refine mask");
-    assert!(domain.contains("bbox_refine = 0"));
-    assert!(refine.contains("circle_refine = 2"));
-    assert!(domain.contains("108.0000000000 120.0000000000 26.0000000000 18.0000000000"));
-    assert!(refine.contains("114.0000000000 22.0000000000 400.3200000000"));
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn regional_bbox_inset_mask_family_writes_rectangular_default_refine_mask() {
-    let root = env::temp_dir().join(format!("earthmesh_bbox_inset_family_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-
-    let (rw, re, rn, rs) = mesh_runner::default_regional_bbox_refine_bbox(80.0, 140.0, 26.0, -26.0);
-    assert_eq!((rw, re, rn, rs), (85.0, 135.0, 21.0, -21.0));
-
-    let (domain_prefix, refine_prefix) = mesh_runner::write_regional_bbox_inset_mask_family(
-        80.0,
-        140.0,
-        26.0,
-        -26.0,
-        rw,
-        re,
-        rn,
-        rs,
-        &root,
-        "domain_bbox",
-        "refine_bbox",
-        3,
-    )
-    .expect("write bbox/inset mask family");
-
-    assert_eq!(domain_prefix, root.join("domain_bbox"));
-    assert_eq!(refine_prefix, root.join("refine_bbox"));
-    let domain = fs::read_to_string(root.join("domain_bbox_001.nml")).expect("domain mask");
-    let refine = fs::read_to_string(root.join("refine_bbox_001.nml")).expect("refine mask");
-    assert!(domain.contains("bbox_refine = 0"));
-    assert!(refine.contains("bbox_refine = 3"));
-    assert!(refine.contains("85.0000000000 135.0000000000 21.0000000000 -21.0000000000"));
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn regional_bbox_domain_only_ignores_stale_refine_passes_when_refine_disabled() {
-    let root = env::temp_dir().join(format!("earthmesh_bbox_domain_only_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("create root");
-
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("regional_bbox_no_refine")).expect("project");
-    cfg.refinement.enabled = false;
-    cfg.refinement.max_passes = 3;
-    let mut lowered = cfg.try_lower().expect("lower");
-    mesh_runner::configure_regional_bbox_domain_only(
-        &mut lowered,
-        80.0,
-        140.0,
-        26.0,
-        -26.0,
-        &root,
-        "domain_bbox",
-    )
-    .expect("write domain-only bbox");
-
-    assert!(!lowered.mkgrd.refine);
-    assert!(!lowered.refine.refine_spc);
-    assert!(!lowered.refine.refine_cal);
-    assert_eq!(lowered.mkgrd.mask_domain_type, "bbox");
-    assert_eq!(
-        lowered.mkgrd.mask_domain_fprefix,
-        root.join("domain_bbox").to_string_lossy()
-    );
-    let domain = fs::read_to_string(root.join("domain_bbox_001.nml")).expect("domain mask");
-    assert!(domain.contains("bbox_refine = 0"));
-
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn regional_method_c_fast_path_sets_domain_and_refine_mask() {
-    let cfg = ProjectConfig::from_yaml(&hydrology_yaml("fast_region")).expect("project");
-    let mut lowered = cfg.try_lower().expect("lower");
-    mesh_runner::enable_regional_method_c_fast_path(
-        &mut lowered,
-        "bbox",
-        Path::new("/tmp/domain_bbox"),
-        Path::new("/tmp/domain_bbox"),
-        30,
-        2,
-    );
-    assert_eq!(lowered.mkgrd.nxp, 30);
-    assert!(lowered.mkgrd.refine);
-    assert!(!lowered.mkgrd.mask_domain_global);
-    assert_eq!(lowered.mkgrd.mask_domain_type, "bbox");
-    assert_eq!(lowered.mkgrd.mask_domain_fprefix, "/tmp/domain_bbox");
-    assert!(lowered.refine.refine_spc);
-    assert!(!lowered.refine.refine_cal);
-    assert_eq!(lowered.refine.max_iter_spc, 2);
-    assert_eq!(lowered.refine.halo[1], 4);
-    assert_eq!(lowered.refine.halo[2], 4);
-    assert_eq!(lowered.refine.max_transition_row[1], 4);
-    assert_eq!(lowered.refine.max_transition_row[2], 4);
-    assert_eq!(lowered.refine.mask_refine_spc_type, "bbox");
-    assert_eq!(lowered.refine.mask_refine_spc_fprefix, "/tmp/domain_bbox");
-    assert!(lowered.refine.weak_concav_eliminate);
-    assert_eq!(lowered.refine.spring_global_type, 0);
-    assert_eq!(lowered.refine.spring_regional_type, 1);
-    assert_eq!(lowered.refine.niter_refine, 2000);
-    assert!(lowered.refine.niter_refine_specified);
-}
-
-#[test]
-fn engine_namelist_omits_datalayers_after_gui_lowering() {
-    let cfg = ProjectConfig::from_yaml(&hydrology_yaml("fast_region_engine_nml")).expect("project");
-    let mut lowered = cfg.try_lower().expect("lower");
-    mesh_runner::enable_regional_method_c_fast_path(
-        &mut lowered,
-        "bbox",
-        Path::new("/tmp/domain_bbox"),
-        Path::new("/tmp/refine_bbox"),
-        30,
-        2,
-    );
-
-    let provenance = lowered.to_namelist();
-    assert!(provenance.contains("&datalayers"));
-    assert!(provenance.contains("threshold:"));
-
-    let engine = mesh_runner::engine_namelist(&lowered);
-    assert!(!engine.contains("&datalayers"));
-    assert!(engine.contains("RL%refine_cal = .FALSE."));
-    assert!(engine.contains("RL%max_iter_cal = 0"));
-}
-
-#[test]
-fn regional_method_c_fast_path_can_use_separate_refine_mask_type() {
-    let cfg = ProjectConfig::from_yaml(&hydrology_yaml("fast_region_circle")).expect("project");
-    let mut lowered = cfg.try_lower().expect("lower");
-    mesh_runner::enable_regional_method_c_fast_path_with_refine_type(
-        &mut lowered,
-        "bbox",
-        "circle",
-        Path::new("/tmp/domain_bbox"),
-        Path::new("/tmp/refine_circle"),
-        20,
-        2,
-    );
-    assert_eq!(lowered.mkgrd.mask_domain_type, "bbox");
-    assert_eq!(lowered.mkgrd.mask_domain_fprefix, "/tmp/domain_bbox");
-    assert_eq!(lowered.refine.mask_refine_spc_type, "circle");
-    assert_eq!(lowered.refine.mask_refine_spc_fprefix, "/tmp/refine_circle");
-}
-
-#[test]
-fn regional_method_c_fast_path_uses_regional_spring_for_tri_meshes() {
-    let cfg = ProjectConfig::from_yaml(&preset_yaml("fast_ocean", MeshIntentPreset::CoastalOcean))
-        .expect("project");
-    let mut lowered = cfg.try_lower().expect("lower");
-    mesh_runner::enable_regional_method_c_fast_path(
-        &mut lowered,
-        "close",
-        Path::new("/tmp/domain_close"),
-        Path::new("/tmp/refine_close"),
-        20,
-        1,
-    );
-    assert_eq!(lowered.mkgrd.mode_grid, "tri");
-    assert!(lowered.refine.weak_concav_eliminate);
-    assert_eq!(lowered.refine.halo[1], 3);
-    assert_eq!(lowered.refine.max_transition_row[1], 3);
-    assert_eq!(lowered.refine.niter_refine, 2000);
-    assert!(lowered.refine.niter_refine_specified);
-    assert_eq!(lowered.refine.spring_global_type, 0);
-    assert_eq!(lowered.refine.spring_regional_type, 1);
 }
 
 #[test]
@@ -1330,8 +1064,8 @@ fn set_expert_updates_custom_overrides() {
         Some(2),
         Some(0),
         Some(1),
-        Some(1.1),
-        Some(0.03),
+        Some(1.123_456_789_012_3),
+        Some(0.031_234_567_890_123),
         Some(true),
     )
     .expect("set expert");
@@ -1349,8 +1083,8 @@ fn set_expert_updates_custom_overrides() {
     assert_eq!(summary.expert_vertex_pretect_layers, Some(2));
     assert_eq!(summary.expert_spring_global_type, Some(0));
     assert_eq!(summary.expert_spring_regional_type, Some(1));
-    assert_eq!(summary.expert_beta, Some(1.1));
-    assert_eq!(summary.expert_relax, Some(0.03));
+    assert_eq!(summary.expert_beta, Some(1.123_456_789_012_3));
+    assert_eq!(summary.expert_relax, Some(0.031_234_567_890_123));
     assert_eq!(summary.expert_weak_concav_eliminate, Some(true));
     assert!(set_expert(
         yaml,
@@ -1551,6 +1285,61 @@ fn hfield_defaults_on_and_discrete_can_disable_it() {
 }
 
 #[test]
+fn hfield_origin_survives_opened_project_compose_and_canonical_save() {
+    let mut base = circle_project("opened_hfield_origin");
+    base.refinement.hfield = Some(earthmesh_project::HfieldRefinementRecipe {
+        enabled: true,
+        g: 0.15,
+        max_level: 3,
+        base_m: Some(12_000.0),
+        origin_lon: Some(123.5),
+        origin_lat: Some(-31.25),
+    });
+    let edited = ProjectConfig::scaffold(
+        "edited_hfield_origin",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+
+    let composed = preserve_unexposed_project_fields(
+        base.to_yaml().expect("base yaml"),
+        edited.to_yaml().expect("edited yaml"),
+        true,
+    )
+    .expect("preserve hidden h-field origin");
+    let composed = set_hfield_refinement(composed, true, Some(0.25), Some(4), Some(10_000.0))
+        .expect("apply visible h-field edits");
+    let saved = validate_project(composed).expect("canonical save serialization");
+    let recipe = ProjectConfig::from_yaml(&saved)
+        .expect("saved yaml")
+        .refinement
+        .hfield
+        .expect("h-field recipe");
+
+    assert_eq!(recipe.g, 0.25);
+    assert_eq!(recipe.max_level, 4);
+    assert_eq!(recipe.base_m, Some(10_000.0));
+    assert_eq!(recipe.origin_lon, Some(123.5));
+    assert_eq!(recipe.origin_lat, Some(-31.25));
+}
+
+#[test]
+fn set_hfield_refinement_rejects_invalid_explicit_base_size() {
+    for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let error = set_hfield_refinement(
+            hydrology_yaml("invalid_hfield_base"),
+            true,
+            None,
+            None,
+            Some(invalid),
+        )
+        .expect_err("invalid explicit base_m must not be converted to automatic sizing");
+        assert!(error.contains("h-field base_m must be positive"), "{error}");
+    }
+}
+
+#[test]
 fn set_specified_refinement_accepts_close_shapefile() {
     let yaml = set_specified_refinement(
         hydrology_yaml("specified_refine_close"),
@@ -1571,30 +1360,6 @@ fn set_specified_refinement_accepts_close_shapefile() {
         summary.specified_refine_path,
         Some("input/region.shp".to_string())
     );
-}
-
-#[test]
-fn specified_close_text_is_converted_to_engine_nml() {
-    let root = env::temp_dir().join(format!("earthmesh_specified_close_txt_{}", process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("test dir");
-    let source = root.join("region.txt");
-    fs::write(&source, "0,0\n4,0\n4,4\n0,4\n").expect("write text ring");
-    let mut cfg =
-        ProjectConfig::from_yaml(&hydrology_yaml("specified_close_txt")).expect("project");
-    cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
-        path: source.to_string_lossy().into_owned(),
-        boundary: CloseBoundaryMode::Polyline,
-    });
-
-    let (kind, prefix) = mesh_runner::write_specified_refinement_mask(&cfg.refinement, &root, 2)
-        .expect("convert specified close text");
-
-    assert_eq!(kind, "close");
-    assert_eq!(prefix, root.join("specified_close"));
-    let nml = fs::read_to_string(root.join("specified_close_001.nml")).expect("read nml");
-    assert!(nml.contains("close_refine = 2"));
-    assert!(nml.contains("close_num = 4"));
 }
 
 #[test]
@@ -1704,7 +1469,7 @@ fn preserve_unexposed_project_fields_allows_global_override_of_hidden_circle() {
 }
 #[test]
 fn set_layer_path_rejects_enabled_empty_path() {
-    let yaml = set_refinement(hydrology_yaml("layer_test"), false, 0)
+    let yaml = set_refinement(hydrology_yaml("layer_test"), false, true, 0)
         .expect("disable refinement before removing its last source");
     let err =
         set_layer_path(yaml.clone(), "landcover".to_string(), "".to_string(), true).unwrap_err();
@@ -1712,6 +1477,77 @@ fn set_layer_path_rejects_enabled_empty_path() {
     let yaml = set_layer_path(yaml, "landcover".to_string(), "".to_string(), false)
         .expect("disabled empty path is allowed");
     assert!(yaml.contains("enabled: false"));
+}
+
+#[test]
+fn merit_layer_enables_the_project_hydro_plan() {
+    let yaml = preset_yaml("merit_hydro", MeshIntentPreset::MeritHydroCoast);
+    let yaml = set_domain_bbox(yaml, 112.0, 115.0, 21.0, 24.0, None).expect("regional domain");
+    let yaml = set_layer_path(
+        yaml,
+        "merit".to_string(),
+        "/data/merit-new".to_string(),
+        true,
+    )
+    .expect("set MERIT root");
+    let cfg = ProjectConfig::from_yaml(&yaml).expect("updated project");
+    assert_eq!(
+        cfg.hydro_execution_plan()
+            .expect("hydro plan")
+            .expect("enabled hydro plan")
+            .merit_root,
+        "/data/merit-new"
+    );
+}
+
+#[test]
+fn merit_layer_edit_keeps_hidden_hydro_options() {
+    let mut base = ProjectConfig::scaffold(
+        "opened_merit",
+        MeshIntentPreset::MeritHydroCoast,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: 112.0,
+                e: 115.0,
+                s: 21.0,
+                n: 24.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(40),
+    );
+    base.hydro_coast = Some(HydroCoastConfig {
+        merit_root: "/data/merit-old".to_string(),
+        cama_root: Some("/data/cama".to_string()),
+        merit_stride: 1,
+        r3_width_m: 450.0,
+        r2_width_m: 75.0,
+    });
+    let edited = ProjectConfig::scaffold(
+        "opened_merit",
+        MeshIntentPreset::MeritHydroCoast,
+        base.domain.clone(),
+        ResolutionSpec::Nxp(40),
+    );
+    let yaml = preserve_unexposed_project_fields(
+        base.to_yaml().expect("base yaml"),
+        edited.to_yaml().expect("edited yaml"),
+        false,
+    )
+    .expect("preserve hidden hydro options");
+    let yaml = set_layer_path(
+        yaml,
+        "merit".to_string(),
+        "/data/merit-new".to_string(),
+        true,
+    )
+    .expect("update visible MERIT root");
+    let cfg = ProjectConfig::from_yaml(&yaml).expect("updated project");
+    let hydro = cfg.hydro_coast.expect("hydro config");
+    assert_eq!(hydro.merit_root, "/data/merit-new");
+    assert_eq!(hydro.cama_root.as_deref(), Some("/data/cama"));
+    assert_eq!(hydro.r3_width_m, 450.0);
+    assert_eq!(hydro.r2_width_m, 75.0);
 }
 
 #[test]
@@ -1808,69 +1644,6 @@ fn set_threshold_value_updates_threshold_layer() {
 }
 
 #[test]
-fn stage_threshold_layers_uses_engine_stems() {
-    let root = env::temp_dir().join(format!(
-        "earthmesh_studio_threshold_stage_{}",
-        process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("temp root");
-    let src = root.join("terrain_slope_source.nc");
-    fs::write(&src, b"slope").expect("write source");
-    let mut cfg = ProjectConfig::scaffold(
-        "threshold_stage",
-        MeshIntentPreset::HydrologyLand,
-        DomainConfig::Global,
-        ResolutionSpec::Nxp(40),
-    );
-    let layer = cfg
-        .data_layers
-        .iter_mut()
-        .find(|layer| layer.id == "slope_avg")
-        .expect("threshold layer");
-    layer.path = src.to_string_lossy().into_owned();
-    layer.enabled = true;
-    let threshold_dir = root.join("threshold");
-    assert!(engine::stage_threshold_layers(&cfg, &threshold_dir, &root).expect("stage"));
-    assert_eq!(
-        fs::read(threshold_dir.join("slope_avg.nc")).expect("read staged"),
-        b"slope"
-    );
-    let _ = fs::remove_dir_all(&root);
-}
-
-#[test]
-fn stage_threshold_layers_resolves_project_relative_sources() {
-    let root = env::temp_dir().join(format!(
-        "earthmesh_studio_threshold_relative_{}",
-        process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    let input = root.join("input");
-    fs::create_dir_all(&input).expect("input dir");
-    fs::write(input.join("terrain_slope_source.nc"), b"slope").expect("write source");
-    let mut cfg = ProjectConfig::scaffold(
-        "threshold_stage",
-        MeshIntentPreset::HydrologyLand,
-        DomainConfig::Global,
-        ResolutionSpec::Nxp(40),
-    );
-    let layer = cfg
-        .data_layers
-        .iter_mut()
-        .find(|layer| layer.id == "slope_avg")
-        .expect("threshold layer");
-    layer.path = "input/terrain_slope_source.nc".to_string();
-    layer.enabled = true;
-    let threshold_dir = root.join("threshold");
-    assert!(engine::stage_threshold_layers(&cfg, &threshold_dir, &root).expect("stage"));
-    assert_eq!(
-        fs::read(threshold_dir.join("slope_avg.nc")).expect("read staged"),
-        b"slope"
-    );
-    let _ = fs::remove_dir_all(&root);
-}
-#[test]
 fn set_quality_rejects_invalid_min_angle() {
     let yaml = hydrology_yaml("quality_test");
     let err = set_quality(yaml, 0.0, "warn".to_string(), 1).unwrap_err();
@@ -1913,39 +1686,48 @@ fn set_quality_rejects_an_empty_auto_refine_batch() {
 #[test]
 fn set_refinement_rejects_too_many_passes() {
     let yaml = hydrology_yaml("refine_test");
-    let err = set_refinement(yaml, true, 10).unwrap_err();
-    assert!(err.contains("refinement max_passes must be <= 9"));
+    let err = set_refinement(yaml, true, true, 6).unwrap_err();
+    assert!(err.contains("refinement max_passes must be <= 5"));
 }
 #[test]
 fn set_refinement_rejects_zero_passes_when_enabled() {
     let yaml = hydrology_yaml("refine_test");
-    let err = set_refinement(yaml, true, 0).unwrap_err();
+    let err = set_refinement(yaml, true, true, 0).unwrap_err();
     assert!(err.contains("refinement max_passes must be > 0"));
 }
 #[test]
 fn set_refinement_allows_zero_passes_when_disabled() {
     let yaml = hydrology_yaml("refine_test");
-    let yaml = set_refinement(yaml, false, 8).expect("disabled refinement ignores pass count");
+    let yaml =
+        set_refinement(yaml, false, true, 8).expect("disabled refinement ignores pass count");
     let summary = project_summary(yaml).expect("summary");
     assert!(!summary.refine_enabled);
     assert_eq!(summary.max_passes, 0);
 }
 
 #[test]
-fn mesh_merit_cells_rejects_invalid_bbox_before_io() {
-    let err = mesh_outputs::mesh_merit_cells(
-        "/no/grid.nc".to_string(),
-        "hex".to_string(),
-        "/no/merit".to_string(),
-        120.0,
-        108.0,
-        18.0,
-        26.0,
-        Some(1),
-        None,
-    )
-    .unwrap_err();
-    assert!(err.contains("invalid MERIT-Hydro mesh bbox"));
+fn set_refinement_persists_the_independent_threshold_switch() {
+    let yaml = hydrology_yaml("threshold_master_switch");
+    let yaml = set_refinement(yaml, false, false, 0).expect("disable threshold refinement");
+    let summary = project_summary(yaml).expect("summary");
+    assert!(!summary.refine_enabled);
+    assert!(!summary.threshold_refine_enabled);
+}
+
+#[test]
+fn mesh_merit_bbox_accepts_antimeridian_and_rejects_invalid_ranges() {
+    assert!(mesh_outputs::validate_merit_mesh_bbox(170.0, -170.0, -10.0, 10.0).is_ok());
+    for bbox in [
+        [170.0, 170.0, -10.0, 10.0],
+        [-181.0, 170.0, -10.0, 10.0],
+        [170.0, -170.0, -91.0, 10.0],
+        [170.0, -170.0, 10.0, 10.0],
+    ] {
+        let [w, e, s, n] = bbox;
+        assert!(mesh_outputs::validate_merit_mesh_bbox(w, e, s, n)
+            .unwrap_err()
+            .contains("invalid MERIT-Hydro mesh bbox"));
+    }
 }
 
 #[test]

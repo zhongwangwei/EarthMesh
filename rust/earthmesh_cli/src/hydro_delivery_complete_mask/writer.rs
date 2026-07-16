@@ -12,6 +12,41 @@ use super::classification::{
     cell_feature_mask_class, cell_mask_priority, index_best_by_cell, surface_class_from_coast,
 };
 
+fn unwrap_ring_near(
+    ring: &[earthmesh_geometry::Point],
+    anchor_lon: f64,
+) -> Vec<earthmesh_geometry::Point> {
+    let mut unwrapped = Vec::with_capacity(ring.len());
+    let mut previous = anchor_lon;
+    for point in ring {
+        let mut lon = point.x;
+        while lon - previous > 180.0 {
+            lon -= 360.0;
+        }
+        while lon - previous < -180.0 {
+            lon += 360.0;
+        }
+        unwrapped.push(earthmesh_geometry::Point::new(lon, point.y));
+        previous = lon;
+    }
+    if unwrapped.is_empty() {
+        return unwrapped;
+    }
+    let min_lon = unwrapped
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_lon = unwrapped
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let shift = 360.0 * ((anchor_lon - 0.5 * (min_lon + max_lon)) / 360.0).round();
+    for point in &mut unwrapped {
+        point.x += shift;
+    }
+    unwrapped
+}
+
 /// Merge sparse river/coast overlays into final cells. COAST remains the
 /// primary surface class; river properties are still copied onto those cells.
 pub fn write_complete_cell_mask_geojson(
@@ -92,8 +127,20 @@ pub fn write_complete_cell_mask_geojson(
             for (class, rings) in &surface_polys {
                 let mut area = 0.0;
                 for cr in &cell_rings {
+                    let Some(first) = cr.first() else { continue };
+                    let cell_ring = unwrap_ring_near(cr, first.x);
+                    let cell_anchor = 0.5
+                        * (cell_ring
+                            .iter()
+                            .map(|point| point.x)
+                            .fold(f64::INFINITY, f64::min)
+                            + cell_ring
+                                .iter()
+                                .map(|point| point.x)
+                                .fold(f64::NEG_INFINITY, f64::max));
                     for sr in rings {
-                        area += intersection_area(cr, sr);
+                        let surface_ring = unwrap_ring_near(sr, cell_anchor);
+                        area += intersection_area(&cell_ring, &surface_ring);
                     }
                 }
                 if area > best_area {

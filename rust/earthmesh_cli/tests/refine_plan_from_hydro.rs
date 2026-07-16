@@ -5,6 +5,30 @@
 use earthmesh_cli::hydro_delivery_refine_workflow::plan_refinement_from_hydro_geojson;
 
 #[test]
+fn zero_max_level_is_rejected_instead_of_enabling_level_one() {
+    let dir = std::env::temp_dir().join(format!("em3_refplan_zero_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[]}"#,
+    )
+    .unwrap();
+
+    let error = plan_refinement_from_hydro_geojson(
+        dir.join("cells.geojson"),
+        dir.join("plan.json"),
+        0,
+        None,
+    )
+    .expect_err("max_level=0 must not silently become level one");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("max_level must be in 1..=255"));
+    assert!(!dir.join("plan.json").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn river_fraction_drives_target_level() {
     let dir = std::env::temp_dir().join(format!("em3_refplan_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

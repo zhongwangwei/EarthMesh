@@ -16,14 +16,14 @@ pub fn gridfile_mesh_from_state(grid: &GridMemory, tabs: &IjTabs) -> io::Result<
 
     let m_points = (0..nma)
         .map(|idx| LonLatPoint {
-            lon: f64::from(grid.glonm[idx]),
-            lat: f64::from(grid.glatm[idx]),
+            lon: grid.glonm[idx],
+            lat: grid.glatm[idx],
         })
         .collect();
     let w_points = (0..nwa)
         .map(|idx| LonLatPoint {
-            lon: f64::from(grid.glonw[idx]),
-            lat: f64::from(grid.glatw[idx]),
+            lon: grid.glonw[idx],
+            lat: grid.glatw[idx],
         })
         .collect();
     let m_to_w = tabs.m.iter().take(nma).map(|tab| tab.iw).collect();
@@ -72,14 +72,14 @@ pub fn gridfile_mesh_from_one_based_state(
 
     let m_points = (1..=nma)
         .map(|idx| LonLatPoint {
-            lon: f64::from(grid.glonm[idx]),
-            lat: f64::from(grid.glatm[idx]),
+            lon: grid.glonm[idx],
+            lat: grid.glatm[idx],
         })
         .collect();
     let w_points = (1..=nwa)
         .map(|idx| LonLatPoint {
-            lon: f64::from(grid.glonw[idx]),
-            lat: f64::from(grid.glatw[idx]),
+            lon: grid.glonw[idx],
+            lat: grid.glatw[idx],
         })
         .collect();
     let m_to_w = (1..=nma).map(|idx| tabs.m[idx].iw).collect();

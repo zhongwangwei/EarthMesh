@@ -1,11 +1,11 @@
-use crate::convex_hull_order_indices;
-use crate::gridfile_lonlat_has_two_placeholders;
-use crate::mesh_row_for_canonical_id;
+use crate::gridfile_m_row_layout;
+use crate::gridfile_w_row_layout;
 use crate::netcdf_to_io_error;
 use crate::required_values_f64;
 use crate::required_values_i32;
 use crate::required_values_i32_matrix;
 use crate::GridfileMeshPoints;
+use crate::GridfileRowLayout;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
@@ -14,16 +14,17 @@ use std::path::Path;
 /// triangle (M->W) view.
 pub fn quality_input_from_gridfile(
     mesh: &GridfileMeshPoints,
-) -> earthmesh_quality::QualityMeshInput {
+) -> io::Result<earthmesh_quality::QualityMeshInput> {
     use earthmesh_geometry::Point;
     use earthmesh_quality::{QualityCell, QualityMeshInput};
+    validate_coordinate_pairs(mesh)?;
     let vertices: Vec<Point> = mesh
         .w_lon
         .iter()
         .zip(&mesh.w_lat)
         .map(|(&lon, &lat)| Point::new(lon, lat))
         .collect();
-    let cells = tri_quality_cells_from_gridfile(mesh)
+    let cells = tri_quality_cells_from_gridfile(mesh)?
         .into_iter()
         .map(|(mi, vertices)| QualityCell {
             vertices,
@@ -31,24 +32,28 @@ pub fn quality_input_from_gridfile(
             neighbors: Vec::new(),
         })
         .collect::<Vec<_>>();
+    if cells.is_empty() {
+        return Err(invalid("triangle quality input contains no physical cells"));
+    }
     let mut cells = cells;
     derive_shared_edge_neighbors(&mut cells);
-    QualityMeshInput { vertices, cells }
+    Ok(QualityMeshInput { vertices, cells })
 }
 
 /// Build quality input from the HEXAGON (W-cell) view.
 pub fn quality_input_from_gridfile_hex(
     mesh: &GridfileMeshPoints,
-) -> earthmesh_quality::QualityMeshInput {
+) -> io::Result<earthmesh_quality::QualityMeshInput> {
     use earthmesh_geometry::Point;
     use earthmesh_quality::{QualityCell, QualityMeshInput};
+    validate_coordinate_pairs(mesh)?;
     let vertices: Vec<Point> = mesh
         .m_lon
         .iter()
         .zip(&mesh.m_lat)
         .map(|(&lon, &lat)| Point::new(lon, lat))
         .collect();
-    let cells = hex_quality_cells_from_gridfile(mesh)
+    let cells = hex_quality_cells_from_gridfile(mesh)?
         .into_iter()
         .map(|(wi, vertices)| QualityCell {
             vertices,
@@ -56,106 +61,222 @@ pub fn quality_input_from_gridfile_hex(
             neighbors: Vec::new(),
         })
         .collect::<Vec<_>>();
+    if cells.is_empty() {
+        return Err(invalid("hex quality input contains no physical cells"));
+    }
     let mut cells = cells;
     derive_shared_edge_neighbors(&mut cells);
-    QualityMeshInput { vertices, cells }
+    Ok(QualityMeshInput { vertices, cells })
 }
 
 pub(crate) fn tri_quality_cells_from_gridfile(
     mesh: &GridfileMeshPoints,
-) -> Vec<(usize, Vec<usize>)> {
+) -> io::Result<Vec<(usize, Vec<usize>)>> {
+    validate_coordinate_pairs(mesh)?;
     let wn = mesh.w_lon.len();
-    let w_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.w_lon, &mesh.w_lat);
+    let mn = mesh.m_lon.len();
+    let expected = mn
+        .checked_mul(3)
+        .ok_or_else(|| invalid("M connectivity size overflow"))?;
+    if mesh.m_to_w.len() != expected {
+        return Err(invalid(format!(
+            "M coordinate rows {mn} require {expected} triangle connectivity values, found {}",
+            mesh.m_to_w.len()
+        )));
+    }
+    let m_layout = gridfile_m_row_layout(mesh);
+    let w_layout = gridfile_w_row_layout(mesh);
     let mut cells = Vec::new();
     for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
-        let idx: Vec<usize> = tri
-            .iter()
-            .filter_map(|&v| mesh_row_for_canonical_id(v, wn, w_has_two_placeholders))
-            .collect();
-        if idx.len() == 3 && idx[0] != idx[1] && idx[1] != idx[2] && idx[0] != idx[2] {
-            cells.push((mi, idx));
+        if !m_layout.is_physical_row(mi) {
+            continue;
         }
+        let idx = tri
+            .iter()
+            .map(|&id| {
+                w_layout
+                    .physical_row_for_canonical_id(id, wn)
+                    .ok_or_else(|| {
+                        invalid(format!("M cell row {mi} contains invalid W vertex id {id}"))
+                    })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if idx[0] == idx[1] || idx[1] == idx[2] || idx[0] == idx[2] {
+            return Err(invalid(format!(
+                "M cell row {mi} contains duplicate W vertex ids {tri:?}"
+            )));
+        }
+        cells.push((mi, idx));
     }
-    cells
+    Ok(cells)
 }
 
 pub(crate) fn hex_quality_cells_from_gridfile(
     mesh: &GridfileMeshPoints,
-) -> Vec<(usize, Vec<usize>)> {
-    let mn = mesh.m_lon.len().min(mesh.m_lat.len());
+) -> io::Result<Vec<(usize, Vec<usize>)>> {
+    validate_coordinate_pairs(mesh)?;
+    let mn = mesh.m_lon.len();
     let wn = mesh.w_lon.len();
-    let m_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.m_lon, &mesh.m_lat);
-    let w_has_two_placeholders = gridfile_lonlat_has_two_placeholders(&mesh.w_lon, &mesh.w_lat);
+    let m_layout = gridfile_m_row_layout(mesh);
+    let w_layout = gridfile_w_row_layout(mesh);
     let mut incident: Vec<Vec<usize>> = vec![Vec::new(); wn];
-    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
-        if mi >= mn {
-            break;
+    if !mesh.m_to_w.is_empty() {
+        let expected = mn
+            .checked_mul(3)
+            .ok_or_else(|| invalid("M connectivity size overflow"))?;
+        if mesh.m_to_w.len() != expected {
+            return Err(invalid(format!(
+                "M coordinate rows {mn} require {expected} triangle connectivity values, found {}",
+                mesh.m_to_w.len()
+            )));
         }
-        if m_has_two_placeholders && mi < 2 {
+    }
+    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+        if !m_layout.is_physical_row(mi) {
             continue;
         }
         for &v in tri {
-            if let Some(w_row) = mesh_row_for_canonical_id(v, wn, w_has_two_placeholders) {
-                incident[w_row].push(mi);
-            }
+            let w_row = w_layout
+                .physical_row_for_canonical_id(v, wn)
+                .ok_or_else(|| {
+                    invalid(format!("M cell row {mi} contains invalid W vertex id {v}"))
+                })?;
+            incident[w_row].push(mi);
         }
     }
 
     let mut cells = Vec::new();
     for (wi, incident_corners) in incident.iter().enumerate().take(wn) {
-        if w_has_two_placeholders && wi < 2 {
+        if !w_layout.is_physical_row(wi) {
             continue;
         }
         // `itab_w%im` + `n_ngrwm` is the gridfile's authoritative W-cell ring.
         // Prefer it over reconstructing incidence from M triangles, but retain the
         // inverse-connectivity path for legacy gridfiles that do not carry it.
-        let corners =
-            authoritative_w_corners(mesh, wi, mn, m_has_two_placeholders).unwrap_or_else(|| {
-                let mut corners = incident_corners
-                    .iter()
-                    .copied()
-                    .filter(|&mi| mi < mn && !(m_has_two_placeholders && mi < 2))
-                    .collect::<Vec<_>>();
-                corners.sort_unstable();
-                corners.dedup();
-                corners
-            });
+        let corners = authoritative_w_corners(mesh, wi, mn, m_layout)?.unwrap_or_else(|| {
+            let mut corners = incident_corners
+                .iter()
+                .copied()
+                .filter(|&mi| mi < mn && m_layout.is_physical_row(mi))
+                .collect::<Vec<_>>();
+            corners.sort_unstable();
+            corners.dedup();
+            corners
+        });
         if corners.len() < 3 {
-            continue;
+            return Err(invalid(format!(
+                "W cell row {wi} has only {} valid M corners",
+                corners.len()
+            )));
         }
         let ordered = order_corners_on_sphere(mesh, wi, corners);
-        if ordered.len() >= 3 {
-            cells.push((wi, ordered));
+        if ordered.len() < 3 {
+            return Err(invalid(format!(
+                "W cell row {wi} cannot form a valid polygon"
+            )));
         }
+        cells.push((wi, ordered));
     }
-    cells
+    Ok(cells)
 }
 
 fn authoritative_w_corners(
     mesh: &GridfileMeshPoints,
     wi: usize,
     mn: usize,
-    m_has_two_placeholders: bool,
-) -> Option<Vec<usize>> {
+    m_layout: GridfileRowLayout,
+) -> io::Result<Option<Vec<usize>>> {
     let width = mesh.w_to_m_width;
-    if width == 0 || mesh.w_to_m.len() < mesh.w_lon.len().checked_mul(width)? {
-        return None;
+    if width == 0 && mesh.w_to_m.is_empty() && mesh.n_w.is_empty() {
+        return Ok(None);
     }
-    let count = usize::try_from(*mesh.n_w.get(wi)?).ok()?;
-    if count > width {
-        return None;
+    if width == 0 {
+        return Err(invalid("authoritative W connectivity has zero row width"));
     }
-    let start = wi.checked_mul(width)?;
-    let row = mesh.w_to_m.get(start..start.checked_add(count)?)?;
+    let expected = mesh
+        .w_lon
+        .len()
+        .checked_mul(width)
+        .ok_or_else(|| invalid("W connectivity size overflow"))?;
+    if mesh.w_to_m.len() != expected || mesh.n_w.len() != mesh.w_lon.len() {
+        return Err(invalid(format!(
+            "authoritative W connectivity requires {expected} values and {} counts, found {} values and {} counts",
+            mesh.w_lon.len(),
+            mesh.w_to_m.len(),
+            mesh.n_w.len()
+        )));
+    }
+    let count = usize::try_from(mesh.n_w[wi]).map_err(|_| {
+        invalid(format!(
+            "W cell row {wi} has negative corner count {}",
+            mesh.n_w[wi]
+        ))
+    })?;
+    if !(3..=width).contains(&count) {
+        return Err(invalid(format!(
+            "W cell row {wi} corner count {count} must be between 3 and {width}"
+        )));
+    }
+    let start = wi
+        .checked_mul(width)
+        .ok_or_else(|| invalid("W connectivity row offset overflow"))?;
+    let row = &mesh.w_to_m[start..start + count];
     let mut corners = Vec::with_capacity(count);
     for &canonical_id in row {
-        let corner = mesh_row_for_canonical_id(canonical_id, mn, m_has_two_placeholders)?;
+        let corner = m_layout
+            .physical_row_for_canonical_id(canonical_id, mn)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "W cell row {wi} contains invalid M corner id {canonical_id}"
+                ))
+            })?;
         if corners.contains(&corner) {
-            return None;
+            return Err(invalid(format!(
+                "W cell row {wi} contains duplicate M corner id {canonical_id}"
+            )));
         }
         corners.push(corner);
     }
-    Some(corners)
+    Ok(Some(corners))
+}
+
+fn validate_coordinate_pairs(mesh: &GridfileMeshPoints) -> io::Result<()> {
+    if mesh.m_lon.len() != mesh.m_lat.len() {
+        return Err(invalid(format!(
+            "M longitude/latitude lengths differ: {} vs {}",
+            mesh.m_lon.len(),
+            mesh.m_lat.len()
+        )));
+    }
+    if mesh.w_lon.len() != mesh.w_lat.len() {
+        return Err(invalid(format!(
+            "W longitude/latitude lengths differ: {} vs {}",
+            mesh.w_lon.len(),
+            mesh.w_lat.len()
+        )));
+    }
+    for (kind, lon, lat) in [
+        ("M", mesh.m_lon.as_slice(), mesh.m_lat.as_slice()),
+        ("W", mesh.w_lon.as_slice(), mesh.w_lat.as_slice()),
+    ] {
+        for (row, (&lon, &lat)) in lon.iter().zip(lat).enumerate() {
+            if !lon.is_finite() || !lat.is_finite() {
+                return Err(invalid(format!(
+                    "{kind} coordinate row {row} must be finite"
+                )));
+            }
+            if !(-90.0..=90.0).contains(&lat) {
+                return Err(invalid(format!(
+                    "{kind} coordinate row {row} latitude must be within [-90, 90] degrees"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 /// Sort W-cell corners by azimuth in the local spherical tangent plane centered
@@ -166,19 +287,6 @@ fn order_corners_on_sphere(
     wi: usize,
     mut corners: Vec<usize>,
 ) -> Vec<usize> {
-    if !mesh.w_lon[wi].is_finite()
-        || !mesh.w_lat[wi].is_finite()
-        || corners
-            .iter()
-            .any(|&mi| !mesh.m_lon[mi].is_finite() || !mesh.m_lat[mi].is_finite())
-    {
-        return convex_hull_order_indices(
-            corners
-                .into_iter()
-                .map(|mi| (mesh.m_lon[mi], mesh.m_lat[mi], mi))
-                .collect(),
-        );
-    }
     let lon0 = mesh.w_lon[wi].to_radians();
     let lat0 = mesh.w_lat[wi].to_radians();
     let tangent = |mi: usize| {
@@ -250,14 +358,38 @@ pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileM
     let m_lat = required_values_f64(&file, "GLATM")?;
     let w_lon = required_values_f64(&file, "GLONW")?;
     let w_lat = required_values_f64(&file, "GLATW")?;
+    if m_lon.len() != m_lat.len() {
+        return Err(invalid(format!(
+            "GLONM/GLATM lengths differ: {} vs {}",
+            m_lon.len(),
+            m_lat.len()
+        )));
+    }
+    if w_lon.len() != w_lat.len() {
+        return Err(invalid(format!(
+            "GLONW/GLATW lengths differ: {} vs {}",
+            w_lon.len(),
+            w_lat.len()
+        )));
+    }
     let m_to_w =
         required_values_i32_matrix(&file, "itab_m%iw", "sjx_points", "dimb", m_lon.len(), 3)?;
     let m_refine_level = optional_values_i32_exact(&file, "earthmesh_m_refine_level", m_lon.len())?;
     let m_refine_level_orig =
         optional_values_i32_exact(&file, "earthmesh_m_refine_level_orig", m_lon.len())?;
     let m_ngr = optional_values_i32_exact(&file, "earthmesh_m_ngr", m_lon.len())?;
+    let has_w_to_m = file.variable("itab_w%im").is_some();
+    let has_n_w = file.variable("n_ngrwm").is_some();
+    if has_w_to_m != has_n_w {
+        return Err(invalid(
+            "gridfile must provide both itab_w%im and n_ngrwm, or neither",
+        ));
+    }
     let w_to_m_width = file.dimension("dimc").map(|d| d.len()).unwrap_or(0);
-    let (w_to_m, n_w) = if w_to_m_width > 0 {
+    let (w_to_m, n_w) = if has_w_to_m {
+        if w_to_m_width == 0 {
+            return Err(invalid("gridfile itab_w%im requires a positive dimc"));
+        }
         let im = required_values_i32_matrix(
             &file,
             "itab_w%im",
@@ -265,14 +397,16 @@ pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileM
             "dimc",
             w_lon.len(),
             w_to_m_width,
-        )
-        .unwrap_or_default();
-        let n = required_values_i32(&file, "n_ngrwm").unwrap_or_default();
-        if im.len() == w_lon.len() * w_to_m_width && n.len() == w_lon.len() {
-            (im, n)
-        } else {
-            (Vec::new(), Vec::new())
+        )?;
+        let n = required_values_i32(&file, "n_ngrwm")?;
+        if n.len() != w_lon.len() {
+            return Err(invalid(format!(
+                "n_ngrwm length {} must equal W coordinate rows {}",
+                n.len(),
+                w_lon.len()
+            )));
         }
+        (im, n)
     } else {
         (Vec::new(), Vec::new())
     };
@@ -343,10 +477,103 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        let quality = quality_input_from_gridfile(&mesh);
+        let error = quality_input_from_gridfile(&mesh).unwrap_err();
 
-        assert_eq!(quality.cells.len(), 1);
-        assert_eq!(quality.cells[0].vertices, vec![2, 3, 4]);
+        assert!(error.to_string().contains("M coordinate rows"));
+    }
+
+    #[test]
+    fn tri_quality_rejects_invalid_connectivity_instead_of_dropping_the_cell() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0],
+            m_lat: vec![0.0],
+            w_lon: vec![0.0, 1.0, 0.0],
+            w_lat: vec![0.0, 0.0, 1.0],
+            m_to_w: vec![1, 2, 99],
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: Vec::new(),
+            w_to_m_width: 0,
+            n_w: Vec::new(),
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let error = quality_input_from_gridfile(&mesh).unwrap_err();
+        assert!(error.to_string().contains("invalid W vertex id 99"));
+    }
+
+    #[test]
+    fn tri_quality_skips_single_compact_sentinel_row() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 10.33],
+            m_lat: vec![0.0, 20.33],
+            w_lon: vec![0.0, 10.0, 11.0, 10.0],
+            w_lat: vec![0.0, 20.0, 20.0, 21.0],
+            m_to_w: vec![1, 1, 1, 2, 3, 4],
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: Vec::new(),
+            w_to_m_width: 0,
+            n_w: Vec::new(),
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let cells = tri_quality_cells_from_gridfile(&mesh).unwrap();
+
+        assert_eq!(cells, vec![(1, vec![1, 2, 3])]);
+    }
+
+    #[test]
+    fn tri_quality_keeps_first_physical_w_vertex_at_origin_after_single_sentinel() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 0.33],
+            m_lat: vec![0.0, 0.33],
+            w_lon: vec![0.0, 0.0, 1.0, 0.0],
+            w_lat: vec![0.0, 0.0, 0.0, 1.0],
+            m_to_w: vec![1, 1, 1, 2, 3, 4],
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: Vec::new(),
+            w_to_m_width: 0,
+            n_w: Vec::new(),
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let cells = tri_quality_cells_from_gridfile(&mesh).unwrap();
+
+        assert_eq!(cells, vec![(1, vec![1, 2, 3])]);
+    }
+
+    #[test]
+    fn hex_quality_rejects_malformed_authoritative_ring_instead_of_falling_back() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 1.0, 0.0],
+            m_lat: vec![0.0, 0.0, 1.0],
+            w_lon: vec![0.25],
+            w_lat: vec![0.25],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 2, 99],
+            w_to_m_width: 3,
+            n_w: vec![3],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let error = quality_input_from_gridfile_hex(&mesh).unwrap_err();
+        assert!(error.to_string().contains("invalid M corner id 99"));
     }
 
     #[test]
@@ -368,7 +595,7 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        let cells = tri_quality_cells_from_gridfile(&mesh);
+        let cells = tri_quality_cells_from_gridfile(&mesh).unwrap();
 
         assert_eq!(cells, vec![(0, vec![2, 3, 4])]);
     }
@@ -397,7 +624,7 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        let cells = hex_quality_cells_from_gridfile(&mesh);
+        let cells = hex_quality_cells_from_gridfile(&mesh).unwrap();
 
         assert!(cells
             .iter()
@@ -423,11 +650,11 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        let tri = quality_input_from_gridfile(&mesh);
+        let tri = quality_input_from_gridfile(&mesh).unwrap();
         assert_eq!(tri.cells.len(), 4);
         assert_eq!(tri.cells[1].refine_level, Some(1));
 
-        let hex = quality_input_from_gridfile_hex(&mesh);
+        let hex = quality_input_from_gridfile_hex(&mesh).unwrap();
         assert!(hex.cells.iter().any(|cell| cell.refine_level == Some(2)));
     }
 
@@ -455,7 +682,7 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        let quality = quality_input_from_gridfile_hex(&mesh);
+        let quality = quality_input_from_gridfile_hex(&mesh).unwrap();
 
         assert_eq!(quality.cells.len(), 4);
         assert!(quality.cells[0].vertices.contains(&1));
@@ -478,17 +705,96 @@ mod tests {
     }
 
     #[test]
-    fn hex_quality_does_not_resurrect_single_placeholder_from_inverse_connectivity() {
+    fn hex_quality_skips_single_compact_sentinel_and_keeps_physical_polar_cell() {
         let mesh = GridfileMeshPoints {
-            m_lon: vec![0.0, 1.0, 2.0],
-            m_lat: vec![0.0, 1.0, 0.0],
-            w_lon: vec![0.0],
-            w_lat: vec![0.0],
-            m_to_w: vec![1, 1, 1],
+            m_lon: vec![0.0, 0.0, 72.0, 144.0, -144.0, -72.0],
+            m_lat: vec![0.0, -88.0, -88.0, -88.0, -88.0, -88.0],
+            w_lon: vec![0.0, 0.0],
+            w_lat: vec![0.0, -90.0],
+            m_to_w: Vec::new(),
             m_refine_level: Vec::new(),
             m_refine_level_orig: Vec::new(),
             m_ngr: Vec::new(),
-            w_to_m: vec![1, 1, 1],
+            w_to_m: vec![1, 1, 1, 1, 1, 2, 3, 4, 5, 6],
+            w_to_m_width: 5,
+            n_w: vec![1, 5],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let cells = hex_quality_cells_from_gridfile(&mesh).unwrap();
+
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].0, 1);
+        let mut corners = cells[0].1.clone();
+        corners.sort_unstable();
+        assert_eq!(corners, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn hex_quality_keeps_first_physical_w_cell_at_origin_after_single_sentinel() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, -1.0, 1.0, 1.0, -1.0],
+            m_lat: vec![0.0, -1.0, -1.0, 1.0, 1.0],
+            w_lon: vec![0.0, 0.0],
+            w_lat: vec![0.0, 0.0],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 1, 1, 1, 2, 3, 4, 5],
+            w_to_m_width: 4,
+            n_w: vec![1, 4],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let cells = hex_quality_cells_from_gridfile(&mesh).unwrap();
+
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].0, 1);
+    }
+
+    #[test]
+    fn hex_quality_keeps_first_physical_m_corner_at_origin_without_m_triangles() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            m_lat: vec![0.0, 0.0, 0.0, 1.0, 1.0],
+            w_lon: vec![0.0, 0.5],
+            w_lat: vec![0.0, 0.5],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 1, 1, 1, 2, 3, 4, 5],
+            w_to_m_width: 4,
+            n_w: vec![1, 4],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let cells = hex_quality_cells_from_gridfile(&mesh).unwrap();
+
+        let mut corners = cells[0].1.clone();
+        corners.sort_unstable();
+        assert_eq!(corners, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn hex_quality_rejects_non_sentinel_origin_cell_with_one_corner() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 1.0, 0.0],
+            m_lat: vec![0.0, 0.0, 1.0],
+            w_lon: vec![0.0],
+            w_lat: vec![0.0],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 2, 3],
             w_to_m_width: 3,
             n_w: vec![1],
             w_refine_level: Vec::new(),
@@ -496,6 +802,10 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        assert!(hex_quality_cells_from_gridfile(&mesh).is_empty());
+        let error = hex_quality_cells_from_gridfile(&mesh).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("corner count 1 must be between 3 and 3"));
     }
 }

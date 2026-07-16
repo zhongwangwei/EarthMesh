@@ -1,7 +1,7 @@
 use crate::close_mask_netcdf_has_refine;
 use crate::read_close_mask_netcdf;
 use crate::read_close_mesh_netcdf;
-use crate::validate_close_mask;
+use crate::validate_close_mask_geographic;
 use crate::AreaJudgeAreaSourceReport;
 use crate::AreaJudgeSparseAreaSourceReport;
 use crate::CloseMask;
@@ -10,7 +10,8 @@ use std::path::Path;
 
 use earthmesh_geometry::{area_judge_first_self_intersection_one_based, Point as AreaJudgePoint};
 use earthmesh_mesh::{
-    area_judge_closed_curve_fill_one_based, area_judge_minmax_range_make_one_based, LonLatDegrees,
+    area_judge_closed_curve_fill_one_based, area_judge_minmax_range_make_one_based,
+    area_judge_source_find_one_based, AreaJudgeAxis, AreaJudgeSourceBounds, LonLatDegrees,
 };
 
 use super::dateline::{area_judge_check_crossing, area_judge_close_crosses_dateline};
@@ -33,7 +34,7 @@ pub fn build_area_judge_close_area_source_cells_one_based(
             points: read_close_mesh_netcdf(inputfile)?,
         }
     };
-    validate_close_mask(&mask).map_err(|err| {
+    validate_close_mask_geographic(&mask).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid close area source: {err}"),
@@ -84,25 +85,6 @@ pub fn build_area_judge_close_area_source_cells_one_based(
         area_judge_check_crossing(&mut fill_points);
     }
 
-    let bounds = area_judge_minmax_range_make_one_based(
-        edgew_temp,
-        edgee_temp,
-        edgen_temp,
-        edges_temp,
-        lon_vertex,
-        lat_vertex,
-        gridnum_perdegree,
-        nlons_source,
-        nlats_source,
-    )
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "close area bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
-            ),
-        )
-    })?;
     let fill = area_judge_closed_curve_fill_one_based(
         &fill_points,
         lon_vertex,
@@ -116,6 +98,56 @@ pub fn build_area_judge_close_area_source_cells_one_based(
         io::Error::new(
             io::ErrorKind::InvalidData,
             "close area source could not be converted to source-grid cells",
+        )
+    })?;
+    let bounds = area_judge_minmax_range_make_one_based(
+        edgew_temp,
+        edgee_temp,
+        edgen_temp,
+        edges_temp,
+        lon_vertex,
+        lat_vertex,
+        gridnum_perdegree,
+        nlons_source,
+        nlats_source,
+    )
+    .or_else(|| {
+        // Canonical closed-curve scans legitimately execute zero iterations
+        // when a polygon is smaller than one source cell.  Keep a safe,
+        // non-inverted anchor bound for downstream range aggregation rather
+        // than confusing that empty selection with an out-of-grid polygon.
+        if !fill.cells.is_empty() {
+            return None;
+        }
+        let lon_index = area_judge_source_find_one_based(
+            edgew_temp,
+            lon_vertex,
+            AreaJudgeAxis::Longitude,
+            gridnum_perdegree,
+            nlons_source,
+        )?
+        .min(nlons_source);
+        let lat_index = area_judge_source_find_one_based(
+            edgen_temp,
+            lat_vertex,
+            AreaJudgeAxis::Latitude,
+            gridnum_perdegree,
+            nlats_source,
+        )?
+        .min(nlats_source);
+        Some(AreaJudgeSourceBounds {
+            minlon_source: lon_index,
+            maxlon_source: lon_index,
+            maxlat_source: lat_index,
+            minlat_source: lat_index,
+        })
+    })
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "close area bounds west/east/north/south = {edgew_temp}/{edgee_temp}/{edgen_temp}/{edges_temp} are outside source grid"
+            ),
         )
     })?;
     for &(lon_index, lat_index) in &fill.cells {
@@ -151,9 +183,9 @@ pub fn build_area_judge_close_area_source_one_based(
         nlons_source,
         nlats_source,
     )?;
-    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![false; nlats_source + 1]; nlons_source + 1];
     for (lon_index, lat_index) in &sparse.cells {
-        is_in_area[*lon_index][*lat_index] = 1;
+        is_in_area[*lon_index][*lat_index] = true;
     }
 
     Ok(AreaJudgeAreaSourceReport {

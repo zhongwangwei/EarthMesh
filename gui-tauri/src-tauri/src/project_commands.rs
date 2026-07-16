@@ -4,7 +4,7 @@ use earthmesh_project::{
     DomainConfig, MeshIntentPreset, ProjectConfig, RegionShape, ResolutionSpec,
 };
 
-fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
+pub(crate) fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
     cfg.validate()?;
     cfg.to_yaml()
 }
@@ -78,6 +78,12 @@ pub(crate) fn preserve_unexposed_project_fields(
     cfg.expert = base.expert;
     cfg.hydro_coast = base.hydro_coast;
     cfg.coupling = base.coupling;
+
+    if let Some(base_hfield) = base.refinement.hfield.as_ref() {
+        let hfield = cfg.refinement.hfield.get_or_insert_with(Default::default);
+        hfield.origin_lon = base_hfield.origin_lon;
+        hfield.origin_lat = base_hfield.origin_lat;
+    }
 
     if base.target.intent == cfg.target.intent {
         cfg.target.kind = base.target.kind;

@@ -41,21 +41,22 @@ fn parse_bbox_mask_nml_matches_canonical_free_format_rules() {
 }
 
 #[test]
-fn parse_bbox_mask_nml_rejects_invalid_bbox_orientation_and_skips_too_high_refine() {
+fn parse_bbox_mask_nml_accepts_directed_dateline_bbox_and_skips_too_high_refine() {
     let root =
         std::env::temp_dir().join(format!("earthmesh_cli_bbox_reject_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create root");
-    let bad_orientation = root.join("bad_bbox.nml");
+    let dateline_bbox = root.join("dateline_bbox.nml");
     fs::write(
-        &bad_orientation,
+        &dateline_bbox,
         "bbox_num = 1\nbbox_refine = 1\n20.0 -10.0 40.0 20.0\n",
     )
-    .expect("write bad orientation");
-    let err = earthmesh_cli::bbox_mask_io::parse_bbox_mask_nml(&bad_orientation, 5)
-        .expect_err("west greater than east should match Canonical stop");
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-    assert!(err.to_string().contains("west"));
+    .expect("write directed bbox");
+    let parsed = earthmesh_cli::bbox_mask_io::parse_bbox_mask_nml(&dateline_bbox, 5)
+        .expect("parse directed bbox")
+        .expect("refine degree within max_iter_spc");
+    assert_eq!(parsed.points[0].west, 20.0);
+    assert_eq!(parsed.points[0].east, -10.0);
 
     let too_high = root.join("too_high.nml");
     fs::write(

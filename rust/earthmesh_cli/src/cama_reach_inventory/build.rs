@@ -9,8 +9,9 @@ use crate::cama_binary_io::{
 ///
 /// This mirrors Python `build_reach_inventory`: only cells with positive
 /// upstream area, river width, and river length become records; non-positive
-/// downstream links marked terminal/ocean by the CaMa `nextxy` reader are
-/// treated as estuaries; upstream area can be scaled into km2.
+/// negative downstream sentinels identify estuaries, while zero-valued
+/// endorheic/terminal links remain non-estuary reaches; upstream area can be
+/// scaled into km2.
 pub fn build_cama_reach_inventory(
     grid: CamaBinaryGridSpec,
     window: CamaBinaryWindow,
@@ -21,10 +22,14 @@ pub fn build_cama_reach_inventory(
     rivlen: &CamaMetricWindowReport,
     nextxy: &CamaNextxyWindowReport,
 ) -> io::Result<CamaReachInventoryReport> {
-    if target_dx_km <= 0.0 {
+    if !target_dx_km.is_finite()
+        || target_dx_km <= 0.0
+        || !uparea_to_km2.is_finite()
+        || uparea_to_km2 <= 0.0
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "target_dx_km must be positive",
+            "target_dx_km and uparea_to_km2 must be finite and positive",
         ));
     }
     validate_cama_reach_inventory_inputs(grid, window, uparea, width, rivlen, nextxy)?;
@@ -45,8 +50,7 @@ pub fn build_cama_reach_inventory(
             let y_index = window.y_start + row_offset;
             let downstream_x = nextxy.next_x[row_offset][col_offset];
             let downstream_y = nextxy.next_y[row_offset][col_offset];
-            let is_estuary = nextxy.terminal_or_ocean[row_offset][col_offset]
-                || cama_nextxy_is_estuary_sentinel(downstream_x, downstream_y);
+            let is_estuary = cama_nextxy_is_estuary_sentinel(downstream_x, downstream_y);
             records.push(CamaReachRecord {
                 reach_id: format!("cama-{y_index}-{x_index}"),
                 x_index,
@@ -117,6 +121,44 @@ fn validate_cama_reach_inventory_inputs(
             io::ErrorKind::InvalidInput,
             "all CaMa reach inventory arrays must match the requested window shape",
         ));
+    }
+    let expected_cells = window.width.checked_mul(window.height).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa reach window shape overflows usize",
+        )
+    })?;
+    let terminal_links = nextxy
+        .terminal_or_ocean
+        .iter()
+        .flatten()
+        .filter(|terminal| **terminal)
+        .count();
+    if nextxy.terminal_or_ocean_links != terminal_links
+        || nextxy.valid_downstream_links != expected_cells.saturating_sub(terminal_links)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CaMa nextxy counters do not match the terminal-link mask",
+        ));
+    }
+    for row in 0..window.height {
+        for col in 0..window.width {
+            let x = nextxy.next_x[row][col];
+            let y = nextxy.next_y[row][col];
+            let positive_coordinate_is_outside =
+                (x >= 0 && x as usize >= grid.nx) || (y >= 0 && y as usize >= grid.ny);
+            let nonterminal_has_sentinel = !nextxy.terminal_or_ocean[row][col] && (x < 0 || y < 0);
+            if positive_coordinate_is_outside || nonterminal_has_sentinel {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "CaMa nextxy link at window row {row}, column {col} points outside the {}x{} grid",
+                        grid.nx, grid.ny
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
 }

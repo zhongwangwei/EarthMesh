@@ -1,6 +1,6 @@
 use crate::{
-    parse_canonical_bool, parse_canonical_string, parse_f64, parse_f64_array, parse_i32,
-    parse_i32_canonical_1_based_array, strip_canonical_comment,
+    namelist_assignments, parse_canonical_bool, parse_canonical_string, parse_f64, parse_f64_array,
+    parse_i32, parse_i32_canonical_1_based_array,
 };
 
 /// Typed equivalent of the operational `refine_vars` module state.
@@ -118,34 +118,9 @@ impl RefineConfig {
         external_field: bool,
     ) -> Result<Self, String> {
         let mut config = Self::default();
-        let mut in_mkrefine = false;
-
-        for raw_line in input.lines() {
-            let line = strip_canonical_comment(raw_line)
-                .trim()
-                .trim_end_matches(',');
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with('&') {
-                in_mkrefine = line.eq_ignore_ascii_case("&mkrefine");
-                continue;
-            }
-            if line == "/" {
-                in_mkrefine = false;
-                continue;
-            }
-            if !in_mkrefine {
-                continue;
-            }
-
-            let Some((left, right)) = line.split_once('=') else {
-                continue;
-            };
-            let Some(field) = left.trim().split_once('%').map(|(_, field)| field.trim()) else {
-                continue;
-            };
-            let value = right.trim().trim_end_matches(',');
+        for assignment in namelist_assignments(input, "mkrefine")? {
+            let field = assignment.field.as_str();
+            let value = assignment.value.as_str();
 
             match field.to_ascii_lowercase().as_str() {
                 "weak_concav_eliminate" => {
@@ -340,7 +315,7 @@ impl RefineConfig {
                 "th_sea_slope_s" => config.th_onelayer_ocn[7] = parse_f64(field, value)?,
                 "th_typhoon_m" => config.th_onelayer_atmos[0] = parse_f64(field, value)?,
                 "th_typhoon_s" => config.th_onelayer_atmos[1] = parse_f64(field, value)?,
-                _ => {}
+                _ => return Err(format!("unknown &mkrefine field '{field}'")),
             }
         }
 

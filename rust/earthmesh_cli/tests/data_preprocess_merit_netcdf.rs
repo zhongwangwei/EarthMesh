@@ -215,6 +215,116 @@ fn merit_hydro_reader_selects_bbox_window_cleans_fill_and_classifies_masks() {
 }
 
 #[test]
+fn merit_hydro_reader_cleans_default_and_positive_missing_values_before_classification() {
+    let root = temp_root("data_preprocess_merit_default_fill");
+    let tile = root.join("n10e100.nc");
+    let mut file = earthmesh_cli::create_netcdf_quiet(&tile).expect("create MERIT tile");
+    file.add_dimension("longitude", 2).unwrap();
+    file.add_dimension("latitude", 1).unwrap();
+    file.add_variable::<f64>("longitude", &["longitude"])
+        .unwrap()
+        .put_values(&[100.0, 100.5], ..)
+        .unwrap();
+    file.add_variable::<f64>("latitude", &["latitude"])
+        .unwrap()
+        .put_value(10.0, 0)
+        .unwrap();
+    file.add_variable::<i32>("dir", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&[1, 1], (.., ..))
+        .unwrap();
+    file.add_variable::<f64>("upa", &["longitude", "latitude"])
+        .unwrap()
+        .put_value(100.0, (0, 0))
+        .unwrap();
+    file.add_variable::<f64>("elv", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&[1.0, 1.0], (.., ..))
+        .unwrap();
+    let mut width = file
+        .add_variable::<f64>("wth", &["longitude", "latitude"])
+        .unwrap();
+    width.put_attribute("missing_value", 99_999.0).unwrap();
+    width.put_values(&[10.0, 99_999.0], (.., ..)).unwrap();
+    file.add_variable::<i32>("landtype_igbp", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&[1, 1], (.., ..))
+        .unwrap();
+    drop(file);
+
+    let report = earthmesh_cli::merit_hydro_io::read_merit_hydro_window(
+        &tile,
+        earthmesh_cli::merit_tile_selection::MeritLonLatBbox {
+            west: 100.0,
+            south: 10.0,
+            east: 100.5,
+            north: 10.0,
+        },
+        1,
+    )
+    .unwrap();
+    assert!(report.upa_km2[1].is_nan());
+    assert!(report.width_m[1].is_nan());
+    let mask = earthmesh_cli::merit_hydro_io::classify_merit_hydro_window(
+        &report,
+        earthmesh_cli::merit_hydro_io::MeritMaskThresholds::default(),
+    )
+    .unwrap();
+    assert_eq!(mask.classes[1], "LAND");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn merit_hydro_reader_rejects_ambiguous_square_matrix_axes() {
+    let root = temp_root("data_preprocess_merit_ambiguous_axes");
+    let tile = root.join("n10e100.nc");
+    let mut file = earthmesh_cli::create_netcdf_quiet(&tile).expect("create MERIT tile");
+    for dimension in ["longitude", "latitude", "row", "column"] {
+        file.add_dimension(dimension, 2).unwrap();
+    }
+    file.add_variable::<f64>("longitude", &["longitude"])
+        .unwrap()
+        .put_values(&[100.0, 100.5], ..)
+        .unwrap();
+    file.add_variable::<f64>("latitude", &["latitude"])
+        .unwrap()
+        .put_values(&[10.0, 10.5], ..)
+        .unwrap();
+    file.add_variable::<i32>("dir", &["row", "column"])
+        .unwrap()
+        .put_values(&[1; 4], (.., ..))
+        .unwrap();
+    for name in ["upa", "elv", "wth"] {
+        file.add_variable::<f64>(name, &["row", "column"])
+            .unwrap()
+            .put_values(&[1.0; 4], (.., ..))
+            .unwrap();
+    }
+    file.add_variable::<i32>("landtype_igbp", &["row", "column"])
+        .unwrap()
+        .put_values(&[1; 4], (.., ..))
+        .unwrap();
+    drop(file);
+
+    let error = earthmesh_cli::merit_hydro_io::read_merit_hydro_window(
+        &tile,
+        earthmesh_cli::merit_tile_selection::MeritLonLatBbox {
+            west: 100.0,
+            south: 10.0,
+            east: 100.5,
+            north: 10.5,
+        },
+        1,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("do not match expected"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn merit_hydro_reader_uses_strided_hyperslab_for_lat_lon_descending_axis() {
     let root = temp_root("data_preprocess_merit_hyperslab");
     let tile = root.join("n10e100.nc");

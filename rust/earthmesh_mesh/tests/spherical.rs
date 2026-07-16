@@ -22,7 +22,12 @@ fn xyz_to_lonlat_matches_mkgrd_equator_axes() {
 #[test]
 fn xyz_to_lonlat_matches_mkgrd_poles_and_quadrants() {
     let north_pole = xyz_to_lonlat_degrees(CartesianPoint::new(0.0, 0.0, EARTH_RADIUS_METERS));
+    approx_eq(north_pole.lon_degrees, 0.0, 1.0e-12);
     approx_eq(north_pole.lat_degrees, 90.0, 1.0e-12);
+
+    let noisy_south_pole = xyz_to_lonlat_degrees(CartesianPoint::new(1.0e-16, -1.0e-16, -1.0));
+    approx_eq(noisy_south_pole.lon_degrees, 0.0, 1.0e-12);
+    approx_eq(noisy_south_pole.lat_degrees, -90.0, 1.0e-12);
 
     let southwest = xyz_to_lonlat_degrees(CartesianPoint::new(-1.0, -1.0, 1.0));
     approx_eq(southwest.lon_degrees, -135.0, 1.0e-12);

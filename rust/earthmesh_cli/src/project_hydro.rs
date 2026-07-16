@@ -30,6 +30,7 @@ use crate::merit_hydro_io::{
     read_merit_hydro_window, write_merit_hydro_mask_geojson_layers, MeritMaskThresholds,
 };
 use crate::merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
+use crate::resolve_project_path;
 use crate::unstructured_mesh_support::GridfileCellKind;
 
 #[derive(Clone, Debug)]
@@ -439,7 +440,7 @@ fn write_cama_reach_corridor_geojson(
             r2_width_m
         };
         let corridor_width_m = classification.effective_width_m.max(policy_width_m);
-        let downstream = cama_downstream_point(inventory, record);
+        let downstream = cama_downstream_point(inventory, record)?;
         let ring =
             geodesic_reach_capsule((record.lon, record.lat), downstream, corridor_width_m / 2.0)?;
         let coordinates = ring
@@ -471,19 +472,38 @@ fn write_cama_reach_corridor_geojson(
 fn cama_downstream_point(
     inventory: &CamaReachInventoryReport,
     record: &CamaReachRecord,
-) -> Option<(f64, f64)> {
-    let x = usize::try_from(record.downstream_x).ok()?;
-    let y = usize::try_from(record.downstream_y).ok()?;
-    if x >= inventory.grid.nx
-        || y >= inventory.grid.ny
-        || (x, y) == (record.x_index, record.y_index)
-    {
-        return None;
+) -> io::Result<Option<(f64, f64)>> {
+    if record.downstream_x < 0 || record.downstream_y < 0 {
+        return Ok(None);
     }
-    Some((
+    let x = usize::try_from(record.downstream_x).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "negative CaMa downstream x index",
+        )
+    })?;
+    let y = usize::try_from(record.downstream_y).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "negative CaMa downstream y index",
+        )
+    })?;
+    if x >= inventory.grid.nx || y >= inventory.grid.ny {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "CaMa reach {} downstream index ({x},{y}) is outside the {}x{} grid",
+                record.reach_id, inventory.grid.nx, inventory.grid.ny
+            ),
+        ));
+    }
+    if (x, y) == (record.x_index, record.y_index) {
+        return Ok(None);
+    }
+    Ok(Some((
         wrap_lon(inventory.grid.lon_center(x)),
         inventory.grid.lat_center(y),
-    ))
+    )))
 }
 
 fn geodesic_reach_capsule(
@@ -550,7 +570,7 @@ fn initial_bearing(start: (f64, f64), end: (f64, f64)) -> f64 {
 }
 
 fn geodesic_destination(start: (f64, f64), bearing: f64, distance_m: f64) -> (f64, f64) {
-    const EARTH_RADIUS_M: f64 = 6_371_008.8;
+    const EARTH_RADIUS_M: f64 = earthmesh_core::EARTH_RADIUS_METERS;
     let angular = distance_m / EARTH_RADIUS_M;
     let lat = start.1.to_radians();
     let lon = start.0.to_radians();
@@ -666,7 +686,7 @@ fn domain_from_directed_bbox(
 }
 
 fn domain_from_circle(lon: f64, lat: f64, radius_km: f64) -> io::Result<ProjectHydroDomain> {
-    const EARTH_RADIUS_KM: f64 = 6_371.008_8;
+    const EARTH_RADIUS_KM: f64 = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
     let angular = radius_km / EARTH_RADIUS_KM;
     let center_lat = lat.to_radians();
     let center_lon = lon.to_radians();
@@ -857,29 +877,18 @@ fn wrap_lon(lon: f64) -> f64 {
     }
 }
 
-fn resolve_project_path(project_path: &Path, configured: &str) -> PathBuf {
-    let path = PathBuf::from(configured);
-    if path.is_absolute() {
-        path
-    } else {
-        project_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        domain_from_circle, domain_from_directed_bbox, domain_from_outer_rings,
-        expanded_merit_query_bboxes, merge_corridor_geojson, reset_project_hydro_output_dir,
-        resolve_project_path, run_hydro_workflow, run_project_hydro_postprocess,
+        cama_downstream_point, domain_from_circle, domain_from_directed_bbox,
+        domain_from_outer_rings, expanded_merit_query_bboxes, merge_corridor_geojson,
+        reset_project_hydro_output_dir, run_hydro_workflow, run_project_hydro_postprocess,
         write_cama_reach_corridor_geojson,
     };
     use crate::cama_binary_io::{
         CamaBinaryGridSpec, CamaBinaryWindow, CamaReachInventoryReport, CamaReachRecord,
     };
+    use crate::resolve_project_path;
     use earthmesh_project::{DomainConfig, HydroCoastConfig, ProjectConfig, RegionShape};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1031,6 +1040,51 @@ mod tests {
         .unwrap();
         assert_eq!(domain.rings.len(), 2);
         assert_eq!(domain.bbox, [100.0, 10.0, 111.0, 21.0]);
+    }
+
+    #[test]
+    fn out_of_grid_cama_downstream_is_an_error_not_a_terminal_cap() {
+        let record = CamaReachRecord {
+            reach_id: "invalid-downstream".to_string(),
+            x_index: 0,
+            y_index: 0,
+            lon: 0.0,
+            lat: 0.0,
+            upstream_area_km2: 12_000.0,
+            width_m: 80.0,
+            floodplain_width_m: 0.0,
+            target_dx_km: 2.5,
+            is_estuary: false,
+            river_length_m: 1_100.0,
+            downstream_x: 2,
+            downstream_y: 0,
+        };
+        let inventory = CamaReachInventoryReport {
+            grid: CamaBinaryGridSpec {
+                nx: 2,
+                ny: 1,
+                west: -0.005,
+                south: -0.005,
+                grid_size_deg: 0.01,
+                little_endian: true,
+                y_reversed_storage: false,
+            },
+            window: CamaBinaryWindow {
+                x_start: 0,
+                y_start: 0,
+                width: 1,
+                height: 1,
+            },
+            records: vec![record.clone()],
+            valid_channel_cells: 1,
+            skipped_cells: 0,
+        };
+
+        let error = cama_downstream_point(&inventory, &record).unwrap_err();
+        assert!(
+            error.to_string().contains("outside the 2x1 grid"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -15,15 +15,14 @@ fn area_judge_ray_segment_intersection_lon(
 ) -> Option<f64> {
     let lat1 = start.lat_degrees;
     let lat2 = end.lat_degrees;
-    if lat1 == lat2 {
-        return None;
-    }
-    if (lat1 > ray_lat && lat2 > ray_lat) || (lat1 < ray_lat && lat2 < ray_lat) {
+    if (lat1 > ray_lat) == (lat2 > ray_lat) {
         return None;
     }
 
-    let m = (lat2 - lat1) / (end.lon_degrees - start.lon_degrees);
-    Some(start.lon_degrees + (ray_lat - lat1) / m)
+    Some(
+        start.lon_degrees
+            + (ray_lat - lat1) * (end.lon_degrees - start.lon_degrees) / (lat2 - lat1),
+    )
 }
 
 /// Pure Rust source-cell fill for the closed-curve branch in

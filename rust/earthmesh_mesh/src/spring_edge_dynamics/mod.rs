@@ -72,6 +72,9 @@ pub fn spring_edge_directions_one_based(
     if n_edges_on_cell.len() != edges_on_cell.len() {
         return None;
     }
+    // `dirs` is default REAL in MOD_grid_preprocess. Public configuration is
+    // f64, so quantize once at this canonical kernel boundary.
+    let relax = relax as f32 as f64;
 
     let mut directions = vec![Vec::<f64>::new(); n_edges_on_cell.len()];
     for cell_id in 2..n_edges_on_cell.len() {

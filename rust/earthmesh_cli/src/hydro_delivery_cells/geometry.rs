@@ -115,41 +115,6 @@ pub(super) fn order_around_spherical_center(
     corners
 }
 
-pub(crate) fn convex_hull_order_indices(mut pts: Vec<(f64, f64, usize)>) -> Vec<usize> {
-    pts.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
-    if pts.len() < 3 {
-        return pts.iter().map(|p| p.2).collect();
-    }
-    let cross = |o: &(f64, f64, usize), a: &(f64, f64, usize), b: &(f64, f64, usize)| {
-        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
-    };
-    let mut lower: Vec<(f64, f64, usize)> = Vec::new();
-    for &p in &pts {
-        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], &p) <= 0.0
-        {
-            lower.pop();
-        }
-        lower.push(p);
-    }
-    let mut upper: Vec<(f64, f64, usize)> = Vec::new();
-    for &p in pts.iter().rev() {
-        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], &p) <= 0.0
-        {
-            upper.pop();
-        }
-        upper.push(p);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    lower.iter().map(|p| p.2).collect()
-}
-
 #[cfg(test)]
 mod bbox_tests {
     use super::ring_intersects_directed_bbox;

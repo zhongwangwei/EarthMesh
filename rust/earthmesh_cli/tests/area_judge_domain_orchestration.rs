@@ -91,9 +91,9 @@ fn domain_orchestration_builds_non_global_mask_domain_from_sources() {
     assert_eq!(report.numpatch, 8);
     assert_eq!(report.nlons_select, 5);
     assert_eq!(report.nlats_select, 5);
-    assert_eq!(report.is_in_domain[2][2], 1);
-    assert_eq!(report.is_in_domain[5][5], 1);
-    assert_eq!(report.is_in_domain[1][1], 0);
+    assert!(report.is_in_domain[2][2]);
+    assert!(report.is_in_domain[5][5]);
+    assert!(!report.is_in_domain[1][1]);
 }
 
 #[test]
@@ -121,6 +121,6 @@ fn domain_orchestration_preserves_global_domain_shortcut() {
     assert_eq!(report.bounds.maxlon_source, 6);
     assert_eq!(report.nlons_select, 6);
     assert_eq!(report.nlats_select, 6);
-    assert_eq!(report.is_in_domain[1][1], 1);
-    assert_eq!(report.is_in_domain[6][6], 1);
+    assert!(report.is_in_domain[1][1]);
+    assert!(report.is_in_domain[6][6]);
 }

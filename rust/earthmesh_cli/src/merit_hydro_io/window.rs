@@ -2,6 +2,7 @@ use std::io;
 use std::path::Path;
 
 use super::types::MeritHydroWindowReport;
+use crate::area_judge_threshold_inputs::numeric_missing_values;
 use crate::{required_values_f64_any, MeritLonLatBbox};
 
 #[derive(Clone, Copy)]
@@ -69,10 +70,7 @@ pub fn read_merit_hydro_window(
         lat_all.len(),
         lon_window,
         lat_window,
-    )?
-    .into_iter()
-    .map(clean_merit_fill)
-    .collect();
+    )?;
     let elv_m = read_f64_window(
         &file,
         "elv",
@@ -80,10 +78,7 @@ pub fn read_merit_hydro_window(
         lat_all.len(),
         lon_window,
         lat_window,
-    )?
-    .into_iter()
-    .map(clean_merit_fill)
-    .collect();
+    )?;
     let width_m = read_f64_window(
         &file,
         "wth",
@@ -91,10 +86,7 @@ pub fn read_merit_hydro_window(
         lat_all.len(),
         lon_window,
         lat_window,
-    )?
-    .into_iter()
-    .map(clean_merit_fill)
-    .collect();
+    )?;
     let landtype_igbp = read_i32_window(
         &file,
         "landtype_igbp",
@@ -181,7 +173,17 @@ fn read_f64_window(
             format!("{name} variable must be readable as f64 or f32"),
         ));
     };
-    normalize_window(values, order, lon.count, lat.count, name)
+    let missing = numeric_missing_values(&variable)?;
+    normalize_window(
+        values
+            .into_iter()
+            .map(|value| clean_merit_fill(value, &missing))
+            .collect(),
+        order,
+        lon.count,
+        lat.count,
+        name,
+    )
 }
 
 fn read_i32_window(
@@ -207,7 +209,23 @@ fn read_i32_window(
             format!("{name} variable must be readable as i32, i16, or i8"),
         ));
     };
-    normalize_window(values, order, lon.count, lat.count, name)
+    let missing = numeric_missing_values(&variable)?;
+    normalize_window(
+        values
+            .into_iter()
+            .map(|value| {
+                if missing.contains(&f64::from(value)) {
+                    i32::MIN
+                } else {
+                    value
+                }
+            })
+            .collect(),
+        order,
+        lon.count,
+        lat.count,
+        name,
+    )
 }
 
 fn required_variable<'a>(file: &'a netcdf::File, name: &str) -> io::Result<netcdf::Variable<'a>> {
@@ -243,9 +261,9 @@ fn matrix_order(
         (lengths == [lon_len, lat_len]).then_some(MatrixOrder::LonLat)
     } else if is_lat_dim(&names[0]) && is_lon_dim(&names[1]) {
         (lengths == [lat_len, lon_len]).then_some(MatrixOrder::LatLon)
-    } else if lengths == [lon_len, lat_len] {
+    } else if lon_len != lat_len && lengths == [lon_len, lat_len] {
         Some(MatrixOrder::LonLat)
-    } else if lengths == [lat_len, lon_len] {
+    } else if lon_len != lat_len && lengths == [lat_len, lon_len] {
         Some(MatrixOrder::LatLon)
     } else {
         None
@@ -331,8 +349,8 @@ fn normalize_window<T: Copy + Default>(
     Ok(transposed)
 }
 
-fn clean_merit_fill(value: f64) -> f64 {
-    if value <= -9990.0 {
+fn clean_merit_fill(value: f64, missing: &[f64]) -> f64 {
+    if !value.is_finite() || value <= -9990.0 || missing.contains(&value) {
         f64::NAN
     } else {
         value

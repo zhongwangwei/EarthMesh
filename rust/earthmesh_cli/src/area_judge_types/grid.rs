@@ -83,10 +83,10 @@ pub struct AreaJudgeRestartGridsRunReport {
 pub struct AreaJudgeRefineGridRunConfig<'a> {
     pub file_dir: &'a Path,
     pub iter: usize,
-    pub calculated_refine: Option<(&'a [Vec<i32>], AreaJudgeSourceBounds)>,
+    pub calculated_refine: Option<(&'a [Vec<bool>], AreaJudgeSourceBounds)>,
     pub mask_refine_spc_type: &'a str,
     pub mask_refine_ndm: usize,
-    pub is_in_domain: &'a [Vec<i32>],
+    pub is_in_domain: &'a [Vec<bool>],
     pub lon_vertex: &'a [f64],
     pub lat_vertex: &'a [f64],
     pub lon_i: &'a [f64],

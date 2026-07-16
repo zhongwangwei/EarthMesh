@@ -237,6 +237,22 @@ fn spring_edge_directions_match_canonical_cell_side_sign_rule() {
 }
 
 #[test]
+fn spring_edge_directions_quantize_relax_to_canonical_default_real() {
+    let n_edges_on_cell = vec![0, 0, 1];
+    let edges_on_cell = vec![vec![], vec![], vec![2]];
+    let cells_on_edge = vec![[0, 0], [0, 0], [3, 2]];
+    let relax = 0.035_f64;
+
+    let directions =
+        spring_edge_directions_one_based(&n_edges_on_cell, &edges_on_cell, &cells_on_edge, relax)
+            .expect("valid spring direction inputs");
+
+    let canonical_relax = relax as f32 as f64;
+    assert_ne!(relax.to_bits(), canonical_relax.to_bits());
+    assert_eq!(directions[2][0].to_bits(), canonical_relax.to_bits());
+}
+
+#[test]
 fn spring_apply_cell_displacements_accumulates_and_renormalizes_like_canonical() {
     let cell_points = vec![
         CartesianPoint::new(0.0, 0.0, 0.0),

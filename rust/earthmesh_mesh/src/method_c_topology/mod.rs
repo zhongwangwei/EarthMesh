@@ -21,6 +21,21 @@ impl MethodCDelaunayMesh {
         require_method_c_len("m_prognostic", self.m_prognostic.len(), self.nmd + 1)?;
         require_method_c_len("u_prognostic", self.u_prognostic.len(), self.nud + 1)?;
         require_method_c_len("w_prognostic", self.w_prognostic.len(), self.nwd + 1)?;
+        validate_method_c_prognostic_map(
+            "Method-C M prognostic owner",
+            &self.m_prognostic,
+            self.nmd,
+        )?;
+        validate_method_c_prognostic_map(
+            "Method-C U prognostic owner",
+            &self.u_prognostic,
+            self.nud,
+        )?;
+        validate_method_c_prognostic_map(
+            "Method-C W prognostic owner",
+            &self.w_prognostic,
+            self.nwd,
+        )?;
 
         for iu in 2..=self.nud {
             let edge = self.u_edges[iu];
@@ -141,10 +156,156 @@ impl MethodCDelaunayMesh {
             }
         }
 
+        self.validate_global_sphere_invariants()?;
+
         Ok(MethodCTopologyValidation {
             checked_m_points: self.nmd.saturating_sub(1),
             checked_u_edges: self.nud.saturating_sub(1),
             checked_w_faces: self.nwd.saturating_sub(1),
         })
+    }
+
+    fn validate_global_sphere_invariants(&self) -> io::Result<()> {
+        let uses_cartesian_pentagon_sentinel = self.impent.iter().all(|&point| point == 1);
+        let has_global_pentagons = self.impent.iter().all(|&point| point > 1);
+        if !uses_cartesian_pentagon_sentinel && !has_global_pentagons {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Method-C impent must contain either twelve active global points or twelve Cartesian sentinel slots",
+            ));
+        }
+        if !has_global_pentagons {
+            return Ok(());
+        }
+
+        let has_periodic_copies = self
+            .m_prognostic
+            .iter()
+            .enumerate()
+            .skip(2)
+            .take(self.nmd.saturating_sub(1))
+            .any(|(id, &owner)| owner > 1 && owner != id)
+            || self
+                .u_prognostic
+                .iter()
+                .enumerate()
+                .skip(2)
+                .take(self.nud.saturating_sub(1))
+                .any(|(id, &owner)| owner > 1 && owner != id)
+            || self
+                .w_prognostic
+                .iter()
+                .enumerate()
+                .skip(2)
+                .take(self.nwd.saturating_sub(1))
+                .any(|(id, &owner)| owner > 1 && owner != id);
+        if has_periodic_copies {
+            return Ok(());
+        }
+
+        let mut protected = vec![false; self.nmd + 1];
+        for &point in &self.impent {
+            require_method_c_id("Method-C protected pentagon", point, self.nmd)?;
+            if protected[point] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Method-C impent contains duplicate protected point {point}"),
+                ));
+            }
+            if self.m_neighbors[point].npoly != 5 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Method-C protected pentagon {point} has degree {}, expected 5",
+                        self.m_neighbors[point].npoly
+                    ),
+                ));
+            }
+            protected[point] = true;
+        }
+
+        validate_method_c_sphere_counts(self.nmd, self.nud, self.nwd)?;
+        Ok(())
+    }
+}
+
+fn validate_method_c_prognostic_map(
+    label: &str,
+    owners: &[usize],
+    max_id: usize,
+) -> io::Result<()> {
+    for id in 2..=max_id {
+        let owner = owners[id];
+        require_method_c_id(label, owner, max_id)?;
+        if owner != id && owners[owner] != owner {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{label} for periodic copy {id} points to non-owner {owner}, whose owner is {}",
+                    owners[owner]
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_method_c_sphere_counts(nmd: usize, nud: usize, nwd: usize) -> io::Result<()> {
+    let vertices = nmd.saturating_sub(1) as i128;
+    let edges = nud.saturating_sub(1) as i128;
+    let faces = nwd.saturating_sub(1) as i128;
+    let euler_characteristic = vertices - edges + faces;
+    if euler_characteristic != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Method-C global sphere violates Euler invariant: V-E+F = {vertices}-{edges}+{faces} = {euler_characteristic}, expected 2"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_method_c_sphere_counts, MethodCDelaunayMesh};
+
+    #[test]
+    fn global_sphere_count_check_rejects_extra_components() {
+        validate_method_c_sphere_counts(13, 31, 21).expect("icosahedron has Euler two");
+        let error = validate_method_c_sphere_counts(17, 37, 25).unwrap_err();
+        assert!(error.to_string().contains("expected 2"), "{error}");
+    }
+
+    #[test]
+    fn topology_rejects_out_of_range_prognostic_owners_before_periodic_skip() {
+        let base = MethodCDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100)
+            .expect("valid Method-C mesh");
+
+        let mut invalid_m = base.clone();
+        invalid_m.m_prognostic[2] = invalid_m.nmd + 1;
+        let error = invalid_m.validate_topology().unwrap_err();
+        assert!(error.to_string().contains("M prognostic owner"), "{error}");
+
+        let mut invalid_u = base.clone();
+        invalid_u.u_prognostic[2] = invalid_u.nud + 1;
+        let error = invalid_u.validate_topology().unwrap_err();
+        assert!(error.to_string().contains("U prognostic owner"), "{error}");
+
+        let mut invalid_w = base;
+        invalid_w.w_prognostic[2] = invalid_w.nwd + 1;
+        let error = invalid_w.validate_topology().unwrap_err();
+        assert!(error.to_string().contains("W prognostic owner"), "{error}");
+    }
+
+    #[test]
+    fn topology_rejects_periodic_owner_chains() {
+        let mut mesh = MethodCDelaunayMesh::from_icosahedron(2, 0, 1.0, 0.25, 100)
+            .expect("valid Method-C mesh");
+        mesh.u_prognostic[2] = 3;
+        mesh.u_prognostic[3] = 4;
+
+        let error = mesh.validate_topology().unwrap_err();
+        assert!(error.to_string().contains("non-owner"), "{error}");
     }
 }

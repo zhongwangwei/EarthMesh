@@ -127,7 +127,12 @@ pub fn refine_ngr_renew_core_one_based(
     }
 
     let mut n_triangles_on_cell = vec![0_usize; num_dbx + 1];
-    for tri_cells in cells_on_triangle.iter_mut().take(num_sjx + 1).skip(2) {
+    for (triangle, tri_cells) in cells_on_triangle
+        .iter_mut()
+        .enumerate()
+        .take(num_sjx + 1)
+        .skip(2)
+    {
         for cell in tri_cells.iter_mut() {
             if *cell == 0 || *cell >= vertex_mapping.len() || vertex_mapping[*cell] == 0 {
                 return Err(io::Error::new(
@@ -136,7 +141,18 @@ pub fn refine_ngr_renew_core_one_based(
                 ));
             }
             *cell = vertex_mapping[*cell];
-            n_triangles_on_cell[*cell] += 1;
+        }
+        if tri_cells[0] == tri_cells[1]
+            || tri_cells[0] == tri_cells[2]
+            || tri_cells[1] == tri_cells[2]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("triangle {triangle} collapses after vertex deduplication: {tri_cells:?}"),
+            ));
+        }
+        for &cell in tri_cells.iter() {
+            n_triangles_on_cell[cell] += 1;
         }
     }
 

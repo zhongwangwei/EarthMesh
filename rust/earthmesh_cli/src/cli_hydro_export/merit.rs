@@ -70,21 +70,37 @@ pub(crate) fn run_merit_hydro_geojson(
     }
 
     let bbox = bbox.ok_or_else(|| usage("--merit-hydro-geojson requires --bbox W S E N"))?;
-    let tile_paths =
-        earthmesh_cli::merit_tile_selection::select_merit_hydro_tiles(&merit_root, bbox)
+    let query_windows = earthmesh_cli::merit_tile_selection::split_merit_query_bbox(bbox)
+        .map_err(|err| err.to_string())?;
+    let mut windows = Vec::new();
+    for query in query_windows {
+        let tile_paths =
+            earthmesh_cli::merit_tile_selection::select_merit_hydro_tiles(&merit_root, query)
+                .map_err(|err| err.to_string())?;
+        for tile in tile_paths {
+            let tile_bounds = earthmesh_cli::merit_tile_selection::merit_tile_bounds_from_name(
+                tile.file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| format!("invalid MERIT-Hydro tile path {}", tile.display()))?,
+            )
             .map_err(|err| err.to_string())?;
-    if tile_paths.is_empty() {
+            let Some(clipped) =
+                earthmesh_cli::merit_tile_selection::clip_merit_bbox_to_tile(query, tile_bounds)
+                    .map_err(|err| err.to_string())?
+            else {
+                continue;
+            };
+            windows.push(
+                earthmesh_cli::merit_hydro_io::read_merit_hydro_window(&tile, clipped, stride)
+                    .map_err(|err| err.to_string())?,
+            );
+        }
+    }
+    if windows.is_empty() {
         return Err(format!(
             "no MERIT-Hydro tiles in {} intersect bbox",
             merit_root.display()
         ));
-    }
-    let mut windows = Vec::with_capacity(tile_paths.len());
-    for tile in &tile_paths {
-        windows.push(
-            earthmesh_cli::merit_hydro_io::read_merit_hydro_window(tile, bbox, stride)
-                .map_err(|err| err.to_string())?,
-        );
     }
     let report = earthmesh_cli::merit_hydro_io::write_merit_hydro_mask_geojson_layers(
         &windows,

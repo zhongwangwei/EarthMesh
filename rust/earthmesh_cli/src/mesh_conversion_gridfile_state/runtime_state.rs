@@ -27,12 +27,12 @@ pub(crate) fn earthmesh_runtime_state_from_compact_mesh(
     state.grid.allocate_xyzew(nwa);
     state.grid.allocate_grid_lonlatmw(nma, 0, nwa);
     for (idx, point) in mesh.m_points.iter().enumerate() {
-        state.grid.glonm[idx] = point.lon as f32;
-        state.grid.glatm[idx] = point.lat as f32;
+        state.grid.glonm[idx] = point.lon;
+        state.grid.glatm[idx] = point.lat;
     }
     for (idx, point) in mesh.w_points.iter().enumerate() {
-        state.grid.glonw[idx] = point.lon as f32;
-        state.grid.glatw[idx] = point.lat as f32;
+        state.grid.glonw[idx] = point.lon;
+        state.grid.glatw[idx] = point.lat;
     }
 
     state

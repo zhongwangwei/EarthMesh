@@ -19,6 +19,5 @@ fn main() {
             continue;
         }
         println!("cargo:rustc-link-arg=-Wl,-rpath,{path}");
-        println!("cargo:rustc-link-arg-tests=-Wl,-rpath,{path}");
     }
 }

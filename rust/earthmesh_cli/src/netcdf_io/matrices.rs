@@ -186,6 +186,89 @@ pub(crate) fn required_values_i32_matrix(
     ))
 }
 
+/// Read a 2-D i32 matrix whose dimension names are part of the file contract.
+///
+/// The reversed `(inner, outer)` order is accepted and explicitly transposed;
+/// unrelated dimension names are rejected even when their lengths happen to fit.
+pub(crate) fn required_values_i32_matrix_named(
+    file: &netcdf::File,
+    name: &str,
+    outer_dim: &str,
+    inner_dim: &str,
+    outer_len: usize,
+    inner_len: usize,
+) -> io::Result<Vec<i32>> {
+    let variable = file.variable(name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing {name} variable"),
+        )
+    })?;
+    let dimensions = variable.dimensions();
+    if dimensions.len() != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} must be 2-D over {outer_dim}, {inner_dim}"),
+        ));
+    }
+    let dimension_names = dimensions
+        .iter()
+        .map(|dimension| dimension.name())
+        .collect::<Vec<_>>();
+    let dimension_lengths = dimensions
+        .iter()
+        .map(|dimension| dimension.len())
+        .collect::<Vec<_>>();
+    let expected_len = outer_len.checked_mul(inner_len).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} matrix shape overflows usize"),
+        )
+    })?;
+
+    let reversed = if dimension_names == [outer_dim, inner_dim] {
+        if dimension_lengths != [outer_len, inner_len] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{name} dimensions {:?} have wrong lengths {:?}",
+                    dimension_names, dimension_lengths
+                ),
+            ));
+        }
+        false
+    } else if dimension_names == [inner_dim, outer_dim] {
+        if dimension_lengths != [inner_len, outer_len] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{name} dimensions {:?} have wrong lengths {:?}",
+                    dimension_names, dimension_lengths
+                ),
+            ));
+        }
+        true
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name} dimensions {:?} do not match required ({outer_dim}, {inner_dim})",
+                dimension_names
+            ),
+        ));
+    };
+
+    let values = variable
+        .get_values::<i32, _>((.., ..))
+        .map_err(netcdf_to_io_error)?;
+    require_len(name, values.len(), expected_len)?;
+    Ok(if reversed {
+        transpose(&values, outer_len, inner_len)
+    } else {
+        values
+    })
+}
+
 pub(crate) fn optional_values_i32_2d(
     file: &netcdf::File,
     name: &str,

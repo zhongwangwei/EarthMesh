@@ -12,18 +12,22 @@ use super::helpers::{
     getcontain_validate_source_matrix,
 };
 
-pub fn getcontain_containment_matrix_one_based(
+pub fn getcontain_containment_matrix_one_based<T, U>(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
     cell_to_vertices: &[Vec<i32>],
     n_edges: &[i32],
     is_in_area_ustr: &[i32],
-    is_in_area_grid: &[Vec<i32>],
-    seaorland: &[Vec<i32>],
+    is_in_area_grid: &[Vec<T>],
+    seaorland: &[Vec<U>],
     lon_i: &[f64],
     lat_i: &[f64],
     num_vertex: usize,
-) -> io::Result<ContainMesh> {
+) -> io::Result<ContainMesh>
+where
+    T: Copy + Into<i32>,
+    U: Copy + Into<i32>,
+{
     getcontain_containment_matrix_flat_one_based(
         mesh_kind,
         vertices,
@@ -39,18 +43,22 @@ pub fn getcontain_containment_matrix_one_based(
     .to_contain_mesh()
 }
 
-pub fn getcontain_containment_matrix_flat_one_based(
+pub fn getcontain_containment_matrix_flat_one_based<T, U>(
     mesh_kind: GetContainMeshKind,
     vertices: &[LonLatPoint],
     cell_to_vertices: &[Vec<i32>],
     n_edges: &[i32],
     is_in_area_ustr: &[i32],
-    is_in_area_grid: &[Vec<i32>],
-    seaorland: &[Vec<i32>],
+    is_in_area_grid: &[Vec<T>],
+    seaorland: &[Vec<U>],
     lon_i: &[f64],
     lat_i: &[f64],
     num_vertex: usize,
-) -> io::Result<FlatContainMesh> {
+) -> io::Result<FlatContainMesh>
+where
+    T: Copy + Into<i32>,
+    U: Copy + Into<i32>,
+{
     if is_in_area_ustr.len() != cell_to_vertices.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -129,7 +137,7 @@ pub fn getcontain_containment_matrix_flat_one_based(
                     i
                 };
                 for j in lat_range.clone() {
-                    if is_in_area_grid[restored_i][j] == 0 {
+                    if is_in_area_grid[restored_i][j].into() == 0 {
                         continue;
                     }
                     let point = AreaJudgePoint::new(lon_i[i], lat_i[j]);
@@ -139,12 +147,12 @@ pub fn getcontain_containment_matrix_flat_one_based(
                     total_inside += 1;
                     match mesh_kind {
                         GetContainMeshKind::Land => {
-                            if seaorland[restored_i][j] == 1 {
+                            if seaorland[restored_i][j].into() != 0 {
                                 ustr_ii_values.extend_from_slice(&[restored_i as i32, j as i32]);
                             }
                         }
                         GetContainMeshKind::Ocean => {
-                            if seaorland[restored_i][j] == 0 {
+                            if seaorland[restored_i][j].into() == 0 {
                                 ustr_ii_values.extend_from_slice(&[restored_i as i32, j as i32]);
                             }
                         }
@@ -152,7 +160,11 @@ pub fn getcontain_containment_matrix_flat_one_based(
                             ustr_ii_values.extend_from_slice(&[
                                 restored_i as i32,
                                 j as i32,
-                                if seaorland[restored_i][j] == 1 { 1 } else { 0 },
+                                if seaorland[restored_i][j].into() != 0 {
+                                    1
+                                } else {
+                                    0
+                                },
                             ]);
                         }
                     }

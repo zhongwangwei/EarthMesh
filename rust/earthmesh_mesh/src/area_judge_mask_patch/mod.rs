@@ -27,11 +27,14 @@ fn area_judge_grid_covers_bounds_one_based<T>(
 /// mask is nonzero.  This helper keeps the same one-based array convention and
 /// returns the number of nonzero patch cells applied; area construction and
 /// NetCDF restart I/O remain in the higher-level orchestration layer.
-pub fn area_judge_apply_mask_patch_one_based(
-    seaorland: &mut [Vec<i32>],
-    patch_mask: &[Vec<i32>],
+pub fn area_judge_apply_mask_patch_one_based<T>(
+    seaorland: &mut [Vec<bool>],
+    patch_mask: &[Vec<T>],
     bounds: AreaJudgeSourceBounds,
-) -> Option<AreaJudgeMaskPatchReport> {
+) -> Option<AreaJudgeMaskPatchReport>
+where
+    T: Copy + Into<i32>,
+{
     if !area_judge_grid_covers_bounds_one_based(seaorland, bounds)
         || !area_judge_grid_covers_bounds_one_based(patch_mask, bounds)
     {
@@ -41,8 +44,8 @@ pub fn area_judge_apply_mask_patch_one_based(
     let mut patched_cells = 0usize;
     for lat_index in bounds.maxlat_source..=bounds.minlat_source {
         for lon_index in bounds.minlon_source..=bounds.maxlon_source {
-            if patch_mask[lon_index][lat_index] != 0 {
-                seaorland[lon_index][lat_index] = 0;
+            if patch_mask[lon_index][lat_index].into() != 0 {
+                seaorland[lon_index][lat_index] = false;
                 patched_cells += 1;
             }
         }

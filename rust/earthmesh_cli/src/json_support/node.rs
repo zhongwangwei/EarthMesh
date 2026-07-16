@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq)]
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
 pub(crate) enum JsonNode {
     Object(BTreeMap<String, JsonNode>),
     Array(Vec<JsonNode>),

@@ -85,8 +85,11 @@ complete Cargo dependency graph. Shared physical constants live in
 ## Flatness rule
 
 The public architecture is flat by responsibility: each crate owns one layer,
-wildcard public re-exports and deprecated compatibility facades are forbidden by
-`make check-architecture`, and GUI/CLI policy is sourced from the Project model.
+wildcard public re-exports, deprecated output facades, and single-child forwarding
+directories are forbidden by `make check-architecture`. Narrow legacy **input**
+aliases may remain at parser boundaries while old Project files are supported;
+they are not exposed as current GUI choices or output identifiers. GUI/CLI policy
+is sourced from the Project model.
 
 The large `earthmesh_cli` and `earthmesh_mesh` modules remain internally split
 by algorithm and file-format responsibility. Moving them into a single flat

@@ -1233,15 +1233,14 @@ pub fn ray_segment_intersection_lon(
     let lon_p = ray_start.x;
     let lat_p = ray_start.y;
 
-    if lat1 == lat2 {
-        return None;
-    }
-    if (lat1 > lat_p && lat2 > lat_p) || (lat1 < lat_p && lat2 < lat_p) {
+    // Half-open endpoint rule: a vertex lying on the ray belongs to exactly
+    // one of its two incident edges, preventing a double crossing that breaks
+    // even-odd parity.
+    if (lat1 > lat_p) == (lat2 > lat_p) {
         return None;
     }
 
-    let m = (lat2 - lat1) / (lon2 - lon1);
-    let lon_intersect = lon1 + (lat_p - lat1) / m;
+    let lon_intersect = lon1 + (lat_p - lat1) * (lon2 - lon1) / (lat2 - lat1);
     if lon_intersect == lon_p {
         None
     } else {

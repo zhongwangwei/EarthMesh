@@ -1,7 +1,7 @@
 use crate::merge_area_judge_source_bounds;
 use crate::read_circle_mask_netcdf;
 use crate::require_len;
-use crate::validate_circle_mask;
+use crate::validate_circle_mask_geographic;
 use crate::AreaJudgeAreaSourceReport;
 use std::io;
 use std::path::Path;
@@ -25,13 +25,13 @@ pub fn build_area_judge_circle_area_source_one_based(
     nlats_source: usize,
 ) -> io::Result<AreaJudgeAreaSourceReport> {
     let mask = read_circle_mask_netcdf(inputfile)?;
-    validate_circle_mask(&mask).map_err(|err| {
+    validate_circle_mask_geographic(&mask).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid circle area source: {err}"),
         )
     })?;
-    let mut is_in_area = vec![vec![0_i32; nlats_source + 1]; nlons_source + 1];
+    let mut is_in_area = vec![vec![false; nlats_source + 1]; nlons_source + 1];
     let mut merged_bounds = None;
     let mut numpatch = 0usize;
 
@@ -130,13 +130,13 @@ pub fn build_area_judge_circle_area_source_one_based(
 
         for lon_index in minlon_source..maxlon_source {
             for lat_index in maxlat_source..minlat_source {
-                if is_in_area[lon_index][lat_index] != 0 {
+                if is_in_area[lon_index][lat_index] {
                     continue;
                 }
                 let point = AreaJudgePoint::new(lon_i[lon_index], lat_i[lat_index]);
                 let center = AreaJudgePoint::new(center.lon, center.lat);
                 if is_point_in_circle_km(point, center, radius_km) {
-                    is_in_area[lon_index][lat_index] = 1;
+                    is_in_area[lon_index][lat_index] = true;
                     numpatch += 1;
                 }
             }

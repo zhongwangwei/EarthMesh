@@ -79,10 +79,15 @@ pub(crate) fn json_usize_f64_map_node(
 
 pub(crate) fn json_node_to_usize(value: &JsonNode) -> io::Result<usize> {
     let value = json_node_to_f64(value)?;
-    if value < 0.0 || value.fract() != 0.0 {
+    const MAX_SAFE_JSON_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if value < 0.0
+        || value.fract() != 0.0
+        || value > MAX_SAFE_JSON_INTEGER
+        || value > usize::MAX as f64
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "expected a non-negative integer JSON number",
+            "expected a non-negative integer JSON number exactly representable as usize",
         ));
     }
     Ok(value as usize)
@@ -99,4 +104,32 @@ pub(crate) fn json_node_to_f64(value: &JsonNode) -> io::Result<f64> {
         ));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usize_conversion_rejects_values_outside_the_safe_json_integer_range() {
+        let rounded_above_safe_integer = JsonNode::Number(9_007_199_254_740_992.0);
+        assert!(json_node_to_usize(&rounded_above_safe_integer).is_err());
+    }
+
+    #[test]
+    fn usize_conversion_accepts_safe_max_and_rejects_non_integer_shapes() {
+        let safe_max = 9_007_199_254_740_991u64.min(usize::MAX as u64);
+        assert_eq!(
+            json_node_to_usize(&JsonNode::Number(safe_max as f64)).unwrap(),
+            safe_max as usize
+        );
+        for invalid in [
+            JsonNode::Number(-1.0),
+            JsonNode::Number(1.5),
+            JsonNode::Number(f64::NAN),
+            JsonNode::Null,
+        ] {
+            assert!(json_node_to_usize(&invalid).is_err());
+        }
+    }
 }

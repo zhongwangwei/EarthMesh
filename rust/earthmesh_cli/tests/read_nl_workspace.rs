@@ -142,3 +142,33 @@ fn apply_read_nl_workspace_plan_rejects_delete_outside_workdir() {
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&outside);
 }
+
+#[test]
+fn relative_workspace_paths_always_resolve_from_workdir() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_workspace_relative_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let workdir = root.join("z-workdir");
+    let namelist_dir = root.join("a-namelist");
+    fs::create_dir_all(&workdir).unwrap();
+    fs::create_dir_all(&namelist_dir).unwrap();
+    let namelist = namelist_dir.join("mkgrd.nml");
+    fs::write(&namelist, "&mkgrd\n/\n").unwrap();
+    let plan = MkgrdWorkspacePlan {
+        file_dir: "case/".into(),
+        remove_existing_file_dir: false,
+        remove_filelists: false,
+        directories_to_create: vec!["case/result".into()],
+        namelist_save_path: "case/result/namelist.save".into(),
+        mask_operations: Vec::new(),
+    };
+
+    earthmesh_cli::workspace_apply::apply_read_nl_workspace_plan(&plan, &namelist, &workdir)
+        .unwrap();
+
+    assert!(workdir.join("case/result/namelist.save").is_file());
+    assert!(!namelist_dir.join("case").exists());
+    let _ = fs::remove_dir_all(root);
+}

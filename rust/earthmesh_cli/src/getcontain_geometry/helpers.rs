@@ -155,9 +155,9 @@ pub(super) fn getcontain_cell_polygon(
     Ok(polygon)
 }
 
-pub(crate) fn getcontain_validate_source_matrix(
+pub(crate) fn getcontain_validate_source_matrix<T>(
     name: &str,
-    matrix: &[Vec<i32>],
+    matrix: &[Vec<T>],
     lon_len: usize,
     lat_len: usize,
 ) -> io::Result<()> {

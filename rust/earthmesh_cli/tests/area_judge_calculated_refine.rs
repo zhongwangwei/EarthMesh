@@ -33,11 +33,11 @@ fn small_axes() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     (lon_vertex, lat_vertex, lon_i, lat_i)
 }
 
-fn domain_mask(nx: usize, ny: usize, bounds: AreaJudgeSourceBounds) -> Vec<Vec<i32>> {
-    let mut values = vec![vec![0; ny + 1]; nx + 1];
+fn domain_mask(nx: usize, ny: usize, bounds: AreaJudgeSourceBounds) -> Vec<Vec<bool>> {
+    let mut values = vec![vec![false; ny + 1]; nx + 1];
     for lon in bounds.minlon_source..=bounds.maxlon_source {
         for lat in bounds.maxlat_source..=bounds.minlat_source {
-            values[lon][lat] = 1;
+            values[lon][lat] = true;
         }
     }
     values
@@ -97,8 +97,8 @@ fn calculated_refine_builds_mask_refine_sources_inside_domain() {
         }
     );
     assert_eq!(report.numpatch, 1);
-    assert_eq!(report.is_in_area[3][3], 1);
-    assert_eq!(report.is_in_area[4][4], 0);
+    assert!(report.is_in_area[3][3]);
+    assert!(!report.is_in_area[4][4]);
 }
 
 #[test]

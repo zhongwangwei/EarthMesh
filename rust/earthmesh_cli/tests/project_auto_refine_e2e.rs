@@ -78,7 +78,7 @@ fn json_stat_max(text: &str, key: &str) -> f64 {
 }
 
 #[test]
-fn project_cli_runs_quality_repair_from_raw_parent_and_rechecks() {
+fn project_cli_accepts_warning_candidate_when_guarded_quality_strictly_improves() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("project.yaml");
@@ -104,7 +104,6 @@ fn project_cli_runs_quality_repair_from_raw_parent_and_rechecks() {
         stderr.contains("auto_refine applying") && stderr.contains("pass 2"),
         "the complete CLI path must execute a local quality-repair retry:\n{stderr}"
     );
-
     let mut adapters = Vec::new();
     find_named(&root, "adapter.nml", &mut adapters);
     assert!(
@@ -138,9 +137,9 @@ fn project_cli_runs_quality_repair_from_raw_parent_and_rechecks() {
         "local repair must refine the measured mesh"
     );
     assert!(
-        !initial_quality.contains("\"verdict\": \"fail\"")
-            && !pass_2_quality.contains("\"verdict\": \"fail\""),
-        "the relaxed pass-2 repair candidate must remain usable"
+        initial_quality.contains("\"verdict\": \"warn\"")
+            && pass_2_quality.contains("\"verdict\": \"warn\""),
+        "this regression case requires warning baseline and candidate reports"
     );
     assert!(
         json_stat_max(&pass_2_quality, "aspect_ratio")

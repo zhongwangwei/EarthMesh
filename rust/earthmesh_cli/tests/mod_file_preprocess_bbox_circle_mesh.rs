@@ -18,8 +18,8 @@ fn bbox_mesh_read_write_preserves_canonical_schema_without_refine_field() {
                 south: 22.0,
             },
             BBoxPoint {
-                west: -5.0,
-                east: 1.5,
+                west: 170.0,
+                east: -170.0,
                 north: 2.0,
                 south: -3.0,
             },

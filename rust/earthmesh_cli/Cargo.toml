@@ -17,6 +17,8 @@ earthmesh_project = { path = "../earthmesh_project" }
 flate2 = "1"
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.11.1" }
 netcdf = { version = "0.12.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [features]
 # Statically bundle netCDF-c + HDF5 + zlib so the CLI / packaged mkgrd.x
