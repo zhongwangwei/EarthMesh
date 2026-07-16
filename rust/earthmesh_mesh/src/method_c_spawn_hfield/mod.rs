@@ -230,6 +230,36 @@ impl MethodCDelaunayMesh {
                     }
                 }
             }
+            // Mixed point/edge demand may leave an edge-only boundary tail
+            // off the point-driven thirdm lattice. Add only the minimum
+            // aligned endpoint footprints needed to cover those demanded
+            // edges instead of expanding the whole component by one row.
+            if has_point_demand {
+                for &im in &component {
+                    let neighbors = method_c_m_neighbors[im];
+                    for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                        let edge = self.u_edges[iu];
+                        if edge.mrlu != pass
+                            || self.u_edge_midpoint_target_level(iu, target_level, use_cartesian_xy)
+                                < pass
+                            || edge.iw[..2].iter().any(|&iw| selected[iw])
+                        {
+                            continue;
+                        }
+                        let mut footprint = vec![false; self.nwd + 1];
+                        self.mark_fill_rad3_faces_with_neighbors(
+                            im,
+                            &mut footprint,
+                            &method_c_m_neighbors,
+                        )?;
+                        for iw in 2..=self.nwd {
+                            if footprint[iw] && self.w_faces[iw].mrlw == mrlo {
+                                selected[iw] = true;
+                            }
+                        }
+                    }
+                }
+            }
             for &im in &component {
                 let neighbors = method_c_m_neighbors[im];
                 if self.m_point_demands_pass(im, target_level, pass, use_cartesian_xy)
