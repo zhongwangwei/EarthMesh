@@ -24,14 +24,17 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     fs::write(
         &source,
         format!(
-            "&mkgrd\n  NL%EXPNME='hydro_adapter'\n  NL%base_dir='{}/'\n  NL%NXP=80\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_origin_lon=110.5\n  NL%hfield_origin_lat=22.25\n  NL%hfield_nlon=72\n  NL%hfield_nlat=36\n/\n",
+            "&mkgrd\n  NL%EXPNME='hydro_adapter'\n  NL%base_dir='{}/'\n  NL%NXP=80\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_origin_lon=110.5\n  NL%hfield_origin_lat=22.25\n  NL%hfield_nlon=360\n  NL%hfield_nlat=180\n/\n",
             root.display()
         ),
     )
     .expect("write source namelist");
+    // Keep this integration case local to one measured parent-grid cell. A broad
+    // synthetic rectangle turns the second Method-C pass into an unrelated
+    // continent-scale perimeter-repair stress test and can exhaust the CI timeout.
     fs::write(
         &cells,
-        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"1","center_lon":115,"center_lat":25},"geometry":{"type":"Polygon","coordinates":[[[80,0],[150,0],[150,50],[80,50],[80,0]]]}}]}"#,
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"1","center_lon":115.3779068,"center_lat":25.1378422},"geometry":{"type":"Polygon","coordinates":[[[115.1,24.9],[115.65,24.9],[115.65,25.4],[115.1,25.4],[115.1,24.9]]]}}]}"#,
     )
     .expect("write target cells");
     fs::write(
