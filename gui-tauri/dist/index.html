@@ -199,6 +199,11 @@ body.normal .expert{display:none}
 #mapsvg{height:280px;border-radius:8px;overflow:hidden;background:var(--bg)}
 #mapsvgModal{flex:1;min-height:300px;border-radius:8px;overflow:hidden;background:var(--bg)}
 .leaflet-container{font:inherit;background:var(--bg)}
+body.map-window .app{display:none}
+body.map-window #mapModal{display:flex!important;background:var(--bg)!important}
+body.map-window #mapModalPanel{width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;border:0!important;border-radius:0!important;padding:12px!important;resize:none!important;box-shadow:none!important}
+body.map-window #mapModalCloseBtn{display:none}
+body.map-window #mapsvgModal{border-radius:0}
 .cz-legend{padding:7px 9px;background:var(--elevated);border:1px solid var(--border);
   border-radius:var(--r-sm);box-shadow:var(--shadow);color:var(--text);font-size:11px;line-height:1.4}
 .cz-legend .row{display:flex;align-items:center;gap:6px;white-space:nowrap}
@@ -328,11 +333,13 @@ const I = {
  "st.idle":["idle","空闲"],
  "foot.back":["Back","上一步"],"foot.next":["Next","下一步"]
 };
-let lang=1; // 0=en, 1=zh — default to Chinese
+const PAGE_PARAMS=new URLSearchParams(window.location.search);
+const MAP_WINDOW_MODE=PAGE_PARAMS.get("view")==="map";
+let lang=PAGE_PARAMS.get("lang")==="en"?0:1; // 0=en, 1=zh — default to Chinese
 function L(k){return (I[k]||["",""])[lang];}
 function applyI18n(){
   document.querySelectorAll("[data-i18n]").forEach(e=>{const k=e.getAttribute("data-i18n");if(I[k])e.textContent=L(k);});
-  renderSteps(); renderStep(cur);
+  if(!MAP_WINDOW_MODE){ renderSteps(); renderStep(cur); }
 }
 
 /* ---------------- workflow steps (from i18n.rs step.*) ---------------- */
@@ -903,12 +910,14 @@ function setDomainBoundaryLayer(m, geojson, doFit){
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
 let _domainGeojson=null; // watershed/domain outline overlay
 let _coastalGeojson=null; // real MERIT-Hydro land/coast/ocean overlay
+let syncMapWindow=()=>{};
 function applyMesh(geojson){
   _meshGeojson=geojson;
   const m=document.getElementById("mapsvg") && document.getElementById("mapsvg")._lmap;
   if(m) setMeshLayer(m, geojson, true);
   const mm=document.getElementById("mapsvgModal") && document.getElementById("mapsvgModal")._lmap;
   if(mm) setMeshLayer(mm, geojson, true);
+  syncMapWindow();
 }
 function applyDomainBoundary(geojson, doFit){
   _domainGeojson=geojson;
@@ -916,6 +925,7 @@ function applyDomainBoundary(geojson, doFit){
   if(m) setDomainBoundaryLayer(m, geojson, !!doFit);
   const mm=document.getElementById("mapsvgModal") && document.getElementById("mapsvgModal")._lmap;
   if(mm) setDomainBoundaryLayer(mm, geojson, !!doFit);
+  syncMapWindow();
 }
 function drawMap(){
   const m=ensureMap("mapsvg");
@@ -941,9 +951,10 @@ function openMapModal(){
     }
   }
 }
+function openMapWindow(){ openMapModal(); }
 function closeMapModal(){const mm=document.getElementById("mapModal"); if(mm) mm.style.display="none";}
 function clearLog(){const lb=document.getElementById("logbox"); if(lb) lb.textContent="";}
-document.getElementById("mapEnlargeBtn").onclick=openMapModal;
+document.getElementById("mapEnlargeBtn").onclick=()=>openMapWindow();
 document.getElementById("mapModalCloseBtn").onclick=closeMapModal;
 document.getElementById("clearLogBtn").onclick=clearLog;
 document.getElementById("mapModal").onclick=e=>{if(e.target===e.currentTarget)closeMapModal();};
@@ -1038,7 +1049,22 @@ function setupSplitters(){
   mk(document.querySelector(".live"),"left");
 }
 
-renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
+if(MAP_WINDOW_MODE){
+  document.body.classList.add("map-window");
+  document.getElementById("mapModal").style.display="flex";
+  applyI18n();
+  const map=ensureMap("mapsvgModal");
+  if(map){
+    const container=document.getElementById("mapsvgModal");
+    if(container && window.ResizeObserver){
+      map._resizeObserver=new ResizeObserver(()=>map.invalidateSize({pan:false}));
+      map._resizeObserver.observe(container);
+    }
+    setTimeout(()=>map.invalidateSize({pan:false}),60);
+  }
+}else{
+  renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
+}
 </script>
 
 <script>
@@ -1058,6 +1084,64 @@ renderSteps(); renderStep(cur); drawMap(); applyI18n(); setupSplitters();
 (function () {
   if (!(window.__TAURI__ && window.__TAURI__.core)) return;
   const invoke = window.__TAURI__.core.invoke;
+  const tauriEvent = window.__TAURI__.event;
+  const WebviewWindow = window.__TAURI__.webviewWindow.WebviewWindow;
+
+  if (MAP_WINDOW_MODE) {
+    tauriEvent.listen("earthmesh-map-state", ({ payload }) => {
+      _meshGeojson = payload.mesh;
+      _domainGeojson = payload.domain;
+      _coastalGeojson = payload.coastal;
+      regional = payload.regional;
+      domainMode = payload.domainMode;
+      if (payload.bbox) domBbox = payload.bbox;
+      document.documentElement.setAttribute("data-theme", payload.theme || "light");
+      const map = ensureMap("mapsvgModal");
+      if (!map) return;
+      refreshDomain(map);
+      setDomainBoundaryLayer(map, _domainGeojson, true);
+      setMeshLayer(map, _meshGeojson, true);
+      setCoastalZoneLayer(map, _coastalGeojson);
+      setTimeout(() => map.invalidateSize(), 30);
+    }).then(() => tauriEvent.emitTo("main", "earthmesh-map-ready"));
+    return;
+  }
+
+  const mapState = () => ({
+    mesh: _meshGeojson,
+    domain: _domainGeojson,
+    coastal: _coastalGeojson,
+    regional,
+    domainMode,
+    bbox: domBbox,
+    theme: document.documentElement.getAttribute("data-theme") || "light",
+  });
+  const publishMapState = () => tauriEvent.emitTo("map", "earthmesh-map-state", mapState());
+  syncMapWindow = () => { publishMapState().catch(() => {}); };
+  tauriEvent.listen("earthmesh-map-ready", publishMapState);
+  openMapWindow = async function () {
+    try {
+      let mapWindow = await WebviewWindow.getByLabel("map");
+      if (mapWindow) {
+        await mapWindow.show();
+        await mapWindow.setFocus();
+        await publishMapState();
+        return;
+      }
+      mapWindow = new WebviewWindow("map", {
+        url: `index.html?view=map&lang=${lang ? "zh" : "en"}`,
+        title: lang ? "EarthMesh Studio — 地图细查" : "EarthMesh Studio — Map inspection",
+        width: 1000,
+        height: 760,
+        minWidth: 600,
+        minHeight: 420,
+        resizable: true,
+      });
+      mapWindow.once("tauri://error", (event) => console.error("map window:", event.payload));
+    } catch (error) {
+      console.error("map window:", error);
+    }
+  };
 
   function applyProjectCapabilities(capabilities) {
     const intentIds = new Set(capabilities.intent_ids || []);
@@ -1332,6 +1416,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function clearCoastalOverlay() {
     if (typeof _coastalGeojson !== "undefined") _coastalGeojson = null;
     if (typeof drawMap === "function") drawMap();
+    syncMapWindow();
   }
   function meshMeritLayer(summary) {
     return summary && (summary.layers || []).find((l) => l.role_kind === "merit" && l.enabled && l.path);
@@ -1382,6 +1467,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     _lastQuality = null;
     if (typeof applyMesh === "function") applyMesh(null);
     if (typeof _coastalGeojson !== "undefined") _coastalGeojson = null;
+    syncMapWindow();
     document.querySelectorAll('.live-pane[data-pane="quality"] .mini-metric b')
       .forEach((b) => { b.textContent = "—"; b.style.color = "var(--muted)"; });
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
@@ -2771,6 +2857,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       .then((txt) => {
         _coastalGeojson = JSON.parse(txt);
         if (typeof drawMap === "function") drawMap();
+        syncMapWindow();
         logLine(zh() ? "✓ 最终网格已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
       })
       .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });

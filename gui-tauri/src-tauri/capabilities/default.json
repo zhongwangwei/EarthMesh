@@ -3,10 +3,14 @@
   "identifier": "default",
   "description": "Core defaults for the main window. Custom #[tauri::command]s do not require permissions; only plugin commands do.",
   "windows": [
-    "main"
+    "main",
+    "map"
   ],
   "permissions": [
     "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
     "dialog:default"
   ]
 }

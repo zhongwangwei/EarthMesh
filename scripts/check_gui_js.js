@@ -6,6 +6,7 @@ const fs = require("fs");
 const read = (path) => fs.readFileSync(path, "utf8");
 const html = read("gui-tauri/dist/index.html");
 const readme = read("gui-tauri/README.md");
+const capability = read("gui-tauri/src-tauri/capabilities/default.json");
 
 function check(condition, message, details) {
   if (!condition) {
@@ -115,10 +116,15 @@ log("project actions stay horizontal");
 
 check(
   /<button[^>]+id="mapEnlargeBtn"[^>]+aria-haspopup="dialog"/.test(html) &&
-    html.includes('document.getElementById("mapEnlargeBtn").onclick=openMapModal;'),
-  "the enlarged map must remain a native button wired to the map dialog",
+    html.includes('new WebviewWindow("map"') &&
+    html.includes('url: `index.html?view=map&lang=${lang ? "zh" : "en"}`') &&
+    html.includes('tauriEvent.emitTo("map", "earthmesh-map-state"') &&
+    html.includes('map._resizeObserver=new ResizeObserver(()=>map.invalidateSize({pan:false}))') &&
+    capability.includes('"map"') &&
+    capability.includes('"core:webview:allow-create-webview-window"'),
+  "the enlarged map must open a state-synchronized Tauri window",
 );
-log("enlarged map opens from a native button");
+log("enlarged map opens in a native Tauri window");
 
 check(
   /<input class="proj-name"[^>]*\breadonly\b/.test(html) &&
