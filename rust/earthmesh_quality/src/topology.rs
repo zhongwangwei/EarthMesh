@@ -160,38 +160,34 @@ fn non_manifold_vertex_fans(mesh: &QualityMeshInput) -> Vec<(usize, usize)> {
             }
         }
     }
+    let mut connections = vec![Vec::<(usize, usize)>::new(); mesh.vertices.len()];
+    for (&(a, b), edge_incidents) in &edge_cells {
+        for (index, &left) in edge_incidents.iter().enumerate() {
+            for &right in &edge_incidents[index + 1..] {
+                connections[a].push((left, right));
+                connections[b].push((left, right));
+            }
+        }
+    }
     let mut broken = Vec::new();
     for (vertex, cells) in incidents.iter().enumerate() {
         if cells.len() <= 1 {
             continue;
         }
-        let incident_set: BTreeSet<_> = cells.iter().copied().collect();
-        let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
-        for (&(a, b), edge_incidents) in &edge_cells {
-            if a != vertex && b != vertex {
-                continue;
-            }
-            for &left in edge_incidents {
-                for &right in edge_incidents {
-                    if left != right
-                        && incident_set.contains(&left)
-                        && incident_set.contains(&right)
-                        && !adjacency.entry(left).or_default().contains(&right)
-                    {
-                        adjacency.entry(left).or_default().push(right);
-                    }
-                }
-            }
-        }
         let start = cells[0];
         let mut seen = BTreeSet::from([start]);
         let mut queue = VecDeque::from([start]);
         while let Some(ci) = queue.pop_front() {
-            if let Some(neighbors) = adjacency.get(&ci) {
-                for &next in neighbors {
-                    if seen.insert(next) {
-                        queue.push_back(next);
-                    }
+            for &(left, right) in &connections[vertex] {
+                let next = if left == ci {
+                    right
+                } else if right == ci {
+                    left
+                } else {
+                    continue;
+                };
+                if seen.insert(next) {
+                    queue.push_back(next);
                 }
             }
         }
