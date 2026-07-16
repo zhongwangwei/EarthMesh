@@ -33,7 +33,7 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/icon.png"
+      "icons/icon@2x.png"
     ]
   }
 }

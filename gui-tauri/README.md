@@ -16,7 +16,7 @@ gui-tauri/
     ├── tauri.bundle.conf.json # release-only engine sidecar overlay
     ├── binaries/         # generated target-suffixed earthmesh_cli sidecar
     ├── capabilities/default.json
-    ├── icons/icon.png    # bundle icon
+    ├── icons/icon@2x.png # 1024px Retina bundle icon
     └── src/
         ├── main.rs       # launcher -> earthmesh_studio_lib::run()
         └── lib.rs        # #[tauri::command]s
@@ -187,9 +187,9 @@ platform icon set.
   contract and Tauri command layer directly; the Node check does not scrape Rust
   source text.
   Packaging still depends on the local Tauri/webview prerequisites listed above.
-- **Icons.** Only `icons/icon.png` is included (enough for `cargo run`/dev). For
-  release bundles run `cargo tauri icon icons/icon.png` to generate the full
-  platform icon set, then list them in `bundle.icon`.
+- **Icons.** The 1024px `icons/icon@2x.png` filename marks its Retina density so Tauri can
+  generate the macOS ICNS during release bundling. Add generated platform-specific
+  icon sets only when publishing native installers for other operating systems.
 - **Own workspace.** `src-tauri/Cargo.toml` declares an empty `[workspace]`, so
   this app stays out of the engine workspace and never affects
   `cargo test -p earthmesh_*`.
