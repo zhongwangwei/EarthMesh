@@ -77,11 +77,26 @@ log("threshold refinement master switch is wired");
 check(
   html.includes('id="qualityAutoRefineOn"') &&
     html.includes('id="qualityViolationPolicy"') &&
+    html.includes('<div class="quality-detail"><span class="quality-tag">') &&
+    !html.includes('<div class="quality-detail expert">') &&
     !html.includes("Auto repair attempt") &&
     !html.includes("自动尝试修复"),
-  "AutoRefine must live in the quality expert controls, not the normal violation policy list",
+  "AutoRefine must remain visible in normal quality controls",
 );
-log("AutoRefine is scoped to quality expert controls");
+log("AutoRefine is visible in normal quality controls");
+
+check(
+  html.includes('.proj-actions{display:flex;flex-direction:row;flex-wrap:nowrap') &&
+    html.includes('<div class="proj-actions">'),
+  "New/Open/Save must stay in one horizontal project action row",
+);
+log("project actions stay horizontal");
+
+check(
+  html.includes('${u.ticks.map(t=>`<span>${t}${u.suffix}</span>`).join("")}'),
+  "resolution slider ticks must show their unit",
+);
+log("resolution slider ticks are self-describing");
 
 {
   const body = section(
@@ -374,6 +389,22 @@ check(
 );
 log("layer rows render project data as text");
 
+{
+  const body = section(
+    html,
+    /async function enhanceLayerStep\(\) \{([\s\S]*?)\n  \}\n\n  \/\/ ---- domain/,
+    "enhanceLayerStep body",
+  );
+  check(
+    body.indexOf("auto.onclick = async") >= 0 &&
+      body.indexOf("auto.onclick = async") < body.indexOf("await api.summary") &&
+      body.includes("无法读取数据图层") &&
+      body.includes("当前模板不需要外部数据图层"),
+    "folder matching must bind before project composition and layer loading must expose error/empty states",
+  );
+  log("data-layer picker binds immediately and reports empty/error states");
+}
+
 check(
   html.includes('tr.dataset.path = l.path || "";') &&
     html.includes('tr.dataset.enabled = l.enabled ? "1" : "0";') &&
@@ -428,17 +459,19 @@ log("opened project layers preserve disabled state");
   check(
     html.includes('id="targetQualityModeOutput"') &&
       html.includes('id="readyQualityModeOutput"') &&
+      html.includes("function qualityModeLabel(mode, cell)") &&
       body.includes('const mode = s.quality_mode || (cell === "tri" ? "tri-strict" : "hex-cgrid");') &&
-      body.includes('modeIn.textContent = mode;') &&
-      body.includes('readyMode.textContent = mode;') &&
+      body.includes('modeIn.textContent = qualityModeLabel(mode, cell);') &&
+      body.includes('readyMode.textContent = qualityModeLabel(mode, cell);') &&
+      !html.includes('id="targetQualityModeOutput" style="font-size:15px">—</b>') &&
       html.includes('function meshViewKind()') &&
       qualityBody.includes('invoke("mesh_quality", {') &&
       qualityBody.includes('kind: meshViewKind()') &&
       qualityBody.includes('minAngleDeg:') &&
       qualityBody.includes('onViolation:'),
-    "quality mode must render tri-strict/hex-cgrid labels",
+    "quality mode must render user-facing tri/hex labels without an unexplained dash",
   );
-  log("quality mode labels render from project summary");
+  log("quality mode labels are explicit and render from project summary");
 }
 
 check(

@@ -64,6 +64,8 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .menu-btn{padding:5px 10px;border:1px solid var(--border);border-radius:var(--r-sm);
   background:var(--elevated);display:flex;align-items:center;gap:6px}
 .menu-btn:hover{border-color:var(--accent);color:var(--accent)}
+.proj-actions{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:8px;margin-bottom:14px}
+.proj-actions .menu-btn{flex:0 0 auto;justify-content:center}
 .proj-name{padding:5px 10px;border:1px solid transparent;border-radius:var(--r-sm);
   background:var(--bg);min-width:160px;color:var(--text);font-weight:600}
 .proj-name:focus{outline:none;border-color:var(--accent)}
@@ -444,6 +446,12 @@ function autoSpringStrategyLabel(cell, regionalDomain, z){
   if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（嵌套弹性平滑）" : "Auto (nested spring smoothing)";
   return regionalDomain ? (z ? "自动（区域平滑）" : "Auto (regional smoothing)") : (z ? "自动（全局平滑）" : "Auto (global smoothing)" );
 }
+function qualityModeLabel(mode, cell){
+  const tri=mode==="tri-strict" || (!mode && String(cell||"").toLowerCase()==="tri");
+  return tri
+    ? (lang ? "三角网格严格质量检查" : "Triangular strict quality checks")
+    : (lang ? "六边形 C-grid 质量检查" : "Hexagonal C-grid quality checks");
+}
 function springStrategyOptions(selected,z){
   const opts=[
     ["", z?"自动（按网格/区域）":"Auto (mesh/domain)"],
@@ -556,7 +564,7 @@ function resControl(lang){
     <div id="resEq" style="color:var(--muted);font-size:11px;margin:-4px 0 9px;min-height:14px">${fmtEquiv()}</div>
     <input type="range" id="resRange" style="width:100%" min="${u.min}" max="${u.max}" step="${u.step}" value="${resVal}">
     <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px">
-      ${u.ticks.map(t=>`<span>${t}</span>`).join("")}
+      ${u.ticks.map(t=>`<span>${t}${u.suffix}</span>`).join("")}
     </div></div>`;
 }
 function resInput(src){
@@ -585,7 +593,7 @@ function renderStep(i){
   let html="";
   if(i===0){
     html=head(STEPS[0].t[lang],lang?"新建、打开或保存项目——所有设置都存进一个可重开的项目文件。":"Create, open or save a project — every setting lives in one reopenable project file.")
-    +`<div class="proj-actions" style="display:flex;gap:8px;margin-bottom:14px">
+    +`<div class="proj-actions">
          <button class="menu-btn" id="projNew">🆕 ${lang?"新建":"New"}</button>
          <button class="menu-btn" id="projOpen">📂 ${lang?"打开":"Open"}</button>
          <button class="menu-btn" id="projSave">💾 ${lang?"保存":"Save"}</button>
@@ -615,7 +623,7 @@ function renderStep(i){
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
           ${field(lang?"输出模型":"Output model",`<input class="input" id="targetModelOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
-          ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">—</b>`,lang?"随单元形状自动标注":"label follows cell shape")}
+          ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 弹性调整":"EXPERT — spring adjustment"}</span>
         <div class="grid2" id="expertFields">
@@ -664,11 +672,11 @@ function renderStep(i){
     +`<div class="card"><h3>${lang?"细化策略":"Refinement strategy"}</h3><div class="ch">${lang?"正在读取项目细化配置…":"loading refinement settings…"}</div></div>`;
   }
   else if(i===5){
-    html=head(STEPS[5].t[lang],lang?"设置质量门限与违规策略；AutoRefine 属于质量修复，在专家模式中配置。":"Set quality gates and violation behavior; AutoRefine is a quality repair option configured in Expert mode.")
+    html=head(STEPS[5].t[lang],lang?"设置质量门限与违规策略；符合条件的区域网格可直接启用 AutoRefine。":"Set quality gates and violation behavior; eligible regional meshes can enable AutoRefine here.")
     +`<div class="card"><h3>${lang?"违规处理":"Violation behavior"}</h3>
       ${field(lang?"违规时":"On violation",`<select class="select" id="qualityViolationPolicy"><option value="warn" selected>${lang?"警告并继续":"Warn & continue"}</option><option value="block">${lang?"直接失败":"Fail"}</option></select>`)}
     </div>
-    <div class="quality-detail expert"><span class="expert-tag">⚙ ${lang?"专家 — 质量门禁与 AutoRefine":"EXPERT — quality gates and AutoRefine"}</span>
+    <div class="quality-detail"><span class="quality-tag">${lang?"质量门禁与 AutoRefine":"Quality gates and AutoRefine"}</span>
       <div class="grid2">
         ${field(lang?"最小角 ≥":"Min angle ≥",inp(`${DEFAULT_MIN_ANGLE_DEG}°`))}
         ${field("AutoRefine",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="qualityAutoRefineOn"> <span>${lang?"质量不达标时自动生成并比较修复候选":"Generate and compare a repair candidate after a quality violation"}</span></label>`,lang?"仅区域网格且已有细化来源时可用":"Available for regional meshes with a refinement source")}
@@ -682,7 +690,7 @@ function renderStep(i){
         <div class="ch">${lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run."}</div>
         <div class="grid2" style="margin-top:8px">
           ${field(lang?"输出模型":"Output model",`<b id="readyModelOutput" style="font-size:15px">—</b>`)}
-          ${field(lang?"质量模式":"Quality mode",`<b id="readyQualityModeOutput" style="font-size:15px">—</b>`)}
+          ${field(lang?"质量模式":"Quality mode",`<b id="readyQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`)}
           ${field(lang?"分辨率":"Resolution",`<b style="font-size:15px">${fmtRes()}</b> <span style="color:var(--muted);font-size:12px">${fmtEquiv()}</span>`)}
           ${field(lang?"计算域":"Domain",`<b id="readyDomainOutput" style="font-size:15px">—</b>`)}
           ${field(lang?"细化":"Refinement",`<b id="readyRefinementOutput" style="font-size:15px">—</b>`)}
@@ -1417,15 +1425,54 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   async function enhanceLayerStep() {
     const table = document.querySelector("#work table.layers");
     if (!table) return;
-    let sum;
-    try { sum = await api.summary(await composeYaml()); }
-    catch (e) { logLine("✗ layers: " + e); return; }
-    clearCoastalOverlay();
     const tbody = table.querySelector("tbody");
     if (!tbody) return;
     const z = zh();
+    const auto = document.getElementById("autoLayerFolder");
+    if (auto) auto.onclick = async () => {
+      let folder;
+      try { folder = await api.pickDataFolder(); }
+      catch (e) { logLine("✗ " + e); return; }
+      if (!folder) return;
+      let yaml, next;
+      try {
+        yaml = await api.autofillLayers(await composeYaml(), folder);
+        next = await api.summary(yaml);
+      } catch (e) { logLine("✗ " + e); return; }
+      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+      for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
+      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
+      (next.layers || []).forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
+      logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
+      enhanceLayerStep();
+    };
+    let sum;
+    try { sum = await api.summary(await composeYaml()); }
+    catch (e) {
+      tbody.textContent = "";
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.style.cssText = "color:var(--fail);padding:12px";
+      td.textContent = (z ? "无法读取数据图层：" : "Could not load data layers: ") + e;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      logLine("✗ layers: " + e);
+      return;
+    }
+    clearCoastalOverlay();
     tbody.textContent = "";
-    sum.layers.forEach((l) => {
+    const layers = sum.layers || [];
+    if (!layers.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.style.cssText = "color:var(--muted);padding:12px";
+      td.textContent = z ? "当前模板不需要外部数据图层。" : "This template needs no external data layers.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    layers.forEach((l) => {
       const tr = document.createElement("tr");
       tr.dataset.layer = l.id;
       tr.dataset.folder = l.wants_folder ? "1" : "0";
@@ -1515,28 +1562,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         enhanceLayerStep();
       };
     });
-    const auto = document.getElementById("autoLayerFolder");
-    if (auto) auto.onclick = async () => {
-      let folder;
-      try { folder = await api.pickDataFolder(); }
-      catch (e) { logLine("✗ " + e); return; }
-      if (!folder) return;
-      let yaml, next;
-      try {
-        yaml = await api.autofillLayers(await composeYaml(), folder);
-        next = await api.summary(yaml);
-      } catch (e) { logLine("✗ " + e); return; }
-      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
-      for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
-      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
-      (next.layers || []).forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
-      logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
-      enhanceLayerStep();
-    };
     const card = table.closest(".card");
     const ch = card && card.querySelector(".ch");
     if (ch) ch.textContent = (z ? "实时映射 ProjectConfig.data_layers · " : "live ProjectConfig.data_layers · ")
-      + sum.layers.length + (z ? " 个图层" : " layers");
+      + layers.length + (z ? " 个图层" : " layers");
   }
 
   // ---- domain (step 2) -> DomainConfig --------------------------------------
@@ -1695,10 +1724,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (minIn) minIn.value = qualityEdit.minAngle + "°";
       if (batchIn) batchIn.value = String(qualityEdit.batchCells || 1);
       if (sel) sel.value = qualityEdit.policy === "block" ? "block" : "warn";
-      if (autoIn) {
-        autoIn.disabled = !autoEligible;
-        autoIn.checked = autoEligible && qualityEdit.policy === "auto_refine";
-      }
+    }
+    if (autoIn) {
+      autoIn.disabled = !autoEligible;
+      autoIn.checked = autoEligible && !!qualityEdit && qualityEdit.policy === "auto_refine";
+      autoIn.title = autoEligible
+        ? (zh() ? "当前项目可使用 AutoRefine" : "AutoRefine is available for this project")
+        : (zh() ? "需要区域网格和已启用的细化来源" : "Requires a regional mesh and an enabled refinement source");
     }
     paintAutoRefine();
   }
@@ -2255,9 +2287,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const refine = document.getElementById("readyRefinementOutput");
     if (modelIn) modelIn.value = model;
     if (cellIn) cellIn.value = cell;
-    if (modeIn) modeIn.textContent = mode;
+    if (modeIn) modeIn.textContent = qualityModeLabel(mode, cell);
     if (ready) ready.textContent = model;
-    if (readyMode) readyMode.textContent = mode;
+    if (readyMode) readyMode.textContent = qualityModeLabel(mode, cell);
     if (refine) refine.textContent = s.refine_enabled
       ? ((zh() ? "最多 " : "up to ") + s.max_passes + (zh() ? " 次" : " passes"))
       : (zh() ? "关闭" : "off");
