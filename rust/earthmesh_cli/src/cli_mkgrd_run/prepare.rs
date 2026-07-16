@@ -391,6 +391,7 @@ mod tests {
         ];
         project.refinement.enabled = true;
         project.refinement.threshold_enabled = false;
+        project.refinement.max_passes = 1;
         project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
             lon: 0.0,
             lat: 0.0,
@@ -576,6 +577,7 @@ mod tests {
         }];
         project.refinement.enabled = true;
         project.refinement.max_passes = 1;
+        project.refinement.threshold_enabled = true;
         let project_path = root.join("project.yaml");
         fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
         let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
@@ -619,6 +621,7 @@ mod tests {
         }];
         project.refinement.enabled = true;
         project.refinement.max_passes = 1;
+        project.refinement.threshold_enabled = true;
         let mut lowered = project.try_lower().unwrap();
         lowered.refine.threshold_dir = explicit.to_string_lossy().into_owned();
         let namelist = root.join("raw.nml");
@@ -654,6 +657,7 @@ mod tests {
         }];
         project.refinement.enabled = true;
         project.refinement.max_passes = 1;
+        project.refinement.threshold_enabled = true;
         let mut lowered = project.try_lower().unwrap();
         lowered.refine.threshold_dir.clear();
         let namelist = root.join("raw.nml");
