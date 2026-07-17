@@ -8,7 +8,8 @@ the static redesign.
 ```
 gui-tauri/
 ├── dist/
-│   └── index.html        # static frontend + Tauri invoke bridge
+│   ├── index.html        # static frontend + Tauri invoke bridge
+│   └── vendor/openlayers # local OpenLayers runtime for the desktop CSP
 └── src-tauri/
     ├── Cargo.toml        # own workspace; deps: tauri v2 + earthmesh_project (NO hdf5)
     ├── build.rs          # tauri_build::build()
@@ -77,6 +78,7 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `pick_data_folder` | – | native folder picker → path (tiled layers) |
 | `open_project` | – | native open → `{path, yaml}` (or `null`) |
 | `save_project` | `yaml` | native save → path (or `null`) |
+| `save_map_png` | raw PNG IPC body | validated PNG → native save path (or `null`) |
 | `read_project` | `path` | `{path, yaml}` for recent-project reopen |
 | `open_path` | `path` | open output/report path in the OS file browser |
 | `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile,auto_refine_decisions}`; each decision includes pass, selection reason, selected paths/verdict, structured guarded regressions, and its artifact path |
@@ -172,6 +174,10 @@ automatically.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the
   engine reports a gridfile; quality uses `tri-strict` for triangle targets and
   `hex-cgrid` for hex targets.
+- Both the embedded and independent maps use the vendored OpenLayers runtime.
+  The independent window supports imagery/topographic/ocean bases,
+  Web Mercator/geographic projection switching, dateline-safe regional fitting,
+  and exact-size PNG export for the selected region, current view, or globe.
 - AutoRefine runs scan only their own output tree (without following directory
   symlinks) and show every `auto_refine_decision.json` in pass order. Accepted
   candidates, baseline rollbacks, selected reports, and guarded metric
@@ -196,8 +202,8 @@ platform icon set.
   `make test-gui` uses Node to parse inline JS and check frontend-only invariants
   such as capability consumption, text-safe rendering, run-state wiring,
   placeholders, and i18n keys. Rust tests exercise the structured capability
-  contract and Tauri command layer directly; the Node check does not scrape Rust
-  source text.
+  contract and Tauri command layer directly; the Node check also guards the raw
+  PNG save-command registration used by the static frontend.
   Packaging still depends on the local Tauri/webview prerequisites listed above.
 - **Icons.** The 1024px `icons/icon@2x.png` filename marks its Retina density so Tauri can
   generate the macOS ICNS during release bundling. Add generated platform-specific

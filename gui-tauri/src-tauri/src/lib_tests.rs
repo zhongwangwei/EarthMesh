@@ -2686,3 +2686,54 @@ fn list_criteria_reports_frontend_fields() {
     assert_eq!(dem.unit, "m");
     assert_eq!(dem.default_value, 500.0);
 }
+
+fn one_pixel_png() -> Vec<u8> {
+    vec![
+        137, 80, 78, 71, 13, 10, 26, 10, // signature
+        0, 0, 0, 13, b'I', b'H', b'D', b'R', // IHDR header
+        0, 0, 0, 1, 0, 0, 0, 1, // 1 x 1
+        8, 6, 0, 0, 0, 31, 21, 196, 137, // IHDR data + CRC
+        0, 0, 0, 0, b'I', b'E', b'N', b'D', 174, 66, 96, 130, // IEND
+    ]
+}
+
+#[test]
+fn png_payload_validation_rejects_invalid_structure() {
+    assert!(validate_png_bytes(&[]).unwrap_err().contains("invalid PNG"));
+    assert!(validate_png_bytes(b"not a png")
+        .unwrap_err()
+        .contains("invalid PNG"));
+
+    let mut image = one_pixel_png();
+    assert!(validate_png_bytes(&image).is_ok());
+
+    image[16..20].copy_from_slice(&0_u32.to_be_bytes());
+    assert!(validate_png_bytes(&image)
+        .unwrap_err()
+        .contains("dimensions"));
+
+    let mut image = one_pixel_png();
+    *image.last_mut().expect("PNG fixture") = 0;
+    assert!(validate_png_bytes(&image).unwrap_err().contains("IEND"));
+
+    let oversized = vec![0; 64 * 1024 * 1024 + 1];
+    assert!(validate_png_bytes(&oversized)
+        .unwrap_err()
+        .contains("64 MiB limit"));
+}
+
+#[test]
+fn png_output_path_enforces_png_extension() {
+    assert_eq!(
+        ensure_png_extension(PathBuf::from("/tmp/map")),
+        PathBuf::from("/tmp/map.png")
+    );
+    assert_eq!(
+        ensure_png_extension(PathBuf::from("/tmp/map.jpg")),
+        PathBuf::from("/tmp/map.png")
+    );
+    assert_eq!(
+        ensure_png_extension(PathBuf::from("/tmp/map.PNG")),
+        PathBuf::from("/tmp/map.PNG")
+    );
+}

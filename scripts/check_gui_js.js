@@ -7,6 +7,9 @@ const read = (path) => fs.readFileSync(path, "utf8");
 const html = read("gui-tauri/dist/index.html");
 const readme = read("gui-tauri/README.md");
 const capability = read("gui-tauri/src-tauri/capabilities/default.json");
+const fileCommands = read("gui-tauri/src-tauri/src/file_commands.rs");
+const libRs = read("gui-tauri/src-tauri/src/lib.rs");
+const gitignore = read(".gitignore");
 
 function check(condition, message, details) {
   if (!condition) {
@@ -38,15 +41,18 @@ check(
 log("frontend has no inline HTML event handlers");
 
 check(
-  html.includes('href="vendor/leaflet/leaflet.css"') &&
-    html.includes('src="vendor/leaflet/leaflet.js"') &&
+  html.includes('href="vendor/openlayers/ol.css"') &&
+    html.includes('src="vendor/openlayers/ol.js"') &&
+    !html.toLowerCase().includes("leaflet") &&
     !html.includes("unpkg.com") &&
-    fs.existsSync("gui-tauri/dist/vendor/leaflet/leaflet.css") &&
-    fs.existsSync("gui-tauri/dist/vendor/leaflet/leaflet.js") &&
-    fs.existsSync("gui-tauri/dist/vendor/leaflet/LICENSE"),
-  "Leaflet runtime and license must be vendored for the desktop CSP",
+    fs.existsSync("gui-tauri/dist/vendor/openlayers/ol.css") &&
+    fs.existsSync("gui-tauri/dist/vendor/openlayers/ol.js") &&
+    fs.existsSync("gui-tauri/dist/vendor/openlayers/LICENSE.md") &&
+    gitignore.includes("!gui-tauri/dist/vendor/openlayers/**") &&
+    !gitignore.includes("!gui-tauri/dist/vendor/leaflet/**"),
+  "OpenLayers must be the sole vendored GUI map runtime and survive a clean checkout",
 );
-log("Leaflet runtime is vendored locally");
+log("OpenLayers is the sole vendored GUI map runtime");
 
 check(
   !html.includes('${watershedPath ?') &&
@@ -203,7 +209,9 @@ check(
     html.includes('new WebviewWindow("map"') &&
     html.includes('url: `index.html?view=map&lang=${lang ? "zh" : "en"}`') &&
     html.includes('tauriEvent.emitTo("map", "earthmesh-map-state"') &&
-    html.includes('map._resizeObserver=new ResizeObserver(()=>map.invalidateSize({pan:false}))') &&
+    html.includes('const map=ensureOlMap("mapsvgModal")') &&
+    html.includes('map._resizeObserver=new ResizeObserver(()=>map.updateSize())') &&
+    html.includes('updateOlMap(map, !!payload.fit)') &&
     html.includes('grid-template-rows:auto minmax(0,1fr)') &&
     html.includes('body.map-window #mapsvgModal{height:100%!important;min-height:0!important') &&
     capability.includes('"map"') &&
@@ -211,6 +219,77 @@ check(
   "the enlarged map must open a state-synchronized Tauri window",
 );
 log("enlarged map opens in a native Tauri window");
+
+check(
+    html.includes('const map=ensureOlMap("mapsvg")') &&
+    html.includes("new ol.layer.VectorImage") &&
+    html.includes("featureClass:ol.render.Feature") &&
+    html.includes('mesh=classified?_coastalGeojson:_meshGeojson') &&
+    html.includes("map._geoRefs[key]===geojson && map._geoProjection[key]===cacheKey") &&
+    !html.includes("_lmap") &&
+    !html.includes("window.LEAF"),
+  "both maps must use one cached OpenLayers mesh source without raw/classified double drawing",
+);
+log("OpenLayers rendering avoids duplicate and unchanged GeoJSON work");
+
+check(
+  html.includes('const ALL_MAP_STATE=["mesh","domain","coastal","settings"]') &&
+    html.includes('if(selected.has("mesh")) payload.mesh=_meshGeojson') &&
+    html.includes('if ("mesh" in payload) _meshGeojson = payload.mesh') &&
+    html.includes('syncMapWindow(["settings"])') &&
+    html.includes('syncMapWindow(["mesh","coastal"],true)') &&
+    html.includes('publishMapState(["settings"],false)'),
+  "map-window IPC must patch only changed fields instead of repeatedly cloning all GeoJSON",
+);
+log("map-window IPC preserves unchanged GeoJSON object identities");
+
+check(
+  html.includes('<option value="EPSG:3857">') &&
+    html.includes('<option value="EPSG:4326">') &&
+    html.includes('domBbox[0]>domBbox[1]') &&
+    html.includes('input[i]+360') &&
+    html.includes('fitOlMap(map,scope,0,[width,height],null)') &&
+    html.includes('canvas.toBlob(resolve,"image/png")') &&
+    html.includes('core.invoke("save_map_png",bytes)') &&
+    html.includes('target.style.setProperty("width",width+"px","important")') &&
+    html.includes('EarthMesh Studio · ${credit}') &&
+    fileCommands.includes("tauri::ipc::InvokeBody::Raw") &&
+    fileCommands.includes("validate_png_bytes(bytes)?") &&
+    libRs.includes("save_map_png,"),
+  "projection, antimeridian, exact-size PNG export, attribution, and raw native save must remain wired",
+);
+log("projection and PNG export contracts are wired");
+
+check(
+  html.includes("function updateOlLegend(map)") &&
+    html.includes('map._meshLayer.getFeatures(event.pixel)') &&
+    html.includes("meshFeatureLabel(feature.getProperties())") &&
+    html.includes('tooltip.className="ol-cell-tooltip"') &&
+    html.includes('addEventListener("pointerleave"'),
+  "OpenLayers migration must preserve the hydro legend and cell inspection tooltip",
+);
+log("OpenLayers preserves legend and cell inspection");
+
+check(
+  html.includes('lang=b.dataset.lang==="zh"?1:0; applyI18n();};') &&
+    html.includes('}else{\n  applyI18n(); setupSplitters();') &&
+    !html.includes('renderSteps(); renderStep(cur); applyI18n();'),
+  "startup and language switches must render the workflow/map only once",
+);
+log("startup and language switching avoid duplicate renders");
+
+{
+  const splitters = section(
+    html,
+    /function setupSplitters\(\)\{([\s\S]*?)\n\}\n\nif\(MAP_WINDOW_MODE\)/,
+    "splitter setup",
+  );
+  check(
+    splitters.includes("scheduleMapResize()") && !splitters.includes("drawMap()"),
+    "dragging splitters must resize maps without rebuilding GeoJSON layers",
+  );
+}
+log("splitter dragging only resizes existing maps");
 
 check(
   /<input class="proj-name"[^>]*\breadonly\b/.test(html) &&

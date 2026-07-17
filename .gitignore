@@ -20,8 +20,8 @@ gui-tauri/dist/*
 !gui-tauri/dist/index.html
 !gui-tauri/dist/vendor/
 gui-tauri/dist/vendor/*
-!gui-tauri/dist/vendor/leaflet/
-!gui-tauri/dist/vendor/leaflet/**
+!gui-tauri/dist/vendor/openlayers/
+!gui-tauri/dist/vendor/openlayers/**
 
 # Brainstorming companion working dir
 .superpowers/

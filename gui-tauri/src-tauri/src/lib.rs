@@ -64,6 +64,7 @@ pub fn run() {
             pick_data_folder,
             open_project,
             save_project,
+            save_map_png,
             read_project,
             open_path,
             run_project,
