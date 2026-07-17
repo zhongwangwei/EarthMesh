@@ -130,7 +130,11 @@ fn binary_can_export_merit_root_to_geojson_layers() {
     let summary =
         fs::read_to_string(output_dir.join("merit_mask_summary.json")).expect("read summary");
     assert!(summary.contains(r#""tile_count":1"#));
-    assert!(summary.contains(r#""feature_count":4"#));
+    assert!(summary.contains(r#""feature_count":6"#));
+    assert!(summary.contains(r#""COAST_LAND":3"#));
+    assert!(summary.contains(r#""COAST_OCEAN":1"#));
+    assert!(summary.contains(r#""R2":1"#));
+    assert!(summary.contains(r#""R3":1"#));
 
     let _ = fs::remove_dir_all(root);
 }

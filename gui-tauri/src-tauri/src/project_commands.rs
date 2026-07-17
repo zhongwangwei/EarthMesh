@@ -1,7 +1,7 @@
 //! Project intent/schema command handlers.
 
 use earthmesh_project::{
-    DomainConfig, MeshIntentPreset, ProjectConfig, RegionShape, ResolutionSpec,
+    DomainConfig, MeshDomainKind, MeshIntentPreset, ProjectConfig, RegionShape, ResolutionSpec,
 };
 
 pub(crate) fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
@@ -76,8 +76,7 @@ pub(crate) fn preserve_unexposed_project_fields(
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
 
     cfg.expert = base.expert;
-    cfg.hydro_coast = base.hydro_coast;
-    cfg.coupling = base.coupling;
+    cfg.refinement.threshold_criteria = base.refinement.threshold_criteria.clone();
 
     if let Some(base_hfield) = base.refinement.hfield.as_ref() {
         let hfield = cfg.refinement.hfield.get_or_insert_with(Default::default);
@@ -89,13 +88,37 @@ pub(crate) fn preserve_unexposed_project_fields(
         cfg.target.kind = base.target.kind;
         cfg.target.cell = base.target.cell;
         cfg.target.model_format = base.target.model_format;
+    }
 
-        for layer in base.data_layers {
-            if !cfg.data_layers.iter().any(|l| l.id == layer.id) {
-                cfg.data_layers.push(layer);
+    for layer in base.data_layers {
+        if !cfg
+            .data_layers
+            .iter()
+            .any(|candidate| candidate.id == layer.id)
+        {
+            if layer.enabled
+                && matches!(
+                    layer.role,
+                    earthmesh_project::ProjectLayerRole::Threshold(_)
+                        | earthmesh_project::ProjectLayerRole::LandType
+                )
+            {
+                for sibling in &mut cfg.data_layers {
+                    if sibling.role == layer.role {
+                        sibling.enabled = false;
+                    }
+                }
             }
+            cfg.data_layers.push(layer);
         }
     }
+
+    cfg.hydro_coast = matches!(cfg.domain, DomainConfig::Regional { .. })
+        .then_some(base.hydro_coast)
+        .flatten();
+    cfg.coupling = (cfg.target.kind == MeshDomainKind::Coupled)
+        .then_some(base.coupling)
+        .flatten();
 
     let preserves_unexposed_shape = matches!(
         &base.domain,

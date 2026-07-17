@@ -366,9 +366,9 @@ fn refine_config_rejects_invalid_core_read_nl_refine_combinations() {
         "atmosmesh",
         "tri",
     )
-    .expect_err("atmosmesh calculate mode needs an atmos threshold switch");
+    .expect_err("calculated refinement needs at least one threshold switch");
     assert!(atmos_cal.contains("atmosmesh"));
-    assert!(atmos_cal.contains("refine_onelayer_Atmos"));
+    assert!(atmos_cal.contains("at least one land, ocean, or atmosphere threshold"));
 }
 
 #[test]
@@ -458,16 +458,16 @@ fn refine_config_parses_threshold_switches_and_values_for_locmesh() {
 }
 
 #[test]
-fn refine_config_rejects_calculate_mode_without_mesh_specific_threshold_switches() {
+fn refine_config_rejects_calculate_mode_without_any_threshold_switch() {
     let err = earthmesh_core::RefineConfig::from_mkrefine_namelist(
         "&mkrefine\n RL%Istransition = .true.\n RL%SpringGlobal_type = 0\n RL%SpringRegional_type = 0\n RL%refine_cal = .true.\n RL%max_iter_cal = 1\n/\n",
         "oceanmesh",
         "tri",
     )
-    .expect_err("calculate mode needs an ocean threshold switch like read_nl");
+    .expect_err("calculated refinement needs at least one threshold switch");
 
-    assert!(err.contains("refine_sea_ratio"));
-    assert!(err.contains("refine_onelayer_Ocn"));
+    assert!(err.contains("oceanmesh"));
+    assert!(err.contains("at least one land, ocean, or atmosphere threshold"));
 }
 
 #[test]

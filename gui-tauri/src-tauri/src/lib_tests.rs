@@ -1,9 +1,10 @@
 use super::*;
 use earthmesh_project::{
     default_mask_sea_ratio, CloseBoundaryMode, CoupledMeshConfig, DomainConfig, HydroCoastConfig,
-    MeshIntentPreset, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
-    SpecifiedCloseRefinement, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
-    METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
+    MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig, ProjectDataLayer,
+    ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
+    ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG,
+    INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
 };
 use std::{
     env, fs, io,
@@ -107,6 +108,66 @@ fn staged_engine_paths_are_process_specific_and_published_from_a_temp_copy() {
             .to_string_lossy()
             .contains(".tmp-")
     }));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn engine_discovery_rejects_silent_zero_exit_stubs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_engine_probe_{}_{}",
+        process::id(),
+        nonce
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let stub = root.join("silent-stub");
+    let compatible = root.join("compatible-engine");
+    fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::write(
+        &compatible,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' '{}'\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&compatible, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(!engine::engine_candidate_is_compatible(&stub));
+    assert!(engine::engine_candidate_is_compatible(&compatible));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn successful_project_runs_require_an_existing_reported_gridfile() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_gridfile_contract_{}_{}",
+        process::id(),
+        nonce
+    ));
+    fs::create_dir_all(&root).unwrap();
+
+    let missing = mesh_runner::require_project_gridfile(&root, None).unwrap_err();
+    assert!(missing.contains("exited with code 0"));
+    assert!(mesh_runner::require_project_gridfile(&root, Some("missing.nc4")).is_err());
+
+    fs::write(root.join("grid.nc4"), b"grid").unwrap();
+    let resolved = mesh_runner::require_project_gridfile(&root, Some("grid.nc4")).unwrap();
+    assert_eq!(
+        PathBuf::from(resolved),
+        root.join("grid.nc4").canonicalize().unwrap()
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -251,6 +312,17 @@ fn gui_stages_relative_hydro_root_as_an_absolute_project_input() {
         merit_stride: 1,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     mesh_runner::absolutize_gui_project_inputs(&mut cfg).expect("absolute hydro root");
     let hydro = cfg.hydro_coast.unwrap();
@@ -282,6 +354,17 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
         merit_stride: 1,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     cfg.coupling = Some(CoupledMeshConfig {
         cama_root: Some("fixtures/coupling-cama".to_string()),
@@ -632,6 +715,24 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
         capabilities.km_per_degree_equator,
         earthmesh_project::KM_PER_DEGREE_EQUATOR
     );
+    assert_eq!(capabilities.target_presets.len(), INTENT_PRESETS.len());
+    let atmosphere = capabilities
+        .target_presets
+        .iter()
+        .find(|preset| preset.intent == "AtmosphereMpas")
+        .expect("atmosphere target preset");
+    assert_eq!(atmosphere.kind, "atmosphere");
+    assert_eq!(atmosphere.cell, "hex");
+    assert_eq!(atmosphere.model_format, "MPAS");
+    assert_eq!(
+        capabilities
+            .target_compatibility
+            .iter()
+            .find(|entry| entry.kind == "atmosphere")
+            .expect("atmosphere compatibility")
+            .model_formats,
+        vec!["MPAS".to_string(), "MPAS-Simple".to_string()]
+    );
 }
 
 #[test]
@@ -684,6 +785,10 @@ fn mesh_kind_rejects_invalid_values() {
         1.0,
         None,
         None,
+        50.0,
+        5_000.0,
+        300.0,
+        50_000.0,
     ) {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_merit_cells kind should fail"),
@@ -716,12 +821,37 @@ fn explicit_missing_landtype_file_is_not_silently_replaced_by_merit_surface_data
         24.0,
         None,
         Some(missing_landtype.to_string_lossy().into_owned()),
+        50.0,
+        5_000.0,
+        300.0,
+        50_000.0,
     )
     .expect_err("an explicit missing landtype file must fail before MERIT fallback");
 
     assert!(error.contains("landtype file not found"), "{error}");
     assert!(error.contains("missing-landtype.nc"), "{error}");
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn merit_map_rejects_unordered_custom_thresholds_before_running_the_engine() {
+    let error = mesh_outputs::mesh_merit_cells(
+        "missing.nc".into(),
+        "hex".into(),
+        "missing-merit".into(),
+        112.0,
+        115.0,
+        21.0,
+        24.0,
+        None,
+        None,
+        300.0,
+        5_000.0,
+        50.0,
+        50_000.0,
+    )
+    .unwrap_err();
+    assert!(error.contains("ordered R3 >= R2"), "{error}");
 }
 
 #[test]
@@ -779,6 +909,172 @@ fn new_gui_projects_enable_auto_refine_by_default() {
     assert!(!project.refinement.threshold_enabled);
     assert_eq!(project.refinement.max_passes, 0);
 }
+
+#[test]
+fn every_gui_intent_exposes_the_full_disabled_threshold_catalog() {
+    let mut expected_thresholds = list_criteria()
+        .into_iter()
+        .filter(|criterion| criterion.statistic != "categorical")
+        .map(|criterion| criterion.source_stem)
+        .collect::<Vec<_>>();
+    expected_thresholds.sort_unstable();
+    expected_thresholds.dedup();
+
+    for intent in INTENT_PRESETS {
+        let summary = project_summary(preset_yaml("all_thresholds", *intent)).expect("summary");
+        let thresholds = summary
+            .layers
+            .iter()
+            .filter(|layer| layer.role_kind == "threshold")
+            .collect::<Vec<_>>();
+        let mut actual_thresholds = thresholds
+            .iter()
+            .map(|layer| layer.id.as_str())
+            .collect::<Vec<_>>();
+        actual_thresholds.sort_unstable();
+
+        assert_eq!(actual_thresholds, expected_thresholds, "{}", intent.id());
+        assert!(
+            thresholds.iter().all(|layer| {
+                !layer.enabled && layer.path.is_empty() && layer.threshold_value.is_none()
+            }),
+            "{} threshold defaults",
+            intent.id()
+        );
+
+        assert_eq!(
+            summary
+                .layers
+                .iter()
+                .filter(|layer| layer.role_kind != "threshold")
+                .count(),
+            3,
+            "{}",
+            intent.id()
+        );
+        for (role, enabled, path) in [
+            ("landcover", true, "input/landtype_igbp_update.nc"),
+            ("merit", false, ""),
+            ("cama", false, ""),
+        ] {
+            let layer = summary
+                .layers
+                .iter()
+                .find(|layer| layer.role_kind == role)
+                .unwrap_or_else(|| panic!("{} {role}", intent.id()));
+            assert_eq!(layer.enabled, enabled, "{} {role}", intent.id());
+            assert_eq!(layer.path, path, "{} {role}", intent.id());
+            assert_eq!(layer.threshold_value, None, "{} {role}", intent.id());
+        }
+    }
+
+    let yaml = set_layer_path(
+        preset_yaml("atmosphere_lai", MeshIntentPreset::AtmosphereMpas),
+        "lai".to_string(),
+        "/data/lai.nc".to_string(),
+        true,
+    )
+    .expect("atmosphere should accept a land threshold");
+    let atmosphere = ProjectConfig::from_yaml(&yaml).expect("parse atmosphere threshold");
+    assert!(atmosphere
+        .data_layers
+        .iter()
+        .any(|layer| layer.id == "lai" && layer.enabled));
+}
+
+#[test]
+fn gui_target_profile_is_editable_with_the_backend_compatibility_matrix() {
+    let yaml = preset_yaml("editable_target", MeshIntentPreset::AtmosphereMpas);
+    let yaml = set_project_target(yaml, "atmosphere".to_string(), "MPAS-Simple".to_string())
+        .expect("MPAS-Simple atmosphere target");
+    let summary = project_summary(yaml.clone()).expect("target summary");
+    assert_eq!(summary.target_kind, "atmosphere");
+    assert_eq!(summary.model_format, "MPAS-Simple");
+
+    let error = set_project_target(yaml, "ocean".to_string(), "CoLM".to_string())
+        .expect_err("ocean/CoLM must remain invalid");
+    assert!(error.contains("ocean target model_format must be FVCOM"));
+}
+
+#[test]
+fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_state() {
+    let yaml = preset_yaml("migration_base", MeshIntentPreset::MeritHydroCoast);
+    let yaml = set_domain_bbox(yaml, 108.0, 120.0, 18.0, 26.0, None).unwrap();
+    let yaml = set_layer_path(yaml, "merit".into(), "/data/merit".into(), true).unwrap();
+    let mut base = ProjectConfig::from_yaml(&yaml).expect("base project");
+    base.coupling = Some(CoupledMeshConfig::default());
+    base.data_layers.push(ProjectDataLayer {
+        id: "custom_lai".to_string(),
+        role: ProjectLayerRole::Threshold(ThresholdField::Lai),
+        path: "/data/custom_lai.nc".to_string(),
+        enabled: false,
+        threshold_value: Some(2.5),
+    });
+    base.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "lai_std".to_string(),
+            enabled: false,
+            value: Some(3.5),
+        });
+    base.quality.min_angle_deg = 31.0;
+    base.validate().expect("valid migration base");
+
+    let global_atmosphere = ProjectConfig::scaffold(
+        "global_atmosphere",
+        MeshIntentPreset::AtmosphereMpas,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    let migrated = preserve_unexposed_project_fields(
+        base.to_yaml().unwrap(),
+        global_atmosphere.to_yaml().unwrap(),
+        false,
+    )
+    .expect("drop incompatible hidden state");
+    let migrated = ProjectConfig::from_yaml(&migrated).unwrap();
+    assert!(migrated.hydro_coast.is_none());
+    assert!(migrated.coupling.is_none());
+    assert_eq!(
+        migrated.refinement.threshold_criteria,
+        base.refinement.threshold_criteria
+    );
+    assert!(migrated
+        .data_layers
+        .iter()
+        .any(|layer| layer.id == "custom_lai" && layer.threshold_value == Some(2.5)));
+
+    let regional_coupled = ProjectConfig::scaffold(
+        "regional_coupled",
+        MeshIntentPreset::LandOceanCoupled,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: 108.0,
+                e: 120.0,
+                s: 18.0,
+                n: 26.0,
+            },
+            sea_ratio: Some(0.5),
+        },
+        ResolutionSpec::Nxp(80),
+    );
+    let compatible = preserve_unexposed_project_fields(
+        base.to_yaml().unwrap(),
+        regional_coupled.to_yaml().unwrap(),
+        false,
+    )
+    .expect("preserve compatible hidden state");
+    let compatible = ProjectConfig::from_yaml(&compatible).unwrap();
+    assert!(compatible.hydro_coast.is_some());
+    assert!(compatible.coupling.is_some());
+    assert_eq!(
+        compatible.refinement.threshold_criteria,
+        base.refinement.threshold_criteria
+    );
+    assert_eq!(compatible.target.kind, MeshDomainKind::Coupled);
+    assert_eq!(compatible.target.model_format, ModelFormat::CoLM);
+}
+
 fn hydrology_yaml(name: &str) -> String {
     preset_yaml(name, MeshIntentPreset::HydrologyLand)
 }
@@ -1162,6 +1458,71 @@ fn set_expert_updates_custom_overrides() {
 }
 
 #[test]
+fn opened_hidden_expert_overrides_survive_the_gui_compose_command_sequence() {
+    let mut opened = ProjectConfig::from_yaml(&hydrology_yaml("hidden_expert_roundtrip")).unwrap();
+    opened.expert.nxp = Some(96);
+    opened.expert.openmp = Some(3);
+    opened.expert.niter = Some(321);
+    opened.expert.niter_refine = Some(87);
+    opened.expert.max_iter_spc = Some(2);
+    opened.expert.max_iter_cal = Some(4);
+    opened.expert.halo = Some(vec![7, 5, 3]);
+    opened.expert.max_transition_row = Some(vec![8, 6, 4]);
+    opened.expert.set_dis_type = Some("nonlinear2".to_string());
+    opened.expert.num_rc = Some(2);
+    opened.expert.vertex_pretect_layers = Some(3);
+    opened.expert.spring_global_type = Some(0);
+    opened.expert.spring_regional_type = Some(2);
+    opened.expert.beta = Some(1.17);
+    opened.expert.relax = Some(0.027);
+    opened.expert.weak_concav_eliminate = Some(false);
+    opened.validate().expect("valid opened expert overrides");
+    let expected = opened.expert.clone();
+
+    let fresh = ProjectConfig::scaffold(
+        "hidden_expert_roundtrip",
+        opened.target.intent,
+        opened.domain.clone(),
+        opened.target.resolution,
+    );
+    let preserved = preserve_unexposed_project_fields(
+        opened.to_yaml().unwrap(),
+        fresh.to_yaml().unwrap(),
+        false,
+    )
+    .unwrap();
+    let summary = project_summary(preserved.clone()).unwrap();
+    let recomposed = set_expert(
+        preserved,
+        summary.expert_nxp,
+        summary.expert_openmp,
+        summary.expert_niter,
+        summary.expert_niter_refine,
+        summary.expert_max_iter_spc,
+        summary.expert_max_iter_cal,
+        summary.expert_halo,
+        summary.expert_max_transition_row,
+        summary.expert_set_dis_type,
+        summary.expert_num_rc,
+        summary.expert_vertex_pretect_layers,
+        summary.expert_spring_global_type,
+        summary.expert_spring_regional_type,
+        summary.expert_beta,
+        summary.expert_relax,
+        summary.expert_weak_concav_eliminate,
+    )
+    .unwrap();
+    let recomposed = ProjectConfig::from_yaml(&recomposed).unwrap();
+    assert_eq!(recomposed.expert, expected);
+
+    // `save_project` canonicalizes via from_yaml -> to_yaml before writing.
+    // Replaying that exact serialization boundary must not alter hidden fields.
+    let saved = recomposed.to_yaml().unwrap();
+    let reopened = ProjectConfig::from_yaml(&saved).unwrap();
+    assert_eq!(reopened.expert, expected);
+}
+
+#[test]
 fn close_boundary_command_updates_domain_and_round_trips_through_summary() {
     let yaml = preset_yaml("close_boundary_domain", MeshIntentPreset::CoastalOcean);
     let yaml = set_domain_close(
@@ -1524,12 +1885,214 @@ fn preserve_unexposed_project_fields_allows_global_override_of_hidden_circle() {
 fn set_layer_path_rejects_enabled_empty_path() {
     let yaml = set_refinement(hydrology_yaml("layer_test"), false, true, 0)
         .expect("disable refinement before removing its last source");
-    let err =
-        set_layer_path(yaml.clone(), "landcover".to_string(), "".to_string(), true).unwrap_err();
-    assert!(err.contains("data layer 'landcover' is enabled but has no path"));
-    let yaml = set_layer_path(yaml, "landcover".to_string(), "".to_string(), false)
+    let err = set_layer_path(yaml.clone(), "lai".to_string(), "".to_string(), true).unwrap_err();
+    assert!(err.contains("data layer 'lai' is enabled but has no path"));
+    let yaml = set_layer_path(yaml, "lai".to_string(), "".to_string(), false)
         .expect("disabled empty path is allowed");
     assert!(yaml.contains("enabled: false"));
+}
+
+#[test]
+fn switching_threshold_sources_in_both_directions_is_atomic() {
+    let mut cfg = ProjectConfig::from_yaml(&hydrology_yaml("exclusive_threshold_source")).unwrap();
+    cfg.data_layers.push(ProjectDataLayer {
+        id: "custom_lai".to_string(),
+        role: ProjectLayerRole::Threshold(ThresholdField::Lai),
+        path: "/old/custom_lai.nc".to_string(),
+        enabled: false,
+        threshold_value: Some(2.0),
+    });
+    let yaml = set_layer_path(
+        cfg.to_yaml().unwrap(),
+        "lai".to_string(),
+        "/data/canonical_lai.nc".to_string(),
+        true,
+    )
+    .unwrap();
+    let yaml = set_layer_path(
+        yaml,
+        "custom_lai".to_string(),
+        "/data/custom_lai.nc".to_string(),
+        true,
+    )
+    .expect("custom source replaces canonical source atomically");
+    let cfg = ProjectConfig::from_yaml(&yaml).unwrap();
+    assert!(
+        !cfg.data_layers
+            .iter()
+            .find(|l| l.id == "lai")
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        cfg.data_layers
+            .iter()
+            .find(|l| l.id == "custom_lai")
+            .unwrap()
+            .enabled
+    );
+    let summary = project_summary(yaml).unwrap();
+    assert_eq!(
+        summary
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == "lai_mean")
+            .unwrap()
+            .source_id,
+        "custom_lai"
+    );
+
+    let yaml = set_layer_path(
+        cfg.to_yaml().unwrap(),
+        "lai".to_string(),
+        "/data/canonical_lai-v2.nc".to_string(),
+        true,
+    )
+    .expect("canonical source replaces custom source atomically");
+    let cfg = ProjectConfig::from_yaml(&yaml).unwrap();
+    assert!(
+        cfg.data_layers
+            .iter()
+            .find(|l| l.id == "lai")
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        !cfg.data_layers
+            .iter()
+            .find(|l| l.id == "custom_lai")
+            .unwrap()
+            .enabled
+    );
+    let summary = project_summary(yaml).unwrap();
+    assert_eq!(
+        summary
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == "lai_mean")
+            .unwrap()
+            .source_id,
+        "lai"
+    );
+}
+
+#[test]
+fn switching_landtype_sources_in_both_directions_keeps_one_mask_source() {
+    let mut cfg = ProjectConfig::from_yaml(&hydrology_yaml("exclusive_landtype_source")).unwrap();
+    cfg.data_layers.push(ProjectDataLayer {
+        id: "custom_landcover".to_string(),
+        role: ProjectLayerRole::LandType,
+        path: "/old/custom_landcover.nc".to_string(),
+        enabled: false,
+        threshold_value: None,
+    });
+
+    let yaml = set_layer_path(
+        cfg.to_yaml().unwrap(),
+        "custom_landcover".to_string(),
+        "/data/custom_landcover.nc".to_string(),
+        true,
+    )
+    .expect("custom LandType source replaces canonical source atomically");
+    let cfg = ProjectConfig::from_yaml(&yaml).unwrap();
+    assert_eq!(
+        cfg.data_layers
+            .iter()
+            .filter(|layer| layer.role == ProjectLayerRole::LandType && layer.enabled)
+            .map(|layer| layer.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["custom_landcover"]
+    );
+    assert_eq!(
+        cfg.effective_landcover_criterion().unwrap().source_layer_id,
+        "custom_landcover"
+    );
+
+    let yaml = set_layer_path(
+        cfg.to_yaml().unwrap(),
+        "landcover".to_string(),
+        "/data/canonical_landcover.nc".to_string(),
+        true,
+    )
+    .expect("canonical LandType source replaces custom source atomically");
+    let cfg = ProjectConfig::from_yaml(&yaml).unwrap();
+    assert_eq!(
+        cfg.data_layers
+            .iter()
+            .filter(|layer| layer.role == ProjectLayerRole::LandType && layer.enabled)
+            .map(|layer| layer.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["landcover"]
+    );
+    assert_eq!(
+        cfg.effective_landcover_criterion().unwrap().source_layer_id,
+        "landcover"
+    );
+}
+
+#[test]
+fn opened_custom_landtype_source_survives_gui_compose_roundtrip() {
+    let mut opened =
+        ProjectConfig::from_yaml(&hydrology_yaml("custom_landtype_roundtrip")).unwrap();
+    let canonical = opened
+        .data_layers
+        .iter_mut()
+        .find(|layer| layer.id == "landcover")
+        .unwrap();
+    canonical.enabled = false;
+    let canonical_path = canonical.path.clone();
+    opened.data_layers.push(ProjectDataLayer {
+        id: "custom_landcover".to_string(),
+        role: ProjectLayerRole::LandType,
+        path: "/data/custom_landcover.nc".to_string(),
+        enabled: true,
+        threshold_value: None,
+    });
+    opened
+        .validate()
+        .expect("valid opened custom LandType source");
+
+    let scaffold = ProjectConfig::scaffold(
+        "custom_landtype_roundtrip",
+        opened.target.intent,
+        opened.domain.clone(),
+        opened.target.resolution,
+    );
+    let yaml = preserve_unexposed_project_fields(
+        opened.to_yaml().unwrap(),
+        scaffold.to_yaml().unwrap(),
+        false,
+    )
+    .expect("preserve custom source before visible layer edits replay");
+
+    // `composeYaml` replays enabled sources before disabled siblings.
+    let yaml = set_layer_path(
+        yaml,
+        "custom_landcover".to_string(),
+        "/data/custom_landcover.nc".to_string(),
+        true,
+    )
+    .unwrap();
+    let yaml = set_layer_path(yaml, "landcover".to_string(), canonical_path, false).unwrap();
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let reopened = ProjectConfig::from_yaml(&saved).unwrap();
+
+    assert_eq!(
+        reopened
+            .data_layers
+            .iter()
+            .filter(|layer| layer.role == ProjectLayerRole::LandType && layer.enabled)
+            .map(|layer| layer.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["custom_landcover"]
+    );
+    assert_eq!(
+        reopened
+            .effective_landcover_criterion()
+            .unwrap()
+            .source_layer_id,
+        "custom_landcover"
+    );
 }
 
 #[test]
@@ -1575,6 +2138,17 @@ fn merit_layer_edit_keeps_hidden_hydro_options() {
         merit_stride: 1,
         r3_width_m: 450.0,
         r2_width_m: 75.0,
+        r3_upa_km2: 60_000.0,
+        r2_upa_km2: 6_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: false,
+        coast_buffer_km: 25.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: false,
     });
     let edited = ProjectConfig::scaffold(
         "opened_merit",
@@ -1601,6 +2175,47 @@ fn merit_layer_edit_keeps_hidden_hydro_options() {
     assert_eq!(hydro.cama_root.as_deref(), Some("/data/cama"));
     assert_eq!(hydro.r3_width_m, 450.0);
     assert_eq!(hydro.r2_width_m, 75.0);
+    assert_eq!(hydro.r3_upa_km2, 60_000.0);
+    assert_eq!(hydro.r2_upa_km2, 6_000.0);
+    assert!(hydro.river_refinement_enabled);
+    assert!(hydro.river_width_refinement_enabled);
+    assert!(hydro.river_upstream_area_refinement_enabled);
+    assert!(!hydro.coast_refinement_enabled);
+    assert_eq!(hydro.coast_buffer_km, 25.0);
+    assert!(hydro.coast_land_refinement_enabled);
+    assert!(!hydro.coast_ocean_refinement_enabled);
+}
+
+#[test]
+fn hydro_refinement_is_configurable_for_any_regional_target() {
+    let yaml = preset_yaml("regional_atmos_hydro", MeshIntentPreset::AtmosphereMpas);
+    let yaml = set_domain_bbox(yaml, 112.0, 115.0, 21.0, 24.0, None).unwrap();
+    let yaml = set_layer_path(yaml, "merit".into(), "/data/merit".into(), true).unwrap();
+    let yaml =
+        set_hydro_refinement(yaml, true, false, true, 75.0, true, false, 400.0, 80_000.0).unwrap();
+    let yaml = set_refinement(yaml, true, true, 3).unwrap();
+    let summary = project_summary(yaml.clone()).unwrap();
+    assert!(summary.hydro_river_refine_enabled);
+    assert!(summary.hydro_river_width_refine_enabled);
+    assert!(!summary.hydro_river_upstream_area_refine_enabled);
+    assert!(summary.hydro_coast_refine_enabled);
+    assert_eq!(summary.hydro_coast_buffer_km, Some(75.0));
+    assert!(summary.hydro_coast_land_refine_enabled);
+    assert!(!summary.hydro_coast_ocean_refine_enabled);
+    assert_eq!(summary.hydro_river_width_threshold_m, Some(400.0));
+    assert_eq!(
+        summary.hydro_river_upstream_area_threshold_km2,
+        Some(80_000.0)
+    );
+    let project =
+        ProjectConfig::from_yaml(&yaml).expect("MERIT refinement works for regional atmosphere");
+    let hydro = project.hydro_coast.unwrap();
+    assert_eq!(hydro.r2_width_m, 50.0);
+    assert_eq!(hydro.r3_width_m, 300.0);
+    assert_eq!(hydro.r2_upa_km2, 5_000.0);
+    assert_eq!(hydro.r3_upa_km2, 50_000.0);
+    assert_eq!(hydro.river_width_threshold_m, Some(400.0));
+    assert_eq!(hydro.river_upstream_area_threshold_km2, Some(80_000.0));
 }
 
 #[test]
@@ -1673,6 +2288,78 @@ fn autofill_data_layers_from_folder_matches_v2_source_data_names() {
 }
 
 #[test]
+fn autofill_keeps_user_selected_custom_threshold_and_landtype_sources_exclusive() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_studio_custom_source_data_{}",
+        process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("lai.nc"), b"lai").unwrap();
+    fs::write(root.join("landtype_igbp_update.nc"), b"landcover").unwrap();
+
+    let mut cfg = ProjectConfig::from_yaml(&preset_yaml(
+        "custom_source_autofill",
+        MeshIntentPreset::CarbonLand,
+    ))
+    .unwrap();
+    cfg.data_layers.push(ProjectDataLayer {
+        id: "custom_lai".to_string(),
+        role: ProjectLayerRole::Threshold(ThresholdField::Lai),
+        path: "/old/custom_lai.nc".to_string(),
+        enabled: true,
+        threshold_value: None,
+    });
+    cfg.data_layers
+        .iter_mut()
+        .find(|layer| layer.id == "landcover")
+        .unwrap()
+        .enabled = false;
+    cfg.data_layers.push(ProjectDataLayer {
+        id: "custom_landcover".to_string(),
+        role: ProjectLayerRole::LandType,
+        path: "/old/custom_landcover.nc".to_string(),
+        enabled: true,
+        threshold_value: None,
+    });
+    cfg.validate().unwrap();
+
+    let yaml = autofill_data_layers_from_folder(
+        cfg.to_yaml().unwrap(),
+        root.to_string_lossy().into_owned(),
+    )
+    .expect("autofill preserves the selected source id");
+    let cfg = ProjectConfig::from_yaml(&yaml).unwrap();
+    let canonical = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "lai")
+        .unwrap();
+    let custom = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "custom_lai")
+        .unwrap();
+    assert!(!canonical.enabled);
+    assert!(custom.enabled);
+    assert!(custom.path.ends_with("lai.nc"));
+    let canonical_landcover = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "landcover")
+        .unwrap();
+    let custom_landcover = cfg
+        .data_layers
+        .iter()
+        .find(|layer| layer.id == "custom_landcover")
+        .unwrap();
+    assert!(!canonical_landcover.enabled);
+    assert!(custom_landcover.enabled);
+    assert!(custom_landcover.path.ends_with("landtype_igbp_update.nc"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn set_threshold_value_updates_threshold_layer() {
     let yaml = hydrology_yaml("threshold_value");
     let yaml =
@@ -1694,6 +2381,199 @@ fn set_threshold_value_updates_threshold_layer() {
     assert_eq!(landcover.threshold_value, Some(8.0));
     let err = set_threshold_value(yaml, "merit".to_string(), Some(1.0)).unwrap_err();
     assert!(err.contains("is not a refinement layer"));
+}
+
+#[test]
+fn gui_threshold_catalog_expands_each_continuous_source_into_mean_and_std_rows() {
+    let criteria = list_criteria();
+    assert_eq!(
+        criteria.len(),
+        earthmesh_project::criterion_catalog().len() * 2 + 1
+    );
+    let landcover = criteria
+        .iter()
+        .find(|criterion| criterion.id == "landcover")
+        .expect("single categorical landcover criterion");
+    assert_eq!(landcover.source_stem, "landcover");
+    assert_eq!(landcover.statistic, "categorical");
+    let mean = criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_mean")
+        .expect("LAI mean criterion");
+    let std = criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_std")
+        .expect("LAI std criterion");
+    assert_eq!(mean.source_stem, "lai");
+    assert_eq!(mean.statistic, "mean");
+    assert_eq!(std.source_stem, "lai");
+    assert_eq!(std.statistic, "std");
+}
+
+#[test]
+fn gui_threshold_criteria_edit_independent_axes_without_duplicating_the_source_path() {
+    let yaml = set_layer_path(
+        hydrology_yaml("criterion_axes"),
+        "lai".to_string(),
+        "/data/lai.nc".to_string(),
+        true,
+    )
+    .unwrap();
+    let legacy = set_threshold_value(yaml, "lai".to_string(), Some(4.5)).unwrap();
+    let summary = project_summary(legacy.clone()).unwrap();
+    let legacy_mean = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_mean")
+        .unwrap();
+    let legacy_std = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_std")
+        .unwrap();
+    assert!(legacy_mean.enabled && legacy_std.enabled);
+    assert_eq!(legacy_mean.value, 4.5);
+    assert_eq!(legacy_std.value, 4.5);
+
+    let yaml = set_threshold_criterion(legacy, "lai_mean".to_string(), false, Some(2.5)).unwrap();
+    let yaml = set_threshold_criterion(yaml, "lai_std".to_string(), true, Some(7.5)).unwrap();
+    let summary = project_summary(yaml.clone()).unwrap();
+    let mean = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_mean")
+        .unwrap();
+    let std = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_std")
+        .unwrap();
+    assert!(!mean.enabled);
+    assert_eq!(mean.value, 2.5);
+    assert!(std.enabled);
+    assert_eq!(std.value, 7.5);
+
+    let yaml = set_threshold_criterion(yaml, "lai_mean".to_string(), true, None).unwrap();
+    let summary = project_summary(yaml.clone()).unwrap();
+    let mean = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_mean")
+        .unwrap();
+    let std = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_std")
+        .unwrap();
+    let default_mean = list_criteria()
+        .into_iter()
+        .find(|criterion| criterion.id == "lai_mean")
+        .unwrap()
+        .default_value;
+    assert!(mean.enabled);
+    assert_eq!(mean.value, default_mean, "blank restores the mean default");
+    assert_eq!(std.value, 7.5, "blanking mean does not change std");
+
+    let cfg = ProjectConfig::from_yaml(&yaml).unwrap();
+    let sources = cfg
+        .data_layers
+        .iter()
+        .filter(|layer| layer.id == "lai")
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].path, "/data/lai.nc");
+    assert_eq!(cfg.refinement.threshold_criteria.len(), 2);
+}
+
+#[test]
+fn gui_threshold_criterion_uses_the_role_when_a_source_has_a_custom_layer_id() {
+    let mut cfg = ProjectConfig::from_yaml(&hydrology_yaml("custom_criterion_source")).unwrap();
+    let source = cfg
+        .data_layers
+        .iter_mut()
+        .find(|layer| layer.id == "lai")
+        .unwrap();
+    source.id = "custom_lai".to_string();
+    source.path = "/data/custom_lai.nc".to_string();
+    source.enabled = true;
+
+    let yaml = set_threshold_criterion(
+        cfg.to_yaml().unwrap(),
+        "lai_std".to_string(),
+        false,
+        Some(6.5),
+    )
+    .expect("custom-id LAI source is selected by role");
+    let summary = project_summary(yaml).unwrap();
+    let criterion = summary
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "lai_std")
+        .unwrap();
+    assert_eq!(criterion.source_id, "custom_lai");
+    assert!(!criterion.enabled);
+    assert_eq!(criterion.value, 6.5);
+}
+
+#[test]
+fn landcover_refinement_toggle_is_independent_from_the_mask_source() {
+    let yaml = hydrology_yaml("landcover_criterion");
+    let initial = project_summary(yaml.clone()).unwrap();
+    let layer = initial
+        .layers
+        .iter()
+        .find(|layer| layer.role_kind == "landcover")
+        .unwrap();
+    let criterion = initial
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "landcover")
+        .unwrap();
+    assert!(
+        layer.enabled,
+        "landcover remains available as the mask source"
+    );
+    assert!(
+        !criterion.enabled,
+        "mask-only projects do not refine by class count"
+    );
+
+    let yaml = set_threshold_criterion(yaml, "landcover".to_string(), true, Some(9.0)).unwrap();
+    let enabled = project_summary(yaml.clone()).unwrap();
+    assert!(
+        enabled
+            .layers
+            .iter()
+            .find(|layer| layer.role_kind == "landcover")
+            .unwrap()
+            .enabled
+    );
+    let criterion = enabled
+        .threshold_criteria
+        .iter()
+        .find(|criterion| criterion.id == "landcover")
+        .unwrap();
+    assert!(criterion.enabled);
+    assert_eq!(criterion.value, 9.0);
+
+    let yaml = set_threshold_criterion(yaml, "landcover".to_string(), false, Some(9.0)).unwrap();
+    let disabled = project_summary(yaml).unwrap();
+    assert!(
+        disabled
+            .layers
+            .iter()
+            .find(|layer| layer.role_kind == "landcover")
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        !disabled
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == "landcover")
+            .unwrap()
+            .enabled
+    );
 }
 
 #[test]
@@ -1788,16 +2668,21 @@ fn list_criteria_reports_frontend_fields() {
     let criteria = list_criteria();
     let slope = criteria
         .iter()
-        .find(|c| c.stem == "slope_avg")
+        .find(|c| c.id == "slope_avg_mean")
         .expect("slope");
-    assert_eq!(slope.label, "Slope");
+    assert_eq!(slope.label, "Slope mean");
+    assert_eq!(slope.source_stem, "slope_avg");
+    assert_eq!(slope.statistic, "mean");
     assert_eq!(slope.unit, "deg");
     assert_eq!(slope.default_value, 5.0);
     assert_eq!(slope.range_min, 0.0);
     assert_eq!(slope.range_max, 45.0);
     assert_eq!(slope.physical_process, "orographic / runoff routing");
-    let dem = criteria.iter().find(|c| c.stem == "dem").expect("dem");
-    assert_eq!(dem.label, "DEM");
+    let dem = criteria
+        .iter()
+        .find(|c| c.id == "dem_std")
+        .expect("dem std");
+    assert_eq!(dem.label, "DEM std");
     assert_eq!(dem.unit, "m");
     assert_eq!(dem.default_value, 500.0);
 }

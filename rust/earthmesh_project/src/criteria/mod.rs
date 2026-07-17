@@ -1,4 +1,9 @@
-use crate::{MeshDomainKind, ProjectDataLayer, ProjectLayerRole, ThresholdField};
+use crate::{MeshDomainKind, ProjectConfig, ProjectDataLayer, ProjectLayerRole, ThresholdField};
+
+/// Single categorical land-cover refinement criterion. The LandType data layer
+/// remains independently usable as the land/sea mask when this criterion is off.
+pub const LANDCOVER_CRITERION_ID: &str = "landcover";
+pub const DEFAULT_LANDCOVER_CLASS_THRESHOLD: f64 = 12.0;
 
 /// How the GUI renders a criterion's control (self-describing, so new criteria
 /// automatically get GUI metadata from this schema.
@@ -24,6 +29,62 @@ pub struct CriterionSpec {
     pub gui: CriterionGuiSpec,
 }
 
+/// Statistical criterion evaluated from one continuous threshold source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThresholdStatistic {
+    Mean,
+    Std,
+}
+
+impl ThresholdStatistic {
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Mean => "mean",
+            Self::Std => "std",
+        }
+    }
+}
+
+/// Flattened criterion catalog entry. `source_field` identifies the single
+/// NetCDF data source; `statistic` identifies the independent engine switch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThresholdCriterionSpec {
+    pub id: String,
+    pub label: String,
+    pub source_field: ThresholdField,
+    pub statistic: ThresholdStatistic,
+    pub gui: CriterionGuiSpec,
+}
+
+/// Project-specific criterion after applying explicit axis overrides and legacy
+/// `ProjectDataLayer::threshold_value` fallback.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectiveThresholdCriterion {
+    pub id: String,
+    pub source_layer_id: String,
+    /// Whether the shared data source itself is currently enabled. This is
+    /// deliberately separate from the criterion switch so disabling a source
+    /// does not turn an implicit criterion default into an explicit `false`.
+    pub source_enabled: bool,
+    pub source_field: ThresholdField,
+    pub statistic: ThresholdStatistic,
+    /// The criterion's own mean/std switch, independent of source availability.
+    pub enabled: bool,
+    pub value: f64,
+}
+
+/// Project-specific categorical land-cover criterion. Unlike continuous
+/// sources, LandType has one engine switch (`refine_num_landtypes`), not
+/// separate mean/std axes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectiveLandcoverCriterion {
+    pub id: &'static str,
+    pub source_layer_id: String,
+    pub source_enabled: bool,
+    pub enabled: bool,
+    pub value: f64,
+}
+
 impl CriterionSpec {
     /// Build a project data layer for this criterion (role = its ThresholdField).
     pub fn to_data_layer(&self, path: impl Into<String>, enabled: bool) -> ProjectDataLayer {
@@ -37,17 +98,9 @@ impl CriterionSpec {
     }
 }
 
-const LAND: &[MeshDomainKind] = &[
+const ALL_DOMAINS: &[MeshDomainKind] = &[
     MeshDomainKind::Land,
-    MeshDomainKind::Coupled,
-    MeshDomainKind::Earth,
-];
-const OCEAN: &[MeshDomainKind] = &[
     MeshDomainKind::Ocean,
-    MeshDomainKind::Coupled,
-    MeshDomainKind::Earth,
-];
-const ATMOS: &[MeshDomainKind] = &[
     MeshDomainKind::Atmosphere,
     MeshDomainKind::Coupled,
     MeshDomainKind::Earth,
@@ -59,7 +112,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "lai",
         physical_process: "vegetation phenology / canopy heterogeneity",
         field: ThresholdField::Lai,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "LAI",
             help: "Refine where leaf-area-index variability exceeds the threshold",
@@ -72,7 +125,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "slope",
         physical_process: "orographic / runoff routing",
         field: ThresholdField::Slope,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "Slope",
             help: "Refine where mean terrain slope exceeds the threshold",
@@ -85,7 +138,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "dem",
         physical_process: "terrain elevation",
         field: ThresholdField::Dem,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "DEM",
             help: "Refine where terrain elevation variability exceeds the threshold",
@@ -98,7 +151,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "slope_max",
         physical_process: "orographic / steep terrain",
         field: ThresholdField::SlopeMax,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "Max slope",
             help: "Refine where maximum terrain slope exceeds the threshold",
@@ -111,7 +164,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "k_s",
         physical_process: "soil hydraulics",
         field: ThresholdField::Ks,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "k_s",
             help: "Refine on saturated hydraulic conductivity heterogeneity",
@@ -124,7 +177,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "k_solids",
         physical_process: "soil thermal",
         field: ThresholdField::KSolids,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "k_solids",
             help: "Refine on soil-solids thermal conductivity heterogeneity",
@@ -137,7 +190,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "tkdry",
         physical_process: "soil thermal",
         field: ThresholdField::Tkdry,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "tkdry",
             help: "Refine on dry-soil thermal conductivity heterogeneity",
@@ -150,7 +203,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "tksatf",
         physical_process: "soil thermal (frozen)",
         field: ThresholdField::Tksatf,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "tksatf",
             help: "Refine on frozen saturated thermal conductivity",
@@ -163,7 +216,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "tksatu",
         physical_process: "soil thermal (unfrozen)",
         field: ThresholdField::Tksatu,
-        applicable: LAND,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "tksatu",
             help: "Refine on unfrozen saturated thermal conductivity",
@@ -176,7 +229,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "sst",
         physical_process: "ocean surface temperature front",
         field: ThresholdField::Sst,
-        applicable: OCEAN,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "SST",
             help: "Refine across sea-surface-temperature gradients",
@@ -189,7 +242,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "ssh",
         physical_process: "ocean dynamic height",
         field: ThresholdField::Ssh,
-        applicable: OCEAN,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "SSH",
             help: "Refine across sea-surface-height gradients",
@@ -202,7 +255,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "eke",
         physical_process: "mesoscale eddies",
         field: ThresholdField::Eke,
-        applicable: OCEAN,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "EKE",
             help: "Refine in high eddy-kinetic-energy regions",
@@ -215,7 +268,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "sea_slope",
         physical_process: "bathymetric gradient / shelf break",
         field: ThresholdField::SeaSlope,
-        applicable: OCEAN,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "Sea slope",
             help: "Refine across steep seafloor slopes / shelf breaks",
@@ -228,7 +281,7 @@ const CATALOG: &[CriterionSpec] = &[
         id: "typhoon",
         physical_process: "atmospheric cyclone / precipitation forcing",
         field: ThresholdField::Typhoon,
-        applicable: ATMOS,
+        applicable: ALL_DOMAINS,
         gui: CriterionGuiSpec {
             label: "Typhoon",
             help: "Refine where typhoon forcing exceeds the threshold",
@@ -249,7 +302,109 @@ pub fn criterion_by_id(id: &str) -> Option<&'static CriterionSpec> {
     CATALOG.iter().find(|c| c.id == id)
 }
 
-/// Criteria applicable to a mesh domain (for the GUI refinement step).
+/// Every continuous source expanded into its independent mean/std criteria.
+pub fn threshold_criterion_catalog() -> Vec<ThresholdCriterionSpec> {
+    CATALOG
+        .iter()
+        .flat_map(|source| {
+            [ThresholdStatistic::Mean, ThresholdStatistic::Std].map(move |statistic| {
+                ThresholdCriterionSpec {
+                    id: format!("{}_{}", source.field.stem(), statistic.suffix()),
+                    label: format!("{} {}", source.gui.label, statistic.suffix()),
+                    source_field: source.field,
+                    statistic,
+                    gui: source.gui,
+                }
+            })
+        })
+        .collect()
+}
+
+pub fn threshold_criterion_by_id(id: &str) -> Option<ThresholdCriterionSpec> {
+    threshold_criterion_catalog()
+        .into_iter()
+        .find(|criterion| criterion.id == id)
+}
+
+impl ProjectConfig {
+    /// Resolve the categorical land-cover criterion independently from the
+    /// LandType mask/source toggle. Legacy projects that set only
+    /// `ProjectDataLayer::threshold_value` retain their previous behavior;
+    /// an explicit criterion entry always wins and can disable that fallback.
+    pub fn effective_landcover_criterion(&self) -> Option<EffectiveLandcoverCriterion> {
+        let source = self
+            .data_layers
+            .iter()
+            .find(|layer| layer.enabled && layer.role == ProjectLayerRole::LandType)
+            .or_else(|| {
+                self.data_layers
+                    .iter()
+                    .find(|layer| layer.role == ProjectLayerRole::LandType)
+            })?;
+        let explicit = self
+            .refinement
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == LANDCOVER_CRITERION_ID);
+        Some(EffectiveLandcoverCriterion {
+            id: LANDCOVER_CRITERION_ID,
+            source_layer_id: source.id.clone(),
+            source_enabled: source.enabled,
+            enabled: explicit.map_or(source.threshold_value.is_some(), |criterion| {
+                criterion.enabled
+            }),
+            value: explicit.map_or_else(
+                || {
+                    source
+                        .threshold_value
+                        .unwrap_or(DEFAULT_LANDCOVER_CLASS_THRESHOLD)
+                },
+                |criterion| criterion.value.unwrap_or(DEFAULT_LANDCOVER_CLASS_THRESHOLD),
+            ),
+        })
+    }
+
+    /// Resolve one mean/std criterion without duplicating its data-source path.
+    /// Explicit `refinement.threshold_criteria` entries are self-contained:
+    /// their blank value means the catalog default. Only an omitted entry falls
+    /// back to the legacy shared `threshold_value`.
+    pub fn effective_threshold_criterion(
+        &self,
+        field: ThresholdField,
+        statistic: ThresholdStatistic,
+    ) -> Option<EffectiveThresholdCriterion> {
+        let source = self
+            .data_layers
+            .iter()
+            .find(|layer| layer.enabled && layer.role == ProjectLayerRole::Threshold(field))
+            .or_else(|| {
+                self.data_layers
+                    .iter()
+                    .find(|layer| layer.role == ProjectLayerRole::Threshold(field))
+            })?;
+        let catalog = CATALOG.iter().find(|criterion| criterion.field == field)?;
+        let id = format!("{}_{}", field.stem(), statistic.suffix());
+        let explicit = self
+            .refinement
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == id);
+        Some(EffectiveThresholdCriterion {
+            id,
+            source_layer_id: source.id.clone(),
+            source_enabled: source.enabled,
+            source_field: field,
+            statistic,
+            enabled: explicit.is_none_or(|criterion| criterion.enabled),
+            value: explicit.map_or_else(
+                || source.threshold_value.unwrap_or(catalog.gui.default),
+                |criterion| criterion.value.unwrap_or(catalog.gui.default),
+            ),
+        })
+    }
+}
+
+/// Criteria available to a mesh domain (currently the full shared catalog).
 pub fn criteria_for_domain(kind: MeshDomainKind) -> Vec<&'static CriterionSpec> {
     CATALOG
         .iter()

@@ -1,28 +1,16 @@
 use crate::{
-    DomainConfig, ExpertOverrides, MeshCellKind, MeshDomainKind, MeshIntentPreset,
-    MeshTargetConfig, ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
-    ProjectMetadata, QualityConfig, RefinementRecipe, ResolutionSpec, ThresholdField,
-    ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    criterion_catalog, DomainConfig, ExpertOverrides, MeshCellKind, MeshDomainKind,
+    MeshIntentPreset, MeshTargetConfig, ModelFormat, ProjectConfig, ProjectDataLayer,
+    ProjectLayerRole, ProjectMetadata, QualityConfig, RefinementRecipe, ResolutionSpec,
+    ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
 };
 
 pub const DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID: &str = "AtmosphereTyphoonPrecip";
-const LAND_SOURCE_THRESHOLDS: [ThresholdField; 9] = [
-    ThresholdField::Lai,
-    ThresholdField::Slope,
-    ThresholdField::Dem,
-    ThresholdField::SlopeMax,
-    ThresholdField::Ks,
-    ThresholdField::KSolids,
-    ThresholdField::Tkdry,
-    ThresholdField::Tksatf,
-    ThresholdField::Tksatu,
-];
 
 /// Suggested scaffold defaults for a [`MeshIntentPreset`] - the GUI "pick a
-/// template" flow. Threshold `criteria` become disabled data-layer entries the
-/// user points at files; `extra_roles` are non-threshold inputs (landtype, MERIT,
-/// CaMa). Criteria use the engine's real [`ThresholdField`]s; richer criteria
-/// (river/coastline plugins) should stay in their workflow-specific config.
+/// template" flow. Every registered threshold and non-threshold input is
+/// scaffolded; `extra_roles` only records which non-threshold inputs the preset
+/// historically recommended by default.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresetDefaults {
     pub kind: MeshDomainKind,
@@ -90,91 +78,38 @@ impl MeshIntentPreset {
         use MeshDomainKind::{Atmosphere, Coupled, Land, Ocean};
         use ModelFormat::{CoLM, Fvcom, Mpas};
         use ProjectLayerRole as R;
-        use ThresholdField as T;
-        let (kind, cell, fmt, criteria, extra_roles): (
+        let (kind, cell, fmt, extra_roles): (
             MeshDomainKind,
             MeshCellKind,
             ModelFormat,
-            Vec<ThresholdField>,
             Vec<ProjectLayerRole>,
         ) = match self {
-            MeshIntentPreset::Custom => (Land, Hex, CoLM, vec![], vec![R::LandType]),
-            MeshIntentPreset::HydrologyLand => (
-                Land,
-                Hex,
-                CoLM,
-                LAND_SOURCE_THRESHOLDS.to_vec(),
-                vec![R::LandType, R::MeritHydro],
-            ),
-            MeshIntentPreset::CarbonLand => (
-                Land,
-                Hex,
-                CoLM,
-                LAND_SOURCE_THRESHOLDS.to_vec(),
-                vec![R::LandType],
-            ),
-            MeshIntentPreset::SnowPermafrostLand => (
-                Land,
-                Hex,
-                CoLM,
-                LAND_SOURCE_THRESHOLDS.to_vec(),
-                vec![R::LandType],
-            ),
-            MeshIntentPreset::UrbanLand => (
-                Land,
-                Hex,
-                CoLM,
-                LAND_SOURCE_THRESHOLDS.to_vec(),
-                vec![R::LandType],
-            ),
+            MeshIntentPreset::Custom => (Land, Hex, CoLM, vec![R::LandType]),
+            MeshIntentPreset::HydrologyLand => (Land, Hex, CoLM, vec![R::LandType, R::MeritHydro]),
+            MeshIntentPreset::CarbonLand => (Land, Hex, CoLM, vec![R::LandType]),
+            MeshIntentPreset::SnowPermafrostLand => (Land, Hex, CoLM, vec![R::LandType]),
+            MeshIntentPreset::UrbanLand => (Land, Hex, CoLM, vec![R::LandType]),
             // Ocean meshes carve to ocean-only cells from the SAME landcover the
             // land meshes use (sea/land classification), so they need a LandType
             // layer too - otherwise there is nothing to mask the land away with.
-            MeshIntentPreset::CoastalOcean => {
-                (Ocean, Tri, Fvcom, vec![T::SeaSlope], vec![R::LandType])
-            }
-            MeshIntentPreset::Estuary => (
-                Ocean,
-                Tri,
-                Fvcom,
-                vec![T::SeaSlope],
-                vec![R::LandType, R::Cama],
-            ),
-            MeshIntentPreset::RiverNetwork => (
-                Land,
-                Hex,
-                CoLM,
-                LAND_SOURCE_THRESHOLDS.to_vec(),
-                vec![R::LandType, R::MeritHydro],
-            ),
+            MeshIntentPreset::CoastalOcean => (Ocean, Tri, Fvcom, vec![R::LandType]),
+            MeshIntentPreset::Estuary => (Ocean, Tri, Fvcom, vec![R::LandType, R::Cama]),
+            MeshIntentPreset::RiverNetwork => (Land, Hex, CoLM, vec![R::LandType, R::MeritHydro]),
             MeshIntentPreset::MeritHydroCoast => {
-                let mut criteria = LAND_SOURCE_THRESHOLDS.to_vec();
-                criteria.push(T::SeaSlope);
-                (
-                    Coupled,
-                    Hex,
-                    CoLM,
-                    criteria,
-                    vec![R::LandType, R::MeritHydro],
-                )
+                (Coupled, Hex, CoLM, vec![R::LandType, R::MeritHydro])
             }
-            MeshIntentPreset::LandOceanCoupled => {
-                let mut criteria = LAND_SOURCE_THRESHOLDS.to_vec();
-                criteria.push(T::SeaSlope);
-                (Coupled, Hex, CoLM, criteria, vec![R::LandType])
-            }
-            MeshIntentPreset::AtmosphereMpas => (Atmosphere, Hex, Mpas, vec![], vec![]),
-            MeshIntentPreset::MultiObjectiveBalanced => {
-                let mut criteria = LAND_SOURCE_THRESHOLDS.to_vec();
-                criteria.push(T::SeaSlope);
-                (Coupled, Hex, CoLM, criteria, vec![R::LandType])
-            }
+            MeshIntentPreset::LandOceanCoupled => (Coupled, Hex, CoLM, vec![R::LandType]),
+            MeshIntentPreset::AtmosphereMpas => (Atmosphere, Hex, Mpas, vec![R::LandType]),
+            MeshIntentPreset::MultiObjectiveBalanced => (Coupled, Hex, CoLM, vec![R::LandType]),
         };
         PresetDefaults {
             kind,
             cell,
             model_format: fmt,
-            criteria,
+            criteria: criterion_catalog()
+                .iter()
+                .map(|criterion| criterion.field)
+                .collect(),
             extra_roles,
             min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
         }
@@ -192,17 +127,22 @@ impl ProjectConfig {
     ) -> ProjectConfig {
         let d = intent.defaults();
         let mut data_layers = Vec::new();
-        for role in &d.extra_roles {
-            let is_landtype = matches!(role, ProjectLayerRole::LandType);
+        for role in [
+            ProjectLayerRole::LandType,
+            ProjectLayerRole::MeritHydro,
+            ProjectLayerRole::Cama,
+        ] {
+            let is_default_landtype = role == ProjectLayerRole::LandType
+                && d.extra_roles.contains(&ProjectLayerRole::LandType);
             data_layers.push(ProjectDataLayer {
                 id: role.role_kind().to_string(),
-                role: *role,
-                path: if is_landtype {
+                role,
+                path: if is_default_landtype {
                     "input/landtype_igbp_update.nc".to_string()
                 } else {
                     String::new()
                 },
-                enabled: is_landtype,
+                enabled: is_default_landtype,
                 threshold_value: None,
             });
         }
@@ -234,6 +174,7 @@ impl ProjectConfig {
                 enabled: false,
                 threshold_enabled: false,
                 max_passes: 0,
+                threshold_criteria: Vec::new(),
                 specified_circle: None,
                 specified_bbox: None,
                 specified_close: None,

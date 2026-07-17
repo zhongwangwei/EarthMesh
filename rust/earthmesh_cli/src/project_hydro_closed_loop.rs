@@ -106,7 +106,7 @@ pub fn run_project_hydro_closed_loop(
         let adapter = run_hydro_refinement_adapter(
             source_namelist,
             refinement_parent_gridfile,
-            &coarse.hydro.intersections_path,
+            &coarse.hydro.refinement_source_path,
             &coarse.hydro.refinement_plan_path,
             &adapter_namelist,
             engine_workdir,
@@ -142,7 +142,7 @@ pub fn run_project_hydro_closed_loop(
         let adapter = run_hydro_refinement_adapter_with_gradation_cap(
             source_namelist,
             refinement_parent_gridfile,
-            &coarse.hydro.intersections_path,
+            &coarse.hydro.refinement_source_path,
             &coarse.hydro.refinement_plan_path,
             &adapter_namelist,
             engine_workdir,

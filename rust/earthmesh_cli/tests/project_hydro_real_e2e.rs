@@ -117,6 +117,17 @@ fn real_merit_cama_and_production_gridfile_complete_project_hydro_stage() {
         merit_stride: stride,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     project.validate().expect("real E2E Project config");
 

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use earthmesh_project::{
     read_close_mask_nml_points, read_lonlat_text_points, read_shapefile_polygon_rings,
     transform_close_boundary, CloseBoundaryGeometry, CloseMaskFormat, GeometryPoint, MeshCellKind,
-    ProjectConfig, ProjectLayerRole, RegionShape,
+    MeshDomainKind, ProjectConfig, ProjectLayerRole, RegionShape,
 };
 
 use crate::cama_binary_io::{
@@ -24,12 +24,13 @@ use crate::cama_reach_inventory::{
     write_cama_reach_inventory_point_geojson,
 };
 use crate::hydro_delivery_cells::write_gridfile_cell_polygons_geojson_with_report;
-use crate::hydro_delivery_refine_workflow::{run_disjoint_hydro_workflow, run_hydro_workflow};
+use crate::hydro_delivery_refine_workflow::{run_project_hydro_workflow, HydroRefinementPolicy};
 use crate::hydro_workflow_types::HydroWorkflowReport;
 use crate::merit_hydro_io::{
     read_merit_hydro_window, write_merit_hydro_mask_geojson_layers, MeritMaskThresholds,
 };
 use crate::merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
+use crate::project_coast_refinement::write_project_coast_refinement_cells;
 use crate::resolve_project_path;
 use crate::unstructured_mesh_support::GridfileCellKind;
 
@@ -121,24 +122,29 @@ pub fn run_project_hydro_postprocess(
                 && layer.role == ProjectLayerRole::LandType
                 && !layer.path.trim().is_empty()
         })
-        .map(|layer| resolve_project_path(project_path, layer.path.trim()))
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Project hydro production coupling requires an enabled landtype data layer",
-            )
-        })?;
-    if !landtype.is_file() {
+        .map(|layer| resolve_project_path(project_path, layer.path.trim()));
+    if project.target.kind == MeshDomainKind::Coupled && landtype.is_none() {
         return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "Project hydro production coupling requires landtype file {}",
-                landtype.display()
-            ),
+            io::ErrorKind::InvalidInput,
+            "Project hydro production coupling requires an enabled landtype data layer",
         ));
     }
-    let landtype_gridnum_perdegree =
-        crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&landtype)?;
+    if let Some(landtype) = &landtype {
+        if !landtype.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Project hydro production coupling requires landtype file {}",
+                    landtype.display()
+                ),
+            ));
+        }
+    }
+    let landtype_gridnum_perdegree = if let Some(landtype) = &landtype {
+        crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(landtype)?
+    } else {
+        1
+    };
     let domain = project_hydro_domain(project_path, &plan.domain)?;
     // Validate every external input before mutating the owned output set.
     reset_project_hydro_output_dir(out_dir)?;
@@ -176,11 +182,18 @@ pub fn run_project_hydro_postprocess(
     );
 
     let mut windows = Vec::new();
-    // MERIT-Hydro is a 3 arc-second raster. Read one native cell beyond the
-    // requested footprint so coast/river classification at the exact domain
-    // edge can still inspect its immediate neighbor; workflow clipping remains
-    // tied to `domain.rings` and therefore does not enlarge the output domain.
-    for query in expanded_merit_query_bboxes(domain.bbox) {
+    // Read the larger of one native MERIT cell or the requested coast distance
+    // beyond the footprint. Workflow clipping remains tied to `domain.rings`,
+    // so the halo cannot enlarge the output domain.
+    let coast_buffer_km = if plan.max_level >= 1
+        && plan.coast_refinement_enabled
+        && (plan.coast_land_refinement_enabled || plan.coast_ocean_refinement_enabled)
+    {
+        plan.coast_buffer_km
+    } else {
+        0.0
+    };
+    for query in expanded_merit_query_bboxes(domain.bbox, coast_buffer_km) {
         let bbox = merit_bbox(query);
         let tiles = select_merit_hydro_tiles(&merit_root, bbox)?;
         for tile in tiles {
@@ -209,11 +222,32 @@ pub fn run_project_hydro_postprocess(
     let thresholds = MeritMaskThresholds {
         r2_width_m: plan.r2_width_m,
         r3_width_m: plan.r3_width_m,
-        ..MeritMaskThresholds::default()
+        r2_upa_km2: plan.r2_upa_km2,
+        r3_upa_km2: plan.r3_upa_km2,
+        river_width_refinement_m: plan.river_width_threshold_m,
+        river_upstream_area_refinement_km2: plan.river_upstream_area_threshold_km2,
     };
     let merit_window_count = windows.len();
     let merit =
         write_merit_hydro_mask_geojson_layers(&windows, thresholds, &merit_dir, false, false)?;
+    let coast_refinement_cells = if coast_buffer_km > 0.0 {
+        let output = out_dir.join("coast_refinement_cells.geojson");
+        let count = write_project_coast_refinement_cells(
+            &cells_geojson,
+            &merit.combined_geojson,
+            &windows,
+            coast_buffer_km,
+            plan.coast_land_refinement_enabled,
+            plan.coast_ocean_refinement_enabled,
+            &output,
+        )?;
+        eprintln!(
+            "earthmesh_cli: project hydro: selected {count} coast-distance cells within {coast_buffer_km} km"
+        );
+        Some(output)
+    } else {
+        None
+    };
     drop(windows);
     eprintln!(
         "earthmesh_cli: project hydro: compacted {} native river/coast cells into {} disjoint corridors; intersecting mesh cells",
@@ -271,37 +305,29 @@ pub fn run_project_hydro_postprocess(
         merit.combined_geojson.clone()
     };
     let workflow_dir = out_dir.join("workflow");
-    let hydro = if cama_corridors_geojson.is_some() {
-        run_hydro_workflow(
-            &cells_geojson,
-            &corridors_geojson,
-            &workflow_dir,
-            &plan.include_classes,
-            0.0,
-            false,
-            Some(&domain.rings),
-            plan.max_level,
-            None,
-            Some(gridfile),
-            Some(&landtype),
-            landtype_gridnum_perdegree,
-        )
-    } else {
-        run_disjoint_hydro_workflow(
-            &cells_geojson,
-            &corridors_geojson,
-            &workflow_dir,
-            &plan.include_classes,
-            0.0,
-            false,
-            Some(&domain.rings),
-            plan.max_level,
-            None,
-            Some(gridfile),
-            Some(&landtype),
-            landtype_gridnum_perdegree,
-        )
-    }?;
+    let hydro = run_project_hydro_workflow(
+        &cells_geojson,
+        &corridors_geojson,
+        &workflow_dir,
+        &plan.include_classes,
+        0.0,
+        false,
+        Some(&domain.rings),
+        plan.max_level,
+        None,
+        landtype.as_ref().map(|_| gridfile),
+        landtype.as_deref(),
+        landtype_gridnum_perdegree,
+        cama_corridors_geojson.is_some(),
+        coast_refinement_cells.as_deref(),
+        HydroRefinementPolicy {
+            river_width: plan.river_width_refinement_enabled,
+            river_upstream_area: plan.river_upstream_area_refinement_enabled,
+            legacy_river_classes: false,
+            coast_land: plan.coast_refinement_enabled && plan.coast_land_refinement_enabled,
+            coast_ocean: plan.coast_refinement_enabled && plan.coast_ocean_refinement_enabled,
+        },
+    )?;
     eprintln!(
         "earthmesh_cli: project hydro: completed {} cell/class intersections and {} coupling rows",
         hydro.intersection_cells, hydro.coupling_rows
@@ -320,7 +346,7 @@ pub fn run_project_hydro_postprocess(
     fs::write(
         &manifest_path,
         format!(
-            "{{\n  \"kind\": \"earthmesh_project_hydro\",\n  \"domain_parts\": {},\n  \"cell_count\": {},\n  \"rejected_unsupported_cell_count\": {},\n  \"merit_window_count\": {},\n  \"merit_stride\": {},\n  \"cama_reach_count\": {},\n  \"cama_river_mouth_count\": {},\n  \"cama_corridor_count\": {},\n  \"artifacts\": {{\n    \"cells_geojson\": \"{}\",\n    \"corridors_geojson\": \"{}\",\n    \"merit_corridors_geojson\": \"{}\",\n    \"cama_reaches_geojson\": {},\n    \"cama_river_mouths_geojson\": {},\n    \"cama_corridors_geojson\": {},\n    \"hydro_workflow_manifest\": \"{}\"\n  }}\n}}\n",
+            "{{\n  \"kind\": \"earthmesh_project_hydro\",\n  \"domain_parts\": {},\n  \"cell_count\": {},\n  \"rejected_unsupported_cell_count\": {},\n  \"merit_window_count\": {},\n  \"merit_stride\": {},\n  \"cama_reach_count\": {},\n  \"cama_river_mouth_count\": {},\n  \"cama_corridor_count\": {},\n  \"artifacts\": {{\n    \"cells_geojson\": \"{}\",\n    \"corridors_geojson\": \"{}\",\n    \"merit_corridors_geojson\": \"{}\",\n    \"cama_reaches_geojson\": {},\n    \"cama_river_mouths_geojson\": {},\n    \"cama_corridors_geojson\": {},\n    \"coast_refinement_cells_geojson\": {},\n    \"hydro_workflow_manifest\": \"{}\"\n  }}\n}}\n",
             domain.rings.len(),
             cell_export.emitted_cells,
             cell_export.rejected_unsupported_cells,
@@ -335,6 +361,7 @@ pub fn run_project_hydro_postprocess(
             optional_path(&cama_reaches_geojson),
             optional_path(&cama_river_mouths_geojson),
             optional_path(&cama_corridors_geojson),
+            optional_path(&coast_refinement_cells),
             crate::json_escape_string(&hydro.manifest_path.display().to_string()),
         ),
     )?;
@@ -363,23 +390,34 @@ fn merit_bbox(bbox: [f64; 4]) -> MeritLonLatBbox {
     }
 }
 
-fn expanded_merit_query_bboxes([west, south, east, north]: [f64; 4]) -> Vec<[f64; 4]> {
+fn expanded_merit_query_bboxes(
+    [west, south, east, north]: [f64; 4],
+    coast_buffer_km: f64,
+) -> Vec<[f64; 4]> {
     const MERIT_NATIVE_CELL_DEG: f64 = 3.0 / 3_600.0;
+    let lat_halo =
+        (coast_buffer_km / earthmesh_core::KM_PER_DEGREE_EQUATOR).max(MERIT_NATIVE_CELL_DEG);
+    let expanded_south = (south - lat_halo).max(-90.0);
+    let expanded_north = (north + lat_halo).min(90.0);
+    let max_abs_lat = expanded_south.abs().max(expanded_north.abs());
+    let lon_halo = if max_abs_lat >= 89.999 {
+        180.0
+    } else {
+        (lat_halo / max_abs_lat.to_radians().cos()).min(180.0)
+    };
     let span = if west <= east {
         east - west
     } else {
         360.0 - (west - east)
     };
-    let south = (south - MERIT_NATIVE_CELL_DEG).max(-90.0);
-    let north = (north + MERIT_NATIVE_CELL_DEG).min(90.0);
-    if span + 2.0 * MERIT_NATIVE_CELL_DEG >= 360.0 {
-        return vec![[-180.0, south, 180.0, north]];
+    if span + 2.0 * lon_halo >= 360.0 {
+        return vec![[-180.0, expanded_south, 180.0, expanded_north]];
     }
     split_directed_bbox([
-        wrap_lon(west - MERIT_NATIVE_CELL_DEG),
-        south,
-        wrap_lon(east + MERIT_NATIVE_CELL_DEG),
-        north,
+        wrap_lon(west - lon_halo),
+        expanded_south,
+        wrap_lon(east + lon_halo),
+        expanded_north,
     ])
 }
 
@@ -400,6 +438,7 @@ fn reset_project_hydro_output_dir(out_dir: &Path) -> io::Result<()> {
         "cama_river_mouths.geojson",
         "cama_reach_corridors.geojson",
         "combined_hydro_corridors.geojson",
+        "coast_refinement_cells.geojson",
         "project_hydro_manifest.json",
         "merit_masks",
         "workflow",
@@ -929,12 +968,13 @@ mod tests {
     use super::{
         cama_downstream_point, domain_from_circle, domain_from_directed_bbox,
         domain_from_outer_rings, expanded_merit_query_bboxes, merge_corridor_geojson,
-        reset_project_hydro_output_dir, run_hydro_workflow, run_project_hydro_postprocess,
+        reset_project_hydro_output_dir, run_project_hydro_postprocess,
         write_cama_reach_corridor_geojson,
     };
     use crate::cama_binary_io::{
         CamaBinaryGridSpec, CamaBinaryWindow, CamaReachInventoryReport, CamaReachRecord,
     };
+    use crate::hydro_delivery_refine_workflow::run_hydro_workflow;
     use crate::resolve_project_path;
     use earthmesh_project::{DomainConfig, HydroCoastConfig, ProjectConfig, RegionShape};
     use std::fs;
@@ -1003,6 +1043,17 @@ mod tests {
             merit_stride: 1,
             r3_width_m: 300.0,
             r2_width_m: 50.0,
+            r3_upa_km2: 50_000.0,
+            r2_upa_km2: 5_000.0,
+            river_refinement_enabled: true,
+            river_width_refinement_enabled: true,
+            river_upstream_area_refinement_enabled: true,
+            river_width_threshold_m: None,
+            river_upstream_area_threshold_km2: None,
+            coast_refinement_enabled: true,
+            coast_buffer_km: 50.0,
+            coast_land_refinement_enabled: true,
+            coast_ocean_refinement_enabled: true,
         });
         let err = run_project_hydro_postprocess(
             &project,
@@ -1027,26 +1078,33 @@ mod tests {
     }
 
     #[test]
-    fn merit_query_adds_one_native_cell_halo_without_expanding_domain_clip() {
-        let halo = 3.0 / 3_600.0;
-        let windows = expanded_merit_query_bboxes([100.0, 10.0, 101.0, 11.0]);
+    fn merit_query_uses_native_or_physical_coast_halo_without_expanding_domain_clip() {
+        let halo: f64 = 3.0 / 3_600.0;
+        let windows = expanded_merit_query_bboxes([100.0, 10.0, 101.0, 11.0], 0.0);
         assert_eq!(windows.len(), 1);
-        assert!((windows[0][0] - (100.0 - halo)).abs() < 1.0e-12);
+        let lon_halo = halo / (11.0 + halo).to_radians().cos();
+        assert!((windows[0][0] - (100.0 - lon_halo)).abs() < 1.0e-12);
         assert!((windows[0][1] - (10.0 - halo)).abs() < 1.0e-12);
-        assert!((windows[0][2] - (101.0 + halo)).abs() < 1.0e-12);
+        assert!((windows[0][2] - (101.0 + lon_halo)).abs() < 1.0e-12);
         assert!((windows[0][3] - (11.0 + halo)).abs() < 1.0e-12);
 
-        let seam = expanded_merit_query_bboxes([179.9995, 89.9995, 180.0, 90.0]);
-        assert_eq!(seam.len(), 2);
+        let seam = expanded_merit_query_bboxes([179.9995, 89.9995, 180.0, 90.0], 0.0);
+        assert_eq!(seam.len(), 1);
+        assert_eq!(seam[0][0], -180.0);
+        assert!((seam[0][1] - (89.9995 - halo)).abs() < 1.0e-12);
         assert_eq!(seam[0][2], 180.0);
-        assert_eq!(seam[1][0], -180.0);
         assert_eq!(seam[0][3], 90.0);
-        assert_eq!(seam[1][3], 90.0);
 
-        let antimeridian = expanded_merit_query_bboxes([170.0, -10.0, -170.0, 10.0]);
+        let antimeridian = expanded_merit_query_bboxes([170.0, -10.0, -170.0, 10.0], 0.0);
         assert_eq!(antimeridian.len(), 2);
-        assert!((antimeridian[0][0] - (170.0 - halo)).abs() < 1.0e-12);
-        assert!((antimeridian[1][2] - (-170.0 + halo)).abs() < 1.0e-12);
+        let antimeridian_lon_halo = halo / (10.0 + halo).to_radians().cos();
+        assert!((antimeridian[0][0] - (170.0 - antimeridian_lon_halo)).abs() < 1.0e-9);
+        assert!((antimeridian[1][2] - (-170.0 + antimeridian_lon_halo)).abs() < 1.0e-9);
+
+        let physical = expanded_merit_query_bboxes([100.0, 60.0, 101.0, 61.0], 50.0);
+        let lat_halo = 50.0 / earthmesh_core::KM_PER_DEGREE_EQUATOR;
+        assert!((physical[0][1] - (60.0 - lat_halo)).abs() < 1.0e-9);
+        assert!(100.0 - physical[0][0] > lat_halo);
     }
 
     #[test]

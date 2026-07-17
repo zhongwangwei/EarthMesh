@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 /// A refinement criterion, flattened for the data-layer / quality UI.
 #[derive(Serialize)]
 pub(crate) struct CriterionInfo {
+    pub(crate) id: String,
+    pub(crate) source_stem: String,
+    pub(crate) statistic: String,
     pub(crate) physical_process: String,
     pub(crate) label: String,
     pub(crate) help: String,
@@ -10,15 +13,14 @@ pub(crate) struct CriterionInfo {
     pub(crate) range_min: f64,
     pub(crate) range_max: f64,
     pub(crate) default_value: f64,
-    /// Engine file stem (= the scaffolded layer id) so the UI can match a
-    /// template's threshold layers back to their criterion metadata.
-    pub(crate) stem: String,
 }
 
 /// Backend-owned project defaults and refinement limits consumed at GUI startup.
 #[derive(Serialize)]
 pub(crate) struct ProjectCapabilities {
     pub(crate) intent_ids: Vec<String>,
+    pub(crate) target_presets: Vec<TargetPresetInfo>,
+    pub(crate) target_compatibility: Vec<TargetCompatibilityInfo>,
     pub(crate) default_sea_ratio: f64,
     pub(crate) default_min_angle_deg: f64,
     pub(crate) method_c_min_base_nxp: i32,
@@ -30,6 +32,22 @@ pub(crate) struct ProjectCapabilities {
     pub(crate) default_hfield_g: f64,
     pub(crate) method_c_spring_nxp1_km: f64,
     pub(crate) km_per_degree_equator: f64,
+}
+
+/// Canonical target defaults attached to one intent preset.
+#[derive(Serialize)]
+pub(crate) struct TargetPresetInfo {
+    pub(crate) intent: String,
+    pub(crate) kind: String,
+    pub(crate) cell: String,
+    pub(crate) model_format: String,
+}
+
+/// Output formats accepted by the project validator for one target kind.
+#[derive(Serialize)]
+pub(crate) struct TargetCompatibilityInfo {
+    pub(crate) kind: String,
+    pub(crate) model_formats: Vec<String>,
 }
 
 /// A loaded project: canonical YAML plus the path it came from.
@@ -44,6 +62,7 @@ pub(crate) struct OpenedProject {
 pub(crate) struct LayerSummary {
     pub(crate) id: String,
     pub(crate) role_kind: String,
+    pub(crate) source_field: Option<String>,
     pub(crate) role: String,
     pub(crate) path: String,
     pub(crate) enabled: bool,
@@ -51,6 +70,19 @@ pub(crate) struct LayerSummary {
     /// True for tiled inputs (MERIT-Hydro, CaMa) that are directories of tiles,
     /// so the UI offers a folder picker instead of a file picker.
     pub(crate) wants_folder: bool,
+}
+
+/// One effective threshold criterion. Continuous sources share the path in
+/// `LayerSummary`; categorical landcover uses the same independent switch/value
+/// shape while its source remains available separately as a mask layer.
+#[derive(Serialize)]
+pub(crate) struct ThresholdCriterionSummary {
+    pub(crate) id: String,
+    pub(crate) source_id: String,
+    pub(crate) statistic: String,
+    pub(crate) source_enabled: bool,
+    pub(crate) enabled: bool,
+    pub(crate) value: f64,
 }
 
 /// A project at a glance — used to reflect a loaded YAML back into the UI.
@@ -81,6 +113,20 @@ pub(crate) struct ProjectSummary {
     pub(crate) on_violation: String,
     pub(crate) refine_enabled: bool,
     pub(crate) threshold_refine_enabled: bool,
+    pub(crate) threshold_criteria: Vec<ThresholdCriterionSummary>,
+    pub(crate) hydro_river_refine_enabled: bool,
+    pub(crate) hydro_river_width_refine_enabled: bool,
+    pub(crate) hydro_river_upstream_area_refine_enabled: bool,
+    pub(crate) hydro_river_width_threshold_m: Option<f64>,
+    pub(crate) hydro_river_upstream_area_threshold_km2: Option<f64>,
+    pub(crate) hydro_coast_refine_enabled: bool,
+    pub(crate) hydro_coast_buffer_km: Option<f64>,
+    pub(crate) hydro_coast_land_refine_enabled: bool,
+    pub(crate) hydro_coast_ocean_refine_enabled: bool,
+    pub(crate) hydro_r2_width_m: Option<f64>,
+    pub(crate) hydro_r2_upa_km2: Option<f64>,
+    pub(crate) hydro_r3_width_m: Option<f64>,
+    pub(crate) hydro_r3_upa_km2: Option<f64>,
     pub(crate) max_passes: u8,
     pub(crate) specified_refine_enabled: bool,
     pub(crate) specified_refine_kind: String,

@@ -17,6 +17,17 @@ pub struct HydroExecutionPlan {
     pub domain: RegionShape,
     pub r2_width_m: f64,
     pub r3_width_m: f64,
+    pub r2_upa_km2: f64,
+    pub r3_upa_km2: f64,
+    pub river_refinement_enabled: bool,
+    pub river_width_refinement_enabled: bool,
+    pub river_upstream_area_refinement_enabled: bool,
+    pub river_width_threshold_m: f64,
+    pub river_upstream_area_threshold_km2: f64,
+    pub coast_refinement_enabled: bool,
+    pub coast_buffer_km: f64,
+    pub coast_land_refinement_enabled: bool,
+    pub coast_ocean_refinement_enabled: bool,
     pub merit_stride: usize,
     pub target_dx_km: f64,
     pub include_classes: Vec<String>,
@@ -53,6 +64,17 @@ impl ProjectConfig {
             domain,
             r2_width_m: hydro.r2_width_m,
             r3_width_m: hydro.r3_width_m,
+            r2_upa_km2: hydro.r2_upa_km2,
+            r3_upa_km2: hydro.r3_upa_km2,
+            river_refinement_enabled: hydro.river_refinement_enabled,
+            river_width_refinement_enabled: hydro.river_width_refinement_active(),
+            river_upstream_area_refinement_enabled: hydro.river_upstream_area_refinement_active(),
+            river_width_threshold_m: hydro.effective_river_width_threshold_m(),
+            river_upstream_area_threshold_km2: hydro.effective_river_upstream_area_threshold_km2(),
+            coast_refinement_enabled: hydro.coast_refinement_enabled,
+            coast_buffer_km: hydro.coast_buffer_km,
+            coast_land_refinement_enabled: hydro.coast_land_refinement_enabled,
+            coast_ocean_refinement_enabled: hydro.coast_ocean_refinement_enabled,
             merit_stride: hydro.merit_stride,
             target_dx_km,
             include_classes: vec![
@@ -61,7 +83,13 @@ impl ProjectConfig {
                 "COAST_LAND".to_string(),
                 "COAST_OCEAN".to_string(),
             ],
-            max_level: if self.refinement.enabled {
+            max_level: if self.refinement.enabled
+                && self.refinement.threshold_enabled
+                && (hydro.has_river_refinement()
+                    || (hydro.coast_refinement_enabled
+                        && (hydro.coast_land_refinement_enabled
+                            || hydro.coast_ocean_refinement_enabled)))
+            {
                 self.refinement
                     .max_passes
                     .clamp(1, METHOD_C_MAX_AUTO_REFINE_LEVEL)

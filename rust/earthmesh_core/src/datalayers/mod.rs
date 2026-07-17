@@ -122,6 +122,13 @@ pub struct DataLayerConfig {
     pub var: Option<String>,
     pub enabled: bool,
     pub required: bool,
+    /// Independent continuous-threshold statistic switches. Legacy six-field
+    /// tokens omit these values and therefore enable both axes.
+    pub mean_enabled: bool,
+    pub std_enabled: bool,
+    /// Categorical LandType refinement is independent from using the same file
+    /// as the land/sea mask. Ignored for continuous threshold roles.
+    pub categorical_enabled: bool,
 }
 
 /// The `&datalayers` block: an ordered list of [`DataLayerConfig`].
@@ -132,8 +139,11 @@ pub struct DataLayersNamelist {
 
 impl DataLayersNamelist {
     /// Parse a `&datalayers` block. Each layer is one
-    /// `NL%layer = 'id|role|path|var|enabled|required'` line. Lenient: malformed
-    /// or unknown-role lines are skipped; an absent block yields an empty list.
+    /// `NL%layer = 'id|role|path|var|enabled|required|mean_enabled|std_enabled|categorical_enabled'`
+    /// line. The final three fields are optional for compatibility. Legacy
+    /// records do not implicitly enable categorical LandType refinement.
+    /// Lenient: malformed or unknown-role lines are skipped; an absent block
+    /// yields an empty list.
     pub fn from_datalayers_namelist(input: &str) -> Self {
         let mut layers = Vec::new();
         for assignment in namelist_assignments(input, "datalayers").unwrap_or_default() {
@@ -163,13 +173,16 @@ impl DataLayersNamelist {
 
 fn data_layer_token(l: &DataLayerConfig) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
         l.id,
         l.role.to_token(),
         l.path,
         l.var.as_deref().unwrap_or(""),
         if l.enabled { "T" } else { "F" },
         if l.required { "T" } else { "F" },
+        if l.mean_enabled { "T" } else { "F" },
+        if l.std_enabled { "T" } else { "F" },
+        if l.categorical_enabled { "T" } else { "F" },
     )
 }
 
@@ -192,5 +205,8 @@ fn parse_data_layer_token(s: &str) -> Option<DataLayerConfig> {
         },
         enabled: truthy(p[4]),
         required: truthy(p[5]),
+        mean_enabled: p.get(6).is_none_or(|value| truthy(value)),
+        std_enabled: p.get(7).is_none_or(|value| truthy(value)),
+        categorical_enabled: p.get(8).is_some_and(|value| truthy(value)),
     })
 }

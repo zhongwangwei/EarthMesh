@@ -1,29 +1,52 @@
 //! Read-only project catalog and summary command handlers.
 
-use crate::dto::{CriterionInfo, LayerSummary, ProjectCapabilities, ProjectSummary};
+use crate::dto::{
+    CriterionInfo, LayerSummary, ProjectCapabilities, ProjectSummary, TargetCompatibilityInfo,
+    TargetPresetInfo, ThresholdCriterionSummary,
+};
 use earthmesh_project::{
-    criterion_catalog, default_mask_sea_ratio, CloseMaskFormat, DomainConfig,
-    HfieldRefinementRecipe, MeshDomainKind, MeshIntentPreset, ProjectConfig, RegionShape,
-    ResolutionSpec, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS, KM_PER_DEGREE_EQUATOR,
-    METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
+    criterion_catalog, default_mask_sea_ratio, threshold_criterion_catalog, CloseMaskFormat,
+    DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshIntentPreset,
+    ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    DEFAULT_LANDCOVER_CLASS_THRESHOLD, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    KM_PER_DEGREE_EQUATOR, LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL,
+    METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
 };
 
 /// List every registered refinement criterion (self-describing GUI specs).
 #[tauri::command]
 pub(crate) fn list_criteria() -> Vec<CriterionInfo> {
-    criterion_catalog()
-        .iter()
-        .map(|c| CriterionInfo {
-            physical_process: c.physical_process.to_string(),
-            label: c.gui.label.to_string(),
-            help: c.gui.help.to_string(),
-            unit: c.gui.unit.to_string(),
-            range_min: c.gui.range.0,
-            range_max: c.gui.range.1,
-            default_value: c.gui.default,
-            stem: c.field.stem().to_string(),
-        })
-        .collect()
+    let mut criteria = vec![CriterionInfo {
+        id: LANDCOVER_CRITERION_ID.to_string(),
+        source_stem: "landcover".to_string(),
+        statistic: "categorical".to_string(),
+        physical_process: "land-cover heterogeneity".to_string(),
+        label: "Landcover classes".to_string(),
+        help: "Refine where a cell contains many land-cover classes".to_string(),
+        unit: "classes".to_string(),
+        range_min: 1.0,
+        range_max: 32.0,
+        default_value: DEFAULT_LANDCOVER_CLASS_THRESHOLD,
+    }];
+    criteria.extend(threshold_criterion_catalog().into_iter().map(|criterion| {
+        let source = criterion_catalog()
+            .iter()
+            .find(|source| source.field == criterion.source_field)
+            .expect("threshold criterion source must be cataloged");
+        CriterionInfo {
+            id: criterion.id,
+            source_stem: criterion.source_field.stem().to_string(),
+            statistic: criterion.statistic.suffix().to_string(),
+            physical_process: source.physical_process.to_string(),
+            label: criterion.label,
+            help: criterion.gui.help.to_string(),
+            unit: criterion.gui.unit.to_string(),
+            range_min: criterion.gui.range.0,
+            range_max: criterion.gui.range.1,
+            default_value: criterion.gui.default,
+        }
+    }));
+    criteria
 }
 
 /// Return defaults and limits that affect GUI runtime decisions.
@@ -41,6 +64,25 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
             .iter()
             .map(|intent| intent.id().to_string())
             .collect(),
+        target_presets: INTENT_PRESETS
+            .iter()
+            .map(|intent| {
+                let defaults = intent.defaults();
+                TargetPresetInfo {
+                    intent: intent.id().to_string(),
+                    kind: target_kind_id(defaults.kind).to_string(),
+                    cell: defaults.cell.engine_str().to_string(),
+                    model_format: defaults.model_format.engine_str().to_string(),
+                }
+            })
+            .collect(),
+        target_compatibility: vec![
+            target_compatibility("land", &["CoLM"]),
+            target_compatibility("earth", &["CoLM"]),
+            target_compatibility("coupled", &["CoLM"]),
+            target_compatibility("ocean", &["FVCOM"]),
+            target_compatibility("atmosphere", &["MPAS", "MPAS-Simple"]),
+        ],
         default_sea_ratio: default_mask_sea_ratio(),
         default_min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
         method_c_min_base_nxp: METHOD_C_MIN_BASE_NXP,
@@ -53,6 +95,16 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
         method_c_spring_nxp1_km: METHOD_C_SPRING_NXP1_KM,
         km_per_degree_equator: KM_PER_DEGREE_EQUATOR,
     })
+}
+
+fn target_compatibility(kind: &str, model_formats: &[&str]) -> TargetCompatibilityInfo {
+    TargetCompatibilityInfo {
+        kind: kind.to_string(),
+        model_formats: model_formats
+            .iter()
+            .map(|format| (*format).to_string())
+            .collect(),
+    }
 }
 
 /// Summarize a project YAML for the UI (name, intent, resolution, data layers).
@@ -123,12 +175,45 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         _ => None,
     };
     let hfield_effective = cfg.refinement.hfield.clone().unwrap_or_default();
+    let hydro = cfg.hydro_coast.as_ref();
+    let mut threshold_criteria = Vec::new();
+    if let Some(effective) = cfg.effective_landcover_criterion() {
+        threshold_criteria.push(ThresholdCriterionSummary {
+            id: effective.id.to_string(),
+            source_id: effective.source_layer_id,
+            statistic: "categorical".to_string(),
+            source_enabled: effective.source_enabled,
+            enabled: effective.enabled,
+            value: effective.value,
+        });
+    }
+    threshold_criteria.extend(
+        threshold_criterion_catalog()
+            .into_iter()
+            .filter_map(|criterion| {
+                let effective =
+                    cfg.effective_threshold_criterion(criterion.source_field, criterion.statistic)?;
+                Some(ThresholdCriterionSummary {
+                    id: effective.id,
+                    source_id: effective.source_layer_id,
+                    statistic: criterion.statistic.suffix().to_string(),
+                    source_enabled: effective.source_enabled,
+                    enabled: effective.enabled,
+                    value: effective.value,
+                })
+            }),
+    );
     let layers = cfg
         .data_layers
         .iter()
         .map(|l| LayerSummary {
             id: l.id.clone(),
             role_kind: l.role.role_kind().to_string(),
+            source_field: match l.role {
+                ProjectLayerRole::Threshold(field) => Some(field.stem().to_string()),
+                ProjectLayerRole::LandType => Some("landcover".to_string()),
+                _ => None,
+            },
             role: l.role.label(),
             path: l.path.clone(),
             enabled: l.enabled,
@@ -161,6 +246,26 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         on_violation,
         refine_enabled: cfg.refinement.enabled,
         threshold_refine_enabled: cfg.refinement.threshold_enabled,
+        threshold_criteria,
+        hydro_river_refine_enabled: hydro.is_some_and(|value| value.river_refinement_enabled),
+        hydro_river_width_refine_enabled: hydro
+            .is_some_and(HydroCoastConfig::river_width_refinement_active),
+        hydro_river_upstream_area_refine_enabled: hydro
+            .is_some_and(HydroCoastConfig::river_upstream_area_refinement_active),
+        hydro_river_width_threshold_m: hydro
+            .map(HydroCoastConfig::effective_river_width_threshold_m),
+        hydro_river_upstream_area_threshold_km2: hydro
+            .map(HydroCoastConfig::effective_river_upstream_area_threshold_km2),
+        hydro_coast_refine_enabled: hydro.is_some_and(|value| value.coast_refinement_enabled),
+        hydro_coast_buffer_km: hydro.map(|value| value.coast_buffer_km),
+        hydro_coast_land_refine_enabled: hydro
+            .is_some_and(|value| value.coast_land_refinement_enabled),
+        hydro_coast_ocean_refine_enabled: hydro
+            .is_some_and(|value| value.coast_ocean_refinement_enabled),
+        hydro_r2_width_m: hydro.map(|value| value.r2_width_m),
+        hydro_r2_upa_km2: hydro.map(|value| value.r2_upa_km2),
+        hydro_r3_width_m: hydro.map(|value| value.r3_width_m),
+        hydro_r3_upa_km2: hydro.map(|value| value.r3_upa_km2),
         max_passes: cfg.refinement.max_passes,
         specified_refine_enabled: specified_circle.is_some()
             || specified_bbox.is_some()

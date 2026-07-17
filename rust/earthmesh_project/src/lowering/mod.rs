@@ -1,6 +1,7 @@
 use crate::{
     criterion_catalog, degree_to_nxp, km_to_nxp, DomainConfig, GeometryIr, HfieldRefinementRecipe,
-    ProjectConfig, ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
+    ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
+    ThresholdStatistic,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
@@ -63,16 +64,44 @@ impl LoweredProject {
 
 impl ProjectConfig {
     fn data_layers_namelist(&self) -> DataLayersNamelist {
+        let surface_landtype_required = matches!(
+            self.target.kind,
+            crate::MeshDomainKind::Land
+                | crate::MeshDomainKind::Ocean
+                | crate::MeshDomainKind::Coupled
+        );
+        let landcover_criterion_enabled = self
+            .effective_landcover_criterion()
+            .is_some_and(|criterion| criterion.enabled);
+        let categorical_refinement_enabled =
+            self.refinement.threshold_enabled && landcover_criterion_enabled;
+        let landtype_refinement_active = self.refinement.enabled && categorical_refinement_enabled;
         let layers = self
             .data_layers
             .iter()
-            .map(|l| DataLayerConfig {
-                id: l.id.clone(),
-                role: l.role.to_core(),
-                path: l.path.clone(),
-                var: None,
-                enabled: l.enabled,
-                required: matches!(l.role, ProjectLayerRole::LandType),
+            .map(|l| {
+                let is_landtype = matches!(l.role, ProjectLayerRole::LandType);
+                let enabled = l.enabled
+                    && (!is_landtype || surface_landtype_required || landtype_refinement_active);
+                let (mean_enabled, std_enabled) = match l.role {
+                    ProjectLayerRole::LandType => (false, false),
+                    ProjectLayerRole::Threshold(field) => (
+                        self.threshold_statistic_enabled(field, ThresholdStatistic::Mean),
+                        self.threshold_statistic_enabled(field, ThresholdStatistic::Std),
+                    ),
+                    _ => (true, true),
+                };
+                DataLayerConfig {
+                    id: l.id.clone(),
+                    role: l.role.to_core(),
+                    path: l.path.clone(),
+                    var: None,
+                    enabled,
+                    required: is_landtype && enabled,
+                    mean_enabled,
+                    std_enabled,
+                    categorical_enabled: is_landtype && categorical_refinement_enabled,
+                }
             })
             .collect();
         DataLayersNamelist { layers }
@@ -170,11 +199,10 @@ impl ProjectConfig {
         };
         lowering_layers.lower_into(&mut mkgrd, &mut refine);
         if self.refinement.threshold_enabled {
-            apply_threshold_values(&mut refine, self.target.kind, &self.data_layers);
+            apply_threshold_values(&mut refine, self);
         }
-        // Refinement runs only when a real source supplies data: thresholds,
-        // landcover class-count refinement for land/coupled/earth targets, or a
-        // specified mask. Hydro folders still do not drive mkgrd refinement.
+        // Refinement runs only when a real source supplies data. LandType mask
+        // availability is independent from its explicit categorical criterion.
         if let Some(circle) = &self.refinement.specified_circle {
             refine.refine_spc = true;
             refine.mask_refine_spc_type = "circle".to_string();
@@ -299,75 +327,90 @@ fn apply_i32_prefix(target: &mut [i32; 10], values: &[i32]) {
     }
 }
 
-fn apply_threshold_values(
-    refine: &mut RefineConfig,
-    kind: crate::MeshDomainKind,
-    layers: &[ProjectDataLayer],
-) {
-    for layer in layers {
+fn apply_threshold_values(refine: &mut RefineConfig, project: &ProjectConfig) {
+    for layer in &project.data_layers {
         if !layer.enabled || layer.path.trim().is_empty() {
             continue;
         }
-        if matches!(layer.role, ProjectLayerRole::LandType)
-            && matches!(
-                kind,
-                crate::MeshDomainKind::Land
-                    | crate::MeshDomainKind::Coupled
-                    | crate::MeshDomainKind::Earth
-            )
-        {
+        if matches!(layer.role, ProjectLayerRole::LandType) {
+            let Some(criterion) = project.effective_landcover_criterion() else {
+                continue;
+            };
+            if !criterion.enabled {
+                continue;
+            }
             refine.refine_num_landtypes = true;
             refine.refine_cal = true;
-            refine.th_num_landtypes = layer
-                .threshold_value
-                .map(|value| value.round() as i32)
-                .unwrap_or(12);
+            refine.th_num_landtypes = criterion.value.round() as i32;
             continue;
         }
         let ProjectLayerRole::Threshold(field) = layer.role else {
             continue;
         };
-        let Some(value) = criterion_catalog()
+        let Some(default_value) = criterion_catalog()
             .iter()
             .find(|criterion| criterion.field == field)
             .map(|criterion| layer.threshold_value.unwrap_or(criterion.gui.default))
         else {
             continue;
         };
+        let mean =
+            threshold_statistic_value(project, field, ThresholdStatistic::Mean, default_value);
+        let std = threshold_statistic_value(project, field, ThresholdStatistic::Std, default_value);
         match field {
-            ThresholdField::Lai => set_pair(&mut refine.th_onelayer_lnd, 0, value),
-            ThresholdField::Slope => set_pair(&mut refine.th_onelayer_lnd, 2, value),
-            ThresholdField::Dem => set_pair(&mut refine.th_onelayer_lnd, 4, value),
-            ThresholdField::SlopeMax => set_pair(&mut refine.th_onelayer_lnd, 6, value),
-            ThresholdField::Ks => set_layer_pair(&mut refine.th_twolayer_lnd, 0, value),
-            ThresholdField::KSolids => set_layer_pair(&mut refine.th_twolayer_lnd, 2, value),
-            ThresholdField::Tkdry => set_layer_pair(&mut refine.th_twolayer_lnd, 4, value),
-            ThresholdField::Tksatf => set_layer_pair(&mut refine.th_twolayer_lnd, 6, value),
-            ThresholdField::Tksatu => set_layer_pair(&mut refine.th_twolayer_lnd, 8, value),
-            ThresholdField::Sst => set_pair(&mut refine.th_onelayer_ocn, 0, value),
-            ThresholdField::Ssh => set_pair(&mut refine.th_onelayer_ocn, 2, value),
-            ThresholdField::Eke => set_pair(&mut refine.th_onelayer_ocn, 4, value),
-            ThresholdField::SeaSlope => set_pair(&mut refine.th_onelayer_ocn, 6, value),
-            ThresholdField::Typhoon => set_pair(&mut refine.th_onelayer_atmos, 0, value),
+            ThresholdField::Lai => set_axis_values(&mut refine.th_onelayer_lnd, 0, mean, std),
+            ThresholdField::Slope => set_axis_values(&mut refine.th_onelayer_lnd, 2, mean, std),
+            ThresholdField::Dem => set_axis_values(&mut refine.th_onelayer_lnd, 4, mean, std),
+            ThresholdField::SlopeMax => set_axis_values(&mut refine.th_onelayer_lnd, 6, mean, std),
+            ThresholdField::Ks => set_layer_axis_values(&mut refine.th_twolayer_lnd, 0, mean, std),
+            ThresholdField::KSolids => {
+                set_layer_axis_values(&mut refine.th_twolayer_lnd, 2, mean, std)
+            }
+            ThresholdField::Tkdry => {
+                set_layer_axis_values(&mut refine.th_twolayer_lnd, 4, mean, std)
+            }
+            ThresholdField::Tksatf => {
+                set_layer_axis_values(&mut refine.th_twolayer_lnd, 6, mean, std)
+            }
+            ThresholdField::Tksatu => {
+                set_layer_axis_values(&mut refine.th_twolayer_lnd, 8, mean, std)
+            }
+            ThresholdField::Sst => set_axis_values(&mut refine.th_onelayer_ocn, 0, mean, std),
+            ThresholdField::Ssh => set_axis_values(&mut refine.th_onelayer_ocn, 2, mean, std),
+            ThresholdField::Eke => set_axis_values(&mut refine.th_onelayer_ocn, 4, mean, std),
+            ThresholdField::SeaSlope => set_axis_values(&mut refine.th_onelayer_ocn, 6, mean, std),
+            ThresholdField::Typhoon => set_axis_values(&mut refine.th_onelayer_atmos, 0, mean, std),
         }
     }
 }
 
-fn set_pair<const N: usize>(values: &mut [f64; N], start: usize, value: f64) {
+fn threshold_statistic_value(
+    project: &ProjectConfig,
+    field: ThresholdField,
+    statistic: ThresholdStatistic,
+    fallback: f64,
+) -> f64 {
+    project
+        .effective_threshold_criterion(field, statistic)
+        .map(|criterion| criterion.value)
+        .unwrap_or(fallback)
+}
+
+fn set_axis_values<const N: usize>(values: &mut [f64; N], start: usize, mean: f64, std: f64) {
     if let Some(slot) = values.get_mut(start) {
-        *slot = value;
+        *slot = mean;
     }
     if let Some(slot) = values.get_mut(start + 1) {
-        *slot = value;
+        *slot = std;
     }
 }
 
-fn set_layer_pair(values: &mut [[f64; 2]; 10], start: usize, value: f64) {
+fn set_layer_axis_values(values: &mut [[f64; 2]; 10], start: usize, mean: f64, std: f64) {
     if let Some(slot) = values.get_mut(start) {
-        *slot = [value; 2];
+        *slot = [mean; 2];
     }
     if let Some(slot) = values.get_mut(start + 1) {
-        *slot = [value; 2];
+        *slot = [std; 2];
     }
 }
 

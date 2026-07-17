@@ -82,6 +82,10 @@ impl DataLayersNamelist {
                 DataLayerRole::LandType => {
                     mkgrd.landtype_file = l.path.clone();
                     report.landtype_set = true;
+                    if l.categorical_enabled {
+                        refine.refine_num_landtypes = true;
+                        refine.refine_cal = true;
+                    }
                 }
                 DataLayerRole::ThresholdField(v) => {
                     let stem = v.file_stem();
@@ -95,10 +99,16 @@ impl DataLayersNamelist {
                         }
                     }
                     let (arr, base) = v.switch_slot();
-                    set_refine_switch(refine, arr, base);
-                    set_refine_switch(refine, arr, base + 1);
-                    refine.refine_cal = true;
-                    report.enabled_thresholds.push(v);
+                    if l.mean_enabled {
+                        set_refine_switch(refine, arr, base);
+                    }
+                    if l.std_enabled {
+                        set_refine_switch(refine, arr, base + 1);
+                    }
+                    if l.mean_enabled || l.std_enabled {
+                        refine.refine_cal = true;
+                        report.enabled_thresholds.push(v);
+                    }
                 }
                 DataLayerRole::MeritHydroRoot | DataLayerRole::CamaReach => {
                     // Hydro / CaMa roles flow through the dedicated hydro

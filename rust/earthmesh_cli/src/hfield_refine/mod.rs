@@ -11,11 +11,21 @@
 //!   hfield_nlon/nlat  field raster size                  (default 720 x 360)
 //!   hfield_origin_lon/lat  WGS84 origin for geographic rasters on Cartesian-XY meshes
 
-use std::{io, path::Path};
+use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    },
+};
 
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_hfield::HField;
 use earthmesh_mesh::{CartesianPoint, LonLatDegrees, MethodCRefinementRegion};
+use serde::{Deserialize, Serialize};
 
 use crate::area_judge_threshold_inputs::{
     enabled_mean_threshold_field_specs, enabled_std_threshold_field_specs, numeric_missing_values,
@@ -379,6 +389,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
     g: f64,
     landtype_mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
+    stats_cache: &mut ThresholdStatsCache,
 ) -> io::Result<usize> {
     let specs = enabled_mean_threshold_field_specs(refine, mesh_type);
     if specs.is_empty() {
@@ -389,9 +400,19 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
     let mut applied = 0usize;
     for spec in specs {
         let input = threshold_dir.join(format!("{}.nc", spec.file_stem));
-        let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
-        let stats =
-            read_threshold_stats_on_hfield_masked(&file, &spec.var_name, field, landtype_mask)?;
+        let key = (input.display().to_string(), spec.var_name.clone());
+        if !stats_cache.contains_key(&key) {
+            let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
+            let stats = read_threshold_stats_on_hfield_masked(
+                &file,
+                &spec.var_name,
+                field,
+                landtype_mask,
+                domain,
+            )?;
+            stats_cache.insert(key.clone(), stats);
+        }
+        let stats = stats_cache.get(&key).expect("threshold stats cached");
         min_with_threshold_matrix(field, &stats.mean, spec.threshold, h_inside, domain);
         applied += 1;
     }
@@ -410,6 +431,7 @@ pub(crate) fn apply_std_threshold_hfield_contributions(
     target_level: usize,
     g: f64,
 ) -> io::Result<usize> {
+    let mut stats_cache = ThresholdStatsCache::new();
     apply_std_threshold_hfield_contributions_with_landtype_mask(
         field,
         refine,
@@ -419,6 +441,7 @@ pub(crate) fn apply_std_threshold_hfield_contributions(
         g,
         None,
         None,
+        &mut stats_cache,
     )
 }
 
@@ -431,6 +454,7 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
     g: f64,
     landtype_mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
+    stats_cache: &mut ThresholdStatsCache,
 ) -> io::Result<usize> {
     let specs = enabled_std_threshold_field_specs(refine, mesh_type);
     if specs.is_empty() {
@@ -441,9 +465,19 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
     let mut applied = 0usize;
     for spec in specs {
         let input = threshold_dir.join(format!("{}.nc", spec.file_stem));
-        let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
-        let stats =
-            read_threshold_stats_on_hfield_masked(&file, &spec.var_name, field, landtype_mask)?;
+        let key = (input.display().to_string(), spec.var_name.clone());
+        if !stats_cache.contains_key(&key) {
+            let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
+            let stats = read_threshold_stats_on_hfield_masked(
+                &file,
+                &spec.var_name,
+                field,
+                landtype_mask,
+                domain,
+            )?;
+            stats_cache.insert(key.clone(), stats);
+        }
+        let stats = stats_cache.get(&key).expect("threshold stats cached");
         min_with_threshold_matrix(field, &stats.stddev, spec.threshold, h_inside, domain);
         applied += 1;
     }
@@ -464,12 +498,19 @@ pub(crate) fn has_threshold_hfield_sources(refine: &RefineConfig, mesh_type: &st
 }
 
 fn has_land_thresholds(refine: &RefineConfig, mesh_type: &str) -> bool {
-    matches!(mesh_type, "landmesh" | "LOCmesh" | "earthmesh")
+    supports_threshold_hfield(mesh_type)
         && (refine.refine_num_landtypes || refine.refine_area_mainland)
 }
 
 fn has_ocean_thresholds(refine: &RefineConfig, mesh_type: &str) -> bool {
-    matches!(mesh_type, "oceanmesh" | "LOCmesh" | "earthmesh") && refine.refine_sea_ratio
+    supports_threshold_hfield(mesh_type) && refine.refine_sea_ratio
+}
+
+fn supports_threshold_hfield(mesh_type: &str) -> bool {
+    matches!(
+        mesh_type,
+        "landmesh" | "oceanmesh" | "atmos" | "atmosmesh" | "LOCmesh" | "earthmesh"
+    )
 }
 
 fn has_landtype_basic_threshold_hfield_sources(refine: &RefineConfig, mesh_type: &str) -> bool {
@@ -497,7 +538,8 @@ fn apply_landtype_basic_threshold_hfield_contributions(
             "landtype basic hfield thresholds require a real NL%landtype_file".to_string(),
         ));
     }
-    let bins = read_landtype_source_for_hfield(Path::new(config.landtype_file.trim()), field)?;
+    let bins =
+        read_landtype_source_for_hfield(Path::new(config.landtype_file.trim()), field, domain)?;
     let h_inside = base_m / 2f64.powi(target_level.clamp(1, 5) as i32);
     let applied = apply_landtype_basic_thresholds_from_bins(
         field, &bins, refine, mesh_type, h_inside, domain,
@@ -522,22 +564,34 @@ fn hfield_landtype_mask_source(
 
 #[derive(Debug)]
 struct LandtypeBinStats {
+    hfield_len: usize,
+    slot_by_hfield: Vec<usize>,
     total: Vec<usize>,
     ocean: Vec<usize>,
     land: Vec<usize>,
-    distinct: Vec<std::collections::BTreeSet<i32>>,
-    class_counts: Vec<std::collections::BTreeMap<i32, usize>>,
+    class_counts: Vec<Vec<(i32, usize)>>,
 }
 
 impl LandtypeBinStats {
-    fn new(field: &HField) -> Self {
+    fn new(field: &HField, domain: Option<&HfieldDomainMask>) -> Self {
         let len = field.nlon() * field.nlat();
+        let mut slot_by_hfield = vec![usize::MAX; len];
+        let mut slot_count = 0usize;
+        for i in 0..field.nlon() {
+            for j in 0..field.nlat() {
+                if domain.is_none_or(|domain| domain.is_active(i, j)) {
+                    slot_by_hfield[i * field.nlat() + j] = slot_count;
+                    slot_count += 1;
+                }
+            }
+        }
         Self {
-            total: vec![0; len],
-            ocean: vec![0; len],
-            land: vec![0; len],
-            distinct: vec![std::collections::BTreeSet::new(); len],
-            class_counts: vec![std::collections::BTreeMap::new(); len],
+            hfield_len: len,
+            slot_by_hfield,
+            total: vec![0; slot_count],
+            ocean: vec![0; slot_count],
+            land: vec![0; slot_count],
+            class_counts: vec![Vec::new(); slot_count],
         }
     }
 
@@ -547,28 +601,93 @@ impl LandtypeBinStats {
                 "landtype value {landtype} must be non-negative"
             )));
         }
-        self.total[out] += 1;
+        let Some(slot) = self.slot(out) else {
+            return Ok(());
+        };
+        self.total[slot] += 1;
         if landtype == 0 {
-            self.ocean[out] += 1;
+            self.ocean[slot] += 1;
         } else {
-            self.land[out] += 1;
-            self.distinct[out].insert(landtype);
-            *self.class_counts[out].entry(landtype).or_insert(0) += 1;
+            self.land[slot] += 1;
+            if let Some((_, count)) = self.class_counts[slot]
+                .iter_mut()
+                .find(|(class, _)| *class == landtype)
+            {
+                *count += 1;
+            } else {
+                self.class_counts[slot].push((landtype, 1));
+            }
         }
         Ok(())
     }
 
     fn exclude_class(&mut self, landtype: i32) {
-        for classes in &mut self.distinct {
-            classes.remove(&landtype);
-        }
         for counts in &mut self.class_counts {
-            counts.remove(&landtype);
+            counts.retain(|(class, _)| *class != landtype);
         }
+    }
+
+    fn slot(&self, out: usize) -> Option<usize> {
+        self.slot_by_hfield
+            .get(out)
+            .copied()
+            .filter(|slot| *slot != usize::MAX)
+    }
+
+    fn total_at(&self, out: usize) -> usize {
+        self.slot(out).map_or(0, |slot| self.total[slot])
+    }
+
+    fn ocean_at(&self, out: usize) -> usize {
+        self.slot(out).map_or(0, |slot| self.ocean[slot])
+    }
+
+    fn land_at(&self, out: usize) -> usize {
+        self.slot(out).map_or(0, |slot| self.land[slot])
+    }
+
+    fn distinct_at(&self, out: usize) -> usize {
+        self.slot(out)
+            .map_or(0, |slot| self.class_counts[slot].len())
+    }
+
+    #[cfg(test)]
+    fn contains_class(&self, out: usize, landtype: i32) -> bool {
+        self.slot(out).is_some_and(|slot| {
+            self.class_counts[slot]
+                .iter()
+                .any(|(class, _)| *class == landtype)
+        })
+    }
+
+    fn max_class_count_at(&self, out: usize) -> usize {
+        self.slot(out).map_or(0, |slot| {
+            self.class_counts[slot]
+                .iter()
+                .map(|(_, count)| *count)
+                .max()
+                .unwrap_or(0)
+        })
+    }
+
+    #[cfg(test)]
+    fn total_samples(&self) -> usize {
+        self.total.iter().sum()
     }
 }
 
+#[cfg(test)]
 fn landtype_hfield_bin(lon: f64, src_j: usize, src_nlat: usize, field: &HField) -> usize {
+    let (i, j) = landtype_hfield_indices(lon, src_j, src_nlat, field);
+    i * field.nlat() + j
+}
+
+fn landtype_hfield_indices(
+    lon: f64,
+    src_j: usize,
+    src_nlat: usize,
+    field: &HField,
+) -> (usize, usize) {
     // Canonical global source rows run north-to-south: row 0 is nearest +90°.
     let lat = 90.0 - (src_j as f64 + 0.5) * 180.0 / src_nlat as f64;
     let i = (((earthmesh_hfield::wrap_lon_degrees(lon) + 180.0) / 360.0) * field.nlon() as f64)
@@ -577,7 +696,7 @@ fn landtype_hfield_bin(lon: f64, src_j: usize, src_nlat: usize, field: &HField) 
     let j = (((lat + 90.0) / 180.0) * field.nlat() as f64)
         .floor()
         .clamp(0.0, (field.nlat() - 1) as f64) as usize;
-    i * field.nlat() + j
+    (i, j)
 }
 
 fn landtype_tile(
@@ -693,44 +812,475 @@ fn is_missing_numeric(value: impl Into<f64>, missing: &[f64]) -> bool {
     missing.contains(&value.into())
 }
 
+fn netcdf_longitude_tile_size(
+    variable: &netcdf::Variable<'_>,
+    lat_lon: bool,
+    src_nlon: usize,
+    fallback: usize,
+) -> usize {
+    variable
+        .chunking()
+        .ok()
+        .flatten()
+        .and_then(|chunking| chunking.get(usize::from(lat_lon)).copied())
+        .filter(|size| *size > 0)
+        .unwrap_or(fallback)
+        .min(src_nlon)
+}
+
+const LANDTYPE_MAXLC_CACHE_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+struct LandtypeMaxlcIdentity {
+    canonical_path: PathBuf,
+    source_len: u64,
+    modified_unix_nanos: u128,
+    unix_device: Option<u64>,
+    unix_inode: Option<u64>,
+    unix_changed_nanos: Option<i128>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct LandtypeMaxlcCacheRecord {
+    version: u32,
+    source: LandtypeMaxlcIdentity,
+    maxlc: i32,
+    checksum: u64,
+}
+
+fn landtype_maxlc_cache() -> &'static Mutex<HashMap<LandtypeMaxlcIdentity, i32>> {
+    static CACHE: OnceLock<Mutex<HashMap<LandtypeMaxlcIdentity, i32>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn landtype_maxlc_cache_identity(path: &Path) -> io::Result<Option<LandtypeMaxlcIdentity>> {
+    let metadata = std::fs::metadata(path)?;
+    let Some(modified_unix_nanos) = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+    else {
+        return Ok(None);
+    };
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(unix)]
+    let (unix_device, unix_inode, unix_changed_nanos) = {
+        use std::os::unix::fs::MetadataExt;
+        (
+            Some(metadata.dev()),
+            Some(metadata.ino()),
+            Some(i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec())),
+        )
+    };
+    #[cfg(not(unix))]
+    let (unix_device, unix_inode, unix_changed_nanos) = (None, None, None);
+    Ok(Some(LandtypeMaxlcIdentity {
+        canonical_path: canonical,
+        source_len: metadata.len(),
+        modified_unix_nanos,
+        unix_device,
+        unix_inode,
+        unix_changed_nanos,
+    }))
+}
+
+fn open_landtype_netcdf_with<F>(
+    path: &Path,
+    opener: F,
+) -> io::Result<(netcdf::File, Option<LandtypeMaxlcIdentity>)>
+where
+    F: FnOnce(&Path) -> io::Result<netcdf::File>,
+{
+    // Bind the path identity to the handle. Capturing identity only after open
+    // can associate an already-open old inode with a newly atomically replaced
+    // path and then cache the old maxlc under the new file's identity.
+    let identity_before = landtype_maxlc_cache_identity(path)?;
+    let file = opener(path)?;
+    let identity_after = landtype_maxlc_cache_identity(path)?;
+    if identity_before != identity_after {
+        return Err(io::Error::other(
+            "landtype source changed while opening NetCDF",
+        ));
+    }
+    Ok((file, identity_before))
+}
+
+fn open_landtype_netcdf(path: &Path) -> io::Result<(netcdf::File, Option<LandtypeMaxlcIdentity>)> {
+    open_landtype_netcdf_with(path, |path| {
+        crate::open_netcdf(path).map_err(crate::netcdf_to_io_error)
+    })
+}
+
+fn stable_landtype_cache_key(path: &Path) -> u64 {
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes()
+    };
+    #[cfg(not(unix))]
+    let path_text = path.to_string_lossy();
+    #[cfg(not(unix))]
+    let bytes = path_text.as_bytes();
+
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+fn landtype_maxlc_cache_directories() -> Vec<PathBuf> {
+    #[cfg(test)]
+    {
+        vec![std::env::temp_dir().join("earthmesh-hfield-maxlc-test-cache")]
+    }
+    #[cfg(not(test))]
+    {
+        let mut directories = Vec::new();
+        #[cfg(target_os = "macos")]
+        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+            directories.push(PathBuf::from(home).join("Library/Caches/EarthMesh"));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(cache) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
+            directories.push(PathBuf::from(cache).join("earthmesh"));
+        } else if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+            directories.push(PathBuf::from(home).join(".cache/earthmesh"));
+        }
+        let fallback = std::env::temp_dir().join("earthmesh-cache");
+        if !directories.contains(&fallback) {
+            directories.push(fallback);
+        }
+        directories
+    }
+}
+
+fn landtype_maxlc_cache_path(directory: &Path, source: &LandtypeMaxlcIdentity) -> PathBuf {
+    directory.join(format!(
+        "landtype-maxlc-v{LANDTYPE_MAXLC_CACHE_VERSION}-{:016x}.json",
+        stable_landtype_cache_key(&source.canonical_path)
+    ))
+}
+
+fn landtype_maxlc_checksum(source: &LandtypeMaxlcIdentity, maxlc: i32) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    LANDTYPE_MAXLC_CACHE_VERSION.hash(&mut hasher);
+    source.hash(&mut hasher);
+    maxlc.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn read_landtype_maxlc_cache(source: &LandtypeMaxlcIdentity) -> Option<i32> {
+    landtype_maxlc_cache_directories()
+        .into_iter()
+        .find_map(|directory| {
+            let contents = std::fs::read(landtype_maxlc_cache_path(&directory, source)).ok()?;
+            let record = serde_json::from_slice::<LandtypeMaxlcCacheRecord>(&contents).ok()?;
+            (record.version == LANDTYPE_MAXLC_CACHE_VERSION
+                && record.source == *source
+                && (0..=i32::from(i8::MAX)).contains(&record.maxlc)
+                && record.checksum == landtype_maxlc_checksum(source, record.maxlc))
+            .then_some(record.maxlc)
+        })
+}
+
+fn write_landtype_maxlc_cache(source: &LandtypeMaxlcIdentity, maxlc: i32) -> io::Result<()> {
+    static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+
+    let record = LandtypeMaxlcCacheRecord {
+        version: LANDTYPE_MAXLC_CACHE_VERSION,
+        source: source.clone(),
+        maxlc,
+        checksum: landtype_maxlc_checksum(source, maxlc),
+    };
+    let mut last_error = None;
+    for directory in landtype_maxlc_cache_directories() {
+        let result = (|| {
+            std::fs::create_dir_all(&directory)?;
+            let cache = landtype_maxlc_cache_path(&directory, source);
+            let mut temp_name = cache
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("earthmesh-maxlc"))
+                .to_os_string();
+            temp_name.push(format!(
+                ".{}.{}.{}.tmp",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_nanos()),
+                NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let temp = cache.with_file_name(temp_name);
+            let write_result = (|| {
+                let mut file = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&temp)?;
+                serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+                drop(file);
+                std::fs::rename(&temp, &cache)
+            })();
+            if write_result.is_err() {
+                let _ = std::fs::remove_file(temp);
+            }
+            write_result
+        })();
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("no landtype cache directory available")))
+}
+
+#[cfg(test)]
+fn landtype_maxlc_scan_counts() -> &'static Mutex<HashMap<LandtypeMaxlcIdentity, usize>> {
+    static COUNTS: OnceLock<Mutex<HashMap<LandtypeMaxlcIdentity, usize>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn landtype_global_maxlc(
+    path: &Path,
+    source_identity: Option<&LandtypeMaxlcIdentity>,
+    variable: &netcdf::Variable<'_>,
+    lat_lon: bool,
+    src_nlon: usize,
+    src_nlat: usize,
+    missing: &[f64],
+) -> io::Result<i32> {
+    if let Some(source) = source_identity {
+        if let Some(maxlc) = landtype_maxlc_cache()
+            .lock()
+            .map_err(|_| io::Error::other("landtype maxlc cache lock poisoned"))?
+            .get(source)
+            .copied()
+        {
+            return Ok(maxlc);
+        }
+        if let Some(maxlc) = read_landtype_maxlc_cache(source) {
+            landtype_maxlc_cache()
+                .lock()
+                .map_err(|_| io::Error::other("landtype maxlc cache lock poisoned"))?
+                .insert(source.clone(), maxlc);
+            return Ok(maxlc);
+        }
+        #[cfg(test)]
+        {
+            *landtype_maxlc_scan_counts()
+                .lock()
+                .expect("landtype maxlc scan-count lock")
+                .entry(source.clone())
+                .or_default() += 1;
+        }
+    }
+
+    let tile_lon = netcdf_longitude_tile_size(variable, lat_lon, src_nlon, 256);
+    let mut maxlc = 0_i32;
+    let mut has_valid = false;
+    for lon_start in (0..src_nlon).step_by(tile_lon) {
+        let lon_count = tile_lon.min(src_nlon - lon_start);
+        for value in landtype_tile(variable, lat_lon, lon_start, lon_count, 0, src_nlat)? {
+            if is_missing_numeric(value, missing) {
+                continue;
+            }
+            if value < 0 {
+                return Err(invalid(format!(
+                    "landtype value {value} must be non-negative"
+                )));
+            }
+            has_valid = true;
+            maxlc = maxlc.max(i32::from(value));
+        }
+    }
+    if !has_valid {
+        return Err(invalid("landtype contains no valid values".to_string()));
+    }
+    if let Some(source) = source_identity {
+        if landtype_maxlc_cache_identity(path)?.as_ref() != Some(source) {
+            return Err(io::Error::other(
+                "landtype source changed while scanning global maxlc",
+            ));
+        }
+        landtype_maxlc_cache()
+            .lock()
+            .map_err(|_| io::Error::other("landtype maxlc cache lock poisoned"))?
+            .insert(source.clone(), maxlc);
+        // If every user/temp cache directory is unavailable, retain the exact
+        // value in-process and retry persistence on the next CLI invocation.
+        let _ = write_landtype_maxlc_cache(source, maxlc);
+    }
+    Ok(maxlc)
+}
+
+fn active_hfield_axes(field: &HField, domain: Option<&HfieldDomainMask>) -> (Vec<bool>, Vec<bool>) {
+    domain.map_or_else(
+        || (vec![true; field.nlon()], vec![true; field.nlat()]),
+        |domain| {
+            let mut active_lon = vec![false; field.nlon()];
+            let mut active_lat = vec![false; field.nlat()];
+            for (i, lon_active) in active_lon.iter_mut().enumerate() {
+                for (j, lat_active) in active_lat.iter_mut().enumerate() {
+                    if domain.is_active(i, j) {
+                        *lon_active = true;
+                        *lat_active = true;
+                    }
+                }
+            }
+            (active_lon, active_lat)
+        },
+    )
+}
+
+fn active_source_latitude_window(
+    field: &HField,
+    active_lat: &[bool],
+    src_nlat: usize,
+    latitude_order: LatitudeOrder,
+) -> io::Result<(usize, usize, usize, usize)> {
+    let mut canonical_start = None;
+    let mut canonical_end = 0usize;
+    let mut include_source_row = |src_j: usize| {
+        canonical_start = Some(canonical_start.map_or(src_j, |start: usize| start.min(src_j)));
+        canonical_end = canonical_end.max(src_j);
+    };
+    for src_j in 0..src_nlat {
+        let (_, field_j) = landtype_hfield_indices(0.0, src_j, src_nlat, field);
+        if active_lat[field_j] {
+            include_source_row(src_j);
+        }
+    }
+    // A finer HField row may contain no coarser source center. Include the
+    // nearest source row needed by the dense fallback instead of rejecting a
+    // valid regional domain before that fallback can run.
+    for (field_j, active) in active_lat.iter().copied().enumerate() {
+        if active {
+            include_source_row(scaled_hfield_center_index(
+                field.lat_center(field_j),
+                src_nlat,
+                false,
+            ));
+        }
+    }
+    let canonical_start = canonical_start.ok_or_else(|| {
+        invalid("regional HField domain contains no active source rows".to_string())
+    })?;
+    let count = canonical_end - canonical_start + 1;
+    let file_start = match latitude_order {
+        LatitudeOrder::NorthToSouth => canonical_start,
+        LatitudeOrder::SouthToNorth => src_nlat - 1 - canonical_end,
+    };
+    Ok((canonical_start, canonical_end, file_start, count))
+}
+
 /// Stream a production landtype raster directly into fixed-size HField bins.
+/// Regional domains read only the source chunks intersecting their active
+/// HField rows/columns instead of decompressing the entire global raster.
 /// Memory is O(hfield cells + one tile), independent of source resolution.
-fn read_landtype_source_for_hfield(path: &Path, field: &HField) -> io::Result<LandtypeBinStats> {
-    let file = crate::open_netcdf(path).map_err(crate::netcdf_to_io_error)?;
+fn read_landtype_source_for_hfield(
+    path: &Path,
+    field: &HField,
+    domain: Option<&HfieldDomainMask>,
+) -> io::Result<LandtypeBinStats> {
+    let (file, source_identity) = open_landtype_netcdf(path)?;
     let variable = file
         .variable("landtype")
         .ok_or_else(|| invalid("missing landtype variable".to_string()))?;
     let (lat_lon, src_nlon, src_nlat, latitude_order, longitudes) =
         landtype_source_layout(&file, &variable)?;
     let missing = numeric_missing_values(&variable)?;
-    // Longitude stripes keep the production tile near 11 MiB at
-    // 86400x43200 while avoiding tens of thousands of tiny NetCDF reads.
-    const TILE_LON: usize = 256;
-    let mut bins = LandtypeBinStats::new(field);
-    let mut maxlc = 0_i32;
+    let (active_lon, active_lat) = active_hfield_axes(field, domain);
+    if !active_lon.iter().any(|active| *active) || !active_lat.iter().any(|active| *active) {
+        return Ok(LandtypeBinStats::new(field, domain));
+    }
+    let (_, _, lat_start, lat_count) =
+        active_source_latitude_window(field, &active_lat, src_nlat, latitude_order)?;
+    let active_local_lat = (0..lat_count)
+        .filter_map(|local_file_j| {
+            let file_j = lat_start + local_file_j;
+            let src_j = canonical_latitude_index(latitude_order, file_j, src_nlat);
+            let (_, field_j) = landtype_hfield_indices(0.0, src_j, src_nlat, field);
+            active_lat[field_j].then_some((local_file_j, field_j))
+        })
+        .collect::<Vec<_>>();
+    // Match NetCDF-4's longitude chunk width when available. Re-reading narrow
+    // stripes inside a large compressed chunk can otherwise decompress the same
+    // data dozens of times.
+    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 256);
+    let mut bins = LandtypeBinStats::new(field, domain);
+    let maxlc = landtype_global_maxlc(
+        path,
+        source_identity.as_ref(),
+        &variable,
+        lat_lon,
+        src_nlon,
+        src_nlat,
+        &missing,
+    )?;
     let mut has_valid = false;
-    for lon_start in (0..src_nlon).step_by(TILE_LON) {
-        let lon_count = TILE_LON.min(src_nlon - lon_start);
-        let raw = landtype_tile(&variable, lat_lon, lon_start, lon_count, 0, src_nlat)?;
-        crate::require_len("landtype tile", raw.len(), lon_count * src_nlat)?;
-        for local_i in 0..lon_count {
-            for file_j in 0..src_nlat {
-                let src_j = canonical_latitude_index(latitude_order, file_j, src_nlat);
+    for lon_start in (0..src_nlon).step_by(tile_lon) {
+        let lon_count = tile_lon.min(src_nlon - lon_start);
+        let active_local_lon = (0..lon_count)
+            .filter_map(|local_i| {
+                let lon = source_longitude(lon_start + local_i, src_nlon, longitudes.as_deref());
+                let (field_i, _) = landtype_hfield_indices(lon, 0, src_nlat, field);
+                active_lon[field_i].then_some((local_i, field_i))
+            })
+            .collect::<Vec<_>>();
+        if active_local_lon.is_empty() {
+            continue;
+        }
+        let raw = landtype_tile(
+            &variable, lat_lon, lon_start, lon_count, lat_start, lat_count,
+        )?;
+        crate::require_len("landtype tile", raw.len(), lon_count * lat_count)?;
+        for (local_i, field_i) in active_local_lon {
+            for &(local_file_j, field_j) in &active_local_lat {
                 let raw_index = if lat_lon {
-                    file_j * lon_count + local_i
+                    local_file_j * lon_count + local_i
                 } else {
-                    local_i * src_nlat + file_j
+                    local_i * lat_count + local_file_j
                 };
                 let value = raw[raw_index];
                 if is_missing_numeric(value, &missing) {
                     continue;
                 }
+                if domain.is_some_and(|domain| !domain.is_active(field_i, field_j)) {
+                    continue;
+                }
                 has_valid = true;
-                maxlc = maxlc.max(i32::from(value));
-                let lon = source_longitude(lon_start + local_i, src_nlon, longitudes.as_deref());
-                let out = landtype_hfield_bin(lon, src_j, src_nlat, field);
+                let out = field_i * field.nlat() + field_j;
                 bins.record(out, i32::from(value))?;
             }
+        }
+    }
+    // Preserve dense categorical behavior when the HField is finer than the
+    // LandType raster (or an active longitude column contains no source
+    // center): empty active bins inherit their nearest source class.
+    let mut nearest_by_i = std::collections::BTreeMap::<usize, Vec<(usize, usize)>>::new();
+    for i in 0..field.nlon() {
+        let src_i = nearest_longitude_index(field.lon_center(i), src_nlon, longitudes.as_deref());
+        for j in 0..field.nlat() {
+            if domain.is_some_and(|domain| !domain.is_active(i, j)) {
+                continue;
+            }
+            let out = i * field.nlat() + j;
+            if bins.total_at(out) == 0 {
+                let src_j = scaled_hfield_center_index(field.lat_center(j), src_nlat, false);
+                nearest_by_i.entry(src_i).or_default().push((src_j, out));
+            }
+        }
+    }
+    for (src_i, targets) in nearest_by_i {
+        let row = landtype_tile(&variable, lat_lon, src_i, 1, 0, src_nlat)?;
+        for (src_j, out) in targets {
+            let file_j = file_latitude_index(latitude_order, src_j, src_nlat);
+            let value = row[file_j];
+            if is_missing_numeric(value, &missing) {
+                continue;
+            }
+            bins.record(out, i32::from(value))?;
+            has_valid = true;
         }
     }
     if !has_valid {
@@ -759,34 +1309,22 @@ impl LandtypeMaskSource {
 }
 
 fn read_landtype_mask_source_for_hfield(path: &Path) -> io::Result<LandtypeMaskSource> {
-    let file = crate::open_netcdf(path).map_err(crate::netcdf_to_io_error)?;
+    let (file, source_identity) = open_landtype_netcdf(path)?;
     let variable = file
         .variable("landtype")
         .ok_or_else(|| invalid("missing landtype variable".to_string()))?;
     let (lat_lon, src_nlon, src_nlat, latitude_order, longitudes) =
         landtype_source_layout(&file, &variable)?;
     let missing = numeric_missing_values(&variable)?;
-    let mut maxlc = 0_i32;
-    let mut has_valid = false;
-    const TILE_LON: usize = 256;
-    for lon_start in (0..src_nlon).step_by(TILE_LON) {
-        let lon_count = TILE_LON.min(src_nlon - lon_start);
-        for value in landtype_tile(&variable, lat_lon, lon_start, lon_count, 0, src_nlat)? {
-            if is_missing_numeric(value, &missing) {
-                continue;
-            }
-            if value < 0 {
-                return Err(invalid(format!(
-                    "landtype value {value} must be non-negative"
-                )));
-            }
-            has_valid = true;
-            maxlc = maxlc.max(i32::from(value));
-        }
-    }
-    if !has_valid {
-        return Err(invalid("landtype contains no valid values".to_string()));
-    }
+    let maxlc = landtype_global_maxlc(
+        path,
+        source_identity.as_ref(),
+        &variable,
+        lat_lon,
+        src_nlon,
+        src_nlat,
+        &missing,
+    )?;
     Ok(LandtypeMaskSource {
         path: path.to_path_buf(),
         nlon: src_nlon,
@@ -825,7 +1363,7 @@ fn apply_landtype_basic_thresholds_from_source(
         }
     }
 
-    let mut bins = LandtypeBinStats::new(field);
+    let mut bins = LandtypeBinStats::new(field, None);
 
     for src_i in 0..src_nlon {
         let lon = source_longitude(src_i, src_nlon, None);
@@ -848,12 +1386,7 @@ fn apply_landtype_basic_thresholds_from_bins(
     domain: Option<&HfieldDomainMask>,
 ) -> io::Result<usize> {
     let len = field.nlon() * field.nlat();
-    if bins.total.len() != len
-        || bins.ocean.len() != len
-        || bins.land.len() != len
-        || bins.distinct.len() != len
-        || bins.class_counts.len() != len
-    {
+    if bins.hfield_len != len || bins.slot_by_hfield.len() != len {
         return Err(invalid(
             "landtype HField bin count does not match the target field".to_string(),
         ));
@@ -861,10 +1394,8 @@ fn apply_landtype_basic_thresholds_from_bins(
 
     let mut applied = 0usize;
     if has_land_thresholds(refine, mesh_type) && refine.refine_num_landtypes {
-        let active = bins
-            .distinct
-            .iter()
-            .map(|classes| classes.len() as i32 > refine.th_num_landtypes)
+        let active = (0..len)
+            .map(|idx| bins.distinct_at(idx) as i32 > refine.th_num_landtypes)
             .collect::<Vec<_>>();
         min_with_bool_matrix(field, &active, h_inside, domain);
         applied += 1;
@@ -872,9 +1403,8 @@ fn apply_landtype_basic_thresholds_from_bins(
     if has_land_thresholds(refine, mesh_type) && refine.refine_area_mainland {
         let active = (0..len)
             .map(|idx| {
-                bins.land[idx] > 0
-                    && (bins.class_counts[idx].values().copied().max().unwrap_or(0) as f64
-                        / bins.land[idx] as f64)
+                bins.land_at(idx) > 0
+                    && (bins.max_class_count_at(idx) as f64 / bins.land_at(idx) as f64)
                         < refine.th_area_mainland
             })
             .collect::<Vec<_>>();
@@ -884,8 +1414,8 @@ fn apply_landtype_basic_thresholds_from_bins(
     if has_ocean_thresholds(refine, mesh_type) {
         let active = (0..len)
             .map(|idx| {
-                bins.total[idx] > 0 && {
-                    let ratio = bins.ocean[idx] as f64 / bins.total[idx] as f64;
+                bins.total_at(idx) > 0 && {
+                    let ratio = bins.ocean_at(idx) as f64 / bins.total_at(idx) as f64;
                     ratio > refine.th_sea_ratio[0] && ratio < refine.th_sea_ratio[1]
                 }
             })
@@ -923,6 +1453,7 @@ pub(crate) fn build_composed_hfield(
         } else {
             None
         };
+        let mut threshold_stats_cache = ThresholdStatsCache::new();
         apply_mean_threshold_hfield_contributions_with_landtype_mask(
             &mut field,
             refine,
@@ -932,6 +1463,7 @@ pub(crate) fn build_composed_hfield(
             options.g,
             landtype_mask.as_ref(),
             domain.as_ref(),
+            &mut threshold_stats_cache,
         )?;
         apply_std_threshold_hfield_contributions_with_landtype_mask(
             &mut field,
@@ -942,6 +1474,7 @@ pub(crate) fn build_composed_hfield(
             options.g,
             landtype_mask.as_ref(),
             domain.as_ref(),
+            &mut threshold_stats_cache,
         )?;
         apply_landtype_basic_threshold_hfield_contributions(
             &mut field,
@@ -988,11 +1521,14 @@ struct ThresholdStats {
     stddev: Vec<f64>,
 }
 
+type ThresholdStatsCache = HashMap<(String, String), ThresholdStats>;
+
 fn read_threshold_stats_on_hfield_masked(
     file: &netcdf::File,
     name: &str,
     field: &HField,
     landtype_mask: Option<&LandtypeMaskSource>,
+    domain: Option<&HfieldDomainMask>,
 ) -> io::Result<ThresholdStats> {
     let variable = file.variable(name).ok_or_else(|| {
         io::Error::new(
@@ -1038,6 +1574,24 @@ fn read_threshold_stats_on_hfield_masked(
         threshold_latitude_order(file, &dims[usize::from(!lat_lon)].name(), src_nlat)?;
     let longitudes =
         threshold_longitude_coordinates(file, &dims[usize::from(lat_lon)].name(), src_nlon)?;
+    let (active_lon, active_lat) = active_hfield_axes(field, domain);
+    let len = field.nlon() * field.nlat();
+    if !active_lon.iter().any(|active| *active) || !active_lat.iter().any(|active| *active) {
+        return Ok(ThresholdStats {
+            mean: vec![0.0; len],
+            stddev: vec![0.0; len],
+        });
+    }
+    let (canonical_lat_start, canonical_lat_end, lat_start, lat_count) =
+        active_source_latitude_window(field, &active_lat, src_nlat, latitude_order)?;
+    let active_local_lat = (0..lat_count)
+        .filter_map(|local_file_j| {
+            let file_j = lat_start + local_file_j;
+            let src_j = canonical_latitude_index(latitude_order, file_j, src_nlat);
+            let (_, field_j) = landtype_hfield_indices(0.0, src_j, src_nlat, field);
+            active_lat[field_j].then_some((local_file_j, src_j, field_j))
+        })
+        .collect::<Vec<_>>();
     let mask_file = landtype_mask
         .map(|mask| crate::open_netcdf(&mask.path).map_err(crate::netcdf_to_io_error))
         .transpose()?;
@@ -1049,16 +1603,38 @@ fn read_threshold_stats_on_hfield_masked(
                 .ok_or_else(|| invalid("missing landtype variable".to_string()))
         })
         .transpose()?;
+    let mask_lat_window = landtype_mask.map(|mask| {
+        let mask_canonical_start = scaled_source_index(canonical_lat_start, src_nlat, mask.nlat);
+        let mask_canonical_end = scaled_source_index(canonical_lat_end, src_nlat, mask.nlat);
+        let mask_lat_count = mask_canonical_end - mask_canonical_start + 1;
+        let mask_lat_start = match mask.latitude_order {
+            LatitudeOrder::NorthToSouth => mask_canonical_start,
+            LatitudeOrder::SouthToNorth => mask.nlat - 1 - mask_canonical_end,
+        };
+        (mask_lat_start, mask_lat_count)
+    });
 
-    let len = field.nlon() * field.nlat();
     let mut count = vec![0usize; len];
     let mut sum = vec![0.0; len];
     let mut sumsq = vec![0.0; len];
-    const TILE_LON: usize = 128;
-    for lon_start in (0..src_nlon).step_by(TILE_LON) {
-        let lon_count = TILE_LON.min(src_nlon - lon_start);
-        let raw = threshold_tile(&variable, lat_lon, lon_start, lon_count, 0, src_nlat, name)?;
-        crate::require_len(name, raw.len(), lon_count * src_nlat)?;
+    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 128);
+    for lon_start in (0..src_nlon).step_by(tile_lon) {
+        let lon_count = tile_lon.min(src_nlon - lon_start);
+        let active_local_lon = (0..lon_count)
+            .filter_map(|local_i| {
+                let src_i = lon_start + local_i;
+                let lon = source_longitude(src_i, src_nlon, longitudes.as_deref());
+                let (field_i, _) = landtype_hfield_indices(lon, 0, src_nlat, field);
+                active_lon[field_i].then_some((local_i, src_i, field_i))
+            })
+            .collect::<Vec<_>>();
+        if active_local_lon.is_empty() {
+            continue;
+        }
+        let raw = threshold_tile(
+            &variable, lat_lon, lon_start, lon_count, lat_start, lat_count, name,
+        )?;
+        crate::require_len(name, raw.len(), lon_count * lat_count)?;
         let mask_window =
             if let (Some(mask), Some(mask_variable)) = (landtype_mask, mask_variable.as_ref()) {
                 let indices = (0..lon_count)
@@ -1086,26 +1662,33 @@ fn read_threshold_stats_on_hfield_masked(
                     vec![(0, low_max + 1), (high_min, mask.nlon - high_min)]
                 };
                 let mut windows = Vec::with_capacity(ranges.len());
+                let (mask_lat_start, mask_lat_count) =
+                    mask_lat_window.expect("mask latitude window exists");
                 for (start, count) in ranges {
                     windows.push((
                         start,
                         count,
-                        landtype_tile(mask_variable, mask.lat_lon, start, count, 0, mask.nlat)?,
+                        landtype_tile(
+                            mask_variable,
+                            mask.lat_lon,
+                            start,
+                            count,
+                            mask_lat_start,
+                            mask_lat_count,
+                        )?,
                     ));
                 }
-                Some((indices, windows))
+                Some((indices, windows, mask_lat_start, mask_lat_count))
             } else {
                 None
             };
 
-        for local_i in 0..lon_count {
-            let src_i = lon_start + local_i;
-            for file_j in 0..src_nlat {
-                let src_j = match latitude_order {
-                    LatitudeOrder::NorthToSouth => file_j,
-                    LatitudeOrder::SouthToNorth => src_nlat - 1 - file_j,
-                };
-                if let (Some(mask), Some((mask_indices, windows))) =
+        for &(local_i, _src_i, field_i) in &active_local_lon {
+            for &(local_file_j, src_j, field_j) in &active_local_lat {
+                if domain.is_some_and(|domain| !domain.is_active(field_i, field_j)) {
+                    continue;
+                }
+                if let (Some(mask), Some((mask_indices, windows, mask_lat_start, mask_lat_count))) =
                     (landtype_mask, mask_window.as_ref())
                 {
                     let mask_i = mask_indices[local_i];
@@ -1118,22 +1701,22 @@ fn read_threshold_stats_on_hfield_masked(
                         })
                         .expect("mask longitude index belongs to a loaded window");
                     let local_mask_i = mask_i - *first_i;
+                    let local_file_mask_j = file_mask_j - *mask_lat_start;
                     let mask_index = if mask.lat_lon {
-                        file_mask_j * *mask_nlon + local_mask_i
+                        local_file_mask_j * *mask_nlon + local_mask_i
                     } else {
-                        local_mask_i * mask.nlat + file_mask_j
+                        local_mask_i * *mask_lat_count + local_file_mask_j
                     };
                     if mask.excludes(values[mask_index]) {
                         continue;
                     }
                 }
                 let raw_index = if lat_lon {
-                    file_j * lon_count + local_i
+                    local_file_j * lon_count + local_i
                 } else {
-                    local_i * src_nlat + file_j
+                    local_i * lat_count + local_file_j
                 };
-                let lon = source_longitude(src_i, src_nlon, longitudes.as_deref());
-                let out = landtype_hfield_bin(lon, src_j, src_nlat, field);
+                let out = field_i * field.nlat() + field_j;
                 let value = raw[raw_index];
                 count[out] += 1;
                 sum[out] += value;
@@ -1158,6 +1741,9 @@ fn read_threshold_stats_on_hfield_masked(
     for i in 0..field.nlon() {
         let src_i = nearest_longitude_index(field.lon_center(i), src_nlon, longitudes.as_deref());
         for j in 0..field.nlat() {
+            if domain.is_some_and(|domain| !domain.is_active(i, j)) {
+                continue;
+            }
             let out = i * field.nlat() + j;
             if count[out] == 0 {
                 let src_j = scaled_hfield_center_index(field.lat_center(j), src_nlat, false);
@@ -1427,6 +2013,29 @@ fn min_with_bool_matrix(
 mod tests {
     use super::*;
     use earthmesh_mesh::LonLatDegrees;
+
+    fn test_landtype_global_maxlc(path: &Path) -> i32 {
+        read_landtype_mask_source_for_hfield(path).unwrap().maxlc
+    }
+
+    fn clear_test_landtype_maxlc_memory_cache(path: &Path) -> LandtypeMaxlcIdentity {
+        let identity = landtype_maxlc_cache_identity(path).unwrap().unwrap();
+        landtype_maxlc_cache().lock().unwrap().remove(&identity);
+        identity
+    }
+
+    fn test_landtype_maxlc_scan_count(identity: &LandtypeMaxlcIdentity) -> usize {
+        landtype_maxlc_scan_counts()
+            .lock()
+            .unwrap()
+            .get(identity)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn test_landtype_maxlc_cache_path(identity: &LandtypeMaxlcIdentity) -> PathBuf {
+        landtype_maxlc_cache_path(&landtype_maxlc_cache_directories()[0], identity)
+    }
 
     #[test]
     fn absent_group_and_disabled_group_read_as_none() {
@@ -1770,9 +2379,14 @@ mod tests {
 
             let mask = read_landtype_mask_source_for_hfield(&mask_path).unwrap();
             let threshold_file = crate::open_netcdf(&threshold_path).unwrap();
-            let actual =
-                read_threshold_stats_on_hfield_masked(&threshold_file, "lai", &field, Some(&mask))
-                    .unwrap();
+            let actual = read_threshold_stats_on_hfield_masked(
+                &threshold_file,
+                "lai",
+                &field,
+                Some(&mask),
+                None,
+            )
+            .unwrap();
 
             assert_eq!(actual.mean, expected.mean, "mean mismatch for {case}");
             assert_eq!(actual.stddev, expected.stddev, "std mismatch for {case}");
@@ -1800,7 +2414,8 @@ mod tests {
 
         let same_resolution = HField::uniform(4, 2, 100.0).unwrap();
         let stats =
-            read_threshold_stats_on_hfield_masked(&file, "lai", &same_resolution, None).unwrap();
+            read_threshold_stats_on_hfield_masked(&file, "lai", &same_resolution, None, None)
+                .unwrap();
         assert_eq!(
             stats.mean[1], 10.0,
             "north value must land in north HField bin"
@@ -1812,7 +2427,8 @@ mod tests {
 
         let finer_latitude = HField::uniform(4, 4, 100.0).unwrap();
         let stats =
-            read_threshold_stats_on_hfield_masked(&file, "lai", &finer_latitude, None).unwrap();
+            read_threshold_stats_on_hfield_masked(&file, "lai", &finer_latitude, None, None)
+                .unwrap();
         assert_eq!(
             stats.mean[2], 10.0,
             "empty northern bin inherits northern source"
@@ -1822,6 +2438,74 @@ mod tests {
             "empty southern bin inherits southern source"
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fine_active_row_without_source_center_uses_nearest_threshold_and_landtype_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_fine_active_row_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let field = HField::uniform(4, 4, 100.0).unwrap();
+        let mut active = vec![false; field.nlon() * field.nlat()];
+        for i in 0..field.nlon() {
+            active[i * field.nlat()] = true;
+        }
+        let domain = HfieldDomainMask {
+            nlon: field.nlon(),
+            nlat: field.nlat(),
+            active,
+        };
+        let (_, active_lat) = active_hfield_axes(&field, Some(&domain));
+        assert_eq!(
+            active_source_latitude_window(&field, &active_lat, 2, LatitudeOrder::NorthToSouth,)
+                .unwrap(),
+            (1, 1, 1, 1),
+            "fine southern row must select its nearest coarse source row"
+        );
+
+        let threshold_path = root.join("lai.nc");
+        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        threshold_file.add_dimension("longitude", 4).unwrap();
+        threshold_file.add_dimension("latitude", 2).unwrap();
+        threshold_file
+            .add_variable::<f64>("lai", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[10.0, 1.0, 10.0, 1.0, 10.0, 1.0, 10.0, 1.0], (.., ..))
+            .unwrap();
+        drop(threshold_file);
+        let threshold_file = crate::open_netcdf(&threshold_path).unwrap();
+        let stats = read_threshold_stats_on_hfield_masked(
+            &threshold_file,
+            "lai",
+            &field,
+            None,
+            Some(&domain),
+        )
+        .unwrap();
+        for i in 0..field.nlon() {
+            assert_eq!(stats.mean[i * field.nlat()], 1.0);
+        }
+
+        let landtype_path = root.join("landtype.nc");
+        let mut landtype_file = crate::create_netcdf_quiet(&landtype_path).unwrap();
+        landtype_file.add_dimension("longitude", 4).unwrap();
+        landtype_file.add_dimension("latitude", 2).unwrap();
+        landtype_file
+            .add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[9, 1, 2, 1, 2, 1, 2, 1], (.., ..))
+            .unwrap();
+        drop(landtype_file);
+        let bins = read_landtype_source_for_hfield(&landtype_path, &field, Some(&domain)).unwrap();
+        for i in 0..field.nlon() {
+            assert!(bins.contains_class(i * field.nlat(), 1));
+        }
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1848,13 +2532,15 @@ mod tests {
 
         let same_resolution = HField::uniform(4, 2, 100.0).unwrap();
         let stats =
-            read_threshold_stats_on_hfield_masked(&file, "lai", &same_resolution, None).unwrap();
+            read_threshold_stats_on_hfield_masked(&file, "lai", &same_resolution, None, None)
+                .unwrap();
         assert_eq!(stats.mean[1], 10.0, "north row follows coordinate values");
         assert_eq!(stats.mean[0], 1.0, "south row follows coordinate values");
 
         let finer_latitude = HField::uniform(4, 4, 100.0).unwrap();
         let stats =
-            read_threshold_stats_on_hfield_masked(&file, "lai", &finer_latitude, None).unwrap();
+            read_threshold_stats_on_hfield_masked(&file, "lai", &finer_latitude, None, None)
+                .unwrap();
         assert_eq!(stats.mean[2], 10.0, "nearest fallback preserves north");
         assert_eq!(stats.mean[0], 1.0, "nearest fallback preserves south");
         let _ = std::fs::remove_file(path);
@@ -1895,7 +2581,8 @@ mod tests {
             drop(file);
             let file = crate::open_netcdf(&path).unwrap();
             let field = HField::uniform(4, 2, 100.0).unwrap();
-            let stats = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None).unwrap();
+            let stats =
+                read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap();
             assert_eq!(
                 [stats.mean[1], stats.mean[3], stats.mean[5], stats.mean[7]],
                 [30.0, 40.0, 10.0, 20.0],
@@ -1918,8 +2605,94 @@ mod tests {
         drop(file);
         let file = crate::open_netcdf(&path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let error = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None).unwrap_err();
+        let error =
+            read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap_err();
         assert!(error.to_string().contains("strictly monotonic"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn regional_threshold_stats_match_full_scan_across_dateline() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_threshold_regional_dateline_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let threshold_path = root.join("threshold.nc");
+        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        threshold_file.add_dimension("longitude", 8).unwrap();
+        threshold_file.add_dimension("latitude", 4).unwrap();
+        threshold_file
+            .add_variable::<f64>("longitude", &["longitude"])
+            .unwrap()
+            .put_values(&[0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0], ..)
+            .unwrap();
+        let values = (0..32).map(|value| value as f64).collect::<Vec<_>>();
+        threshold_file
+            .add_variable::<f64>("lai", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&values, (.., ..))
+            .unwrap();
+        drop(threshold_file);
+
+        let mask_path = root.join("mask.nc");
+        let mut mask_file = crate::create_netcdf_quiet(&mask_path).unwrap();
+        mask_file.add_dimension("longitude", 8).unwrap();
+        mask_file.add_dimension("latitude", 4).unwrap();
+        mask_file
+            .add_variable::<f64>("longitude", &["longitude"])
+            .unwrap()
+            .put_values(&[0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0], ..)
+            .unwrap();
+        let mut mask_values = vec![1_i8; 32];
+        mask_values[4] = 9;
+        mask_file
+            .add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&mask_values, (.., ..))
+            .unwrap();
+        drop(mask_file);
+
+        let field = HField::uniform(8, 4, 100.0).unwrap();
+        let domain = HfieldDomainMask::new(
+            8,
+            4,
+            &GridRegion::Bbox {
+                west: 135.0,
+                east: -135.0,
+                south: -45.0,
+                north: 45.0,
+            },
+        );
+        let mask = read_landtype_mask_source_for_hfield(&mask_path).unwrap();
+        let threshold_file = crate::open_netcdf(&threshold_path).unwrap();
+        let global = read_threshold_stats_on_hfield_masked(
+            &threshold_file,
+            "lai",
+            &field,
+            Some(&mask),
+            None,
+        )
+        .unwrap();
+        let regional = read_threshold_stats_on_hfield_masked(
+            &threshold_file,
+            "lai",
+            &field,
+            Some(&mask),
+            Some(&domain),
+        )
+        .unwrap();
+
+        for i in 0..field.nlon() {
+            for j in 0..field.nlat() {
+                let out = i * field.nlat() + j;
+                if domain.is_active(i, j) {
+                    assert_eq!(regional.mean[out], global.mean[out], "mean ({i},{j})");
+                    assert_eq!(regional.stddev[out], global.stddev[out], "std ({i},{j})");
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1957,8 +2730,8 @@ mod tests {
             drop(file);
             let file = crate::open_netcdf(&path).unwrap();
             let field = HField::uniform(4, 4, 100.0).unwrap();
-            let error =
-                read_threshold_stats_on_hfield_masked(&file, "lai", &field, None).expect_err(case);
+            let error = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None)
+                .expect_err(case);
             assert!(
                 error.to_string().contains("missing/non-finite"),
                 "{case}: {error}"
@@ -1984,7 +2757,8 @@ mod tests {
         drop(file);
         let file = crate::open_netcdf(&path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let error = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None).unwrap_err();
+        let error =
+            read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap_err();
         assert!(error.to_string().contains("missing/non-finite"), "{error}");
         let _ = std::fs::remove_file(path);
     }
@@ -2006,7 +2780,8 @@ mod tests {
         drop(file);
         let file = crate::open_netcdf(&path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let error = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None).unwrap_err();
+        let error =
+            read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap_err();
         assert!(error.to_string().contains("missing/non-finite"), "{error}");
         let _ = std::fs::remove_file(path);
     }
@@ -2028,7 +2803,8 @@ mod tests {
         drop(file);
         let file = crate::open_netcdf(&path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let error = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None).unwrap_err();
+        let error =
+            read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap_err();
         assert!(error
             .to_string()
             .contains("identify longitude and latitude axes"));
@@ -2074,8 +2850,203 @@ mod tests {
     }
 
     #[test]
+    fn mean_and_std_thresholds_share_one_stats_read_without_reordering_limiters() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_lai_mean_std_cache_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("lai.nc");
+        let values = vec![
+            0.0_f64, 0.0, 2.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 8).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        file.add_variable::<f64>("lai", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&values, (.., ..))
+            .unwrap();
+        drop(file);
+
+        let mut refine = RefineConfig {
+            threshold_dir: root.display().to_string(),
+            ..RefineConfig::default()
+        };
+        refine.refine_onelayer_lnd[0] = true;
+        refine.refine_onelayer_lnd[1] = true;
+        refine.th_onelayer_lnd[0] = 1.0;
+        refine.th_onelayer_lnd[1] = 1.0;
+        let mut actual = HField::uniform(4, 2, 100.0).unwrap();
+        let mut cache = ThresholdStatsCache::new();
+
+        apply_mean_threshold_hfield_contributions_with_landtype_mask(
+            &mut actual,
+            &refine,
+            "landmesh",
+            100.0,
+            1,
+            10.0,
+            None,
+            None,
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(cache.len(), 1);
+        apply_std_threshold_hfield_contributions_with_landtype_mask(
+            &mut actual,
+            &refine,
+            "landmesh",
+            100.0,
+            1,
+            10.0,
+            None,
+            None,
+            &mut cache,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cache.len(),
+            1,
+            "mean/std must reuse the same ThresholdStats"
+        );
+        assert_eq!(actual.get(1, 1), 50.0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn continuous_thresholds_do_not_open_placeholder_landtype_source() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_continuous_without_landtype_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let threshold_path = root.join("lai.nc");
+        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        threshold_file.add_dimension("longitude", 4).unwrap();
+        threshold_file.add_dimension("latitude", 2).unwrap();
+        threshold_file
+            .add_variable::<f64>("lai", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[10.0; 8], (.., ..))
+            .unwrap();
+        drop(threshold_file);
+
+        let mut refine = RefineConfig {
+            refine_cal: true,
+            threshold_dir: root.display().to_string(),
+            ..RefineConfig::default()
+        };
+        refine.refine_onelayer_lnd[0] = true;
+        refine.th_onelayer_lnd[0] = 1.0;
+        let config = EarthmeshConfig {
+            landtype_file: "/tmp".to_string(),
+            ..EarthmeshConfig::default()
+        };
+        let options = HfieldRefineOptions {
+            g: 10.0,
+            max_level: Some(1),
+            base_m: Some(100.0),
+            geographic_origin: None,
+            nlon: 4,
+            nlat: 2,
+            target_cells_geojson: None,
+            target_levels_json: None,
+        };
+
+        let field = build_composed_hfield(
+            &[],
+            &refine,
+            "landmesh",
+            Some(&config),
+            100.0,
+            &options,
+            1,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(field.values(), &[50.0; 8]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn continuous_thresholds_keep_real_landtype_maxlc_mask_without_landtype_criteria() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_continuous_real_landtype_mask_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let threshold_path = root.join("lai.nc");
+        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        threshold_file.add_dimension("longitude", 4).unwrap();
+        threshold_file.add_dimension("latitude", 2).unwrap();
+        threshold_file
+            .add_variable::<f64>("lai", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[10.0; 8], (.., ..))
+            .unwrap();
+        drop(threshold_file);
+        let landtype_path = root.join("landtype.nc");
+        let mut landtype_file = crate::create_netcdf_quiet(&landtype_path).unwrap();
+        landtype_file.add_dimension("longitude", 4).unwrap();
+        landtype_file.add_dimension("latitude", 2).unwrap();
+        landtype_file
+            .add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[9, 1, 1, 1, 1, 1, 1, 1], (.., ..))
+            .unwrap();
+        drop(landtype_file);
+
+        let mut refine = RefineConfig {
+            refine_cal: true,
+            threshold_dir: root.display().to_string(),
+            ..RefineConfig::default()
+        };
+        refine.refine_onelayer_lnd[0] = true;
+        refine.th_onelayer_lnd[0] = 1.0;
+        let config = EarthmeshConfig {
+            landtype_file: landtype_path.display().to_string(),
+            ..EarthmeshConfig::default()
+        };
+        let options = HfieldRefineOptions {
+            g: 10.0,
+            max_level: Some(1),
+            base_m: Some(100.0),
+            geographic_origin: None,
+            nlon: 4,
+            nlat: 2,
+            target_cells_geojson: None,
+            target_levels_json: None,
+        };
+
+        let field = build_composed_hfield(
+            &[],
+            &refine,
+            "landmesh",
+            Some(&config),
+            100.0,
+            &options,
+            1,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(field.get(0, 1), 100.0, "maxlc pixel remains masked");
+        assert_eq!(field.get(0, 0), 50.0, "valid land pixel still refines");
+        let identity = landtype_maxlc_cache_identity(&landtype_path)
+            .unwrap()
+            .unwrap();
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn landtype_basic_thresholds_contribute_to_hfield() {
-        let mut field = HField::uniform(4, 2, 100.0).unwrap();
         let landtypes = vec![
             vec![0, 0, 0],
             vec![0, 1, 1],
@@ -2096,24 +3067,30 @@ mod tests {
             th_sea_ratio: [0.4, 0.6],
             ..RefineConfig::default()
         };
-        assert!(has_threshold_hfield_sources(&refine, "earthmesh"));
-
-        let applied = apply_landtype_basic_thresholds_from_source(
-            &mut field,
-            &landtypes,
-            9,
-            &refine,
+        for mesh_type in [
+            "landmesh",
+            "oceanmesh",
+            "atmos",
+            "atmosmesh",
+            "LOCmesh",
             "earthmesh",
-            25.0,
-        )
-        .unwrap();
+        ] {
+            assert!(has_threshold_hfield_sources(&refine, mesh_type));
+            let mut field = HField::uniform(4, 2, 100.0).unwrap();
+            let applied = apply_landtype_basic_thresholds_from_source(
+                &mut field, &landtypes, 9, &refine, mesh_type, 25.0,
+            )
+            .unwrap();
 
-        assert_eq!(applied, 3);
-        assert_eq!(field.get(0, 1), 25.0);
-        assert_eq!(field.get(2, 1), 25.0);
-        assert_eq!(field.get(1, 1), 100.0);
+            assert_eq!(applied, 3, "{mesh_type}");
+            assert_eq!(field.get(0, 1), 25.0, "{mesh_type}");
+            assert_eq!(field.get(2, 1), 25.0, "{mesh_type}");
+            assert_eq!(field.get(1, 1), 100.0, "{mesh_type}");
+        }
 
         refine.refine_num_landtypes = false;
+        refine.refine_area_mainland = false;
+        refine.refine_sea_ratio = false;
         assert!(!has_threshold_hfield_sources(&refine, "atmosmesh"));
     }
 
@@ -2190,7 +3167,7 @@ mod tests {
             drop(file);
 
             let mut actual = HField::uniform(4, 2, 100.0).unwrap();
-            let stats = read_landtype_source_for_hfield(&path, &actual).unwrap();
+            let stats = read_landtype_source_for_hfield(&path, &actual, None).unwrap();
             let applied = apply_landtype_basic_thresholds_from_bins(
                 &mut actual,
                 &stats,
@@ -2232,12 +3209,371 @@ mod tests {
         drop(file);
 
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let bins = read_landtype_source_for_hfield(&path, &field).unwrap();
+        let bins = read_landtype_source_for_hfield(&path, &field, None).unwrap();
         for i in 0..4 {
-            assert_eq!(bins.ocean[i * 2], 1, "south row {i}");
-            assert_eq!(bins.land[i * 2 + 1], 1, "north row {i}");
+            assert_eq!(bins.ocean_at(i * 2), 1, "south row {i}");
+            assert_eq!(bins.land_at(i * 2 + 1), 1, "north row {i}");
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn regional_landtype_stream_reads_only_active_hfield_bins() {
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_regional_{}.nc",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 8).unwrap();
+        file.add_dimension("latitude", 4).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1; 32], (.., ..))
+            .unwrap();
+        drop(file);
+
+        let field = HField::uniform(8, 4, 100.0).unwrap();
+        let domain = HfieldDomainMask::new(
+            8,
+            4,
+            &GridRegion::Bbox {
+                west: 0.0,
+                east: 90.0,
+                south: 0.0,
+                north: 90.0,
+            },
+        );
+        let bins = read_landtype_source_for_hfield(&path, &field, Some(&domain)).unwrap();
+
+        assert_eq!(bins.total_samples(), 4);
+        for i in 0..field.nlon() {
+            for j in 0..field.nlat() {
+                assert_eq!(
+                    bins.total_at(i * field.nlat() + j),
+                    usize::from(domain.is_active(i, j))
+                );
+            }
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn landtype_global_maxlc_persistent_cache_hits_after_memory_cache_is_cleared() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_sidecar_hit_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype.nc");
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 4).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1, 2, 9, 1, 1, 1, 1, 1], (.., ..))
+            .unwrap();
+        drop(file);
+
+        assert_eq!(test_landtype_global_maxlc(&path), 9);
+        let identity = clear_test_landtype_maxlc_memory_cache(&path);
+        assert_eq!(test_landtype_maxlc_scan_count(&identity), 1);
+        assert_eq!(test_landtype_global_maxlc(&path), 9);
+        assert_eq!(test_landtype_maxlc_scan_count(&identity), 1);
+        assert_eq!(
+            read_landtype_maxlc_cache(&identity),
+            Some(9),
+            "the second lookup must be served by the exact persisted record"
+        );
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn landtype_global_maxlc_cache_hits_when_source_directory_is_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_read_only_cache_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype.nc");
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 4).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1, 2, 5, 1, 1, 1, 1, 1], (.., ..))
+            .unwrap();
+        drop(file);
+
+        let identity = clear_test_landtype_maxlc_memory_cache(&path);
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let original_permissions = std::fs::metadata(&root).unwrap().permissions();
+        let mut read_only = original_permissions.clone();
+        read_only.set_mode(0o555);
+        std::fs::set_permissions(&root, read_only).unwrap();
+
+        assert_eq!(test_landtype_global_maxlc(&path), 5);
+        clear_test_landtype_maxlc_memory_cache(&path);
+        assert_eq!(test_landtype_global_maxlc(&path), 5);
+        assert_eq!(
+            test_landtype_maxlc_scan_count(&identity),
+            1,
+            "the persistent user cache must not depend on source-directory writes"
+        );
+
+        std::fs::set_permissions(&root, original_permissions).unwrap();
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_landtype_maxlc_cache_writers_leave_one_valid_record() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_concurrent_cache_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype.nc");
+        std::fs::write(&path, b"identity-only fixture").unwrap();
+        let identity = landtype_maxlc_cache_identity(&path).unwrap().unwrap();
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+
+        let writers = (0..4)
+            .map(|_| {
+                let identity = identity.clone();
+                std::thread::spawn(move || write_landtype_maxlc_cache(&identity, 9))
+            })
+            .collect::<Vec<_>>();
+        for writer in writers {
+            writer.join().unwrap().unwrap();
+        }
+
+        assert_eq!(read_landtype_maxlc_cache(&identity), Some(9));
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn landtype_open_rejects_path_replacement_before_binding_cache_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_open_identity_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype.nc");
+        let replacement = root.join("replacement.nc");
+        for (fixture, nlon) in [(&path, 4), (&replacement, 5)] {
+            let mut file = crate::create_netcdf_quiet(fixture).unwrap();
+            file.add_dimension("longitude", nlon).unwrap();
+            file.add_dimension("latitude", 2).unwrap();
+            file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+                .unwrap()
+                .put_values(&vec![1_i8; nlon * 2], (.., ..))
+                .unwrap();
+        }
+
+        let error = match open_landtype_netcdf_with(&path, |path| {
+            std::fs::remove_file(path)?;
+            std::fs::rename(&replacement, path)?;
+            crate::open_netcdf(path).map_err(crate::netcdf_to_io_error)
+        }) {
+            Ok(_) => panic!("a replaced path must not be bound to the old cache identity"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("changed while opening NetCDF"),
+            "{error}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn landtype_global_maxlc_persistent_cache_invalidates_when_source_identity_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_sidecar_invalidate_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype.nc");
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 4).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1, 2, 3, 1, 1, 1, 1, 1], (.., ..))
+            .unwrap();
+        drop(file);
+
+        assert_eq!(test_landtype_global_maxlc(&path), 3);
+        let old_identity = clear_test_landtype_maxlc_memory_cache(&path);
+        let old_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut file = netcdf::append(&path).unwrap();
+        file.variable_mut("landtype")
+            .unwrap()
+            .put_value(7, (0, 0))
+            .unwrap();
+        drop(file);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old_modified + std::time::Duration::from_secs(1))
+            .unwrap();
+        let new_identity = clear_test_landtype_maxlc_memory_cache(&path);
+        assert_ne!(new_identity, old_identity);
+
+        assert_eq!(test_landtype_global_maxlc(&path), 7);
+        assert_eq!(test_landtype_maxlc_scan_count(&old_identity), 1);
+        assert_eq!(test_landtype_maxlc_scan_count(&new_identity), 1);
+        assert_eq!(read_landtype_maxlc_cache(&new_identity), Some(7));
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&new_identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn landtype_global_maxlc_recovers_exactly_from_a_corrupt_sidecar() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_sidecar_corrupt_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype.nc");
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 4).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1, 2, 6, 1, 1, 1, 1, 1], (.., ..))
+            .unwrap();
+        drop(file);
+
+        assert_eq!(test_landtype_global_maxlc(&path), 6);
+        let identity = clear_test_landtype_maxlc_memory_cache(&path);
+        std::fs::write(test_landtype_maxlc_cache_path(&identity), b"not valid json").unwrap();
+
+        assert_eq!(test_landtype_global_maxlc(&path), 6);
+        assert_eq!(test_landtype_maxlc_scan_count(&identity), 2);
+        clear_test_landtype_maxlc_memory_cache(&path);
+        assert_eq!(test_landtype_global_maxlc(&path), 6);
+        assert_eq!(
+            test_landtype_maxlc_scan_count(&identity),
+            2,
+            "the exact recovery scan must replace the corrupt sidecar"
+        );
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn regional_landtype_stream_excludes_the_global_not_local_maxlc() {
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_landtype_regional_maxlc_{}.nc",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 8).unwrap();
+        file.add_dimension("latitude", 4).unwrap();
+        let mut values = vec![1_i8; 32];
+        values[0] = 9; // True global maxlc, outside the regional window.
+        values[4 * 4] = 2; // Largest regional class; it must remain a valid class.
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&values, (.., ..))
+            .unwrap();
+        drop(file);
+
+        let field = HField::uniform(8, 4, 100.0).unwrap();
+        let domain = HfieldDomainMask::new(
+            8,
+            4,
+            &GridRegion::Bbox {
+                west: 0.0,
+                east: 90.0,
+                south: 0.0,
+                north: 90.0,
+            },
+        );
+        let bins = read_landtype_source_for_hfield(&path, &field, Some(&domain)).unwrap();
+
+        assert!(
+            bins.contains_class(4 * field.nlat() + 3, 2),
+            "a regional maximum is a valid class when a larger global maxlc exists"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn subcell_region_without_active_hfield_centers_has_no_threshold_contribution() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_empty_subcell_region_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let landtype_path = root.join("landtype.nc");
+        let mut landtype_file = crate::create_netcdf_quiet(&landtype_path).unwrap();
+        landtype_file.add_dimension("longitude", 8).unwrap();
+        landtype_file.add_dimension("latitude", 4).unwrap();
+        landtype_file
+            .add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1_i8; 32], (.., ..))
+            .unwrap();
+        drop(landtype_file);
+
+        let threshold_path = root.join("threshold.nc");
+        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        threshold_file.add_dimension("longitude", 8).unwrap();
+        threshold_file.add_dimension("latitude", 4).unwrap();
+        threshold_file
+            .add_variable::<f64>("lai", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1.0_f64; 32], (.., ..))
+            .unwrap();
+        drop(threshold_file);
+
+        let field = HField::uniform(8, 4, 100.0).unwrap();
+        let domain = HfieldDomainMask::new(
+            8,
+            4,
+            &GridRegion::Bbox {
+                west: 0.0,
+                east: 1.0,
+                south: 0.0,
+                north: 1.0,
+            },
+        );
+        assert!((0..field.nlon()).all(|i| (0..field.nlat()).all(|j| !domain.is_active(i, j))));
+
+        let bins = read_landtype_source_for_hfield(&landtype_path, &field, Some(&domain)).unwrap();
+        assert_eq!(bins.total_samples(), 0);
+
+        let threshold_file = crate::open_netcdf(&threshold_path).unwrap();
+        let stats = read_threshold_stats_on_hfield_masked(
+            &threshold_file,
+            "lai",
+            &field,
+            None,
+            Some(&domain),
+        )
+        .unwrap();
+        assert_eq!(stats.mean, vec![0.0; field.nlon() * field.nlat()]);
+        assert_eq!(stats.stddev, vec![0.0; field.nlon() * field.nlat()]);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2261,9 +3597,9 @@ mod tests {
         drop(file);
 
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let bins = read_landtype_source_for_hfield(&path, &field).unwrap();
+        let bins = read_landtype_source_for_hfield(&path, &field, None).unwrap();
         for (i, expected) in [3, 4, 1, 2].into_iter().enumerate() {
-            assert!(bins.distinct[i * 2 + 1].contains(&expected), "bin {i}");
+            assert!(bins.contains_class(i * 2 + 1, expected), "bin {i}");
         }
         let _ = std::fs::remove_file(path);
     }
@@ -2286,7 +3622,7 @@ mod tests {
 
         let field = HField::uniform(4, 2, 100.0).unwrap();
         for error in [
-            read_landtype_source_for_hfield(&path, &field).unwrap_err(),
+            read_landtype_source_for_hfield(&path, &field, None).unwrap_err(),
             read_landtype_mask_source_for_hfield(&path).unwrap_err(),
         ] {
             assert!(
@@ -2337,9 +3673,14 @@ mod tests {
         let mask = read_landtype_mask_source_for_hfield(&mask_path).unwrap();
         let threshold_file = crate::open_netcdf(&threshold_path).unwrap();
         let field = HField::uniform(4, 4, 100.0).unwrap();
-        let stats =
-            read_threshold_stats_on_hfield_masked(&threshold_file, "lai", &field, Some(&mask))
-                .unwrap();
+        let stats = read_threshold_stats_on_hfield_masked(
+            &threshold_file,
+            "lai",
+            &field,
+            Some(&mask),
+            None,
+        )
+        .unwrap();
         assert_eq!(&stats.mean[..4], &[1.0, 1.0, 0.0, 0.0]);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2378,9 +3719,14 @@ mod tests {
         let mask = read_landtype_mask_source_for_hfield(&mask_path).unwrap();
         let threshold_file = crate::open_netcdf(&threshold_path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let stats =
-            read_threshold_stats_on_hfield_masked(&threshold_file, "lai", &field, Some(&mask))
-                .unwrap();
+        let stats = read_threshold_stats_on_hfield_masked(
+            &threshold_file,
+            "lai",
+            &field,
+            Some(&mask),
+            None,
+        )
+        .unwrap();
         assert_eq!(stats.mean, vec![0.0; 8]);
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1,9 +1,10 @@
 use crate::{
-    criterion_catalog, CoupledMeshConfig, DomainConfig, ExpertOverrides, HfieldRefinementRecipe,
-    HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat, ProjectConfig,
-    ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe, RegionShape,
-    ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
-    ThresholdField, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
+    criterion_catalog, threshold_criterion_by_id, CoupledMeshConfig, DomainConfig, ExpertOverrides,
+    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat,
+    ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe,
+    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
+    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ThresholdStatistic,
+    LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 
@@ -45,6 +46,7 @@ impl ProjectConfig {
         self.domain.validate()?;
         self.target.validate()?;
         self.validate_data_layers()?;
+        self.validate_landtype_requirements()?;
         self.refinement.validate()?;
         self.validate_refinement_sources()?;
         self.quality.validate()?;
@@ -68,8 +70,15 @@ impl ProjectConfig {
     fn validate_data_layers(&self) -> Result<(), String> {
         let mut ids = HashSet::new();
         let mut threshold_fields = HashSet::new();
+        let mut enabled_landtype_seen = false;
         for layer in &self.data_layers {
             layer.validate()?;
+            if layer.enabled && layer.role == ProjectLayerRole::LandType {
+                if enabled_landtype_seen {
+                    return Err("enabled LandType source is duplicated".to_string());
+                }
+                enabled_landtype_seen = true;
+            }
             if let ProjectLayerRole::Threshold(field) = layer.role {
                 self.validate_threshold_layer(layer, field)?;
                 if layer.enabled && !threshold_fields.insert(field.stem()) {
@@ -83,7 +92,70 @@ impl ProjectConfig {
                 return Err(format!("data layer id '{}' is duplicated", layer.id));
             }
         }
+        let mut criterion_ids = HashSet::new();
+        for criterion in &self.refinement.threshold_criteria {
+            criterion.validate()?;
+            if !criterion_ids.insert(criterion.id.as_str()) {
+                return Err(format!(
+                    "threshold criterion id '{}' is duplicated",
+                    criterion.id
+                ));
+            }
+            if criterion.id == LANDCOVER_CRITERION_ID {
+                if matches!(criterion.value, Some(value) if value <= 0.0) {
+                    return Err("landcover class threshold must be > 0".to_string());
+                }
+                if !self
+                    .data_layers
+                    .iter()
+                    .any(|layer| layer.role == ProjectLayerRole::LandType)
+                {
+                    return Err(
+                        "threshold criterion 'landcover' has no matching LandType data source"
+                            .to_string(),
+                    );
+                }
+                continue;
+            }
+            let spec = threshold_criterion_by_id(&criterion.id)
+                .ok_or_else(|| format!("unknown threshold criterion '{}'", criterion.id))?;
+            if !self
+                .data_layers
+                .iter()
+                .any(|layer| layer.role == ProjectLayerRole::Threshold(spec.source_field))
+            {
+                return Err(format!(
+                    "threshold criterion '{}' has no matching '{}' data source",
+                    criterion.id,
+                    spec.source_field.stem()
+                ));
+            }
+        }
         Ok(())
+    }
+
+    fn validate_landtype_requirements(&self) -> Result<(), String> {
+        let requires_surface_carve = matches!(
+            self.target.kind,
+            MeshDomainKind::Land | MeshDomainKind::Ocean
+        );
+        let requires_coupling_source = self.target.kind == MeshDomainKind::Coupled
+            && (self.coupling.is_some() || self.hydro_coast.is_some());
+        if !requires_surface_carve && !requires_coupling_source {
+            return Ok(());
+        }
+        if self.data_layers.iter().any(|layer| {
+            layer.role == ProjectLayerRole::LandType
+                && layer.enabled
+                && !layer.path.trim().is_empty()
+        }) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{:?} target requires an enabled landtype layer for surface carve/coupling",
+                self.target.kind
+            ))
+        }
     }
 
     fn validate_refinement_sources(&self) -> Result<(), String> {
@@ -113,14 +185,33 @@ impl ProjectConfig {
                     return false;
                 }
                 match layer.role {
-                    ProjectLayerRole::LandType => matches!(
-                        self.target.kind,
-                        MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth
-                    ),
-                    ProjectLayerRole::Threshold(_) => true,
-                    ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
+                    ProjectLayerRole::LandType => self
+                        .effective_landcover_criterion()
+                        .is_some_and(|criterion| criterion.enabled),
+                    ProjectLayerRole::Threshold(field) => {
+                        self.threshold_statistic_enabled(field, ThresholdStatistic::Mean)
+                            || self.threshold_statistic_enabled(field, ThresholdStatistic::Std)
+                    }
+                    ProjectLayerRole::MeritHydro => {
+                        self.hydro_coast.as_ref().is_some_and(|hydro| {
+                            hydro.has_river_refinement()
+                                || (hydro.coast_refinement_enabled
+                                    && (hydro.coast_land_refinement_enabled
+                                        || hydro.coast_ocean_refinement_enabled))
+                        })
+                    }
+                    ProjectLayerRole::Cama => false,
                 }
             })
+    }
+
+    pub(crate) fn threshold_statistic_enabled(
+        &self,
+        field: ThresholdField,
+        statistic: ThresholdStatistic,
+    ) -> bool {
+        self.effective_threshold_criterion(field, statistic)
+            .is_some_and(|criterion| criterion.enabled)
     }
 
     fn validate_expert_refinement_levels(&self) -> Result<(), String> {
@@ -150,16 +241,10 @@ impl ProjectConfig {
         if !layer.enabled {
             return Ok(());
         }
-        let criterion = criterion_catalog()
+        criterion_catalog()
             .iter()
             .find(|criterion| criterion.field == field)
             .ok_or_else(|| format!("unknown threshold field '{}'", field.stem()))?;
-        if !criterion.applicable.contains(&self.target.kind) {
-            return Err(format!(
-                "threshold layer '{}' is not applicable to {:?} targets",
-                layer.id, self.target.kind
-            ));
-        }
         Ok(())
     }
 }
@@ -327,6 +412,24 @@ impl ProjectDataLayer {
         {
             return Err(format!(
                 "data layer '{}' landcover class threshold must be > 0",
+                self.id
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ThresholdCriterionConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.id.trim().is_empty() || self.id.trim() != self.id {
+            return Err(
+                "threshold criterion id must be non-empty without surrounding whitespace"
+                    .to_string(),
+            );
+        }
+        if matches!(self.value, Some(value) if !value.is_finite()) {
+            return Err(format!(
+                "threshold criterion '{}' value must be finite",
                 self.id
             ));
         }
@@ -592,6 +695,48 @@ impl HydroCoastConfig {
         }
         if self.r3_width_m < self.r2_width_m {
             return Err("hydro_coast r3_width_m must be >= r2_width_m".to_string());
+        }
+        if !self.r3_upa_km2.is_finite() || !self.r2_upa_km2.is_finite() {
+            return Err("hydro_coast upstream areas must be finite".to_string());
+        }
+        if self.r3_upa_km2 <= 0.0 || self.r2_upa_km2 <= 0.0 {
+            return Err("hydro_coast upstream areas must be > 0".to_string());
+        }
+        if self.r3_upa_km2 < self.r2_upa_km2 {
+            return Err("hydro_coast r3_upa_km2 must be >= r2_upa_km2".to_string());
+        }
+        if let Some(value) = self.river_width_threshold_m {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(
+                    "hydro_coast river_width_threshold_m must be finite and > 0".to_string()
+                );
+            }
+            if value < self.r2_width_m {
+                return Err(
+                    "hydro_coast river_width_threshold_m must be >= the supported river width minimum"
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(value) = self.river_upstream_area_threshold_km2 {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(
+                    "hydro_coast river_upstream_area_threshold_km2 must be finite and > 0"
+                        .to_string(),
+                );
+            }
+            if value < self.r2_upa_km2 {
+                return Err(
+                    "hydro_coast river_upstream_area_threshold_km2 must be >= the supported upstream area minimum"
+                        .to_string(),
+                );
+            }
+        }
+        if !self.coast_buffer_km.is_finite() || self.coast_buffer_km < 0.0 {
+            return Err("hydro_coast coast_buffer_km must be finite and >= 0".to_string());
+        }
+        if self.coast_buffer_km > 1_000.0 {
+            return Err("hydro_coast coast_buffer_km must be <= 1000".to_string());
         }
         if self.merit_stride != 1 {
             return Err(

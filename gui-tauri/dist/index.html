@@ -416,6 +416,27 @@ const DEFAULT_BBOX=[108,120,18,26]; // [W,E,S,N]
 // before composing, saving, or running a project.
 const STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM=8006.322488295298;
 const STATIC_BROWSER_CAPABILITIES={
+  target_presets:[
+    {intent:"Custom",kind:"land",cell:"hex",model_format:"CoLM"},
+    {intent:"HydrologyLand",kind:"land",cell:"hex",model_format:"CoLM"},
+    {intent:"CarbonLand",kind:"land",cell:"hex",model_format:"CoLM"},
+    {intent:"SnowPermafrostLand",kind:"land",cell:"hex",model_format:"CoLM"},
+    {intent:"UrbanLand",kind:"land",cell:"hex",model_format:"CoLM"},
+    {intent:"CoastalOcean",kind:"ocean",cell:"tri",model_format:"FVCOM"},
+    {intent:"Estuary",kind:"ocean",cell:"tri",model_format:"FVCOM"},
+    {intent:"RiverNetwork",kind:"land",cell:"hex",model_format:"CoLM"},
+    {intent:"MeritHydroCoast",kind:"coupled",cell:"hex",model_format:"CoLM"},
+    {intent:"LandOceanCoupled",kind:"coupled",cell:"hex",model_format:"CoLM"},
+    {intent:"AtmosphereMpas",kind:"atmosphere",cell:"hex",model_format:"MPAS"},
+    {intent:"MultiObjectiveBalanced",kind:"coupled",cell:"hex",model_format:"CoLM"},
+  ],
+  target_compatibility:[
+    {kind:"land",model_formats:["CoLM"]},
+    {kind:"earth",model_formats:["CoLM"]},
+    {kind:"coupled",model_formats:["CoLM"]},
+    {kind:"ocean",model_formats:["FVCOM"]},
+    {kind:"atmosphere",model_formats:["MPAS","MPAS-Simple"]},
+  ],
   default_sea_ratio:0.5,
   default_min_angle_deg:25,
   method_c_min_base_nxp:10,
@@ -428,6 +449,8 @@ const STATIC_BROWSER_CAPABILITIES={
   method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM,
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
+let TARGET_PRESETS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_presets.map((p)=>[p.intent,p]));
+let TARGET_COMPATIBILITY=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.kind,p.model_formats]));
 let DEFAULT_SEA_RATIO_PCT=STATIC_BROWSER_CAPABILITIES.default_sea_ratio*100;
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
@@ -444,10 +467,16 @@ let METHOD_C_MIN_BASE_NXP=STATIC_BROWSER_CAPABILITIES.method_c_min_base_nxp;
 let METHOD_C_MAX_REFINEMENT_LEVEL=STATIC_BROWSER_CAPABILITIES.method_c_max_refinement_level;
 const MERIT_SURFACE_PREVIEW_STRIDE=50;
 var expertEdit = { springStrategy: null }; // fallback for static renderStep before Tauri bridge state exists
+var targetEdit = null;     // null means use the selected intent's one-shot target preset
+var cellEdit = null;       // null means use the selected intent's one-shot cell preset
 
+function templateDefaultTarget(){
+  const intent=(TPL[tpl]&&TPL[tpl].intent)||"Custom";
+  const preset=TARGET_PRESETS[intent]||TARGET_PRESETS.Custom||{kind:"land",cell:"hex",model_format:"CoLM"};
+  return targetEdit ? {...preset,...targetEdit} : preset;
+}
 function templateDefaultCell(){
-  const meta=((TPL[tpl]&&TPL[tpl].meta&&TPL[tpl].meta[0])||"").toLowerCase();
-  return meta.includes("tri") ? "tri" : "hex";
+  return cellEdit || templateDefaultTarget().cell || "hex";
 }
 function autoSpringStrategyLabel(cell, regionalDomain, z){
   if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（嵌套弹性平滑）" : "Auto (nested spring smoothing)";
@@ -628,7 +657,8 @@ function renderStep(i){
           <div style="margin:auto 0">${resControl(lang)}</div>
         </div>
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
-          ${field(lang?"输出模型":"Output model",`<input class="input" id="targetModelOutput" value="—" readonly>`,lang?"由项目模型决定":"from ProjectConfig")}
+          ${field(lang?"目标类型":"Target kind",`<select class="select" id="targetKindOutput"><option value="land">${lang?"陆面":"Land"}</option><option value="ocean">${lang?"海洋":"Ocean"}</option><option value="atmosphere">${lang?"大气":"Atmosphere"}</option><option value="coupled">${lang?"耦合":"Coupled"}</option><option value="earth">${lang?"地球系统":"Earth"}</option></select>`,lang?"模板只提供初始预设":"template supplies the initial preset")}
+          ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"只显示与目标类型兼容的格式":"formats compatible with the target kind")}
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
           ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
@@ -873,9 +903,10 @@ function setCoastalZoneLayer(m, geojson){
     const ctl=window.LEAF.control({position:"bottomleft"});
     ctl.onAdd=function(){
       const div=window.LEAF.DomUtil.create("div","cz-legend");
+      const h=_hydroThresholds;
       const rows=lang
-        ? [["r3","R3: 宽≥300m/上游≥5万km²"],["r2","R2: 宽≥50m/上游≥5000km²"],["coast","海岸带"],["land","陆地"],["ocean","海洋"]]
-        : [["r3","R3: width≥300m/upstream≥50k km²"],["r2","R2: width≥50m/upstream≥5k km²"],["coast","Coastal zone"],["land","Land"],["ocean","Ocean"]];
+        ? [["r3",`河道：宽≥${h.r3WidthM}m 或上游≥${h.r3UpaKm2}km²`],["r2","其他 MERIT 河道分类"],["coast","MERIT 物理海岸线（距离细化带不在本图显示）"],["land","陆地"],["ocean","海洋"]]
+        : [["r3",`River: width≥${h.r3WidthM}m or upstream≥${h.r3UpaKm2}km²`],["r2","Other MERIT river classes"],["coast","MERIT physical coast (distance-refinement band is not shown)"],["land","Land"],["ocean","Ocean"]];
       div.innerHTML=rows.map(([k,label])=>`<div class="row"><i style="background:${coastalZoneStyle({properties:{zone:k}}).fillColor}"></i><span>${label}</span></div>`).join("")
         + `<div class="row"><i style="background:transparent;border:1.5px dashed #c0266b"></i><span>${lang?"虚线：该格有河道交集":"Dashed: river intersects cell"}</span></div>`;
       return div;
@@ -910,6 +941,7 @@ function setDomainBoundaryLayer(m, geojson, doFit){
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
 let _domainGeojson=null; // watershed/domain outline overlay
 let _coastalGeojson=null; // real MERIT-Hydro land/coast/ocean overlay
+let _hydroThresholds={r2WidthM:50,r2UpaKm2:5000,r3WidthM:300,r3UpaKm2:50000,coastBufferKm:50,coastLandEnabled:true,coastOceanEnabled:true};
 let syncMapWindow=()=>{};
 function applyMesh(geojson){
   _meshGeojson=geojson;
@@ -1092,6 +1124,7 @@ if(MAP_WINDOW_MODE){
       _meshGeojson = payload.mesh;
       _domainGeojson = payload.domain;
       _coastalGeojson = payload.coastal;
+      _hydroThresholds = payload.hydroThresholds || _hydroThresholds;
       regional = payload.regional;
       domainMode = payload.domainMode;
       if (payload.bbox) domBbox = payload.bbox;
@@ -1111,6 +1144,7 @@ if(MAP_WINDOW_MODE){
     mesh: _meshGeojson,
     domain: _domainGeojson,
     coastal: _coastalGeojson,
+    hydroThresholds: _hydroThresholds,
     regional,
     domainMode,
     bbox: domBbox,
@@ -1148,6 +1182,8 @@ if(MAP_WINDOW_MODE){
     const unsupported = [...new Set(TPL.map((card) => card.intent))]
       .filter((intent) => !intentIds.has(intent));
     if (unsupported.length) throw new Error("unsupported gallery intents: " + unsupported.join(", "));
+    TARGET_PRESETS = Object.fromEntries((capabilities.target_presets || []).map((preset) => [preset.intent, preset]));
+    TARGET_COMPATIBILITY = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.kind, entry.model_formats]));
     DEFAULT_SEA_RATIO_PCT = capabilities.default_sea_ratio * 100;
     DEFAULT_MIN_ANGLE_DEG = capabilities.default_min_angle_deg;
     METHOD_C_MIN_BASE_NXP = capabilities.method_c_min_base_nxp;
@@ -1211,11 +1247,13 @@ if(MAP_WINDOW_MODE){
   // ---- live project model ----------------------------------------------------
   const layerEdits = {};   // layer id -> { path, enabled }
   const thresholdEdits = {}; // threshold layer id -> number|null (null = catalog default)
+  const criterionEdits = {}; // mean/std criterion id -> { enabled, value }
   let thresholdRefine = { enabled: false }; // explicit strategy; data availability does not opt in
+  const defaultHydroRefine = () => ({ riverWidthEnabled: true, riverUpstreamAreaEnabled: true, coastEnabled: true, coastBufferKm: 50, coastLandEnabled: true, coastOceanEnabled: true, riverWidthThresholdM: 300, riverUpstreamAreaThresholdKm2: 50000, r2WidthM: 50, r2UpaKm2: 5000 });
+  let hydroRefine = defaultHydroRefine();
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
-  let cellEdit = null;     // null | "hex" | "tri"; null means template default
-let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
+let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null };
   let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
@@ -1293,13 +1331,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     });
   }
 
-  function landcoverCanRefine(summary) {
-    return ["land", "coupled", "earth"].includes(String(summary && summary.target_kind || "").toLowerCase());
-  }
   // Refinement runs only if a real refinement source has a data file.
   function hasEnabledThresholdLayer(summary) {
-    return ((summary && summary.layers) || []).some((l) =>
-      (l.role_kind === "threshold" || (l.role_kind === "landcover" && landcoverCanRefine(summary))) && !!l.path && !!l.enabled);
+    const criteria = (summary && summary.threshold_criteria) || [];
+    return ((summary && summary.layers) || []).some((l) => {
+      if (!((l.role_kind === "threshold" || l.role_kind === "landcover") && !!l.path && !!l.enabled)) return false;
+      return criteria.some((criterion) => criterion.source_id === l.id && criterion.enabled);
+    });
+  }
+  function hasEnabledHydroRefinement(summary) {
+    const hydroConfigured = !!summary && (summary.hydro_coast_buffer_km != null || summary.hydro_river_width_threshold_m != null || summary.hydro_river_upstream_area_threshold_km2 != null);
+    return hydroConfigured && !!meshMeritLayer(summary) && (hydroRefine.riverWidthEnabled || hydroRefine.riverUpstreamAreaEnabled || (hydroRefine.coastEnabled && (hydroRefine.coastLandEnabled || hydroRefine.coastOceanEnabled)));
   }
 
   async function composeYaml() {
@@ -1332,34 +1374,50 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (baseProjectYaml) {
       yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !!hiddenDomainShape });
     }
-    for (const id of Object.keys(layerEdits)) {
-      const e = layerEdits[id];
-      try { yaml = await invoke("set_layer_path", { yaml, id, path: e.path, enabled: e.enabled }); }
-      catch (err) { /* id not in this preset's layer set — skip */ }
-    }
-    for (const id of Object.keys(thresholdEdits)) {
-      try { yaml = await invoke("set_threshold_value", { yaml, id, value: thresholdEdits[id] }); }
-      catch (err) { /* id not in this preset's layer set — skip */ }
+    if (targetEdit) {
+      yaml = await invoke("set_project_target", { yaml, kind: targetEdit.kind, modelFormat: targetEdit.modelFormat });
     }
     if (cellEdit) {
       yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
     }
+    const layerIds = Object.keys(layerEdits).sort((a,b) => Number(!!layerEdits[b].enabled) - Number(!!layerEdits[a].enabled));
+    for (const id of layerIds) {
+      const e = layerEdits[id];
+      yaml = await invoke("set_layer_path", { yaml, id, path: e.path, enabled: e.enabled });
+    }
+    for (const id of Object.keys(thresholdEdits)) {
+      yaml = await invoke("set_threshold_value", { yaml, id, value: thresholdEdits[id] });
+    }
+    for (const id of Object.keys(criterionEdits)) {
+      const criterion = criterionEdits[id];
+      yaml = await invoke("set_threshold_criterion", { yaml, id, enabled: !!criterion.enabled, value: criterion.value });
+    }
+    yaml = await invoke("set_hydro_refinement", {
+      yaml,
+      riverWidthEnabled: !!hydroRefine.riverWidthEnabled,
+      riverUpstreamAreaEnabled: !!hydroRefine.riverUpstreamAreaEnabled,
+      coastEnabled: !!hydroRefine.coastEnabled,
+      coastBufferKm: hydroRefine.coastBufferKm,
+      coastLandEnabled: !!hydroRefine.coastLandEnabled,
+      coastOceanEnabled: !!hydroRefine.coastOceanEnabled,
+      riverWidthThresholdM: hydroRefine.riverWidthThresholdM,
+      riverUpstreamAreaThresholdKm2: hydroRefine.riverUpstreamAreaThresholdKm2
+    });
     const spring = springTypesFor(expertEdit.springStrategy);
-    const discreteMask = specifiedRefine.hfieldEnabled === false;
     yaml = await invoke("set_expert", {
-      yaml, nxp: null, openmp: expertEdit.openmp, niter: expertEdit.niter,
+      yaml, nxp: expertEdit.nxp, openmp: expertEdit.openmp, niter: expertEdit.niter,
       niterRefine: expertEdit.niterRefine, maxIterSpc: expertEdit.maxIterSpc, maxIterCal: expertEdit.maxIterCal,
-      halo: discreteMask ? expertEdit.halo : null,
-      maxTransitionRow: discreteMask ? expertEdit.maxTransitionRow : null,
-      setDisType: discreteMask ? expertEdit.setDisType : null,
-      numRc: discreteMask ? expertEdit.numRc : null,
-      vertexPretectLayers: discreteMask ? expertEdit.vertexPretectLayers : null,
+      halo: expertEdit.halo,
+      maxTransitionRow: expertEdit.maxTransitionRow,
+      setDisType: expertEdit.setDisType,
+      numRc: expertEdit.numRc,
+      vertexPretectLayers: expertEdit.vertexPretectLayers,
       springGlobalType: spring.springGlobalType, springRegionalType: spring.springRegionalType,
       beta: expertEdit.beta, relax: expertEdit.relax,
-      weakConcavEliminate: discreteMask ? true : null
+      weakConcavEliminate: expertEdit.weakConcavEliminate
     });
     const summary = await invoke("project_summary", { yaml });
-    const thresholdSourceEnabled = thresholdRefine.enabled && hasEnabledThresholdLayer(summary);
+    const thresholdSourceEnabled = thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
     const refinementEnabled = thresholdSourceEnabled || !!specifiedRefine.enabled;
     const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;
     const refinementPasses = refinementEnabled
@@ -1397,7 +1455,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     listCriteria: () => invoke("list_criteria"),
     validate:   (yaml) => invoke("validate_project", { yaml }),
     summary:    (yaml) => invoke("project_summary", { yaml }),
+    setProjectTarget: (yaml, kind, modelFormat) => invoke("set_project_target", { yaml, kind, modelFormat }),
     setTargetCell: (yaml, cell) => invoke("set_target_cell", { yaml, cell }),
+    setThresholdCriterion: (yaml, id, enabled, value) => invoke("set_threshold_criterion", { yaml, id, enabled, value }),
     setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
     setDomainClose: (yaml, path, format, seaRatio) => invoke("set_domain_close", { yaml, path, format, seaRatio }),
     shapefileBoundary: (path) => invoke("shapefile_boundary_geojson", { path }),
@@ -1474,16 +1534,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   window.resetTemplateDerivedState = function () {
-      for (const id of Object.keys(layerEdits)) delete layerEdits[id];
-      for (const id of Object.keys(thresholdEdits)) delete thresholdEdits[id];
-      baseProjectYaml = null;
       domainEdit = null;
       domainCloseBoundary = normalizeCloseBoundary(null);
-      qualityEdit = null;
-      thresholdRefine = { enabled: false };
       lastSummary = null;
+      targetEdit = null;
       cellEdit = null;
-      maxPasses = null;
       const t = (typeof TPL !== "undefined" && TPL[tpl]) ? TPL[tpl] : {};
       if (t.nxp) { resUnitIdx = 1; resVal = t.nxp; }
       if (t.domainMode) {
@@ -1495,11 +1550,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         closeFormat = t.closeFormat || inferCloseFormat(t.closePath);
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: null };
       }
-      if (t.maxPasses) maxPasses = t.maxPasses;
+      if (t.maxPasses != null) maxPasses = t.maxPasses;
       if (t.specifiedClosePath) {
         specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
-      } else {
-        specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
       }
       if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       clearRunArtifacts();
@@ -1526,9 +1579,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         next = await api.summary(yaml);
       } catch (e) { logLine("✗ " + e); return; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
-      for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
       (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
-      (next.layers || []).forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
       logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
       enhanceLayerStep();
     };
@@ -1549,6 +1600,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     clearCoastalOverlay();
     tbody.textContent = "";
     const layers = sum.layers || [];
+    const selectExclusiveSource = (id, path) => {
+      const selected = layers.find((layer) => layer.id === id);
+      if (selected && selected.source_field) {
+        layers.forEach((sibling) => {
+          if (sibling.id !== id && sibling.source_field === selected.source_field) {
+            layerEdits[sibling.id] = { path: sibling.path || "", enabled: false };
+          }
+        });
+      }
+      layerEdits[id] = { path, enabled: true };
+    };
     if (!layers.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
@@ -1564,6 +1626,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       tr.dataset.folder = l.wants_folder ? "1" : "0";
       tr.dataset.path = l.path || "";
       tr.dataset.enabled = l.enabled ? "1" : "0";
+      tr.dataset.sourceField = l.source_field || "";
 
       const swCell = document.createElement("td");
       const sw = document.createElement("div");
@@ -1626,7 +1689,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         try { p = await (folder ? api.pickDataFolder() : api.pickDataFile()); }
         catch (e) { logLine("✗ " + e); return; }
         if (!p) return;
-        layerEdits[id] = { path: p, enabled: true };
+        selectExclusiveSource(id, p);
         enhanceLayerStep();
       };
     });
@@ -1644,7 +1707,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const id = tr.dataset.layer;
         const path = tr.dataset.path || "";
         if (!path) return; // nothing to toggle without a file
-        layerEdits[id] = { path, enabled: tr.dataset.enabled !== "1" };
+        const enabled = tr.dataset.enabled !== "1";
+        if (enabled) selectExclusiveSource(id, path);
+        else layerEdits[id] = { path, enabled: false };
         enhanceLayerStep();
       };
     });
@@ -1820,9 +1885,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     paintAutoRefine();
   }
 
-  // ---- refinement (step 4) -> template's criteria ---------------------------
-  // Render the criteria the selected template uses (its threshold layers),
-  // greying out any whose data layer isn't set, plus the max-passes control.
+  // ---- refinement (step 4) -> shared criteria -------------------------------
+  // Render every threshold layer, greying out inputs without data, plus passes.
   async function enhanceRefinementStep() {
     const critCard = document.querySelector("#work .card");
     if (!critCard) return;
@@ -1830,22 +1894,37 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     try { sum = await api.summary(await composeYaml()); cat = await api.listCriteria(); }
     catch (e) { logLine("✗ refinement: " + e); return; }
     if (maxPasses == null) maxPasses = sum.max_passes;
-    const byStem = {}; cat.forEach((c) => { byStem[c.stem] = c; });
-    const crits = sum.layers.filter((l) => l.role_kind === "threshold" || (l.role_kind === "landcover" && landcoverCanRefine(sum)));
+    const merit = (sum.hydro_coast_buffer_km != null || sum.hydro_river_width_threshold_m != null || sum.hydro_river_upstream_area_threshold_km2 != null)
+      ? meshMeritLayer(sum)
+      : null;
     const z = zh();
     const criterionRow = (l) => {
-      const c = byStem[l.id] || (l.role_kind === "landcover"
+      const c = l.criterion || (l.role_kind === "landcover"
         ? { label: zh() ? "土地利用种类" : "Landcover classes", unit: zh() ? "类" : "classes", physical_process: zh() ? "土地利用异质性" : "landcover heterogeneity", help: "", default_value: 12, range_min: 1, range_max: 32 }
         : { label: l.id, unit: "", physical_process: "", help: "", default_value: null, range_min: null, range_max: null });
-      const hasData = !!l.path;
-      const on = thresholdRefine.enabled && hasData && l.enabled;
-      const thValue = thresholdEdits[l.id] ?? l.threshold_value ?? c.default_value;
+      const isCriterion = !!l.isCriterion;
+      const sourceEnabled = l.sourceEnabled == null ? l.enabled : l.sourceEnabled;
+      const hasData = !!l.path && !!sourceEnabled;
+      const editedCriterion = isCriterion ? criterionEdits[l.id] : null;
+      const criterionEnabled = editedCriterion ? !!editedCriterion.enabled : !!l.enabled;
+      const on = thresholdRefine.enabled && hasData && criterionEnabled;
+      const thValue = l.hydroThresholdKey
+        ? hydroRefine[l.hydroThresholdKey]
+        : isCriterion
+          ? (editedCriterion ? editedCriterion.value : l.value) ?? c.default_value
+          : (thresholdEdits[l.id] ?? l.threshold_value ?? c.default_value);
       const row = document.createElement("div");
       row.className = "em-crit";
       row.dataset.crit = l.id;
       row.dataset.has = hasData ? "1" : "0";
       row.dataset.path = l.path || "";
-      row.dataset.enabled = l.enabled ? "1" : "0";
+      row.dataset.enabled = criterionEnabled ? "1" : "0";
+      row.dataset.isCriterion = l.isCriterion ? "1" : "0";
+      row.dataset.sourceId = l.sourceId || l.id;
+      row.dataset.value = thValue == null ? "" : String(thValue);
+      row.dataset.hydroKey = l.hydroKey || "";
+      row.dataset.hydroThresholdKey = l.hydroThresholdKey || "";
+      row.dataset.hydroSides = l.hydroSides ? "1" : "0";
       row.style.cssText = "display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;margin-bottom:10px;opacity:" + (hasData ? "1" : "0.55");
       const tog = document.createElement("div");
       tog.className = "em-tog";
@@ -1857,7 +1936,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       text.style.cssText = "flex:1;min-width:0";
       const label = document.createElement("div");
       label.style.cssText = "font-weight:650;font-size:14px";
-      label.textContent = c.label;
+      label.textContent = isCriterion && z
+        ? c.label.replace(/ mean$/, " · 平均").replace(/ std$/, " · 标准差")
+        : c.label;
       const help = document.createElement("div");
       help.style.cssText = "color:var(--muted);font-size:11.5px;margin-top:1px";
       help.textContent = (c.physical_process || c.help || "") + (c.unit ? " · " + c.unit : "");
@@ -1874,14 +1955,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (Number.isFinite(c.range_min)) th.min = c.range_min;
       if (Number.isFinite(c.range_max)) th.max = c.range_max;
       if (thValue != null) th.value = thValue;
-      th.title = z ? "判据阈值；留空使用默认值" : "criterion threshold; blank uses default";
-      row.append(tog, text, th, badge);
+      th.title = z ? "判据阈值；留空恢复默认值" : "criterion threshold; blank restores default";
+      row.append(tog, text, th);
+      if (l.hydroSides) {
+        const sides = document.createElement("select");
+        sides.className = "select em-hydro-sides";
+        sides.style.cssText = "width:104px;flex:none";
+        sides.disabled = !hasData || !thresholdRefine.enabled;
+        sides.innerHTML = `<option value="both">${z?"两侧":"both"}</option><option value="land">${z?"陆侧":"land"}</option><option value="ocean">${z?"海侧":"ocean"}</option><option value="none">${z?"未选择":"none"}</option>`;
+        sides.value = hydroRefine.coastLandEnabled && hydroRefine.coastOceanEnabled ? "both" : hydroRefine.coastLandEnabled ? "land" : hydroRefine.coastOceanEnabled ? "ocean" : "none";
+        row.appendChild(sides);
+      }
+      row.appendChild(badge);
       return row;
     };
 
     const regionalRefine = sum.domain === "regional";
     const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;
-    const refinementEnabled = (thresholdRefine.enabled && hasEnabledThresholdLayer(sum)) || !!specifiedRefine.enabled;
+    const refinementEnabled = (thresholdRefine.enabled && (hasEnabledThresholdLayer(sum) || hasEnabledHydroRefinement(sum))) || !!specifiedRefine.enabled;
     if (refinementEnabled) {
       if (maxPasses > nMax) maxPasses = nMax;
       if (maxPasses < 1) maxPasses = 1;
@@ -1939,7 +2030,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"discrete 距离分布函数":"discrete distance distribution")}
         ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"discrete 默认 0":"discrete default 0")}
         ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"discrete 默认 1":"discrete default 1")}
-        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" checked disabled> <span>${z?"开启":"On"}</span></label>`,z?"discrete 默认开启；必须开启":"discrete default on; required")}
+        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" ${expertEdit.weakConcavEliminate === false ? "" : "checked"} disabled> <span>${z?"当前项目值":"current project value"}</span></label>`,z?"未设置时使用引擎默认值；打开项目时原样保留":"engine default when unset; preserved exactly for opened projects")}
       </div>
     </div>`;
     const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
@@ -1950,11 +2041,50 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
 
-    const active = crits.filter((l) => l.path && l.enabled).length;
-    const thresholdSummary = crits.length
-      ? (z ? "判据随模板自动列出 · " : "criteria from the template · ")
-        + active + "/" + crits.length + (z ? " 个有数据启用" : " active")
-      : (z ? "此模板没有阈值细化判据" : "no threshold criteria for this template");
+    const hydroCriteria = [
+      {
+        id: "hydroRiverWidth", role_kind: "hydro", path: merit ? merit.path : "",
+        enabled: hydroRefine.riverWidthEnabled, hydroKey: "riverWidthEnabled",
+        hydroThresholdKey: "riverWidthThresholdM",
+        criterion: { label: z ? "河道细化 · MERIT" : "River refinement · MERIT", unit: "m", physical_process: z ? "河宽 ≥" : "river width ≥", help: "", default_value: 300, range_min: hydroRefine.r2WidthM || 50, range_max: null }
+      },
+      {
+        id: "hydroRiverUpstreamArea", role_kind: "hydro", path: merit ? merit.path : "",
+        enabled: hydroRefine.riverUpstreamAreaEnabled, hydroKey: "riverUpstreamAreaEnabled",
+        hydroThresholdKey: "riverUpstreamAreaThresholdKm2",
+        criterion: { label: z ? "河道细化 · MERIT" : "River refinement · MERIT", unit: "km²", physical_process: z ? "上游汇水面积 ≥" : "upstream area ≥", help: "", default_value: 50000, range_min: hydroRefine.r2UpaKm2 || 5000, range_max: null }
+      },
+      {
+        id: "hydroCoastDistance", role_kind: "hydro", path: merit ? merit.path : "",
+        enabled: hydroRefine.coastEnabled, hydroKey: "coastEnabled",
+        hydroThresholdKey: "coastBufferKm", hydroSides: true,
+        criterion: { label: z ? "海岸带细化 · MERIT" : "Coast refinement · MERIT", unit: "km", physical_process: z ? "距海岸线 ≤" : "distance to coastline ≤", help: "", default_value: 50, range_min: 0, range_max: 1000 }
+      }
+    ];
+    const criterionStates = Object.fromEntries((sum.threshold_criteria || []).map((criterion) => [criterion.id, criterion]));
+    const refinementCriteria = sum.layers.flatMap((l) => {
+      if (l.role_kind === "landcover") {
+        const state = criterionStates.landcover;
+        const criterion = cat.find((candidate) => candidate.id === "landcover");
+        if (!state || !criterion || state.source_id !== l.id) return [];
+        return [{ ...l, id: criterion.id, sourceId: l.id, criterion, isCriterion: true,
+          sourceEnabled: l.enabled, enabled: state.enabled, value: state.value }];
+      }
+      if (l.role_kind === "threshold") {
+        const sourceCriteria = cat.filter((criterion) => criterionStates[criterion.id] && criterionStates[criterion.id].source_id === l.id);
+        return sourceCriteria.map((criterion) => ({ ...l, id: criterion.id, sourceId: l.id, criterion,
+          isCriterion: true, sourceEnabled: l.enabled,
+          enabled: criterionStates[criterion.id] ? criterionStates[criterion.id].enabled : true,
+          value: criterionStates[criterion.id] ? criterionStates[criterion.id].value : (l.threshold_value ?? criterion.default_value) }));
+      }
+      if (l.role_kind === "merit") return hydroCriteria;
+      return [];
+    });
+    const active = refinementCriteria.filter((l) => l.path && (l.sourceEnabled == null ? l.enabled : l.sourceEnabled) && l.enabled).length;
+    const thresholdSummary = refinementCriteria.length
+      ? (z ? "与数据图层一致 · " : "matches data layers · ")
+        + active + "/" + refinementCriteria.length + (z ? " 个有数据启用" : " active")
+      : (z ? "没有可用于阈值细化的数据图层" : "no threshold-capable data layers");
     const threshold = `<div class="card" id="thresholdRefinementPanel" style="margin-top:12px">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px">
         <div><div style="font-weight:700">${z ? "阈值细化" : "Threshold refinement"}</div>
@@ -1990,7 +2120,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         + (strategyEnabled ? hfieldBlock + expertRefine : "");
       anchor.insertAdjacentHTML("afterend", mp);
       const rows = document.getElementById("thresholdRows");
-      if (rows) crits.forEach((l) => rows.appendChild(criterionRow(l)));
+      if (rows) refinementCriteria.forEach((l) => rows.appendChild(criterionRow(l)));
       const specifiedCloseText = document.getElementById("specifiedClosePathText");
       if (specifiedCloseText) specifiedCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z ? "📄 点击选择 SHP/NML/NetCDF/TXT" : "📄 Choose SHP/NML/NetCDF/TXT");
       const thresholdOn = document.getElementById("thresholdRefineOn");
@@ -2021,18 +2151,56 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (row.dataset.has !== "1" || !thresholdRefine.enabled) return;
       const tog = row.querySelector(".em-tog");
       if (tog) tog.onclick = () => {
-        const id = row.dataset.crit;
-        const path = row.dataset.path || "";
-        if (!path) return;
-        layerEdits[id] = { path, enabled: row.dataset.enabled !== "1" };
+        const hydroKey = row.dataset.hydroKey;
+        if (hydroKey) {
+          const next = row.dataset.enabled !== "1";
+          hydroRefine[hydroKey] = next;
+          if (hydroKey === "coastEnabled" && next && !hydroRefine.coastLandEnabled && !hydroRefine.coastOceanEnabled) {
+            hydroRefine.coastLandEnabled = true;
+            hydroRefine.coastOceanEnabled = true;
+          }
+          _hydroThresholds = { ...hydroRefine, r3WidthM: hydroRefine.riverWidthThresholdM, r3UpaKm2: hydroRefine.riverUpstreamAreaThresholdKm2 };
+          clearRunArtifacts();
+        } else if (row.dataset.isCriterion === "1") {
+          const id = row.dataset.crit;
+          const next = row.dataset.enabled !== "1";
+          const previous = criterionEdits[id];
+          const shownValue = row.dataset.value === "" ? null : parseFloat(row.dataset.value);
+          criterionEdits[id] = { enabled: next, value: previous ? previous.value : (Number.isFinite(shownValue) ? shownValue : null) };
+        } else {
+          const id = row.dataset.crit;
+          const path = row.dataset.path || "";
+          if (!path) return;
+          layerEdits[id] = { path, enabled: row.dataset.enabled !== "1" };
+        }
         enhanceRefinementStep();
       };
       const th = row.querySelector(".em-threshold");
       if (th) th.oninput = () => {
         const raw = th.value.trim();
         const v = raw === "" ? null : parseFloat(raw);
-        thresholdEdits[row.dataset.crit] = Number.isFinite(v) ? v : null;
+        const hydroThresholdKey = row.dataset.hydroThresholdKey;
+        if (hydroThresholdKey) {
+          hydroRefine[hydroThresholdKey] = raw === ""
+            ? defaultHydroRefine()[hydroThresholdKey]
+            : Number.isFinite(v) ? v : 0;
+          _hydroThresholds = { ...hydroRefine, r3WidthM: hydroRefine.riverWidthThresholdM, r3UpaKm2: hydroRefine.riverUpstreamAreaThresholdKm2 };
+        } else if (row.dataset.isCriterion === "1") {
+          const previous = criterionEdits[row.dataset.crit];
+          criterionEdits[row.dataset.crit] = { enabled: previous ? previous.enabled : row.dataset.enabled === "1", value: Number.isFinite(v) ? v : null };
+        } else {
+          thresholdEdits[row.dataset.crit] = Number.isFinite(v) ? v : null;
+        }
         clearRunArtifacts();
+      };
+      const sides = row.querySelector(".em-hydro-sides");
+      if (sides) sides.onchange = () => {
+        hydroRefine.coastLandEnabled = sides.value === "both" || sides.value === "land";
+        hydroRefine.coastOceanEnabled = sides.value === "both" || sides.value === "ocean";
+        hydroRefine.coastEnabled = sides.value !== "none";
+        _hydroThresholds = { ...hydroRefine, r3WidthM: hydroRefine.riverWidthThresholdM, r3UpaKm2: hydroRefine.riverUpstreamAreaThresholdKm2 };
+        clearRunArtifacts();
+        enhanceRefinementStep();
       };
     });
     const spcPass = document.getElementById("spcPassRange");
@@ -2066,7 +2234,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (erNumRc) erNumRc.value = expertEdit.numRc ?? "";
     if (erVertex) erVertex.value = expertEdit.vertexPretectLayers ?? "";
     if (erSpring) erSpring.value = expertEdit.springStrategy ?? "";
-    if (erWeakConcav) erWeakConcav.checked = true;
+    if (erWeakConcav) erWeakConcav.checked = expertEdit.weakConcavEliminate !== false;
     const syncExpertRefine = () => {
       expertEdit.niterRefine = readOptionalInt("expertNiterRefine");
       expertEdit.halo = readOptionalIntList("expertHalo");
@@ -2075,7 +2243,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       expertEdit.numRc = readOptionalInt("expertNumRc");
       expertEdit.vertexPretectLayers = readOptionalInt("expertVertexPretectLayers");
       expertEdit.springStrategy = erSpring && erSpring.value ? erSpring.value : null;
-      expertEdit.weakConcavEliminate = true;
       expertEdit.enabled = expertEnabled();
       clearRunArtifacts();
     };
@@ -2216,14 +2383,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       let matchingTpl = TPL.findIndex((t) => t.intent === sum.intent && t.global === !isRegional);
       if (matchingTpl < 0) matchingTpl = TPL.findIndex((t) => t.intent === sum.intent);
       if (matchingTpl >= 0) tpl = matchingTpl;
+      targetEdit = { kind: sum.target_kind, modelFormat: sum.model_format };
       cellEdit = String(sum.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
       if (sum.nxp != null) { resUnitIdx = 1; resVal = sum.nxp; }
       else if (sum.approx_degree != null) { resUnitIdx = 2; resVal = sum.approx_degree; }
       else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
       for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
+      for (const k of Object.keys(criterionEdits)) delete criterionEdits[k];
       sum.layers.forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
       sum.layers.forEach((l) => { if (l.threshold_value != null) thresholdEdits[l.id] = l.threshold_value; });
+      (sum.threshold_criteria || []).forEach((criterion) => {
+        criterionEdits[criterion.id] = { enabled: !!criterion.enabled, value: criterion.value };
+      });
       domainCloseBoundary = normalizeCloseBoundary(null);
       if (sum.domain_shape === "shapefile") {
         domainMode = "watershed";
@@ -2259,7 +2431,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       hiddenDomainShape = domainEdit.kind === "hidden" ? domainEdit.shape : null;
       expertEdit = {
         enabled: sum.expert_openmp != null || sum.expert_niter != null || sum.expert_niter_refine != null || sum.expert_max_iter_spc != null || sum.expert_max_iter_cal != null || sum.expert_halo != null || sum.expert_max_transition_row != null || sum.expert_set_dis_type != null || sum.expert_num_rc != null || sum.expert_vertex_pretect_layers != null || sum.expert_spring_global_type != null || sum.expert_spring_regional_type != null || sum.expert_beta != null || sum.expert_relax != null,
-        nxp: null,
+        nxp: sum.expert_nxp ?? null,
         openmp: sum.expert_openmp ?? null,
         niter: sum.expert_niter ?? null,
         niterRefine: sum.expert_niter_refine ?? null,
@@ -2273,7 +2445,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         springStrategy: springStrategyFromTypes(sum.expert_spring_global_type, sum.expert_spring_regional_type),
         beta: sum.expert_beta ?? null,
         relax: sum.expert_relax ?? null,
-        weakConcavEliminate: true,
+        weakConcavEliminate: sum.expert_weak_concav_eliminate ?? null,
       };
       specifiedRefine = {
         enabled: !!sum.specified_refine_enabled,
@@ -2292,6 +2464,21 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         hfieldMaxLevel: sum.hfield_max_level ?? null,
         hfieldBaseM: sum.hfield_base_m ?? null,
       };
+      const hydroDefaults = defaultHydroRefine();
+      const hasHydro = sum.hydro_coast_buffer_km != null || sum.hydro_river_width_threshold_m != null;
+      hydroRefine = hasHydro ? {
+        riverWidthEnabled: !!sum.hydro_river_width_refine_enabled,
+        riverUpstreamAreaEnabled: !!sum.hydro_river_upstream_area_refine_enabled,
+        coastEnabled: !!sum.hydro_coast_refine_enabled,
+        coastBufferKm: sum.hydro_coast_buffer_km ?? 0,
+        coastLandEnabled: !!sum.hydro_coast_land_refine_enabled,
+        coastOceanEnabled: !!sum.hydro_coast_ocean_refine_enabled,
+        r2WidthM: sum.hydro_r2_width_m ?? 50,
+        r2UpaKm2: sum.hydro_r2_upa_km2 ?? 5000,
+        riverWidthThresholdM: sum.hydro_river_width_threshold_m ?? 300,
+        riverUpstreamAreaThresholdKm2: sum.hydro_river_upstream_area_threshold_km2 ?? 50000,
+      } : hydroDefaults;
+      _hydroThresholds = { ...hydroRefine, r3WidthM: hydroRefine.riverWidthThresholdM, r3UpaKm2: hydroRefine.riverUpstreamAreaThresholdKm2 };
       thresholdRefine = { enabled: !!sum.threshold_refine_enabled };
       if ((expertEdit.enabled || specifiedRefine.hfieldEnabled === false) && typeof setExpertMode === "function") setExpertMode(true);
       qualityEdit = { minAngle: sum.min_angle_deg, policy: sum.on_violation || "warn", batchCells: sum.auto_refine_batch_cells || 1 };
@@ -2328,17 +2515,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); cellEdit = null;
+    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();
     loadWatershedBoundary("");
     for (const k of Object.keys(layerEdits)) delete layerEdits[k];
     for (const k of Object.keys(thresholdEdits)) delete thresholdEdits[k];
+    for (const k of Object.keys(criterionEdits)) delete criterionEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
     thresholdRefine = { enabled: false };
-    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: true };
+    hydroRefine = defaultHydroRefine();
+    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null };
     specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
@@ -2364,24 +2553,48 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       : (zh() ? "六边形" : "Hexagonal");
   }
 
+  function compatibleTargetModels(kind) {
+    const models = TARGET_COMPATIBILITY[kind];
+    return Array.isArray(models) && models.length ? models : [templateDefaultTarget().model_format || "CoLM"];
+  }
+
+  function selectedTarget(summary) {
+    const preset = templateDefaultTarget();
+    const kind = (targetEdit && targetEdit.kind) || (summary && summary.target_kind) || preset.kind || "land";
+    const models = compatibleTargetModels(kind);
+    const requested = (targetEdit && targetEdit.modelFormat) || (summary && summary.model_format) || preset.model_format;
+    return { kind, modelFormat: models.includes(requested) ? requested : models[0], models };
+  }
+
   function paintTargetOutputs(summary) {
     const s = summary || lastSummary;
-    if (!s) return;
-    const model = s.model_format || "—";
-    const cell = String(cellEdit || s.cell || "hex").toLowerCase() === "tri" ? "tri" : "hex";
-    const mode = s.quality_mode || (cell === "tri" ? "tri-strict" : "hex-cgrid");
+    const target = selectedTarget(s);
+    const model = target.modelFormat;
+    const cell = String(cellEdit || (s && s.cell) || templateDefaultCell()).toLowerCase() === "tri" ? "tri" : "hex";
+    const mode = (s && s.quality_mode) || (cell === "tri" ? "tri-strict" : "hex-cgrid");
+    const kindIn = document.getElementById("targetKindOutput");
     const modelIn = document.getElementById("targetModelOutput");
     const cellIn = document.getElementById("targetCellOutput");
     const modeIn = document.getElementById("targetQualityModeOutput");
     const ready = document.getElementById("readyModelOutput");
     const readyMode = document.getElementById("readyQualityModeOutput");
     const refine = document.getElementById("readyRefinementOutput");
-    if (modelIn) modelIn.value = model;
+    if (kindIn) kindIn.value = target.kind;
+    if (modelIn) {
+      modelIn.textContent = "";
+      target.models.forEach((format) => {
+        const option = document.createElement("option");
+        option.value = format;
+        option.textContent = format;
+        modelIn.appendChild(option);
+      });
+      modelIn.value = model;
+    }
     if (cellIn) cellIn.value = cell;
     if (modeIn) modeIn.textContent = qualityModeLabel(mode, cell);
     if (ready) ready.textContent = model;
     if (readyMode) readyMode.textContent = qualityModeLabel(mode, cell);
-    if (refine) refine.textContent = s.refine_enabled
+    if (refine) refine.textContent = s && s.refine_enabled
       ? ((zh() ? "最多 " : "up to ") + s.max_passes + (zh() ? " 次" : " passes"))
       : (zh() ? "关闭" : "off");
   }
@@ -2439,7 +2652,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const update = async () => {
       expertEdit = {
         enabled: true,
-        nxp: null,
+        nxp: expertEdit.nxp,
         openmp: readOptionalInt("expertOpenmp"),
         niter: readOptionalInt("expertNiter"),
         niterRefine: expertEdit.niterRefine,
@@ -2453,7 +2666,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         springStrategy: spring && spring.value ? spring.value : null,
         beta: readOptionalFloat("expertBeta"),
         relax: readOptionalFloat("expertRelax"),
-        weakConcavEliminate: true,
+        weakConcavEliminate: expertEdit.weakConcavEliminate,
       };
       expertEdit.enabled = expertEnabled();
       clearRunArtifacts();
@@ -2465,7 +2678,28 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   async function enhanceTargetOutputStep() {
+    const kindIn = document.getElementById("targetKindOutput");
+    const modelIn = document.getElementById("targetModelOutput");
     const cellIn = document.getElementById("targetCellOutput");
+    if (kindIn) {
+      kindIn.onchange = async () => {
+        const kind = kindIn.value;
+        const models = compatibleTargetModels(kind);
+        const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
+        targetEdit = { kind: kind, modelFormat: currentModel };
+        clearRunArtifacts();
+        paintTargetOutputs(await refreshSummary());
+      };
+    }
+    if (modelIn) {
+      modelIn.onchange = async () => {
+        const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
+        const models = compatibleTargetModels(kind);
+        targetEdit = { kind: kind, modelFormat: models.includes(modelIn.value) ? modelIn.value : models[0] };
+        clearRunArtifacts();
+        paintTargetOutputs(await refreshSummary());
+      };
+    }
     if (cellIn) {
       cellIn.onchange = async () => {
         cellEdit = cellIn.value === "tri" ? "tri" : "hex";
@@ -2852,8 +3086,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const merit = meshMeritLayer(summary);
     const landcover = meshLandcoverLayer(summary);
     const b = summary && summary.bbox;
-    if (currentIntent() !== "MeritHydroCoast" || !merit || !b) { clearCoastalOverlay(); return; }
-    invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null })
+    if (!merit || !b) { clearCoastalOverlay(); return; }
+    _hydroThresholds = {
+      r2WidthM: summary.hydro_r2_width_m ?? 50,
+      r2UpaKm2: summary.hydro_r2_upa_km2 ?? 5000,
+      r3WidthM: summary.hydro_river_width_threshold_m ?? 300,
+      r3UpaKm2: summary.hydro_river_upstream_area_threshold_km2 ?? 50000,
+      coastBufferKm: summary.hydro_coast_buffer_km ?? 0,
+      coastLandEnabled: !!summary.hydro_coast_land_refine_enabled,
+      coastOceanEnabled: !!summary.hydro_coast_ocean_refine_enabled,
+    };
+    invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
       .then((txt) => {
         _coastalGeojson = JSON.parse(txt);
         if (typeof drawMap === "function") drawMap();

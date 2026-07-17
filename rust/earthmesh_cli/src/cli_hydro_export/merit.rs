@@ -52,6 +52,7 @@ pub(crate) fn run_merit_hydro_geojson(
             "--r3-width-m" => {
                 let value = next_required_arg(&mut args, "--r3-width-m")?;
                 thresholds.r3_width_m = parse_positive_f64("--r3-width-m", &value)?;
+                thresholds.river_width_refinement_m = thresholds.r3_width_m;
             }
             "--r2-upa-km2" => {
                 let value = next_required_arg(&mut args, "--r2-upa-km2")?;
@@ -60,6 +61,7 @@ pub(crate) fn run_merit_hydro_geojson(
             "--r3-upa-km2" => {
                 let value = next_required_arg(&mut args, "--r3-upa-km2")?;
                 thresholds.r3_upa_km2 = parse_positive_f64("--r3-upa-km2", &value)?;
+                thresholds.river_upstream_area_refinement_km2 = thresholds.r3_upa_km2;
             }
             "--skip-surface-mask" => {
                 include_surface_masks = false;

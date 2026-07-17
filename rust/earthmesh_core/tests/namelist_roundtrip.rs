@@ -407,7 +407,71 @@ fn datalayers_namelist_round_trips_through_writer() {
     assert_eq!(original.layers[0].var.as_deref(), Some("landtype"));
     assert_eq!(original.layers[1].var, None);
     assert!(original.layers[0].required);
+    assert!(!original.layers[0].categorical_enabled);
     assert!(!original.layers[1].required);
+    assert!(original.layers[1].mean_enabled);
+    assert!(original.layers[1].std_enabled);
+}
+
+#[test]
+fn landtype_mask_and_categorical_refinement_are_independent() {
+    let mask_only = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers NL%layer='landcover|landtype|./land.nc|landtype|T|T|F|F|F' /",
+    );
+    let mut mkgrd = EarthmeshConfig::default();
+    let mut refine = RefineConfig::default();
+    mask_only.lower_into(&mut mkgrd, &mut refine);
+    assert_eq!(mkgrd.landtype_file, "./land.nc");
+    assert!(!refine.refine_num_landtypes);
+    assert!(!refine.refine_cal);
+
+    let explicit_landcover = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers NL%layer='landcover|landtype|./land.nc|landtype|T|T|F|F|T' /",
+    );
+    let mut mkgrd = EarthmeshConfig::default();
+    let mut refine = RefineConfig::default();
+    explicit_landcover.lower_into(&mut mkgrd, &mut refine);
+    assert_eq!(mkgrd.landtype_file, "./land.nc");
+    assert!(refine.refine_num_landtypes);
+    assert!(refine.refine_cal);
+
+    let lai_only = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers\n\
+         NL%layer='landcover|landtype|./land.nc|landtype|T|T|F|F|F'\n\
+         NL%layer='lai|threshold:lai|./lai.nc||T|F|T|F|F'\n/",
+    );
+    let mut mkgrd = EarthmeshConfig::default();
+    let mut refine = RefineConfig::default();
+    lai_only.lower_into(&mut mkgrd, &mut refine);
+    assert!(refine.refine_cal);
+    assert!(refine.refine_onelayer_lnd[0]);
+    assert!(!refine.refine_onelayer_lnd[1]);
+    assert!(!refine.refine_num_landtypes);
+}
+
+#[test]
+fn datalayers_statistic_axes_preserve_legacy_defaults_and_explicit_switches() {
+    let legacy = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers NL%layer='lai|threshold:lai|./lai.nc||T|F' /",
+    );
+    assert!(legacy.layers[0].mean_enabled);
+    assert!(legacy.layers[0].std_enabled);
+
+    let explicit = DataLayersNamelist::from_datalayers_namelist(
+        "&datalayers NL%layer='lai|threshold:lai|./lai.nc||T|F|T|F' /",
+    );
+    assert!(explicit.layers[0].mean_enabled);
+    assert!(!explicit.layers[0].std_enabled);
+
+    let rendered = explicit.to_datalayers_namelist();
+    let reparsed = DataLayersNamelist::from_datalayers_namelist(&rendered);
+    assert_eq!(explicit, reparsed, "explicit mean/std axes must round-trip");
+
+    let mut mkgrd = EarthmeshConfig::default();
+    let mut refine = RefineConfig::default();
+    explicit.lower_into(&mut mkgrd, &mut refine);
+    assert!(refine.refine_onelayer_lnd[0]);
+    assert!(!refine.refine_onelayer_lnd[1]);
 }
 
 #[test]

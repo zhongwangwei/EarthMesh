@@ -44,6 +44,7 @@ fn sample() -> ProjectConfig {
             enabled: true,
             threshold_enabled: true,
             max_passes: 3,
+            threshold_criteria: Vec::new(),
             specified_circle: None,
             specified_bbox: None,
             specified_close: None,
@@ -106,7 +107,7 @@ fn yaml_round_trips() {
 }
 
 #[test]
-fn new_projects_default_to_auto_refine_without_reinterpreting_legacy_yaml() {
+fn quality_policy_omission_matches_the_whole_config_default() {
     assert_eq!(
         QualityConfig::default().on_violation,
         ViolationPolicy::AutoRefine
@@ -130,7 +131,23 @@ fn new_projects_default_to_auto_refine_without_reinterpreting_legacy_yaml() {
         .collect::<Vec<_>>()
         .join("\n");
     let reopened = ProjectConfig::from_yaml(&legacy).unwrap();
-    assert_eq!(reopened.quality.on_violation, ViolationPolicy::Warn);
+    assert_eq!(reopened.quality.on_violation, ViolationPolicy::AutoRefine);
+}
+
+#[test]
+fn threshold_refinement_is_opt_in_for_default_partial_and_scaffold_configs() {
+    assert!(!RefinementRecipe::default().threshold_enabled);
+    let partial: RefinementRecipe =
+        serde_yaml::from_str("enabled: false\nmax_passes: 0\n").expect("partial refinement");
+    assert!(!partial.threshold_enabled);
+
+    let scaffold = ProjectConfig::scaffold(
+        "threshold-opt-in",
+        MeshIntentPreset::AtmosphereMpas,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    assert!(!scaffold.refinement.threshold_enabled);
 }
 
 #[test]
@@ -284,6 +301,17 @@ fn project_validation_rejects_invalid_data_layers() {
 
     let mut p = sample();
     p.data_layers.push(ProjectDataLayer {
+        id: "alternate-landcover".into(),
+        role: ProjectLayerRole::LandType,
+        path: "./in/alternate-landtype.nc".into(),
+        enabled: true,
+        threshold_value: None,
+    });
+    let err = yaml_err(&p);
+    assert!(err.contains("enabled LandType source is duplicated"));
+
+    let mut p = sample();
+    p.data_layers.push(ProjectDataLayer {
         id: "merit".into(),
         role: ProjectLayerRole::MeritHydro,
         path: "./merit".into(),
@@ -302,18 +330,60 @@ fn project_validation_rejects_invalid_data_layers() {
     p.data_layers[0].threshold_value = Some(0.0);
     let err = yaml_err(&p);
     assert!(err.contains("landcover class threshold must be > 0"));
+}
 
-    let mut p = sample();
-    p.target.kind = MeshDomainKind::Land;
-    p.data_layers.push(ProjectDataLayer {
-        id: "sea_slope".into(),
-        role: ProjectLayerRole::Threshold(ThresholdField::SeaSlope),
-        path: "./in/sea_slope.nc".into(),
-        enabled: true,
-        threshold_value: None,
-    });
-    let err = yaml_err(&p);
-    assert!(err.contains("threshold layer 'sea_slope' is not applicable to Land targets"));
+#[test]
+fn project_validation_accepts_all_thresholds_for_every_domain() {
+    let cases = [
+        (MeshDomainKind::Land, MeshCellKind::Hex, ModelFormat::CoLM),
+        (MeshDomainKind::Ocean, MeshCellKind::Tri, ModelFormat::Fvcom),
+        (
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Hex,
+            ModelFormat::Mpas,
+        ),
+        (
+            MeshDomainKind::Coupled,
+            MeshCellKind::Hex,
+            ModelFormat::CoLM,
+        ),
+        (MeshDomainKind::Earth, MeshCellKind::Hex, ModelFormat::CoLM),
+    ];
+
+    for (kind, cell, model_format) in cases {
+        let mut project = sample();
+        project.target.kind = kind;
+        project.target.cell = cell;
+        project.target.model_format = model_format;
+        project.data_layers = criterion_catalog()
+            .iter()
+            .map(|criterion| ProjectDataLayer {
+                id: criterion.field.stem().to_string(),
+                role: ProjectLayerRole::Threshold(criterion.field),
+                path: format!("./threshold/{}.nc", criterion.field.stem()),
+                enabled: true,
+                threshold_value: None,
+            })
+            .collect();
+        project.data_layers.push(ProjectDataLayer {
+            id: "landcover".into(),
+            role: ProjectLayerRole::LandType,
+            path: "./input/landtype_igbp_update.nc".into(),
+            enabled: true,
+            threshold_value: Some(12.0),
+        });
+
+        let lowered = project
+            .try_lower()
+            .unwrap_or_else(|error| panic!("{kind:?} rejected universal thresholds: {error}"));
+        assert!(lowered.refine.refine_num_landtypes, "{kind:?}");
+        earthmesh_core::RefineConfig::from_mkrefine_namelist(
+            &lowered.to_namelist(),
+            &lowered.mkgrd.mesh_type,
+            &lowered.mkgrd.mode_grid,
+        )
+        .unwrap_or_else(|error| panic!("{kind:?} threshold namelist did not reparse: {error}"));
+    }
 }
 
 #[test]
@@ -476,6 +546,34 @@ fn project_validation_rejects_refinement_without_source() {
     });
     let err = json_err(&p);
     assert!(err.contains("refinement is enabled but no refinement source is enabled"));
+
+    p.hydro_coast = Some(HydroCoastConfig {
+        merit_root: "./merit".into(),
+        cama_root: None,
+        merit_stride: 1,
+        r3_width_m: 300.0,
+        r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: false,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
+    });
+    p.data_layers.push(ProjectDataLayer {
+        id: "landcover".into(),
+        role: ProjectLayerRole::LandType,
+        path: "./in/landtype.nc".into(),
+        enabled: true,
+        threshold_value: None,
+    });
+    ProjectConfig::from_json(&p.to_json().expect("json"))
+        .expect("MERIT river thresholds with the coupled surface source must validate");
 }
 
 #[test]
@@ -499,6 +597,17 @@ fn project_validation_rejects_invalid_hydro_coast_config() {
         merit_stride: 1,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     let err = yaml_err(&p);
     assert!(err.contains("hydro_coast merit_root must not be empty"));
@@ -509,6 +618,17 @@ fn project_validation_rejects_invalid_hydro_coast_config() {
         merit_stride: 1,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     let err = yaml_err(&p);
     assert!(err.contains("hydro_coast cama_root must not be empty"));
@@ -519,6 +639,17 @@ fn project_validation_rejects_invalid_hydro_coast_config() {
         merit_stride: 1,
         r3_width_m: 0.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     let err = json_err(&p);
     assert!(err.contains("hydro_coast widths must be > 0"));
@@ -529,9 +660,106 @@ fn project_validation_rejects_invalid_hydro_coast_config() {
         merit_stride: 1,
         r3_width_m: 50.0,
         r2_width_m: 300.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     let err = json_err(&p);
     assert!(err.contains("hydro_coast r3_width_m must be >= r2_width_m"));
+
+    let hydro = p.hydro_coast.as_mut().unwrap();
+    hydro.r3_width_m = 300.0;
+    hydro.r2_width_m = 50.0;
+    hydro.r3_upa_km2 = 1_000.0;
+    hydro.r2_upa_km2 = 5_000.0;
+    let err = yaml_err(&p);
+    assert!(err.contains("hydro_coast r3_upa_km2 must be >= r2_upa_km2"));
+
+    let hydro = p.hydro_coast.as_mut().unwrap();
+    hydro.r3_upa_km2 = 50_000.0;
+    hydro.river_width_threshold_m = Some(49.0);
+    let err = json_err(&p);
+    assert!(err.contains("river_width_threshold_m must be >= the supported river width"));
+    let hydro = p.hydro_coast.as_mut().unwrap();
+    hydro.river_width_threshold_m = Some(300.0);
+    hydro.river_upstream_area_threshold_km2 = Some(4_999.0);
+    let err = yaml_err(&p);
+    assert!(
+        err.contains("river_upstream_area_threshold_km2 must be >= the supported upstream area")
+    );
+    let hydro = p.hydro_coast.as_mut().unwrap();
+    hydro.river_upstream_area_threshold_km2 = Some(50_000.0);
+    hydro.coast_buffer_km = -1.0;
+    let err = json_err(&p);
+    assert!(err.contains("hydro_coast coast_buffer_km must be finite and >= 0"));
+    p.hydro_coast.as_mut().unwrap().coast_buffer_km = 1_001.0;
+    let err = yaml_err(&p);
+    assert!(err.contains("hydro_coast coast_buffer_km must be <= 1000"));
+}
+
+#[test]
+fn legacy_hydro_yaml_defaults_upstream_thresholds_and_refinement_switches() {
+    let mut p = sample();
+    p.hydro_coast = Some(HydroCoastConfig {
+        merit_root: "/data/merit".into(),
+        cama_root: None,
+        merit_stride: 1,
+        r3_width_m: 300.0,
+        r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
+    });
+    let yaml = p
+        .to_yaml()
+        .unwrap()
+        .lines()
+        .filter(|line| {
+            !line.contains("_upa_km2:")
+                && !line.contains("river_refinement_enabled:")
+                && !line.contains("river_width_refinement_enabled:")
+                && !line.contains("river_upstream_area_refinement_enabled:")
+                && !line.contains("coast_refinement_enabled:")
+                && !line.contains("coast_buffer_km:")
+                && !line.contains("coast_land_refinement_enabled:")
+                && !line.contains("coast_ocean_refinement_enabled:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let loaded = ProjectConfig::from_yaml(&yaml).unwrap();
+    let hydro = loaded.hydro_coast.unwrap();
+    assert_eq!(hydro.r2_upa_km2, 5_000.0);
+    assert_eq!(hydro.r3_upa_km2, 50_000.0);
+    assert!(hydro.river_refinement_enabled);
+    assert!(hydro.river_width_refinement_enabled);
+    assert!(hydro.river_upstream_area_refinement_enabled);
+    assert_eq!(hydro.river_width_threshold_m, None);
+    assert_eq!(hydro.river_upstream_area_threshold_km2, None);
+    assert_eq!(hydro.effective_river_width_threshold_m(), 300.0);
+    assert_eq!(
+        hydro.effective_river_upstream_area_threshold_km2(),
+        50_000.0
+    );
+    assert!(hydro.coast_refinement_enabled);
+    assert_eq!(hydro.coast_buffer_km, 0.0);
+    assert!(hydro.coast_land_refinement_enabled);
+    assert!(hydro.coast_ocean_refinement_enabled);
 }
 
 #[test]
@@ -553,9 +781,9 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.mkgrd.beta, 1.1);
     assert_eq!(lowered.mkgrd.relax, 0.03);
 
-    // landcover → landtype_file + landtype-count refine; lai → refine switch + refine_cal
+    // LandType supplies the mask only; LAI independently drives calculated refinement.
     assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
-    assert!(lowered.refine.refine_num_landtypes);
+    assert!(!lowered.refine.refine_num_landtypes);
     assert_eq!(lowered.refine.th_num_landtypes, 12);
     assert!(lowered.refine.refine_onelayer_lnd[0] && lowered.refine.refine_onelayer_lnd[1]);
     assert_eq!(lowered.refine.th_onelayer_lnd[0], 1.0);
@@ -597,6 +825,90 @@ fn lower_maps_to_engine_config() {
     .expect("compiled project refine config should reparse");
     assert_eq!(&reparsed.halo[1..4], &[4, 4, 3]);
     assert_eq!(&reparsed.max_transition_row[1..4], &[5, 4, 3]);
+}
+
+#[test]
+fn landtype_mask_and_landcover_criterion_are_independent_with_legacy_fallback() {
+    let mask_and_lai = sample();
+    let mask_only_criterion = mask_and_lai
+        .effective_landcover_criterion()
+        .expect("landcover source");
+    assert!(mask_only_criterion.source_enabled);
+    assert!(!mask_only_criterion.enabled);
+    assert_eq!(mask_only_criterion.value, DEFAULT_LANDCOVER_CLASS_THRESHOLD);
+    let lowered = mask_and_lai.lower();
+    assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
+    assert!(lowered.refine.refine_cal, "LAI remains a refinement source");
+    assert!(!lowered.refine.refine_num_landtypes);
+    let relowered = earthmesh_core::lower_datalayers_namelist(&lowered.to_namelist(), None)
+        .expect("shared CLI lowering");
+    let reparsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        &relowered.namelist,
+        &lowered.mkgrd.mesh_type,
+        &lowered.mkgrd.mode_grid,
+    )
+    .expect("reparse mask plus LAI");
+    assert!(!reparsed.refine_num_landtypes);
+
+    let mut explicit_landcover = sample();
+    explicit_landcover
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: LANDCOVER_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(8.0),
+        });
+    let lowered = explicit_landcover.lower();
+    assert!(explicit_landcover
+        .effective_landcover_criterion()
+        .is_some_and(|criterion| criterion.enabled && criterion.value == 8.0));
+    assert!(lowered.refine.refine_num_landtypes);
+    assert_eq!(lowered.refine.th_num_landtypes, 8);
+    let relowered = earthmesh_core::lower_datalayers_namelist(&lowered.to_namelist(), None)
+        .expect("shared CLI lowering");
+    let reparsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        &relowered.namelist,
+        &lowered.mkgrd.mesh_type,
+        &lowered.mkgrd.mode_grid,
+    )
+    .expect("reparse explicit landcover criterion");
+    assert!(reparsed.refine_num_landtypes);
+    assert_eq!(reparsed.th_num_landtypes, 8);
+    let landtype_layer = lowered
+        .data_layers
+        .layers
+        .iter()
+        .find(|layer| matches!(layer.role, earthmesh_core::DataLayerRole::LandType))
+        .expect("landtype layer");
+    assert!(landtype_layer.categorical_enabled);
+
+    let mut legacy = sample();
+    legacy.data_layers[0].threshold_value = Some(9.0);
+    let lowered = legacy.lower();
+    assert!(legacy
+        .effective_landcover_criterion()
+        .is_some_and(|criterion| criterion.enabled && criterion.value == 9.0));
+    assert!(lowered.refine.refine_num_landtypes);
+    assert_eq!(lowered.refine.th_num_landtypes, 9);
+
+    let mut explicitly_disabled_legacy = legacy;
+    explicitly_disabled_legacy
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: LANDCOVER_CRITERION_ID.into(),
+            enabled: false,
+            value: None,
+        });
+    let lowered = explicitly_disabled_legacy.lower();
+    assert!(explicitly_disabled_legacy
+        .effective_landcover_criterion()
+        .is_some_and(|criterion| {
+            !criterion.enabled && criterion.value == DEFAULT_LANDCOVER_CLASS_THRESHOLD
+        }));
+    assert!(!lowered.refine.refine_num_landtypes);
+    assert!(lowered.refine.refine_cal, "LAI still drives refinement");
 }
 
 #[test]
@@ -813,6 +1125,206 @@ fn threshold_value_override_lowers_to_engine_arrays() {
 }
 
 #[test]
+fn threshold_axes_lower_mean_and_std_independently_and_preserve_two_layer_slots() {
+    let mut p = sample();
+    p.data_layers[1].threshold_value = Some(4.5);
+    p.data_layers.push(ProjectDataLayer {
+        id: "k_s".into(),
+        role: ProjectLayerRole::Threshold(ThresholdField::Ks),
+        path: "./th/k_s.nc".into(),
+        enabled: true,
+        threshold_value: Some(0.01),
+    });
+
+    let mut value = serde_yaml::to_value(&p).expect("project value");
+    let refinement = value
+        .get_mut("refinement")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .expect("refinement mapping");
+    refinement.insert(
+        serde_yaml::Value::String("threshold_criteria".into()),
+        serde_yaml::from_str(
+            r#"
+- id: lai_mean
+  enabled: false
+  value: 2.5
+- id: lai_std
+  enabled: true
+  value: 7.5
+- id: k_s_mean
+  enabled: true
+  value: 0.02
+- id: k_s_std
+  enabled: false
+  value: 0.04
+"#,
+        )
+        .expect("threshold axes"),
+    );
+    let configured =
+        ProjectConfig::from_yaml(&serde_yaml::to_string(&value).expect("configured project yaml"))
+            .expect("independent threshold axes must parse");
+
+    let lowered = configured.lower();
+    let lai_mean = configured
+        .effective_threshold_criterion(ThresholdField::Lai, ThresholdStatistic::Mean)
+        .expect("effective lai mean");
+    assert_eq!(lai_mean.source_layer_id, "lai");
+    assert!(lai_mean.source_enabled);
+    assert!(!lai_mean.enabled);
+    assert_eq!(lai_mean.value, 2.5);
+
+    let mut source_disabled = configured.clone();
+    source_disabled
+        .data_layers
+        .iter_mut()
+        .find(|layer| layer.role == ProjectLayerRole::Threshold(ThresholdField::Ks))
+        .expect("soil hydraulic conductivity source")
+        .enabled = false;
+    let soil_ks_mean = source_disabled
+        .effective_threshold_criterion(ThresholdField::Ks, ThresholdStatistic::Mean)
+        .expect("effective soil hydraulic conductivity mean");
+    assert!(!soil_ks_mean.source_enabled);
+    assert!(soil_ks_mean.enabled);
+
+    let mut replacement_source = configured.clone();
+    replacement_source
+        .data_layers
+        .iter_mut()
+        .find(|layer| layer.role == ProjectLayerRole::Threshold(ThresholdField::Lai))
+        .expect("canonical lai source")
+        .enabled = false;
+    replacement_source.data_layers.push(ProjectDataLayer {
+        id: "custom_lai".into(),
+        role: ProjectLayerRole::Threshold(ThresholdField::Lai),
+        path: "./custom/lai.nc".into(),
+        enabled: true,
+        threshold_value: None,
+    });
+    let replacement_lai = replacement_source
+        .effective_threshold_criterion(ThresholdField::Lai, ThresholdStatistic::Mean)
+        .expect("replacement lai source must win");
+    assert_eq!(replacement_lai.source_layer_id, "custom_lai");
+    assert!(replacement_lai.source_enabled);
+    assert!(!lowered.refine.refine_onelayer_lnd[0]);
+    assert!(lowered.refine.refine_onelayer_lnd[1]);
+    assert_eq!(lowered.refine.th_onelayer_lnd[0], 2.5);
+    assert_eq!(lowered.refine.th_onelayer_lnd[1], 7.5);
+    assert!(lowered.refine.refine_twolayer_lnd[0]);
+    assert!(!lowered.refine.refine_twolayer_lnd[1]);
+    assert_eq!(lowered.refine.th_twolayer_lnd[0], [0.02, 0.02]);
+    assert_eq!(lowered.refine.th_twolayer_lnd[1], [0.04, 0.04]);
+
+    let reparsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        &lowered.to_namelist(),
+        &lowered.mkgrd.mesh_type,
+        &lowered.mkgrd.mode_grid,
+    )
+    .expect("axis-aware datalayers must not re-enable disabled axes");
+    assert!(!reparsed.refine_onelayer_lnd[0]);
+    assert!(reparsed.refine_onelayer_lnd[1]);
+    assert!(reparsed.refine_twolayer_lnd[0]);
+    assert!(!reparsed.refine_twolayer_lnd[1]);
+
+    let relowered = earthmesh_core::lower_datalayers_namelist(&lowered.to_namelist(), None)
+        .expect("axis-aware datalayers must survive the CLI lowering pass");
+    let reparsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        &relowered.namelist,
+        &lowered.mkgrd.mesh_type,
+        &lowered.mkgrd.mode_grid,
+    )
+    .expect("CLI-lowered independent threshold axes");
+    assert!(!reparsed.refine_onelayer_lnd[0]);
+    assert!(reparsed.refine_onelayer_lnd[1]);
+    assert!(reparsed.refine_twolayer_lnd[0]);
+    assert!(!reparsed.refine_twolayer_lnd[1]);
+}
+
+#[test]
+fn explicit_blank_threshold_axis_uses_its_default_not_the_legacy_shared_value() {
+    let mut project = sample();
+    project.data_layers[1].threshold_value = Some(99.0);
+    project
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "lai_mean".into(),
+            enabled: true,
+            value: None,
+        });
+
+    let expected_default = threshold_criterion_by_id("lai_mean")
+        .expect("cataloged LAI mean")
+        .gui
+        .default;
+    let mean = project
+        .effective_threshold_criterion(ThresholdField::Lai, ThresholdStatistic::Mean)
+        .expect("effective LAI mean");
+    let std = project
+        .effective_threshold_criterion(ThresholdField::Lai, ThresholdStatistic::Std)
+        .expect("effective LAI std");
+
+    assert_eq!(mean.value, expected_default);
+    assert_eq!(std.value, 99.0, "the omitted sibling keeps legacy fallback");
+}
+
+#[test]
+fn landtype_is_required_for_surface_targets_but_skipped_for_idle_atmosphere() {
+    for (kind, format) in [
+        (MeshDomainKind::Land, ModelFormat::CoLM),
+        (MeshDomainKind::Ocean, ModelFormat::Fvcom),
+    ] {
+        let mut p = sample();
+        p.target.kind = kind;
+        p.target.model_format = format;
+        p.data_layers[0].enabled = false;
+        let error = p
+            .try_lower()
+            .expect_err("surface targets require a landtype carve source");
+        assert!(error.contains("landtype"), "{kind:?}: {error}");
+    }
+
+    let mut coupled = sample();
+    coupled.data_layers[0].enabled = false;
+    coupled.coupling = Some(CoupledMeshConfig::default());
+    let error = coupled
+        .try_lower()
+        .expect_err("active coupling requires a landtype source");
+    assert!(error.contains("landtype"), "{error}");
+
+    let mut atmosphere = sample();
+    atmosphere.target.kind = MeshDomainKind::Atmosphere;
+    atmosphere.target.model_format = ModelFormat::Mpas;
+    atmosphere.refinement.enabled = false;
+    atmosphere.refinement.threshold_enabled = false;
+    atmosphere.refinement.max_passes = 0;
+    let lowered = atmosphere
+        .try_lower()
+        .expect("idle atmosphere must not require or lower landtype");
+    assert_eq!(lowered.mkgrd.landtype_file, "none");
+    assert!(lowered.data_layers.layers.iter().any(|layer| {
+        matches!(layer.role, earthmesh_core::DataLayerRole::LandType) && !layer.enabled
+    }));
+
+    atmosphere.refinement.enabled = true;
+    atmosphere.refinement.threshold_enabled = true;
+    atmosphere.refinement.max_passes = 1;
+    atmosphere.data_layers[1].enabled = false;
+    atmosphere
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: LANDCOVER_CRITERION_ID.into(),
+            enabled: true,
+            value: None,
+        });
+    let lowered = atmosphere
+        .try_lower()
+        .expect("landcover criterion must keep landtype active for atmosphere");
+    assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
+}
+
+#[test]
 fn hfield_is_default_unless_explicit_compatibility() {
     let mut p = sample();
     p.refinement.hfield = None;
@@ -870,33 +1382,90 @@ fn baseline_grid_without_refinement_omits_mkrefine() {
 }
 
 #[test]
-fn preset_defaults_pick_sensible_criteria() {
-    let h = MeshIntentPreset::HydrologyLand.defaults();
-    assert_eq!(h.kind, MeshDomainKind::Land);
-    assert!(h.criteria.contains(&ThresholdField::Slope));
-    assert!(h.criteria.contains(&ThresholdField::Dem));
-    assert!(h.criteria.contains(&ThresholdField::SlopeMax));
-    assert!(h.criteria.contains(&ThresholdField::KSolids));
-    assert!(h.criteria.contains(&ThresholdField::Tksatu));
-    assert!(h.extra_roles.contains(&ProjectLayerRole::MeritHydro));
+fn every_preset_scaffolds_the_full_disabled_threshold_catalog() {
+    use ProjectLayerRole::{Cama, LandType, MeritHydro};
 
-    let a = MeshIntentPreset::AtmosphereMpas.defaults();
-    assert_eq!(a.kind, MeshDomainKind::Atmosphere);
-    assert_eq!(a.model_format, ModelFormat::Mpas);
-    assert!(a.criteria.is_empty());
+    let recommended_roles: &[(MeshIntentPreset, &[ProjectLayerRole])] = &[
+        (MeshIntentPreset::Custom, &[LandType]),
+        (MeshIntentPreset::HydrologyLand, &[LandType, MeritHydro]),
+        (MeshIntentPreset::CarbonLand, &[LandType]),
+        (MeshIntentPreset::SnowPermafrostLand, &[LandType]),
+        (MeshIntentPreset::UrbanLand, &[LandType]),
+        (MeshIntentPreset::CoastalOcean, &[LandType]),
+        (MeshIntentPreset::Estuary, &[LandType, Cama]),
+        (MeshIntentPreset::RiverNetwork, &[LandType, MeritHydro]),
+        (MeshIntentPreset::MeritHydroCoast, &[LandType, MeritHydro]),
+        (MeshIntentPreset::LandOceanCoupled, &[LandType]),
+        (MeshIntentPreset::AtmosphereMpas, &[LandType]),
+        (MeshIntentPreset::MultiObjectiveBalanced, &[LandType]),
+    ];
+    let expected_fields = criterion_catalog()
+        .iter()
+        .map(|criterion| criterion.field)
+        .collect::<Vec<_>>();
 
-    let p = ProjectConfig::scaffold(
-        "atmosphere",
-        MeshIntentPreset::AtmosphereMpas,
-        DomainConfig::Global,
-        ResolutionSpec::Nxp(40),
-    );
-    assert!(!p.refinement.enabled);
-    assert_eq!(p.refinement.max_passes, 0);
+    assert_eq!(recommended_roles.len(), MeshIntentPreset::all().len());
+    for &(intent, extra_roles) in recommended_roles {
+        let defaults = intent.defaults();
+        assert_eq!(
+            defaults.criteria,
+            expected_fields,
+            "{} criteria",
+            intent.id()
+        );
+        assert_eq!(defaults.extra_roles, extra_roles, "{} roles", intent.id());
 
-    let c = MeshIntentPreset::CoastalOcean.defaults();
-    assert_eq!(c.kind, MeshDomainKind::Ocean);
-    assert_eq!(c.cell, MeshCellKind::Tri);
+        let project = ProjectConfig::scaffold(
+            intent.id(),
+            intent,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(80),
+        );
+        let thresholds = project
+            .data_layers
+            .iter()
+            .filter(|layer| matches!(layer.role, ProjectLayerRole::Threshold(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            thresholds
+                .iter()
+                .map(|layer| match layer.role {
+                    ProjectLayerRole::Threshold(field) => field,
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>(),
+            expected_fields,
+            "{}",
+            intent.id()
+        );
+        assert!(thresholds.iter().all(|layer| layer.path.is_empty()
+            && !layer.enabled
+            && layer.threshold_value.is_none()));
+        for role in [LandType, MeritHydro, Cama] {
+            let layer = project
+                .data_layers
+                .iter()
+                .find(|layer| layer.role == role)
+                .unwrap_or_else(|| panic!("{} missing {role:?}", intent.id()));
+            let was_recommended = extra_roles.contains(&role);
+            if role == LandType && was_recommended {
+                assert_eq!(layer.path, "input/landtype_igbp_update.nc");
+                assert!(layer.enabled);
+            } else {
+                assert!(layer.path.is_empty());
+                assert!(!layer.enabled);
+            }
+        }
+        assert!(!project.refinement.enabled);
+        assert_eq!(project.refinement.max_passes, 0);
+    }
+
+    let atmosphere = MeshIntentPreset::AtmosphereMpas.defaults();
+    assert_eq!(atmosphere.kind, MeshDomainKind::Atmosphere);
+    assert_eq!(atmosphere.model_format, ModelFormat::Mpas);
+    let ocean = MeshIntentPreset::CoastalOcean.defaults();
+    assert_eq!(ocean.kind, MeshDomainKind::Ocean);
+    assert_eq!(ocean.cell, MeshCellKind::Tri);
 }
 
 #[test]
@@ -1077,7 +1646,24 @@ fn criterion_catalog_is_unique_and_self_describing() {
 }
 
 #[test]
-fn criterion_lookup_and_domain_filter() {
+fn threshold_criterion_catalog_expands_each_source_into_named_mean_and_std_axes() {
+    let catalog = threshold_criterion_catalog();
+    assert_eq!(catalog.len(), criterion_catalog().len() * 2);
+    let lai_mean = catalog
+        .iter()
+        .find(|criterion| criterion.id == "lai_mean")
+        .expect("lai mean criterion");
+    assert_eq!(lai_mean.label, "LAI mean");
+    assert_eq!(lai_mean.source_field, ThresholdField::Lai);
+    assert_eq!(lai_mean.statistic, ThresholdStatistic::Mean);
+    let lai_std = threshold_criterion_by_id("lai_std").expect("lai std criterion");
+    assert_eq!(lai_std.label, "LAI std");
+    assert_eq!(lai_std.source_field, ThresholdField::Lai);
+    assert_eq!(lai_std.statistic, ThresholdStatistic::Std);
+}
+
+#[test]
+fn criterion_lookup_and_universal_domain_catalog() {
     let slope = criterion_by_id("slope").expect("slope criterion");
     assert_eq!(slope.field, ThresholdField::Slope);
     assert_eq!(
@@ -1092,18 +1678,29 @@ fn criterion_lookup_and_domain_filter() {
     );
     assert!(criterion_by_id("nope").is_none());
 
-    let ocean = criteria_for_domain(MeshDomainKind::Ocean);
-    assert!(ocean.iter().any(|c| c.id == "sea_slope"));
-    assert!(ocean.iter().all(|c| c.id != "lai")); // land-only excluded
-
-    let atmosphere = criteria_for_domain(MeshDomainKind::Atmosphere);
-    assert_eq!(atmosphere.len(), 1);
-    assert_eq!(atmosphere[0].id, "typhoon");
-
-    let earth = criteria_for_domain(MeshDomainKind::Earth);
-    assert!(earth.iter().any(|c| c.id == "lai"));
-    assert!(earth.iter().any(|c| c.id == "sea_slope"));
-    assert!(earth.iter().any(|c| c.id == "typhoon"));
+    let expected = criterion_catalog()
+        .iter()
+        .map(|criterion| criterion.id)
+        .collect::<Vec<_>>();
+    for kind in [
+        MeshDomainKind::Land,
+        MeshDomainKind::Ocean,
+        MeshDomainKind::Atmosphere,
+        MeshDomainKind::Coupled,
+        MeshDomainKind::Earth,
+    ] {
+        assert_eq!(
+            criteria_for_domain(kind)
+                .into_iter()
+                .map(|criterion| criterion.id)
+                .collect::<Vec<_>>(),
+            expected,
+            "{kind:?}"
+        );
+        assert!(criterion_catalog()
+            .iter()
+            .all(|criterion| criterion.applicable.contains(&kind)));
+    }
 
     let layer = slope.to_data_layer("./th/slope_avg.nc", true);
     assert_eq!(
@@ -1256,9 +1853,31 @@ fn regional_bbox_hydro_coast_builds_an_explicit_postprocess_plan() {
         merit_stride: 1,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     let plan = p.hydro_execution_plan().unwrap().unwrap();
     assert_eq!(plan.merit_root, "/data/merit");
+    assert_eq!(plan.r2_upa_km2, 5_000.0);
+    assert_eq!(plan.r3_upa_km2, 50_000.0);
+    assert!(plan.river_refinement_enabled);
+    assert!(plan.river_width_refinement_enabled);
+    assert!(plan.river_upstream_area_refinement_enabled);
+    assert_eq!(plan.river_width_threshold_m, 300.0);
+    assert_eq!(plan.river_upstream_area_threshold_km2, 50_000.0);
+    assert!(plan.coast_refinement_enabled);
+    assert_eq!(plan.coast_buffer_km, 50.0);
+    assert!(plan.coast_land_refinement_enabled);
+    assert!(plan.coast_ocean_refinement_enabled);
     assert_eq!(
         plan.domain,
         RegionShape::Bbox {
@@ -1273,11 +1892,50 @@ fn regional_bbox_hydro_coast_builds_an_explicit_postprocess_plan() {
         vec!["R2", "R3", "COAST_LAND", "COAST_OCEAN"]
     );
     assert_eq!(plan.max_level, 3);
+    p.hydro_coast
+        .as_mut()
+        .unwrap()
+        .river_width_refinement_enabled = false;
+    let upstream_only = p.hydro_execution_plan().unwrap().unwrap();
+    assert!(!upstream_only.river_width_refinement_enabled);
+    assert!(upstream_only.river_upstream_area_refinement_enabled);
+    assert_eq!(upstream_only.max_level, 3);
+    p.hydro_coast
+        .as_mut()
+        .unwrap()
+        .river_upstream_area_refinement_enabled = false;
+    p.hydro_coast.as_mut().unwrap().coast_refinement_enabled = false;
+    assert_eq!(p.hydro_execution_plan().unwrap().unwrap().max_level, 0);
+    p.hydro_coast
+        .as_mut()
+        .unwrap()
+        .river_width_refinement_enabled = true;
+    p.hydro_coast
+        .as_mut()
+        .unwrap()
+        .river_upstream_area_refinement_enabled = true;
+    p.hydro_coast.as_mut().unwrap().river_refinement_enabled = false;
+    p.hydro_coast.as_mut().unwrap().coast_refinement_enabled = false;
+    assert_eq!(p.hydro_execution_plan().unwrap().unwrap().max_level, 0);
+    p.hydro_coast.as_mut().unwrap().coast_refinement_enabled = true;
+    p.hydro_coast
+        .as_mut()
+        .unwrap()
+        .coast_land_refinement_enabled = false;
+    p.hydro_coast
+        .as_mut()
+        .unwrap()
+        .coast_ocean_refinement_enabled = false;
+    assert_eq!(p.hydro_execution_plan().unwrap().unwrap().max_level, 0);
+    p.hydro_coast.as_mut().unwrap().river_refinement_enabled = true;
     p.refinement.enabled = false;
     p.refinement.max_passes = 0;
     assert_eq!(p.hydro_execution_plan().unwrap().unwrap().max_level, 0);
     p.refinement.enabled = true;
     p.refinement.max_passes = 3;
+    p.refinement.threshold_enabled = false;
+    assert_eq!(p.hydro_execution_plan().unwrap().unwrap().max_level, 0);
+    p.refinement.threshold_enabled = true;
     p.target.resolution = ResolutionSpec::ApproxDegree(1.0);
     assert_eq!(
         p.hydro_execution_plan().unwrap().unwrap().target_dx_km,
@@ -1311,6 +1969,17 @@ fn hydro_plan_accepts_cama_antimeridian_and_non_bbox_regional_domains() {
         merit_stride: 1,
         r3_width_m: 300.0,
         r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: true,
+        river_width_threshold_m: None,
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: true,
+        coast_buffer_km: 50.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
     });
     let plan = p.hydro_execution_plan().unwrap().unwrap();
     assert_eq!(plan.cama_root.as_deref(), Some("/data/cama"));

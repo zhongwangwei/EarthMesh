@@ -16,7 +16,9 @@ small channels are aggregated or represented as 1D river edges, medium channels 
 > (never a regenerated nominal-NXP grid), and recomputes coupling plus quality
 > on the final gridfile.
 > `scripts/run_real_hydro_e2e.sh` is a real-asset bounded closed-loop test by
-> default. It asserts a real CaMa estuary survives into the production CoLM
+> default. It first checks that native MERIT tiles on both sides of the
+> antimeridian produce coast-distance cells and an HField plan, then asserts a real CaMa
+> estuary survives into the production CoLM
 > rows and requires both final mesh and landtype-coupling quality to pass;
 > enable `EARTHMESH_REAL_KEEP_PRODUCTION_NITER=1` for source-spring parameter
 > parity. Level-3-or-deeper runs use one quality-gated physical retry at

@@ -5,7 +5,9 @@ use super::types::{
 };
 use crate::require_len;
 
-/// Classify a native MERIT-Hydro window into river/coast/surface mask classes.
+/// Classify a native MERIT-Hydro window into one primary mask class per cell.
+/// River classes take precedence here; exporters may additionally emit the
+/// same cell's orthogonal coast/surface class.
 pub fn classify_merit_hydro_window(
     window: &MeritHydroWindowReport,
     thresholds: MeritMaskThresholds,
@@ -97,14 +99,32 @@ pub(super) fn classify_merit_cell(
     adjacent_to_other_surface: bool,
     thresholds: MeritMaskThresholds,
 ) -> &'static str {
-    if width_m.is_finite() && upa_km2.is_finite() {
-        if width_m >= thresholds.r3_width_m || upa_km2 >= thresholds.r3_upa_km2 {
-            return "R3";
-        }
-        if width_m >= thresholds.r2_width_m || upa_km2 >= thresholds.r2_upa_km2 {
-            return "R2";
-        }
+    classify_merit_river(width_m, upa_km2, thresholds)
+        .unwrap_or_else(|| classify_merit_surface(landtype_igbp, adjacent_to_other_surface))
+}
+
+pub(super) fn classify_merit_river(
+    width_m: f64,
+    upa_km2: f64,
+    thresholds: MeritMaskThresholds,
+) -> Option<&'static str> {
+    if (width_m.is_finite() && width_m >= thresholds.r3_width_m)
+        || (upa_km2.is_finite() && upa_km2 >= thresholds.r3_upa_km2)
+    {
+        return Some("R3");
     }
+    if (width_m.is_finite() && width_m >= thresholds.r2_width_m)
+        || (upa_km2.is_finite() && upa_km2 >= thresholds.r2_upa_km2)
+    {
+        return Some("R2");
+    }
+    None
+}
+
+pub(super) fn classify_merit_surface(
+    landtype_igbp: i32,
+    adjacent_to_other_surface: bool,
+) -> &'static str {
     if is_merit_ocean_landtype(landtype_igbp) {
         if adjacent_to_other_surface {
             "COAST_OCEAN"
@@ -172,4 +192,26 @@ fn merit_window_wraps_longitude(window: &MeritHydroWindowReport) -> bool {
 
 fn is_merit_ocean_landtype(value: i32) -> bool {
     value == 0 || value == 17
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn river_thresholds_apply_width_or_upstream_area_independently() {
+        let thresholds = MeritMaskThresholds::default();
+        assert_eq!(
+            classify_merit_cell(350.0, f64::NAN, 1, false, thresholds),
+            "R3"
+        );
+        assert_eq!(
+            classify_merit_cell(f64::NAN, 6_000.0, 1, false, thresholds),
+            "R2"
+        );
+        assert_eq!(
+            classify_merit_cell(10.0, 100.0, 1, false, thresholds),
+            "LAND"
+        );
+    }
 }

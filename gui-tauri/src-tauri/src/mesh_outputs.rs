@@ -217,9 +217,23 @@ pub(crate) fn mesh_merit_cells(
     n: f64,
     stride: Option<u32>,
     landtype_file: Option<String>,
+    r2_width_m: f64,
+    r2_upa_km2: f64,
+    r3_width_m: f64,
+    r3_upa_km2: f64,
 ) -> Result<String, String> {
     validate_merit_mesh_bbox(w, e, s, n)?;
     let kind = checked_mesh_kind(Some(&kind))?;
+    if [r2_width_m, r2_upa_km2, r3_width_m, r3_upa_km2]
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+        || r3_width_m < r2_width_m
+        || r3_upa_km2 < r2_upa_km2
+    {
+        return Err(
+            "MERIT-Hydro thresholds must be finite, positive, and ordered R3 >= R2".to_string(),
+        );
+    }
     if !Path::new(&merit_root).is_dir() {
         return Err(format!("MERIT-Hydro directory not found: {merit_root}"));
     }
@@ -261,6 +275,14 @@ pub(crate) fn mesh_merit_cells(
             .arg(n.to_string())
             .arg("--stride")
             .arg("1")
+            .arg("--r2-width-m")
+            .arg(r2_width_m.to_string())
+            .arg("--r2-upa-km2")
+            .arg(r2_upa_km2.to_string())
+            .arg("--r3-width-m")
+            .arg(r3_width_m.to_string())
+            .arg("--r3-upa-km2")
+            .arg(r3_upa_km2.to_string())
             .arg("--skip-surface-mask")
             .output()
             .map_err(|e| format!("run --merit-hydro-geojson ({bin}): {e}"))?;

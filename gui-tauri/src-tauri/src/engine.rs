@@ -3,7 +3,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -20,7 +22,7 @@ pub(crate) fn resolve_mkgrd() -> Result<String, String> {
     // (OOM) when executed from certain source directories (observed in the dev
     // git-repo root) — an environment-level interaction with the C libraries, not a
     // logic bug. A copy under temp_dir runs reliably, so stage one and return it.
-    let found = resolve_mkgrd_path();
+    let found = resolve_mkgrd_path()?;
     let src = Path::new(&found);
     if !src.is_file() {
         return Ok(found);
@@ -101,35 +103,105 @@ pub(crate) fn stage_engine_copy(src: &Path, dst: &Path) -> Result<(), String> {
     result
 }
 
-fn resolve_mkgrd_path() -> String {
+fn resolve_mkgrd_path() -> Result<String, String> {
     // Honor an explicit override, but only if it points at a real file — a
     // stale or placeholder $EARTHMESH_MKGRD (e.g. "/path/to/mkgrd.x") must not
     // shadow a real build; fall through to discovery instead.
     if let Ok(p) = env::var("EARTHMESH_MKGRD") {
         let p = p.trim();
-        if !p.is_empty() && Path::new(p).is_file() {
-            return p.to_string();
+        if !p.is_empty() && engine_candidate_is_compatible(Path::new(p)) {
+            return Ok(p.to_string());
         }
     }
     // CARGO_MANIFEST_DIR is <repo>/gui-tauri/src-tauri at build time.
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..");
-    let roots = engine_search_roots(&repo, env::current_exe().ok().as_deref());
+    let current_exe = env::current_exe().ok();
+    let roots = engine_search_roots(&repo, current_exe.as_deref());
     let names = ["mkgrd.x", "earthmesh_cli", "earthmesh_cli.exe", "mkgrd.exe"];
-    for root in &roots {
-        for n in &names {
-            let cand = root.join(n);
-            if cand.is_file() {
-                return cand
-                    .canonicalize()
-                    .unwrap_or(cand)
-                    .to_string_lossy()
-                    .into_owned();
+
+    // Outside a source checkout, the sidecar next to the application is the
+    // packaged engine and must win over any build tree left on the machine.
+    // Inside the checkout, however, choose the newest compatible build. This
+    // prevents stale test stubs in target/debug from shadowing a real CLI.
+    if current_exe
+        .as_deref()
+        .is_some_and(|exe| !path_is_within(exe, &repo))
+    {
+        if let Some(dir) = current_exe.as_deref().and_then(Path::parent) {
+            for name in &names {
+                let candidate = dir.join(name);
+                if engine_candidate_is_compatible(&candidate) {
+                    return Ok(canonical_string(candidate));
+                }
             }
         }
     }
-    "mkgrd.x".to_string()
+
+    let mut compatible = Vec::new();
+    for root in &roots {
+        for name in &names {
+            let candidate = root.join(name);
+            if engine_candidate_is_compatible(&candidate) {
+                compatible.push(candidate);
+            }
+        }
+    }
+    if let Some(candidate) = compatible
+        .into_iter()
+        .max_by_key(|path| candidate_modified(path))
+    {
+        return Ok(canonical_string(candidate));
+    }
+
+    if let Some(paths) = env::var_os("PATH") {
+        for dir in env::split_paths(&paths) {
+            for name in &names {
+                let candidate = dir.join(name);
+                if engine_candidate_is_compatible(&candidate) {
+                    return Ok(canonical_string(candidate));
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "no compatible EarthMesh engine was found (expected version {}). Build earthmesh_cli or set EARTHMESH_MKGRD to its full path",
+        env!("CARGO_PKG_VERSION")
+    ))
+}
+
+pub(crate) fn engine_candidate_is_compatible(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|version| version.trim() == env!("CARGO_PKG_VERSION"))
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(root)
+}
+
+fn candidate_modified(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
+fn canonical_string(path: PathBuf) -> String {
+    path.canonicalize()
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub(crate) fn engine_search_roots(repo: &Path, current_exe: Option<&Path>) -> Vec<PathBuf> {

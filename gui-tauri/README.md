@@ -49,16 +49,19 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 
 | command | args | returns |
 |---|---|---|
-| `list_criteria` | – | refinement criteria `{physical_process,label,help,unit,range_min,range_max,default_value,stem}` |
+| `list_criteria` | – | one categorical landcover criterion plus independent continuous mean/std criteria `{id,source_stem,statistic,physical_process,label,help,unit,range_min,range_max,default_value}` |
 | `project_capabilities` | – | backend-owned intent ids, project defaults, and refinement level limits used by the runtime UI |
 | `scaffold_project` | `name, intent, nxp?, approxKm?` | project **YAML** |
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
 | `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
-| `project_summary` | `yaml` | `{name,authors,description,intent,cell,model_format,domain,domain_shape,nxp,approx_km,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]}` |
+| `project_summary` | `yaml` | `{name,authors,description,intent,target_kind,cell,model_format,domain,domain_shape,nxp,approx_km,approx_degree,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,threshold_criteria:[{id,source_id,statistic,source_enabled,enabled,value}],hydro_river_width_refine_enabled,hydro_river_upstream_area_refine_enabled,hydro_river_width_threshold_m,hydro_river_upstream_area_threshold_km2,hydro_coast_refine_enabled,hydro_coast_buffer_km,hydro_coast_land_refine_enabled,hydro_coast_ocean_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,source_field,role,path,enabled,threshold_value,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
-| `set_threshold_value` | `yaml, id, value?` | updated **YAML** (per-criterion threshold; null uses default) |
+| `set_threshold_value` | `yaml, id, value?` | updated **YAML** (legacy/shared source threshold; null uses the catalog default) |
+| `set_threshold_criterion` | `yaml, id, enabled, value?` | updated **YAML** (one independent `<source>_mean` or `<source>_std` switch/value; source path remains in `data_layers`) |
+| `set_hydro_refinement` | `yaml, riverWidthEnabled, riverUpstreamAreaEnabled, coastEnabled, coastBufferKm, coastLandEnabled, coastOceanEnabled, riverWidthThresholdM, riverUpstreamAreaThresholdKm2` | updated **YAML** (independent river-width/upstream-area demand plus the coast-distance demand) |
 | `autofill_data_layers_from_folder` | `yaml, folder` | updated **YAML** with matching NetCDF layer paths |
+| `set_project_target` | `yaml, kind, modelFormat` | updated **YAML** after enforcing the backend kind/model compatibility matrix |
 | `set_target_cell` | `yaml, cell` | updated **YAML** (`hex` or `tri`) |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
@@ -80,8 +83,13 @@ static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
 | `kill_run` | – | terminate the running engine child if one exists |
 | `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard; `kind` is `tri` or `hex` and maps to report `cell_view` (omitted defaults to `hex`) |
 | `mesh_cell_polygons` | `gridfile, kind, maxCells?` | GeoJSON mesh overlay for the map |
-| `mesh_merit_cells` | `gridfile, kind, meritRoot, w, e, s, n, stride?, landtypeFile?` | final mesh cells with MERIT-Hydro R2/R3 plus land-cover land/ocean/coast fractions; land-cover resolution is inferred from the file |
+| `mesh_merit_cells` | `gridfile, kind, meritRoot, w, e, s, n, stride?, landtypeFile?, r2WidthM, r2UpaKm2, r3WidthM, r3UpaKm2` | final mesh cells with MERIT-Hydro R2/R3 plus land-cover land/ocean/coast fractions; land-cover resolution is inferred from the file |
 | `shapefile_boundary_geojson` | `path` | GeoJSON polygon outline for the map |
+
+New MERIT-Hydro configurations use one 50 km coast-distance threshold with both
+sides enabled. Legacy YAML that lacks the distance field loads as 0 km (physical
+coastline cells only), so opening an older project cannot silently expand its
+refinement footprint.
 
 All wired to `earthmesh_project`: `ProjectConfig::scaffold` / `from_yaml` /
 `from_json` / `validate` / `to_yaml` / `lower().to_namelist()` /

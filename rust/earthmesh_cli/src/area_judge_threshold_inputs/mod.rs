@@ -66,16 +66,13 @@ pub(crate) fn enabled_mean_threshold_field_specs(
     mesh_type: &str,
 ) -> Vec<AreaJudgeThresholdFieldSpec> {
     let mut specs = Vec::new();
-    match mesh_type {
-        "landmesh" => push_land_threshold_specs(refine, &mut specs),
-        "oceanmesh" => push_ocean_threshold_specs(refine, &mut specs),
-        "atmos" | "atmosmesh" => push_atmos_threshold_specs(refine, &mut specs),
-        "LOCmesh" | "earthmesh" => {
-            push_land_threshold_specs(refine, &mut specs);
-            push_ocean_threshold_specs(refine, &mut specs);
-            push_atmos_threshold_specs(refine, &mut specs);
-        }
-        _ => {}
+    if matches!(
+        mesh_type,
+        "landmesh" | "oceanmesh" | "atmos" | "atmosmesh" | "LOCmesh" | "earthmesh"
+    ) {
+        push_land_threshold_specs(refine, &mut specs);
+        push_ocean_threshold_specs(refine, &mut specs);
+        push_atmos_threshold_specs(refine, &mut specs);
     }
     specs
 }
@@ -85,16 +82,13 @@ pub(crate) fn enabled_std_threshold_field_specs(
     mesh_type: &str,
 ) -> Vec<AreaJudgeThresholdFieldSpec> {
     let mut specs = Vec::new();
-    match mesh_type {
-        "landmesh" => push_land_std_threshold_specs(refine, &mut specs),
-        "oceanmesh" => push_ocean_std_threshold_specs(refine, &mut specs),
-        "atmos" | "atmosmesh" => push_atmos_std_threshold_specs(refine, &mut specs),
-        "LOCmesh" | "earthmesh" => {
-            push_land_std_threshold_specs(refine, &mut specs);
-            push_ocean_std_threshold_specs(refine, &mut specs);
-            push_atmos_std_threshold_specs(refine, &mut specs);
-        }
-        _ => {}
+    if matches!(
+        mesh_type,
+        "landmesh" | "oceanmesh" | "atmos" | "atmosmesh" | "LOCmesh" | "earthmesh"
+    ) {
+        push_land_std_threshold_specs(refine, &mut specs);
+        push_ocean_std_threshold_specs(refine, &mut specs);
+        push_atmos_std_threshold_specs(refine, &mut specs);
     }
     specs
 }
@@ -302,5 +296,32 @@ mod tests {
                 threshold: 7.0,
             }]
         );
+    }
+
+    #[test]
+    fn supported_meshes_keep_every_enabled_threshold_family() {
+        let mut refine = RefineConfig::default();
+        refine.refine_onelayer_lnd.fill(true);
+        refine.refine_twolayer_lnd.fill(true);
+        refine.refine_onelayer_ocn.fill(true);
+        refine.refine_onelayer_atmos.fill(true);
+
+        let expected_mean = enabled_mean_threshold_field_specs(&refine, "earthmesh");
+        let expected_std = enabled_std_threshold_field_specs(&refine, "earthmesh");
+        assert_eq!(expected_mean.len(), 19);
+        assert_eq!(expected_std.len(), 19);
+
+        for mesh_type in ["landmesh", "oceanmesh", "atmos", "atmosmesh", "LOCmesh"] {
+            assert_eq!(
+                enabled_mean_threshold_field_specs(&refine, mesh_type),
+                expected_mean,
+                "mean thresholds were filtered for {mesh_type}"
+            );
+            assert_eq!(
+                enabled_std_threshold_field_specs(&refine, mesh_type),
+                expected_std,
+                "standard-deviation thresholds were filtered for {mesh_type}"
+            );
+        }
     }
 }

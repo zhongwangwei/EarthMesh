@@ -1,10 +1,11 @@
 //! Project YAML edit command handlers.
 
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, DomainConfig,
-    HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind, MeshIntentPreset, ProjectConfig,
-    ProjectLayerRole, RegionShape, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCloseRefinement, ThresholdField, ViolationPolicy,
+    criterion_catalog, default_mask_sea_ratio, threshold_criterion_by_id, CloseBoundaryMode,
+    CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind,
+    MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole, RegionShape,
+    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
+    ThresholdCriterionConfig, ThresholdField, ViolationPolicy, LANDCOVER_CRITERION_ID,
 };
 use std::path::{Path, PathBuf};
 
@@ -29,21 +30,72 @@ pub(crate) fn set_layer_path(
         layer.enabled = enabled;
         layer.role
     };
-    if role == ProjectLayerRole::MeritHydro
-        && (cfg.target.intent == MeshIntentPreset::MeritHydroCoast || cfg.hydro_coast.is_some())
+    if enabled
+        && matches!(
+            role,
+            ProjectLayerRole::Threshold(_) | ProjectLayerRole::LandType
+        )
     {
-        if enabled {
+        for sibling in &mut cfg.data_layers {
+            if sibling.id != id && sibling.role == role {
+                sibling.enabled = false;
+            }
+        }
+    }
+    if role == ProjectLayerRole::MeritHydro {
+        if enabled && matches!(cfg.domain, DomainConfig::Regional { .. }) {
             let hydro = cfg.hydro_coast.get_or_insert(HydroCoastConfig {
                 merit_root: path.clone(),
                 cama_root: None,
                 merit_stride: 1,
                 r3_width_m: 300.0,
                 r2_width_m: 50.0,
+                r3_upa_km2: 50_000.0,
+                r2_upa_km2: 5_000.0,
+                river_refinement_enabled: true,
+                river_width_refinement_enabled: true,
+                river_upstream_area_refinement_enabled: true,
+                river_width_threshold_m: Some(300.0),
+                river_upstream_area_threshold_km2: Some(50_000.0),
+                coast_refinement_enabled: true,
+                coast_buffer_km: 50.0,
+                coast_land_refinement_enabled: true,
+                coast_ocean_refinement_enabled: true,
             });
             hydro.merit_root = path;
         } else {
             cfg.hydro_coast = None;
         }
+    }
+    validated_yaml(cfg)
+}
+
+/// Configure the MERIT-Hydro river/coast refinement demand without changing
+/// whether those classes remain available for coupling and map output.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_hydro_refinement(
+    yaml: String,
+    river_width_enabled: bool,
+    river_upstream_area_enabled: bool,
+    coast_enabled: bool,
+    coast_buffer_km: f64,
+    coast_land_enabled: bool,
+    coast_ocean_enabled: bool,
+    river_width_threshold_m: f64,
+    river_upstream_area_threshold_km2: f64,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    if let Some(hydro) = cfg.hydro_coast.as_mut() {
+        hydro.river_refinement_enabled = river_width_enabled || river_upstream_area_enabled;
+        hydro.river_width_refinement_enabled = river_width_enabled;
+        hydro.river_upstream_area_refinement_enabled = river_upstream_area_enabled;
+        hydro.coast_refinement_enabled = coast_enabled;
+        hydro.coast_buffer_km = coast_buffer_km;
+        hydro.coast_land_refinement_enabled = coast_land_enabled;
+        hydro.coast_ocean_refinement_enabled = coast_ocean_enabled;
+        hydro.river_width_threshold_m = Some(river_width_threshold_m);
+        hydro.river_upstream_area_threshold_km2 = Some(river_upstream_area_threshold_km2);
     }
     validated_yaml(cfg)
 }
@@ -71,6 +123,43 @@ pub(crate) fn set_threshold_value(
     validated_yaml(cfg)
 }
 
+/// Set one mean/std criterion without changing its shared source-layer path or
+/// the sibling statistic. A blank explicit value restores this criterion's
+/// catalog default instead of falling back to a legacy shared threshold.
+#[tauri::command]
+pub(crate) fn set_threshold_criterion(
+    yaml: String,
+    id: String,
+    enabled: bool,
+    value: Option<f64>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let is_landcover = id == LANDCOVER_CRITERION_ID;
+    let source_role = if is_landcover {
+        ProjectLayerRole::LandType
+    } else {
+        let criterion = threshold_criterion_by_id(&id)
+            .ok_or_else(|| format!("unknown threshold criterion '{id}'"))?;
+        ProjectLayerRole::Threshold(criterion.source_field)
+    };
+    if !cfg
+        .data_layers
+        .iter()
+        .any(|layer| layer.role == source_role)
+    {
+        return Err(format!(
+            "threshold criterion '{id}' has no matching data source"
+        ));
+    }
+    cfg.refinement
+        .threshold_criteria
+        .retain(|entry| entry.id != id);
+    cfg.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig { id, enabled, value });
+    validated_yaml(cfg)
+}
+
 #[tauri::command]
 pub(crate) fn autofill_data_layers_from_folder(
     yaml: String,
@@ -78,21 +167,53 @@ pub(crate) fn autofill_data_layers_from_folder(
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     let files = nc_files(Path::new(&folder))?;
-    for layer in &mut cfg.data_layers {
-        let matched = match layer.role {
-            ProjectLayerRole::LandType => find_by_stems(
-                &files,
-                &["landtype_igbp_update", "landtype_usgs_update", "landtype"],
-            ),
-            ProjectLayerRole::Threshold(field) => find_by_stems(&files, threshold_stems(field)),
-            _ => None,
-        };
-        if let Some(path) = matched {
-            layer.path = path.to_string_lossy().into_owned();
-            layer.enabled = true;
+    if let Some(path) = find_by_stems(
+        &files,
+        &["landtype_igbp_update", "landtype_usgs_update", "landtype"],
+    ) {
+        set_autofilled_role(&mut cfg, ProjectLayerRole::LandType, "landcover", path);
+    }
+    for source in criterion_catalog() {
+        if let Some(path) = find_by_stems(&files, threshold_stems(source.field)) {
+            set_autofilled_role(
+                &mut cfg,
+                ProjectLayerRole::Threshold(source.field),
+                source.field.stem(),
+                path,
+            );
         }
     }
     validated_yaml(cfg)
+}
+
+fn set_autofilled_role(
+    cfg: &mut ProjectConfig,
+    role: ProjectLayerRole,
+    canonical_id: &str,
+    path: PathBuf,
+) {
+    let selected = cfg
+        .data_layers
+        .iter()
+        .position(|layer| layer.role == role && layer.enabled)
+        .or_else(|| {
+            cfg.data_layers
+                .iter()
+                .position(|layer| layer.role == role && layer.id == canonical_id)
+        })
+        .or_else(|| cfg.data_layers.iter().position(|layer| layer.role == role));
+    let Some(selected) = selected else {
+        return;
+    };
+    let path = path.to_string_lossy().into_owned();
+    for (index, layer) in cfg.data_layers.iter_mut().enumerate() {
+        if layer.role == role {
+            layer.enabled = index == selected;
+            if index == selected {
+                layer.path = path.clone();
+            }
+        }
+    }
 }
 
 fn nc_files(folder: &Path) -> Result<Vec<PathBuf>, String> {
@@ -139,6 +260,36 @@ fn threshold_stems(field: ThresholdField) -> &'static [&'static str] {
         ThresholdField::SeaSlope => &["sea_slope"],
         ThresholdField::Typhoon => &["typhoon"],
     }
+}
+
+/// Update the canonical physical target while preserving project intent as the
+/// one-shot preset that originally scaffolded the project.
+#[tauri::command]
+pub(crate) fn set_project_target(
+    yaml: String,
+    kind: String,
+    model_format: String,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.target.kind = match kind.trim().to_ascii_lowercase().as_str() {
+        "land" => MeshDomainKind::Land,
+        "ocean" => MeshDomainKind::Ocean,
+        "atmosphere" => MeshDomainKind::Atmosphere,
+        "coupled" => MeshDomainKind::Coupled,
+        "earth" => MeshDomainKind::Earth,
+        other => return Err(format!("unknown target kind '{other}'")),
+    };
+    cfg.target.model_format = match model_format.trim().to_ascii_lowercase().as_str() {
+        "colm" => ModelFormat::CoLM,
+        "fvcom" => ModelFormat::Fvcom,
+        "mpas" => ModelFormat::Mpas,
+        "mpas-simple" | "mpassimple" => ModelFormat::MpasSimple,
+        other => return Err(format!("unknown target model format '{other}'")),
+    };
+    if cfg.target.kind != MeshDomainKind::Coupled {
+        cfg.coupling = None;
+    }
+    validated_yaml(cfg)
 }
 
 /// Set the target cell shape, returning the updated YAML.

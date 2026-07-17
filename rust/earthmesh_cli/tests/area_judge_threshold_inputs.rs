@@ -147,9 +147,11 @@ fn threshold_inputs_follow_area_judge_bounds_and_mesh_type_dispatch() {
 }
 
 #[test]
-fn threshold_inputs_skip_irrelevant_mesh_type_readers() {
-    let root = temp_root("area_judge_threshold_inputs_land_only");
+fn threshold_inputs_keep_cross_domain_layers_for_land_meshes() {
+    let root = temp_root("area_judge_threshold_inputs_cross_domain");
     write_2d_threshold(&root.join("lai.nc"), "lai", 5, 5, 0.0);
+    write_2d_threshold(&root.join("sst.nc"), "sst", 5, 5, 20_000.0);
+    write_2d_threshold(&root.join("typhoon.nc"), "typhoon", 5, 5, 30_000.0);
 
     let report = read_area_judge_threshold_inputs_one_based(
         AreaJudgeThresholdReadConfig {
@@ -168,9 +170,9 @@ fn threshold_inputs_skip_irrelevant_mesh_type_readers() {
             minlat_source: 2,
         },
     )
-    .expect("read land-only threshold inputs");
+    .expect("read cross-domain threshold inputs");
 
     assert!(report.land_onelayer[0].is_some());
-    assert!(report.ocean_onelayer.is_empty());
-    assert!(report.atmos_onelayer.is_empty());
+    assert!(report.ocean_onelayer[0].is_some());
+    assert!(report.atmos_onelayer[0].is_some());
 }

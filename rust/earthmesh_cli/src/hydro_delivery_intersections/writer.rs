@@ -22,6 +22,8 @@ struct CorridorRing {
     source: Option<String>,
     is_estuary: bool,
     reach_id: Option<String>,
+    river_width_triggered: Option<bool>,
+    river_upstream_area_triggered: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -107,6 +109,8 @@ struct CorridorProperties {
     source: Option<TextProperty>,
     is_estuary: Option<BoolProperty>,
     reach_id: Option<TextProperty>,
+    river_width_triggered: Option<BoolProperty>,
+    river_upstream_area_triggered: Option<BoolProperty>,
 }
 
 impl CorridorProperties {
@@ -192,6 +196,14 @@ fn read_corridor_rings(
         let reach_id = properties
             .reach_id
             .and_then(TextProperty::into_nonempty_string);
+        let river_width_triggered = properties
+            .river_width_triggered
+            .as_ref()
+            .map(BoolProperty::value);
+        let river_upstream_area_triggered = properties
+            .river_upstream_area_triggered
+            .as_ref()
+            .map(BoolProperty::value);
         let Some(geometry) = feature.geometry else {
             continue;
         };
@@ -215,6 +227,8 @@ fn read_corridor_rings(
                     source: source.clone(),
                     is_estuary,
                     reach_id: reach_id.clone(),
+                    river_width_triggered,
+                    river_upstream_area_triggered,
                 });
         }
     }
@@ -425,6 +439,9 @@ fn write_earthmesh_intersection_geojson_with_overlap(
             let mut disjoint_estuary_area = 0.0;
             let mut corridor_sources = std::collections::BTreeSet::new();
             let mut reach_ids = std::collections::BTreeSet::new();
+            let mut has_river_criteria = false;
+            let mut river_width_triggered = false;
+            let mut river_upstream_area_triggered = false;
             for corridor in rings {
                 if !cell_cap.overlaps(corridor.cap) {
                     continue;
@@ -470,6 +487,14 @@ fn write_earthmesh_intersection_geojson_with_overlap(
                 };
                 if corridor_area <= 0.0 {
                     continue;
+                }
+                if let Some(triggered) = corridor.river_width_triggered {
+                    has_river_criteria = true;
+                    river_width_triggered |= triggered;
+                }
+                if let Some(triggered) = corridor.river_upstream_area_triggered {
+                    has_river_criteria = true;
+                    river_upstream_area_triggered |= triggered;
                 }
                 if let Some(source) = &corridor.source {
                     corridor_sources.insert(source.clone());
@@ -598,6 +623,16 @@ fn write_earthmesh_intersection_geojson_with_overlap(
                     },
                 );
                 props.insert("estuary_fraction".into(), format!("{estuary_fraction}"));
+                if has_river_criteria {
+                    props.insert(
+                        "river_width_triggered".into(),
+                        river_width_triggered.to_string(),
+                    );
+                    props.insert(
+                        "river_upstream_area_triggered".into(),
+                        river_upstream_area_triggered.to_string(),
+                    );
+                }
                 props.insert(
                     "reach_ids".into(),
                     format!(

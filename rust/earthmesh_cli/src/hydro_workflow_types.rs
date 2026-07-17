@@ -40,6 +40,9 @@ pub struct HydroWorkflowReport {
     /// R7 verdict (pass/warn/fail), present only when mesh + land-type were supplied.
     pub coupling_quality_verdict: Option<String>,
     pub intersections_path: PathBuf,
+    /// Exact per-cell feature collection used to build `refinement_plan_path`.
+    /// It equals `intersections_path` unless refinement-only signals were merged.
+    pub refinement_source_path: PathBuf,
     pub coupling_csv_path: PathBuf,
     pub refinement_plan_path: PathBuf,
     pub coupling_quality_path: Option<PathBuf>,

@@ -69,13 +69,95 @@ log("niter_refine default remains engine-owned");
 
 check(
   html.includes('id="thresholdRefineOn"') &&
-    html.includes("thresholdRefine.enabled && hasEnabledThresholdLayer(summary)") &&
+    html.includes("thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary))") &&
     html.includes("thresholdEnabled: !!thresholdRefine.enabled") &&
     html.includes("let thresholdRefine = { enabled: false }") &&
-    html.includes("thresholdRefine = { enabled: !!sum.threshold_refine_enabled }"),
+    html.includes("thresholdRefine = { enabled: !!sum.threshold_refine_enabled }") &&
+    html.includes('(l.role_kind === "threshold" || l.role_kind === "landcover")') &&
+    !html.includes("landcoverCanRefine"),
   "threshold refinement must have an independent persisted master switch",
 );
 log("threshold refinement master switch is wired");
+
+check(
+  html.includes("const criterionEdits = {};") &&
+    html.includes('invoke("set_threshold_criterion"') &&
+    html.includes("sum.threshold_criteria") &&
+    html.includes("criterion.source_id === l.id && criterion.enabled") &&
+    html.includes("const sourceCriteria = cat.filter((criterion) => criterionStates[criterion.id] && criterionStates[criterion.id].source_id === l.id);") &&
+    html.includes("sourceCriteria.map((criterion) => ({ ...l, id: criterion.id, sourceId: l.id, criterion") &&
+    html.includes('row.dataset.isCriterion = l.isCriterion ? "1" : "0";') &&
+    html.includes('if (row.dataset.isCriterion === "1")') &&
+    html.includes("criterionEdits[id] = { enabled: next, value:") &&
+    html.includes("criterionEdits[row.dataset.crit] = { enabled:"),
+  "continuous threshold sources must render independent mean/std criteria with one shared path",
+);
+log("continuous thresholds expose independent mean/std criteria over one source path");
+
+check(
+  html.includes("const state = criterionStates.landcover;") &&
+    html.includes('const criterion = cat.find((candidate) => candidate.id === "landcover");') &&
+    html.includes("sourceEnabled: l.enabled, enabled: state.enabled, value: state.value") &&
+    !html.includes('if (l.role_kind === "landcover") return true;'),
+  "landcover refinement must be an independent categorical criterion, not the mask source toggle",
+);
+log("landcover criterion is independent from the mask source toggle");
+
+check(
+  html.includes('id: "hydroRiverWidth"') &&
+    html.includes('id: "hydroRiverUpstreamArea"') &&
+    html.includes('id: "hydroCoastDistance"') &&
+    html.includes('label: z ? "河道细化 · MERIT"') &&
+    html.includes('physical_process: z ? "河宽 ≥"') &&
+    html.includes('physical_process: z ? "上游汇水面积 ≥"') &&
+    html.includes('physical_process: z ? "距海岸线 ≤"') &&
+    html.includes("const refinementCriteria = sum.layers.flatMap") &&
+    html.includes('if (l.role_kind === "landcover") {') &&
+    html.includes("const state = criterionStates.landcover;") &&
+    html.includes('if (l.role_kind === "threshold") {') &&
+    html.includes('if (l.role_kind === "merit") return hydroCriteria;') &&
+    html.includes("refinementCriteria.forEach") &&
+    !html.includes("[...crits, ...hydroCriteria]") &&
+    html.includes('sides.className = "select em-hydro-sides"') &&
+    html.includes('hydroRefine.coastEnabled = sides.value !== "none";') &&
+    html.includes('hydroKey === "coastEnabled" && next && !hydroRefine.coastLandEnabled') &&
+    html.includes('invoke("set_hydro_refinement"') &&
+    html.includes("riverWidthEnabled: !!hydroRefine.riverWidthEnabled") &&
+    html.includes("riverUpstreamAreaEnabled: !!hydroRefine.riverUpstreamAreaEnabled") &&
+    html.includes("riverWidthThresholdM: hydroRefine.riverWidthThresholdM") &&
+    html.includes("riverUpstreamAreaThresholdKm2: hydroRefine.riverUpstreamAreaThresholdKm2") &&
+    html.includes("coastBufferKm: hydroRefine.coastBufferKm") &&
+    html.includes("coastLandEnabled: !!hydroRefine.coastLandEnabled") &&
+    html.includes("coastOceanEnabled: !!hydroRefine.coastOceanEnabled") &&
+    html.includes("hydro_river_width_refine_enabled") &&
+    html.includes("hydro_river_upstream_area_refine_enabled") &&
+    html.includes("hydro_river_width_threshold_m") &&
+    html.includes("hydro_river_upstream_area_threshold_km2") &&
+    html.includes("const hasHydro = sum.hydro_coast_buffer_km != null || sum.hydro_river_width_threshold_m != null") &&
+    !html.includes('id="hydroThresholdPanel"') &&
+    !html.includes('id="hydroR2Width"') &&
+    !html.includes('id="hydroR3Width"') &&
+    readme.includes("riverWidthEnabled, riverUpstreamAreaEnabled") &&
+    readme.includes("riverWidthThresholdM, riverUpstreamAreaThresholdKm2") &&
+    readme.includes("hydro_river_width_refine_enabled") &&
+    readme.includes("hydro_river_upstream_area_refine_enabled"),
+  "MERIT-Hydro width, upstream area, and coast distance must be flat independent threshold rows",
+);
+log("MERIT-Hydro refinement criteria are flat independent rows");
+
+check(
+  html.includes("const h=_hydroThresholds;") &&
+    html.includes("h.r3WidthM") &&
+    html.includes("h.r3UpaKm2") &&
+    html.includes("distance-refinement band is not shown") &&
+    !html.includes("C2") &&
+    !html.includes("C3") &&
+    !html.includes("..._hydroThresholds") &&
+    !html.includes("R3: 宽≥300m/上游≥5万km²") &&
+    !html.includes("R2: width≥50m/upstream≥5k km²"),
+  "MERIT map legend must follow the configured thresholds",
+);
+log("MERIT map legend follows project thresholds");
 
 check(
   html.includes('id="refinementStrategySwitches"') &&
@@ -156,6 +238,8 @@ log("resolution slider ticks are self-describing");
       body.includes("unsupported gallery intents") &&
       body.includes("capabilities.default_sea_ratio") &&
       body.includes("capabilities.default_min_angle_deg") &&
+      body.includes("capabilities.target_presets") &&
+      body.includes("capabilities.target_compatibility") &&
       body.includes("capabilities.method_c_min_base_nxp") &&
       body.includes("capabilities.method_c_max_refinement_level") &&
       body.includes("capabilities.method_c_spring_nxp1_km") &&
@@ -166,6 +250,47 @@ log("resolution slider ticks are self-describing");
     "runtime project capabilities must gate gallery intents and defaults",
   );
   log("runtime project capabilities own gallery compatibility and limits");
+}
+
+check(
+  html.includes('id="targetKindOutput"') &&
+    html.includes('id="targetModelOutput"') &&
+    !html.includes('id="targetModelOutput" value="—" readonly') &&
+    html.includes('invoke("set_project_target"') &&
+    html.includes("targetEdit = { kind:") &&
+    html.includes("TARGET_COMPATIBILITY") &&
+    html.includes("sum.target_kind") &&
+    html.includes("sum.model_format"),
+  "target kind/model must be editable canonical ProjectConfig state",
+);
+log("target kind/model are editable canonical state");
+
+{
+  const compose = section(html, /async function composeYaml\(\) \{([\s\S]*?)\n  \}/, "composeYaml body");
+  const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const wire = section(html, /async function wireExpertTargetStep\(\) \{([\s\S]*?)\n  \}/, "wireExpertTargetStep body");
+  check(
+    compose.includes("yaml, nxp: expertEdit.nxp") &&
+      compose.includes("halo: expertEdit.halo") &&
+      compose.includes("maxTransitionRow: expertEdit.maxTransitionRow") &&
+      compose.includes("weakConcavEliminate: expertEdit.weakConcavEliminate") &&
+      reflect.includes("nxp: sum.expert_nxp ?? null") &&
+      reflect.includes("weakConcavEliminate: sum.expert_weak_concav_eliminate ?? null") &&
+      wire.includes("nxp: expertEdit.nxp") &&
+      wire.includes("weakConcavEliminate: expertEdit.weakConcavEliminate") &&
+      !compose.includes("nxp: null, openmp:") &&
+      !compose.includes("weakConcavEliminate: discreteMask ? true : null"),
+    "open-compose-save must preserve hidden expert overrides exactly",
+  );
+  check(
+    compose.includes("Object.keys(layerEdits).sort((a,b) => Number(!!layerEdits[b].enabled) - Number(!!layerEdits[a].enabled))") &&
+      compose.includes('yaml = await invoke("set_layer_path"') &&
+      compose.includes('yaml = await invoke("set_threshold_value"') &&
+      compose.includes('yaml = await invoke("set_threshold_criterion"') &&
+      !compose.includes("catch (err)"),
+    "compose must surface data-layer and criterion validation errors",
+  );
+  log("hidden expert overrides survive compose and edit validation errors propagate");
 }
 
 check(
@@ -212,15 +337,26 @@ log("gallery meta uses target defaults");
   log("gallery tags match scaffolded data/criteria");
 }
 
-check(
-  html.includes("function selectTemplate(k)") &&
-    html.includes("baseProjectYaml = null;") &&
-    html.includes("delete layerEdits[id];") &&
-    html.includes("cur = 1;") &&
-    html.includes("c.onclick=()=>selectTemplate(+c.dataset.tpl)"),
-  "template switch must clear carried project state and advance rail",
-);
-log("template switch state check passed");
+{
+  const reset = section(
+    html,
+    /window\.resetTemplateDerivedState = function \(\) \{([\s\S]*?)\n  \};/,
+    "resetTemplateDerivedState body",
+  );
+  check(
+    html.includes("function selectTemplate(k)") &&
+      reset.includes("targetEdit = null;") &&
+      !reset.includes("delete layerEdits[id]") &&
+      !reset.includes("delete thresholdEdits[id]") &&
+      !reset.includes("baseProjectYaml = null") &&
+      !reset.includes("qualityEdit = null") &&
+      !reset.includes("thresholdRefine = { enabled: false }") &&
+      html.includes("cur = 1;") &&
+      html.includes("c.onclick=()=>selectTemplate(+c.dataset.tpl)"),
+    "template switch must apply a one-shot target preset without clearing common project edits",
+  );
+  log("template switch preserves common project state");
+}
 
 check(!html.includes('head("",STEPS'), "step header helper must not carry an unused argument");
 log("step header helper has no dummy argument");
@@ -253,10 +389,12 @@ log("static output placeholders are neutral");
 }
 
 check(
-  readme.includes("layers:[{id,role_kind,role,path,enabled,threshold_value,wants_folder}]"),
-  "project_summary README must document layer role_kind/wants_folder",
+  readme.includes("target_kind") &&
+    readme.includes("threshold_criteria:[{id,source_id,statistic,source_enabled,enabled,value}]") &&
+    readme.includes("layers:[{id,role_kind,source_field,role,path,enabled,threshold_value,wants_folder}]"),
+  "project_summary README must document target, criterion, and layer shapes",
 );
-log("project_summary layer shape documented");
+log("project_summary target/criterion/layer shapes documented");
 
 check(!html.includes('["Cama","CaMa"]'), "GUI must spell CaMa like backend role labels");
 log("CaMa label check passed");
@@ -454,11 +592,15 @@ log("layer rows render project data as text");
 check(
   html.includes('tr.dataset.path = l.path || "";') &&
     html.includes('tr.dataset.enabled = l.enabled ? "1" : "0";') &&
-    html.includes('layerEdits[id] = { path, enabled: tr.dataset.enabled !== "1" };') &&
+    html.includes('tr.dataset.sourceField = l.source_field || "";') &&
+    html.includes("const selectExclusiveSource = (id, path) => {") &&
+    html.includes("sibling.source_field === selected.source_field") &&
+    html.includes('layerEdits[sibling.id] = { path: sibling.path || "", enabled: false };') &&
+    html.includes("if (enabled) selectExclusiveSource(id, path);") &&
     !html.includes("const e = layerEdits[id];\n        if (!e || !e.path) return;"),
-  "layer toggles must preserve opened project paths",
+  "layer toggles must preserve paths and keep same-field sources exclusive",
 );
-log("layer toggles preserve opened project paths");
+log("layer toggles preserve paths and keep same-field sources exclusive");
 
 check(
   html.includes('layerEdits[l.id] = { path: l.path, enabled: l.enabled };') &&
@@ -506,7 +648,7 @@ log("opened project layers preserve disabled state");
     html.includes('id="targetQualityModeOutput"') &&
       html.includes('id="readyQualityModeOutput"') &&
       html.includes("function qualityModeLabel(mode, cell)") &&
-      body.includes('const mode = s.quality_mode || (cell === "tri" ? "tri-strict" : "hex-cgrid");') &&
+      body.includes('const mode = (s && s.quality_mode) || (cell === "tri" ? "tri-strict" : "hex-cgrid");') &&
       body.includes('modeIn.textContent = qualityModeLabel(mode, cell);') &&
       body.includes('readyMode.textContent = qualityModeLabel(mode, cell);') &&
       !html.includes('id="targetQualityModeOutput" style="font-size:15px">—</b>') &&
@@ -673,11 +815,11 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 
 {
   check(
-    html.includes("const refinementEnabled = (thresholdRefine.enabled && hasEnabledThresholdLayer(sum)) || !!specifiedRefine.enabled;") &&
+    html.includes("const refinementEnabled = (thresholdRefine.enabled && (hasEnabledThresholdLayer(sum) || hasEnabledHydroRefinement(sum))) || !!specifiedRefine.enabled;") &&
       !html.includes("const refinementEnabled = regionalRefine ||") &&
       !html.includes("regionalAutoPasses") &&
       html.includes("const shownPasses") &&
-      html.includes("no threshold criteria for this template") &&
+      html.includes("no threshold-capable data layers") &&
       html.includes('anchor.insertAdjacentHTML("afterend", mp);') &&
       html.includes(
         "const refinementPasses = refinementEnabled",
@@ -686,6 +828,15 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
   );
   log("disabled refinement max_passes zero check passed");
 }
+
+check(
+  html.includes('hydroRefine[hydroThresholdKey] = raw === ""') &&
+    html.includes("? defaultHydroRefine()[hydroThresholdKey]") &&
+    html.includes(": Number.isFinite(v) ? v : 0;") &&
+    !html.includes("if (Number.isFinite(v) && v > 0) {\n            hydroRefine[hydroThresholdKey] = v;"),
+  "blank MERIT thresholds must restore defaults while invalid values reach Rust validation",
+);
+log("blank MERIT thresholds restore defaults; invalid values reach Rust validation");
 
 check(
   html.includes("METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level") &&
@@ -698,7 +849,7 @@ log("Method-C refinement controls share the engine level cap");
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
   check(
-    body.includes("label.textContent = c.label;") &&
+    body.includes("label.textContent = isCriterion && z") &&
       body.includes('help.textContent = (c.physical_process || c.help || "") + (c.unit ? " \u00b7 " + c.unit : "");') &&
       !body.includes("const rows = crits.map") &&
       !body.includes("${c.label}") &&
@@ -710,8 +861,9 @@ log("Method-C refinement controls share the engine level cap");
 
   check(
     body.includes('row.dataset.path = l.path || "";') &&
-      body.includes('row.dataset.enabled = l.enabled ? "1" : "0";') &&
+      body.includes('row.dataset.enabled = criterionEnabled ? "1" : "0";') &&
       body.includes('layerEdits[id] = { path, enabled: row.dataset.enabled !== "1" };') &&
+      body.includes('criterionEdits[id] = { enabled: next, value:') &&
       !body.includes("if (!layerEdits[id]) return;"),
     "refinement toggles must preserve opened project paths",
   );

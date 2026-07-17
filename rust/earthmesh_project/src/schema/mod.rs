@@ -211,6 +211,24 @@ pub struct ProjectDataLayer {
     pub threshold_value: Option<f64>,
 }
 
+/// Optional mean/std criterion override for one continuous threshold data source.
+///
+/// Continuous criterion ids are the source field stem plus `_mean` or `_std`
+/// (for example `lai_mean`, `lai_std`, `k_s_mean`). The categorical LandType
+/// criterion uses the single id `landcover`. Source paths remain owned by the
+/// matching [`ProjectDataLayer`]. Omitted continuous entries retain legacy
+/// mean+std behavior; omitted `landcover` is disabled unless the legacy
+/// LandType layer explicitly supplies `threshold_value`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThresholdCriterionConfig {
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
 /// Serde-friendly mirror of [`earthmesh_core::DataLayerRole`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProjectLayerRole {
@@ -241,17 +259,22 @@ pub enum ThresholdField {
 
 // ----------------------------- refinement / quality / expert -----------------------------
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RefinementRecipe {
     #[serde(default)]
     pub enabled: bool,
     /// Master switch for calculated refinement from threshold/landcover data.
     /// Data layers remain available to mesh output when this is disabled.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub threshold_enabled: bool,
     #[serde(default)]
     pub max_passes: u8,
+    /// Independent mean/std criteria for continuous threshold sources. The
+    /// source NetCDF path remains declared once in `data_layers`; these entries
+    /// only override statistic-specific enable/value settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub threshold_criteria: Vec<ThresholdCriterionConfig>,
     #[serde(default)]
     pub specified_circle: Option<SpecifiedCircleRefinement>,
     #[serde(default)]
@@ -263,20 +286,6 @@ pub struct RefinementRecipe {
     /// (emits the `&hfield` namelist group).
     #[serde(default)]
     pub hfield: Option<HfieldRefinementRecipe>,
-}
-
-impl Default for RefinementRecipe {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            threshold_enabled: true,
-            max_passes: 0,
-            specified_circle: None,
-            specified_bbox: None,
-            specified_close: None,
-            hfield: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -352,12 +361,16 @@ pub struct QualityConfig {
     /// Maximum connected defect cells changed by one AutoRefine pass.
     #[serde(default = "default_auto_refine_batch_cells")]
     pub auto_refine_batch_cells: usize,
-    #[serde(default)]
+    #[serde(default = "default_violation_policy")]
     pub on_violation: ViolationPolicy,
 }
 
 fn default_auto_refine_batch_cells() -> usize {
     DEFAULT_AUTO_REFINE_BATCH_CELLS
+}
+
+fn default_violation_policy() -> ViolationPolicy {
+    ViolationPolicy::AutoRefine
 }
 
 impl Default for QualityConfig {
@@ -373,11 +386,11 @@ impl Default for QualityConfig {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViolationPolicy {
     #[serde(alias = "warn")]
-    #[default]
     Warn,
     #[serde(alias = "block")]
     Block,
     #[serde(alias = "auto_refine")]
+    #[default]
     AutoRefine,
 }
 
@@ -449,6 +462,58 @@ pub struct HydroCoastConfig {
     pub r3_width_m: f64,
     #[serde(default = "default_r2_width")]
     pub r2_width_m: f64,
+    #[serde(default = "default_r3_upa")]
+    pub r3_upa_km2: f64,
+    #[serde(default = "default_r2_upa")]
+    pub r2_upa_km2: f64,
+    /// River and coast remain available for delivery/coupling even when their
+    /// HField refinement demand is disabled.
+    #[serde(default = "default_true")]
+    pub river_refinement_enabled: bool,
+    #[serde(default = "default_true")]
+    pub river_width_refinement_enabled: bool,
+    #[serde(default = "default_true")]
+    pub river_upstream_area_refinement_enabled: bool,
+    /// Single user-facing river-width trigger. R2/R3 remain internal
+    /// classification thresholds for coupling and map output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub river_width_threshold_m: Option<f64>,
+    /// Single user-facing upstream-area trigger, independent of river width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub river_upstream_area_threshold_km2: Option<f64>,
+    #[serde(default = "default_true")]
+    pub coast_refinement_enabled: bool,
+    /// Refinement-only distance band measured from the native MERIT coastline.
+    /// A zero value keeps legacy projects on physical coastline cells only.
+    #[serde(default)]
+    pub coast_buffer_km: f64,
+    #[serde(default = "default_true")]
+    pub coast_land_refinement_enabled: bool,
+    #[serde(default = "default_true")]
+    pub coast_ocean_refinement_enabled: bool,
+}
+
+impl HydroCoastConfig {
+    pub fn effective_river_width_threshold_m(&self) -> f64 {
+        self.river_width_threshold_m.unwrap_or(self.r3_width_m)
+    }
+
+    pub fn effective_river_upstream_area_threshold_km2(&self) -> f64 {
+        self.river_upstream_area_threshold_km2
+            .unwrap_or(self.r3_upa_km2)
+    }
+
+    pub fn river_width_refinement_active(&self) -> bool {
+        self.river_refinement_enabled && self.river_width_refinement_enabled
+    }
+
+    pub fn river_upstream_area_refinement_active(&self) -> bool {
+        self.river_refinement_enabled && self.river_upstream_area_refinement_enabled
+    }
+
+    pub fn has_river_refinement(&self) -> bool {
+        self.river_width_refinement_active() || self.river_upstream_area_refinement_active()
+    }
 }
 
 fn default_r3_width() -> f64 {
@@ -457,6 +522,14 @@ fn default_r3_width() -> f64 {
 
 fn default_r2_width() -> f64 {
     50.0
+}
+
+fn default_r3_upa() -> f64 {
+    50_000.0
+}
+
+fn default_r2_upa() -> f64 {
+    5_000.0
 }
 
 fn default_merit_stride() -> usize {

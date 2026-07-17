@@ -48,4 +48,5 @@ export EARTHMESH_REAL_EXPECT_CELL_COUNT
 export EARTHMESH_REAL_KEEP_PRODUCTION_NITER
 export EARTHMESH_REAL_MAX_PASSES
 
+"$CARGO" test -p earthmesh_cli --lib real_merit_tiles_drive_coast_distance_across_the_antimeridian -- --ignored --nocapture
 exec "$CARGO" test -p earthmesh_cli --test project_hydro_real_e2e -- --ignored --nocapture

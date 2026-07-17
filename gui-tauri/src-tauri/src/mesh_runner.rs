@@ -86,6 +86,11 @@ async fn run_project_cli(
     let (ok, code, gridfile) = capture_mesh_child_with_logger(child, run.id(), move |line| {
         let _ = log_app.emit("mkgrd://log", line);
     })?;
+    let gridfile = if ok {
+        Some(require_project_gridfile(&run_dir, gridfile.as_deref())?)
+    } else {
+        gridfile
+    };
     let scan = scan_auto_refine_decisions(&run_dir);
     for warning in &scan.warnings {
         let _ = app.emit("mkgrd://log", format!("⚠ AutoRefine audit: {warning}"));
@@ -97,6 +102,38 @@ async fn run_project_cli(
         gridfile,
         auto_refine_decisions: scan.decisions,
     })
+}
+
+pub(crate) fn require_project_gridfile(
+    run_dir: &Path,
+    reported: Option<&str>,
+) -> Result<String, String> {
+    let reported = reported
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "mesh engine exited with code 0 but did not report gridfile and produced no usable project result in {}",
+                run_dir.display()
+            )
+        })?;
+    let path = Path::new(reported);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        run_dir.join(path)
+    };
+    if !path.is_file() {
+        return Err(format!(
+            "mesh engine reported gridfile {}, but that file does not exist",
+            path.display()
+        ));
+    }
+    Ok(path
+        .canonicalize()
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned())
 }
 
 pub(crate) fn absolutize_gui_project_inputs(cfg: &mut ProjectConfig) -> Result<(), String> {

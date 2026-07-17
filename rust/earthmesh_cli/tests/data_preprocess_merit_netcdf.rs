@@ -383,13 +383,13 @@ fn merit_hydro_writer_exports_combined_and_split_geojson_layers_from_native_wind
     .expect("write MERIT GeoJSON layers");
 
     assert_eq!(report.window_count, 1);
-    assert_eq!(report.combined_feature_count, 6);
+    assert_eq!(report.combined_feature_count, 9);
     assert_eq!(report.river_feature_count, 3);
-    assert_eq!(report.coast_feature_count, 3);
+    assert_eq!(report.coast_feature_count, 6);
     assert_eq!(report.surface_feature_count, 0);
     assert_eq!(report.mask_counts.get("R3"), Some(&1));
     assert_eq!(report.mask_counts.get("R2"), Some(&2));
-    assert_eq!(report.mask_counts.get("COAST_LAND"), Some(&1));
+    assert_eq!(report.mask_counts.get("COAST_LAND"), Some(&4));
     assert_eq!(report.mask_counts.get("COAST_OCEAN"), Some(&2));
     assert!(report.combined_geojson.ends_with("merit_masks.geojson"));
     assert!(report.river_geojson.ends_with("merit_river_masks.geojson"));
@@ -407,7 +407,8 @@ fn merit_hydro_writer_exports_combined_and_split_geojson_layers_from_native_wind
     let combined = fs::read_to_string(&report.combined_geojson).expect("read combined geojson");
     assert!(combined.starts_with("{\"type\":\"FeatureCollection\",\"features\":["));
     assert!(combined.contains(r#""geometry":{"type":"Polygon","coordinates":[[[99.75,9.75],[100.25,9.75],[100.25,10.25],[99.75,10.25],[99.75,9.75]]]}"#));
-    assert!(combined.contains(r#""feature_id":"n10e100:0:0:COAST_LAND""#));
+    assert!(combined.contains(r#""feature_id":"n10e100:0:2:COAST_LAND""#));
+    assert!(combined.contains(r#""feature_id":"n10e100:0:2:R3""#));
     assert!(combined.contains(r#""mask_class":"R3""#));
     assert!(combined.contains(r#""source":"MERIT-Hydro""#));
     assert!(combined.contains(r#""upstream_area_km2":50000"#));
@@ -421,17 +422,19 @@ fn merit_hydro_writer_exports_combined_and_split_geojson_layers_from_native_wind
     assert!(!river.contains("COAST_OCEAN"));
 
     let coast = fs::read_to_string(&report.coast_geojson).expect("read coast geojson");
-    assert_eq!(coast.matches(r#""type":"Feature""#).count(), 3);
+    assert_eq!(coast.matches(r#""type":"Feature""#).count(), 6);
     assert!(coast.contains("COAST_LAND"));
     assert!(coast.contains("COAST_OCEAN"));
     assert!(!coast.contains(r#""mask_class":"R2""#));
 
     let summary = fs::read_to_string(&report.summary_json).expect("read summary json");
     assert!(summary.contains(r#""tile_count":1"#));
-    assert!(summary.contains(r#""feature_count":6"#));
+    assert!(summary.contains(r#""feature_count":9"#));
     assert!(summary.contains(r#""R2":2"#));
     assert!(summary.contains(r#""COAST_OCEAN":2"#));
     assert!(summary.contains(r#""r3_width_m":300"#));
+    assert!(summary.contains(r#""river_width_refinement_m":300"#));
+    assert!(summary.contains(r#""river_upstream_area_refinement_km2":50000"#));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -500,6 +503,54 @@ fn merit_hydro_writer_can_skip_duplicate_split_layers_for_project_runs() {
     assert!(!report.coast_geojson.exists());
     let combined = fs::read_to_string(report.combined_geojson).unwrap();
     assert!(combined.contains(r#""source_cell_count":3"#), "{combined}");
+    assert!(combined.contains(r#""river_width_triggered":false"#));
+    assert!(combined.contains(r#""river_upstream_area_triggered":false"#));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn merit_hydro_writer_preserves_independent_project_river_triggers() {
+    let root = temp_root("data_preprocess_merit_independent_triggers");
+    let windows = vec![earthmesh_cli::merit_hydro_io::MeritHydroWindowReport {
+        tile: PathBuf::from("triggers.nc"),
+        tile_name: "triggers.nc".to_string(),
+        lon: vec![0.0],
+        lat: vec![0.0, 1.0, 2.0],
+        width: 1,
+        height: 3,
+        sampling_stride: 1,
+        dir: Vec::new(),
+        upa_km2: vec![100.0, 6_000.0, 6_000.0],
+        elv_m: vec![0.0; 3],
+        width_m: vec![60.0, 0.0, 60.0],
+        landtype_igbp: vec![1; 3],
+    }];
+    let thresholds = earthmesh_cli::merit_hydro_io::MeritMaskThresholds {
+        river_width_refinement_m: 55.0,
+        river_upstream_area_refinement_km2: 5_500.0,
+        ..Default::default()
+    };
+
+    let report = earthmesh_cli::merit_hydro_io::write_merit_hydro_mask_geojson_layers(
+        &windows,
+        thresholds,
+        root.join("out"),
+        false,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report.river_feature_count, 3);
+    let combined = fs::read_to_string(report.combined_geojson).unwrap();
+    assert!(
+        combined.contains(r#""river_upstream_area_triggered":false,"river_width_triggered":true"#)
+    );
+    assert!(
+        combined.contains(r#""river_upstream_area_triggered":true,"river_width_triggered":false"#)
+    );
+    assert!(
+        combined.contains(r#""river_upstream_area_triggered":true,"river_width_triggered":true"#)
+    );
     let _ = fs::remove_dir_all(root);
 }
 

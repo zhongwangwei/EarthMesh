@@ -10,8 +10,8 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use super::feature_table::hydro_refine_feature_set;
-use super::plan::plan_refinement_from_hydro_geojson;
+use super::feature_table::{hydro_refine_feature_set, HydroRefinementPolicy};
+use super::plan::plan_refinement_from_hydro_geojson_with_policy;
 
 fn write_disabled_refinement_plan(
     intersections_geojson: &Path,
@@ -77,13 +77,16 @@ pub fn run_hydro_workflow(
         landtype,
         gridnum_perdegree,
         true,
+        None,
+        HydroRefinementPolicy::default(),
     )
 }
 
-/// Project-only fast path for a corridor layer whose same-class polygon interiors
-/// are known to be disjoint (the native MERIT-Hydro raster classification).
+/// Project workflow with independent river/coast refinement demand. The
+/// intersection/delivery artifacts keep every included class; only the HField
+/// score is switched.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_disjoint_hydro_workflow(
+pub(crate) fn run_project_hydro_workflow(
     cells_geojson: impl AsRef<Path>,
     corridors_geojson: impl AsRef<Path>,
     out_dir: impl AsRef<Path>,
@@ -96,6 +99,9 @@ pub(crate) fn run_disjoint_hydro_workflow(
     mesh: Option<&Path>,
     landtype: Option<&Path>,
     gridnum_perdegree: usize,
+    same_class_overlap_possible: bool,
+    supplemental_refinement_geojson: Option<&Path>,
+    refinement_policy: HydroRefinementPolicy,
 ) -> io::Result<HydroWorkflowReport> {
     run_hydro_workflow_with_overlap(
         cells_geojson,
@@ -110,7 +116,9 @@ pub(crate) fn run_disjoint_hydro_workflow(
         mesh,
         landtype,
         gridnum_perdegree,
-        false,
+        same_class_overlap_possible,
+        supplemental_refinement_geojson,
+        refinement_policy,
     )
 }
 
@@ -129,6 +137,8 @@ fn run_hydro_workflow_with_overlap(
     landtype: Option<&Path>,
     gridnum_perdegree: usize,
     same_class_overlap_possible: bool,
+    supplemental_refinement_geojson: Option<&Path>,
+    refinement_policy: HydroRefinementPolicy,
 ) -> io::Result<HydroWorkflowReport> {
     let out_dir = out_dir.as_ref();
     fs::create_dir_all(out_dir)?;
@@ -180,15 +190,23 @@ fn run_hydro_workflow_with_overlap(
                     .is_some_and(|fraction| fraction > 0.0)
         })
         .count();
+    let refinement_inputs_path = out_dir.join("refinement_inputs.geojson");
+    let refinement_source_path = if let Some(supplemental) = supplemental_refinement_geojson {
+        merge_refinement_features(&intersections_path, supplemental, &refinement_inputs_path)?;
+        refinement_inputs_path.clone()
+    } else {
+        intersections_path.clone()
+    };
     let (cells_refined, refinement_max_level) = if max_level == 0 {
-        write_disabled_refinement_plan(&intersections_path, &refinement_plan_path)?;
+        write_disabled_refinement_plan(&refinement_source_path, &refinement_plan_path)?;
         (0, 0)
     } else {
-        let report = plan_refinement_from_hydro_geojson(
-            &intersections_path,
+        let report = plan_refinement_from_hydro_geojson_with_policy(
+            &refinement_source_path,
             &refinement_plan_path,
             max_level,
             max_refined_cells,
+            refinement_policy,
         )?;
         (
             report.budget_used.cells_refined_after,
@@ -233,7 +251,7 @@ fn run_hydro_workflow_with_overlap(
         "{{\n  \"kind\": \"earthmesh_hydro_workflow\",\n  \"overlay_semantics\": \"cell_local_lambert_azimuthal_equal_area_conservative\",\n  \"production_coupling\": true,\n  \"intersection_cells\": {},\n  \
          \"coupling_rows\": {},\n  \"estuary_coupling_rows\": {},\n  \"cells_refined\": {},\n  \"refinement_max_level\": {},\n{}  \
          \"artifacts\": {{\n    \"intersections_geojson\": \"{}\",\n    \
-         \"colm_coupling_csv\": \"{}\",\n    \"refinement_plan_json\": \"{}\"{}\n  }}\n}}\n",
+         \"refinement_source_geojson\": \"{}\",\n    \"colm_coupling_csv\": \"{}\",\n    \"refinement_plan_json\": \"{}\"{}\n  }}\n}}\n",
         intersection_cells,
         coupling_rows,
         estuary_coupling_rows,
@@ -241,6 +259,7 @@ fn run_hydro_workflow_with_overlap(
         refinement_max_level,
         cq_verdict_field,
         json_escape_string(&intersections_path.display().to_string()),
+        json_escape_string(&refinement_source_path.display().to_string()),
         json_escape_string(&coupling_csv_path.display().to_string()),
         json_escape_string(&refinement_plan_path.display().to_string()),
         cq_artifact,
@@ -255,9 +274,276 @@ fn run_hydro_workflow_with_overlap(
         refinement_max_level,
         coupling_quality_verdict,
         intersections_path,
+        refinement_source_path,
         coupling_csv_path,
         refinement_plan_path,
         coupling_quality_path,
         manifest_path,
     })
+}
+
+fn merge_refinement_features(base: &Path, supplemental: &Path, output: &Path) -> io::Result<()> {
+    let mut features = Vec::new();
+    for path in [base, supplemental] {
+        let root = JsonParser::new(&read_text_maybe_gzip(path)?).parse()?;
+        features.extend(
+            geojson_feature_nodes(&root)
+                .into_iter()
+                .map(crate::json_node_to_string),
+        );
+    }
+    fs::write(
+        output,
+        format!(
+            "{{\"type\":\"FeatureCollection\",\"features\":[{}]}}\n",
+            features.join(",")
+        ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_coast_refinement_keeps_coast_coupling_output() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hydro_policy_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let cells = root.join("cells.geojson");
+        let corridors = root.join("corridors.geojson");
+        fs::write(
+            &cells,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"coast-cell"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &corridors,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"mask_class":"COAST_LAND"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}"#,
+        )
+        .unwrap();
+
+        let report = run_project_hydro_workflow(
+            &cells,
+            &corridors,
+            root.join("workflow"),
+            &["COAST_LAND".to_string()],
+            0.0,
+            false,
+            None,
+            3,
+            None,
+            None,
+            None,
+            1,
+            false,
+            None,
+            HydroRefinementPolicy {
+                river_width: true,
+                river_upstream_area: true,
+                legacy_river_classes: true,
+                coast_land: false,
+                coast_ocean: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.intersection_cells, 1);
+        assert_eq!(report.cells_refined, 0);
+        assert!(fs::read_to_string(report.intersections_path)
+            .unwrap()
+            .contains("COAST_LAND"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn coast_distance_supplement_refines_without_adding_coupling_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hydro_coast_distance_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let cells = root.join("cells.geojson");
+        let corridors = root.join("corridors.geojson");
+        let supplemental = root.join("coast_refinement_cells.geojson");
+        fs::write(
+            &cells,
+            r#"{"type":"FeatureCollection","features":[
+              {"type":"Feature","properties":{"cell_id":"core","center_lon":0.5,"center_lat":0.5},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}},
+              {"type":"Feature","properties":{"cell_id":"buffer","center_lon":1.5,"center_lat":0.5},"geometry":{"type":"Polygon","coordinates":[[[1,0],[2,0],[2,1],[1,1],[1,0]]]}}
+            ]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &corridors,
+            r#"{"type":"FeatureCollection","features":[
+              {"type":"Feature","properties":{"mask_class":"COAST_LAND"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[0.9,0],[0.9,1],[0,1],[0,0]]]}},
+              {"type":"Feature","properties":{"mask_class":"R3"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[0.9,0],[0.9,1],[0,1],[0,0]]]}}
+            ]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &supplemental,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"buffer","center_lon":1.5,"center_lat":0.5,"mask_class":"COAST_DISTANCE_LAND","refinement_only":true},"geometry":{"type":"Polygon","coordinates":[[[1,0],[2,0],[2,1],[1,1],[1,0]]]}}]}"#,
+        )
+        .unwrap();
+
+        let base = run_project_hydro_workflow(
+            &cells,
+            &corridors,
+            root.join("base"),
+            &["COAST_LAND".to_string(), "R3".to_string()],
+            0.0,
+            false,
+            None,
+            5,
+            None,
+            None,
+            None,
+            1,
+            false,
+            None,
+            HydroRefinementPolicy::default(),
+        )
+        .unwrap();
+        let report = run_project_hydro_workflow(
+            &cells,
+            &corridors,
+            root.join("supplemented"),
+            &["COAST_LAND".to_string(), "R3".to_string()],
+            0.0,
+            false,
+            None,
+            5,
+            None,
+            None,
+            None,
+            1,
+            false,
+            Some(&supplemental),
+            HydroRefinementPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(report.intersection_cells, base.intersection_cells);
+        assert_eq!(report.coupling_rows, base.coupling_rows);
+        assert!(report.coupling_rows > 0);
+        assert_eq!(
+            fs::read(&report.coupling_csv_path).unwrap(),
+            fs::read(&base.coupling_csv_path).unwrap()
+        );
+        assert_eq!(base.cells_refined, 1);
+        assert_eq!(report.cells_refined, 2);
+        assert_ne!(report.refinement_source_path, report.intersections_path);
+        assert!(!fs::read_to_string(&report.intersections_path)
+            .unwrap()
+            .contains("COAST_DISTANCE"));
+        assert!(!fs::read_to_string(&report.coupling_csv_path)
+            .unwrap()
+            .contains("COAST_DISTANCE"));
+        assert!(fs::read_to_string(&report.refinement_source_path)
+            .unwrap()
+            .contains("COAST_DISTANCE_LAND"));
+        let plan = fs::read_to_string(&report.refinement_plan_path).unwrap();
+        assert!(plan.contains(r#""cell_id": "core", "target_level": 5"#));
+        assert!(plan.contains(r#""cell_id": "buffer", "target_level": 5"#));
+        let target = crate::hydro_refinement_adapter::load_hydro_target_field(
+            &report.refinement_source_path,
+            &report.refinement_plan_path,
+            1_000_000.0,
+            0.2,
+            36,
+            18,
+        )
+        .unwrap();
+        assert_eq!(target.summary.refined_rows, 2);
+        assert_eq!(target.summary.max_level, 5);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_river_options_filter_refinement_without_removing_coupling() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hydro_independent_river_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let cells = root.join("cells.geojson");
+        let corridors = root.join("corridors.geojson");
+        fs::write(
+            &cells,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"river","center_lon":0.5,"center_lat":0.5},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &corridors,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"mask_class":"R3","river_width_triggered":false,"river_upstream_area_triggered":true},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}}]}"#,
+        )
+        .unwrap();
+        let width_only = run_project_hydro_workflow(
+            &cells,
+            &corridors,
+            root.join("width"),
+            &["R3".to_string()],
+            0.0,
+            false,
+            None,
+            3,
+            None,
+            None,
+            None,
+            1,
+            false,
+            None,
+            HydroRefinementPolicy {
+                river_width: true,
+                river_upstream_area: false,
+                legacy_river_classes: false,
+                coast_land: false,
+                coast_ocean: false,
+            },
+        )
+        .unwrap();
+        let upstream_only = run_project_hydro_workflow(
+            &cells,
+            &corridors,
+            root.join("upstream"),
+            &["R3".to_string()],
+            0.0,
+            false,
+            None,
+            3,
+            None,
+            None,
+            None,
+            1,
+            false,
+            None,
+            HydroRefinementPolicy {
+                river_width: false,
+                river_upstream_area: true,
+                legacy_river_classes: false,
+                coast_land: false,
+                coast_ocean: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(width_only.coupling_rows, upstream_only.coupling_rows);
+        assert!(width_only.coupling_rows > 0);
+        assert_eq!(width_only.cells_refined, 0);
+        assert_eq!(upstream_only.cells_refined, 1);
+        let _ = fs::remove_dir_all(root);
+    }
 }

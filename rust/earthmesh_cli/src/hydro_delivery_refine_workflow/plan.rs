@@ -5,7 +5,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use super::feature_table::hydro_refine_feature_set;
+use super::feature_table::{
+    hydro_refine_feature_set_with_policy_and_secondary, HydroRefinementPolicy,
+};
 
 fn hydro_refine_plan_json(
     report: &earthmesh_refine_planner::RefinementReport,
@@ -63,6 +65,22 @@ pub fn plan_refinement_from_hydro_geojson(
     max_level: u8,
     max_refined_cells: Option<usize>,
 ) -> io::Result<earthmesh_refine_planner::RefinementReport> {
+    plan_refinement_from_hydro_geojson_with_policy(
+        geojson,
+        output_json,
+        max_level,
+        max_refined_cells,
+        HydroRefinementPolicy::default(),
+    )
+}
+
+pub(crate) fn plan_refinement_from_hydro_geojson_with_policy(
+    geojson: impl AsRef<Path>,
+    output_json: impl AsRef<Path>,
+    max_level: u8,
+    max_refined_cells: Option<usize>,
+    policy: HydroRefinementPolicy,
+) -> io::Result<earthmesh_refine_planner::RefinementReport> {
     if max_level == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -70,7 +88,12 @@ pub fn plan_refinement_from_hydro_geojson(
         ));
     }
     use earthmesh_refine_planner as rp;
-    let features = hydro_refine_feature_set(&read_text_maybe_gzip(geojson.as_ref())?)?;
+    let secondary_demand = f64::from(max_level.saturating_sub(1)) / f64::from(max_level);
+    let features = hydro_refine_feature_set_with_policy_and_secondary(
+        &read_text_maybe_gzip(geojson.as_ref())?,
+        policy,
+        secondary_demand,
+    )?;
     let criteria = vec![rp::hydro_coast_score_criterion()];
     let cfg = rp::CompositeScoreConfig {
         weights: vec![("hydro_coast_score".to_string(), 1.0)],

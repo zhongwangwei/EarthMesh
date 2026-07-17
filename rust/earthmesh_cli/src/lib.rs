@@ -37,6 +37,7 @@ use unstructured_mesh_support::{
 pub mod merit_tile_selection;
 use merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
 pub mod merit_hydro_io;
+mod project_coast_refinement;
 use merit_hydro_io::{
     read_merit_hydro_window, write_merit_hydro_mask_geojson_layers,
     MeritHydroGeoJsonLayerWriteReport, MeritMaskThresholds,

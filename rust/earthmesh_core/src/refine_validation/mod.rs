@@ -49,9 +49,8 @@ impl RefineConfig {
         };
 
         if self.refine_setting == "calculate" || self.refine_setting == "mixed" {
-            // Deliberately allow atmosmesh calculated thresholds: the Rust hfield path
-            // supports atmosphere/typhoon criteria even though the old Canonical read_nl
-            // guard rejected RL%refine_cal for atmosmesh.
+            // Threshold datasets describe geography, not an output mesh type; the
+            // output/domain mask decides which refined cells survive.
             self.validate_threshold_switches_for_mesh(mesh_type)?;
         }
         self.validate_enabled_threshold_values()?;
@@ -67,25 +66,12 @@ impl RefineConfig {
         let has_ocean =
             self.refine_sea_ratio || self.refine_onelayer_ocn.iter().any(|enabled| *enabled);
         let has_atmos = self.refine_onelayer_atmos.iter().any(|enabled| *enabled);
-
-        match mesh_type {
-            "landmesh" if !has_land => Err(
-                "Must one of TRUE in the refine_num_landtypes or refine_area_mainland or refine_onelayer_Lnd or refine_twolayer_Lnd when refine is TRUE and meshtype = landmesh"
-                    .to_string(),
-            ),
-            "oceanmesh" if !has_ocean => Err(
-                "Must one of TRUE in the refine_sea_ratio or refine_onelayer_Ocn when refine is TRUE and meshtype = oceanmesh"
-                    .to_string(),
-            ),
-            "atmosmesh" if !has_atmos => Err(
-                "Must one of TRUE in the refine_onelayer_Atmos when refine is TRUE and meshtype = atmosmesh"
-                    .to_string(),
-            ),
-            "LOCmesh" if !(has_land || has_ocean || has_atmos) => Err(
-                "Must one threshold switch be TRUE for LOCmesh among land, ocean, or atmos criteria"
-                    .to_string(),
-            ),
-            _ => Ok(()),
+        if has_land || has_ocean || has_atmos {
+            Ok(())
+        } else {
+            Err(format!(
+                "at least one land, ocean, or atmosphere threshold must be enabled for calculated refinement on {mesh_type}"
+            ))
         }
     }
 
@@ -127,5 +113,28 @@ impl RefineConfig {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn land_threshold_is_valid_for_ocean_and_atmosphere_meshes() {
+        let input = "&mkrefine\n\
+ RL%Istransition = .true.\n\
+ RL%SpringGlobal_type = 0\n\
+ RL%SpringRegional_type = 0\n\
+ RL%refine_cal = .true.\n\
+ RL%max_iter_cal = 1\n\
+ RL%refine_lai_m = .true.\n\
+ RL%th_lai_m = 1.0\n/\n";
+
+        for mesh_type in ["oceanmesh", "atmosmesh"] {
+            let parsed = RefineConfig::from_mkrefine_namelist(input, mesh_type, "tri")
+                .unwrap_or_else(|error| panic!("{mesh_type} rejected a land threshold: {error}"));
+            assert!(parsed.refine_onelayer_lnd[0]);
+        }
     }
 }

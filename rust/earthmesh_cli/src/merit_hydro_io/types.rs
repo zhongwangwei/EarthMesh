@@ -24,6 +24,10 @@ pub struct MeritMaskThresholds {
     pub r3_width_m: f64,
     pub r2_upa_km2: f64,
     pub r3_upa_km2: f64,
+    /// Independent Project refinement triggers. Standalone export defaults
+    /// them to the corresponding R3 classification thresholds.
+    pub river_width_refinement_m: f64,
+    pub river_upstream_area_refinement_km2: f64,
 }
 
 impl Default for MeritMaskThresholds {
@@ -33,11 +37,17 @@ impl Default for MeritMaskThresholds {
             r3_width_m: 300.0,
             r2_upa_km2: 5_000.0,
             r3_upa_km2: 50_000.0,
+            river_width_refinement_m: 300.0,
+            river_upstream_area_refinement_km2: 50_000.0,
         }
     }
 }
 
-/// Classification summary for one native MERIT-Hydro window.
+/// Primary classification summary for one native MERIT-Hydro window.
+///
+/// `classes` contains one precedence-resolved label per native cell (river
+/// labels win over surface/coast labels). GeoJSON writers may emit the
+/// orthogonal river and surface/coast labels as separate features.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeritHydroMaskClassificationReport {
     pub classes: Vec<String>,

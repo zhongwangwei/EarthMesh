@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::classify::classify_merit_cell;
+use super::classify::{classify_merit_river, classify_merit_surface};
 use super::types::{
     MeritHydroGeoJsonLayerWriteReport, MeritHydroWindowReport, MeritMaskThresholds,
 };
@@ -63,44 +63,80 @@ pub fn write_merit_hydro_mask_geojson_layers(
             require_len(name, len, expected)?;
         }
         if compact_project_corridors {
+            for offset in 0..expected {
+                if let Some(class) =
+                    classify_merit_river(window.width_m[offset], window.upa_km2[offset], thresholds)
+                {
+                    increment_mask_count(&mut mask_counts, class);
+                }
+                increment_mask_count(
+                    &mut mask_counts,
+                    classify_merit_surface(
+                        window.landtype_igbp[offset],
+                        coast_adjacency[window_index][offset],
+                    ),
+                );
+            }
             for lon_index in 0..window.width {
-                let mut run_class: Option<&'static str> = None;
-                let mut run_start = 0;
-                for lat_index in 0..=window.height {
-                    let class = if lat_index < window.height {
-                        let offset = lon_index * window.height + lat_index;
-                        let class = classify_merit_cell(
-                            window.width_m[offset],
-                            window.upa_km2[offset],
-                            window.landtype_igbp[offset],
-                            coast_adjacency[window_index][offset],
-                            thresholds,
-                        );
-                        increment_mask_count(&mut mask_counts, class);
-                        matches!(class, "R2" | "R3" | "COAST_LAND" | "COAST_OCEAN").then_some(class)
-                    } else {
-                        None
-                    };
-                    if class == run_class {
-                        continue;
-                    }
-                    if let Some(previous) = run_class {
-                        let feature = merit_mask_run_feature_json(
-                            window,
-                            lon_index,
-                            run_start,
-                            lat_index - 1,
-                            previous,
-                        );
-                        combined_writer.write_feature(&feature)?;
-                        match previous {
-                            "R2" | "R3" => river_feature_count += 1,
-                            "COAST_LAND" | "COAST_OCEAN" => coast_feature_count += 1,
-                            _ => unreachable!("compact Project corridors use a closed class set"),
+                for river_pass in [true, false] {
+                    let mut run_state: Option<(&'static str, bool, bool)> = None;
+                    let mut run_start = 0;
+                    for lat_index in 0..=window.height {
+                        let state = if lat_index < window.height {
+                            let offset = lon_index * window.height + lat_index;
+                            if river_pass {
+                                classify_merit_river(
+                                    window.width_m[offset],
+                                    window.upa_km2[offset],
+                                    thresholds,
+                                )
+                                .map(|class| {
+                                    (
+                                        class,
+                                        window.width_m[offset].is_finite()
+                                            && window.width_m[offset]
+                                                >= thresholds.river_width_refinement_m,
+                                        window.upa_km2[offset].is_finite()
+                                            && window.upa_km2[offset]
+                                                >= thresholds.river_upstream_area_refinement_km2,
+                                    )
+                                })
+                            } else {
+                                let surface = classify_merit_surface(
+                                    window.landtype_igbp[offset],
+                                    coast_adjacency[window_index][offset],
+                                );
+                                matches!(surface, "COAST_LAND" | "COAST_OCEAN")
+                                    .then_some((surface, false, false))
+                            }
+                        } else {
+                            None
+                        };
+                        if state == run_state {
+                            continue;
                         }
+                        if let Some((previous, width_triggered, upstream_area_triggered)) =
+                            run_state
+                        {
+                            let feature = merit_mask_run_feature_json(
+                                window,
+                                lon_index,
+                                run_start,
+                                lat_index - 1,
+                                previous,
+                                width_triggered,
+                                upstream_area_triggered,
+                            );
+                            combined_writer.write_feature(&feature)?;
+                            if river_pass {
+                                river_feature_count += 1;
+                            } else {
+                                coast_feature_count += 1;
+                            }
+                        }
+                        run_state = state;
+                        run_start = lat_index;
                     }
-                    run_class = class;
-                    run_start = lat_index;
                 }
             }
             continue;
@@ -108,36 +144,36 @@ pub fn write_merit_hydro_mask_geojson_layers(
         for lon_index in 0..window.width {
             for lat_index in 0..window.height {
                 let offset = lon_index * window.height + lat_index;
-                let class = classify_merit_cell(
-                    window.width_m[offset],
-                    window.upa_km2[offset],
+                if let Some(class) =
+                    classify_merit_river(window.width_m[offset], window.upa_km2[offset], thresholds)
+                {
+                    increment_mask_count(&mut mask_counts, class);
+                    let feature = merit_mask_feature_json(window, lon_index, lat_index, class);
+                    combined_writer.write_feature(&feature)?;
+                    river_feature_count += 1;
+                    if let Some(writer) = &mut river_writer {
+                        writer.write_feature(&feature)?;
+                    }
+                }
+                let surface = classify_merit_surface(
                     window.landtype_igbp[offset],
                     coast_adjacency[window_index][offset],
-                    thresholds,
                 );
-                if class == "UNKNOWN" {
-                    continue;
-                }
-                increment_mask_count(&mut mask_counts, class);
-                if matches!(class, "LAND" | "OCEAN") && !include_surface_masks {
-                    continue;
-                }
-                let feature = merit_mask_feature_json(window, lon_index, lat_index, class);
-                combined_writer.write_feature(&feature)?;
-                match class {
-                    "R2" | "R3" => {
-                        river_feature_count += 1;
-                        if let Some(writer) = &mut river_writer {
-                            writer.write_feature(&feature)?;
-                        }
-                    }
+                increment_mask_count(&mut mask_counts, surface);
+                match surface {
                     "COAST_LAND" | "COAST_OCEAN" => {
+                        let feature =
+                            merit_mask_feature_json(window, lon_index, lat_index, surface);
+                        combined_writer.write_feature(&feature)?;
                         coast_feature_count += 1;
                         if let Some(writer) = &mut coast_writer {
                             writer.write_feature(&feature)?;
                         }
                     }
-                    "LAND" | "OCEAN" => {
+                    "LAND" | "OCEAN" if include_surface_masks => {
+                        let feature =
+                            merit_mask_feature_json(window, lon_index, lat_index, surface);
+                        combined_writer.write_feature(&feature)?;
                         surface_feature_count += 1;
                         if let Some(writer) = &mut surface_writer {
                             writer.write_feature(&feature)?;
@@ -473,6 +509,8 @@ fn merit_mask_run_feature_json(
     start_lat_index: usize,
     end_lat_index: usize,
     mask_class: &str,
+    river_width_triggered: bool,
+    river_upstream_area_triggered: bool,
 ) -> String {
     let lon = window.lon[lon_index];
     let dlon = merit_cell_delta(&window.lon, lon_index);
@@ -491,7 +529,7 @@ fn merit_mask_run_feature_json(
         .unwrap_or_else(|| window.tile_name.trim_end_matches(".nc").to_string());
     let feature_id = format!("{stem}:{lon_index}:{start_lat_index}-{end_lat_index}:{mask_class}");
     format!(
-        "{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{},{}],[{},{}],[{},{}],[{},{}],[{},{}]]]}},\"properties\":{{\"feature_id\":\"{}\",\"mask_class\":\"{}\",\"source\":\"MERIT-Hydro\",\"source_cell_count\":{},\"tile\":\"{}\"}}}}",
+        "{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{},{}],[{},{}],[{},{}],[{},{}],[{},{}]]]}},\"properties\":{{\"feature_id\":\"{}\",\"mask_class\":\"{}\",\"river_upstream_area_triggered\":{},\"river_width_triggered\":{},\"source\":\"MERIT-Hydro\",\"source_cell_count\":{},\"tile\":\"{}\"}}}}",
         json_number(lon0),
         json_number(lat0),
         json_number(lon1),
@@ -504,6 +542,8 @@ fn merit_mask_run_feature_json(
         json_number(lat0),
         json_escape_string(&feature_id),
         json_escape_string(mask_class),
+        river_upstream_area_triggered,
+        river_width_triggered,
         end_lat_index - start_lat_index + 1,
         json_escape_string(&window.tile_name),
     )
@@ -551,11 +591,13 @@ fn write_merit_mask_summary_json(
         text.push_str(&count.to_string());
     }
     text.push_str(&format!(
-        "}},\"thresholds\":{{\"r2_upa_km2\":{},\"r2_width_m\":{},\"r3_upa_km2\":{},\"r3_width_m\":{}}},\"tile_count\":{}}}\n",
+        "}},\"thresholds\":{{\"r2_upa_km2\":{},\"r2_width_m\":{},\"r3_upa_km2\":{},\"r3_width_m\":{},\"river_upstream_area_refinement_km2\":{},\"river_width_refinement_m\":{}}},\"tile_count\":{}}}\n",
         json_number(thresholds.r2_upa_km2),
         json_number(thresholds.r2_width_m),
         json_number(thresholds.r3_upa_km2),
         json_number(thresholds.r3_width_m),
+        json_number(thresholds.river_upstream_area_refinement_km2),
+        json_number(thresholds.river_width_refinement_m),
         tile_count,
     ));
     fs::write(path, text)

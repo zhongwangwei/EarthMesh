@@ -19,15 +19,19 @@ pub use schema::{
     MeshDomainKind, MeshIntentPreset, MeshTargetConfig, ModelFormat, ProjectConfig,
     ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig, RefinementRecipe,
     RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCloseRefinement, ThresholdField, ViolationPolicy, DEFAULT_AUTO_REFINE_BATCH_CELLS,
-    DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
-    METHOD_C_SPRING_NXP1_KM, PROJECT_SCHEMA_VERSION,
+    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ViolationPolicy,
+    DEFAULT_AUTO_REFINE_BATCH_CELLS, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
+    PROJECT_SCHEMA_VERSION,
 };
 mod auto_refine;
 pub use auto_refine::{AutoRefineAction, AutoRefineEvent, AutoRefineState};
 mod criteria;
 pub use criteria::{
-    criteria_for_domain, criterion_by_id, criterion_catalog, CriterionGuiSpec, CriterionSpec,
+    criteria_for_domain, criterion_by_id, criterion_catalog, threshold_criterion_by_id,
+    threshold_criterion_catalog, CriterionGuiSpec, CriterionSpec, EffectiveLandcoverCriterion,
+    EffectiveThresholdCriterion, ThresholdCriterionSpec, ThresholdStatistic,
+    DEFAULT_LANDCOVER_CLASS_THRESHOLD, LANDCOVER_CRITERION_ID,
 };
 mod close_boundary;
 pub use close_boundary::{
