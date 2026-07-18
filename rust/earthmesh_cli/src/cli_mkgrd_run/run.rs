@@ -246,7 +246,10 @@ fn run_prepared_mkgrd(
                     "auto_refine requires a completed gridfile-producing project run".to_string(),
                 );
             };
-            let quality = project_quality_report(spec, gridfile)?;
+            let quality_namelist = candidate_namelist
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new(&namelist));
+            let quality = project_quality_report_with_namelist(spec, gridfile, quality_namelist)?;
             let verdict = quality.verdict;
             let current_pass = auto_refine_state
                 .as_ref()
@@ -477,6 +480,7 @@ fn run_prepared_mkgrd(
                     ));
                 }
                 if let Some(adapter) = closed.refinement {
+                    namelist = adapter.adapter_namelist.to_string_lossy().into_owned();
                     report = earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline(adapter.pipeline);
                 }
             }
@@ -485,7 +489,12 @@ fn run_prepared_mkgrd(
                     "project quality block policy requires a completed gridfile-producing run"
                         .to_string()
                 })?;
-                let verdict = project_quality_report(spec, gridfile)?.verdict;
+                let verdict = project_quality_report_with_namelist(
+                    spec,
+                    gridfile,
+                    std::path::Path::new(&namelist),
+                )?
+                .verdict;
                 enforce_project_quality_policy(spec.config.quality.on_violation, verdict)?;
             }
         }
@@ -723,14 +732,20 @@ fn refinement_parent_gridfile(
     }
 }
 
-fn project_quality_report(
+fn project_quality_report_with_namelist(
     spec: &ProjectRunSpec,
     gridfile: &std::path::Path,
+    quality_namelist: &std::path::Path,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let out_dir = gridfile
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    earthmesh_cli::project_quality::write_project_quality_report(&spec.config, gridfile, out_dir)
+    earthmesh_cli::project_quality::write_project_quality_report_with_namelist(
+        &spec.config,
+        gridfile,
+        out_dir,
+        Some(quality_namelist),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

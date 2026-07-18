@@ -768,7 +768,7 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.mkgrd.mesh_type, "LOCmesh");
     assert_eq!(lowered.mkgrd.mode_grid, "hex");
     assert_eq!(lowered.mkgrd.output_format, "CoLM");
-    assert_eq!(lowered.mkgrd.nxp, 40);
+    assert_eq!(lowered.mkgrd.nxp, 42);
     assert!(!lowered.mkgrd.mask_domain_global);
     assert_eq!(lowered.mkgrd.mask_domain_type, "bbox");
     assert_eq!(
@@ -1764,11 +1764,86 @@ fn km_resolution_and_coupling_round_trip() {
 
     let back = yaml_round_trip(&p);
     assert_eq!(p, back);
-    assert_eq!(p.lower().mkgrd.nxp, 80);
+    assert_eq!(p.lower().mkgrd.nxp, 81);
 
     p.target.resolution =
         ResolutionSpec::ApproxDegree(100.0 / earthmesh_core::KM_PER_DEGREE_EQUATOR);
-    assert_eq!(p.lower().mkgrd.nxp, 80);
+    assert_eq!(p.lower().mkgrd.nxp, 81);
+}
+
+#[test]
+fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
+    let mut project = sample();
+    project.target.resolution = ResolutionSpec::Nxp(80);
+    assert_eq!(project.lower().mkgrd.nxp, 81);
+
+    project.target.resolution = ResolutionSpec::Nxp(81);
+    assert_eq!(project.lower().mkgrd.nxp, 81);
+
+    project.target.resolution = ResolutionSpec::Nxp(82);
+    assert_eq!(project.lower().mkgrd.nxp, 84);
+
+    project.refinement.enabled = false;
+    project.refinement.threshold_enabled = false;
+    project.refinement.max_passes = 0;
+    project.quality.on_violation = ViolationPolicy::Warn;
+    project.target.resolution = ResolutionSpec::Nxp(80);
+    assert_eq!(project.lower().mkgrd.nxp, 80);
+
+    project.quality.on_violation = ViolationPolicy::AutoRefine;
+    assert_eq!(project.lower().mkgrd.nxp, 81);
+}
+
+#[test]
+fn hydro_only_local_refinement_rounds_parent_nxp_to_stride_three() {
+    let mut project = sample();
+    project.target.resolution = ResolutionSpec::Nxp(80);
+    project.quality.on_violation = ViolationPolicy::Warn;
+    project.data_layers = vec![
+        ProjectDataLayer {
+            id: "merit".into(),
+            role: ProjectLayerRole::MeritHydro,
+            path: "./merit".into(),
+            enabled: true,
+            threshold_value: None,
+        },
+        ProjectDataLayer {
+            id: "landcover".into(),
+            role: ProjectLayerRole::LandType,
+            path: "./in/landtype.nc".into(),
+            enabled: true,
+            threshold_value: None,
+        },
+    ];
+    project.hydro_coast = Some(HydroCoastConfig {
+        merit_root: "./merit".into(),
+        cama_root: None,
+        merit_stride: 1,
+        r3_width_m: 300.0,
+        r2_width_m: 50.0,
+        r3_upa_km2: 50_000.0,
+        r2_upa_km2: 5_000.0,
+        river_refinement_enabled: true,
+        river_width_refinement_enabled: true,
+        river_upstream_area_refinement_enabled: false,
+        river_width_threshold_m: Some(300.0),
+        river_upstream_area_threshold_km2: None,
+        coast_refinement_enabled: false,
+        coast_buffer_km: 0.0,
+        coast_land_refinement_enabled: true,
+        coast_ocean_refinement_enabled: true,
+    });
+
+    let lowered = project.try_lower().expect("hydro-only Project lowering");
+    assert!(!lowered.mkgrd.refine, "hydro executes after the base mesh");
+    assert!(
+        lowered.hfield.is_none(),
+        "no generic refinement source exists"
+    );
+    assert_eq!(
+        lowered.mkgrd.nxp, 81,
+        "the later hydro HField adapter still needs a stride-compatible parent"
+    );
 }
 
 #[test]

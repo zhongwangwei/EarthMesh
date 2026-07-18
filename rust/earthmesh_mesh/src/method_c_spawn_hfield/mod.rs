@@ -1,14 +1,38 @@
-use std::io;
+use std::{collections::HashMap, io};
 
 use super::*;
+
+#[derive(Clone, Debug)]
+pub(crate) struct MethodCHfieldDemandCoverage {
+    anchors: Vec<(usize, Vec<usize>)>,
+}
+
+impl MethodCHfieldDemandCoverage {
+    pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
+        for (im, faces) in &self.anchors {
+            if !faces
+                .iter()
+                .any(|&iw| selected.get(iw).copied().unwrap_or(false))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Method-C h-field aligned demand anchor at M point {im} is not covered by the refinement mask"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Method-C spawning driven by a quantized target-level field instead of
 /// geometric regions ("M4" of the h-field integration).
 ///
 /// The selection seam is the same `Vec<bool>` over Canonical-indexed W faces
 /// that `selected_regions_faces` produces; everything downstream — the
-/// Method-C pass, mask annealing repair, perimeter mrow construction, and the
-/// optional per-pass nest spring — is reused verbatim. Invariants mirrored
+/// Method-C pass, perimeter mrow construction, and the optional per-pass nest
+/// spring — is reused verbatim. Invariants mirrored
 /// from the region path: only faces of the current generation
 /// (`mrlw == pass`) are selectable, and passes run shallow-to-deep so a
 /// gradient-limited field (whose level sets are nested rings with bounded
@@ -94,59 +118,195 @@ impl MethodCDelaunayMesh {
     /// than rasterizing face centroids — is what keeps the mask boundary
     /// smooth and multiple-of-3 aligned, which the Method-C perimeter walker
     /// requires.
+    #[cfg(test)]
     pub(crate) fn selected_faces_from_target_levels<F: Fn(f64, f64) -> u8>(
         &self,
         target_level: &F,
         pass: usize,
         use_cartesian_xy: bool,
     ) -> io::Result<Vec<bool>> {
+        self.selected_faces_and_coverage_from_target_levels_with_policy(
+            target_level,
+            pass,
+            use_cartesian_xy,
+            true,
+        )
+        .map(|(selected, _)| selected)
+    }
+
+    fn selected_faces_and_coverage_from_target_levels_with_policy<F: Fn(f64, f64) -> u8>(
+        &self,
+        target_level: &F,
+        pass: usize,
+        use_cartesian_xy: bool,
+        preserve_all_demands: bool,
+    ) -> io::Result<(Vec<bool>, MethodCHfieldDemandCoverage)> {
         require_method_c_len("m_points", self.m_points.len(), self.nmd + 1)?;
         require_method_c_len("w_faces", self.w_faces.len(), self.nwd + 1)?;
         let method_c_m_neighbors = self.method_c_m_neighbors()?;
         let mut selected = vec![false; self.nwd + 1];
+        let mut anchors = Vec::new();
+        let mut alignable_faces = vec![false; self.nwd + 1];
 
-        let mut levels = vec![0usize; self.nmd + 1];
-        for im in 2..=self.nmd {
-            levels[im] = self.m_point_or_edge_target_level(
-                im,
-                &method_c_m_neighbors[im],
-                target_level,
-                use_cartesian_xy,
-            );
-        }
         // A deeper H-field level may touch the transition apron produced by
         // the previous pass. Only current-parent interior M points can seed a
         // legal Method-C perimeter; clipping that boundary row preserves the
         // valid demand instead of aborting the whole refinement.
-        let mut eligible = vec![false; self.nmd + 1];
+        let mut parent_interior = vec![false; self.nmd + 1];
         for im in 2..=self.nmd {
-            if levels[im] < pass {
-                continue;
-            }
             let mrlo = self.m_metadata[im].mrlm;
             if mrlo != pass {
                 continue;
             }
             let neighbors = method_c_m_neighbors[im];
-            let mut parent_interior = true;
+            let mut is_parent_interior = true;
             for &iu in neighbors.iu.iter().take(neighbors.npoly) {
                 require_method_c_id("Method-C h-field eligibility U edge", iu, self.nud)?;
                 if self.u_edges[iu].mrlu != mrlo {
-                    parent_interior = false;
+                    is_parent_interior = false;
                     break;
                 }
             }
-            eligible[im] = parent_interior;
+            parent_interior[im] = is_parent_interior;
         }
-        let mut component_seen = vec![false; self.nmd + 1];
+
+        // Record every sampled point/edge demand separately. This prevents a
+        // repair from preserving one face of a large component while silently
+        // eroding the rest of the requested threshold footprint.
+        let mut demand_at_m = vec![false; self.nmd + 1];
+        let mut point_demand_at_m = vec![false; self.nmd + 1];
+        for im in 2..=self.nmd {
+            if !parent_interior[im]
+                || !self.m_point_demands_pass(im, target_level, pass, use_cartesian_xy)
+            {
+                continue;
+            }
+            let neighbors = method_c_m_neighbors[im];
+            let mut faces = Vec::new();
+            for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+                require_method_c_id("Method-C h-field point-demand W face", iw, self.nwd)?;
+                if self.w_faces[iw].mrlw == pass {
+                    faces.push(iw);
+                }
+            }
+            if !faces.is_empty() {
+                demand_at_m[im] = true;
+                point_demand_at_m[im] = true;
+                anchors.push((im, faces));
+            }
+        }
+        for iu in 2..=self.nud {
+            let edge = self.u_edges[iu];
+            if edge.mrlu != pass
+                || self.u_edge_midpoint_target_level(iu, target_level, use_cartesian_xy) < pass
+            {
+                continue;
+            }
+            let Some(anchor_im) = edge
+                .im
+                .iter()
+                .copied()
+                .find(|&im| im <= self.nmd && parent_interior[im])
+            else {
+                continue;
+            };
+            let mut faces = Vec::new();
+            for &iw in edge.iw.iter().take(2) {
+                require_method_c_id("Method-C h-field edge-demand W face", iw, self.nwd)?;
+                if self.w_faces[iw].mrlw == pass {
+                    faces.push(iw);
+                }
+            }
+            if !faces.is_empty() {
+                for &im in &edge.im {
+                    if im <= self.nmd && parent_interior[im] {
+                        demand_at_m[im] = true;
+                    }
+                }
+                anchors.push((anchor_im, faces));
+            }
+        }
+
+        // Nearby islands must share one Canonical phase because their rad3
+        // footprints and transition aprons can meet. A six-edge support halo
+        // joins only potentially interacting islands; keeping the traversal
+        // local avoids carrying one phase around a pentagon or parent seam.
+        let mut phase_support = demand_at_m.clone();
+        if preserve_all_demands {
+            for _ in 0..6 {
+                let mut expanded = phase_support.clone();
+                for im in 2..=self.nmd {
+                    if !phase_support[im] {
+                        continue;
+                    }
+                    let neighbors = method_c_m_neighbors[im];
+                    for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                        require_method_c_id("Method-C h-field phase-support U edge", iu, self.nud)?;
+                        for &next in &self.u_edges[iu].im {
+                            if next > 1 && next <= self.nmd && parent_interior[next] {
+                                expanded[next] = true;
+                            }
+                        }
+                    }
+                }
+                phase_support = expanded;
+            }
+        }
+
+        // Method-C has one globally valid thirdm congruence class on the base
+        // icosahedron. Anchoring separate pass-1 demand islands to arbitrary
+        // local M points can shift that phase and create an invalid transition
+        // even when every individual rad3 footprint is legal. Build the phase
+        // membership once; components still select only their local demand.
+        let mut canonical_phase = vec![false; self.nmd + 1];
+        if pass == 1 {
+            if let Some(global_start) = self.impent.iter().copied().find(|&im| im > 1) {
+                let mut phase_done = vec![[false; 6]; self.nmd + 1];
+                let mut stack = vec![global_start];
+                canonical_phase[global_start] = true;
+                while let Some(im) = stack.pop() {
+                    for next in self.method_c_thirdm_neighbors_canonical_with_neighbors(
+                        im,
+                        &mut phase_done,
+                        &method_c_m_neighbors,
+                    )? {
+                        if !canonical_phase[next] {
+                            canonical_phase[next] = true;
+                            stack.push(next);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reuse pass-wide indexed scratch. Fragmented fields can contain many
+        // components; allocating/scanning nmd/nwd-sized buffers per island
+        // made selection O(components * mesh size) before any mesh work.
+        // The component root is a unique non-zero stamp, so touched entries
+        // need neither clearing nor a second membership bitmap.
+        let mut component_stamp = vec![0usize; self.nmd + 1];
+        let mut seed_seen = vec![0usize; self.nmd + 1];
+        let mut legal_seed = vec![0usize; self.nmd + 1];
+        let mut lattice_neighbors = vec![Vec::new(); self.nmd + 1];
+        let mut jdone = vec![[false; 6]; self.nmd + 1];
+        let mut jdone_touched = Vec::new();
+        let mut seed_demand_reachable = vec![0usize; self.nmd + 1];
+        let mut selected_seeds = vec![0usize; self.nmd + 1];
+        let mut footprint_index = vec![usize::MAX; self.nmd + 1];
+        let mut owner = HashMap::new();
+        let mut anchor_indices_by_m = vec![Vec::new(); self.nmd + 1];
+        for (index, (im, _)) in anchors.iter().enumerate() {
+            anchor_indices_by_m[*im].push(index);
+        }
+
         for root in 2..=self.nmd {
-            if component_seen[root] || !eligible[root] {
+            if component_stamp[root] != 0 || !phase_support[root] {
                 continue;
             }
             let component_mrl = self.m_metadata[root].mrlm;
             let mut component = Vec::new();
             let mut queue = std::collections::VecDeque::from([root]);
-            component_seen[root] = true;
+            component_stamp[root] = root;
             while let Some(im) = queue.pop_front() {
                 component.push(im);
                 let neighbors = method_c_m_neighbors[im];
@@ -160,140 +320,325 @@ impl MethodCDelaunayMesh {
                     };
                     if next > 1
                         && next <= self.nmd
-                        && !component_seen[next]
-                        && eligible[next]
+                        && component_stamp[next] == 0
+                        && phase_support[next]
                         && self.m_metadata[next].mrlm == component_mrl
                     {
-                        component_seen[next] = true;
+                        component_stamp[next] = root;
                         queue.push_back(next);
                     }
                 }
             }
-            // Pentagon anchors retain the Canonical stride lattice; otherwise
-            // use deepest demand and lowest id as a deterministic tie-break.
-            let start = component
-                .iter()
-                .copied()
-                .find(|im| self.impent.contains(im))
-                .unwrap_or_else(|| {
-                    component
-                        .iter()
-                        .copied()
-                        .max_by(|a, b| levels[*a].cmp(&levels[*b]).then_with(|| b.cmp(a)))
-                        .expect("demand component is non-empty")
-                });
-            let mrlo = self.m_metadata[start].mrlm;
-            let has_point_demand = component
-                .iter()
-                .copied()
-                .any(|im| self.m_point_demands_pass(im, target_level, pass, use_cartesian_xy));
-            let mut component_member = vec![false; self.nmd + 1];
-            for &im in &component {
-                component_member[im] = true;
+            if !component.iter().any(|&im| demand_at_m[im]) {
+                continue;
             }
-            let mut seeds = std::collections::BTreeSet::new();
-            let mut jdone = vec![[false; 6]; self.nmd + 1];
+            let has_point_demand = component.iter().any(|&im| point_demand_at_m[im]);
+            // Anchor the Canonical phase inside the demand, as the geometric
+            // region path does. All demand islands in this parent then share
+            // one phase without forcing a globe-spanning pentagon phase.
+            let demand_start = component
+                .iter()
+                .copied()
+                .filter(|&im| demand_at_m[im])
+                .find(|im| self.impent.contains(im))
+                .or_else(|| {
+                    let demanded = component.iter().copied().filter(|&im| demand_at_m[im]);
+                    if preserve_all_demands {
+                        demanded.min()
+                    } else {
+                        demanded.max_by(|a, b| {
+                            let a_level = self.m_point_or_edge_target_level(
+                                *a,
+                                &method_c_m_neighbors[*a],
+                                target_level,
+                                use_cartesian_xy,
+                            );
+                            let b_level = self.m_point_or_edge_target_level(
+                                *b,
+                                &method_c_m_neighbors[*b],
+                                target_level,
+                                use_cartesian_xy,
+                            );
+                            a_level.cmp(&b_level).then_with(|| b.cmp(a))
+                        })
+                    }
+                })
+                .expect("demanded parent component has an anchor");
+            let start = if pass == 1 {
+                let anchor = self.m_points[demand_start];
+                component
+                    .iter()
+                    .copied()
+                    .filter(|&im| canonical_phase[im])
+                    .min_by(|&a, &b| {
+                        let distance = |im: usize| {
+                            let point = self.m_points[im];
+                            (point.x - anchor.x).powi(2)
+                                + (point.y - anchor.y).powi(2)
+                                + (point.z - anchor.z).powi(2)
+                        };
+                        distance(a).total_cmp(&distance(b)).then_with(|| a.cmp(&b))
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Method-C h-field pass {pass} demand component has no canonical stride-3 seed"
+                            ),
+                        )
+                    })?
+            } else {
+                demand_start
+            };
+            let mut lattice_seeds = Vec::new();
             let mut lista = vec![start];
+            seed_seen[start] = root;
             while let Some(im) = lista.pop() {
-                seeds.insert(im);
+                let footprint =
+                    self.method_c_rad3_faces_with_neighbors(im, &method_c_m_neighbors)?;
+                let footprint_is_legal = !footprint
+                    .iter()
+                    .copied()
+                    .filter(|&iw| iw >= 2)
+                    .any(|iw| iw > self.nwd || self.w_faces[iw].mrlw != component_mrl);
+                if footprint_is_legal {
+                    for &iw in &footprint {
+                        if iw >= 2 && iw <= self.nwd && self.w_faces[iw].mrlw == component_mrl {
+                            alignable_faces[iw] = true;
+                        }
+                    }
+                    legal_seed[im] = root;
+                    lattice_seeds.push((im, footprint));
+                }
+                // An atomic footprint can straddle the parent transition
+                // boundary even though legal seeds exist one stride farther
+                // inside. Keep traversing the Canonical lattice through that
+                // non-materializable seed; otherwise the boundary seed cuts
+                // off the entire legal interior and valid deeper demand is
+                // reported as uncovered.
+                jdone_touched.push(im);
                 for neighbor in self.method_c_thirdm_neighbors_canonical_with_neighbors(
                     im,
                     &mut jdone,
                     &method_c_m_neighbors,
                 )? {
+                    jdone_touched.push(neighbor);
                     let traversed_count = jdone[neighbor].iter().filter(|&&done| done).count();
-                    if traversed_count < 2
-                        && component_member[neighbor]
-                        && self.m_metadata[neighbor].mrlm == mrlo
-                        && (self.m_point_demands_pass(
-                            neighbor,
-                            target_level,
-                            pass,
-                            use_cartesian_xy,
-                        ) || (!has_point_demand && levels[neighbor] >= pass))
+                    if component_stamp[neighbor] != root
+                        || self.m_metadata[neighbor].mrlm != component_mrl
                     {
+                        continue;
+                    }
+                    lattice_neighbors[im].push(neighbor);
+                    lattice_neighbors[neighbor].push(im);
+                    let follows_intermediate_demand = preserve_all_demands
+                        || point_demand_at_m[neighbor]
+                        || (!has_point_demand && demand_at_m[neighbor]);
+                    if traversed_count < 2
+                        && seed_seen[neighbor] != root
+                        && follows_intermediate_demand
+                    {
+                        seed_seen[neighbor] = root;
                         lista.push(neighbor);
                     }
                 }
             }
-            for im in seeds {
-                let mrl_seed = self.m_metadata[im].mrlm;
-                let mut footprint = vec![false; self.nwd + 1];
-                self.mark_fill_rad3_faces_with_neighbors(
-                    im,
-                    &mut footprint,
-                    &method_c_m_neighbors,
-                )?;
-                for iw in 2..=self.nwd {
-                    if footprint[iw] && self.w_faces[iw].mrlw == mrl_seed {
-                        selected[iw] = true;
+            for im in jdone_touched.drain(..) {
+                jdone[im] = [false; 6];
+            }
+            for (im, _) in &lattice_seeds {
+                let neighbors = &mut lattice_neighbors[*im];
+                neighbors.retain(|&neighbor| legal_seed[neighbor] == root);
+                neighbors.sort_unstable();
+                neighbors.dedup();
+            }
+            if legal_seed[start] == root {
+                let mut queue = std::collections::VecDeque::from([start]);
+                seed_demand_reachable[start] = root;
+                while let Some(im) = queue.pop_front() {
+                    for &next in &lattice_neighbors[im] {
+                        let follows_demand = if has_point_demand {
+                            point_demand_at_m[next]
+                        } else {
+                            demand_at_m[next]
+                        };
+                        if follows_demand && seed_demand_reachable[next] != root {
+                            seed_demand_reachable[next] = root;
+                            queue.push_back(next);
+                        }
                     }
                 }
             }
-            // Mixed point/edge demand may leave an edge-only boundary tail
-            // off the point-driven thirdm lattice. Add only the minimum
-            // aligned endpoint footprints needed to cover those demanded
-            // edges instead of expanding the whole component by one row.
-            if has_point_demand {
-                for &im in &component {
-                    let neighbors = method_c_m_neighbors[im];
-                    for &iu in neighbors.iu.iter().take(neighbors.npoly) {
-                        let edge = self.u_edges[iu];
-                        if edge.mrlu != pass
-                            || self.u_edge_midpoint_target_level(iu, target_level, use_cartesian_xy)
-                                < pass
-                            || edge.iw[..2].iter().any(|&iw| selected[iw])
-                        {
-                            continue;
+
+            // Assign each parent face to its nearest seed. Selecting the owner
+            // of each demand anchor applies one aligned rad3 footprint instead
+            // of dilating the demand once while finding seeds and again while
+            // materializing their footprints.
+            owner.clear();
+            for (im, footprint) in &lattice_seeds {
+                let seed = self.m_points[*im];
+                for &iw in footprint {
+                    if iw < 2 || iw > self.nwd || self.w_faces[iw].mrlw != component_mrl {
+                        continue;
+                    }
+                    let face = self.w_faces[iw];
+                    let center = CartesianPoint::new(
+                        (self.m_points[face.im[0]].x
+                            + self.m_points[face.im[1]].x
+                            + self.m_points[face.im[2]].x)
+                            / 3.0,
+                        (self.m_points[face.im[0]].y
+                            + self.m_points[face.im[1]].y
+                            + self.m_points[face.im[2]].y)
+                            / 3.0,
+                        (self.m_points[face.im[0]].z
+                            + self.m_points[face.im[1]].z
+                            + self.m_points[face.im[2]].z)
+                            / 3.0,
+                    );
+                    let distance = (seed.x - center.x).powi(2)
+                        + (seed.y - center.y).powi(2)
+                        + (seed.z - center.z).powi(2);
+                    let (current_owner, current_distance) =
+                        owner.get(&iw).copied().unwrap_or((0, f64::INFINITY));
+                    if distance < current_distance
+                        || (distance == current_distance && *im < current_owner)
+                    {
+                        owner.insert(iw, (*im, distance));
+                    }
+                }
+            }
+
+            for (index, (im, _)) in lattice_seeds.iter().enumerate() {
+                footprint_index[*im] = index;
+            }
+            for (im, _) in &lattice_seeds {
+                if seed_demand_reachable[*im] == root {
+                    selected_seeds[*im] = root;
+                }
+            }
+            selected_seeds[start] = root;
+            for (im, footprint) in &lattice_seeds {
+                if selected_seeds[*im] == root {
+                    for &iw in footprint {
+                        if iw >= 2 && iw <= self.nwd && self.w_faces[iw].mrlw == component_mrl {
+                            selected[iw] = true;
                         }
-                        let mut footprint = vec![false; self.nwd + 1];
-                        self.mark_fill_rad3_faces_with_neighbors(
-                            im,
-                            &mut footprint,
-                            &method_c_m_neighbors,
-                        )?;
-                        for iw in 2..=self.nwd {
-                            if footprint[iw] && self.w_faces[iw].mrlw == mrlo {
-                                selected[iw] = true;
+                    }
+                }
+            }
+            // Vertex sampling can miss a thin edge-only tail. Add exactly one
+            // nearest aligned owner only when an individual demand anchor is
+            // still uncovered by the center-selected footprints.
+            let mut component_anchor_indices = component
+                .iter()
+                .flat_map(|&im| anchor_indices_by_m[im].iter().copied())
+                .collect::<Vec<_>>();
+            component_anchor_indices.sort_unstable();
+            for anchor_index in component_anchor_indices {
+                let (anchor_im, faces) = &anchors[anchor_index];
+                if faces.iter().any(|&iw| selected[iw]) {
+                    continue;
+                }
+                let anchor = self.m_points[*anchor_im];
+                let mut best = None;
+                for &iw in faces {
+                    let im = owner.get(&iw).map(|&(im, _)| im).unwrap_or(0);
+                    if im <= 1 {
+                        continue;
+                    }
+                    let seed = self.m_points[im];
+                    let distance = (seed.x - anchor.x).powi(2)
+                        + (seed.y - anchor.y).powi(2)
+                        + (seed.z - anchor.z).powi(2);
+                    if best.is_none_or(|(best_distance, best_im)| {
+                        distance < best_distance || (distance == best_distance && im < best_im)
+                    }) {
+                        best = Some((distance, im));
+                    }
+                }
+                if let Some((_, im)) = best {
+                    if selected_seeds[im] != root {
+                        selected_seeds[im] = root;
+                        let index = footprint_index[im];
+                        if index != usize::MAX {
+                            for &iw in &lattice_seeds[index].1 {
+                                if iw >= 2
+                                    && iw <= self.nwd
+                                    && self.w_faces[iw].mrlw == component_mrl
+                                {
+                                    selected[iw] = true;
+                                }
                             }
                         }
                     }
                 }
             }
-            for &im in &component {
-                let neighbors = method_c_m_neighbors[im];
-                if self.m_point_demands_pass(im, target_level, pass, use_cartesian_xy)
-                    && !neighbors
-                        .iw
-                        .iter()
-                        .take(neighbors.npoly)
-                        .any(|&iw| selected[iw])
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "Method-C h-field point demand at M point {im} is not covered by the aligned refinement footprint"
-                        ),
-                    ));
+            if preserve_all_demands {
+                loop {
+                    let mut bridges = Vec::new();
+                    for (mid, _) in &lattice_seeds {
+                        if selected_seeds[*mid] == root {
+                            continue;
+                        }
+                        let selected_neighbors = lattice_neighbors[*mid]
+                            .iter()
+                            .copied()
+                            .filter(|&im| selected_seeds[im] == root)
+                            .collect::<Vec<_>>();
+                        'pairs: for a_index in 0..selected_neighbors.len() {
+                            for b_index in (a_index + 1)..selected_neighbors.len() {
+                                let a = selected_neighbors[a_index];
+                                let b = selected_neighbors[b_index];
+                                if lattice_neighbors[a].binary_search(&b).is_ok() {
+                                    continue;
+                                }
+                                let common = lattice_neighbors[a]
+                                    .iter()
+                                    .copied()
+                                    .filter(|candidate| {
+                                        lattice_neighbors[b].binary_search(candidate).is_ok()
+                                    })
+                                    .collect::<Vec<_>>();
+                                if common.as_slice() == [*mid] {
+                                    bridges.push(*mid);
+                                    break 'pairs;
+                                }
+                            }
+                        }
+                    }
+                    if bridges.is_empty() {
+                        break;
+                    }
+                    for im in bridges {
+                        selected_seeds[im] = root;
+                    }
                 }
-                for &iu in neighbors.iu.iter().take(neighbors.npoly) {
-                    let edge = self.u_edges[iu];
-                    if edge.mrlu == pass
-                        && self.u_edge_midpoint_target_level(iu, target_level, use_cartesian_xy)
-                            >= pass
-                        && !edge.iw[..2].iter().any(|&iw| selected[iw])
-                    {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "Method-C h-field edge-midpoint demand on U edge {iu} is not covered by the aligned refinement footprint"
-                            ),
-                        ));
+            }
+            for (im, footprint) in lattice_seeds {
+                if selected_seeds[im] == root {
+                    for iw in footprint {
+                        if iw >= 2 && iw <= self.nwd && self.w_faces[iw].mrlw == component_mrl {
+                            selected[iw] = true;
+                        }
                     }
                 }
             }
         }
-        Ok(selected)
+        // The previous pass's transition apron can contain current-generation
+        // M points while still being too close to the parent seam for any
+        // complete rad3 footprint. Those samples are not legal Method-C
+        // anchors: clip them based on the existence of an atomic aligned
+        // footprint, rather than letting a partial footprint cross the seam or
+        // failing an otherwise valid deeper interior pass.
+        anchors.retain(|(_, faces)| {
+            faces
+                .iter()
+                .any(|&iw| alignable_faces.get(iw).copied().unwrap_or(false))
+        });
+        let coverage = MethodCHfieldDemandCoverage { anchors };
+        coverage.validate(&selected)?;
+        Ok((selected, coverage))
     }
 
     fn hfield_has_demand_at_or_above<F: Fn(f64, f64) -> u8>(
@@ -367,8 +712,15 @@ impl MethodCDelaunayMesh {
 
         let mut grid_number = first_grid_number;
         for pass in 1..=max_level {
-            let selected_faces =
-                mesh.selected_faces_from_target_levels(target_level, pass, use_cartesian_xy)?;
+            let has_deeper_demand = pass < max_level
+                && mesh.hfield_has_demand_at_or_above(target_level, pass + 1, use_cartesian_xy)?;
+            let (selected_faces, coverage) = mesh
+                .selected_faces_and_coverage_from_target_levels_with_policy(
+                    target_level,
+                    pass,
+                    use_cartesian_xy,
+                    !has_deeper_demand,
+                )?;
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
                 if mesh.hfield_has_current_parent_demand(target_level, pass, use_cartesian_xy)? {
                     return Err(io::Error::new(
@@ -378,36 +730,26 @@ impl MethodCDelaunayMesh {
                         ),
                     ));
                 }
-                if pass < max_level
-                    && mesh.hfield_has_demand_at_or_above(
-                        target_level,
-                        pass + 1,
-                        use_cartesian_xy,
-                    )?
-                {
+                if has_deeper_demand {
                     continue;
                 }
                 break;
             }
-            match mesh.spawn_nest_pass_with_max_mrows(&selected_faces, grid_number, max_mrows, true)
-            {
-                Ok(refined) => mesh = refined,
-                Err(error) => match mesh.spawn_nest_pass_with_mask_annealing(
+
+            mesh = mesh
+                .spawn_nest_pass_method_c_preserving_demands(
                     &selected_faces,
                     grid_number,
                     max_mrows,
                     true,
-                    pass > 1,
-                )? {
-                    Some(refined) => mesh = refined,
-                    None => {
-                        return Err(io::Error::new(
-                            error.kind(),
-                            format!("Method-C h-field spawn_nest pass {pass} failed: {error}"),
-                        ));
-                    }
-                },
-            }
+                    &coverage,
+                )
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("Method-C h-field spawn_nest pass {pass} failed: {error}"),
+                    )
+                })?;
 
             if let Some((nxp, niter, cartesian_dist00)) = spring {
                 if niter > 0 {

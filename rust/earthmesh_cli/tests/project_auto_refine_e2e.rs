@@ -78,7 +78,7 @@ fn json_stat_max(text: &str, key: &str) -> f64 {
 }
 
 #[test]
-fn project_cli_accepts_warning_candidate_when_guarded_quality_strictly_improves() {
+fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("project.yaml");
@@ -106,13 +106,16 @@ fn project_cli_accepts_warning_candidate_when_guarded_quality_strictly_improves(
     );
     let mut adapters = Vec::new();
     find_named(&root, "adapter.nml", &mut adapters);
-    assert!(
-        adapters.iter().any(|path| path
-            .to_string_lossy()
-            .contains("quality_auto_refine/pass_2")),
-        "missing pass-2 adapter under {}",
-        root.display()
-    );
+    let adapter = adapters
+        .iter()
+        .find(|path| {
+            path.to_string_lossy()
+                .contains("quality_auto_refine/pass_2")
+        })
+        .unwrap_or_else(|| panic!("missing pass-2 adapter under {}", root.display()));
+    let adapter_text = fs::read_to_string(adapter).unwrap();
+    assert!(adapter_text.contains("RL%refine_spc = .TRUE."));
+    assert!(adapter_text.contains("hfield_target_levels_json"));
     let mut quality_reports = Vec::new();
     find_named(&root, "quality_summary.json", &mut quality_reports);
     assert!(
@@ -132,14 +135,28 @@ fn project_cli_accepts_warning_candidate_when_guarded_quality_strictly_improves(
         .expect("pass-2 quality report");
     let initial_quality = fs::read_to_string(initial_report).unwrap();
     let pass_2_quality = fs::read_to_string(pass_2_report).unwrap();
+    for (label, quality) in [
+        ("baseline", initial_quality.as_str()),
+        ("pass-2 candidate", pass_2_quality.as_str()),
+    ] {
+        assert!(
+            quality.contains("\"hfield\": {\"enabled\":true"),
+            "{label} AutoRefine quality must include diagnostics from its actual engine namelist: {quality}"
+        );
+        assert_eq!(
+            json_usize(quality, "target_above_actual_count"),
+            0,
+            "{label} must satisfy the complete original-plus-repair HField demand"
+        );
+    }
     assert!(
         json_usize(&pass_2_quality, "cell_count") > json_usize(&initial_quality, "cell_count"),
         "local repair must refine the measured mesh"
     );
     assert!(
-        initial_quality.contains("\"verdict\": \"warn\"")
+        initial_quality.contains("\"verdict\": \"fail\"")
             && pass_2_quality.contains("\"verdict\": \"warn\""),
-        "this regression case requires warning baseline and candidate reports"
+        "the compatible effective NXP case must improve the baseline verdict from fail to warn"
     );
     assert!(
         json_stat_max(&pass_2_quality, "aspect_ratio")
@@ -179,7 +196,7 @@ fn project_cli_accepts_warning_candidate_when_guarded_quality_strictly_improves(
     let decision = fs::read_to_string(decision).unwrap();
     assert!(decision.contains("\"schema_version\": 1"));
     assert!(decision.contains("\"decision\": \"accepted\""));
-    assert!(decision.contains("\"baseline_verdict\": \"warn\""));
+    assert!(decision.contains("\"baseline_verdict\": \"fail\""));
     assert!(decision.contains("\"candidate_verdict\": \"warn\""));
     assert!(decision.contains("\"selected_verdict\": \"warn\""));
     assert!(decision.contains("\"regressions\": []"));
@@ -196,6 +213,49 @@ fn project_cli_accepts_warning_candidate_when_guarded_quality_strictly_improves(
         };
         assert!(path.is_file(), "{key} does not exist: {}", path.display());
     }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_block_quality_includes_hfield_gates() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let project_path = root.join("project.yaml");
+    let example_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects/auto_refine.yaml");
+    let project = fs::read_to_string(&example_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", example_path.display()))
+        .replace("!Nxp 40", "!Nxp 9")
+        .replace("on_violation: AutoRefine", "on_violation: Block");
+    fs::write(&project_path, project).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .current_dir(&root)
+        .args([
+            "--project",
+            project_path.to_str().unwrap(),
+            "--max-tris",
+            "100000",
+            "--quiet",
+        ])
+        .output()
+        .expect("run Project Block CLI");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr:\n{stderr}");
+    let mut quality_reports = Vec::new();
+    find_named(&root, "quality_summary.json", &mut quality_reports);
+    let quality = fs::read_to_string(
+        quality_reports
+            .iter()
+            .find(|path| !path.to_string_lossy().contains("quality_auto_refine"))
+            .expect("Block quality report"),
+    )
+    .unwrap();
+    assert!(
+        quality.contains("\"hfield\": {\"enabled\":true"),
+        "Block quality must include HField diagnostics and gates: {quality}"
+    );
+
     let _ = fs::remove_dir_all(root);
 }
 

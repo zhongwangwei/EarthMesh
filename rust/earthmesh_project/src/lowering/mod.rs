@@ -1,7 +1,7 @@
 use crate::{
     criterion_catalog, degree_to_nxp, km_to_nxp, DomainConfig, GeometryIr, HfieldRefinementRecipe,
     ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
-    ThresholdStatistic,
+    ThresholdStatistic, ViolationPolicy,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
@@ -304,6 +304,25 @@ impl ProjectConfig {
         } else {
             None
         };
+
+        // Method-C local refinement advances on a stride-3 lattice. Build the
+        // parent mesh on that lattice from the start so HField and later
+        // quality AutoRefine passes share one physically compatible topology.
+        // Rounding upward preserves or slightly improves the requested spatial
+        // resolution; uniform meshes without AutoRefine remain unchanged.
+        let hydro_local_refinement = self
+            .hydro_execution_plan()?
+            .is_some_and(|plan| plan.max_level > 0);
+        if hfield.is_some()
+            || hydro_local_refinement
+            || self.quality.on_violation == ViolationPolicy::AutoRefine
+        {
+            let increment = (3 - mkgrd.nxp.rem_euclid(3)) % 3;
+            mkgrd.nxp = mkgrd
+                .nxp
+                .checked_add(increment)
+                .ok_or_else(|| "Method-C effective NXP overflows i32".to_string())?;
+        }
 
         Ok(LoweredProject {
             mkgrd,

@@ -82,6 +82,7 @@ pub(crate) fn method_c_split_outer_edges(
     candidates: [usize; 3],
     u_edges: &[IcosahedronUEdge],
     label: &str,
+    m_point: usize,
 ) -> io::Result<[usize; 2]> {
     let [ku1, ku2, ku3] = candidates;
     for (solid, first_open, second_open) in [(ku1, ku2, ku3), (ku2, ku3, ku1), (ku3, ku1, ku2)] {
@@ -105,7 +106,7 @@ pub(crate) fn method_c_split_outer_edges(
         .join(", ");
     Err(method_c_repairable_error(
         MethodCRepairableKind::TransitionPatch,
-        None,
+        Some(m_point),
         format!("Method-C {label} transition patch has no solid split edge ({edge_summary})"),
     ))
 }

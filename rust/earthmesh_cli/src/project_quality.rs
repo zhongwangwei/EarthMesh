@@ -126,14 +126,14 @@ pub fn write_project_quality_report(
     write_project_quality_report_with_namelist(project, gridfile, out_dir, None)
 }
 
-/// Project quality with the exact engine namelist used to build `gridfile`.
-/// Supplying it attaches target-vs-actual HField diagnostics to the same report
-/// that controls the closed-loop verdict.
+/// Project quality with the engine namelist describing the complete target
+/// field for `gridfile`. Incremental adapters carry the union of original
+/// Project demands and new absolute targets in that same namelist.
 pub fn write_project_quality_report_with_namelist(
     project: &ProjectConfig,
     gridfile: &Path,
     out_dir: &Path,
-    engine_namelist: Option<&Path>,
+    target_namelist: Option<&Path>,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let mesh = crate::grid_quality_pipeline::read_gridfile_mesh_points(gridfile)
         .map_err(|err| format!("project quality read {}: {err}", gridfile.display()))?;
@@ -163,7 +163,7 @@ pub fn write_project_quality_report_with_namelist(
         MeshCellKind::Tri => "tri",
     };
     report.cell_view = cell_view.to_string();
-    if let Some(path) = engine_namelist {
+    if let Some(path) = target_namelist {
         let namelist = fs::read_to_string(path)
             .map_err(|err| format!("project quality read {}: {err}", path.display()))?;
         crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(

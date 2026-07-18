@@ -80,6 +80,18 @@ pub fn run_refine_pipeline_namelist(
         ));
     }
     let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
+    if hfield_options.is_some() && config.nxp % 3 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Method-C HField refinement requires NXP divisible by 3; got {} (use {} or another higher multiple of 3)",
+                config.nxp,
+                config.nxp
+                    .checked_add((3 - config.nxp.rem_euclid(3)) % 3)
+                    .unwrap_or(config.nxp)
+            ),
+        ));
+    }
     let hydro_hfield_max_level = hfield_options
         .as_ref()
         .map(crate::hydro_refinement_adapter::hydro_target_max_level)

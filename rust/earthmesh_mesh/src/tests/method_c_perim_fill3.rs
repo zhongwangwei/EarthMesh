@@ -278,7 +278,7 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
         u_edges[iu34].im[0]
     };
 
-    let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, &u_edges, "iw6")
+    let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, &u_edges, "iw6", jm2)
         .expect("split outer edges for iw6");
     let iw19 = if u_edges[iu25].iw[0] == iw6 {
         u_edges[iu25].iw[1]
@@ -302,7 +302,7 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
     } else {
         u_edges[iu25].im[0]
     };
-    let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, &u_edges, "iw9")
+    let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, &u_edges, "iw9", jm2)
         .expect("split outer edges for iw9");
     let iw8 = if u_edges[iu16].iw[0] == iw9 {
         u_edges[iu16].iw[1]

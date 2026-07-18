@@ -1,6 +1,39 @@
 use super::*;
 
 impl MethodCDelaunayMesh {
+    fn emit_method_c_selected_faces(
+        &self,
+        selected: &[bool],
+        method_c_m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+    ) -> io::Result<Self> {
+        let perimeters =
+            self.method_c_perimeters_from_selected_faces(selected, method_c_m_neighbors)?;
+        if !Self::method_c_perimeters_are_triplets(&perimeters) {
+            return Err(method_c_repairable_error(
+                MethodCRepairableKind::NonTripletPerimeter,
+                None,
+                format!(
+                    "Method-C perimeter length invalid: perimeter lengths {:?} cannot be grouped into transition triples",
+                    perimeters.iter().map(Vec::len).collect::<Vec<_>>()
+                ),
+            ));
+        }
+        let perimeter = perimeters.into_iter().flatten().collect::<Vec<_>>();
+        let mut nest_wd =
+            self.method_c_nest_wd_from_selected_and_perimeter(selected, &perimeter)?;
+        self.emit_method_c_tables(
+            &perimeter,
+            method_c_m_neighbors,
+            &mut nest_wd,
+            child_level,
+            max_mrows,
+            project_to_radius,
+        )
+    }
+
     pub(crate) fn spawn_nest_pass_with_max_mrows(
         &self,
         selected_faces: &[bool],
@@ -36,12 +69,21 @@ impl MethodCDelaunayMesh {
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
 
         let mut last_repairable_error = None;
+        let mut attempted_masks = std::collections::HashSet::new();
         for _ in 0..64 {
             let perimeter = self.repair_method_c_non_triplet_perimeter(
                 &mut selected,
                 &method_c_m_neighbors,
                 child_level,
             )?;
+            if !attempted_masks.insert(selected.clone()) {
+                return Err(last_repairable_error.unwrap_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Method-C automatic perimeter repair repeated an unchanged mask",
+                    )
+                }));
+            }
             let mut nest_wd =
                 self.method_c_nest_wd_from_selected_and_perimeter(&selected, &perimeter)?;
             match self.emit_method_c_tables(
@@ -115,6 +157,34 @@ impl MethodCDelaunayMesh {
         }))
     }
 
+    pub(crate) fn spawn_nest_pass_method_c_preserving_demands(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        coverage: &crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage,
+    ) -> io::Result<Self> {
+        self.validate_topology()?;
+        require_method_c_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
+        if child_level <= 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Method-C child level must be greater than one",
+            ));
+        }
+
+        coverage.validate(selected_faces)?;
+        self.ensure_method_c_selected_faces_share_parent_mrlw(selected_faces, child_level)?;
+        self.emit_method_c_selected_faces(
+            selected_faces,
+            &self.method_c_m_neighbors()?,
+            child_level,
+            max_mrows,
+            project_to_radius,
+        )
+    }
+
     pub(crate) fn spawn_nest_pass_method_c_without_mask_repair(
         &self,
         selected_faces: &[bool],
@@ -138,26 +208,9 @@ impl MethodCDelaunayMesh {
             &method_c_m_neighbors,
         )?;
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
-
-        let perimeters =
-            self.method_c_perimeters_from_selected_faces(&selected, &method_c_m_neighbors)?;
-        if !Self::method_c_perimeters_are_triplets(&perimeters) {
-            return Err(method_c_repairable_error(
-                MethodCRepairableKind::NonTripletPerimeter,
-                None,
-                format!(
-                    "Method-C perimeter length invalid: perimeter lengths {:?} cannot be grouped into transition triples",
-                    perimeters.iter().map(Vec::len).collect::<Vec<_>>()
-                ),
-            ));
-        }
-        let perimeter = perimeters.into_iter().flatten().collect::<Vec<_>>();
-        let mut nest_wd =
-            self.method_c_nest_wd_from_selected_and_perimeter(&selected, &perimeter)?;
-        self.emit_method_c_tables(
-            &perimeter,
+        self.emit_method_c_selected_faces(
+            &selected,
             &method_c_m_neighbors,
-            &mut nest_wd,
             child_level,
             max_mrows,
             project_to_radius,

@@ -1,27 +1,23 @@
 use super::*;
 
 impl MethodCDelaunayMesh {
-    pub(crate) fn mark_fill_rad3_faces_with_neighbors(
+    pub(crate) fn method_c_rad3_faces_with_neighbors(
         &self,
         im: usize,
-        selected_faces: &mut [bool],
         m_neighbors: &[IcosahedronMPointNeighbors],
-    ) -> io::Result<bool> {
+    ) -> io::Result<Vec<usize>> {
         require_method_c_id("Method-C fill_rad3 M point", im, self.nmd)?;
-        require_method_c_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
         require_method_c_len(
             "Method-C perim M-neighbors",
             m_neighbors.len(),
             self.nmd + 1,
         )?;
 
-        let mut changed = false;
         let neighbors = m_neighbors[im];
-
+        let mut faces = Vec::new();
         for &iw in neighbors.iw.iter().take(neighbors.npoly) {
             require_method_c_id("Method-C fill_rad3 sector W face", iw, self.nwd)?;
-            changed |= !selected_faces[iw];
-            selected_faces[iw] = true;
+            faces.push(iw);
 
             let face = self.w_faces[iw];
             let (imx, iwx, iwy) = if im == face.im[0] {
@@ -72,10 +68,31 @@ impl MethodCDelaunayMesh {
                             format!("Method-C fill_rad3 distant W face {far_iw} is out of range"),
                         ));
                     }
-                    changed |= !selected_faces[far_iw];
-                    selected_faces[far_iw] = true;
+                    faces.push(far_iw);
                 }
             }
+        }
+        Ok(faces)
+    }
+
+    pub(crate) fn mark_fill_rad3_faces_with_neighbors(
+        &self,
+        im: usize,
+        selected_faces: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<bool> {
+        require_method_c_id("Method-C fill_rad3 M point", im, self.nmd)?;
+        require_method_c_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
+        require_method_c_len(
+            "Method-C perim M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+
+        let mut changed = false;
+        for iw in self.method_c_rad3_faces_with_neighbors(im, m_neighbors)? {
+            changed |= !selected_faces[iw];
+            selected_faces[iw] = true;
         }
 
         Ok(changed)

@@ -5,8 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use earthmesh_cli::resolve_project_path;
 use earthmesh_project::{
-    read_lonlat_text_points, read_shapefile_polygon_rings, write_close_mask_nml, CloseMaskFormat,
-    DomainConfig, LoweredProject, ProjectConfig, RegionShape,
+    degree_to_nxp, km_to_nxp, read_lonlat_text_points, read_shapefile_polygon_rings,
+    write_close_mask_nml, CloseMaskFormat, DomainConfig, LoweredProject, ProjectConfig,
+    RegionShape, ResolutionSpec,
 };
 
 use super::super::cli_args::usage;
@@ -118,7 +119,18 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
         }
     }
     config.validate()?;
+    let requested_nxp = config.expert.nxp.unwrap_or(match config.target.resolution {
+        ResolutionSpec::Nxp(nxp) => nxp,
+        ResolutionSpec::ApproxKm(km) => km_to_nxp(km),
+        ResolutionSpec::ApproxDegree(degrees) => degree_to_nxp(degrees),
+    });
     let mut lowered = config.try_lower()?;
+    if lowered.mkgrd.nxp != requested_nxp {
+        eprintln!(
+            "earthmesh_cli: Method-C local refinement adjusted NXP {requested_nxp} -> {} to preserve the stride-3 lattice",
+            lowered.mkgrd.nxp
+        );
+    }
     let run_dir = create_project_run_dir(&spec.path)?;
     let result = (|| {
         lowered.mkgrd.base_dir = format!("{}{}", run_dir.display(), std::path::MAIN_SEPARATOR);
@@ -351,6 +363,8 @@ mod tests {
         assert!(nml.contains("&quality"), "{nml}");
         assert!(nml.contains("NL%min_angle_warn_deg = 31"), "{nml}");
         assert!(!nml.contains("&datalayers"), "{nml}");
+        let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
+        assert_eq!(mkgrd.nxp, 42, "HField parent must use the stride-3 lattice");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -443,6 +457,10 @@ mod tests {
         let nml = fs::read_to_string(prepared.namelist).unwrap();
         let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
         assert!(!mkgrd.refine);
+        assert_eq!(
+            mkgrd.nxp, 18,
+            "AutoRefine must prepare a stride-compatible parent even before a repair is needed"
+        );
         assert!(nml.contains("NL%on_violation = 'auto_refine'"));
 
         let _ = fs::remove_dir_all(root);
@@ -491,6 +509,7 @@ mod tests {
         for prepared in [first, second] {
             let nml = fs::read_to_string(&prepared.namelist).unwrap();
             let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
+            assert_eq!(mkgrd.nxp, 42);
             let refine = earthmesh_core::RefineConfig::from_mkrefine_namelist(
                 &nml,
                 &mkgrd.mesh_type,

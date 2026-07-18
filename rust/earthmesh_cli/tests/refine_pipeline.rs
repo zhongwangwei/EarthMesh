@@ -161,6 +161,29 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     );
 }
 
+#[test]
+fn method_c_hfield_rejects_a_raw_namelist_off_the_stride_three_lattice() {
+    let root = temp_root("method_c_hfield_nxp_stride_guard");
+    let namelist = root.join("off_stride.nml");
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='off_stride'\n  NL%base_dir='{}/'\n  NL%NXP=8\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&hfield\n  NL%hfield_on=.true.\n/\n",
+            root.display()
+        ),
+    )
+    .expect("write off-stride HField namelist");
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
+        .expect_err("raw HField NXP outside the stride-3 lattice must fail before gridinit");
+    assert!(
+        error
+            .to_string()
+            .contains("requires NXP divisible by 3; got 8 (use 9"),
+        "unexpected error: {error}"
+    );
+}
+
 fn write_landtype_file_by_predicate(path: &std::path::Path, is_land: impl Fn(f64, f64) -> bool) {
     let (nlons, nlats) = (360, 180);
     let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create landtype file");

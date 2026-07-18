@@ -107,7 +107,7 @@ impl MethodCDelaunayMesh {
             let im20 = nest_ud[ju3].im;
             let iu43 = iunew[ju2];
 
-            let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, u_edges, "iw6")?;
+            let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, u_edges, "iw6", jm2)?;
             let iw7 = other_edge_face(u_edges[iu15], iw6)?;
             let (iw19, im12) = if u_edges[iu25].iw[0] == iw6 {
                 (u_edges[iu25].iw[1], u_edges[iu25].im[1])
@@ -115,7 +115,7 @@ impl MethodCDelaunayMesh {
                 (u_edges[iu25].iw[0], u_edges[iu25].im[0])
             };
 
-            let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, u_edges, "iw9")?;
+            let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, u_edges, "iw9", jm2)?;
             let iw8 = other_edge_face(u_edges[iu16], iw9)?;
             let (iw21, im13) = if u_edges[iu26].iw[0] == iw9 {
                 (u_edges[iu26].iw[1], u_edges[iu26].im[0])
@@ -234,7 +234,7 @@ impl MethodCDelaunayMesh {
                     let ll = xyz_to_lonlat_degrees(center);
                     return Err(method_c_repairable_error(
                         MethodCRepairableKind::TransitionPatch,
-                        None,
+                        Some(jm2),
                         format!(
                             "Method-C perimeter length invalid: Current nested grid {child_level} crosses the parent boundary in Method-C transition at W face {iw} (mrlw={}, lon={:.3}, lat={:.3})",
                             w_faces[iw].mrlw,

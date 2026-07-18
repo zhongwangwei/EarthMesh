@@ -1139,7 +1139,7 @@ fn project_summary_reports_approx_km_resolution() {
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.nxp, None);
     assert_eq!(summary.approx_km, Some(100.0));
-    assert_eq!(summary.effective_nxp, 80);
+    assert_eq!(summary.effective_nxp, 81);
 }
 
 #[test]
@@ -1159,7 +1159,7 @@ fn project_summary_reports_approx_degree_resolution() {
         summary.approx_degree,
         Some(100.0 / earthmesh_project::KM_PER_DEGREE_EQUATOR)
     );
-    assert_eq!(summary.effective_nxp, 80);
+    assert_eq!(summary.effective_nxp, 81);
 }
 
 #[test]
@@ -1174,7 +1174,7 @@ fn scaffold_project_defaults_to_method_c_100km_nxp() {
     .expect("scaffold project");
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.nxp, Some(80));
-    assert_eq!(summary.effective_nxp, 80);
+    assert_eq!(summary.effective_nxp, 81);
 }
 
 #[test]

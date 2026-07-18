@@ -3,9 +3,8 @@
 //!
 //! The first hydro pass is evaluated on a generated mesh. Its cell polygons
 //! and target levels are converted to a gradient-limited `HField`, then the
-//! normal refine pipeline is rerun from the realized parent mesh. Existing
-//! sources stay embodied in that parent; the adapter adds only the new target
-//! field instead of replaying global inputs.
+//! normal refine pipeline is rerun from the realized parent mesh against the
+//! union of original sources and new absolute targets.
 
 use std::fs;
 use std::io;
@@ -804,10 +803,9 @@ fn run_refinement_adapter_with_controls(
         quote_path(&cells_geojson)?,
         quote_path(&target_levels_json)?,
     );
-    // `mode_file` is the already-realized parent. Replaying its threshold or
-    // specified sources would rescan global rasters and duplicate old nests;
-    // this adapter must add only the absolute target field above.
-    disable_realized_refinement_sources(&mut refine);
+    // Target levels are absolute, so replaying realized sources is idempotent.
+    // Keeping them enabled also covers cells moved across an original target
+    // boundary by the repair pass's spring relaxation.
     let text = format!(
         "{}\n{}\n{}",
         config.to_mkgrd_namelist(),
@@ -827,11 +825,6 @@ fn run_refinement_adapter_with_controls(
         target: target.summary,
         pipeline,
     })
-}
-
-fn disable_realized_refinement_sources(refine: &mut RefineConfig) {
-    refine.refine_spc = false;
-    refine.refine_cal = false;
 }
 
 fn apply_minimum_spring_iterations(refine: &mut RefineConfig, minimum: Option<i32>) {
@@ -874,18 +867,6 @@ mod tests {
         };
         apply_minimum_spring_iterations(&mut expert, Some(20));
         assert_eq!(expert.niter_refine, 40);
-    }
-
-    #[test]
-    fn adapter_does_not_replay_sources_already_realized_in_the_parent() {
-        let mut refine = RefineConfig {
-            refine_spc: true,
-            refine_cal: true,
-            ..RefineConfig::default()
-        };
-        disable_realized_refinement_sources(&mut refine);
-        assert!(!refine.refine_spc);
-        assert!(!refine.refine_cal);
     }
 
     fn temp_path(name: &str) -> PathBuf {

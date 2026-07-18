@@ -44,6 +44,36 @@ fn face_centroid_lonlat(mesh: &MethodCDelaunayMesh, iw: usize) -> LonLatDegrees 
 }
 
 #[test]
+fn canonical_thirdm_lattice_rad3_footprints_cover_active_base_faces() {
+    for nxp in [6, 12, 80] {
+        let mesh = MethodCDelaunayMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 100)
+            .expect("base Method-C mesh");
+        let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+        let start = mesh.impent[0];
+        let mut jdone = vec![[false; 6]; mesh.nmd + 1];
+        let mut seen = vec![false; mesh.nmd + 1];
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut covered = vec![false; mesh.nwd + 1];
+        while let Some(im) = stack.pop() {
+            mesh.mark_fill_rad3_faces_with_neighbors(im, &mut covered, &neighbors)
+                .expect("rad3 footprint");
+            for next in mesh
+                .method_c_thirdm_neighbors_canonical_with_neighbors(im, &mut jdone, &neighbors)
+                .expect("thirdm neighbors")
+            {
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        let missing = (2..=mesh.nwd).filter(|&iw| !covered[iw]).count();
+        assert_eq!(missing, 0, "NXP {nxp} thirdm/rad3 coverage gap");
+    }
+}
+
+#[test]
 fn edge_midpoint_demand_is_not_missed_between_hfield_vertex_samples() {
     let mesh = base_mesh();
     let edge = (2..=mesh.nud)
@@ -101,9 +131,9 @@ fn edge_midpoint_demand_is_not_missed_between_hfield_vertex_samples() {
 }
 
 #[test]
-fn mixed_point_and_edge_midpoint_corridor_is_not_silently_truncated() {
+fn mixed_point_and_edge_midpoint_corridor_is_covered_without_truncation() {
     let mesh =
-        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+        MethodCDelaunayMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let first = (2..=mesh.nmd)
         .find(|im| !mesh.impent.contains(im))
         .expect("regular M point");
@@ -195,15 +225,32 @@ fn mixed_point_and_edge_midpoint_corridor_is_not_silently_truncated() {
         1
     );
 
-    let error = mesh
+    let refined = mesh
         .spawn_nest_from_target_levels(demand, 1, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
-        .expect_err("an infeasible edge-only corridor must not return a truncated success");
-    assert!(
-        error.to_string().contains("perimeter length invalid")
-            || error.to_string().contains("parent boundary")
-            || error.to_string().contains("edge-midpoint demand"),
-        "{error}"
-    );
+        .expect("a stride-compatible edge corridor must refine atomically");
+    for demanded in std::iter::once(first_ll).chain(midpoints.iter().copied()) {
+        let nearest = (2..=refined.nmd)
+            .min_by(|a, b| {
+                let distance = |im| {
+                    let point = xyz_to_lonlat_degrees(refined.m_points[im]);
+                    gc_distance_m(
+                        demanded.lon_degrees,
+                        demanded.lat_degrees,
+                        point.lon_degrees,
+                        point.lat_degrees,
+                    )
+                };
+                distance(*a).total_cmp(&distance(*b))
+            })
+            .expect("nearest refined M point");
+        assert!(
+            refined.m_metadata[nearest].mrlm >= 2,
+            "corridor demand at ({:.6}, {:.6}) was left at level {}",
+            demanded.lon_degrees,
+            demanded.lat_degrees,
+            refined.m_metadata[nearest].mrlm,
+        );
+    }
 }
 
 #[test]
@@ -268,7 +315,6 @@ fn disconnected_hfield_demands_select_every_component() {
             "demand component at M point {center} was dropped"
         );
     }
-
     let refined = mesh
         .spawn_nest_from_target_levels(demand, 1, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
         .expect("disconnected h-field components must refine independently");
@@ -276,6 +322,120 @@ fn disconnected_hfield_demands_select_every_component() {
         .validate_topology()
         .expect("disconnected h-field topology");
     assert!(refined.nwd > mesh.nwd);
+    for demanded in [first_point, second_point] {
+        let (nearest, distance_m) = (2..=refined.nmd)
+            .map(|im| {
+                let point = xyz_to_lonlat_degrees(refined.m_points[im]);
+                (
+                    im,
+                    gc_distance_m(
+                        demanded.lon_degrees,
+                        demanded.lat_degrees,
+                        point.lon_degrees,
+                        point.lat_degrees,
+                    ),
+                )
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("nearest refined M point");
+        assert!(
+            refined.m_metadata[nearest].mrlm >= 2,
+            "HField demand at ({:.6}, {:.6}) was left at refinement level {} (nearest center {distance_m:.1} m away)",
+            demanded.lon_degrees,
+            demanded.lat_degrees,
+            refined.m_metadata[nearest].mrlm,
+        );
+    }
+}
+
+#[test]
+fn disconnected_hfield_preserves_every_demand_point() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(12, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let nearest_regular_m = |target_lon: f64, target_lat: f64| {
+        (2..=mesh.nmd)
+            .filter(|im| !mesh.impent.contains(im))
+            .min_by(|a, b| {
+                let distance = |im| {
+                    let point = xyz_to_lonlat_degrees(mesh.m_points[im]);
+                    gc_distance_m(target_lon, target_lat, point.lon_degrees, point.lat_degrees)
+                };
+                distance(*a).total_cmp(&distance(*b))
+            })
+            .expect("nearest regular M point")
+    };
+    let broad_center = xyz_to_lonlat_degrees(mesh.m_points[nearest_regular_m(100.0, 27.0)]);
+    let isolated = [
+        xyz_to_lonlat_degrees(mesh.m_points[nearest_regular_m(77.25, 43.25)]),
+        xyz_to_lonlat_degrees(mesh.m_points[nearest_regular_m(139.75, 39.25)]),
+    ];
+    let isolated_radius_m = isolated
+        .iter()
+        .flat_map(|center| {
+            (2..=mesh.nmd).filter_map(|im| {
+                let point = xyz_to_lonlat_degrees(mesh.m_points[im]);
+                let distance = gc_distance_m(
+                    center.lon_degrees,
+                    center.lat_degrees,
+                    point.lon_degrees,
+                    point.lat_degrees,
+                );
+                (distance > 0.0).then_some(distance)
+            })
+        })
+        .fold(f64::INFINITY, f64::min)
+        * 0.2;
+    let demand = |lon: f64, lat: f64| {
+        u8::from(
+            gc_distance_m(lon, lat, broad_center.lon_degrees, broad_center.lat_degrees)
+                <= 2_000_000.0
+                || isolated.iter().any(|center| {
+                    gc_distance_m(lon, lat, center.lon_degrees, center.lat_degrees)
+                        <= isolated_radius_m
+                }),
+        )
+    };
+    let demanded_points = (2..=mesh.nmd)
+        .filter_map(|im| {
+            let point = xyz_to_lonlat_degrees(mesh.m_points[im]);
+            (demand(point.lon_degrees, point.lat_degrees) > 0).then_some(point)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        demanded_points.len() > 20,
+        "fixture needs a broad demand component"
+    );
+    for center in isolated {
+        assert!(demand(center.lon_degrees, center.lat_degrees) > 0);
+    }
+
+    let refined = mesh
+        .spawn_nest_from_target_levels(demand, 1, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS)
+        .expect("disconnected HField components must share one valid Method-C stride phase");
+    for demanded in demanded_points {
+        let (nearest, distance_m) = (2..=refined.nmd)
+            .map(|im| {
+                let point = xyz_to_lonlat_degrees(refined.m_points[im]);
+                (
+                    im,
+                    gc_distance_m(
+                        demanded.lon_degrees,
+                        demanded.lat_degrees,
+                        point.lon_degrees,
+                        point.lat_degrees,
+                    ),
+                )
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("nearest refined M point");
+        assert!(
+            refined.m_metadata[nearest].mrlm >= 2,
+            "HField demand at ({:.6}, {:.6}) was silently left at refinement level {} (nearest center {distance_m:.1} m away)",
+            demanded.lon_degrees,
+            demanded.lat_degrees,
+            refined.m_metadata[nearest].mrlm,
+        );
+    }
 }
 
 #[test]
@@ -451,22 +611,19 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
 }
 
 #[test]
-fn deeper_hfield_demand_touching_the_parent_boundary_is_clipped_to_legal_interior() {
+fn discontinuous_deeper_hfield_at_parent_boundary_is_rejected() {
     let mesh =
-        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+        MethodCDelaunayMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    // Equal radii make the level-1 branch unreachable, so this target jumps
+    // directly from level 2 to 0. A gradient-limited HField never does this;
+    // reject it rather than silently returning a partially satisfied mesh.
     let field = two_ring_levels(4_000_000.0, 4_000_000.0);
-    let refined = mesh
+    let error = mesh
         .spawn_nest_from_target_levels(&field, 2, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
-        .expect("boundary-touching level-2 demand should retain its legal parent interior");
-
-    refined
-        .validate_topology()
-        .expect("boundary-clipped h-field topology");
-    assert!(refined.nwd > mesh.nwd);
-    assert_eq!(
-        (2..=refined.nwd).map(|iw| refined.w_faces[iw].ngr).max(),
-        Some(3),
-        "boundary clipping must retain a real second refinement pass"
+        .expect_err("a discontinuous level-2 boundary must not be partially accepted");
+    assert!(
+        error.to_string().contains("parent boundary"),
+        "unexpected rejection: {error}"
     );
 }
 
