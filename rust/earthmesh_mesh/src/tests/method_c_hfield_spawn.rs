@@ -131,6 +131,147 @@ fn edge_midpoint_demand_is_not_missed_between_hfield_vertex_samples() {
 }
 
 #[test]
+fn cartesian_hfield_anchors_its_stride_phase_without_a_spherical_pentagon() {
+    let mesh = MethodCDelaunayMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    assert!(
+        mesh.impent.iter().all(|&im| im == 1),
+        "cart_hex intentionally has no spherical pentagon anchor"
+    );
+    let demand = |x: f64, y: f64| {
+        u8::from((-2_000_000.0..=2_000_000.0).contains(&x) && y.abs() <= 1_000_000.0)
+    };
+    let selected = mesh
+        .selected_faces_from_target_levels(&demand, 1, true)
+        .expect("Cartesian HField should anchor its local stride-3 lattice in the demand");
+
+    assert!(selected.iter().skip(2).any(|&selected| selected));
+    assert!((2..=mesh.nwd)
+        .filter(|&iw| selected[iw])
+        .all(|iw| mesh.method_c_w_face_is_active(iw)));
+}
+
+fn first_materializable_cartesian_rad3_seed(
+    mesh: &MethodCDelaunayMesh,
+    neighbors: &[IcosahedronMPointNeighbors],
+) -> (usize, usize, usize, usize, usize) {
+    let seed = (2..=mesh.nmd)
+        .find(|&im| {
+            mesh.m_prognostic[im] == im
+                && matches!(
+                    mesh.hfield_rad3_faces_for_test(im, neighbors, true),
+                    Ok(Some(_))
+                )
+        })
+        .expect("non-seam Cartesian rad3 seed");
+    let sector_iw = neighbors[seed].iw[0];
+    let sector = mesh.w_faces[sector_iw];
+    let (imx, outer_iw, outer_slot) = if seed == sector.im[0] {
+        (sector.im[1], sector.iw[3], 3)
+    } else if seed == sector.im[1] {
+        (sector.im[2], sector.iw[5], 5)
+    } else {
+        assert_eq!(seed, sector.im[2]);
+        (sector.im[0], sector.iw[7], 7)
+    };
+    (seed, sector_iw, imx, outer_iw, outer_slot)
+}
+
+#[test]
+fn cartesian_hfield_does_not_hide_non_seam_rad3_corruption() {
+    let mut mesh =
+        MethodCDelaunayMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+    let (seed, _, imx, outer_iw, _) = first_materializable_cartesian_rad3_seed(&mesh, &neighbors);
+    let replacement = (2..=mesh.nmd)
+        .find(|&im| mesh.m_prognostic[im] == im && !mesh.w_faces[outer_iw].im.contains(&im))
+        .expect("unrelated active M point");
+    let vertex = mesh.w_faces[outer_iw]
+        .im
+        .iter()
+        .position(|&im| im == imx)
+        .expect("outer face contains sector successor");
+    mesh.w_faces[outer_iw].im[vertex] = replacement;
+
+    let error = mesh
+        .hfield_rad3_faces_for_test(seed, &neighbors, true)
+        .expect_err("non-seam topology corruption must remain fatal");
+    assert!(
+        error.to_string().contains("fill_rad3"),
+        "unexpected diagnostic: {error}"
+    );
+}
+
+#[test]
+fn cartesian_hfield_rejects_a_non_seam_outer_link_redirected_to_a_ghost() {
+    let mut mesh =
+        MethodCDelaunayMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+    let (seed, sector_iw, imx, original_outer_iw, outer_slot) =
+        first_materializable_cartesian_rad3_seed(&mesh, &neighbors);
+    let ghost_iw = (2..=mesh.nwd)
+        .find(|&iw| {
+            mesh.w_prognostic[iw] != iw
+                && iw != original_outer_iw
+                && !mesh.w_faces[iw].im.contains(&imx)
+        })
+        .expect("unrelated Cartesian periodic ghost W face");
+    mesh.w_faces[sector_iw].iw[outer_slot] = ghost_iw;
+
+    let error = mesh
+        .hfield_rad3_faces_for_test(seed, &neighbors, true)
+        .expect_err("an arbitrary ghost outer link must not be classified as a periodic seam");
+    assert!(
+        error.to_string().contains("fill_rad3"),
+        "unexpected diagnostic: {error}"
+    );
+}
+
+#[test]
+fn cartesian_hfield_rejects_self_consistent_ghost_inner_and_outer_redirects() {
+    let mut mesh =
+        MethodCDelaunayMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+    let (seed, sector_iw, imx, original_outer_iw, outer_slot) =
+        first_materializable_cartesian_rad3_seed(&mesh, &neighbors);
+    let original_pair = [
+        original_outer_iw,
+        mesh.w_faces[sector_iw].iw[outer_slot + 1],
+    ];
+    let (fake_inner_iw, fake_pair) = (2..=mesh.nwd)
+        .filter(|&iw| mesh.w_prognostic[iw] != iw)
+        .find_map(|inner_iw| {
+            let inner = mesh.w_faces[inner_iw];
+            let pair =
+                tri_neighbors_outer_w_pair(sector_iw, [inner.iw[0], inner.iw[1], inner.iw[2]]);
+            let ids_are_valid = pair
+                .iter()
+                .all(|&iw| iw > 1 && iw <= mesh.nwd && !mesh.w_faces[iw].im.contains(&imx));
+            let touches_periodic_copy = pair.iter().any(|&iw| {
+                mesh.w_prognostic[iw] != iw
+                    || mesh.w_faces[iw]
+                        .im
+                        .iter()
+                        .any(|&im| mesh.m_prognostic[im] != im)
+            });
+            (ids_are_valid && touches_periodic_copy && pair != original_pair)
+                .then_some((inner_iw, pair))
+        })
+        .expect("self-consistent but unrelated ghost inner/outer links");
+    let inner_slot = (outer_slot - 3) / 2;
+    mesh.w_faces[sector_iw].iw[inner_slot] = fake_inner_iw;
+    mesh.w_faces[sector_iw].iw[outer_slot] = fake_pair[0];
+    mesh.w_faces[sector_iw].iw[outer_slot + 1] = fake_pair[1];
+
+    let error = mesh
+        .hfield_rad3_faces_for_test(seed, &neighbors, true)
+        .expect_err("stored ghost W links must not override reciprocal U-edge topology");
+    assert!(
+        error.to_string().contains("fill_rad3"),
+        "unexpected diagnostic: {error}"
+    );
+}
+
+#[test]
 fn mixed_point_and_edge_midpoint_corridor_is_covered_without_truncation() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");

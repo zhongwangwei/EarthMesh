@@ -7,6 +7,11 @@ pub(crate) struct MethodCHfieldDemandCoverage {
     anchors: Vec<(usize, Vec<usize>)>,
 }
 
+enum MethodCHfieldRad3Footprint {
+    Materializable(Vec<usize>),
+    PeriodicSeam,
+}
+
 impl MethodCHfieldDemandCoverage {
     pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
         for (im, faces) in &self.anchors {
@@ -81,6 +86,205 @@ impl MethodCDelaunayMesh {
         level
     }
 
+    fn cartesian_hfield_rad3_failure_is_periodic_seam(
+        &self,
+        im: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<bool> {
+        if self.impent.iter().any(|&pentagon| pentagon != 1) {
+            return Ok(false);
+        }
+        require_method_c_id("Method-C Cartesian h-field seed M point", im, self.nmd)?;
+        require_method_c_len(
+            "Method-C Cartesian h-field M-neighbors",
+            m_neighbors.len(),
+            self.nmd + 1,
+        )?;
+        require_method_c_len(
+            "Method-C Cartesian h-field M prognostic map",
+            self.m_prognostic.len(),
+            self.nmd + 1,
+        )?;
+        require_method_c_len(
+            "Method-C Cartesian h-field W prognostic map",
+            self.w_prognostic.len(),
+            self.nwd + 1,
+        )?;
+        require_method_c_len(
+            "Method-C Cartesian h-field W faces",
+            self.w_faces.len(),
+            self.nwd + 1,
+        )?;
+        require_method_c_len(
+            "Method-C Cartesian h-field U edges",
+            self.u_edges.len(),
+            self.nud + 1,
+        )?;
+
+        let m_is_periodic_copy = |point: usize| -> io::Result<bool> {
+            require_method_c_id("Method-C Cartesian h-field seam M point", point, self.nmd)?;
+            let owner = self.m_prognostic[point];
+            require_method_c_id("Method-C Cartesian h-field seam M owner", owner, self.nmd)?;
+            if self.m_prognostic[owner] != owner {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Method-C Cartesian h-field M prognostic owner {owner} for point {point} is not canonical"
+                    ),
+                ));
+            }
+            Ok(owner != point)
+        };
+        let w_is_periodic_copy = |face: usize| -> io::Result<bool> {
+            require_method_c_id("Method-C Cartesian h-field seam W face", face, self.nwd)?;
+            let owner = self.w_prognostic[face];
+            require_method_c_id("Method-C Cartesian h-field seam W owner", owner, self.nwd)?;
+            if self.w_prognostic[owner] != owner {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Method-C Cartesian h-field W prognostic owner {owner} for face {face} is not canonical"
+                    ),
+                ));
+            }
+            Ok(owner != face)
+        };
+        let reciprocal_w_neighbors = |face_iw: usize| -> io::Result<[usize; 3]> {
+            require_method_c_id(
+                "Method-C Cartesian h-field reciprocal W face",
+                face_iw,
+                self.nwd,
+            )?;
+            let face = self.w_faces[face_iw];
+            let mut result = [1usize; 3];
+            for (slot, result_iw) in result.iter_mut().enumerate() {
+                let iu = face.iu[slot];
+                require_method_c_id("Method-C Cartesian h-field reciprocal U edge", iu, self.nud)?;
+                let edge = self.u_edges[iu];
+                let other_iw = if edge.iw[0] == face_iw {
+                    edge.iw[1]
+                } else if edge.iw[1] == face_iw {
+                    edge.iw[0]
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C Cartesian h-field W face {face_iw} edge slot {slot} points at U edge {iu}, but the edge does not point back"
+                        ),
+                    ));
+                };
+                require_method_c_id(
+                    "Method-C Cartesian h-field reciprocal W neighbor",
+                    other_iw,
+                    self.nwd,
+                )?;
+                *result_iw = other_iw;
+            }
+            Ok(result)
+        };
+
+        let neighbors = m_neighbors[im];
+        for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+            require_method_c_id("Method-C Cartesian h-field sector W face", iw, self.nwd)?;
+            let sector = self.w_faces[iw];
+            let (imx, iwx, iwy, inner_slot) = if im == sector.im[0] {
+                (sector.im[1], sector.iw[3], sector.iw[4], 0)
+            } else if im == sector.im[1] {
+                (sector.im[2], sector.iw[5], sector.iw[6], 1)
+            } else if im == sector.im[2] {
+                (sector.im[0], sector.iw[7], sector.iw[8], 2)
+            } else {
+                return Ok(false);
+            };
+            require_method_c_id("Method-C Cartesian h-field sector M point", imx, self.nmd)?;
+            require_method_c_id("Method-C Cartesian h-field outer W face", iwx, self.nwd)?;
+            require_method_c_id("Method-C Cartesian h-field outer W face", iwy, self.nwd)?;
+
+            let (im1, im2) = match face_following_two_vertices(self.w_faces[iwx], imx, iwx) {
+                Ok(points) => points,
+                Err(_) => {
+                    // `iw[3..9]` is not covered by the general topology
+                    // validator. Re-derive this exact pair from the validated
+                    // first-ring adjacency before accepting the known cart_hex
+                    // periodic representation gap. An arbitrary ghost pointer
+                    // therefore remains a fatal rad3 error.
+                    let sector_neighbors = reciprocal_w_neighbors(iw)?;
+                    let inner_iw = sector_neighbors[inner_slot];
+                    let inner_neighbors = reciprocal_w_neighbors(inner_iw)?;
+                    let canonical_pair = tri_neighbors_outer_w_pair(iw, inner_neighbors);
+                    for &outer_iw in &canonical_pair {
+                        require_method_c_id(
+                            "Method-C Cartesian h-field canonical outer W face",
+                            outer_iw,
+                            self.nwd,
+                        )?;
+                    }
+                    if [iwx, iwy] != canonical_pair
+                        || self.w_faces[canonical_pair[0]].im.contains(&imx)
+                        || self.w_faces[canonical_pair[1]].im.contains(&imx)
+                    {
+                        return Ok(false);
+                    }
+                    let mut touches_periodic_copy = m_is_periodic_copy(imx)?;
+                    for &outer_iw in &canonical_pair {
+                        touches_periodic_copy |= w_is_periodic_copy(outer_iw)?;
+                        for &face_im in &self.w_faces[outer_iw].im {
+                            touches_periodic_copy |= m_is_periodic_copy(face_im)?;
+                        }
+                    }
+                    return Ok(touches_periodic_copy);
+                }
+            };
+            require_method_c_id("Method-C Cartesian h-field distant M point", im1, self.nmd)?;
+            require_method_c_id("Method-C Cartesian h-field distant M point", im2, self.nmd)?;
+            let im3 = match face_following_vertex(self.w_faces[iwy], im2, iwy) {
+                Ok(point) => point,
+                Err(_) => return Ok(false),
+            };
+            require_method_c_id("Method-C Cartesian h-field distant M point", im3, self.nmd)?;
+            for far_im in [im1, im2, im3] {
+                for &far_iw in m_neighbors[far_im].iw.iter().take(6) {
+                    if far_iw > self.nwd {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn hfield_rad3_footprint(
+        &self,
+        im: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<MethodCHfieldRad3Footprint> {
+        match self.method_c_rad3_faces_with_neighbors(im, m_neighbors) {
+            Ok(faces) => Ok(MethodCHfieldRad3Footprint::Materializable(faces)),
+            Err(_error)
+                if use_cartesian_xy
+                    && self.cartesian_hfield_rad3_failure_is_periodic_seam(im, m_neighbors)? =>
+            {
+                Ok(MethodCHfieldRad3Footprint::PeriodicSeam)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hfield_rad3_faces_for_test(
+        &self,
+        im: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<Option<Vec<usize>>> {
+        self.hfield_rad3_footprint(im, m_neighbors, use_cartesian_xy)
+            .map(|footprint| match footprint {
+                MethodCHfieldRad3Footprint::Materializable(faces) => Some(faces),
+                MethodCHfieldRad3Footprint::PeriodicSeam => None,
+            })
+    }
+
     fn u_edge_midpoint_target_level<F: Fn(f64, f64) -> u8>(
         &self,
         iu: usize,
@@ -143,6 +347,13 @@ impl MethodCDelaunayMesh {
     ) -> io::Result<(Vec<bool>, MethodCHfieldDemandCoverage)> {
         require_method_c_len("m_points", self.m_points.len(), self.nmd + 1)?;
         require_method_c_len("w_faces", self.w_faces.len(), self.nwd + 1)?;
+        if use_cartesian_xy {
+            require_method_c_len(
+                "Method-C Cartesian h-field M prognostic map",
+                self.m_prognostic.len(),
+                self.nmd + 1,
+            )?;
+        }
         let method_c_m_neighbors = self.method_c_m_neighbors()?;
         let mut selected = vec![false; self.nwd + 1];
         let mut anchors = Vec::new();
@@ -154,6 +365,21 @@ impl MethodCDelaunayMesh {
         // valid demand instead of aborting the whole refinement.
         let mut parent_interior = vec![false; self.nmd + 1];
         for im in 2..=self.nmd {
+            if use_cartesian_xy {
+                let owner = self.m_prognostic[im];
+                require_method_c_id("Method-C Cartesian h-field M owner", owner, self.nmd)?;
+                if self.m_prognostic[owner] != owner {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C Cartesian h-field M prognostic owner {owner} for point {im} is not canonical"
+                        ),
+                    ));
+                }
+                if owner != im {
+                    continue;
+                }
+            }
             let mrlo = self.m_metadata[im].mrlm;
             if mrlo != pass {
                 continue;
@@ -258,8 +484,11 @@ impl MethodCDelaunayMesh {
         // local M points can shift that phase and create an invalid transition
         // even when every individual rad3 footprint is legal. Build the phase
         // membership once; components still select only their local demand.
+        // cart_hex has no spherical pentagon; like the geometric Cartesian
+        // path, its local stride phase is anchored directly in the demand.
+        let use_global_canonical_phase = pass == 1 && !use_cartesian_xy;
         let mut canonical_phase = vec![false; self.nmd + 1];
-        if pass == 1 {
+        if use_global_canonical_phase {
             if let Some(global_start) = self.impent.iter().copied().find(|&im| im > 1) {
                 let mut phase_done = vec![[false; 6]; self.nmd + 1];
                 let mut stack = vec![global_start];
@@ -364,7 +593,7 @@ impl MethodCDelaunayMesh {
                     }
                 })
                 .expect("demanded parent component has an anchor");
-            let start = if pass == 1 {
+            let start = if use_global_canonical_phase {
                 let anchor = self.m_points[demand_start];
                 component
                     .iter()
@@ -387,6 +616,53 @@ impl MethodCDelaunayMesh {
                             ),
                         )
                     })?
+            } else if use_cartesian_xy {
+                let (sum_x, sum_y, count) = component
+                    .iter()
+                    .copied()
+                    .filter(|&im| demand_at_m[im])
+                    .fold((0.0, 0.0, 0usize), |(sum_x, sum_y, count), im| {
+                        (
+                            sum_x + self.m_points[im].x,
+                            sum_y + self.m_points[im].y,
+                            count + 1,
+                        )
+                    });
+                let centroid = CartesianPoint::new(sum_x / count as f64, sum_y / count as f64, 0.0);
+                let mut candidates = component.clone();
+                candidates.sort_by(|&a, &b| {
+                    let distance = |im: usize| {
+                        let point = self.m_points[im];
+                        (point.x - centroid.x).powi(2) + (point.y - centroid.y).powi(2)
+                    };
+                    distance(a).total_cmp(&distance(b)).then_with(|| a.cmp(&b))
+                });
+                let mut legal_start = None;
+                for im in candidates {
+                    let MethodCHfieldRad3Footprint::Materializable(footprint) =
+                        self.hfield_rad3_footprint(im, &method_c_m_neighbors, use_cartesian_xy)?
+                    else {
+                        continue;
+                    };
+                    if footprint.iter().any(|&iw| iw >= 2)
+                        && footprint
+                            .iter()
+                            .copied()
+                            .filter(|&iw| iw >= 2)
+                            .all(|iw| iw <= self.nwd && self.w_faces[iw].mrlw == component_mrl)
+                    {
+                        legal_start = Some(im);
+                        break;
+                    }
+                }
+                legal_start.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Method-C Cartesian h-field pass {pass} demand component has no legal local stride-3 seed"
+                        ),
+                    )
+                })?
             } else {
                 demand_start
             };
@@ -394,13 +670,24 @@ impl MethodCDelaunayMesh {
             let mut lista = vec![start];
             seed_seen[start] = root;
             while let Some(im) = lista.pop() {
-                let footprint =
-                    self.method_c_rad3_faces_with_neighbors(im, &method_c_m_neighbors)?;
-                let footprint_is_legal = !footprint
-                    .iter()
-                    .copied()
-                    .filter(|&iw| iw >= 2)
-                    .any(|iw| iw > self.nwd || self.w_faces[iw].mrlw != component_mrl);
+                // cart_hex's outer seam contains valid traversal points whose
+                // periodic face representation cannot materialize a complete
+                // rad3 footprint. Skip only that explicitly classified case;
+                // malformed topology and every other rad3 error remain fatal.
+                let footprint = match self.hfield_rad3_footprint(
+                    im,
+                    &method_c_m_neighbors,
+                    use_cartesian_xy,
+                )? {
+                    MethodCHfieldRad3Footprint::Materializable(footprint) => footprint,
+                    MethodCHfieldRad3Footprint::PeriodicSeam => Vec::new(),
+                };
+                let footprint_is_legal = footprint.iter().any(|&iw| iw >= 2)
+                    && !footprint
+                        .iter()
+                        .copied()
+                        .filter(|&iw| iw >= 2)
+                        .any(|iw| iw > self.nwd || self.w_faces[iw].mrlw != component_mrl);
                 if footprint_is_legal {
                     for &iw in &footprint {
                         if iw >= 2 && iw <= self.nwd && self.w_faces[iw].mrlw == component_mrl {
