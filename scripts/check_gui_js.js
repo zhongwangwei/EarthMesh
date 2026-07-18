@@ -10,6 +10,9 @@ const capability = read("gui-tauri/src-tauri/capabilities/default.json");
 const fileCommands = read("gui-tauri/src-tauri/src/file_commands.rs");
 const libRs = read("gui-tauri/src-tauri/src/lib.rs");
 const gitignore = read(".gitignore");
+const tauriConfig = JSON.parse(read("gui-tauri/src-tauri/tauri.conf.json"));
+const csp = tauriConfig.app.security.csp;
+const maplibreJs = read("gui-tauri/dist/vendor/maplibre/maplibre-gl-csp.js");
 
 function check(condition, message, details) {
   if (!condition) {
@@ -43,16 +46,38 @@ log("frontend has no inline HTML event handlers");
 check(
   html.includes('href="vendor/openlayers/ol.css"') &&
     html.includes('src="vendor/openlayers/ol.js"') &&
+    html.includes('href="vendor/maplibre/maplibre-gl.css"') &&
+    html.includes('src="vendor/maplibre/maplibre-gl-csp.js"') &&
+    html.includes('maplibregl.setWorkerUrl(new URL("vendor/maplibre/maplibre-gl-csp-worker.js",document.baseURI).href)') &&
     !html.toLowerCase().includes("leaflet") &&
     !html.includes("unpkg.com") &&
+    !/<(?:script|link)[^>]+(?:src|href)=["']https?:/i.test(html) &&
     fs.existsSync("gui-tauri/dist/vendor/openlayers/ol.css") &&
     fs.existsSync("gui-tauri/dist/vendor/openlayers/ol.js") &&
     fs.existsSync("gui-tauri/dist/vendor/openlayers/LICENSE.md") &&
+    fs.existsSync("gui-tauri/dist/vendor/maplibre/maplibre-gl.css") &&
+    fs.existsSync("gui-tauri/dist/vendor/maplibre/maplibre-gl-csp.js") &&
+    fs.existsSync("gui-tauri/dist/vendor/maplibre/maplibre-gl-csp-worker.js") &&
+    fs.existsSync("gui-tauri/dist/vendor/maplibre/LICENSE.txt") &&
+    maplibreJs.includes("v5.24.0") &&
     gitignore.includes("!gui-tauri/dist/vendor/openlayers/**") &&
+    gitignore.includes("!gui-tauri/dist/vendor/maplibre/**") &&
     !gitignore.includes("!gui-tauri/dist/vendor/leaflet/**"),
-  "OpenLayers must be the sole vendored GUI map runtime and survive a clean checkout",
+  "OpenLayers and MapLibre GL JS 5.24.0 must be locally vendored and survive a clean checkout",
 );
-log("OpenLayers is the sole vendored GUI map runtime");
+log("OpenLayers and MapLibre GL JS 5.24.0 are locally vendored");
+
+check(
+  csp["default-src"] === "'self'" &&
+    csp["script-src"] === "'self'" &&
+    csp["worker-src"] === "'self'" &&
+    !csp["script-src"].includes("unsafe-inline") &&
+    !csp["worker-src"].includes("blob:") &&
+    csp["connect-src"].includes("https://server.arcgisonline.com") &&
+    csp["img-src"].includes("https://server.arcgisonline.com"),
+  "the self-hosted MapLibre CSP bundle and worker must run under a strict Tauri CSP",
+);
+log("map runtimes and CSP worker stay self-hosted under strict CSP");
 
 check(
   !html.includes('${watershedPath ?') &&
@@ -210,10 +235,12 @@ check(
     html.includes('url: `index.html?view=map&lang=${lang ? "zh" : "en"}`') &&
     html.includes('tauriEvent.emitTo("map", "earthmesh-map-state"') &&
     html.includes('const map=ensureOlMap("mapsvgModal")') &&
-    html.includes('map._resizeObserver=new ResizeObserver(()=>map.updateSize())') &&
+    html.includes('map._resizeObserver=new ResizeObserver(scheduleMapResize)') &&
     html.includes('updateOlMap(map, !!payload.fit)') &&
     html.includes('grid-template-rows:auto minmax(0,1fr)') &&
-    html.includes('body.map-window #mapsvgModal{height:100%!important;min-height:0!important') &&
+    html.includes('body.map-window #mapStage{height:100%!important;min-height:0!important') &&
+    html.includes('<div id="mapStage">') &&
+    html.includes('<div id="mapglobeModal" class="earthmesh-globe" hidden></div>') &&
     capability.includes('"map"') &&
     capability.includes('"core:webview:allow-create-webview-window"'),
   "the enlarged map must open a state-synchronized Tauri window",
@@ -226,11 +253,34 @@ check(
     html.includes("featureClass:ol.render.Feature") &&
     html.includes('mesh=classified?_coastalGeojson:_meshGeojson') &&
     html.includes("map._geoRefs[key]===geojson && map._geoProjection[key]===cacheKey") &&
+    html.includes("usableOlExtent(map._meshSource.getExtent())") &&
+    !html.includes("getFeatures().length") &&
     !html.includes("_lmap") &&
     !html.includes("window.LEAF"),
-  "both maps must use one cached OpenLayers mesh source without raw/classified double drawing",
+  "embedded and planar maps must use one cached OpenLayers mesh source without raw/classified double drawing",
 );
-log("OpenLayers rendering avoids duplicate and unchanged GeoJSON work");
+log("OpenLayers planar rendering avoids duplicate and unchanged GeoJSON work");
+
+check(
+  html.includes('id="mapRendererSelect"') &&
+    html.includes('<option value="plane" data-i18n="map.renderer.plane">') &&
+    html.includes('<option value="globe" data-i18n="map.renderer.globe">') &&
+    html.includes('<option value="GLOBE" data-i18n="map.projection.globe" disabled>') &&
+    html.includes('function setMapRenderer(map,renderer,doFit=true)') &&
+    html.includes('renderer=renderer==="globe"?"globe":"plane"') &&
+    html.includes('projection:{type:"vertical-perspective"}') &&
+    html.includes('new maplibregl.Map({container,style:globeStyle()') &&
+    html.includes('trackResize:false,canvasContextAttributes:{preserveDrawingBuffer:true}') &&
+    !html.includes('canvasContextAttributes:{preserveDrawingBuffer:true,antialias:true}') &&
+    html.includes('map._globeGeoRefs[key]===data') &&
+    html.includes('map._globeGeoRefs[key]=data; source.setData(globeGeojson(data))') &&
+    html.includes('while(longitude-previous>180) longitude-=360') &&
+    html.includes('const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson') &&
+    !html.includes('globe.setStyle(') &&
+    !html.includes('map._globe.setStyle('),
+  "the independent map must switch to a fixed vertical-perspective globe without rebuilding unchanged raw GeoJSON",
+);
+log("globe rendering preserves raw GeoJSON identities and updates existing MapLibre sources");
 
 check(
   html.includes('const ALL_MAP_STATE=["mesh","domain","coastal","settings"]') &&
@@ -244,31 +294,84 @@ check(
 log("map-window IPC preserves unchanged GeoJSON object identities");
 
 check(
-  html.includes('<option value="EPSG:3857">') &&
-    html.includes('<option value="EPSG:4326">') &&
-    html.includes('domBbox[0]>domBbox[1]') &&
-    html.includes('input[i]+360') &&
+  html.includes('value="EPSG:3857"') &&
+    html.includes('value="EPSG:4326"') &&
+    html.includes('<option value="UTM:AUTO">') &&
+    html.includes('<option value="streets"') &&
+    html.includes('<option value="light"') &&
+    html.includes('streets:{url:') &&
+    html.includes('light:{url:') &&
+    html.includes('function olUtmZone(lon,lat)') &&
+    html.includes('function autoOlUtmCode(map)') &&
+    html.includes('function olAutoUtmAvailable(') &&
+    html.includes('resolveOlProjectionChoice(map,choice)') &&
+    html.includes('function currentOlDomainFrame()') &&
+    html.includes('frame&&frame.crossesDateline') &&
+    html.includes('input[i]<west?input[i]+360:input[i]') &&
     html.includes('fitOlMap(map,scope,0,[width,height],null)') &&
     html.includes('canvas.toBlob(resolve,"image/png")') &&
+    html.includes('function waitGlobeIdle(globe,timeoutMs=45000)') &&
+    html.includes('function composeGlobeCanvas(map,width,height,contain=false)') &&
+    html.includes('async function saveGlobeMapPng(map)') &&
+    html.includes('if(map._globeActive) return saveGlobeMapPng(map)') &&
+    html.includes('await waitGlobeIdle(globe)') &&
+    html.includes('composeGlobeCanvas(map,width,height,scope==="view").toBlob(resolve,"image/png")') &&
+    html.includes('pitch:globe.getPitch()') &&
+    html.includes('if(scope==="view") globe.setPixelRatio(Math.min(width/viewRect.width,height/viewRect.height))') &&
+    html.includes('if(scope==="view") globe.setPixelRatio(undefined)') &&
+    html.includes('async function persistMapPng(blob)') &&
     html.includes('core.invoke("save_map_png",bytes)') &&
     html.includes('target.style.setProperty("width",width+"px","important")') &&
     html.includes('EarthMesh Studio · ${credit}') &&
     fileCommands.includes("tauri::ipc::InvokeBody::Raw") &&
     fileCommands.includes("validate_png_bytes(bytes)?") &&
     libRs.includes("save_map_png,"),
-  "projection, antimeridian, exact-size PNG export, attribution, and raw native save must remain wired",
+  "planar projection, antimeridian handling, both exact-size PNG exports, attribution, and raw native save must remain wired",
 );
-log("projection and PNG export contracts are wired");
+log("planar and globe PNG export contracts are wired");
+
+check(
+  [
+    "mapWorldBtn",
+    "mapRendererSelect",
+    "mapMeshVisible",
+    "mapBoundaryVisible",
+    "mapDomainVisible",
+    "mapGraticuleVisible",
+    "mapLegendVisible",
+    "mapBaseOpacity",
+    "mapOpacity",
+    "mapMeasureMode",
+    "mapMeasureClearBtn",
+  ].every((id) => html.includes(`id="${id}"`)) &&
+    html.includes('fitOlMap(map,"global",300') &&
+    html.includes('layer.setVisible(el.checked)') &&
+    html.includes('map._baseLayer.setOpacity(value)') &&
+    html.includes('map._meshLayer.setOpacity(value)') &&
+    html.includes('setMapRenderer(map,renderer.value,true)') &&
+    html.includes('setGlobeLayerVisible(map,key,el.checked)') &&
+    html.includes('syncGlobePaint(map)') &&
+    html.includes('setOlMeasureMode(map,measure.value)') &&
+    html.includes('clearOlMeasurements(map)') &&
+    html.includes('map._globeControlStates=map._globeContainer?Array.from') &&
+    html.includes('map._globeControlStates.forEach(([element])=>{ element.disabled=true; })') &&
+    html.includes('.earthmesh-globe .maplibregl-canvas:focus-visible') &&
+    html.includes('map._basemapSources=map._basemapSources||{}'),
+  "map exploration controls must update existing renderer objects instead of rebuilding mesh data",
+);
+log("map exploration controls preserve existing OpenLayers and MapLibre sources");
 
 check(
   html.includes("function updateOlLegend(map)") &&
     html.includes('map._meshLayer.getFeatures(event.pixel)') &&
     html.includes("meshFeatureLabel(feature.getProperties())") &&
+    html.includes('globe.queryRenderedFeatures(event.point,{layers:["earthmesh-mesh-fill"]})') &&
+    html.includes('showCellInspectorProperties(map,features[0]&&features[0].properties)') &&
     html.includes('tooltip.className="ol-cell-tooltip"') &&
     html.includes('addEventListener("pointerleave"'),
-  "OpenLayers migration must preserve the hydro legend and cell inspection tooltip",
+  "both renderers must preserve the hydro legend and cell inspection",
 );
-log("OpenLayers preserves legend and cell inspection");
+log("OpenLayers and MapLibre preserve legend and cell inspection");
 
 check(
   html.includes('lang=b.dataset.lang==="zh"?1:0; applyI18n();};') &&

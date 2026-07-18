@@ -8,8 +8,10 @@ the static redesign.
 ```
 gui-tauri/
 ├── dist/
-│   ├── index.html        # static frontend + Tauri invoke bridge
-│   └── vendor/openlayers # local OpenLayers runtime for the desktop CSP
+│   ├── index.html         # static frontend + Tauri invoke bridge
+│   └── vendor/
+│       ├── openlayers/    # local planar-map runtime
+│       └── maplibre/      # MapLibre GL JS 5.24.0 CSP bundle, worker, CSS, license
 └── src-tauri/
     ├── Cargo.toml        # own workspace; deps: tauri v2 + earthmesh_project (NO hdf5)
     ├── build.rs          # tauri_build::build()
@@ -45,6 +47,34 @@ or run; the browser fallback is not an execution contract.
 static UI ──invoke()──▶ #[tauri::command] ──▶ earthmesh_project
   (dist)    ◀─JSON/YAML─                          (scaffold / lower / criteria)
 ```
+
+### Map rendering
+
+The embedded result map and the independent map window's **Plane** mode use the
+vendored OpenLayers runtime. The independent window also exposes a **Globe**
+mode backed by vendored MapLibre GL JS 5.24.0 with the fixed
+`vertical-perspective` projection. Switching mode does not replace the inline
+map or clone/rebuild the raw mesh payload.
+
+Both renderers consume the same raw mesh/domain/coastal GeoJSON objects received
+through patch-based map-window IPC. Their vector-source reference caches skip
+OpenLayers parsing and MapLibre `setData` when an object's identity is unchanged;
+basemap, projection, opacity, and visibility changes update existing renderer
+objects instead of rebuilding the GeoJSON. Classified coastal cells replace the
+raw mesh layer rather than being drawn on top of it.
+
+All map JavaScript, CSS, and worker code is self-hosted. `vendor/maplibre/`
+contains the 5.24.0 CSP bundle, CSP worker, stylesheet, and upstream license;
+Tauri restricts both `script-src` and `worker-src` to `'self'`. Only the configured
+ArcGIS raster endpoint is admitted for basemap requests. Plane and globe modes
+share the native raw-PNG save command and produce exact-size exports with
+EarthMesh attribution; globe export waits for MapLibre to become idle before
+capturing its preserved WebGL canvas.
+
+MapLibre vector sources still use Web Mercator tiling, so vector cells wholly
+beyond about 85.05° latitude are not drawn in Globe mode; Plane mode remains
+the exact polar-data view. A true polar globe layer requires a custom WebGL
+layer rather than coordinate clamping, which would misrepresent the mesh.
 
 ## Backend commands (`src-tauri/src/lib.rs`)
 
@@ -174,10 +204,13 @@ automatically.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the
   engine reports a gridfile; quality uses `tri-strict` for triangle targets and
   `hex-cgrid` for hex targets.
-- Both the embedded and independent maps use the vendored OpenLayers runtime.
-  The independent window supports imagery/topographic/ocean bases,
-  Web Mercator/geographic projection switching, dateline-safe regional fitting,
-  and exact-size PNG export for the selected region, current view, or globe.
+- The embedded map and the independent window's Plane mode use vendored
+  OpenLayers. The independent window can switch in place to a vendored MapLibre
+  `vertical-perspective` globe while retaining the same raw GeoJSON and map
+  settings. Both modes support the five Esri base styles plus a blank view,
+  layer visibility and opacity controls, cell details, dateline-safe fitting,
+  and exact-size PNG export. Web Mercator/geographic/automatic local UTM views
+  and distance/area measurement remain Plane-mode controls.
 - AutoRefine runs scan only their own output tree (without following directory
   symlinks) and show every `auto_refine_decision.json` in pass order. Accepted
   candidates, baseline rollbacks, selected reports, and guarded metric
@@ -203,7 +236,9 @@ platform icon set.
   such as capability consumption, text-safe rendering, run-state wiring,
   placeholders, and i18n keys. Rust tests exercise the structured capability
   contract and Tauri command layer directly; the Node check also guards the raw
-  PNG save-command registration used by the static frontend.
+  PNG save-command registration, locally vendored OpenLayers/MapLibre runtimes,
+  strict CSP worker setup, plane/globe switch, fixed globe projection, raw
+  GeoJSON identity caching, and both export paths used by the static frontend.
   Packaging still depends on the local Tauri/webview prerequisites listed above.
 - **Icons.** The 1024px `icons/icon@2x.png` filename marks its Retina density so Tauri can
   generate the macOS ICNS during release bundling. Add generated platform-specific

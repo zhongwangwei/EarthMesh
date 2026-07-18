@@ -7,7 +7,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EarthMesh Studio</title>
 <link rel="stylesheet" href="vendor/openlayers/ol.css"/>
+<link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"/>
 <script src="vendor/openlayers/ol.js"></script>
+<script src="vendor/maplibre/maplibre-gl-csp.js"></script>
 <style>
 :root{
   /* ---- light theme tokens (matches theme.rs Primer-like palette) ---- */
@@ -194,7 +196,13 @@ body.normal .expert{display:none}
 .mapwrap{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;background:var(--bg)}
 .map-cap{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;font-size:11.5px;color:var(--muted)}
 #mapsvg{height:280px;border-radius:8px;overflow:hidden;background:var(--bg)}
-#mapsvgModal{flex:1;min-height:300px;border-radius:8px;overflow:hidden;background:var(--bg)}
+#mapStage{position:relative;flex:1;min-height:300px;border-radius:8px;overflow:hidden;background:var(--bg)}
+#mapsvgModal,.earthmesh-globe{position:absolute;inset:0;background:var(--bg)}
+.earthmesh-globe{z-index:5}
+.earthmesh-globe[hidden]{display:none}
+.earthmesh-globe .maplibregl-canvas{outline:none}
+.earthmesh-globe .maplibregl-canvas:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
+.globe-cell-tooltip{position:absolute;z-index:40}
 .ol-viewport{font:inherit;background:var(--bg)}
 .map-modal-head{display:flex;align-items:center;gap:12px;margin-bottom:10px;min-width:0}
 .map-tools{display:none;align-items:center;gap:7px;flex:1;min-width:0;flex-wrap:wrap;font-size:11px;color:var(--muted)}
@@ -205,20 +213,40 @@ body.normal .expert{display:none}
 .map-tool-btn{height:28px;padding:0 10px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--elevated);color:var(--text);font:inherit;font-weight:650}
 .map-tool-btn.primary{border-color:var(--accent);background:var(--accent);color:#fff}
 .map-tool-btn:disabled{opacity:.55;cursor:wait}
+.map-tool-btn:focus-visible,.map-tools select:focus-visible,.map-tools input:focus-visible,.map-tool-menu>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.map-tool-menu{position:relative}
+.map-tool-menu>summary{list-style:none;height:28px;padding:4px 10px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--elevated);color:var(--text);font-weight:650;cursor:pointer;white-space:nowrap}
+.map-tool-menu>summary::-webkit-details-marker{display:none}
+.map-tool-menu[open]>summary{border-color:var(--accent);color:var(--accent)}
+.map-tool-menu.active>summary{border-color:var(--accent);background:var(--accent-weak);color:var(--accent-ink)}
+.map-tool-panel{position:absolute;top:34px;left:0;z-index:80;min-width:230px;padding:11px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--elevated);box-shadow:var(--shadow-lg);color:var(--text)}
+.map-tool-panel .map-check{display:flex;align-items:center;gap:7px;margin:7px 0;white-space:nowrap}
+.map-tool-panel .map-slider{display:grid;grid-template-columns:auto 1fr 38px;align-items:center;gap:7px;margin:9px 0}
+.map-tool-panel .map-slider input[type="range"]{width:100%}
+.map-tool-panel output{font-family:var(--mono);font-size:10.5px;text-align:right;color:var(--muted)}
+.map-tool-panel .map-measure-row{display:flex;align-items:center;gap:7px}
+.map-tool-panel .map-measure-row select{flex:1;min-width:0}
+.map-measure-status{margin-top:8px;min-height:17px;color:var(--muted);font-family:var(--mono)}
 .map-coordinate{margin-left:auto;min-width:132px;color:var(--muted);font-family:var(--mono);text-align:right}
-.map-export-status{flex-basis:100%;min-height:14px;color:var(--muted)}
+.map-export-status{display:block;margin-top:8px;min-height:14px;max-width:310px;color:var(--muted);overflow-wrap:anywhere}
 body.map-window .app{display:none}
 body.map-window #mapModal{display:flex!important;background:var(--bg)!important}
 body.map-window #mapModalPanel{width:100vw!important;height:100vh!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;border:0!important;border-radius:0!important;padding:12px!important;resize:none!important;box-shadow:none!important;display:grid!important;grid-template-rows:auto minmax(0,1fr)}
+body.map-window .map-modal-head{align-items:flex-start}
 body.map-window #mapModalCloseBtn{display:none}
 body.map-window .map-tools{display:flex}
-body.map-window #mapsvgModal{height:100%!important;min-height:0!important;border-radius:0}
+body.map-window #mapStage{height:100%!important;min-height:0!important;border-radius:0}
 .cz-legend{padding:7px 9px;background:var(--elevated);border:1px solid var(--border);
   border-radius:var(--r-sm);box-shadow:var(--shadow);color:var(--text);font-size:11px;line-height:1.4}
 .ol-zone-legend{position:absolute;left:8px;bottom:40px;z-index:20;max-width:calc(100% - 16px)}
 .cz-legend .row{display:flex;align-items:center;gap:6px;white-space:nowrap}
 .cz-legend i{width:16px;height:10px;border-radius:2px;display:inline-block}
 .ol-cell-tooltip{padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--elevated);box-shadow:var(--shadow);color:var(--text);font-size:11px;white-space:nowrap;pointer-events:none}
+.ol-cell-inspector{position:absolute;right:8px;bottom:38px;z-index:30;width:min(310px,calc(100% - 16px));max-height:min(46vh,380px);overflow:auto;padding:10px;border:1px solid var(--border);border-radius:var(--r-md);background:color-mix(in srgb,var(--elevated) 94%,transparent);box-shadow:var(--shadow-lg);color:var(--text);font-size:11px}
+.ol-cell-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px;font-weight:700}
+.ol-cell-inspector-close{border:0;background:transparent;color:var(--muted);padding:0 3px;font-size:16px;line-height:1}
+.ol-cell-inspector-row{display:grid;grid-template-columns:minmax(86px,.8fr) minmax(100px,1.2fr);gap:8px;padding:3px 0;border-top:1px solid var(--border-soft)}
+.ol-cell-inspector-row span:first-child{color:var(--muted);overflow-wrap:anywhere}.ol-cell-inspector-row span:last-child{font-family:var(--mono);overflow-wrap:anywhere}
 .logbox{font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
 .mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
 .mini-metric b{font-weight:700}
@@ -320,35 +348,78 @@ body.map-window #mapsvgModal{height:100%!important;min-height:0!important;border
   <div id="mapModalPanel" style="background:var(--panel,var(--bg,#fff));border:1px solid var(--border);border-radius:14px;padding:18px;width:min(92vw,920px);height:min(82vh,700px);min-width:460px;min-height:340px;max-width:98vw;max-height:96vh;overflow:hidden;resize:both;display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(0,0,0,.45)">
     <div class="map-modal-head">
       <h3 id="mapModalTitle" style="margin:0" data-i18n="map.inspect">Inspect map</h3>
-      <div class="map-tools" id="mapTools" aria-label="map tools">
+      <div class="map-tools" id="mapTools" aria-labelledby="mapModalTitle">
         <label><span data-i18n="map.base">Base</span><select id="mapBasemapSelect">
           <option value="imagery" data-i18n="map.base.imagery">Imagery</option>
+          <option value="light" data-i18n="map.base.light">Light gray</option>
           <option value="topo" data-i18n="map.base.topo">Topographic</option>
+          <option value="streets" data-i18n="map.base.streets">Streets</option>
           <option value="ocean" data-i18n="map.base.ocean">Ocean</option>
           <option value="none" data-i18n="map.base.none">None</option>
         </select></label>
+        <label><span data-i18n="map.renderer">View</span><select id="mapRendererSelect">
+          <option value="plane" data-i18n="map.renderer.plane">Plane</option>
+          <option value="globe" data-i18n="map.renderer.globe">Globe</option>
+        </select></label>
         <label><span data-i18n="map.projection">Projection</span><select id="mapProjectionSelect">
-          <option value="EPSG:3857">Web Mercator</option>
-          <option value="EPSG:4326">Geographic</option>
+          <option value="GLOBE" data-i18n="map.projection.globe" disabled>Spherical · vertical perspective</option>
+          <option value="EPSG:3857" data-i18n="map.projection.mercator">Web Mercator</option>
+          <option value="EPSG:4326" data-i18n="map.projection.geographic">Geographic</option>
+          <option value="UTM:AUTO">Local UTM (auto)</option>
         </select></label>
-        <label><span data-i18n="map.opacity">Grid</span><input id="mapOpacity" type="range" min="20" max="100" value="100" aria-label="grid opacity"></label>
         <button type="button" class="map-tool-btn" id="mapFitBtn" data-i18n="map.fit">Fit region</button>
-        <label><span data-i18n="map.export.scope">Export</span><select id="mapExportScope">
-          <option value="region" data-i18n="map.export.region">Selected region</option>
-          <option value="view" data-i18n="map.export.view">Current view</option>
-          <option value="global" data-i18n="map.export.global">Global</option>
-        </select></label>
-        <select id="mapExportSize" aria-label="export size">
-          <option value="1920x1080">1920×1080</option>
-          <option value="3840x2160">3840×2160</option>
-        </select>
-        <button type="button" class="map-tool-btn primary" id="mapSavePngBtn" data-i18n="map.export.png">Save PNG</button>
+        <button type="button" class="map-tool-btn" id="mapWorldBtn" data-i18n="map.world">Full extent</button>
+        <button type="button" class="map-tool-btn" id="mapNorthBtn" data-i18n="map.north">North up</button>
+        <details class="map-tool-menu" id="mapLayersMenu">
+          <summary data-i18n="map.layers">Layers</summary>
+          <div class="map-tool-panel">
+            <label class="map-check"><input type="checkbox" id="mapMeshVisible" checked> <span data-i18n="map.layer.mesh">Mesh</span></label>
+            <label class="map-check"><input type="checkbox" id="mapBoundaryVisible" checked> <span data-i18n="map.layer.boundary">Project boundary</span></label>
+            <label class="map-check"><input type="checkbox" id="mapDomainVisible" checked> <span data-i18n="map.layer.domain">Domain frame</span></label>
+            <label class="map-check"><input type="checkbox" id="mapGraticuleVisible"> <span data-i18n="map.layer.graticule">Graticule</span></label>
+            <label class="map-check"><input type="checkbox" id="mapLegendVisible" checked> <span data-i18n="map.layer.legend">Legend</span></label>
+            <label class="map-slider"><span data-i18n="map.opacity">Grid</span><input id="mapOpacity" type="range" min="0" max="100" value="100"><output id="mapOpacityValue">100%</output></label>
+            <label class="map-slider"><span data-i18n="map.base.opacity">Base</span><input id="mapBaseOpacity" type="range" min="0" max="100" value="100"><output id="mapBaseOpacityValue">100%</output></label>
+          </div>
+        </details>
+        <details class="map-tool-menu" id="mapMeasureMenu">
+          <summary id="mapMeasureSummary"><span data-i18n="map.measure">Measure</span><span id="mapMeasureModeBadge"></span></summary>
+          <div class="map-tool-panel">
+            <div class="map-measure-row">
+              <select id="mapMeasureMode" aria-labelledby="mapMeasureSummary">
+                <option value="none" data-i18n="map.measure.none">Pointer</option>
+                <option value="distance" data-i18n="map.measure.distance">Distance</option>
+                <option value="area" data-i18n="map.measure.area">Area</option>
+              </select>
+              <button type="button" class="map-tool-btn" id="mapMeasureClearBtn" data-i18n="map.measure.clear">Clear</button>
+            </div>
+            <div class="map-measure-status" id="mapMeasureStatus" aria-live="polite"></div>
+          </div>
+        </details>
+        <details class="map-tool-menu" id="mapExportMenu">
+          <summary data-i18n="map.export.scope">Export</summary>
+          <div class="map-tool-panel">
+            <label><span data-i18n="map.export.scope">Export</span><select id="mapExportScope">
+              <option value="region" data-i18n="map.export.region">Project region</option>
+              <option value="view" data-i18n="map.export.view">Current view</option>
+              <option value="global" data-i18n="map.export.global">Full extent</option>
+            </select></label>
+            <label style="margin-top:8px"><span data-i18n="map.export.size">Size</span><select id="mapExportSize">
+              <option value="1920x1080">1920×1080</option>
+              <option value="3840x2160">3840×2160</option>
+            </select></label>
+            <button type="button" class="map-tool-btn primary" id="mapSavePngBtn" data-i18n="map.export.png" style="width:100%;margin-top:9px">Save PNG</button>
+            <span class="map-export-status" id="mapExportStatus" aria-live="polite"></span>
+          </div>
+        </details>
         <span class="map-coordinate" id="mapCoordinate">—</span>
-        <span class="map-export-status" id="mapExportStatus" aria-live="polite"></span>
       </div>
       <button class="icon-btn" id="mapModalCloseBtn" title="close">✕</button>
     </div>
-    <div id="mapsvgModal"></div>
+    <div id="mapStage">
+      <div id="mapsvgModal"></div>
+      <div id="mapglobeModal" class="earthmesh-globe" hidden></div>
+    </div>
   </div>
 </div>
 
@@ -362,9 +433,12 @@ const I = {
  "live.map":["Map","地图"],"live.quality":["Quality","质量"],"live.log":["Log","日志"],
  "map.hint":["Domain on a satellite base (no borders)","计算域 · 卫星底图(无边界线)"],"map.scroll":["scroll to zoom · drag to pan","滚轮缩放 · 拖动平移"],
  "map.enlarge":["⛶ Enlarge","⛶ 放大"],"map.inspect":["Inspect map","地图细查"],
- "map.base":["Base","底图"],"map.base.imagery":["Imagery","卫星"],"map.base.topo":["Topographic","地形"],"map.base.ocean":["Ocean","海洋"],"map.base.none":["None","无"],
- "map.projection":["Projection","投影"],"map.opacity":["Grid","网格"],"map.fit":["Fit region","适配区域"],
- "map.export.scope":["Export","导出"],"map.export.region":["Selected region","选定区域"],"map.export.view":["Current view","当前视图"],"map.export.global":["Global","全球"],"map.export.png":["Save PNG","保存 PNG"],
+ "map.base":["Base","底图"],"map.base.imagery":["Imagery","卫星"],"map.base.light":["Light gray","浅色"],"map.base.topo":["Topographic","地形"],"map.base.streets":["Streets","街道"],"map.base.ocean":["Ocean","海洋"],"map.base.none":["None","无"],
+ "map.renderer":["View","视图"],"map.renderer.plane":["Plane","平面"],"map.renderer.globe":["Globe","球体"],
+ "map.projection":["Projection","投影"],"map.projection.globe":["Spherical · vertical perspective","球体 · 垂直透视"],"map.projection.mercator":["Web Mercator","Web 墨卡托"],"map.projection.geographic":["Geographic","经纬度"],"map.opacity":["Grid","网格"],"map.base.opacity":["Base","底图"],"map.fit":["Fit region","适配区域"],"map.world":["Full extent","查看全域"],"map.north":["North up","北向上"],
+ "map.layers":["Layers","图层"],"map.layer.mesh":["Mesh","网格"],"map.layer.boundary":["Project boundary","项目边界"],"map.layer.domain":["Domain frame","区域框"],"map.layer.graticule":["Graticule","经纬网"],"map.layer.legend":["Legend","图例"],
+ "map.measure":["Measure","量测"],"map.measure.none":["Pointer","指针"],"map.measure.distance":["Distance","距离"],"map.measure.area":["Area","面积"],"map.measure.clear":["Clear","清除"],
+ "map.export.scope":["Export","导出"],"map.export.region":["Project region","项目区域"],"map.export.view":["Current view","当前视图"],"map.export.global":["Full extent","全域"],"map.export.size":["Size","尺寸"],"map.export.png":["Save PNG","保存 PNG"],
  "log.clear":["Clear","清空"],
  "q.pass":["PASS","通过"],"q.cells":["Cells","单元"],"q.verts":["Vertices","顶点"],
  "q.minangle":["Min angle","最小角"],"q.aspect":["Aspect ratio","纵横比"],
@@ -378,6 +452,9 @@ let lang=PAGE_PARAMS.get("lang")==="en"?0:1; // 0=en, 1=zh — default to Chines
 function L(k){return (I[k]||["",""])[lang];}
 function applyI18n(){
   document.querySelectorAll("[data-i18n]").forEach(e=>{const k=e.getAttribute("data-i18n");if(I[k])e.textContent=L(k);});
+  document.querySelectorAll(".ol-cell-inspector-head>span").forEach((e)=>{e.textContent=lang?"单元详情":"Cell details";});
+  document.querySelectorAll(".ol-cell-inspector-close").forEach((e)=>{e.setAttribute("aria-label",lang?"关闭单元详情":"Close cell details");});
+  [existingOlMap("mapsvg"),existingOlMap("mapsvgModal")].forEach((map)=>{if(map){ syncOlProjectionOption(map); syncOlMeasureBadge(map); }});
   if(!MAP_WINDOW_MODE){ renderSteps(); renderStep(cur); }
 }
 
@@ -938,10 +1015,110 @@ function closeMapModal(){const mm=document.getElementById("mapModal"); if(mm) mm
 
 const OL_BASEMAPS={
   imagery:{url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",attribution:"Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community",maxZoom:19},
+  light:{url:"https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",attribution:"Source: Esri and the GIS User Community",maxZoom:16},
   topo:{url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",attribution:"Source: Esri and the GIS User Community",maxZoom:19},
+  streets:{url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",attribution:"Source: Esri and the GIS User Community",maxZoom:19},
   ocean:{url:"https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",attribution:"Source: Esri, GEBCO, NOAA, National Geographic, Garmin, HERE, and other contributors",maxZoom:16},
   none:{url:"",attribution:"",maxZoom:22},
 };
+if(window.maplibregl) maplibregl.setWorkerUrl(new URL("vendor/maplibre/maplibre-gl-csp-worker.js",document.baseURI).href);
+const OL_MAP_PREFS_KEY="earthmesh.map.preferences.v1";
+const OL_MAP_DEFAULTS={basemap:"imagery",renderer:"plane",projection:"EPSG:3857",mesh:true,boundary:true,domain:true,graticule:false,legend:true,meshOpacity:1,baseOpacity:1,exportSize:"1920x1080"};
+function loadOlMapPrefs(){
+  try{
+    const saved=JSON.parse(localStorage.getItem(OL_MAP_PREFS_KEY)||"{}");
+    const prefs={...OL_MAP_DEFAULTS,...saved};
+    if(!["imagery","light","topo","streets","ocean","none"].includes(prefs.basemap)) prefs.basemap=OL_MAP_DEFAULTS.basemap;
+    if(!["plane","globe"].includes(prefs.renderer)) prefs.renderer=OL_MAP_DEFAULTS.renderer;
+    if(!["EPSG:3857","EPSG:4326","UTM:AUTO"].includes(prefs.projection)) prefs.projection=OL_MAP_DEFAULTS.projection;
+    for(const key of ["meshOpacity","baseOpacity"]){ const value=Number(prefs[key]); prefs[key]=Number.isFinite(value)?Math.max(0,Math.min(1,value)):1; }
+    if(!["1920x1080","3840x2160"].includes(prefs.exportSize)) prefs.exportSize=OL_MAP_DEFAULTS.exportSize;
+    return prefs;
+  }catch(e){ return {...OL_MAP_DEFAULTS}; }
+}
+let _olMapPrefs=loadOlMapPrefs();
+const _olGeoFrameCache=new WeakMap();
+function saveOlMapPrefs(patch){
+  _olMapPrefs={..._olMapPrefs,...patch};
+  try{ localStorage.setItem(OL_MAP_PREFS_KEY,JSON.stringify(_olMapPrefs)); }catch(e){}
+}
+function wrapOlLon(lon){ return ((Number(lon)+180)%360+360)%360-180; }
+function olUtmZone(lon,lat){
+  lon=wrapOlLon(lon);
+  if(lat>=56&&lat<64&&lon>=3&&lon<12) return 32;
+  if(lat>=72&&lat<84&&lon>=0&&lon<42){ if(lon<9) return 31; if(lon<21) return 33; if(lon<33) return 35; return 37; }
+  return Math.max(1,Math.min(60,Math.floor((lon+180)/6)+1));
+}
+function olUtmWorldExtent(zone,lon,lat){
+  let west=-180+(zone-1)*6, east=west+6;
+  if(lat>=56&&lat<64&&zone===32&&lon>=3&&lon<12){ west=3; east=12; }
+  if(lat>=72&&lat<84){
+    if(zone===31){ west=0; east=9; }
+    else if(zone===33){ west=9; east=21; }
+    else if(zone===35){ west=21; east=33; }
+    else if(zone===37){ west=33; east=42; }
+  }
+  return [west,lat>=0?0:-80,east,lat>=0?84:0];
+}
+function olGeojsonFrame(geojson){
+  if(!geojson||typeof geojson!=="object") return null;
+  if(_olGeoFrameCache.has(geojson)) return _olGeoFrameCache.get(geojson);
+  const lons=[]; let south=Infinity,north=-Infinity;
+  const scan=(coordinates)=>{
+    if(!Array.isArray(coordinates)) return;
+    if(coordinates.length>=2&&typeof coordinates[0]==="number"&&typeof coordinates[1]==="number"){
+      const lon=wrapOlLon(coordinates[0]), lat=Number(coordinates[1]);
+      if(Number.isFinite(lon)&&Number.isFinite(lat)){ lons.push((lon+360)%360); south=Math.min(south,lat); north=Math.max(north,lat); }
+      return;
+    }
+    coordinates.forEach(scan);
+  };
+  const scanGeometry=(geometry)=>{ if(!geometry) return; scan(geometry.coordinates); (geometry.geometries||[]).forEach(scanGeometry); };
+  (geojson.features||[]).forEach((feature)=>scanGeometry(feature.geometry)); scanGeometry(geojson.type==="FeatureCollection"?null:geojson.geometry||geojson);
+  if(!lons.length){ _olGeoFrameCache.set(geojson,null); return null; }
+  lons.sort((a,b)=>a-b); let largestGap=-1,start=lons[0];
+  for(let i=0;i<lons.length;i++){ const next=i+1<lons.length?lons[i+1]:lons[0]+360, gap=next-lons[i]; if(gap>largestGap){ largestGap=gap; start=next%360; } }
+  const west=start>180?start-360:start, east=west+Math.max(0,360-largestGap);
+  const frame={west,east,south,north,crossesDateline:east>180}; _olGeoFrameCache.set(geojson,frame); return frame;
+}
+function currentOlDomainFrame(){
+  if(!regional) return null;
+  if((domainMode==="regional"||domainMode==="bbox")&&Array.isArray(domBbox)&&domBbox.length===4){
+    const [west,e,south,north]=domBbox, east=west>e?e+360:e;
+    return [west,east,south,north].every(Number.isFinite)?{west,east,south,north,crossesDateline:east>180}:null;
+  }
+  return olGeojsonFrame(_domainGeojson)||olGeojsonFrame(hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson);
+}
+function olDomainLonLatExtent(){
+  const frame=currentOlDomainFrame();
+  return frame?[frame.west,frame.south,frame.east,frame.north]:null;
+}
+function olMapFocusLonLat(map){
+  const extent=olDomainLonLatExtent();
+  if(extent) return [wrapOlLon((extent[0]+extent[2])/2),Math.max(-90,Math.min(90,(extent[1]+extent[3])/2))];
+  if(map&&map.getView().getCenter()) return ol.proj.transform(map.getView().getCenter(),map.getView().getProjection(),"EPSG:4326");
+  return [0,0];
+}
+function autoOlUtmCode(map){
+  const [lon,lat]=olMapFocusLonLat(map), zone=olUtmZone(lon,lat);
+  const code=`EPSG:${lat>=0?32600+zone:32700+zone}`, projection=ol.proj.get(code);
+  if(projection){
+    const world=olUtmWorldExtent(zone,lon,lat), previous=projection.getWorldExtent();
+    if(!previous||world.some((value,index)=>value!==previous[index])){
+      projection.setWorldExtent(world);
+      projection.setExtent(ol.proj.transformExtent(world,"EPSG:4326",projection,8));
+    }
+  }
+  return code;
+}
+function olAutoUtmAvailable(map){
+  const frame=currentOlDomainFrame();
+  return !!frame&&!frame.crossesDateline&&frame.east-frame.west<=12&&frame.south>=-80&&frame.north<=84;
+}
+function resolveOlProjectionChoice(map,choice){
+  if(choice==="UTM:AUTO") return autoOlUtmCode(map);
+  return choice==="EPSG:4326"?"EPSG:4326":"EPSG:3857";
+}
 const _olStyleCache=new Map();
 const OL_DEFAULT_MESH_STYLE=new ol.style.Style({stroke:new ol.style.Stroke({color:"#22d3ee",width:0.9}),fill:new ol.style.Fill({color:"rgba(34,211,238,.05)"})});
 function rgbaColor(color,opacity){
@@ -963,7 +1140,7 @@ function olMeshStyle(feature){
 function updateOlLegend(map){
   const element=map._zoneLegendElement;
   if(!element) return;
-  const visible=hasGeojson(_coastalGeojson);
+  const visible=_olMapPrefs.legend!==false&&hasGeojson(_coastalGeojson);
   element.hidden=!visible;
   if(!visible) return;
   const key=(document.documentElement.getAttribute("data-theme")||"light")+":"+lang+":"+JSON.stringify(_hydroThresholds);
@@ -987,11 +1164,11 @@ function updateOlLegend(map){
 function olProjectionCode(map){ return map.getView().getProjection().getCode(); }
 function readOlFeatures(geojson,projection){
   if(!geojson) return [];
-  const crossesDateline=regional && domBbox[0]>domBbox[1];
+  const frame=currentOlDomainFrame(), crossesDateline=!!(frame&&frame.crossesDateline);
   if(!crossesDateline){
     return new ol.format.GeoJSON({featureClass:ol.render.Feature}).readFeatures(geojson,{dataProjection:"EPSG:4326",featureProjection:projection});
   }
-  const west=domBbox[0];
+  const west=frame.west;
   const features=new ol.format.GeoJSON().readFeatures(geojson,{dataProjection:"EPSG:4326"});
   features.forEach((feature)=>{
     const geometry=feature.getGeometry();
@@ -1009,57 +1186,270 @@ function readOlFeatures(geojson,projection){
   return features;
 }
 function setOlSource(map,key,source,geojson){
-  const cacheKey=olProjectionCode(map)+":"+(regional&&domBbox[0]>domBbox[1]?domBbox[0]:"");
+  const frame=currentOlDomainFrame(), cacheKey=olProjectionCode(map)+":"+(frame&&frame.crossesDateline?frame.west:"");
   if(map._geoRefs[key]===geojson && map._geoProjection[key]===cacheKey) return;
   map._geoRefs[key]=geojson; map._geoProjection[key]=cacheKey;
+  if(key==="mesh"){
+    map._hitTestToken++; map._inspectToken++;
+    if(map._cellTooltipElement) map._cellTooltipElement.hidden=true;
+    showOlCellInspector(map,null);
+  }
   source.clear(true);
   const features=readOlFeatures(geojson,olProjectionCode(map));
   if(features.length) source.addFeatures(features);
 }
 function olDomainRectangle(map){
   if(!regional || domainMode==="watershed" || domainMode==="close") return null;
-  const [w,e,s,n]=domBbox, east=w>e?e+360:e;
-  const feature=new ol.Feature(new ol.geom.Polygon([[[w,s],[east,s],[east,n],[w,n],[w,s]]]));
+  const frame=currentOlDomainFrame(); if(!frame) return null;
+  const feature=new ol.Feature(new ol.geom.Polygon([[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]));
   feature.getGeometry().transform("EPSG:4326",olProjectionCode(map));
   return feature;
+}
+const GLOBE_EMPTY_GEOJSON={type:"FeatureCollection",features:[]};
+const _globeGeojsonCache=new WeakMap();
+function mapGlobeChildren(items,convert){
+  if(!Array.isArray(items)) return items;
+  let output=null;
+  items.forEach((item,index)=>{ const next=convert(item); if(next!==item&&!output) output=items.slice(0,index); if(output) output.push(next); });
+  return output||items;
+}
+function unwrapGlobeLine(line){
+  if(!Array.isArray(line)) return line;
+  let output=null,previous=null;
+  line.forEach((point,index)=>{
+    let next=point,longitude=Array.isArray(point)?Number(point[0]):NaN;
+    if(Number.isFinite(longitude)){
+      if(previous!=null){ while(longitude-previous>180) longitude-=360; while(longitude-previous< -180) longitude+=360; }
+      if(longitude!==point[0]) next=[longitude,...point.slice(1)];
+      previous=longitude;
+    }
+    if(next!==point&&!output) output=line.slice(0,index); if(output) output.push(next);
+  });
+  return output||line;
+}
+function globeGeometry(geometry){
+  if(!geometry||typeof geometry!=="object") return geometry;
+  let coordinates=geometry.coordinates,geometries=geometry.geometries;
+  if(geometry.type==="LineString") coordinates=unwrapGlobeLine(coordinates);
+  else if(geometry.type==="MultiLineString"||geometry.type==="Polygon") coordinates=mapGlobeChildren(coordinates,unwrapGlobeLine);
+  else if(geometry.type==="MultiPolygon") coordinates=mapGlobeChildren(coordinates,(polygon)=>mapGlobeChildren(polygon,unwrapGlobeLine));
+  else if(geometry.type==="GeometryCollection") geometries=mapGlobeChildren(geometries,globeGeometry);
+  return coordinates===geometry.coordinates&&geometries===geometry.geometries?geometry:{...geometry,coordinates,geometries};
+}
+function globeGeojson(data){
+  if(!data||typeof data!=="object") return data;
+  if(_globeGeojsonCache.has(data)) return _globeGeojsonCache.get(data);
+  let result=data;
+  if(data.type==="FeatureCollection"){
+    const features=mapGlobeChildren(data.features,(feature)=>{ const geometry=globeGeometry(feature&&feature.geometry); return geometry===feature.geometry?feature:{...feature,geometry}; });
+    if(features!==data.features) result={...data,features};
+  }else if(data.type==="Feature"){
+    const geometry=globeGeometry(data.geometry); if(geometry!==data.geometry) result={...data,geometry};
+  }else result=globeGeometry(data);
+  _globeGeojsonCache.set(data,result); return result;
+}
+const GLOBE_LAYER_IDS={mesh:["earthmesh-mesh-fill","earthmesh-mesh-line"],boundary:["earthmesh-boundary-fill","earthmesh-boundary-line"],domain:["earthmesh-domain-line"],graticule:["earthmesh-graticule-line"]};
+function globeKindExpression(){ return ["downcase",["to-string",["coalesce",["get","zone"],["get","mask_class"],["get","hydro_mask_class"],["get","surface_class"],["get","surface_class_code"],""]]]; }
+function globeRiverExpression(){ return ["upcase",["to-string",["coalesce",["get","river_class"],["get","overlap_class"],""]]]; }
+function globeMeshPaint(){
+  const kind=globeKindExpression(),river=globeRiverExpression(),land=cssVarColor("--land","#78aa5a"),ocean=cssVarColor("--ocean","#3c78c8"),coast=cssVarColor("--coast","#dc963c"),opacity=Number(_olMapPrefs.meshOpacity??1);
+  const color=["match",kind,"r3","#c0266b","r2","#7c3aed","coast",coast,"3",coast,"ocean",ocean,"2",ocean,"land",land,"1",land,"#22d3ee"];
+  const lineColor=["case",["==",river,"R3"],"#c0266b",["==",river,"R2"],"#7c3aed",color];
+  return {fill:{"fill-color":color,"fill-opacity":["*",opacity,["match",kind,"r3",0.40,"r2",0.32,"coast",0.30,"3",0.30,"ocean",0.12,"2",0.12,"land",0.12,"1",0.12,0.05]]},line:{"line-color":lineColor,"line-opacity":opacity,"line-width":["match",kind,"r3",1.4,"r2",1.2,"coast",1.5,"3",1.5,0.8]}};
+}
+function globeGraticuleGeojson(){
+  if(globeGraticuleGeojson.cache) return globeGraticuleGeojson.cache;
+  const features=[];
+  for(let lon=-180;lon<=180;lon+=30){ const coordinates=[]; for(let lat=-80;lat<=80;lat+=5) coordinates.push([lon,lat]); features.push({type:"Feature",properties:{},geometry:{type:"LineString",coordinates}}); }
+  for(let lat=-60;lat<=60;lat+=30){ const coordinates=[]; for(let lon=-180;lon<=180;lon+=5) coordinates.push([lon,lat]); features.push({type:"Feature",properties:{},geometry:{type:"LineString",coordinates}}); }
+  return globeGraticuleGeojson.cache={type:"FeatureCollection",features};
+}
+function globeStyle(){
+  const surface={type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]]}};
+  const sources={surface:{type:"geojson",data:surface},mesh:{type:"geojson",data:GLOBE_EMPTY_GEOJSON},boundary:{type:"geojson",data:GLOBE_EMPTY_GEOJSON},domain:{type:"geojson",data:GLOBE_EMPTY_GEOJSON},graticule:{type:"geojson",data:globeGraticuleGeojson()}}, layers=[
+    {id:"earthmesh-background",type:"background",paint:{"background-color":cssVarColor("--bg","#fff")}},
+    {id:"earthmesh-globe-surface",type:"fill",source:"surface",paint:{"fill-color":cssVarColor("--ocean","#3c78c8"),"fill-opacity":0.12}}
+  ];
+  Object.entries(OL_BASEMAPS).forEach(([key,cfg])=>{
+    if(!cfg.url) return;
+    const id="earthmesh-base-"+key; sources[id]={type:"raster",tiles:[cfg.url],tileSize:256,maxzoom:cfg.maxZoom,attribution:cfg.attribution};
+    layers.push({id,type:"raster",source:id,layout:{visibility:key===_olMapPrefs.basemap?"visible":"none"},paint:{"raster-opacity":Number(_olMapPrefs.baseOpacity??1)}});
+  });
+  const paint=globeMeshPaint();
+  layers.push(
+    {id:"earthmesh-mesh-fill",type:"fill",source:"mesh",layout:{visibility:_olMapPrefs.mesh===false?"none":"visible"},paint:paint.fill},
+    {id:"earthmesh-mesh-line",type:"line",source:"mesh",layout:{visibility:_olMapPrefs.mesh===false?"none":"visible"},paint:paint.line},
+    {id:"earthmesh-boundary-fill",type:"fill",source:"boundary",layout:{visibility:_olMapPrefs.boundary===false?"none":"visible"},paint:{"fill-color":"#facc15","fill-opacity":0.08}},
+    {id:"earthmesh-boundary-line",type:"line",source:"boundary",layout:{visibility:_olMapPrefs.boundary===false?"none":"visible"},paint:{"line-color":"#facc15","line-width":2.2,"line-dasharray":[2,1.4]}},
+    {id:"earthmesh-domain-line",type:"line",source:"domain",layout:{visibility:_olMapPrefs.domain===false?"none":"visible"},paint:{"line-color":"#ffffff","line-width":2,"line-dasharray":[3,2]}},
+    {id:"earthmesh-graticule-line",type:"line",source:"graticule",layout:{visibility:_olMapPrefs.graticule===true?"visible":"none"},paint:{"line-color":"#94a3b8","line-opacity":0.45,"line-width":1,"line-dasharray":[2,3]}}
+  );
+  return {version:8,projection:{type:"vertical-perspective"},sky:{"atmosphere-blend":["interpolate",["linear"],["zoom"],0,1,5,1,7,0]},sources,layers};
+}
+function globeDomainGeojson(map){
+  const frame=currentOlDomainFrame(), key=JSON.stringify([regional,domainMode,frame]);
+  if(map._globeDomainKey===key) return map._globeDomainGeojson;
+  map._globeDomainKey=key;
+  map._globeDomainGeojson=(!frame||domainMode==="watershed"||domainMode==="close")?GLOBE_EMPTY_GEOJSON:{type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]}}]};
+  return map._globeDomainGeojson;
+}
+function setGlobeLayerVisible(map,key,visible){
+  const globe=map._globe; if(!map._globeLoaded||!globe) return;
+  (GLOBE_LAYER_IDS[key]||[]).forEach((id)=>{ if(globe.getLayer(id)) globe.setLayoutProperty(id,"visibility",visible?"visible":"none"); });
+}
+function syncGlobeBasemap(map){
+  const globe=map._globe; if(!map._globeLoaded||!globe) return;
+  Object.keys(OL_BASEMAPS).forEach((key)=>{ const id="earthmesh-base-"+key; if(globe.getLayer(id)) globe.setLayoutProperty(id,"visibility",key===_olMapPrefs.basemap?"visible":"none"); });
+}
+function syncGlobePaint(map){
+  const globe=map._globe; if(!map._globeLoaded||!globe) return;
+  const paint=globeMeshPaint();
+  Object.entries(paint.fill).forEach(([name,value])=>globe.setPaintProperty("earthmesh-mesh-fill",name,value));
+  Object.entries(paint.line).forEach(([name,value])=>globe.setPaintProperty("earthmesh-mesh-line",name,value));
+  Object.keys(OL_BASEMAPS).forEach((key)=>{ const id="earthmesh-base-"+key; if(globe.getLayer(id)) globe.setPaintProperty(id,"raster-opacity",Number(_olMapPrefs.baseOpacity??1)); });
+  globe.setPaintProperty("earthmesh-background","background-color",cssVarColor("--bg","#fff"));
+  globe.setPaintProperty("earthmesh-globe-surface","fill-color",cssVarColor("--ocean","#3c78c8"));
+}
+function syncGlobeSource(map,key,data){
+  data=data||GLOBE_EMPTY_GEOJSON;
+  if(map._globeGeoRefs[key]===data) return;
+  const source=map._globe&&map._globe.getSource(key); if(!source) return;
+  map._globeGeoRefs[key]=data; source.setData(globeGeojson(data));
+}
+function fitGlobeMap(map,scope="region",duration=250){
+  const globe=map._globe; if(!map._globeLoaded||!globe) return false;
+  if(scope==="global"||!regional){ globe.fitBounds([[-180,-85],[180,85]],{padding:36,bearing:0,pitch:0,duration}); return true; }
+  const frame=currentOlDomainFrame(); if(!frame) return false;
+  globe.fitBounds([[frame.west,frame.south],[frame.east,frame.north]],{padding:40,maxZoom:10,bearing:0,pitch:0,duration});
+  return true;
+}
+function showGlobeTooltip(map,point,properties){
+  const element=map._globeTooltipElement; if(!element) return;
+  const label=properties?meshFeatureLabel(properties):""; element.hidden=!label;
+  if(label){ element.textContent=label; element.style.left=(point.x+10)+"px"; element.style.top=(point.y-14)+"px"; }
+}
+function bindGlobeEvents(map){
+  const globe=map._globe; if(!globe||map._globeEventsBound) return; map._globeEventsBound=true;
+  let hoverFrame=0,lastHover=null;
+  globe.on("mousemove",(event)=>{
+    const out=document.getElementById("mapCoordinate"); if(out) out.textContent=`${event.lngLat.lng.toFixed(4)}°, ${event.lngLat.lat.toFixed(4)}°`;
+    lastHover={point:{x:event.point.x,y:event.point.y}};
+    if(hoverFrame) return;
+    hoverFrame=requestAnimationFrame(()=>{
+      hoverFrame=0; if(!map._globeActive||!lastHover||_olMapPrefs.mesh===false){ showGlobeTooltip(map,{x:0,y:0},null); return; }
+      const features=globe.queryRenderedFeatures(lastHover.point,{layers:["earthmesh-mesh-fill"]}), feature=features[0];
+      showGlobeTooltip(map,lastHover.point,feature&&feature.properties); globe.getCanvas().style.cursor=feature?"pointer":"";
+    });
+  });
+  globe.on("click",(event)=>{
+    if(_olMapPrefs.mesh===false){ showOlCellInspector(map,null); return; }
+    const features=globe.queryRenderedFeatures(event.point,{layers:["earthmesh-mesh-fill"]}); showCellInspectorProperties(map,features[0]&&features[0].properties);
+  });
+  globe.getCanvas().addEventListener("mouseleave",()=>{ showGlobeTooltip(map,{x:0,y:0},null); globe.getCanvas().style.cursor=""; const out=document.getElementById("mapCoordinate"); if(out) out.textContent="—"; });
+}
+function ensureGlobeMap(map){
+  if(map._globe) return map._globe;
+  const container=document.getElementById("mapglobeModal"); if(!container||!window.maplibregl||typeof maplibregl.Map!=="function") return null;
+  try{
+    const globe=new maplibregl.Map({container,style:globeStyle(),center:[0,0],zoom:0,pitch:0,bearing:0,aroundCenter:true,renderWorldCopies:false,trackResize:false,canvasContextAttributes:{preserveDrawingBuffer:true}});
+    map._globe=globe; map._globeContainer=container; map._globeGeoRefs={}; map._globeLoaded=false;
+    globe.addControl(new maplibregl.NavigationControl({showCompass:true,visualizePitch:false}),"top-left");
+    globe.addControl(new maplibregl.ScaleControl({unit:"metric",maxWidth:130}),"bottom-left");
+    globe.on("load",()=>{ map._globeLoaded=true; bindGlobeEvents(map); updateGlobeMap(map,map._globePendingFit!==false); map._globePendingFit=false; });
+    globe.on("error",(event)=>console.error("MapLibre globe:",event.error||event));
+    globe.getCanvas().addEventListener("webglcontextlost",()=>{ if(map._globeActive) setMapRenderer(map,"plane",false); });
+    return globe;
+  }catch(error){ console.error("MapLibre globe:",error); return null; }
+}
+function updateGlobeMap(map,doFit){
+  const globe=map._globe;
+  if(!globe||!map._globeLoaded){ map._globePendingFit=map._globePendingFit||!!doFit; return; }
+  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson;
+  syncGlobeSource(map,"mesh",mesh); syncGlobeSource(map,"boundary",_domainGeojson); syncGlobeSource(map,"domain",globeDomainGeojson(map));
+  syncGlobeBasemap(map); syncGlobePaint(map);
+  setGlobeLayerVisible(map,"mesh",_olMapPrefs.mesh!==false); setGlobeLayerVisible(map,"boundary",_olMapPrefs.boundary!==false); setGlobeLayerVisible(map,"domain",_olMapPrefs.domain!==false); setGlobeLayerVisible(map,"graticule",_olMapPrefs.graticule===true);
+  updateOlLegend(map); syncOlMapTools(map,true); if(doFit) fitGlobeMap(map,"region",0);
+}
+function setMapRenderer(map,renderer,doFit=true){
+  renderer=renderer==="globe"?"globe":"plane";
+  if(map._exporting||map.getTargetElement().id!=="mapsvgModal") return false;
+  const plane=map.getTargetElement(), globeContainer=document.getElementById("mapglobeModal"), select=document.getElementById("mapRendererSelect");
+  if(renderer==="globe"){
+    if(map._measureMode!=="none") setOlMeasureMode(map,"none");
+    if(!ensureGlobeMap(map)){
+      if(select) select.value="plane";
+      const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=lang?"此设备无法初始化球体 WebGL 视图":"This device cannot initialize the WebGL globe";
+      saveOlMapPrefs({renderer:"plane"}); return false;
+    }
+    map._globeActive=true; plane.hidden=true; globeContainer.hidden=false; saveOlMapPrefs({renderer:"globe"}); if(select) select.value="globe";
+    requestAnimationFrame(()=>{ map._globe.resize(); updateGlobeMap(map,doFit); });
+  }else{
+    map._globeActive=false; if(globeContainer) globeContainer.hidden=true; plane.hidden=false; showGlobeTooltip(map,{x:0,y:0},null); showOlCellInspector(map,null); saveOlMapPrefs({renderer:"plane"}); if(select) select.value="plane";
+    requestAnimationFrame(()=>{ map.updateSize(); updateOlMap(map,doFit); });
+  }
+  syncOlMapTools(map,true); return true;
 }
 function setOlBasemap(map,key){
   key=OL_BASEMAPS[key]?key:"imagery";
   if(map._basemapKey===key) return;
   map._basemapKey=key;
   const cfg=OL_BASEMAPS[key];
+  map._basemapSources=map._basemapSources||{};
+  if(cfg.url&&!map._basemapSources[key]) map._basemapSources[key]=new ol.source.XYZ({url:cfg.url,maxZoom:cfg.maxZoom,crossOrigin:"anonymous",attributions:cfg.attribution});
   map._baseLayer.setVisible(!!cfg.url);
-  map._baseLayer.setSource(cfg.url?new ol.source.XYZ({url:cfg.url,maxZoom:cfg.maxZoom,crossOrigin:"anonymous",attributions:cfg.attribution}):null);
-  map._graticule.setVisible(key==="none" || olProjectionCode(map)==="EPSG:4326");
+  map._baseLayer.setSource(cfg.url?map._basemapSources[key]:null);
+  saveOlMapPrefs({basemap:key});
+  syncGlobeBasemap(map);
+  const select=document.getElementById("mapBasemapSelect"); if(select) select.value=key;
 }
 function usableOlExtent(extent){ return extent && extent.length===4 && extent.every(Number.isFinite) && extent[0]<=extent[2] && extent[1]<=extent[3]; }
 function olRegionExtent(map){
   const boundary=map._boundarySource.getExtent();
-  if(map._boundarySource.getFeatures().length && usableOlExtent(boundary)) return boundary;
+  if(usableOlExtent(boundary)) return boundary;
   const rect=map._domainSource.getExtent();
-  if(map._domainSource.getFeatures().length && usableOlExtent(rect)) return rect;
+  if(usableOlExtent(rect)) return rect;
   const mesh=map._meshSource.getExtent();
-  return map._meshSource.getFeatures().length && usableOlExtent(mesh)?mesh:null;
+  return usableOlExtent(mesh)?mesh:null;
+}
+function setOlWorldClip(map,on){
+  const extent=on?map.getView().getProjection().getExtent():undefined;
+  map.getLayers().forEach((layer)=>layer.setExtent(extent));
+  map._worldClip=!!on;
 }
 function fitOlMap(map,scope="region",duration=250,size,maxZoom=10){
+  if(scope==="region"&&!regional) scope="global";
   let extent=null;
   if(scope==="global") extent=map.getView().getProjection().getExtent();
   else if(scope==="region") extent=olRegionExtent(map);
   if(!usableOlExtent(extent)) return false;
+  setOlWorldClip(map,scope==="global");
   const options={size:size||map.getSize(),padding:[36,36,36,36],duration};
   if(maxZoom!=null) options.maxZoom=maxZoom;
   map.getView().fit(extent,options);
   return true;
 }
+function syncOlProjectionOption(map){
+  const option=document.querySelector('#mapProjectionSelect option[value="UTM:AUTO"]'), available=olAutoUtmAvailable(map), code=autoOlUtmCode(map);
+  if(map._worldClip) setOlWorldClip(map,true);
+  if(option){ option.disabled=!available; option.textContent=lang?`本地 UTM（自动 · ${code.replace("EPSG:","")}）`:`Local UTM (auto · ${code})`; option.title=available?"":(lang?"仅适用于宽度不超过 12°、纬度 80°S–84°N 的区域":"Available for regional domains up to 12° wide between 80°S and 84°N"); }
+  if(map._projectionChoice==="UTM:AUTO"&&!available){ changeOlProjection(map,"EPSG:3857"); return true; }
+  if(map._projectionChoice==="UTM:AUTO"&&olProjectionCode(map)!==code){ changeOlProjection(map,"UTM:AUTO"); return true; }
+  return false;
+}
 function updateOlMap(map,doFit){
   if(!map) return;
+  if(map._exporting){ map._updatePending=true; map._pendingFit=map._pendingFit||!!doFit; return; }
+  if(map._globeActive){ updateGlobeMap(map,doFit); return; }
   const theme=document.documentElement.getAttribute("data-theme")||"light";
   if(map._styleTheme!==theme){ map._styleTheme=theme; _olStyleCache.clear(); map._meshLayer.changed(); }
+  // Resolve the projection from the raw domain frame before decoding a large mesh.
+  // A watershed changing UTM zones must not transform the same mesh twice.
+  if(syncOlProjectionOption(map)) return;
   const classified=hasGeojson(_coastalGeojson), mesh=classified?_coastalGeojson:_meshGeojson;
   const styleMode=classified?"classified":"raw";
   if(map._meshStyleMode!==styleMode){ map._meshStyleMode=styleMode; map._meshLayer.setStyle(classified?olMeshStyle:OL_DEFAULT_MESH_STYLE); }
-  setOlSource(map,"mesh",map._meshSource,mesh);
   setOlSource(map,"boundary",map._boundarySource,_domainGeojson);
+  setOlSource(map,"mesh",map._meshSource,mesh);
   const domainKey=JSON.stringify([regional,domainMode,domBbox,olProjectionCode(map)]);
   let fitChangedRectangle=false;
   if(map._domainKey!==domainKey){
@@ -1068,30 +1458,127 @@ function updateOlMap(map,doFit){
   }
   updateOlLegend(map);
   if(doFit||fitChangedRectangle) fitOlMap(map,"region",0);
+  syncOlMapTools(map,true);
 }
-function changeOlProjection(map,projection){
-  const oldView=map.getView(), oldProjection=oldView.getProjection();
-  if(oldProjection.getCode()===projection) return;
-  const center=oldView.getCenter()?ol.proj.transform(oldView.getCenter(),oldProjection,"EPSG:4326"):[113,22];
-  map.setView(new ol.View({projection,center:ol.proj.transform(center,"EPSG:4326",projection),zoom:oldView.getZoom()||3,multiWorld:true,constrainResolution:false}));
+function changeOlProjection(map,choice){
+  if(map._exporting) return false;
+  if(choice==="UTM:AUTO"&&!olAutoUtmAvailable(map)){
+    const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=lang?"本地 UTM 仅适用于较窄的区域":"Local UTM is available only for narrow regional domains";
+    const select=document.getElementById("mapProjectionSelect"); if(select) select.value=map._projectionChoice||"EPSG:3857";
+    return false;
+  }
+  const projection=resolveOlProjectionChoice(map,choice), oldView=map.getView(), oldProjection=oldView.getProjection();
+  map._projectionChoice=choice; saveOlMapPrefs({projection:choice});
+  const select=document.getElementById("mapProjectionSelect"); if(select) select.value=choice;
+  if(oldProjection.getCode()===projection) return true;
+  const center=oldView.getCenter()?ol.proj.transform(oldView.getCenter(),oldProjection,"EPSG:4326"):olMapFocusLonLat(map);
+  map.setView(new ol.View({projection,center:ol.proj.transform(center,"EPSG:4326",projection),zoom:oldView.getZoom()??3,multiWorld:projection==="EPSG:3857"||projection==="EPSG:4326",constrainResolution:false}));
+  setOlWorldClip(map,map._worldClip);
   map._geoRefs={}; map._geoProjection={}; map._domainKey="";
-  map._graticule.setVisible(map._basemapKey==="none" || projection==="EPSG:4326");
+  clearOlMeasurements(map);
   updateOlMap(map,true);
+  return true;
+}
+function formatOlMeasure(geometry,map){
+  if(geometry instanceof ol.geom.Polygon){
+    const area=ol.sphere.getArea(geometry,{projection:map.getView().getProjection()});
+    return area>=1e6?`${(area/1e6).toFixed(2)} km²`:`${area.toFixed(0)} m²`;
+  }
+  const length=ol.sphere.getLength(geometry,{projection:map.getView().getProjection()});
+  return length>=1000?`${(length/1000).toFixed(2)} km`:`${length.toFixed(1)} m`;
+}
+function clearOlMeasurements(map,clearStatus=true){
+  if(map._measureInteraction&&map._measureInteraction.abortDrawing) map._measureInteraction.abortDrawing();
+  if(map._measureSource) map._measureSource.clear(true);
+  if(clearStatus){ const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=""; }
+}
+function syncOlMeasureBadge(map){
+  const mode=map._measureMode||"none", menu=document.getElementById("mapMeasureMenu"), badge=document.getElementById("mapMeasureModeBadge");
+  if(menu) menu.classList.toggle("active",mode!=="none");
+  if(badge) badge.textContent=mode==="distance"?(lang?" · 距离":" · Distance"):mode==="area"?(lang?" · 面积":" · Area"):"";
+}
+function setOlMeasureMode(map,mode){
+  if(map._measureInteraction){ map.removeInteraction(map._measureInteraction); map._measureInteraction=null; }
+  map._measureMode=mode;
+  syncOlMeasureBadge(map);
+  if(mode==="none") return;
+  map._hitTestToken++; map._inspectToken++;
+  if(map._cellTooltipElement) map._cellTooltipElement.hidden=true;
+  showOlCellInspector(map,null);
+  const interaction=new ol.interaction.Draw({source:map._measureSource,type:mode==="area"?"Polygon":"LineString"});
+  interaction.on("drawstart",()=>{ const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=lang?"双击结束量测":"Double-click to finish"; });
+  interaction.on("drawend",({feature})=>{ const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=formatOlMeasure(feature.getGeometry(),map); });
+  map.addInteraction(interaction); map._measureInteraction=interaction;
+}
+function showCellInspectorProperties(map,properties){
+  const element=map._cellInspectorElement, body=map._cellInspectorBody;
+  if(!element||!body) return;
+  body.replaceChildren();
+  if(!properties){ element.hidden=true; return; }
+  const entries=Object.entries(properties).filter(([key,value])=>key!=="geometry"&&value!=null&&value!=="");
+  entries.forEach(([key,value])=>{
+    const row=document.createElement("div"), name=document.createElement("span"), text=document.createElement("span");
+    row.className="ol-cell-inspector-row"; name.textContent=key; text.textContent=typeof value==="object"?JSON.stringify(value):String(value); row.append(name,text); body.appendChild(row);
+  });
+  element.hidden=entries.length===0;
+}
+function showOlCellInspector(map,feature){ showCellInspectorProperties(map,feature&&feature.getProperties()); }
+function syncOlMapTools(map,projectionSynced=false){
+  if(!projectionSynced) syncOlProjectionOption(map);
+  const values={mapBasemapSelect:map._basemapKey,mapRendererSelect:map._globeActive?"globe":"plane",mapProjectionSelect:map._globeActive?"GLOBE":map._projectionChoice||"EPSG:3857",mapOpacity:String(Math.round(map._meshLayer.getOpacity()*100)),mapBaseOpacity:String(Math.round(map._baseLayer.getOpacity()*100)),mapExportSize:_olMapPrefs.exportSize||"1920x1080"};
+  Object.entries(values).forEach(([id,value])=>{ const el=document.getElementById(id); if(el) el.value=value; });
+  const checks={mapMeshVisible:map._meshLayer.getVisible(),mapBoundaryVisible:map._boundaryLayer.getVisible(),mapDomainVisible:map._domainLayer.getVisible(),mapGraticuleVisible:map._graticule.getVisible(),mapLegendVisible:_olMapPrefs.legend!==false};
+  Object.entries(checks).forEach(([id,value])=>{ const el=document.getElementById(id); if(el) el.checked=value; });
+  const globeMesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson, globeDomain=globeDomainGeojson(map);
+  const available=map._globeActive?{mapMeshVisible:hasGeojson(globeMesh),mapBoundaryVisible:hasGeojson(_domainGeojson),mapDomainVisible:hasGeojson(globeDomain),mapLegendVisible:hasGeojson(_coastalGeojson)}:{mapMeshVisible:usableOlExtent(map._meshSource.getExtent()),mapBoundaryVisible:usableOlExtent(map._boundarySource.getExtent()),mapDomainVisible:usableOlExtent(map._domainSource.getExtent()),mapLegendVisible:hasGeojson(_coastalGeojson)};
+  Object.entries(available).forEach(([id,value])=>{ const el=document.getElementById(id); if(el) el.disabled=!value; });
+  const fit=document.getElementById("mapFitBtn"); if(fit) fit.disabled=map._globeActive?(regional&&!currentOlDomainFrame()):!olRegionExtent(map);
+  const projection=document.getElementById("mapProjectionSelect"); if(projection){ projection.disabled=!!map._globeActive; projection.title=map._globeActive?(lang?"球体视图使用垂直透视；MapLibre 矢量层限于南北纬 85.05°":"Globe view uses vertical perspective; MapLibre vector layers are limited to 85.05°S–85.05°N"):""; }
+  const measure=document.getElementById("mapMeasureMode"),clearMeasure=document.getElementById("mapMeasureClearBtn");
+  if(measure) measure.disabled=!!map._globeActive; if(clearMeasure) clearMeasure.disabled=!!map._globeActive;
+  const meshValue=document.getElementById("mapOpacityValue"), baseValue=document.getElementById("mapBaseOpacityValue");
+  if(meshValue) meshValue.textContent=Math.round(map._meshLayer.getOpacity()*100)+"%";
+  if(baseValue) baseValue.textContent=Math.round(map._baseLayer.getOpacity()*100)+"%";
+}
+function alignOlToolMenu(menu){
+  const panel=menu&&menu.querySelector(".map-tool-panel"); if(!panel) return;
+  panel.style.left="0px";
+  const menuLeft=menu.getBoundingClientRect().left, left=Math.max(8,Math.min(menuLeft,window.innerWidth-panel.offsetWidth-8));
+  panel.style.left=(left-menuLeft)+"px";
 }
 function bindOlMapTools(map){
   if(map._toolsBound) return; map._toolsBound=true;
-  const base=document.getElementById("mapBasemapSelect"), projection=document.getElementById("mapProjectionSelect");
-  const opacity=document.getElementById("mapOpacity"), fit=document.getElementById("mapFitBtn"), save=document.getElementById("mapSavePngBtn");
-  if(base) base.onchange=()=>setOlBasemap(map,base.value);
-  if(projection) projection.onchange=()=>changeOlProjection(map,projection.value);
-  if(opacity) opacity.oninput=()=>map._meshLayer.setOpacity(Number(opacity.value)/100);
-  if(fit) fit.onclick=()=>fitOlMap(map,"region",300);
+  const base=document.getElementById("mapBasemapSelect"), renderer=document.getElementById("mapRendererSelect"), projection=document.getElementById("mapProjectionSelect");
+  const opacity=document.getElementById("mapOpacity"), baseOpacity=document.getElementById("mapBaseOpacity"), fit=document.getElementById("mapFitBtn"), world=document.getElementById("mapWorldBtn"), north=document.getElementById("mapNorthBtn"), save=document.getElementById("mapSavePngBtn");
+  if(base) base.onchange=()=>{ if(!map._exporting) setOlBasemap(map,base.value); };
+  if(renderer) renderer.onchange=()=>{ if(!map._exporting) setMapRenderer(map,renderer.value,true); };
+  if(projection) projection.onchange=()=>{ if(!map._exporting) changeOlProjection(map,projection.value); };
+  if(opacity) opacity.oninput=()=>{ if(map._exporting) return; const value=Number(opacity.value)/100; map._meshLayer.setOpacity(value); saveOlMapPrefs({meshOpacity:value}); syncGlobePaint(map); const out=document.getElementById("mapOpacityValue"); if(out) out.textContent=opacity.value+"%"; };
+  if(baseOpacity) baseOpacity.oninput=()=>{ if(map._exporting) return; const value=Number(baseOpacity.value)/100; map._baseLayer.setOpacity(value); saveOlMapPrefs({baseOpacity:value}); syncGlobePaint(map); const out=document.getElementById("mapBaseOpacityValue"); if(out) out.textContent=baseOpacity.value+"%"; };
+  if(fit) fit.onclick=()=>{ if(!map._exporting) map._globeActive?fitGlobeMap(map,"region",300):fitOlMap(map,"region",300); };
+  if(world) world.onclick=()=>{ if(!map._exporting) map._globeActive?fitGlobeMap(map,"global",300):fitOlMap(map,"global",300,null,null); };
+  if(north) north.onclick=()=>{ if(!map._exporting){ if(map._globeActive) map._globe.easeTo({bearing:0,pitch:0,duration:250}); else map.getView().animate({rotation:0,duration:250}); } };
   if(save) save.onclick=()=>saveOlMapPng(map);
+  const toggles={mapMeshVisible:[map._meshLayer,"mesh"],mapBoundaryVisible:[map._boundaryLayer,"boundary"],mapDomainVisible:[map._domainLayer,"domain"],mapGraticuleVisible:[map._graticule,"graticule"]};
+  Object.entries(toggles).forEach(([id,[layer,key]])=>{ const el=document.getElementById(id); if(el) el.onchange=()=>{ if(map._exporting) return; layer.setVisible(el.checked); saveOlMapPrefs({[key]:el.checked}); setGlobeLayerVisible(map,key,el.checked); if(key==="mesh"&&!el.checked){ map._hitTestToken++; map._inspectToken++; map._cellTooltipElement.hidden=true; showGlobeTooltip(map,{x:0,y:0},null); showOlCellInspector(map,null); } }; });
+  const legend=document.getElementById("mapLegendVisible"); if(legend) legend.onchange=()=>{ if(map._exporting) return; saveOlMapPrefs({legend:legend.checked}); updateOlLegend(map); };
+  const measure=document.getElementById("mapMeasureMode"), clearMeasure=document.getElementById("mapMeasureClearBtn");
+  if(measure) measure.onchange=()=>{ if(!map._exporting) setOlMeasureMode(map,measure.value); };
+  if(clearMeasure) clearMeasure.onclick=()=>{ if(!map._exporting) clearOlMeasurements(map); };
+  const exportSize=document.getElementById("mapExportSize"); if(exportSize) exportSize.onchange=()=>{ if(!map._exporting) saveOlMapPrefs({exportSize:exportSize.value}); };
+  document.querySelectorAll(".map-tool-menu").forEach((menu)=>menu.addEventListener("toggle",()=>{ if(menu.open){ document.querySelectorAll(".map-tool-menu").forEach((other)=>{ if(other!==menu) other.open=false; }); requestAnimationFrame(()=>alignOlToolMenu(menu)); } }));
+  if(!window._olMenuResizeBound){ window._olMenuResizeBound=true; window.addEventListener("resize",()=>{ document.querySelectorAll(".map-tool-menu[open]").forEach(alignOlToolMenu); scheduleMapResize(); }); }
+  syncOlMapTools(map);
   map.on("pointermove",(event)=>{
+    if(map._worldClip&&!ol.extent.containsCoordinate(map.getView().getProjection().getExtent(),event.coordinate)){
+      map._cellTooltipElement.hidden=true; const out=document.getElementById("mapCoordinate"); if(out) out.textContent="—"; return;
+    }
     const ll=ol.proj.transform(event.coordinate,map.getView().getProjection(),"EPSG:4326");
     const lon=((ll[0]+180)%360+360)%360-180;
     const out=document.getElementById("mapCoordinate"); if(out) out.textContent=`${lon.toFixed(4)}°, ${ll[1].toFixed(4)}°`;
+    if(!map._meshLayer.getVisible()){ map._cellTooltipElement.hidden=true; return; }
     if(event.dragging){ map._cellTooltipElement.hidden=true; return; }
+    if(map._measureMode!=="none"){ map._cellTooltipElement.hidden=true; return; }
     const token=++map._hitTestToken;
     map._meshLayer.getFeatures(event.pixel).then((features)=>{
       if(token!==map._hitTestToken) return;
@@ -1104,28 +1591,46 @@ function bindOlMapTools(map){
     map._cellTooltipElement.hidden=true;
     const out=document.getElementById("mapCoordinate"); if(out) out.textContent="—";
   });
+  map.on("singleclick",(event)=>{
+    if(map._measureMode!=="none") return;
+    if(!map._meshLayer.getVisible()){ showOlCellInspector(map,null); return; }
+    if(map._worldClip&&!ol.extent.containsCoordinate(map.getView().getProjection().getExtent(),event.coordinate)){ showOlCellInspector(map,null); return; }
+    const token=++map._inspectToken;
+    map._meshLayer.getFeatures(event.pixel).then((features)=>{ if(token===map._inspectToken) showOlCellInspector(map,features[0]||null); }).catch(()=>{});
+  });
 }
 function ensureOlMap(elId){
   const el=document.getElementById(elId);
   if(!el || !window.ol) return null;
   if(el._olmap) return el._olmap;
+  let projectionChoice=_olMapPrefs.projection||"EPSG:3857";
+  if(projectionChoice==="UTM:AUTO"&&!olAutoUtmAvailable(null)) projectionChoice="EPSG:3857";
+  const projection=resolveOlProjectionChoice(null,projectionChoice), center=olMapFocusLonLat(null);
   const baseLayer=new ol.layer.Tile({zIndex:0});
-  const graticule=new ol.layer.Graticule({zIndex:2,showLabels:true,wrapX:true,strokeStyle:new ol.style.Stroke({color:"rgba(148,163,184,.45)",width:1,lineDash:[3,5]})});
-  const meshSource=new ol.source.Vector({wrapX:true}), domainSource=new ol.source.Vector({wrapX:true}), boundarySource=new ol.source.Vector({wrapX:true});
-  const meshLayer=new ol.layer.VectorImage({source:meshSource,zIndex:10,imageRatio:1.4,style:OL_DEFAULT_MESH_STYLE});
-  const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})});
-  const boundaryLayer=new ol.layer.Vector({source:boundarySource,zIndex:21,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.2,lineDash:[5,3]}),fill:new ol.style.Fill({color:"rgba(250,204,21,.08)"})})});
-  const map=new ol.Map({target:el,layers:[baseLayer,graticule,meshLayer,domainLayer,boundaryLayer],view:new ol.View({projection:"EPSG:3857",center:ol.proj.fromLonLat([113,22]),zoom:4,multiWorld:true,constrainResolution:false})});
+  const graticule=new ol.layer.Graticule({zIndex:2,showLabels:true,wrapX:true,visible:_olMapPrefs.graticule===true,strokeStyle:new ol.style.Stroke({color:"rgba(148,163,184,.45)",width:1,lineDash:[3,5]})});
+  const meshSource=new ol.source.Vector({wrapX:true}), domainSource=new ol.source.Vector({wrapX:true}), boundarySource=new ol.source.Vector({wrapX:true}), measureSource=new ol.source.Vector({wrapX:false});
+  const meshLayer=new ol.layer.VectorImage({source:meshSource,zIndex:10,imageRatio:1.4,visible:_olMapPrefs.mesh!==false,opacity:Number(_olMapPrefs.meshOpacity??1),style:OL_DEFAULT_MESH_STYLE});
+  const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,visible:_olMapPrefs.domain!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})});
+  const boundaryLayer=new ol.layer.Vector({source:boundarySource,zIndex:21,visible:_olMapPrefs.boundary!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.2,lineDash:[5,3]}),fill:new ol.style.Fill({color:"rgba(250,204,21,.08)"})})});
+  const measureLayer=new ol.layer.Vector({source:measureSource,zIndex:30,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.5}),fill:new ol.style.Fill({color:"rgba(250,204,21,.18)"}),image:new ol.style.Circle({radius:5,fill:new ol.style.Fill({color:"#facc15"}),stroke:new ol.style.Stroke({color:"#713f12",width:1})})})});
+  baseLayer.setOpacity(Number(_olMapPrefs.baseOpacity??1));
+  const map=new ol.Map({target:el,layers:[baseLayer,graticule,meshLayer,domainLayer,boundaryLayer,measureLayer],view:new ol.View({projection,center:ol.proj.transform(center,"EPSG:4326",projection),zoom:4,multiWorld:projection==="EPSG:3857"||projection==="EPSG:4326",constrainResolution:false})});
   map._baseLayer=baseLayer; map._graticule=graticule; map._meshLayer=meshLayer; map._meshSource=meshSource;
   map._domainLayer=domainLayer; map._domainSource=domainSource; map._boundaryLayer=boundaryLayer; map._boundarySource=boundarySource;
-  map._geoRefs={}; map._geoProjection={}; map._basemapKey=""; map._hitTestToken=0;
-  const legend=document.createElement("div"); legend.className="cz-legend ol-zone-legend"; legend.hidden=true; map.getViewport().appendChild(legend); map._zoneLegendElement=legend;
+  map._measureLayer=measureLayer; map._measureSource=measureSource; map._measureMode="none"; map._measureInteraction=null;
+  map._geoRefs={}; map._geoProjection={}; map._basemapKey=""; map._basemapSources={}; map._projectionChoice=projectionChoice; map._worldClip=false; map._hitTestToken=0; map._inspectToken=0; map._globeActive=false; map._globe=null; map._globeLoaded=false;
+  const overlayParent=elId==="mapsvgModal"?(document.getElementById("mapStage")||map.getViewport()):map.getViewport();
+  const legend=document.createElement("div"); legend.className="cz-legend ol-zone-legend"; legend.hidden=true; overlayParent.appendChild(legend); map._zoneLegendElement=legend;
   const tooltip=document.createElement("div"); tooltip.className="ol-cell-tooltip"; tooltip.hidden=true;
   map._cellTooltipElement=tooltip; map._cellTooltip=new ol.Overlay({element:tooltip,offset:[10,0],positioning:"center-left",stopEvent:false}); map.addOverlay(map._cellTooltip);
+  const inspector=document.createElement("section"), inspectorHead=document.createElement("div"), inspectorTitle=document.createElement("span"), inspectorClose=document.createElement("button"), inspectorBody=document.createElement("div");
+  inspector.className="ol-cell-inspector"; inspector.hidden=true; inspectorTitle.id=elId+"CellInspectorTitle"; inspector.setAttribute("aria-labelledby",inspectorTitle.id); inspectorHead.className="ol-cell-inspector-head"; inspectorTitle.textContent=lang?"单元详情":"Cell details"; inspectorClose.className="ol-cell-inspector-close"; inspectorClose.type="button"; inspectorClose.textContent="×"; inspectorClose.setAttribute("aria-label",lang?"关闭单元详情":"Close cell details"); inspectorClose.onclick=()=>{inspector.hidden=true;}; inspectorHead.append(inspectorTitle,inspectorClose); inspector.append(inspectorHead,inspectorBody); overlayParent.appendChild(inspector); map._cellInspectorElement=inspector; map._cellInspectorBody=inspectorBody;
+  if(elId==="mapsvgModal"){ const globeTooltip=document.createElement("div"); globeTooltip.className="ol-cell-tooltip globe-cell-tooltip"; globeTooltip.hidden=true; overlayParent.appendChild(globeTooltip); map._globeTooltipElement=globeTooltip; }
   map.addControl(new ol.control.ScaleLine({units:"metric",bar:true,steps:4,text:true,minWidth:110}));
-  setOlBasemap(map,"imagery"); bindOlMapTools(map);
-  if(window.ResizeObserver){ map._resizeObserver=new ResizeObserver(()=>map.updateSize()); map._resizeObserver.observe(el); }
+  setOlBasemap(map,_olMapPrefs.basemap); bindOlMapTools(map);
+  if(window.ResizeObserver){ map._resizeObserver=new ResizeObserver(scheduleMapResize); map._resizeObserver.observe(elId==="mapsvgModal"?(document.getElementById("mapStage")||el):el); }
   el._olmap=map;
+  if(elId==="mapsvgModal"&&_olMapPrefs.renderer==="globe") requestAnimationFrame(()=>setMapRenderer(map,"globe",true));
   return map;
 }
 function waitOlRender(map,timeoutMs=45000){
@@ -1134,6 +1639,36 @@ function waitOlRender(map,timeoutMs=45000){
     map.once("rendercomplete",()=>{clearTimeout(timer);resolve();});
     map.renderSync();
   });
+}
+function setOlExportBusy(map,busy){
+  const tools=document.getElementById("mapTools");
+  if(busy){
+    map._exporting=true;
+    map._exportControlStates=tools?Array.from(tools.querySelectorAll("button,select,input")).map((element)=>[element,element.disabled]):[];
+    map._exportControlStates.forEach(([element])=>{ element.disabled=true; });
+    map._exportInteractionStates=map.getInteractions().getArray().map((interaction)=>[interaction,interaction.getActive()]);
+    map._exportInteractionStates.forEach(([interaction])=>interaction.setActive(false));
+    const handlers=map._globe?["dragPan","scrollZoom","boxZoom","dragRotate","keyboard","doubleClickZoom","touchZoomRotate"].map((name)=>map._globe[name]).filter(Boolean):[];
+    map._globeHandlerStates=handlers.map((handler)=>[handler,handler.isEnabled()]); map._globeHandlerStates.forEach(([handler])=>handler.disable());
+    map._globeControlStates=map._globeContainer?Array.from(map._globeContainer.querySelectorAll(".maplibregl-ctrl button")).map((element)=>[element,element.disabled]):[];
+    map._globeControlStates.forEach(([element])=>{ element.disabled=true; });
+    if(tools) tools.setAttribute("aria-busy","true");
+    return;
+  }
+  (map._exportControlStates||[]).forEach(([element,disabled])=>{ element.disabled=disabled; });
+  (map._exportInteractionStates||[]).forEach(([interaction,active])=>interaction.setActive(active));
+  (map._globeHandlerStates||[]).forEach(([handler,enabled])=>{ if(enabled) handler.enable(); });
+  (map._globeControlStates||[]).forEach(([element,disabled])=>{ element.disabled=disabled; });
+  if(tools) tools.removeAttribute("aria-busy");
+  map._exportControlStates=[]; map._exportInteractionStates=[]; map._globeHandlerStates=[]; map._globeControlStates=[]; map._exporting=false;
+}
+function stampMapCanvas(output,map){
+  const context=output.getContext("2d"),width=output.width,height=output.height,credit=(OL_BASEMAPS[map._basemapKey]||OL_BASEMAPS.none).attribution;
+  context.setTransform(1,0,0,1,0,0); context.globalAlpha=1; context.font="12px sans-serif";
+  const label=credit?`EarthMesh Studio · ${credit}`:"EarthMesh Studio", padding=8, textWidth=context.measureText(label).width;
+  context.fillStyle="rgba(255,255,255,.82)"; context.fillRect(width-textWidth-padding*2,height-27,textWidth+padding*2,27);
+  context.fillStyle="#1f2328"; context.fillText(label,width-textWidth-padding,height-9);
+  return output;
 }
 function composeOlCanvas(map,width,height){
   const output=document.createElement("canvas"); output.width=width; output.height=height;
@@ -1147,21 +1682,57 @@ function composeOlCanvas(map,width,height){
     else context.setTransform((parseFloat(canvas.style.width)||canvas.width)/canvas.width,0,0,(parseFloat(canvas.style.height)||canvas.height)/canvas.height,0,0);
     context.drawImage(canvas,0,0);
   });
-  context.setTransform(1,0,0,1,0,0); context.globalAlpha=1;
-  const credit=(OL_BASEMAPS[map._basemapKey]||OL_BASEMAPS.none).attribution;
-  context.font="12px sans-serif"; const label=credit?`EarthMesh Studio · ${credit}`:"EarthMesh Studio", padding=8, textWidth=context.measureText(label).width;
-  context.fillStyle="rgba(255,255,255,.82)"; context.fillRect(width-textWidth-padding*2,height-27,textWidth+padding*2,27);
-  context.fillStyle="#1f2328"; context.fillText(label,width-textWidth-padding,height-9);
-  return output;
+  return stampMapCanvas(output,map);
+}
+function waitGlobeIdle(globe,timeoutMs=45000){
+  return new Promise((resolve,reject)=>{
+    let done=false; const finish=()=>{ if(done) return; done=true; clearTimeout(timer); globe.off("idle",finish); resolve(); };
+    const timer=setTimeout(()=>{ if(done) return; done=true; globe.off("idle",finish); reject(new Error(lang?"球体瓦片加载超时":"globe tiles timed out")); },timeoutMs);
+    globe.on("idle",finish); globe.triggerRepaint(); if(globe.loaded()&&globe.areTilesLoaded()&&!globe.isMoving()) requestAnimationFrame(()=>requestAnimationFrame(finish));
+  });
+}
+function composeGlobeCanvas(map,width,height,contain=false){
+  const output=document.createElement("canvas"); output.width=width; output.height=height;
+  const context=output.getContext("2d"),source=map._globe.getCanvas(); context.fillStyle=cssVarColor("--bg","#fff"); context.fillRect(0,0,width,height);
+  if(contain){ const scale=Math.min(width/source.width,height/source.height),drawWidth=source.width*scale,drawHeight=source.height*scale; context.drawImage(source,(width-drawWidth)/2,(height-drawHeight)/2,drawWidth,drawHeight); }
+  else context.drawImage(source,0,0,width,height);
+  return stampMapCanvas(output,map);
+}
+async function persistMapPng(blob){
+  const bytes=new Uint8Array(await blob.arrayBuffer());
+  if(window.__TAURI__&&window.__TAURI__.core) return await window.__TAURI__.core.invoke("save_map_png",bytes);
+  const url=URL.createObjectURL(blob),a=document.createElement("a"); a.href=url; a.download="EarthMesh-grid.png"; a.click(); URL.revokeObjectURL(url); return a.download;
+}
+async function saveGlobeMapPng(map){
+  if(map._exporting||!map._globeLoaded) return;
+  const status=document.getElementById("mapExportStatus"),scope=(document.getElementById("mapExportScope")||{}).value||"region";
+  const [width,height]=((document.getElementById("mapExportSize")||{}).value||"1920x1080").split("x").map(Number),globe=map._globe,target=map._globeContainer;
+  const camera={center:globe.getCenter().toArray(),zoom:globe.getZoom(),bearing:globe.getBearing(),pitch:globe.getPitch()},viewRect=target.getBoundingClientRect(),oldWidth=[target.style.getPropertyValue("width"),target.style.getPropertyPriority("width")],oldHeight=[target.style.getPropertyValue("height"),target.style.getPropertyPriority("height")];
+  setOlExportBusy(map,true); if(status) status.textContent=lang?"正在生成 PNG…":"Rendering PNG…";
+  try{
+    if(scope==="view") globe.setPixelRatio(Math.min(width/viewRect.width,height/viewRect.height));
+    else{ target.style.setProperty("width",width+"px","important"); target.style.setProperty("height",height+"px","important"); globe.resize(); if(!fitGlobeMap(map,scope,0)) throw new Error(lang?"没有可导出的网格范围":"no exportable mesh extent"); }
+    await waitGlobeIdle(globe);
+    const blob=await new Promise((resolve)=>composeGlobeCanvas(map,width,height,scope==="view").toBlob(resolve,"image/png")); if(!blob) throw new Error(lang?"PNG 编码失败":"PNG encoding failed");
+    const path=await persistMapPng(blob); if(status) status.textContent=path?(lang?`已保存：${path}`:`Saved: ${path}`):(lang?"已取消保存":"Save cancelled");
+  }catch(error){ if(status) status.textContent=(lang?"导出失败：":"Export failed: ")+error; }
+  finally{
+    if(oldWidth[0]) target.style.setProperty("width",oldWidth[0],oldWidth[1]); else target.style.removeProperty("width");
+    if(oldHeight[0]) target.style.setProperty("height",oldHeight[0],oldHeight[1]); else target.style.removeProperty("height");
+    if(scope==="view") globe.setPixelRatio(undefined); else globe.resize(); globe.jumpTo(camera); setOlExportBusy(map,false);
+    if(map._updatePending){ const pendingFit=!!map._pendingFit; map._updatePending=false; map._pendingFit=false; updateOlMap(map,pendingFit); }
+  }
 }
 async function saveOlMapPng(map){
-  const button=document.getElementById("mapSavePngBtn"), status=document.getElementById("mapExportStatus");
+  if(map._globeActive) return saveGlobeMapPng(map);
+  if(map._exporting) return;
+  const status=document.getElementById("mapExportStatus");
   const scope=(document.getElementById("mapExportScope")||{}).value||"region";
   const [width,height]=((document.getElementById("mapExportSize")||{}).value||"1920x1080").split("x").map(Number);
-  const view=map.getView(), target=map.getTargetElement(), oldSize=(map.getSize()||[1000,700]).slice(), oldCenter=view.getCenter().slice(), oldResolution=view.getResolution(), oldRotation=view.getRotation();
+  const view=map.getView(), target=map.getTargetElement(), oldSize=(map.getSize()||[1000,700]).slice(), oldCenter=view.getCenter().slice(), oldResolution=view.getResolution(), oldRotation=view.getRotation(), oldWorldClip=!!map._worldClip;
   const oldWidth=[target.style.getPropertyValue("width"),target.style.getPropertyPriority("width")], oldHeight=[target.style.getPropertyValue("height"),target.style.getPropertyPriority("height")];
   const viewExtent=scope==="view"?view.calculateExtent(oldSize):null;
-  if(button) button.disabled=true; if(status) status.textContent=lang?"正在生成 PNG…":"Rendering PNG…";
+  setOlExportBusy(map,true); if(status) status.textContent=lang?"正在生成 PNG…":"Rendering PNG…";
   try{
     target.style.setProperty("width",width+"px","important"); target.style.setProperty("height",height+"px","important"); map.updateSize();
     if(scope==="view") view.fit(viewExtent,{size:[width,height],padding:[0,0,0,0]});
@@ -1170,18 +1741,16 @@ async function saveOlMapPng(map){
     const canvas=composeOlCanvas(map,width,height);
     const blob=await new Promise((resolve)=>canvas.toBlob(resolve,"image/png"));
     if(!blob) throw new Error(lang?"PNG 编码失败":"PNG encoding failed");
-    const bytes=new Uint8Array(await blob.arrayBuffer());
-    let path=null;
-    if(window.__TAURI__&&window.__TAURI__.core) path=await window.__TAURI__.core.invoke("save_map_png",bytes);
-    else{ const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="EarthMesh-grid.png";a.click();URL.revokeObjectURL(url);path=a.download; }
+    const path=await persistMapPng(blob);
     if(status) status.textContent=path?(lang?`已保存：${path}`:`Saved: ${path}`):(lang?"已取消保存":"Save cancelled");
   }catch(error){
     if(status) status.textContent=(lang?"导出失败：":"Export failed: ")+error;
   }finally{
     if(oldWidth[0]) target.style.setProperty("width",oldWidth[0],oldWidth[1]); else target.style.removeProperty("width");
     if(oldHeight[0]) target.style.setProperty("height",oldHeight[0],oldHeight[1]); else target.style.removeProperty("height");
-    map.updateSize(); view.setCenter(oldCenter); view.setResolution(oldResolution); view.setRotation(oldRotation); map.renderSync();
-    if(button) button.disabled=false;
+    map.updateSize(); setOlWorldClip(map,oldWorldClip); view.setCenter(oldCenter); view.setResolution(oldResolution); view.setRotation(oldRotation); map.renderSync();
+    setOlExportBusy(map,false);
+    if(map._updatePending){ const pendingFit=!!map._pendingFit; map._updatePending=false; map._pendingFit=false; updateOlMap(map,pendingFit); }
   }
 }
 function clearLog(){const lb=document.getElementById("logbox"); if(lb) lb.textContent="";}
@@ -1255,7 +1824,11 @@ function scheduleMapResize(){
     _mapResizeFrame=0;
     ["mapsvg","mapsvgModal"].forEach((id)=>{
       const el=document.getElementById(id);
-      if(el && el._olmap) el._olmap.updateSize();
+      if(el && el._olmap){
+        const target=id==="mapsvgModal"?(document.getElementById("mapStage")||el):el,rect=target.getBoundingClientRect(),key=`${rect.width}:${rect.height}:${window.devicePixelRatio}`;
+        if(el._olmap._resizeKey===key) return; el._olmap._resizeKey=key;
+        if(el._olmap._globeActive&&el._olmap._globe) el._olmap._globe.resize(); else el._olmap.updateSize();
+      }
     });
   });
 }

@@ -22,6 +22,8 @@ gui-tauri/dist/*
 gui-tauri/dist/vendor/*
 !gui-tauri/dist/vendor/openlayers/
 !gui-tauri/dist/vendor/openlayers/**
+!gui-tauri/dist/vendor/maplibre/
+!gui-tauri/dist/vendor/maplibre/**
 
 # Brainstorming companion working dir
 .superpowers/

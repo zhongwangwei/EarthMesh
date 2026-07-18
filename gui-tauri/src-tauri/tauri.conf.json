@@ -22,10 +22,11 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "connect-src": "ipc: http://ipc.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost https://server.arcgisonline.com",
         "img-src": "'self' asset: http://asset.localhost blob: data: https://server.arcgisonline.com",
         "script-src": "'self'",
-        "style-src": "'self' 'unsafe-inline'"
+        "style-src": "'self' 'unsafe-inline'",
+        "worker-src": "'self'"
       }
     }
   },
