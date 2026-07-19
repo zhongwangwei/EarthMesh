@@ -1,6 +1,13 @@
 use super::*;
 
 impl MethodCDelaunayMesh {
+    pub(crate) fn method_c_repair_candidate_preserves_coverage(
+        coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
+        candidate: &[bool],
+    ) -> bool {
+        coverage.is_none_or(|coverage| coverage.validate(candidate).is_ok())
+    }
+
     fn emit_method_c_selected_faces(
         &self,
         selected: &[bool],
@@ -51,6 +58,23 @@ impl MethodCDelaunayMesh {
         max_mrows: usize,
         project_to_radius: bool,
     ) -> io::Result<Self> {
+        self.spawn_nest_pass_method_c_repairing(
+            selected_faces,
+            child_level,
+            max_mrows,
+            project_to_radius,
+            None,
+        )
+    }
+
+    fn spawn_nest_pass_method_c_repairing(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
+    ) -> io::Result<Self> {
         self.validate_topology()?;
         require_method_c_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
         if child_level <= 1 {
@@ -59,6 +83,9 @@ impl MethodCDelaunayMesh {
                 "Method-C child level must be greater than one",
             ));
         }
+        if let Some(coverage) = coverage {
+            coverage.validate(selected_faces)?;
+        }
 
         let mut selected = selected_faces.to_vec();
         let method_c_m_neighbors = self.method_c_m_neighbors()?;
@@ -66,6 +93,9 @@ impl MethodCDelaunayMesh {
             &mut selected,
             &method_c_m_neighbors,
         )?;
+        if let Some(coverage) = coverage {
+            coverage.validate(&selected)?;
+        }
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
 
         let mut last_repairable_error = None;
@@ -76,6 +106,9 @@ impl MethodCDelaunayMesh {
                 &method_c_m_neighbors,
                 child_level,
             )?;
+            if let Some(coverage) = coverage {
+                coverage.validate(&selected)?;
+            }
             if !attempted_masks.insert(selected.clone()) {
                 return Err(last_repairable_error.unwrap_or_else(|| {
                     io::Error::new(
@@ -104,6 +137,9 @@ impl MethodCDelaunayMesh {
                             child_level,
                             Some(&perimeter),
                         )?
+                        .filter(|(candidate, _)| {
+                            Self::method_c_repair_candidate_preserves_coverage(coverage, candidate)
+                        })
                     } else {
                         None
                     };
@@ -165,23 +201,12 @@ impl MethodCDelaunayMesh {
         project_to_radius: bool,
         coverage: &crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage,
     ) -> io::Result<Self> {
-        self.validate_topology()?;
-        require_method_c_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
-        if child_level <= 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Method-C child level must be greater than one",
-            ));
-        }
-
-        coverage.validate(selected_faces)?;
-        self.ensure_method_c_selected_faces_share_parent_mrlw(selected_faces, child_level)?;
-        self.emit_method_c_selected_faces(
+        self.spawn_nest_pass_method_c_repairing(
             selected_faces,
-            &self.method_c_m_neighbors()?,
             child_level,
             max_mrows,
             project_to_radius,
+            Some(coverage),
         )
     }
 

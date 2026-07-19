@@ -13,6 +13,11 @@ enum MethodCHfieldRad3Footprint {
 }
 
 impl MethodCHfieldDemandCoverage {
+    #[cfg(test)]
+    pub(crate) fn from_anchors(anchors: Vec<(usize, Vec<usize>)>) -> Self {
+        Self { anchors }
+    }
+
     pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
         for (im, faces) in &self.anchors {
             if !faces

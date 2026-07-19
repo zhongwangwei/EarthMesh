@@ -196,6 +196,72 @@ fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
 }
 
 #[test]
+fn preserving_demand_spawn_repairs_a_vertex_only_perimeter_contact() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+    let (contact, selected) = (2..=mesh.nmd)
+        .filter(|&im| neighbors[im].npoly == 6)
+        .find_map(|im| {
+            let mut selected = vec![false; mesh.nwd + 1];
+            for slot in [0, 1, 3, 4] {
+                selected[neighbors[im].iw[slot]] = true;
+            }
+            mesh.method_c_perimeters_from_selected_faces(&selected, &neighbors)
+                .is_err_and(|error| error.to_string().contains("revisited M point"))
+                .then_some((im, selected))
+        })
+        .expect("degree-four perimeter contact fixture");
+    let anchors = neighbors[contact]
+        .iw
+        .iter()
+        .copied()
+        .filter(|&iw| selected[iw])
+        .map(|iw| (contact, vec![iw]))
+        .collect();
+    let coverage = crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage::from_anchors(anchors);
+
+    let refined = mesh
+        .spawn_nest_pass_method_c_preserving_demands(
+            &selected,
+            2,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            true,
+            &coverage,
+        )
+        .expect("growth-only repair must make the preserving-demand perimeter walkable");
+
+    refined
+        .validate_topology()
+        .expect("repaired preserving-demand topology");
+}
+
+#[test]
+fn preserving_demand_spawn_rejects_a_shrink_that_uncovers_an_anchor() {
+    let coverage = crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage::from_anchors(vec![(
+        7,
+        vec![2, 3],
+    )]);
+    let mut candidate = vec![false; 4];
+    assert!(
+        !MethodCDelaunayMesh::method_c_repair_candidate_preserves_coverage(
+            Some(&coverage),
+            &candidate,
+        )
+    );
+    candidate[3] = true;
+    assert!(
+        MethodCDelaunayMesh::method_c_repair_candidate_preserves_coverage(
+            Some(&coverage),
+            &candidate,
+        )
+    );
+    assert!(MethodCDelaunayMesh::method_c_repair_candidate_preserves_coverage(None, &candidate,));
+}
+
+#[test]
 fn method_c_perim_ngr_matches_perimeter_next_point() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
