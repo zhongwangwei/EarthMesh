@@ -1481,3 +1481,101 @@ perimeters.iter().all(|perimeter| perimeter.len() % 3 == 0)
 其收益取决于失败分量所覆盖的需求占比——这是可直接测量的。
 
 Case 9 状态仍为 `INCOMPLETE`。
+
+
+## 29. 按分量退让：Method-C 能合法化 93%，但退让有下游代价（2026-07-31）
+
+### 29.1 动机
+
+`method_c_perimeters_are_triplets` 是全或无判据
+（`perimeters.iter().all(|p| p.len() % 3 == 0)`），一条不合格即整个 pass 失败。而实测
+失败为 `[48, 54, 18, 18, 22]`——**五条中四条合格**。若改为按分量判定，合格分量照常
+materialize、不合格分量整体退选，即可测出 Method-C 还能保住多少变分辨率能力。
+
+### 29.2 改动（默认关闭）
+
+`EARTHMESH_M0_COMPONENT_TRIPLET_DROP` 在 repair 用尽后的兜底出口生效：按 W 面邻接把
+选中集分成连通分量，逐分量单独算周界并判三元组，不合格分量整体退选，报告
+`components / dropped_components / dropped_faces / kept_faces`。退让后若周界仍不合法或
+无面剩余则返回 `None`，调用方照原路径报告原失败。
+
+`earthmesh_mesh` 全部 `159` 个测试在默认（关闭）路径下通过。
+
+### 29.3 结果一：退让比例只有 6.9%
+
+原生 `86400×43200`、NXP=243、`max_level=3`：
+
+```
+component triplet drop components=5 dropped_components=1
+  selected_faces=1181 dropped_faces=82 kept_faces=1098
+```
+
+| | |
+|---|---:|
+| 连通分量 | 5（与周界 `[48,54,18,18,22]` 一一对应） |
+| 退让分量 | **1** |
+| 退让面数 | **82 / 1181 = 6.9%** |
+| 保留面数 | **1098 = 93.1%** |
+
+**Method-C 能合法化 93% 的细化。** 且退让后重算的周界通过三元组检验——「分量间强耦合、
+退一个即崩」的担心未发生。
+
+失败类随之从 `NonTripletPerimeter` 变为
+`h-field aligned demand anchor at M point 26685 is not covered`：退让区的 hard demand
+自然无人覆盖，正是设计中的交接点。
+
+证据：`{D}/run.log`
+
+### 29.4 结果二：两开关同时开，首次走到 pass 3
+
+同时开启分量退让与 §27 的覆盖松弛（后者单独开时 `conceded=0`，因为拓扑先卡住、走不到
+覆盖检查）：
+
+| | 此前 | 本次 |
+|---|---|---|
+| repair 轮数 | 32/64 退出 | **64/64 跑满** |
+| 到达层 | pass 2 | **pass 3** |
+| 失败类 | non-triplet | **跨父边界** |
+
+**这是原生 15″ Case 9 首次走到第三层。** 失败为：
+
+`Current nested grid 3 crosses the parent boundary in Method-C transition at
+W face 517469 (mrlw=1, lon=-71.974, lat=-52.473)`
+
+证据：`{OUT}/run.log`，wall time `4 min 22 s`。
+
+### 29.5 关键后果：退让在下一层暴露代价
+
+失败面的 **`mrlw=1`** 正是机制所在。pass 2 退让的 82 个面停留在 `mrlw=1`，而周边区域
+进入 level 2；pass 3 在 level 2 上构造过渡带时撞上这片低一代的残留。
+
+这与三处代码约束一致：Method-C **只选当代面**（`self.w_faces[iw].mrlw == level`，见
+`method_c_spawn_hfield/mod.rs:832,1188,1237,1288`），因此：
+
+1. **退让不可逆**——退让区落后一代，后续 pass 永远无法再选中它；
+2. **退让清单跨 pass 累积**，且同一 anchor 每 pass 都会被重复报告（需求每 pass 重算），
+   交接契约必须去重；
+3. **退让制造层级跳变**——`project_quality.rs:119` 的
+   `actual_level_jump_gt_one_count == 0` 是硬门之一；本次甚至更早，在 pass 3 的拓扑
+   构造阶段就撞上了。
+
+**因此 NVB 不能是「最后收尾」的后处理**：每层退让后必须在下一个 pass 之前补齐并把
+`mrlw` 提上来，否则下一层的过渡带无法跨越退让区。
+
+### 29.6 弹簧不受影响
+
+`method_c_nest_movable_m_points` 按 `m_metadata[im].ngr != ngr` 过滤，只读**已
+materialize** 的网格；退让分量不进网格，弹簧只是少了可松弛对象，不会得到不一致状态。
+退让后周界已验证为合法三元组，保留分量的过渡带结构完整，`mrow` 判据照常工作。
+影响仅在几何层面：退让区旁的密度梯度改变，弹簧解出的点位不同——是质量问题，非正确性问题。
+
+### 29.7 两条可选路
+
+| | 做法 | 代价 |
+|---|---|---|
+| **A** | 退让后**在同一层**用分级细化补齐，把 `mrlw` 提上来再进下一 pass | 需要 §28.3 的 emitter 外部剖分入口；不动既有约束 |
+| B | 退让区永久冻结在当前层，放宽跨父边界约束使后续 pass 绕开 | 需改 Method-C 过渡带构造逻辑，风险更高 |
+
+倾向 **A**：只加入口，不改 Method-C 既有约束。
+
+两个开关均保持默认关闭；生产语义未变。Case 9 状态仍为 `INCOMPLETE`。
