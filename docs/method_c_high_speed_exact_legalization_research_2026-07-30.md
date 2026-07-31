@@ -1343,11 +1343,11 @@ Case 9 状态仍为 `INCOMPLETE`。
 就能既保住 Method-C 的变分辨率能力，又只在局部启用二分。这是「无法细化时才用 NVB」的
 最小实现形式。
 
-该假设可直接实测： 是全部覆盖约束的唯一汇合点。
+该假设可直接实测：`MethodCHfieldDemandCoverage::validate` 是全部覆盖约束的唯一汇合点。
 
 ### 27.2 改动（默认关闭）
 
--  在 `EARTHMESH_M0_COVERAGE_RELAXATION` 置位时返回 `Ok`，否则行为不变；
+- `validate` 在 `EARTHMESH_M0_COVERAGE_RELAXATION` 置位时返回 `Ok`，否则行为不变；
 - 新增 `uncovered_anchors()`，**不受该开关影响**，因此松弛运行报告的退让集合是精确的；
 - pass 成功返回时打印 `anchors=N conceded=M`。
 
