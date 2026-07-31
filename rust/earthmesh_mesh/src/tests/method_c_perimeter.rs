@@ -196,6 +196,101 @@ fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
 }
 
 #[test]
+fn method_c_concavity_closure_does_not_cross_parent_level() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let region = MethodCRefinementRegion::Circle {
+        center: LonLatDegrees::new(115.0, 25.0),
+        radius_meters: 2_500_000.0,
+        level: 1,
+    };
+    let mesh = mesh
+        .spawn_nest_with_max_mrows(
+            &[region],
+            1,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+        )
+        .expect("mixed-level Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+
+    let (im, parent_mrlw) = (2..=mesh.nmd)
+        .find_map(|im| {
+            let incident = neighbors[im]
+                .iw
+                .iter()
+                .take(neighbors[im].npoly)
+                .copied()
+                .collect::<Vec<_>>();
+            let parent_mrlw = mesh.w_faces[*incident.first()?].mrlw;
+            if !incident
+                .iter()
+                .all(|&iw| mesh.w_faces[iw].mrlw == parent_mrlw)
+            {
+                return None;
+            }
+            let footprint = mesh
+                .method_c_rad3_faces_with_neighbors(im, &neighbors)
+                .ok()?;
+            footprint
+                .iter()
+                .any(|&iw| iw >= 2 && mesh.w_faces[iw].mrlw != parent_mrlw)
+                .then_some((im, parent_mrlw))
+        })
+        .expect("mixed-level mesh must expose a boundary-adjacent concavity");
+
+    let mut selected = vec![false; mesh.nwd + 1];
+    for &iw in neighbors[im].iw.iter().take(neighbors[im].npoly - 1) {
+        selected[iw] = true;
+    }
+    mesh.close_method_c_concavities_for_level_with_neighbors(&mut selected, &neighbors)
+        .expect("level-preserving concavity closure");
+
+    assert!(
+        (2..=mesh.nwd).all(|iw| !selected[iw] || mesh.w_faces[iw].mrlw == parent_mrlw),
+        "concavity closure must not add faces from another parent level"
+    );
+}
+
+#[test]
+fn method_c_concavity_fill_is_not_monotone_over_selected_face_sets() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+
+    let witness = (2..=mesh.nmd).find_map(|im| {
+        let ring = &neighbors[im].iw[..neighbors[im].npoly];
+        let mut smaller = vec![false; mesh.nwd + 1];
+        for &iw in &ring[..ring.len() - 1] {
+            smaller[iw] = true;
+        }
+        let mut larger = smaller.clone();
+        larger[*ring.last()?] = true;
+
+        mesh.close_method_c_concavities_for_level_with_neighbors(&mut smaller, &neighbors)
+            .ok()?;
+        mesh.close_method_c_concavities_for_level_with_neighbors(&mut larger, &neighbors)
+            .ok()?;
+
+        smaller
+            .iter()
+            .zip(&larger)
+            .enumerate()
+            .find_map(|(iw, (&in_smaller, &in_larger))| {
+                (in_smaller && !in_larger).then_some((im, iw))
+            })
+    });
+
+    assert!(
+        witness.is_some(),
+        "Canonical exactly-one-missing concavity fill is intentionally not a monotone set closure"
+    );
+}
+
+#[test]
 fn preserving_demand_spawn_repairs_a_vertex_only_perimeter_contact() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
@@ -236,6 +331,185 @@ fn preserving_demand_spawn_repairs_a_vertex_only_perimeter_contact() {
     refined
         .validate_topology()
         .expect("repaired preserving-demand topology");
+}
+
+#[test]
+fn method_c_perimeter_repair_fills_multiple_vertex_only_contacts() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+    let contacts = (2..=mesh.nmd)
+        .filter(|&im| neighbors[im].npoly == 6)
+        .collect::<Vec<_>>();
+    let (contacts, selected) = contacts
+        .iter()
+        .enumerate()
+        .find_map(|(left_index, &left)| {
+            let left_footprint = mesh
+                .method_c_rad3_faces_with_neighbors(left, &neighbors)
+                .ok()?
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            contacts.iter().skip(left_index + 1).find_map(|&right| {
+                let right_footprint = mesh
+                    .method_c_rad3_faces_with_neighbors(right, &neighbors)
+                    .ok()?
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>();
+                if !left_footprint.is_disjoint(&right_footprint) {
+                    return None;
+                }
+                let mut selected = vec![false; mesh.nwd + 1];
+                for im in [left, right] {
+                    for slot in [0, 1, 3, 4] {
+                        selected[neighbors[im].iw[slot]] = true;
+                    }
+                }
+                mesh.method_c_perimeters_from_selected_faces(&selected, &neighbors)
+                    .is_err_and(|error| error.to_string().contains("revisited M point"))
+                    .then_some(([left, right], selected))
+            })
+        })
+        .expect("two independent degree-four perimeter contacts");
+    let demanded_faces = contacts
+        .into_iter()
+        .flat_map(|im| neighbors[im].iw.iter().copied())
+        .filter(|&iw| selected[iw])
+        .collect::<Vec<_>>();
+    assert!(
+        mesh.method_c_vertex_only_perimeter_contacts(&selected, &neighbors)
+            .expect("classified perimeter contacts")
+            .len()
+            >= 2
+    );
+    let mut repaired = selected;
+    let perimeter = mesh
+        .repair_method_c_non_triplet_perimeter(&mut repaired, &neighbors, 2)
+        .expect("batch repair must make all perimeter contacts walkable");
+
+    assert_eq!(perimeter.len() % 3, 0);
+    assert!(
+        demanded_faces.into_iter().all(|iw| repaired[iw]),
+        "growth-only batch repair must preserve every demanded face"
+    );
+}
+
+#[test]
+fn method_c_boundary_repairs_are_deterministic_across_thread_counts() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+    let region = MethodCRefinementRegion::Circle {
+        center: LonLatDegrees::new(115.0, 25.0),
+        radius_meters: 2_500_000.0,
+        level: 1,
+    };
+    let selected = mesh
+        .selected_region_faces(&region, 1, false)
+        .expect("selected Method-C faces");
+    let perimeter = mesh
+        .method_c_perimeters_from_selected_faces(&selected, &neighbors)
+        .expect("Method-C perimeter")
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let run = |threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("local Rayon pool")
+            .install(|| {
+                Ok::<_, std::io::Error>((
+                    mesh.try_fill_method_c_perimeter_boundary(
+                        &selected,
+                        &neighbors,
+                        2,
+                        Some(&perimeter),
+                        None,
+                        MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                        true,
+                    )?,
+                    mesh.try_shrink_method_c_perimeter_once(
+                        &selected,
+                        &neighbors,
+                        2,
+                        Some(&perimeter),
+                        None,
+                    )?,
+                ))
+            })
+            .expect("boundary repairs")
+    };
+
+    assert_eq!(run(1), run(4));
+}
+
+#[test]
+fn method_c_repair_witness_dependency_faces_cover_parent_u_stencil() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+    let parent_u = 2;
+    let error = crate::method_c_table_helpers::method_c_repairable_error_with_parent_origin(
+        method_c_repairable_error(MethodCRepairableKind::Valence, None, "test witness"),
+        None,
+        Some(parent_u),
+    );
+    let faces = mesh.method_c_repair_witness_dependency_faces(&error, &neighbors);
+
+    assert!(!faces.is_empty());
+    assert!(mesh.u_edges[parent_u]
+        .iw
+        .into_iter()
+        .filter(|&iw| iw > 1)
+        .all(|iw| faces.binary_search(&iw).is_ok()));
+}
+
+#[test]
+fn method_c_shrink_uses_the_best_coverage_preserving_candidate() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let neighbors = mesh
+        .derive_icosahedron_m_neighbors_canonical()
+        .expect("Method-C M neighbors");
+    let region = MethodCRefinementRegion::Circle {
+        center: LonLatDegrees::new(115.0, 25.0),
+        radius_meters: 2_500_000.0,
+        level: 1,
+    };
+    let base_selected = mesh
+        .selected_region_faces(&region, 1, false)
+        .expect("selected Method-C faces");
+    let mut selected = base_selected;
+    selected[120] = true;
+    selected[121] = true;
+    mesh.close_method_c_concavities_with_neighbors(&mut selected, &neighbors)
+        .expect("closed two-protrusion fixture");
+    let (unconstrained, _) = mesh
+        .try_shrink_method_c_perimeter_once(&selected, &neighbors, 2, None, None)
+        .expect("unconstrained shrink")
+        .expect("best shrink candidate");
+    assert!(
+        !unconstrained[121],
+        "the unconstrained best candidate removes face 121"
+    );
+    let coverage = crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage::from_anchors(vec![(
+        2,
+        vec![121],
+    )]);
+    let (preserving, _) = mesh
+        .try_shrink_method_c_perimeter_once(&selected, &neighbors, 2, None, Some(&coverage))
+        .expect("coverage-aware shrink")
+        .expect("a lower-ranked coverage-preserving shrink candidate");
+
+    assert!(preserving[121]);
+    assert_ne!(preserving, unconstrained);
 }
 
 #[test]

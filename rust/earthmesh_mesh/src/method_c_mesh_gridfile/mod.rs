@@ -4,9 +4,13 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MethodCGridfileMetadata<'a> {
+    /// Final triangular M-cell rows, which map to Delaunay W faces.
+    pub m_lineage: Option<&'a [i64]>,
     pub m_refine_level: Option<&'a [i32]>,
     pub m_refine_level_orig: Option<&'a [i32]>,
     pub m_ngr: Option<&'a [i32]>,
+    /// Final polygonal W-cell rows, which map to Delaunay M points.
+    pub w_lineage: Option<&'a [i64]>,
     pub w_refine_level: Option<&'a [i32]>,
     pub w_refine_level_orig: Option<&'a [i32]>,
     pub w_ngr: Option<&'a [i32]>,
@@ -84,6 +88,12 @@ impl MethodCDelaunayMesh {
             ("W ngr", metadata.w_ngr, nmd),
         ] {
             validate_gridfile_metadata(name, values, expected)?;
+        }
+        for (name, values, expected) in [
+            ("M lineage", metadata.m_lineage, nwd),
+            ("W lineage", metadata.w_lineage, nmd),
+        ] {
+            validate_gridfile_lineages(name, values, expected)?;
         }
         if nmd < 2 || nwd < 2 {
             return Err(io::Error::new(
@@ -200,8 +210,86 @@ impl MethodCDelaunayMesh {
                 mesh.m_metadata[row + 1].ngr = ngr as usize;
             }
         }
+        if let Some(lineages) = metadata.m_lineage {
+            mesh.w_lineage = gridfile_lineages_to_method_c("M", lineages, nwd)?;
+            mesh.next_w_lineage = mesh
+                .w_lineage
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(1)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Method-C imported W-face lineage space exhausted",
+                    )
+                })?;
+        }
+        if let Some(lineages) = metadata.w_lineage {
+            mesh.m_lineage = gridfile_lineages_to_method_c("W", lineages, nmd)?;
+            mesh.next_m_lineage = mesh
+                .m_lineage
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(1)
+                .checked_add(1)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Method-C imported M-point lineage space exhausted",
+                    )
+                })?;
+        }
+        mesh.validate_topology()?;
         Ok(mesh)
     }
+}
+
+fn validate_gridfile_lineages(
+    name: &str,
+    values: Option<&[i64]>,
+    expected: usize,
+) -> io::Result<()> {
+    let Some(values) = values else {
+        return Ok(());
+    };
+    require_method_c_len(&format!("Method-C gridfile {name}"), values.len(), expected)?;
+    let mut seen = BTreeSet::new();
+    for (row, &value) in values.iter().enumerate().skip(1) {
+        if value <= 1 || !seen.insert(value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Method-C gridfile {name} at row {} must be a unique lineage greater than one, got {value}",
+                    row + 1
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn gridfile_lineages_to_method_c(
+    role: &str,
+    values: &[i64],
+    active_count: usize,
+) -> io::Result<Vec<usize>> {
+    let mut lineages = vec![0; active_count + 1];
+    lineages[1] = 1;
+    for (row, &value) in values.iter().enumerate().skip(1) {
+        lineages[row + 1] = usize::try_from(value).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Method-C gridfile {role} lineage {value} at row {} exceeds the platform usize range",
+                    row + 1
+                ),
+            )
+        })?;
+    }
+    Ok(lineages)
 }
 
 fn validate_gridfile_metadata(
@@ -324,9 +412,15 @@ mod tests {
             .map(|im| mesh.m_neighbors[im].npoly)
             .collect::<Vec<_>>();
         let mut m_level = vec![0; mesh.nwd];
+        let m_lineage = (0..mesh.nwd)
+            .map(|row| if row == 0 { 1 } else { 10_000 + row as i64 })
+            .collect::<Vec<_>>();
         let mut m_orig = vec![0; mesh.nwd];
         let mut m_ngr = vec![1; mesh.nwd];
         let mut w_level = vec![0; mesh.nmd];
+        let w_lineage = (0..mesh.nmd)
+            .map(|row| if row == 0 { 1 } else { 20_000 + row as i64 })
+            .collect::<Vec<_>>();
         let mut w_orig = vec![0; mesh.nmd];
         let mut w_ngr = vec![1; mesh.nmd];
         m_level[1] = 2;
@@ -341,9 +435,11 @@ mod tests {
             &faces,
             &counts,
             MethodCGridfileMetadata {
+                m_lineage: Some(&m_lineage),
                 m_refine_level: Some(&m_level),
                 m_refine_level_orig: Some(&m_orig),
                 m_ngr: Some(&m_ngr),
+                w_lineage: Some(&w_lineage),
                 w_refine_level: Some(&w_level),
                 w_refine_level_orig: Some(&w_orig),
                 w_ngr: Some(&w_ngr),
@@ -357,5 +453,15 @@ mod tests {
         assert_eq!(rebuilt.m_metadata[2].mrlm, 4);
         assert_eq!(rebuilt.m_metadata[2].mrlm_orig, 2);
         assert_eq!(rebuilt.m_metadata[2].ngr, 8);
+        assert_eq!(
+            rebuilt.gridfile_m_cell_lineages().unwrap(),
+            m_lineage,
+            "tri-cell W-face lineage must survive gridfile rebuild"
+        );
+        assert_eq!(
+            rebuilt.gridfile_w_cell_lineages().unwrap(),
+            w_lineage,
+            "hex-cell M-point lineage must survive gridfile rebuild"
+        );
     }
 }

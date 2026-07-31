@@ -58,6 +58,16 @@ pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
     ] {
         validate_metadata_len(name, values, mesh.w_points.len())?;
     }
+    validate_metadata_len(
+        "earthmesh_m_lineage",
+        metadata.m_lineage,
+        mesh.m_points.len(),
+    )?;
+    validate_metadata_len(
+        "earthmesh_w_lineage",
+        metadata.w_lineage,
+        mesh.w_points.len(),
+    )?;
     let output = output.as_ref();
     crate::ensure_parent_dir(output)?;
 
@@ -151,6 +161,17 @@ pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
             var.put_values(values, ..).map_err(netcdf_to_io_error)?;
         }
     }
+    for (name, dimension, values) in [
+        ("earthmesh_m_lineage", "sjx_points", metadata.m_lineage),
+        ("earthmesh_w_lineage", "lbx_points", metadata.w_lineage),
+    ] {
+        if let Some(values) = values {
+            let mut var = file
+                .add_variable::<i64>(name, &[dimension])
+                .map_err(netcdf_to_io_error)?;
+            var.put_values(values, ..).map_err(netcdf_to_io_error)?;
+        }
+    }
 
     Ok(UnstructuredMeshWriteReport {
         output: output.to_path_buf(),
@@ -160,7 +181,7 @@ pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
     })
 }
 
-fn validate_metadata_len(name: &str, levels: Option<&[i32]>, expected: usize) -> io::Result<()> {
+fn validate_metadata_len<T>(name: &str, levels: Option<&[T]>, expected: usize) -> io::Result<()> {
     let Some(levels) = levels else {
         return Ok(());
     };

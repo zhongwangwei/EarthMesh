@@ -233,11 +233,9 @@ impl ProjectConfig {
 
         // Auto spring smoothing: keep the low-level SpringGlobal/SpringRegional pair
         // mutually exclusive while deriving the Method-C-compatible choice from grid/domain.
-        if mkgrd.mode_grid != "tri" {
-            refine.is_transition = true;
-            refine.spring_global_type = if mkgrd.mask_domain_global { 1 } else { 0 };
-            refine.spring_regional_type = if mkgrd.mask_domain_global { 0 } else { 1 };
-        }
+        refine.is_transition = true;
+        refine.spring_global_type = if mkgrd.mask_domain_global { 1 } else { 0 };
+        refine.spring_regional_type = if mkgrd.mask_domain_global { 0 } else { 1 };
 
         // Expert overrides win last.
         if let Some(n) = self.expert.nxp {

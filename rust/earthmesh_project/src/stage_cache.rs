@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +16,22 @@ pub fn content_addressed_stage_key(stage: &str, parts: &[(&str, &[u8])]) -> Stri
         hash_part(&mut hash, name, bytes);
     }
     hex(&hash.finalize())
+}
+
+/// Stream a stable SHA-256 digest of a file without embedding its path or
+/// loading a potentially large gridfile into memory.
+pub fn file_content_hash(path: impl AsRef<Path>) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(hex(&hash.finalize()))
 }
 
 fn hash_part(hash: &mut Sha256, name: &str, bytes: &[u8]) {
@@ -120,6 +136,27 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_eq!(a.len(), 64);
+    }
+
+    #[test]
+    fn file_hash_is_content_only_and_streamed() {
+        let root = temp_root("file_hash");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.bin");
+        let second = root.join("moved.bin");
+        fs::write(&first, b"same bytes").unwrap();
+        fs::write(&second, b"same bytes").unwrap();
+        assert_eq!(
+            file_content_hash(&first).unwrap(),
+            file_content_hash(&second).unwrap()
+        );
+        fs::write(&second, b"changed bytes").unwrap();
+        assert_ne!(
+            file_content_hash(&first).unwrap(),
+            file_content_hash(&second).unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::{
     criterion_catalog, threshold_criterion_by_id, CoupledMeshConfig, DomainConfig, ExpertOverrides,
-    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ModelFormat,
-    ProjectConfig, ProjectDataLayer, ProjectLayerRole, QualityConfig, RefinementRecipe,
+    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ProjectConfig,
+    ProjectDataLayer, ProjectLayerRole, ProjectTargetTriple, QualityConfig, RefinementRecipe,
     RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
     SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ThresholdStatistic,
     LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
@@ -575,24 +575,10 @@ impl MeshTargetConfig {
             }
             _ => Ok(()),
         }?;
-        match (self.kind, self.model_format) {
-            (
-                MeshDomainKind::Land | MeshDomainKind::Earth | MeshDomainKind::Coupled,
-                ModelFormat::CoLM,
-            )
-            | (MeshDomainKind::Ocean, ModelFormat::Fvcom)
-            | (MeshDomainKind::Atmosphere, ModelFormat::Mpas | ModelFormat::MpasSimple) => Ok(()),
-            (MeshDomainKind::Land, _) => Err("land target model_format must be CoLM".to_string()),
-            (MeshDomainKind::Earth, _) => Err("earth target model_format must be CoLM".to_string()),
-            (MeshDomainKind::Coupled, _) => {
-                Err("coupled target model_format must be CoLM".to_string())
-            }
-            (MeshDomainKind::Ocean, _) => {
-                Err("ocean target model_format must be FVCOM".to_string())
-            }
-            (MeshDomainKind::Atmosphere, _) => {
-                Err("atmosphere target model_format must be MPAS or MPAS-Simple".to_string())
-            }
+        if let Some(reason) = ProjectTargetTriple::from(self).rejection_reason() {
+            Err(reason.message().to_string())
+        } else {
+            Ok(())
         }
     }
 }

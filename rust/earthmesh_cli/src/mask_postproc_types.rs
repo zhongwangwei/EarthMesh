@@ -87,6 +87,7 @@ pub struct MaskPostprocOceanRenewalReport {
     pub renewed: MaskPostprocRenewedData,
     pub boundary: Option<BoundaryConnection>,
     pub isolated: Option<IsolatedOceanRenewal>,
+    pub excluded_unsupported_hard_demand_cells: Vec<usize>,
 }
 
 /// File-level I/O contract for the domain branches of

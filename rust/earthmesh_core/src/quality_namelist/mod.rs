@@ -5,10 +5,11 @@ use crate::{
 
 /// Quality-gate thresholds + on-violation policy, carried in an optional
 /// `&quality` namelist block. **Purely additive**: the existing `&mkgrd` /
-/// `&mkrefine` parsers ignore this block, and nothing in mesh generation reads
-/// it — the CLI/GUI map it to `earthmesh_quality::QualityThresholds` and a
-/// Warn/Block policy when judging a finished mesh. Absent block ⇒ `default()`,
-/// which mirrors `earthmesh_quality::QualityThresholds::default()`.
+/// `&mkrefine` parsers ignore this block. The spherical H-field path may use
+/// its shape limits to bound and roll back transition smoothing; the CLI/GUI
+/// still apply the same values as the authoritative finished-mesh gates.
+/// Absent block ⇒ `default()`, which mirrors
+/// `earthmesh_quality::QualityThresholds::default()`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QualityNamelist {
     pub min_angle_warn_deg: f64,
@@ -17,7 +18,11 @@ pub struct QualityNamelist {
     pub aspect_ratio_warn: f64,
     pub aspect_ratio_fail: f64,
     pub cell_edge_cv_warn: f64,
+    /// Backward-compatible threshold for raw global area CV when refinement
+    /// level metadata is unavailable.
     pub area_cv_warn: f64,
+    /// Threshold for level-normalized area CV on variable-resolution meshes.
+    pub normalized_area_cv_warn: f64,
     pub max_adjacent_resolution_ratio_warn: f64,
     pub worst_cells_limit: i32,
     pub repair_batch_limit: i32,
@@ -36,6 +41,7 @@ impl Default for QualityNamelist {
             aspect_ratio_fail: 10.0,
             cell_edge_cv_warn: 0.35,
             area_cv_warn: 1.5,
+            normalized_area_cv_warn: 0.5,
             max_adjacent_resolution_ratio_warn: 2.0,
             worst_cells_limit: 50,
             repair_batch_limit: 1,
@@ -64,6 +70,9 @@ impl QualityNamelist {
                 "aspect_ratio_fail" => config.aspect_ratio_fail = parse_f64(field, value)?,
                 "cell_edge_cv_warn" => config.cell_edge_cv_warn = parse_f64(field, value)?,
                 "area_cv_warn" => config.area_cv_warn = parse_f64(field, value)?,
+                "normalized_area_cv_warn" => {
+                    config.normalized_area_cv_warn = parse_f64(field, value)?
+                }
                 "max_adjacent_resolution_ratio_warn" => {
                     config.max_adjacent_resolution_ratio_warn = parse_f64(field, value)?
                 }
@@ -88,6 +97,7 @@ impl QualityNamelist {
             ("aspect_ratio_fail", self.aspect_ratio_fail),
             ("cell_edge_cv_warn", self.cell_edge_cv_warn),
             ("area_cv_warn", self.area_cv_warn),
+            ("normalized_area_cv_warn", self.normalized_area_cv_warn),
             (
                 "max_adjacent_resolution_ratio_warn",
                 self.max_adjacent_resolution_ratio_warn,
@@ -117,7 +127,10 @@ impl QualityNamelist {
         if self.aspect_ratio_warn > self.aspect_ratio_fail {
             return Err("quality aspect_ratio_warn must not exceed aspect_ratio_fail".to_string());
         }
-        if self.cell_edge_cv_warn < 0.0 || self.area_cv_warn < 0.0 {
+        if self.cell_edge_cv_warn < 0.0
+            || self.area_cv_warn < 0.0
+            || self.normalized_area_cv_warn < 0.0
+        {
             return Err("quality coefficient-of-variation thresholds must be non-negative".into());
         }
         if self.max_adjacent_resolution_ratio_warn < 1.0 {
@@ -170,6 +183,10 @@ impl QualityNamelist {
             self.cell_edge_cv_warn
         ));
         out.push_str(&format!("  NL%area_cv_warn = {}\n", self.area_cv_warn));
+        out.push_str(&format!(
+            "  NL%normalized_area_cv_warn = {}\n",
+            self.normalized_area_cv_warn
+        ));
         out.push_str(&format!(
             "  NL%max_adjacent_resolution_ratio_warn = {}\n",
             self.max_adjacent_resolution_ratio_warn

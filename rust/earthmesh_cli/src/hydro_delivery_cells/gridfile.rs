@@ -6,14 +6,113 @@ use crate::{
 };
 
 use super::geometry::{
-    cell_exceeds_supported_arc, order_around_spherical_center, ring_intersects_directed_bbox,
-    unwrap_ring_lon,
+    cell_has_unsupported_edge_arc, order_around_spherical_center, ring_intersects_directed_bbox,
+    split_ring_at_antimeridian,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GridfileCellExportReport {
     pub emitted_cells: usize,
     pub rejected_unsupported_cells: usize,
+}
+
+fn polygon_geometry(ring: &[(f64, f64)]) -> String {
+    let coords = ring
+        .iter()
+        .map(|(x, y)| format!("[{x}, {y}]"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{\"type\": \"Polygon\", \"coordinates\": [[{coords}]]}}")
+}
+
+fn seam_safe_polygon_geometry(corners: &[(f64, f64)], center_lon: f64) -> Option<String> {
+    let rings = split_ring_at_antimeridian(corners, center_lon);
+    if rings.len() == 1 {
+        return Some(polygon_geometry(&rings[0]));
+    }
+    if rings.is_empty() {
+        return None;
+    }
+    let polygons = rings
+        .iter()
+        .map(|ring| {
+            let coordinates = ring
+                .iter()
+                .map(|(lon, lat)| format!("[{lon}, {lat}]"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[[{coordinates}]]")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "{{\"type\": \"MultiPolygon\", \"coordinates\": [{polygons}]}}"
+    ))
+}
+
+fn polar_cap_geometry(corners: &[(f64, f64)], pole_lat: f64) -> String {
+    let mut sorted = corners.to_vec();
+    sorted.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let first = sorted[0];
+    let last = sorted[sorted.len() - 1];
+    let wrapped_first = (first.0 + 360.0, first.1);
+    let span = wrapped_first.0 - last.0;
+    let crossing_lat = last.1 + (wrapped_first.1 - last.1) * ((180.0 - last.0) / span);
+
+    // GeoJSON is planar, so express the spherical polar cell as one simple
+    // cap ring bounded by both sides of the antimeridian. Splitting it into
+    // adjacent MultiPolygon wedges makes the members share complete meridian
+    // edges, which strict OGC/GEOS consumers correctly reject as invalid.
+    let mut ring = sorted;
+    if last.0 < 180.0 {
+        ring.push((180.0, crossing_lat));
+    }
+    ring.push((180.0, pole_lat));
+    ring.push((-180.0, pole_lat));
+    if first.0 > -180.0 {
+        ring.push((-180.0, crossing_lat));
+    }
+    ring.push(first);
+
+    polygon_geometry(&ring)
+}
+
+fn enclosing_pole_lat(corners: &[(f64, f64)], center_lat: f64) -> Option<f64> {
+    let longitude_winding = corners
+        .iter()
+        .zip(corners.iter().cycle().skip(1))
+        .take(corners.len())
+        .map(|(left, right)| ((right.0 - left.0 + 180.0).rem_euclid(360.0)) - 180.0)
+        .sum::<f64>();
+    (longitude_winding.abs() > 180.0).then_some(if center_lat >= 0.0 { 90.0 } else { -90.0 })
+}
+
+fn polar_cap_intersects_directed_bbox(
+    corners: &[(f64, f64)],
+    pole_lat: f64,
+    bbox: Option<[f64; 4]>,
+) -> bool {
+    let Some([_, south, _, north]) = bbox else {
+        return true;
+    };
+    let (cap_south, cap_north) = if pole_lat > 0.0 {
+        (
+            corners
+                .iter()
+                .map(|corner| corner.1)
+                .fold(f64::INFINITY, f64::min),
+            pole_lat,
+        )
+    } else {
+        (
+            pole_lat,
+            corners
+                .iter()
+                .map(|corner| corner.1)
+                .fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+    cap_south <= north && cap_north >= south
 }
 
 pub fn gridfile_cell_polygons_geojson(
@@ -35,27 +134,18 @@ pub fn gridfile_cell_polygons_geojson_with_report(
     let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
-    let make_feature = |_idx: usize,
-                        canonical_id: i32,
-                        ring: &[(f64, f64)],
+    let make_feature = |canonical_id: i32,
+                        geometry: String,
                         clon: f64,
-                        clat: f64|
+                        clat: f64,
+                        refine_level: i32|
      -> String {
-        let coords = ring
-            .iter()
-            .map(|(x, y)| format!("[{x}, {y}]"))
-            .collect::<Vec<_>>()
-            .join(", ");
         format!(
-            "    {{\"type\": \"Feature\", \"geometry\": {{\"type\": \"Polygon\", \"coordinates\": [[{}]]}}, \
-             \"properties\": {{\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
-             \"center_lon\": {}, \"center_lat\": {}}}}}",
-            coords,
-            canonical_id,
-            canonical_id,
-            clon,
-            clat
-        )
+                "    {{\"type\": \"Feature\", \"geometry\": {}, \
+                 \"properties\": {{\"cell_id\": \"{}\", \"cell_index\": {}, \"grid_kind\": \"earthmesh_cell\", \
+                 \"center_lon\": {}, \"center_lat\": {}, \"refine_level\": {}}}}}",
+                geometry, canonical_id, canonical_id, clon, clat, refine_level
+            )
     };
 
     let mut features: Vec<String> = Vec::new();
@@ -87,23 +177,40 @@ pub fn gridfile_cell_polygons_geojson_with_report(
                     let cy = idx.iter().map(|&i| mesh.w_lat[i]).sum::<f64>() / 3.0;
                     (cx, cy)
                 };
-                let mut ring: Vec<(f64, f64)> = idx
+                let ring: Vec<(f64, f64)> = idx
                     .iter()
                     .map(|&i| (norm_lon(mesh.w_lon[i]), mesh.w_lat[i]))
                     .collect();
-                if !ring_intersects_directed_bbox(&ring, bbox) {
+                let pole_lat = enclosing_pole_lat(&ring, clat);
+                let intersects_bbox = pole_lat.map_or_else(
+                    || ring_intersects_directed_bbox(&ring, bbox),
+                    |pole_lat| polar_cap_intersects_directed_bbox(&ring, pole_lat, bbox),
+                );
+                if !intersects_bbox {
                     continue;
                 }
-                if cell_exceeds_supported_arc(&ring, clon, clat, 120.0) {
+                if cell_has_unsupported_edge_arc(&ring, 120.0) {
                     rejected_unsupported_cells += 1;
                     continue;
                 }
-                unwrap_ring_lon(&mut ring, clon);
-                ring.push(ring[0]);
+                let geometry = if let Some(pole_lat) = pole_lat {
+                    polar_cap_geometry(&ring, pole_lat)
+                } else {
+                    let Some(geometry) = seam_safe_polygon_geometry(&ring, clon) else {
+                        continue;
+                    };
+                    geometry
+                };
                 let Some(canonical_id) = m_layout.canonical_id_for_physical_row(ci) else {
                     continue;
                 };
-                features.push(make_feature(ci, canonical_id, &ring, clon, clat));
+                features.push(make_feature(
+                    canonical_id,
+                    geometry,
+                    clon,
+                    clat,
+                    mesh.m_refine_level.get(ci).copied().unwrap_or(0),
+                ));
                 if max_cells.is_some_and(|mc| features.len() >= mc) {
                     break;
                 }
@@ -160,24 +267,40 @@ pub fn gridfile_cell_polygons_geojson_with_report(
                     if corners.len() < 3 {
                         continue;
                     }
-                    if !ring_intersects_directed_bbox(&corners, bbox) {
+                    let corners = order_around_spherical_center(corners, clon, clat);
+                    if corners.len() < 3 {
                         continue;
                     }
-                    if cell_exceeds_supported_arc(&corners, clon, clat, 120.0) {
+                    let pole_lat = enclosing_pole_lat(&corners, clat);
+                    let intersects_bbox = pole_lat.map_or_else(
+                        || ring_intersects_directed_bbox(&corners, bbox),
+                        |pole_lat| polar_cap_intersects_directed_bbox(&corners, pole_lat, bbox),
+                    );
+                    if !intersects_bbox {
+                        continue;
+                    }
+                    if cell_has_unsupported_edge_arc(&corners, 120.0) {
                         rejected_unsupported_cells += 1;
                         continue;
                     }
-                    let mut corners = order_around_spherical_center(corners, clon, clat);
-                    unwrap_ring_lon(&mut corners, clon);
-                    let mut ring = corners;
-                    if ring.len() < 3 {
-                        continue;
-                    }
-                    ring.push(ring[0]);
+                    let geometry = if let Some(pole_lat) = pole_lat {
+                        polar_cap_geometry(&corners, pole_lat)
+                    } else {
+                        let Some(geometry) = seam_safe_polygon_geometry(&corners, clon) else {
+                            continue;
+                        };
+                        geometry
+                    };
                     let Some(canonical_id) = w_layout.canonical_id_for_physical_row(wi) else {
                         continue;
                     };
-                    features.push(make_feature(wi, canonical_id, &ring, clon, clat));
+                    features.push(make_feature(
+                        canonical_id,
+                        geometry,
+                        clon,
+                        clat,
+                        mesh.w_refine_level.get(wi).copied().unwrap_or(0),
+                    ));
                     if max_cells.is_some_and(|mc| features.len() >= mc) {
                         break;
                     }

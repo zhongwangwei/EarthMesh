@@ -28,7 +28,7 @@ pub enum GridRegion {
 }
 
 impl GridRegion {
-    pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
+    pub fn contains(&self, lon: f64, lat: f64) -> bool {
         let norm = normalize_lon_degrees;
         match self {
             GridRegion::Bbox {

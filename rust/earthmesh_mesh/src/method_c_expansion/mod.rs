@@ -1,6 +1,47 @@
 use super::*;
 
 impl MethodCDelaunayMesh {
+    fn with_global_expansion_lineages(&self, mut expanded: Self) -> io::Result<Self> {
+        require_method_c_len(
+            "Method-C expansion source M lineage",
+            self.m_lineage.len(),
+            self.nmd + 1,
+        )?;
+        require_method_c_len(
+            "Method-C expansion source W lineage",
+            self.w_lineage.len(),
+            self.nwd + 1,
+        )?;
+
+        expanded.m_lineage = vec![0; expanded.nmd + 1];
+        expanded.m_lineage[1] = 1;
+        expanded.m_lineage[2..=self.nmd].copy_from_slice(&self.m_lineage[2..=self.nmd]);
+        expanded.next_m_lineage = self.next_m_lineage;
+        for lineage in expanded.m_lineage.iter_mut().skip(self.nmd + 1) {
+            *lineage = expanded.next_m_lineage;
+            expanded.next_m_lineage = expanded.next_m_lineage.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Method-C M-point lineage space exhausted during global expansion",
+                )
+            })?;
+        }
+
+        expanded.w_lineage = vec![0; expanded.nwd + 1];
+        expanded.w_lineage[1] = 1;
+        expanded.next_w_lineage = self.next_w_lineage;
+        for lineage in expanded.w_lineage.iter_mut().skip(2) {
+            *lineage = expanded.next_w_lineage;
+            expanded.next_w_lineage = expanded.next_w_lineage.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Method-C W-face lineage space exhausted during global expansion",
+                )
+            })?;
+        }
+        Ok(expanded)
+    }
+
     /// Port of Method-C `expand_global2`: insert one M point on every active
     /// Delaunay edge and subdivide every triangular W face into four children.
     ///
@@ -44,7 +85,13 @@ impl MethodCDelaunayMesh {
             child_faces.push(MethodCTriangleSeed::new([ab, bc, ca], metadata).with_mrow(face.mrow));
         }
 
-        method_c_mesh_from_triangle_seeds(m_points.len() - 1, self.impent, m_points, &child_faces)
+        let expanded = method_c_mesh_from_triangle_seeds(
+            m_points.len() - 1,
+            self.impent,
+            m_points,
+            &child_faces,
+        )?;
+        self.with_global_expansion_lineages(expanded)
     }
 
     /// Apply Method-C global expansion factors in the same 3-first, then 2-second
@@ -156,6 +203,12 @@ impl MethodCDelaunayMesh {
             );
         }
 
-        method_c_mesh_from_triangle_seeds(m_points.len() - 1, self.impent, m_points, &child_faces)
+        let expanded = method_c_mesh_from_triangle_seeds(
+            m_points.len() - 1,
+            self.impent,
+            m_points,
+            &child_faces,
+        )?;
+        self.with_global_expansion_lineages(expanded)
     }
 }

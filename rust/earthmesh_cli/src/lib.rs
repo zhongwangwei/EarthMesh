@@ -31,8 +31,8 @@ pub(crate) use unstructured_mesh_support::{
     validate_unstructured_mesh, GridfileRowLayout,
 };
 use unstructured_mesh_support::{
-    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileMetadataSlices,
-    UnstructuredMesh, UnstructuredMeshWriteReport,
+    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
+    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 pub mod merit_tile_selection;
 use merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
@@ -93,7 +93,6 @@ use hydro_delivery_coupling_quality::{
     write_colm_coupling_csv_from_mesh_with_options, write_coupling_quality_from_gridfile,
     CouplingCsvOptions,
 };
-use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
 pub(crate) use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
 pub mod colm_types;
 use colm_types::{
@@ -302,10 +301,9 @@ use mask_postproc_atmos::{
     write_mask_postproc_atmos_mpas_netcdf, write_mask_postproc_atmos_mpas_simple_netcdf,
 };
 pub mod mask_postproc_ocean;
-use mask_postproc_ocean::{
-    apply_ocean_mask_sea_ratio_one_based, renew_mask_postproc_ocean_domain_one_based,
-};
+use mask_postproc_ocean::apply_ocean_mask_sea_ratio_one_based;
 pub mod mask_postproc_patchtypes;
+pub mod masked_topology_cleanup;
 use mask_postproc_patchtypes::{
     build_earth_patchtypes_one_based, build_land_patchtypes_one_based,
     write_mask_postproc_earth_info_netcdf, write_mask_postproc_patchtype_netcdf,
@@ -319,7 +317,7 @@ use mask_postproc_layout::{
 pub mod mask_postproc_domain;
 use mask_postproc_domain::{
     plan_mask_postproc_domain_io, run_mask_postproc_earth_domain, run_mask_postproc_land_domain,
-    run_mask_postproc_ocean_domain,
+    run_mask_postproc_ocean_domain, run_mask_postproc_ocean_domain_with_hard_demand,
 };
 pub mod mesh_metric_writers;
 use mesh_metric_writers::{
@@ -365,8 +363,8 @@ use gridfile_output_writers::{
 pub mod mpas_gridfile_writers;
 pub mod regional_gridfile_writers;
 use regional_gridfile_writers::{
-    write_clean_regional_ocean_gridfile, write_fvcom_2dm_from_carved,
-    write_landtype_masked_gridfile, write_landtype_masked_gridfile_with_refine_levels,
+    write_clean_regional_ocean_gridfile, write_clean_regional_ocean_gridfile_with_hard_demand,
+    write_fvcom_2dm_from_carved, write_landtype_masked_gridfile,
     write_regional_gridfile_with_refine_levels,
 };
 pub mod mask_counts;
@@ -386,7 +384,7 @@ mod grid_quality_global;
 mod grid_quality_inputs;
 pub mod grid_quality_pipeline;
 pub(crate) use grid_quality_pipeline::{
-    get_edge_from_unstructured_mesh, read_gridfile_mesh_points,
+    get_edge_from_unstructured_mesh, read_gridfile_cell_lineages, read_gridfile_mesh_points,
 };
 mod springjustment_gridfile_adapters;
 pub mod workspace_apply;
@@ -445,7 +443,19 @@ mod hfield_refine;
 pub use hfield_refine::{
     build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
 };
+mod m1_topology_frozen;
+mod native_landcover_refine;
 mod refine_pipeline;
+mod source_demand_artifact;
 pub use refine_pipeline::run_refine_pipeline_namelist;
+#[doc(hidden)]
+pub use source_demand_artifact::{
+    persist_hfield_source_demand_for_gridfile, prepare_auto_refine_demand_epoch,
+    publish_accepted_auto_refine_demand_epoch, publish_accepted_gradation_retry_demand,
+    AutoRefineDemandEpochError, PreparedAutoRefineDemandEpoch,
+};
 pub mod mkgrd_top_level_dispatch;
 use mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist;
+
+#[cfg(test)]
+mod p2_primal_refine_research;

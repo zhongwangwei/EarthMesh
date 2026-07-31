@@ -31,7 +31,6 @@ pub fn renew_mask_postproc_domain_triangles_one_based(
             "vertex neighbor tables and count arrays must have matching Canonical-indexed lengths",
         ));
     }
-
     let ustr_points = is_in_domain.len() - 1;
     let ustr_bounds = vertex_neighbors.len().saturating_sub(1);
     let mut solid_boundary_vertex_tally = vec![3usize; is_in_domain.len()];

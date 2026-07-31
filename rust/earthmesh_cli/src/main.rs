@@ -26,7 +26,25 @@ fn main() -> ExitCode {
         argv.get(1).map(String::as_str),
         None | Some("-h") | Some("--help") | Some("-V") | Some("--version")
     );
+    if !is_informational {
+        let last_progress = std::cell::RefCell::new((String::new(), usize::MAX));
+        earthmesh_core::progress::set(move |phase, done, total| {
+            let bucket = done.saturating_mul(20).checked_div(total).unwrap_or(20);
+            let mut last = last_progress.borrow_mut();
+            if last.0 != phase {
+                last.0.clear();
+                last.0.push_str(phase);
+                last.1 = usize::MAX;
+            }
+            if last.1 != bucket || done == total {
+                eprintln!("earthmesh_cli: progress {phase} {done}/{total}");
+                last.1 = bucket;
+            }
+            true
+        });
+    }
     let result = run_cli_command();
+    earthmesh_core::progress::clear();
     if !is_informational {
         write_cli_run_manifest(&argv, started, &result);
     }

@@ -9,6 +9,7 @@ impl MethodCDelaunayMesh {
         m_neighbors: &[IcosahedronMPointNeighbors],
         child_level: usize,
         perimeter: Option<&[MethodCPerimeterPoint]>,
+        coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
     ) -> io::Result<Option<(Vec<bool>, Vec<MethodCPerimeterPoint>)>> {
         let parent_mrlw = selected
             .iter()
@@ -58,6 +59,9 @@ impl MethodCDelaunayMesh {
             let mut trial = selected.to_vec();
             trial[candidate] = true;
             self.close_method_c_concavities_for_level_with_neighbors(&mut trial, m_neighbors)?;
+            if !Self::method_c_repair_candidate_preserves_coverage(coverage, &trial) {
+                continue;
+            }
             if self
                 .ensure_method_c_selected_faces_share_parent_mrlw(&trial, child_level)
                 .is_err()

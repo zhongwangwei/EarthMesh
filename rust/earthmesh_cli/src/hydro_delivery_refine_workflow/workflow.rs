@@ -1,7 +1,9 @@
-use crate::hydro_delivery_intersections::write_disjoint_earthmesh_intersection_geojson;
+use crate::hydro_delivery_intersections::{
+    write_disjoint_earthmesh_intersection_geojson_with_domain,
+    write_earthmesh_intersection_geojson_with_domain, HydroDomainComponent,
+};
 use crate::write_colm_coupling_csv_from_intersections;
 use crate::write_coupling_quality_from_gridfile;
-use crate::write_earthmesh_intersection_geojson;
 use crate::HydroWorkflowReport;
 use crate::{
     geojson_feature_nodes, json_escape_string, read_text_maybe_gzip, JsonNode, JsonParser,
@@ -63,6 +65,13 @@ pub fn run_hydro_workflow(
     landtype: Option<&Path>,
     gridnum_perdegree: usize,
 ) -> io::Result<HydroWorkflowReport> {
+    let domain = domain.map(|rings| {
+        rings
+            .iter()
+            .cloned()
+            .map(HydroDomainComponent::shell)
+            .collect::<Vec<_>>()
+    });
     run_hydro_workflow_with_overlap(
         cells_geojson,
         corridors_geojson,
@@ -70,7 +79,7 @@ pub fn run_hydro_workflow(
         include_classes,
         min_fraction,
         unit_sphere_area,
-        domain,
+        domain.as_deref(),
         max_level,
         max_refined_cells,
         mesh,
@@ -93,7 +102,7 @@ pub(crate) fn run_project_hydro_workflow(
     include_classes: &[String],
     min_fraction: f64,
     unit_sphere_area: bool,
-    domain: Option<&[Vec<(f64, f64)>]>,
+    domain: Option<&[HydroDomainComponent]>,
     max_level: u8,
     max_refined_cells: Option<usize>,
     mesh: Option<&Path>,
@@ -130,7 +139,7 @@ fn run_hydro_workflow_with_overlap(
     include_classes: &[String],
     min_fraction: f64,
     unit_sphere_area: bool,
-    domain: Option<&[Vec<(f64, f64)>]>,
+    domain: Option<&[HydroDomainComponent]>,
     max_level: u8,
     max_refined_cells: Option<usize>,
     mesh: Option<&Path>,
@@ -148,7 +157,7 @@ fn run_hydro_workflow_with_overlap(
     let manifest_path = out_dir.join("workflow_manifest.json");
 
     let intersection_cells = if same_class_overlap_possible {
-        write_earthmesh_intersection_geojson(
+        write_earthmesh_intersection_geojson_with_domain(
             cells_geojson,
             corridors_geojson,
             &intersections_path,
@@ -158,7 +167,7 @@ fn run_hydro_workflow_with_overlap(
             domain,
         )?
     } else {
-        write_disjoint_earthmesh_intersection_geojson(
+        write_disjoint_earthmesh_intersection_geojson_with_domain(
             cells_geojson,
             corridors_geojson,
             &intersections_path,

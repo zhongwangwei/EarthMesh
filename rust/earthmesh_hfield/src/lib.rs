@@ -23,6 +23,13 @@
 use std::f64::consts::{PI, SQRT_2};
 use std::io;
 
+mod demand_snapshot;
+pub use demand_snapshot::{
+    DemandComponent, DemandEpoch, DemandEpochChain, DemandHash, DemandSnapshotError, DemandSource,
+    DemandSourceKind, DemandStrength, DemandSupport, DemandSupportKind, SourceDemandSnapshot,
+    SOURCE_DEMAND_SNAPSHOT_SCHEMA_VERSION,
+};
+
 /// Canonical EarthMesh radius (`erad = 6_371_229 m`). Re-exporting the core
 /// constant keeps every spherical calculation on one source of truth.
 pub use earthmesh_core::EARTH_RADIUS_METERS;
@@ -673,6 +680,79 @@ impl HField {
             raw as u8
         }
     }
+
+    /// Discrete level required by a topology whose realizable sizes are
+    /// `h_base / 2^level`.
+    ///
+    /// Quantization happens on the stored bins before spatial sampling: the
+    /// maximum floor-quantized level in the local bilinear stencil wins. This
+    /// preserves narrow hard targets without turning the continuous gradation
+    /// skirt into fine topology. Method-C adds its own bounded parent support
+    /// around deeper targets when it materializes the discrete topology.
+    pub fn topology_level_at(
+        &self,
+        lon_deg: f64,
+        lat_deg: f64,
+        h_base_m: f64,
+        max_level: u8,
+    ) -> u8 {
+        let lat_deg = lat_deg.clamp(-90.0, 90.0);
+        let quantize = |h: f64| {
+            if !h.is_finite() || h <= 0.0 || h >= h_base_m {
+                return 0;
+            }
+            let raw = ((h_base_m / h).log2() + 1e-9).floor();
+            if raw <= 0.0 {
+                0
+            } else if raw >= max_level as f64 {
+                max_level
+            } else {
+                raw as u8
+            }
+        };
+
+        if (lat_deg.abs() - 90.0).abs() <= 32.0 * f64::EPSILON {
+            let row = if lat_deg.is_sign_negative() {
+                0
+            } else {
+                self.nlat - 1
+            };
+            return (0..self.nlon)
+                .map(|i| quantize(self.get(i, row)))
+                .max()
+                .unwrap_or(0);
+        }
+
+        let x = (wrap_lon_degrees(lon_deg) + 180.0) / self.dlon_degrees() - 0.5;
+        let x = if (x - x.round()).abs() <= 32.0 * f64::EPSILON * x.abs().max(1.0) {
+            x.round()
+        } else {
+            x
+        };
+        let fx = x - x.floor();
+        let i0 = (x.floor() as i64).rem_euclid(self.nlon as i64) as usize;
+        let i1 = (i0 + 1) % self.nlon;
+        let y = ((lat_deg + 90.0) / self.dlat_degrees() - 0.5).clamp(0.0, (self.nlat - 1) as f64);
+        let y = if (y - y.round()).abs() <= 32.0 * f64::EPSILON * y.abs().max(1.0) {
+            y.round()
+        } else {
+            y
+        };
+        let fy = y - y.floor();
+        let j0 = (y.floor() as usize).min(self.nlat - 1);
+        let j1 = (j0 + 1).min(self.nlat - 1);
+
+        [
+            ((1.0 - fx) * (1.0 - fy), quantize(self.get(i0, j0))),
+            (fx * (1.0 - fy), quantize(self.get(i1, j0))),
+            ((1.0 - fx) * fy, quantize(self.get(i0, j1))),
+            (fx * fy, quantize(self.get(i1, j1))),
+        ]
+        .into_iter()
+        .filter_map(|(weight, level)| (weight > 0.0).then_some(level))
+        .max()
+        .unwrap_or(0)
+    }
 }
 
 fn limit_metric_row(row: &mut [f64], distances: &[f64], g: f64) -> f64 {
@@ -1179,5 +1259,57 @@ mod tests {
         assert_eq!(levels[1], 1);
         assert_eq!(levels[2], 2);
         assert_eq!(levels[3], 2);
+    }
+
+    #[test]
+    fn topology_levels_keep_hard_targets_without_refining_the_whole_skirt() {
+        let level_at_center = |h| {
+            let mut f = HField::uniform(8, 4, 100_000.0).unwrap();
+            f.set(3, 1, h);
+            f.topology_level_at(f.lon_center(3), f.lat_center(1), 100_000.0, 5)
+        };
+
+        assert_eq!(level_at_center(75_000.0), 0); // outer level-1 skirt
+        assert_eq!(level_at_center(50_000.0), 1); // hard level-1 target
+        assert_eq!(level_at_center(37_500.0), 1); // level-2 to level-1 skirt
+        assert_eq!(level_at_center(25_000.0), 2); // hard level-2 target
+        assert_eq!(level_at_center(70_000.0), 0); // continuous-only adjustment
+    }
+
+    #[test]
+    fn topology_levels_preserve_a_narrow_neighboring_hard_target() {
+        let mut f = HField::uniform(7, 5, 100_000.0).unwrap();
+        f.set(4, 2, 50_000.0);
+
+        assert_eq!(
+            f.topology_level_at(f.lon_center(3), f.lat_center(2), 100_000.0, 5),
+            0,
+            "a zero-weight neighboring bin must not dilate the hard target"
+        );
+
+        let lon = 0.5 * (f.lon_center(3) + f.lon_center(4));
+        let lat = 0.5 * (f.lat_center(1) + f.lat_center(2));
+        assert!(f.sample(lon, lat) > 70_000.0);
+        assert_eq!(f.topology_level_at(lon, lat, 100_000.0, 5), 1);
+    }
+
+    #[test]
+    fn topology_levels_preserve_narrow_targets_in_a_polar_row() {
+        let mut f = HField::uniform(8, 4, 100_000.0).unwrap();
+        f.set(4, 0, 50_000.0);
+
+        let lon = 0.5 * (f.lon_center(3) + f.lon_center(4));
+        let polar_cap_lat = 0.5 * (-90.0 + f.lat_center(0));
+        assert!(f.sample(lon, polar_cap_lat) > 70_000.0);
+        assert_eq!(
+            f.topology_level_at(lon, polar_cap_lat, 100_000.0, 5),
+            1,
+            "quantization must happen before polar-cap interpolation"
+        );
+        assert_eq!(
+            f.topology_level_at(120.0, -90.0, 100_000.0, 5),
+            1,
+            "longitude is not physically distinct at the pole"
+        );
     }
 }

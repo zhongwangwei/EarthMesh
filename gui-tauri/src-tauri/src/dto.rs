@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::quality::MeshQuality;
+
 /// A refinement criterion, flattened for the data-layer / quality UI.
 #[derive(Serialize)]
 pub(crate) struct CriterionInfo {
@@ -168,6 +170,8 @@ pub(crate) struct RunResult {
     /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
+    /// Authoritative Project-aware quality report emitted by the engine.
+    pub(crate) final_quality: Option<MeshQuality>,
     /// Every candidate-selection decision produced by the shared AutoRefine
     /// loop, ordered by pass and artifact path. Empty for non-AutoRefine runs.
     pub(crate) auto_refine_decisions: Vec<AutoRefineDecision>,

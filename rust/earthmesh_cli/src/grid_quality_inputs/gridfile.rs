@@ -1,6 +1,7 @@
 use crate::gridfile_m_row_layout;
 use crate::gridfile_w_row_layout;
 use crate::netcdf_to_io_error;
+use crate::required_dimension_len;
 use crate::required_values_f64;
 use crate::required_values_i32;
 use crate::required_values_i32_matrix;
@@ -44,6 +45,112 @@ pub fn quality_input_from_gridfile(
 pub fn quality_input_from_gridfile_hex(
     mesh: &GridfileMeshPoints,
 ) -> io::Result<earthmesh_quality::QualityMeshInput> {
+    quality_input_from_gridfile_hex_with_source_rows(mesh).map(|(input, _)| input)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HexDelaunayRowCounts {
+    pub placeholder_rows: usize,
+    pub interior_triangle_rows: usize,
+    pub boundary_dual_rows: usize,
+}
+
+/// Build the interior Delaunay-triangle view of a hex gridfile.
+///
+/// Open hex grids retain boundary dual vertices as physical M rows with one or
+/// two distinct W references. They are polygon corners, not triangle cells.
+/// The authoritative W rings distinguish them from interior M rows without
+/// weakening the strict triangle-product reader.
+pub fn quality_input_from_gridfile_hex_delaunay_interior(
+    mesh: &GridfileMeshPoints,
+) -> io::Result<(earthmesh_quality::QualityMeshInput, HexDelaunayRowCounts)> {
+    use earthmesh_geometry::Point;
+    use earthmesh_quality::{QualityCell, QualityMeshInput};
+    validate_coordinate_pairs(mesh)?;
+    let wn = mesh.w_lon.len();
+    let mn = mesh.m_lon.len();
+    let expected = mn
+        .checked_mul(3)
+        .ok_or_else(|| invalid("M connectivity size overflow"))?;
+    if mesh.m_to_w.len() != expected {
+        return Err(invalid(format!(
+            "M coordinate rows {mn} require {expected} triangle connectivity values, found {}",
+            mesh.m_to_w.len()
+        )));
+    }
+    let m_layout = gridfile_m_row_layout(mesh);
+    let w_layout = gridfile_w_row_layout(mesh);
+    let mut reference_count = vec![0usize; mn];
+    for wi in 0..wn {
+        if !w_layout.is_physical_row(wi) {
+            continue;
+        }
+        let corners = authoritative_w_corners(mesh, wi, mn, m_layout)?.ok_or_else(|| {
+            invalid("hex Delaunay classification requires authoritative W connectivity")
+        })?;
+        for mi in corners {
+            reference_count[mi] += 1;
+        }
+    }
+
+    let vertices = mesh
+        .w_lon
+        .iter()
+        .zip(&mesh.w_lat)
+        .map(|(&lon, &lat)| Point::new(lon, lat))
+        .collect::<Vec<_>>();
+    let mut cells = Vec::new();
+    let mut counts = HexDelaunayRowCounts {
+        placeholder_rows: 0,
+        interior_triangle_rows: 0,
+        boundary_dual_rows: 0,
+    };
+    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+        if !m_layout.is_physical_row(mi) {
+            counts.placeholder_rows += 1;
+            continue;
+        }
+        let mut mapped = Vec::with_capacity(3);
+        let mut distinct = Vec::with_capacity(3);
+        for &id in tri {
+            let row = w_layout
+                .physical_row_for_canonical_id(id, wn)
+                .ok_or_else(|| invalid(format!("M row {mi} contains invalid W vertex id {id}")))?;
+            mapped.push(row);
+            if !distinct.contains(&row) {
+                distinct.push(row);
+            }
+        }
+        match (distinct.len(), reference_count[mi]) {
+            (3, 3) => {
+                counts.interior_triangle_rows += 1;
+                cells.push(QualityCell {
+                    vertices: mapped,
+                    refine_level: refine_level_at(&mesh.m_refine_level, mi),
+                    neighbors: Vec::new(),
+                });
+            }
+            (1, 1) | (2, 2) => counts.boundary_dual_rows += 1,
+            (distinct_vertices, references) => {
+                return Err(invalid(format!(
+                    "M row {mi} has {distinct_vertices} distinct W vertices but is referenced by {references} W cells"
+                )));
+            }
+        }
+    }
+    if cells.is_empty() {
+        return Err(invalid(
+            "hex Delaunay quality input contains no interior triangles",
+        ));
+    }
+    derive_shared_edge_neighbors(&mut cells);
+    Ok((QualityMeshInput { vertices, cells }, counts))
+}
+
+/// Build HEX quality input and retain each cell's source W row.
+pub fn quality_input_from_gridfile_hex_with_source_rows(
+    mesh: &GridfileMeshPoints,
+) -> io::Result<(earthmesh_quality::QualityMeshInput, Vec<usize>)> {
     use earthmesh_geometry::Point;
     use earthmesh_quality::{QualityCell, QualityMeshInput};
     validate_coordinate_pairs(mesh)?;
@@ -53,7 +160,9 @@ pub fn quality_input_from_gridfile_hex(
         .zip(&mesh.m_lat)
         .map(|(&lon, &lat)| Point::new(lon, lat))
         .collect();
-    let cells = hex_quality_cells_from_gridfile(mesh)?
+    let source_cells = hex_quality_cells_from_gridfile(mesh)?;
+    let source_rows = source_cells.iter().map(|(wi, _)| *wi).collect();
+    let cells = source_cells
         .into_iter()
         .map(|(wi, vertices)| QualityCell {
             vertices,
@@ -66,7 +175,7 @@ pub fn quality_input_from_gridfile_hex(
     }
     let mut cells = cells;
     derive_shared_edge_neighbors(&mut cells);
-    Ok(QualityMeshInput { vertices, cells })
+    Ok((QualityMeshInput { vertices, cells }, source_rows))
 }
 
 pub(crate) fn tri_quality_cells_from_gridfile(
@@ -153,7 +262,17 @@ pub(crate) fn hex_quality_cells_from_gridfile(
         // `itab_w%im` + `n_ngrwm` is the gridfile's authoritative W-cell ring.
         // Prefer it over reconstructing incidence from M triangles, but retain the
         // inverse-connectivity path for legacy gridfiles that do not carry it.
-        let corners = authoritative_w_corners(mesh, wi, mn, m_layout)?.unwrap_or_else(|| {
+        let corners = authoritative_w_corners(mesh, wi, mn, m_layout)?;
+        let corner_count = corners
+            .as_ref()
+            .map_or_else(|| incident_corners.len(), Vec::len);
+        if corner_count < 3 {
+            return Err(invalid(format!(
+                "W cell row {wi} has only {} valid M corners",
+                corner_count
+            )));
+        }
+        let ordered = corners.unwrap_or_else(|| {
             let mut corners = incident_corners
                 .iter()
                 .copied()
@@ -161,15 +280,8 @@ pub(crate) fn hex_quality_cells_from_gridfile(
                 .collect::<Vec<_>>();
             corners.sort_unstable();
             corners.dedup();
-            corners
+            order_corners_on_sphere(mesh, wi, corners)
         });
-        if corners.len() < 3 {
-            return Err(invalid(format!(
-                "W cell row {wi} has only {} valid M corners",
-                corners.len()
-            )));
-        }
-        let ordered = order_corners_on_sphere(mesh, wi, corners);
         if ordered.len() < 3 {
             return Err(invalid(format!(
                 "W cell row {wi} cannot form a valid polygon"
@@ -433,6 +545,39 @@ pub fn read_gridfile_mesh_points(path: impl AsRef<Path>) -> io::Result<GridfileM
     })
 }
 
+pub fn read_gridfile_cell_lineages(
+    path: impl AsRef<Path>,
+) -> io::Result<crate::MethodCGridfileLineages> {
+    let file = crate::open_netcdf(path.as_ref()).map_err(netcdf_to_io_error)?;
+    let m_rows = required_dimension_len(&file, "sjx_points")?;
+    let w_rows = required_dimension_len(&file, "lbx_points")?;
+    Ok(crate::MethodCGridfileLineages {
+        m: optional_values_i64_exact(&file, "earthmesh_m_lineage", m_rows)?,
+        w: optional_values_i64_exact(&file, "earthmesh_w_lineage", w_rows)?,
+    })
+}
+
+fn optional_values_i64_exact(
+    file: &netcdf::File,
+    name: &str,
+    expected_len: usize,
+) -> io::Result<Vec<i64>> {
+    let Some(variable) = file.variable(name) else {
+        return Ok(Vec::new());
+    };
+    let values = variable
+        .get_values::<i64, _>(..)
+        .map_err(netcdf_to_io_error)?;
+    if values.len() == expected_len {
+        Ok(values)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} length {} must equal {expected_len}", values.len()),
+        ))
+    }
+}
+
 fn optional_values_i32_exact(
     file: &netcdf::File,
     name: &str,
@@ -457,6 +602,75 @@ fn optional_values_i32_exact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_hex_dual_mesh() -> GridfileMeshPoints {
+        GridfileMeshPoints {
+            m_lon: vec![0.0, 0.0, 10.0, 10.2, 9.8, 10.4, 10.1, 9.9, 10.3],
+            m_lat: vec![0.0, 0.0, 20.0, 20.2, 19.8, 20.4, 20.1, 19.9, 20.3],
+            w_lon: vec![0.0, 0.0, 10.0, 11.0, 11.0, 10.0],
+            w_lat: vec![0.0, 0.0, 20.0, 20.0, 21.0, 21.0],
+            m_to_w: vec![
+                1, 1, 1, // placeholders
+                1, 1, 1, //
+                2, 3, 4, // interior triangles
+                2, 4, 5, //
+                2, 2, 2, // boundary dual vertices
+                3, 3, 3, //
+                3, 4, 3, //
+                4, 5, 4, //
+                5, 5, 5, //
+            ],
+            m_refine_level: vec![0; 9],
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![
+                1, 1, 1, 1, // placeholders
+                1, 1, 1, 1, //
+                2, 3, 4, 1, // authoritative W rings
+                2, 5, 6, 1, //
+                2, 3, 6, 7, //
+                3, 7, 8, 1, //
+            ],
+            w_to_m_width: 4,
+            n_w: vec![1, 1, 3, 3, 4, 3],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hex_delaunay_classifies_open_boundary_dual_rows_without_weakening_tri_quality() {
+        let mesh = open_hex_dual_mesh();
+
+        let strict_tri_error = quality_input_from_gridfile(&mesh).unwrap_err();
+        assert!(strict_tri_error
+            .to_string()
+            .contains("duplicate W vertex ids"));
+
+        let (input, counts) = quality_input_from_gridfile_hex_delaunay_interior(&mesh).unwrap();
+        assert_eq!(input.cells.len(), 2);
+        assert_eq!(
+            counts,
+            HexDelaunayRowCounts {
+                placeholder_rows: 2,
+                interior_triangle_rows: 2,
+                boundary_dual_rows: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn hex_delaunay_rejects_row_whose_shape_and_reverse_degree_disagree() {
+        let mut mesh = open_hex_dual_mesh();
+        mesh.w_to_m[4 * mesh.w_to_m_width..5 * mesh.w_to_m_width].copy_from_slice(&[2, 3, 7, 1]);
+        mesh.n_w[4] = 3;
+
+        let error = quality_input_from_gridfile_hex_delaunay_interior(&mesh).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("M row 6 has 2 distinct W vertices but is referenced by 1 W cells"));
+    }
 
     #[test]
     fn tri_quality_skips_cells_with_placeholder_zero_vertex() {
@@ -702,6 +916,11 @@ mod tests {
             quality.vertices.len() + quality.cells.len() - edges.len(),
             2
         );
+        let report =
+            earthmesh_quality::compute(&quality, &earthmesh_quality::QualityThresholds::default());
+        assert_eq!(report.topology.boundary_loop_count, 0);
+        assert_eq!(report.topology.expected_euler_characteristic, Some(2));
+        assert_eq!(report.topology.euler_characteristic_mismatch_count, 0);
     }
 
     #[test]
@@ -715,7 +934,7 @@ mod tests {
             m_refine_level: Vec::new(),
             m_refine_level_orig: Vec::new(),
             m_ngr: Vec::new(),
-            w_to_m: vec![1, 1, 1, 1, 1, 2, 3, 4, 5, 6],
+            w_to_m: vec![1, 0, 0, 0, 0, 2, 3, 4, 5, 6],
             w_to_m_width: 5,
             n_w: vec![1, 5],
             w_refine_level: Vec::new(),
@@ -730,6 +949,11 @@ mod tests {
         let mut corners = cells[0].1.clone();
         corners.sort_unstable();
         assert_eq!(corners, vec![1, 2, 3, 4, 5]);
+
+        let (quality, source_rows) =
+            quality_input_from_gridfile_hex_with_source_rows(&mesh).unwrap();
+        assert_eq!(source_rows, vec![1]);
+        assert_eq!(quality.cells.len(), 1);
     }
 
     #[test]
@@ -781,6 +1005,30 @@ mod tests {
         let mut corners = cells[0].1.clone();
         corners.sort_unstable();
         assert_eq!(corners, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn hex_quality_preserves_authoritative_w_ring_order() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, -1.0, 1.0, 1.0, -1.0],
+            m_lat: vec![0.0, -1.0, -1.0, 1.0, 1.0],
+            w_lon: vec![0.0, 0.0],
+            w_lat: vec![0.0, 0.0],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 1, 1, 1, 2, 4, 3, 5],
+            w_to_m_width: 4,
+            n_w: vec![1, 4],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let cells = hex_quality_cells_from_gridfile(&mesh).unwrap();
+
+        assert_eq!(cells[0].1, vec![1, 3, 2, 4]);
     }
 
     #[test]

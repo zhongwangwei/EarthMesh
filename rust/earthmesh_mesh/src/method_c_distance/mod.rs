@@ -11,7 +11,11 @@ pub(crate) fn method_c_ec_ps_distance_meters(
     projected.x.hypot(projected.y)
 }
 
-fn method_c_ec_ps_project(point: CartesianPoint, pole: LonLatDegrees, radius: f64) -> PlanePoint {
+pub(crate) fn method_c_ec_ps_project(
+    point: CartesianPoint,
+    pole: LonLatDegrees,
+    radius: f64,
+) -> PlanePoint {
     let point_radius = magnitude(point);
     if point_radius == 0.0 {
         return PlanePoint::new(f64::INFINITY, f64::INFINITY);
@@ -52,7 +56,11 @@ fn method_c_ec_ps_project(point: CartesianPoint, pole: LonLatDegrees, radius: f6
     PlanePoint::new(xq * t, yq * t)
 }
 
-fn method_c_ll_ps_project(point: LonLatDegrees, pole: LonLatDegrees, radius: f64) -> PlanePoint {
+pub(crate) fn method_c_ll_ps_project(
+    point: LonLatDegrees,
+    pole: LonLatDegrees,
+    radius: f64,
+) -> PlanePoint {
     let qlat = deg_to_rad(point.lat_degrees);
     let qlon = deg_to_rad(point.lon_degrees);
     let cartesian = CartesianPoint::new(
@@ -63,12 +71,10 @@ fn method_c_ll_ps_project(point: LonLatDegrees, pole: LonLatDegrees, radius: f64
     method_c_ec_ps_project(cartesian, pole, radius)
 }
 
-pub(crate) fn method_c_corridor_segment_distance_meters(
-    point: CartesianPoint,
+pub(crate) fn method_c_corridor_segment_pole(
     start: LonLatDegrees,
     end: LonLatDegrees,
-    radius: f64,
-) -> (f64, f64) {
+) -> LonLatDegrees {
     let mut segment_lon = 0.5 * (start.lon_degrees + end.lon_degrees);
     if (start.lon_degrees - end.lon_degrees).abs() > 180.0 {
         if segment_lon <= 0.0 {
@@ -77,7 +83,16 @@ pub(crate) fn method_c_corridor_segment_distance_meters(
             segment_lon -= 180.0;
         }
     }
-    let pole = LonLatDegrees::new(segment_lon, 0.5 * (start.lat_degrees + end.lat_degrees));
+    LonLatDegrees::new(segment_lon, 0.5 * (start.lat_degrees + end.lat_degrees))
+}
+
+pub(crate) fn method_c_corridor_segment_distance_meters(
+    point: CartesianPoint,
+    start: LonLatDegrees,
+    end: LonLatDegrees,
+    radius: f64,
+) -> (f64, f64) {
+    let pole = method_c_corridor_segment_pole(start, end);
     let a = method_c_ll_ps_project(start, pole, radius);
     let b = method_c_ll_ps_project(end, pole, radius);
     let p = method_c_ec_ps_project(point, pole, radius);

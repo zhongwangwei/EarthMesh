@@ -22,18 +22,371 @@ use crate::run_mkgrd_gridinit_global_namelist;
 use crate::validate_native_spawn_mdomain;
 use crate::MethodCGridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeSet,
+    ffi::OsString,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, RefineConfig};
 use earthmesh_mesh::{
     grid_cartesian_xy_to_lonlat_placeholders_one_based_state, grid_xyz2lonlat_one_based_state,
-    pcvt_adjust_voronoi_grid_state, voronoi_grid_from_method_c_delaunay_mesh,
-    voronoi_grid_from_method_c_delaunay_mesh_cartesian, MethodCDelaunayMesh,
+    method_c_hfield_spawn_failure, pcvt_adjust_voronoi_grid_state,
+    voronoi_grid_from_method_c_delaunay_mesh, voronoi_grid_from_method_c_delaunay_mesh_cartesian,
+    MethodCDelaunayMesh, MethodCHfieldLegalizationPreflight, MethodCHfieldPassDiagnostics,
+    MethodCHfieldSelectionCheckpoint, MethodCHfieldSpawnFailure,
 };
 
 use super::outputs::{write_method_c_refined_outputs, MethodCMetadataSlices};
+
+fn method_c_topology_gradation_g(
+    refine: &RefineConfig,
+    max_level: usize,
+    requested_g: f64,
+    cap_enabled: bool,
+) -> f64 {
+    if !cap_enabled || max_level < 2 {
+        return requested_g;
+    }
+    let transition_rows = (1..max_level)
+        .map(|level| {
+            refine.halo[level]
+                .max(refine.max_transition_row[level])
+                .max(0) as usize
+        })
+        .max()
+        .unwrap_or(0)
+        .max(4);
+    requested_g.min(1.0 / (4.0 * transition_rows as f64))
+}
+
+fn add_method_c_face_lineage_demands(
+    mesh: &MethodCDelaunayMesh,
+    face_demand: &mut [bool],
+    requested: &BTreeSet<i64>,
+) -> io::Result<usize> {
+    if requested.is_empty() {
+        return Ok(0);
+    }
+    if face_demand.len() != mesh.nwd + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Method-C support face-demand length does not match the current mesh",
+        ));
+    }
+    let lineages = mesh.gridfile_m_cell_lineages()?;
+    let mut matched = 0usize;
+    for (row, lineage) in lineages.into_iter().enumerate() {
+        if requested.contains(&lineage) {
+            face_demand[row + 1] = true;
+            matched += 1;
+        }
+    }
+    if matched != requested.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Method-C cross-level support mapped {matched}/{} stable parent-face lineages",
+                requested.len()
+            ),
+        ));
+    }
+    Ok(matched)
+}
+
+fn hfield_raster_resolution_warning(field: &earthmesh_hfield::HField) -> Option<String> {
+    let dy = earthmesh_hfield::great_circle_distance_m(
+        0.0,
+        field.lat_center(0),
+        0.0,
+        field.lat_center(1),
+    );
+    let mut underresolved = 0usize;
+    let mut max_ratio = 0.0_f64;
+    for j in 0..field.nlat() {
+        let lat = field.lat_center(j);
+        let dx = earthmesh_hfield::great_circle_distance_m(
+            field.lon_center(0),
+            lat,
+            field.lon_center(1),
+            lat,
+        );
+        let spacing = dx.max(dy);
+        for i in 0..field.nlon() {
+            let ratio = spacing / field.get(i, j);
+            if ratio > 1.0 {
+                underresolved += 1;
+                max_ratio = max_ratio.max(ratio);
+            }
+        }
+    }
+    (underresolved > 0).then(|| {
+        format!(
+            "HField raster {}x{} under-resolves {underresolved}/{} bins for gradient limiting \
+             (max axis spacing/local h={max_ratio:.3}; required <=1); increase \
+             hfield_nlon/hfield_nlat when sub-raster detail must be preserved",
+            field.nlon(),
+            field.nlat(),
+            field.nlon() * field.nlat(),
+        )
+    })
+}
+
+#[derive(Clone, Copy)]
+struct M0TopologyGradation {
+    cap_enabled: bool,
+    requested_g: f64,
+    effective_g: f64,
+}
+
+const M0_LEGALIZATION_CHECKPOINT_SCHEMA: &str = "earthmesh-method-c-legalization-checkpoint-v2";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct M0LegalizationCheckpointProvenance {
+    build_profile: String,
+    executable_sha256: String,
+    namelist_sha256: String,
+    landcover_file_name: String,
+    landcover_sha256: String,
+    source_nlon: usize,
+    source_nlat: usize,
+    source_samples_per_degree: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct M0MethodCLegalizationCheckpoint {
+    schema: String,
+    pass: usize,
+    child_grid_number: usize,
+    field_max_level: usize,
+    max_mrows: usize,
+    support_lineages: Vec<Vec<i64>>,
+    selection: MethodCHfieldSelectionCheckpoint,
+    preflight: MethodCHfieldLegalizationPreflight,
+    mesh: MethodCDelaunayMesh,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct M0MethodCLegalizationCheckpointReceipt {
+    checkpoint_sha256: String,
+    provenance: M0LegalizationCheckpointProvenance,
+}
+
+fn m0_legalization_checkpoint_bytes(
+    checkpoint: &M0MethodCLegalizationCheckpoint,
+) -> io::Result<Vec<u8>> {
+    serde_json::to_vec(checkpoint).map_err(io::Error::other)
+}
+
+fn m0_sidecar_path(path: &Path, suffix: &str) -> io::Result<PathBuf> {
+    let mut file_name = path.file_name().map(OsString::from).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "checkpoint has no file name")
+    })?;
+    file_name.push(suffix);
+    Ok(path.with_file_name(file_name))
+}
+
+fn write_m0_method_c_legalization_checkpoint(
+    path: &Path,
+    checkpoint: &M0MethodCLegalizationCheckpoint,
+    provenance: &M0LegalizationCheckpointProvenance,
+) -> io::Result<String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = m0_legalization_checkpoint_bytes(checkpoint)?;
+    let mut temp_name = path.file_name().map(OsString::from).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "checkpoint has no file name")
+    })?;
+    temp_name.push(format!(".{}.tmp", std::process::id()));
+    let temp = path.with_file_name(temp_name);
+    fs::write(&temp, bytes)?;
+    if let Err(error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    let sha256 = earthmesh_project::file_content_hash(path)?;
+    fs::write(m0_sidecar_path(path, ".sha256")?, format!("{sha256}\n"))?;
+    fs::write(
+        m0_sidecar_path(path, ".provenance.json")?,
+        serde_json::to_vec(&M0MethodCLegalizationCheckpointReceipt {
+            checkpoint_sha256: sha256.clone(),
+            provenance: provenance.clone(),
+        })
+        .map_err(io::Error::other)?,
+    )?;
+    Ok(sha256)
+}
+
+fn m0_method_c_checkpoint_provenance(
+    executable: &Path,
+    namelist: &Path,
+    landcover: &Path,
+    source_nlon: usize,
+    source_nlat: usize,
+    source_samples_per_degree: usize,
+) -> io::Result<M0LegalizationCheckpointProvenance> {
+    Ok(M0LegalizationCheckpointProvenance {
+        build_profile: if cfg!(debug_assertions) {
+            "debug".to_string()
+        } else {
+            "release".to_string()
+        },
+        executable_sha256: earthmesh_project::file_content_hash(executable)?,
+        namelist_sha256: earthmesh_project::file_content_hash(namelist)?,
+        landcover_file_name: landcover
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<non-utf8>")
+            .to_string(),
+        landcover_sha256: earthmesh_project::file_content_hash(landcover)?,
+        source_nlon,
+        source_nlat,
+        source_samples_per_degree,
+    })
+}
+
+fn m0_seed_hash(ids: &[usize]) -> String {
+    let hash = ids.iter().fold(0xcbf29ce484222325_u64, |hash, id| {
+        (*id as u64).to_le_bytes().iter().fold(hash, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+    });
+    format!("{hash:016x}")
+}
+
+fn m0_hfield_pass_json(pass: &MethodCHfieldPassDiagnostics) -> serde_json::Value {
+    let reasons = pass.face_reason_mask_counts;
+    let candidate_validation = pass.candidate_validation.as_ref().map(|validation| serde_json::json!({
+        "selected_faces_after_concavity": validation.selected_faces_after_concavity,
+        "coverage_valid": validation.coverage_valid,
+        "parent_level_histogram": validation.parent_level_histogram.iter().map(|(level, faces)| {
+            serde_json::json!({"level": level, "faces": faces})
+        }).collect::<Vec<_>>(),
+        "parent_level_valid": validation.parent_level_valid,
+        "perimeter_lengths": validation.perimeter_lengths,
+        "perimeters_triplets": validation.perimeters_triplets,
+        "predicted_transition_self_loops": validation.predicted_transition_self_loops,
+        "predicted_transition_first_parent_u_edge": validation.predicted_transition_first_parent_u_edge,
+        "local_seed_candidate_pool": validation.local_seed_candidate_pool,
+        "local_seed_edit_sets_tested": validation.local_seed_edit_sets_tested,
+        "local_seed_edit_coverage_valid": validation.local_seed_edit_coverage_valid,
+        "local_seed_edit_parent_level_valid": validation.local_seed_edit_parent_level_valid,
+        "local_seed_edit_triplet_valid": validation.local_seed_edit_triplet_valid,
+        "local_seed_edit_predictor_clear": validation.local_seed_edit_predictor_clear,
+        "local_seed_edit_first_predictor_clear_seeds": validation.local_seed_edit_first_predictor_clear_seeds,
+        "local_seed_edit_first_predictor_clear_removes_seed": validation.local_seed_edit_first_predictor_clear_removes_seed,
+        "local_seed_edit_materializable": validation.local_seed_edit_materializable,
+        "local_seed_edit_first_seeds": validation.local_seed_edit_first_seeds,
+        "local_seed_edit_first_removes_seed": validation.local_seed_edit_first_removes_seed,
+        "local_seed_edit_first_failure_kind": validation.local_seed_edit_first_failure_kind.map(|kind| kind.as_str()),
+        "local_seed_edit_first_failure_parent_m_point": validation.local_seed_edit_first_failure_parent_m_point,
+        "local_seed_edit_first_failure_parent_u_edge": validation.local_seed_edit_first_failure_parent_u_edge,
+        "local_seed_edit_first_failure_parent_m_valence_witnesses": validation.local_seed_edit_first_failure_parent_m_valence_witnesses,
+        "local_seed_edit_first_failure_message": validation.local_seed_edit_first_failure_message,
+        "transition_materializable": validation.transition_materializable,
+        "materialized_m_valence_census_available": validation.materialized_m_valence_census_available,
+        "materialized_m_valence_violation_count": validation.materialized_m_valence_violation_count,
+        "failure_kind": validation.failure_kind.map(|kind| kind.as_str()),
+        "failure_message": validation.failure_message,
+    }));
+    serde_json::json!({
+        "pass": pass.pass,
+        "preserve_all_demands": pass.preserve_all_demands,
+        "parent_interior_m_points": pass.parent_interior_m_points,
+        "hard_demand_m_points": pass.hard_demand_m_points,
+        "hard_demand_anchors": pass.hard_demand_anchors,
+        "phase_support_m_points": pass.phase_support_m_points,
+        "component_count": pass.component_count,
+        "component_phases": pass.component_phases.iter().map(|component| serde_json::json!({
+            "component_index": component.component_index,
+            "component_m_points": component.component_m_points,
+            "demand_start": component.demand_start,
+            "phase_class_count": component.phase_class_count,
+            "phase_starts": component.phase_starts,
+            "selected_phase_ordinal": component.selected_phase_ordinal,
+            "selected_start": component.selected_start,
+            "legal_seed_ids": component.legal_seed_ids,
+            "selected_seed_ids": component.selected_seed_ids,
+        })).collect::<Vec<_>>(),
+        "legal_rad3_seeds": pass.legal_rad3_seeds,
+        "initial_selected_seeds": pass.initial_selected_seeds,
+        "initial_seed_footprint_faces": pass.initial_seed_footprint_faces,
+        "demand_tail_seeds": pass.demand_tail_seeds,
+        "demand_tail_faces": pass.demand_tail_faces,
+        "connectivity_bridge_seeds": pass.connectivity_bridge_seeds,
+        "connectivity_bridge_faces": pass.connectivity_bridge_faces,
+        "face_reason_mask_counts": {
+            "unexplained": reasons[0],
+            "initial_seed_footprint_only": reasons[1],
+            "demand_tail_only": reasons[2],
+            "initial_seed_footprint_and_demand_tail": reasons[3],
+            "connectivity_bridge_only": reasons[4],
+            "initial_seed_footprint_and_connectivity_bridge": reasons[5],
+            "demand_tail_and_connectivity_bridge": reasons[6],
+            "initial_seed_footprint_and_demand_tail_and_connectivity_bridge": reasons[7],
+        },
+        "face_reason_exclusive_counts": {
+            "initial_seed_footprint": reasons[1],
+            "demand_tail": reasons[2],
+            "connectivity_bridge": reasons[4],
+        },
+        "face_reason_pairwise_overlap_counts": {
+            "initial_seed_footprint_and_demand_tail": reasons[3] + reasons[7],
+            "initial_seed_footprint_and_connectivity_bridge": reasons[5] + reasons[7],
+            "demand_tail_and_connectivity_bridge": reasons[6] + reasons[7],
+        },
+        "alignable_faces": pass.alignable_faces,
+        "final_selected_faces": pass.final_selected_faces,
+        "unexplained_selected_faces": pass.unexplained_selected_faces,
+        "selected_seed_count": pass.selected_seed_ids.len(),
+        "selected_seed_hash": m0_seed_hash(&pass.selected_seed_ids),
+        "seed_union_vertex_only_contacts": pass.seed_union_vertex_only_contacts,
+        "seed_union_first_contact_m_point": pass.seed_union_first_contact_m_point,
+        "seed_reconstruction_matches": pass.seed_reconstruction_matches,
+        "seed_reconstruction_error": pass.seed_reconstruction_error,
+        "candidate_validation": candidate_validation,
+    })
+}
+
+fn write_m0_hfield_diagnostics(
+    passes: &[MethodCHfieldPassDiagnostics],
+    failure: Option<&MethodCHfieldSpawnFailure>,
+    topology_gradation: M0TopologyGradation,
+) -> io::Result<()> {
+    let Some(path) = std::env::var_os("EARTHMESH_M0_DIAGNOSTICS_PATH") else {
+        return Ok(());
+    };
+    let failure = failure.map(|failure| {
+        serde_json::json!({
+            "pass": failure.pass,
+            "kind": failure.kind.as_str(),
+            "perimeter_lengths": &failure.perimeter_lengths,
+            "repair_attempts": failure.repair_attempts,
+            "m_point": failure.m_point,
+            "parent_m_point": failure.parent_m_point,
+            "parent_u_edge": failure.parent_u_edge,
+            "parent_m_valence_witnesses": &failure.parent_m_valence_witnesses,
+            "w_face": failure.w_face,
+            "actual_mrlw": failure.actual_mrlw,
+            "expected_mrlw": failure.expected_mrlw,
+            "message": failure.to_string(),
+        })
+    });
+    let payload = serde_json::to_vec_pretty(&serde_json::json!({
+        "topology_gradation": {
+            "cap_enabled": topology_gradation.cap_enabled,
+            "requested_g": topology_gradation.requested_g,
+            "effective_g": topology_gradation.effective_g,
+        },
+        "passes": passes.iter().map(m0_hfield_pass_json).collect::<Vec<_>>(),
+        "failure": failure,
+    }))
+    .map_err(io::Error::other)?;
+    fs::write(path, payload)
+}
 
 /// Execute global specified refinement directly through the Method-C
 /// Delaunay/Voronoi mesh layer.
@@ -255,14 +608,18 @@ pub fn run_refine_pipeline_namelist(
         let source_gridfile = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
         let source_levels =
             crate::grid_quality_pipeline::read_gridfile_mesh_points(&gridinit.gridfile.output)?;
+        let source_lineages =
+            crate::grid_quality_pipeline::read_gridfile_cell_lineages(&gridinit.gridfile.output)?;
         method_c_delaunay_mesh_from_unstructured_gridfile(
             &source_gridfile,
             MethodCGridfileMetadataSlices {
+                m_lineage: (!source_lineages.m.is_empty()).then_some(source_lineages.m.as_slice()),
                 m_refine_level: (!source_levels.m_refine_level.is_empty())
                     .then_some(source_levels.m_refine_level.as_slice()),
                 m_refine_level_orig: (!source_levels.m_refine_level_orig.is_empty())
                     .then_some(source_levels.m_refine_level_orig.as_slice()),
                 m_ngr: (!source_levels.m_ngr.is_empty()).then_some(source_levels.m_ngr.as_slice()),
+                w_lineage: (!source_lineages.w.is_empty()).then_some(source_lineages.w.as_slice()),
                 w_refine_level: (!source_levels.w_refine_level.is_empty())
                     .then_some(source_levels.w_refine_level.as_slice()),
                 w_refine_level_orig: (!source_levels.w_refine_level_orig.is_empty())
@@ -303,6 +660,164 @@ pub fn run_refine_pipeline_namelist(
     } else {
         method_c_spring_iterations(&refine, is_atmosmesh)?
     };
+    let mut hfield_demand = None;
+    let mut single_hfield_product_support = None;
+    let mut coupled_hfield_product_support = None;
+    let mut spherical_hfield = None;
+    let mut native_landcover = None;
+    if let Some(hfield) = active_hfield_options.filter(|_| !native_cartesian_xy) {
+        let base_m = hfield.base_m.unwrap_or_else(|| {
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64)
+        });
+        let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
+        let mut hfield_refine = refine.clone();
+        if refine.refine_cal
+            && crate::landtype_file_is_real(&config.landtype_file)
+            && (refine.refine_num_landtypes
+                || refine.refine_area_mainland
+                || refine.refine_sea_ratio)
+        {
+            let path = Path::new(config.landtype_file.trim());
+            let (source_nlon, source_nlat, maxlc) =
+                crate::hfield_refine::landtype_source_shape_and_maxlc(path)?;
+            if source_nlon > hfield.nlon || source_nlat > hfield.nlat {
+                let gridnum_perdegree = source_nlon.checked_div(360).filter(|value| {
+                    *value > 0
+                        && value.checked_mul(360) == Some(source_nlon)
+                        && value.checked_mul(180) == Some(source_nlat)
+                });
+                let gridnum_perdegree = gridnum_perdegree.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "native landtype dimensions {source_nlon}x{source_nlat} must be a global 360x180 multiple"
+                        ),
+                    )
+                })?;
+                eprintln!(
+                    "earthmesh_cli: native landcover refinement uses all {source_nlon}x{source_nlat} source pixels; coarse HField projection disabled"
+                );
+                native_landcover = Some((path.to_path_buf(), maxlc, gridnum_perdegree));
+                hfield_refine.refine_num_landtypes = false;
+                hfield_refine.refine_area_mainland = false;
+                hfield_refine.refine_sea_ratio = false;
+            }
+        }
+        let mut composed = crate::hfield_refine::build_composed_hfield_with_demand(
+            &regions,
+            &hfield_refine,
+            mesh_type,
+            Some(&config),
+            base_m,
+            hfield,
+            max_cal_level.clamp(1, field_max_level),
+            domain_region.as_ref(),
+        )?;
+        if let Some((_summary, hydro_hard)) =
+            crate::hydro_refinement_adapter::apply_hydro_target_to_fields(
+                &mut composed.regularized,
+                &mut composed.hard,
+                hfield,
+                base_m,
+                domain_region.as_ref(),
+            )?
+        {
+            composed
+                .hard_layers
+                .push(crate::hfield_refine::HfieldHardDemandLayer {
+                    kind: earthmesh_hfield::DemandSourceKind::Hydro,
+                    descriptor: "hydro",
+                    field: hydro_hard,
+                });
+        }
+        crate::hfield_refine::constrain_hfield_to_domain(
+            &mut composed.regularized,
+            domain_region.as_ref(),
+            base_m,
+            hfield.g,
+        )?;
+        // Native landcover stays on source pixels. Product support is bound
+        // later from the actual masked output grid, never from a coarse
+        // landtype-to-HField projection.
+        let native_product_support = native_landcover
+            .as_ref()
+            .map(|_| vec![true; composed.regularized.nlon() * composed.regularized.nlat()]);
+        match config.mesh_type.trim() {
+            "landmesh" => {
+                single_hfield_product_support = Some(match &native_product_support {
+                    Some(support) => support.clone(),
+                    None => crate::hfield_refine::intended_output_landtype_support_mask(
+                        &composed.regularized,
+                        &config,
+                        true,
+                    )?,
+                });
+            }
+            "oceanmesh" => {
+                single_hfield_product_support = Some(match &native_product_support {
+                    Some(support) => support.clone(),
+                    None => crate::hfield_refine::intended_output_landtype_support_mask(
+                        &composed.regularized,
+                        &config,
+                        false,
+                    )?,
+                });
+            }
+            "LOCmesh" => {
+                coupled_hfield_product_support = Some(match &native_product_support {
+                    Some(support) => (support.clone(), support.clone()),
+                    None => (
+                        crate::hfield_refine::intended_output_landtype_support_mask(
+                            &composed.regularized,
+                            &config,
+                            true,
+                        )?,
+                        crate::hfield_refine::intended_output_landtype_support_mask(
+                            &composed.regularized,
+                            &config,
+                            false,
+                        )?,
+                    ),
+                });
+            }
+            _ => {}
+        }
+        if native_surface_global_expansion {
+            // A requested global expansion is hard source demand, not topology excess.
+            let mut native_hard =
+                earthmesh_hfield::HField::uniform(hfield.nlon, hfield.nlat, base_m)?;
+            native_hard.min_with_fn(|_, _| base_m / 2.0);
+            composed.hard.min_with_field(&native_hard)?;
+            composed.regularized.min_with_field(&native_hard)?;
+            composed.regularized.limit_gradient(hfield.g)?;
+            composed
+                .hard_layers
+                .push(crate::hfield_refine::HfieldHardDemandLayer {
+                    kind: earthmesh_hfield::DemandSourceKind::Specified,
+                    descriptor: "native-surface-global-expansion",
+                    field: native_hard,
+                });
+        }
+        if let Some(warning) = hfield_raster_resolution_warning(&composed.regularized) {
+            eprintln!("earthmesh_cli: warning: {warning}");
+        }
+        hfield_demand = Some(
+            crate::source_demand_artifact::PreparedHfieldDemand::
+                capture_with_hard_sources_and_product_support(
+                &composed.hard,
+                &composed.regularized,
+                &composed.hard_layers,
+                base_m,
+                field_max_level as u8,
+                hfield.g,
+                &contents,
+                native_product_support.as_deref(),
+            )?,
+        );
+        spherical_hfield = Some(composed.regularized);
+    }
+    let mut spring_diagnostics = Vec::new();
+    let mut hfield_pass_diagnostics = Vec::new();
     let (mesh, spring_nest_passes) = if !is_atmosmesh
         && (native_only_spawn || native_surface_global_expansion)
         && !refine.refine_spc
@@ -490,36 +1005,315 @@ pub fn run_refine_pipeline_namelist(
                 hfield_spring_iterations,
                 native_deltax,
             )?
-        } else {
-            let mut field = crate::hfield_refine::build_composed_hfield(
-                &regions,
+        } else if let Some((landtype_path, maxlc, gridnum_perdegree)) = native_landcover.as_ref() {
+            let sizing_field = spherical_hfield
+                .as_ref()
+                .expect("spherical HField is prepared before mesh generation");
+            let topology_g_cap_enabled =
+                std::env::var("EARTHMESH_M0_TOPOLOGY_G_CAP").map_or(true, |value| value != "off");
+            let topology_g = method_c_topology_gradation_g(
                 &refine,
-                mesh_type,
-                Some(&config),
-                base_m,
-                hfield,
-                max_cal_level.clamp(1, field_max_level),
-                domain_region.as_ref(),
-            )?;
-            crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-                &mut field,
-                hfield,
-                base_m,
-                domain_region.as_ref(),
-            )?;
-            crate::hfield_refine::constrain_hfield_to_domain(
-                &mut field,
-                domain_region.as_ref(),
-                base_m,
-                hfield.g,
-            )?;
-            mesh.spawn_nest_from_target_levels_with_spring(
-                |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
                 field_max_level,
-                max_mrows,
+                hfield.g,
+                topology_g_cap_enabled,
+            );
+            let topology_field = if topology_g < hfield.g {
+                let mut field = sizing_field.clone();
+                field.limit_gradient(topology_g)?;
+                eprintln!(
+                    "earthmesh_cli: Method-C topology limited HField g {} -> {} to preserve transition clearance",
+                    hfield.g, topology_g
+                );
+                Some(field)
+            } else {
+                None
+            };
+            let field = topology_field.as_ref().unwrap_or(sizing_field);
+            let source_nlon = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "landtype longitude count overflows usize",
+                )
+            })?;
+            let source_nlat = gridnum_perdegree.checked_mul(180).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "landtype latitude count overflows usize",
+                )
+            })?;
+            let axes = crate::build_global_source_axes_one_based(
+                *gridnum_perdegree,
+                source_nlon,
+                source_nlat,
+            )?;
+            let sampler = crate::mkgrd_data_preprocess_source::FrozenLandtypeSampler::open(
+                landtype_path,
+                *gridnum_perdegree,
+            )?;
+            let mut refined = mesh;
+            let mut passes = 0usize;
+            let mut grid_number = refined
+                .w_faces
+                .iter()
+                .skip(2)
+                .map(|face| face.ngr)
+                .max()
+                .unwrap_or(1)
+                .max(1)
+                + 1;
+            let first_grid_number = grid_number;
+            // M0-only: this closes cross-level parent support, but Case 9 still
+            // has an independent same-level TransitionPatch.
+            let cross_level_support =
+                std::env::var_os("EARTHMESH_M0_CROSS_LEVEL_SUPPORT").is_some();
+            let legalization_checkpoint_path =
+                std::env::var_os("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_PATH").map(PathBuf::from);
+            let mut legalization_checkpoint_provenance = None;
+            let mut support_lineages = vec![BTreeSet::new(); field_max_level + 1];
+            let mut checkpoints = Vec::with_capacity(field_max_level);
+            let mut pass = 1usize;
+            while pass <= field_max_level {
+                if cross_level_support {
+                    if checkpoints.len() < pass {
+                        checkpoints.push(refined.clone());
+                    } else {
+                        checkpoints[pass - 1] = refined.clone();
+                    }
+                }
+                let mut face_demand =
+                    crate::native_landcover_refine::native_landcover_face_demands(
+                        &refined,
+                        &sampler,
+                        &axes,
+                        &refine,
+                        mesh_type,
+                        *maxlc,
+                        pass,
+                        domain_region.as_ref(),
+                    )?;
+                if cross_level_support {
+                    add_method_c_face_lineage_demands(
+                        &refined,
+                        &mut face_demand,
+                        &support_lineages[pass],
+                    )?;
+                }
+                let preserve_all_demands = pass == field_max_level;
+                if cross_level_support && pass > 1 {
+                    let required = refined
+                        .required_parent_support_lineages_from_target_levels_and_face_demands(
+                            |lon, lat| {
+                                field.topology_level_at(lon, lat, base_m, field_max_level as u8)
+                            },
+                            &face_demand,
+                            pass,
+                            preserve_all_demands,
+                        )?;
+                    if !required.is_empty() {
+                        let parent_pass = pass - 1;
+                        let mut added = 0usize;
+                        for lineage in required {
+                            added += usize::from(support_lineages[parent_pass].insert(lineage));
+                        }
+                        if added == 0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "Method-C cross-level support made no progress before pass {pass}"
+                                ),
+                            ));
+                        }
+                        eprintln!(
+                            "earthmesh_cli: Method-C pass {pass} requested {added} stable parent-face support refinements from pass {parent_pass}"
+                        );
+                        refined = checkpoints[parent_pass - 1].clone();
+                        checkpoints.truncate(parent_pass - 1);
+                        for pending in support_lineages.iter_mut().skip(parent_pass + 1) {
+                            pending.clear();
+                        }
+                        pass = parent_pass;
+                        passes = parent_pass - 1;
+                        grid_number = first_grid_number + parent_pass - 1;
+                        continue;
+                    }
+                }
+                if cross_level_support
+                    && pass > 1
+                    && support_lineages.iter().any(|lineages| !lineages.is_empty())
+                {
+                    if let Some(path) = legalization_checkpoint_path.as_deref() {
+                        if legalization_checkpoint_provenance.is_none() {
+                            legalization_checkpoint_provenance =
+                                Some(m0_method_c_checkpoint_provenance(
+                                    &std::env::current_exe()?,
+                                    namelist_source,
+                                    landtype_path,
+                                    source_nlon,
+                                    source_nlat,
+                                    *gridnum_perdegree,
+                                )?);
+                        }
+                        let selection = refined
+                            .selection_checkpoint_from_target_levels_and_face_demands(
+                                |lon, lat| {
+                                    field.topology_level_at(lon, lat, base_m, field_max_level as u8)
+                                },
+                                &face_demand,
+                                pass,
+                                preserve_all_demands,
+                            )?;
+                        let preflight = refined.legalization_preflight_from_selected_faces(
+                            &selection.selected_faces,
+                            &selection.legal_seed_ids,
+                            &selection.selected_seed_ids,
+                            grid_number,
+                        )?;
+                        for patch in &preflight.patches {
+                            let boundary = refined.legalization_patch_boundary_check(
+                                &selection,
+                                &preflight,
+                                patch,
+                                &patch.selected_candidate_seed_ids,
+                                grid_number,
+                                max_mrows,
+                            )?;
+                            if !boundary.is_closed() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "Method-C legalization patch {} baseline changes {} faces outside its boundary (perimeter_interface_changed={})",
+                                        patch.cluster_index,
+                                        boundary.outside_changed_faces.len(),
+                                        boundary.outside_perimeter_interface_changed
+                                    ),
+                                ));
+                            }
+                        }
+                        let checkpoint = M0MethodCLegalizationCheckpoint {
+                            schema: M0_LEGALIZATION_CHECKPOINT_SCHEMA.to_string(),
+                            pass,
+                            child_grid_number: grid_number,
+                            field_max_level,
+                            max_mrows,
+                            support_lineages: support_lineages
+                                .iter()
+                                .map(|lineages| lineages.iter().copied().collect())
+                                .collect(),
+                            selection,
+                            preflight,
+                            mesh: refined.clone(),
+                        };
+                        let sha256 = write_m0_method_c_legalization_checkpoint(
+                            path,
+                            &checkpoint,
+                            legalization_checkpoint_provenance
+                                .as_ref()
+                                .expect("checkpoint provenance initialized above"),
+                        )?;
+                        eprintln!(
+                            "earthmesh_cli: wrote Method-C legalization checkpoint {} sha256={sha256}",
+                            path.display()
+                        );
+                    }
+                }
+                let Some(next) = refined.spawn_nest_pass_from_target_levels_and_face_demands(
+                    |lon, lat| field.topology_level_at(lon, lat, base_m, field_max_level as u8),
+                    &face_demand,
+                    pass,
+                    grid_number,
+                    max_mrows,
+                    preserve_all_demands,
+                )?
+                else {
+                    break;
+                };
+                refined = if spring_nest_iterations > 0 {
+                    next.spring_nest(nxp, spring_nest_iterations, grid_number, false)?
+                } else {
+                    next
+                };
+                passes += 1;
+                grid_number += 1;
+                pass += 1;
+            }
+            (refined, passes)
+        } else {
+            let sizing_field = spherical_hfield
+                .as_ref()
+                .expect("spherical HField is prepared before mesh generation");
+            let topology_g_cap_enabled =
+                std::env::var("EARTHMESH_M0_TOPOLOGY_G_CAP").map_or(true, |value| value != "off");
+            let topology_g = method_c_topology_gradation_g(
+                &refine,
+                field_max_level,
+                hfield.g,
+                topology_g_cap_enabled,
+            );
+            let topology_gradation = M0TopologyGradation {
+                cap_enabled: topology_g_cap_enabled,
+                requested_g: hfield.g,
+                effective_g: topology_g,
+            };
+            let topology_field = if topology_g < hfield.g {
+                let mut field = sizing_field.clone();
+                field.limit_gradient(topology_g)?;
+                eprintln!(
+                    "earthmesh_cli: Method-C topology limited HField g {} -> {} to preserve transition clearance",
+                    hfield.g, topology_g
+                );
+                Some(field)
+            } else {
+                None
+            };
+            let field = topology_field.as_ref().unwrap_or(sizing_field);
+            let collect_m0 = std::env::var_os("EARTHMESH_M0_DIAGNOSTICS").is_some();
+            let measured = if collect_m0 {
+                mesh.spawn_nest_from_target_levels_with_m0_diagnostics(
+                    |lon, lat| field.topology_level_at(lon, lat, base_m, field_max_level as u8),
+                    field_max_level,
+                    max_mrows,
+                    nxp,
+                    spring_nest_iterations,
+                    true,
+                )
+            } else {
+                mesh.spawn_nest_from_target_levels_with_spring_diagnostics(
+                    |lon, lat| field.topology_level_at(lon, lat, base_m, field_max_level as u8),
+                    field_max_level,
+                    max_mrows,
+                    nxp,
+                    spring_nest_iterations,
+                    false,
+                )
+                .map(|(mesh, passes, spring)| (mesh, passes, spring, Vec::new()))
+            };
+            let (mesh, passes, diagnostics, pass_diagnostics) = match measured {
+                Ok(measured) => measured,
+                Err(error) => {
+                    let failure = method_c_hfield_spawn_failure(&error);
+                    write_m0_hfield_diagnostics(
+                        failure
+                            .map(|failure| failure.pass_diagnostics.as_slice())
+                            .unwrap_or(&[]),
+                        failure,
+                        topology_gradation,
+                    )?;
+                    return Err(error);
+                }
+            };
+            spring_diagnostics = diagnostics;
+            hfield_pass_diagnostics = pass_diagnostics;
+            write_m0_hfield_diagnostics(&hfield_pass_diagnostics, None, topology_gradation)?;
+            if let Err(error) = crate::m1_topology_frozen::run_if_requested(
+                &mesh,
+                field,
+                hfield_demand.as_ref(),
+                &contents,
                 nxp,
-                spring_nest_iterations,
-            )?
+            ) {
+                eprintln!("earthmesh_cli: warning: M1 diagnostics failed: {error}");
+            }
+            (mesh, passes)
         }
     } else if spring_nest_iterations > 0 {
         if native_cartesian_xy {
@@ -571,6 +1365,8 @@ pub fn run_refine_pipeline_namelist(
         (mesh.spawn_nest(&regions, max_level)?, 0)
     };
     let transition_faces = mesh.boundary_rows().len();
+    let m_lineages = mesh.gridfile_m_cell_lineages()?;
+    let w_lineages = mesh.gridfile_w_cell_lineages()?;
 
     let state = if native_cartesian_xy {
         let mut state = voronoi_grid_from_method_c_delaunay_mesh_cartesian(
@@ -605,14 +1401,71 @@ pub fn run_refine_pipeline_namelist(
         &output_mesh,
         domain_region.as_ref(),
         Some(MethodCMetadataSlices {
+            m_lineage: &m_lineages,
             m_refine_level: &m_refine_levels,
             m_refine_level_orig: &m_refine_levels_orig,
             m_ngr: &m_ngr,
+            w_lineage: &w_lineages,
             w_refine_level: &w_refine_levels,
             w_refine_level_orig: &w_refine_levels_orig,
             w_ngr: &w_ngr,
         }),
+        hfield_demand.as_ref(),
+        single_hfield_product_support.as_deref(),
+        coupled_hfield_product_support
+            .as_ref()
+            .map(|(land, ocean)| (land.as_slice(), ocean.as_slice())),
     )?;
+    if let Some(demand) = &hfield_demand {
+        if let Some(product_support) = single_hfield_product_support.as_deref() {
+            let product = match config.mesh_type.trim() {
+                "landmesh" => crate::source_demand_artifact::HfieldDemandProductKind::Land,
+                "oceanmesh" => crate::source_demand_artifact::HfieldDemandProductKind::Ocean,
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("single HField product support is invalid for mesh_type {other}"),
+                    ));
+                }
+            };
+            demand.persist_for_product_gridfile(
+                &outputs.output.output,
+                product,
+                config.mode_grid.trim(),
+                product_support,
+            )?;
+        } else {
+            demand.persist_for_gridfile(&outputs.output.output)?;
+        }
+        match (
+            outputs.coupled_outputs.as_ref(),
+            coupled_hfield_product_support.as_ref(),
+        ) {
+            (Some(coupled), Some((land_support, ocean_support))) => {
+                demand.persist_for_product_gridfile(
+                    &coupled.land_output.output,
+                    crate::source_demand_artifact::HfieldDemandProductKind::Land,
+                    config.mode_grid.trim(),
+                    land_support,
+                )?;
+                demand.persist_for_product_gridfile(
+                    &coupled.ocean_output.output,
+                    crate::source_demand_artifact::HfieldDemandProductKind::Ocean,
+                    config.mode_grid.trim(),
+                    ocean_support,
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "LOCmesh HField product support and coupled outputs were not produced together",
+                ));
+            }
+        }
+    }
+    let (actual_max_level, refined_cells) =
+        final_output_refinement_stats(&outputs.output.output, &config.mode_grid)?;
 
     let mut runtime_state =
         EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
@@ -630,15 +1483,67 @@ pub fn run_refine_pipeline_namelist(
         refine,
         regions,
         max_level,
+        actual_max_level,
+        refined_cells,
         transition_faces,
         spring_nest_passes,
         spring_nest_iterations,
+        spring_diagnostics,
+        hfield_pass_diagnostics,
         raw_output: outputs.raw_output,
         landtype_masked_cells: outputs.landtype_masked_cells,
         coupled_outputs: outputs.coupled_outputs,
         output: outputs.output,
         runtime_state,
     })
+}
+
+fn final_output_refinement_stats(output: &Path, mode_grid: &str) -> io::Result<(usize, usize)> {
+    let variable_name = if mode_grid.trim().eq_ignore_ascii_case("tri") {
+        "earthmesh_m_refine_level"
+    } else if mode_grid.trim().eq_ignore_ascii_case("hex") {
+        "earthmesh_w_refine_level"
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "final refinement statistics support tri or hex mode_grid only, got {}",
+                mode_grid.trim()
+            ),
+        ));
+    };
+    let file = crate::open_netcdf(output).map_err(crate::netcdf_to_io_error)?;
+    let variable = file.variable(variable_name).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "final output {} is missing {variable_name}",
+                output.display()
+            ),
+        )
+    })?;
+    let levels = variable
+        .get_values::<i32, _>(..)
+        .map_err(crate::netcdf_to_io_error)?;
+    levels.iter().enumerate().try_fold(
+        (0usize, 0usize),
+        |(actual_max_level, refined_cells), (row, &level)| {
+            let level = usize::try_from(level).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "final output {} has negative {variable_name} at row {}",
+                        output.display(),
+                        row + 1
+                    ),
+                )
+            })?;
+            Ok((
+                actual_max_level.max(level),
+                refined_cells + usize::from(level > 0),
+            ))
+        },
+    )
 }
 
 fn method_c_m_refine_levels_zero_based(
@@ -730,7 +1635,2286 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{GridRegion, LonLatPoint, MethodCGridfileMetadataSlices, UnstructuredMesh};
     use earthmesh_core::{GridMemory, IjTabs, ItabM, ItabW};
+    use earthmesh_mesh::{
+        method_c_hfield_failure_kind, xyz_to_lonlat_degrees, CartesianPoint,
+        MethodCHfieldExactPatchTableStatus, MethodCHfieldLegalizationPatch,
+    };
+    use std::collections::{BTreeMap, HashMap, VecDeque};
+
+    #[derive(Debug, Serialize)]
+    struct M0LegalizationEnumerationReport {
+        status: &'static str,
+        cluster_index: usize,
+        search_order: &'static str,
+        candidate_seed_count: usize,
+        candidate_seed_ids: Vec<usize>,
+        current_perimeter_scope_candidate_seed_ids: Option<Vec<usize>>,
+        covers_current_perimeter_scope: bool,
+        total_assignments: Option<usize>,
+        skipped_assignments: usize,
+        assignment_limit: usize,
+        evaluated_assignments: usize,
+        boundary_incomplete_assignments: usize,
+        hard_rejected_assignments: BTreeMap<&'static str, usize>,
+        unclassified_error_assignments: usize,
+        first_unclassified_error: Option<String>,
+        exact_failure_counts: BTreeMap<&'static str, usize>,
+        assignment: Option<Vec<usize>>,
+    }
+
+    enum M0LegalizationAssignmentOutcome {
+        BoundaryIncomplete,
+        Sat,
+        HardRejected(&'static str),
+        ExactFailure(&'static str),
+        Unclassified(String),
+    }
+
+    fn m0_frozen_target_levels(
+        checkpoint: &M0MethodCLegalizationCheckpoint,
+    ) -> HashMap<(u64, u64), u8> {
+        let mut levels = HashMap::new();
+        let mut record = |point: CartesianPoint, level: usize| {
+            let point = xyz_to_lonlat_degrees(point);
+            let key = (point.lon_degrees.to_bits(), point.lat_degrees.to_bits());
+            let level = u8::try_from(level).expect("frozen target level fits u8");
+            if let Some(previous) = levels.insert(key, level) {
+                assert_eq!(
+                    previous, level,
+                    "one frozen sample coordinate has conflicting target levels"
+                );
+            }
+        };
+        for im in 2..=checkpoint.mesh.nmd {
+            record(
+                checkpoint.mesh.m_points[im],
+                checkpoint.selection.m_target_levels[im],
+            );
+        }
+        for iu in 2..=checkpoint.mesh.nud {
+            let [im1, im2] = checkpoint.mesh.u_edges[iu].im;
+            let p1 = checkpoint.mesh.m_points[im1];
+            let p2 = checkpoint.mesh.m_points[im2];
+            record(
+                CartesianPoint::new(
+                    0.5 * (p1.x + p2.x),
+                    0.5 * (p1.y + p2.y),
+                    0.5 * (p1.z + p2.z),
+                ),
+                checkpoint.selection.u_target_levels[iu],
+            );
+        }
+        levels
+    }
+
+    fn m0_dilate_face_demands_same_level(mesh: &MethodCDelaunayMesh, demand: &[bool]) -> Vec<bool> {
+        assert_eq!(demand.len(), mesh.nwd + 1, "face-demand length");
+        let mut dilated = demand.to_vec();
+        for iw in 2..=mesh.nwd {
+            if !demand[iw] {
+                continue;
+            }
+            let level = mesh.w_faces[iw].mrlw;
+            for &iu in &mesh.w_faces[iw].iu[..3] {
+                for &neighbor in &mesh.u_edges[iu].iw[..2] {
+                    if neighbor >= 2 && mesh.w_faces[neighbor].mrlw == level {
+                        dilated[neighbor] = true;
+                    }
+                }
+            }
+        }
+        dilated
+    }
+
+    fn m0_face_demand_components_same_level(
+        mesh: &MethodCDelaunayMesh,
+        demand: &[bool],
+    ) -> Vec<Vec<usize>> {
+        assert_eq!(demand.len(), mesh.nwd + 1, "face-demand length");
+        let mut seen = vec![false; demand.len()];
+        let mut components = Vec::new();
+        for start in 2..=mesh.nwd {
+            if !demand[start] || seen[start] {
+                continue;
+            }
+            let level = mesh.w_faces[start].mrlw;
+            let mut queue = VecDeque::from([start]);
+            let mut component = Vec::new();
+            seen[start] = true;
+            while let Some(iw) = queue.pop_front() {
+                component.push(iw);
+                for &iu in &mesh.w_faces[iw].iu[..3] {
+                    for &neighbor in &mesh.u_edges[iu].iw[..2] {
+                        if neighbor >= 2
+                            && !seen[neighbor]
+                            && demand[neighbor]
+                            && mesh.w_faces[neighbor].mrlw == level
+                        {
+                            seen[neighbor] = true;
+                            queue.push_back(neighbor);
+                        }
+                    }
+                }
+            }
+            component.sort_unstable();
+            components.push(component);
+        }
+        components
+    }
+
+    fn m0_dilate_one_face_demand_component(
+        mesh: &MethodCDelaunayMesh,
+        baseline: &[bool],
+        component: &[usize],
+    ) -> Vec<bool> {
+        let mut component_mask = vec![false; baseline.len()];
+        for &iw in component {
+            component_mask[iw] = true;
+        }
+        let expanded = m0_dilate_face_demands_same_level(mesh, &component_mask);
+        baseline
+            .iter()
+            .zip(expanded)
+            .map(|(&baseline, expanded)| baseline || expanded)
+            .collect()
+    }
+
+    fn m0_usize_list_env(name: &str) -> Vec<usize> {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|item| item.parse::<usize>().expect("unsigned integer list"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn m0_evaluate_face_demand(
+        checkpoint: &M0MethodCLegalizationCheckpoint,
+        levels: &HashMap<(u64, u64), u8>,
+        demand: &[bool],
+    ) -> serde_json::Value {
+        let target_level = |lon: f64, lat: f64| {
+            *levels
+                .get(&(lon.to_bits(), lat.to_bits()))
+                .expect("selection sampled outside the frozen target-level coordinates")
+        };
+        let demand_face_count = demand.iter().skip(2).filter(|&&face| face).count();
+        match checkpoint
+            .mesh
+            .selection_checkpoint_from_target_levels_and_face_demands(
+                &target_level,
+                demand,
+                checkpoint.pass,
+                checkpoint.selection.preserve_all_demands,
+            ) {
+            Ok(selection) => {
+                match checkpoint.mesh.legalization_preflight_from_selected_faces(
+                    &selection.selected_faces,
+                    &selection.legal_seed_ids,
+                    &selection.selected_seed_ids,
+                    checkpoint.child_grid_number,
+                ) {
+                    Ok(preflight) => {
+                        let offsets = vec![0usize; preflight.perimeter_lengths.len()];
+                        match checkpoint
+                            .mesh
+                            .spawn_nest_pass_method_c_with_perimeter_component_offsets_for_diagnostics(
+                                &preflight.prepared_selected_faces,
+                                &offsets,
+                                checkpoint.child_grid_number,
+                                checkpoint.max_mrows,
+                                true,
+                            )
+                        {
+                            Ok(mesh) => {
+                                mesh.validate_topology().expect("face-demand SAT topology");
+                                serde_json::json!({
+                                    "status": "SAT",
+                                    "demand_face_count": demand_face_count,
+                                    "legal_seed_count": selection.legal_seed_ids.len(),
+                                    "selected_seed_count": selection.selected_seed_ids.len(),
+                                    "selected_face_count": preflight.prepared_selected_faces
+                                        .iter().skip(2).filter(|&&face| face).count(),
+                                    "perimeter_lengths": preflight.perimeter_lengths,
+                                    "self_loop_witness_count": preflight.self_loop_witnesses.len(),
+                                    "child_counts": {"m": mesh.nmd, "u": mesh.nud, "w": mesh.nwd},
+                                })
+                            }
+                            Err(error) => serde_json::json!({
+                                "status": "exact_failure",
+                                "demand_face_count": demand_face_count,
+                                "legal_seed_count": selection.legal_seed_ids.len(),
+                                "selected_seed_count": selection.selected_seed_ids.len(),
+                                "selected_face_count": preflight.prepared_selected_faces
+                                    .iter().skip(2).filter(|&&face| face).count(),
+                                "perimeter_lengths": preflight.perimeter_lengths,
+                                "self_loop_witness_count": preflight.self_loop_witnesses.len(),
+                                "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                                "error": error.to_string(),
+                            }),
+                        }
+                    }
+                    Err(error) => serde_json::json!({
+                        "status": "preflight_failure",
+                        "demand_face_count": demand_face_count,
+                        "legal_seed_count": selection.legal_seed_ids.len(),
+                        "selected_seed_count": selection.selected_seed_ids.len(),
+                        "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                        "error": error.to_string(),
+                    }),
+                }
+            }
+            Err(error) => serde_json::json!({
+                "status": "selection_failure",
+                "demand_face_count": demand_face_count,
+                "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                "error": error.to_string(),
+            }),
+        }
+    }
+
+    fn m0_evaluate_legalization_assignment(
+        checkpoint: &M0MethodCLegalizationCheckpoint,
+        patch: &MethodCHfieldLegalizationPatch,
+        assignment: &[usize],
+    ) -> M0LegalizationAssignmentOutcome {
+        match checkpoint.mesh.legalization_patch_boundary_check(
+            &checkpoint.selection,
+            &checkpoint.preflight,
+            patch,
+            assignment,
+            checkpoint.child_grid_number,
+            checkpoint.max_mrows,
+        ) {
+            Ok(check) if !check.is_closed() => M0LegalizationAssignmentOutcome::BoundaryIncomplete,
+            Ok(check) if check.exact_materializable => M0LegalizationAssignmentOutcome::Sat,
+            Ok(check) => M0LegalizationAssignmentOutcome::ExactFailure(
+                check
+                    .exact_failure_kind
+                    .map_or("unknown", |kind| kind.as_str()),
+            ),
+            Err(error) => {
+                let kind = method_c_hfield_failure_kind(&error);
+                if kind == earthmesh_mesh::MethodCHfieldFailureKind::Other {
+                    M0LegalizationAssignmentOutcome::Unclassified(error.to_string())
+                } else {
+                    M0LegalizationAssignmentOutcome::HardRejected(kind.as_str())
+                }
+            }
+        }
+    }
+
+    fn m0_enumerate_legalization_patch(
+        checkpoint: &M0MethodCLegalizationCheckpoint,
+        patch: &MethodCHfieldLegalizationPatch,
+        skip_assignments: usize,
+        max_assignments: usize,
+    ) -> M0LegalizationEnumerationReport {
+        let candidate_seed_count = patch.candidate_seed_ids.len();
+        let current_perimeter_scope_candidate_seed_ids = checkpoint
+            .preflight
+            .current_perimeter_candidate_scope(&patch.perimeter_components)
+            .expect("valid current perimeter candidate scope");
+        let covers_current_perimeter_scope = current_perimeter_scope_candidate_seed_ids
+            .as_ref()
+            .is_some_and(|scope| {
+                scope
+                    .iter()
+                    .all(|seed| patch.candidate_seed_ids.binary_search(seed).is_ok())
+            });
+        let total_assignments =
+            (candidate_seed_count < usize::BITS as usize).then(|| 1usize << candidate_seed_count);
+        let assignment_limit = total_assignments.map_or(max_assignments, |total| {
+            total.saturating_sub(skip_assignments).min(max_assignments)
+        });
+        let mut boundary_incomplete_assignments = 0usize;
+        let mut hard_rejected_assignments = BTreeMap::new();
+        let mut unclassified_error_assignments = 0usize;
+        let mut first_unclassified_error = None;
+        let mut exact_failure_counts = BTreeMap::new();
+        let baseline = patch
+            .selected_candidate_seed_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut visited_assignments = 0usize;
+        let mut evaluated_assignments = 0usize;
+
+        'search: for hamming_weight in 0..=candidate_seed_count {
+            let mut toggles = (0..hamming_weight).collect::<Vec<_>>();
+            loop {
+                if visited_assignments < skip_assignments {
+                    visited_assignments += 1;
+                } else if evaluated_assignments == assignment_limit {
+                    break 'search;
+                } else {
+                    if evaluated_assignments > 0 && evaluated_assignments % 65_536 == 0 {
+                        eprintln!(
+                            "earthmesh_cli: Method-C legalization patch {} evaluated {evaluated_assignments}/{assignment_limit} assignments after skipping {skip_assignments}",
+                            patch.cluster_index
+                        );
+                    }
+                    let assignment = patch
+                        .candidate_seed_ids
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(bit, &seed)| {
+                            (baseline.contains(&seed) ^ toggles.binary_search(&bit).is_ok())
+                                .then_some(seed)
+                        })
+                        .collect::<Vec<_>>();
+                    evaluated_assignments += 1;
+                    match m0_evaluate_legalization_assignment(checkpoint, patch, &assignment) {
+                        M0LegalizationAssignmentOutcome::BoundaryIncomplete => {
+                            boundary_incomplete_assignments += 1;
+                        }
+                        M0LegalizationAssignmentOutcome::Sat => {
+                            return M0LegalizationEnumerationReport {
+                                status: "SAT",
+                                cluster_index: patch.cluster_index,
+                                search_order: "baseline_hamming_weight_then_seed_order",
+                                candidate_seed_count,
+                                candidate_seed_ids: patch.candidate_seed_ids.clone(),
+                                current_perimeter_scope_candidate_seed_ids,
+                                covers_current_perimeter_scope,
+                                total_assignments,
+                                skipped_assignments: skip_assignments,
+                                assignment_limit,
+                                evaluated_assignments,
+                                boundary_incomplete_assignments,
+                                hard_rejected_assignments,
+                                unclassified_error_assignments,
+                                first_unclassified_error,
+                                exact_failure_counts,
+                                assignment: Some(assignment),
+                            };
+                        }
+                        M0LegalizationAssignmentOutcome::HardRejected(kind) => {
+                            *hard_rejected_assignments.entry(kind).or_default() += 1;
+                        }
+                        M0LegalizationAssignmentOutcome::ExactFailure(kind) => {
+                            *exact_failure_counts.entry(kind).or_default() += 1;
+                        }
+                        M0LegalizationAssignmentOutcome::Unclassified(error) => {
+                            unclassified_error_assignments += 1;
+                            first_unclassified_error.get_or_insert(error);
+                        }
+                    }
+                    visited_assignments += 1;
+                }
+
+                if hamming_weight == 0 {
+                    break;
+                }
+                let Some(index) = (0..hamming_weight)
+                    .rev()
+                    .find(|&index| toggles[index] < candidate_seed_count - hamming_weight + index)
+                else {
+                    break;
+                };
+                toggles[index] += 1;
+                for next in (index + 1)..hamming_weight {
+                    toggles[next] = toggles[next - 1] + 1;
+                }
+            }
+        }
+
+        let exhaustive = skip_assignments == 0 && total_assignments == Some(evaluated_assignments);
+        M0LegalizationEnumerationReport {
+            status: if exhaustive
+                && boundary_incomplete_assignments == 0
+                && unclassified_error_assignments == 0
+                && covers_current_perimeter_scope
+            {
+                "PATCH_UNSAT"
+            } else {
+                "INCOMPLETE"
+            },
+            cluster_index: patch.cluster_index,
+            search_order: "baseline_hamming_weight_then_seed_order",
+            candidate_seed_count,
+            candidate_seed_ids: patch.candidate_seed_ids.clone(),
+            current_perimeter_scope_candidate_seed_ids,
+            covers_current_perimeter_scope,
+            total_assignments,
+            skipped_assignments: skip_assignments,
+            assignment_limit,
+            evaluated_assignments,
+            boundary_incomplete_assignments,
+            hard_rejected_assignments,
+            unclassified_error_assignments,
+            first_unclassified_error,
+            exact_failure_counts,
+            assignment: None,
+        }
+    }
+
+    #[derive(Debug, Serialize)]
+    struct M0LegalizationNogoodReport {
+        cluster_index: usize,
+        candidate_seed_count: usize,
+        fixed_seed_states: Vec<(usize, bool)>,
+        free_seed_count: usize,
+        blocked_assignments: usize,
+        generalization_evaluations: usize,
+        verification_evaluations: usize,
+        hard_rejected_assignments: BTreeMap<&'static str, usize>,
+        exact_failure_counts: BTreeMap<&'static str, usize>,
+    }
+
+    struct M0LegalizationSubcubeProof {
+        safe: bool,
+        evaluated_assignments: usize,
+        hard_rejected_assignments: BTreeMap<&'static str, usize>,
+        exact_failure_counts: BTreeMap<&'static str, usize>,
+    }
+
+    fn m0_assignment_from_value_mask(
+        patch: &MethodCHfieldLegalizationPatch,
+        value_mask: usize,
+    ) -> Vec<usize> {
+        patch
+            .candidate_seed_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(bit, &seed)| ((value_mask >> bit) & 1 == 1).then_some(seed))
+            .collect()
+    }
+
+    fn m0_prove_legalization_nogood_subcube(
+        checkpoint: &M0MethodCLegalizationCheckpoint,
+        patch: &MethodCHfieldLegalizationPatch,
+        fixed_mask: usize,
+        fixed_values: usize,
+    ) -> M0LegalizationSubcubeProof {
+        let free_bits = (0..patch.candidate_seed_ids.len())
+            .filter(|bit| fixed_mask & (1usize << bit) == 0)
+            .collect::<Vec<_>>();
+        let total = 1usize << free_bits.len();
+        let mut hard_rejected_assignments = BTreeMap::new();
+        let mut exact_failure_counts = BTreeMap::new();
+        for completion in 0..total {
+            let mut value_mask = fixed_values & fixed_mask;
+            for (completion_bit, &candidate_bit) in free_bits.iter().enumerate() {
+                if completion & (1usize << completion_bit) != 0 {
+                    value_mask |= 1usize << candidate_bit;
+                }
+            }
+            let assignment = m0_assignment_from_value_mask(patch, value_mask);
+            match m0_evaluate_legalization_assignment(checkpoint, patch, &assignment) {
+                M0LegalizationAssignmentOutcome::HardRejected(kind) => {
+                    *hard_rejected_assignments.entry(kind).or_default() += 1;
+                }
+                M0LegalizationAssignmentOutcome::ExactFailure(kind) => {
+                    *exact_failure_counts.entry(kind).or_default() += 1;
+                }
+                M0LegalizationAssignmentOutcome::BoundaryIncomplete
+                | M0LegalizationAssignmentOutcome::Sat
+                | M0LegalizationAssignmentOutcome::Unclassified(_) => {
+                    return M0LegalizationSubcubeProof {
+                        safe: false,
+                        evaluated_assignments: completion + 1,
+                        hard_rejected_assignments,
+                        exact_failure_counts,
+                    };
+                }
+            }
+        }
+        M0LegalizationSubcubeProof {
+            safe: true,
+            evaluated_assignments: total,
+            hard_rejected_assignments,
+            exact_failure_counts,
+        }
+    }
+
+    fn m0_generalize_legalization_nogood(
+        checkpoint: &M0MethodCLegalizationCheckpoint,
+        patch: &MethodCHfieldLegalizationPatch,
+        assignment: &[usize],
+    ) -> Option<M0LegalizationNogoodReport> {
+        let candidate_seed_count = patch.candidate_seed_ids.len();
+        if candidate_seed_count >= usize::BITS as usize {
+            return None;
+        }
+        let selected = assignment.iter().copied().collect::<BTreeSet<_>>();
+        let candidates = patch
+            .candidate_seed_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if selected.len() != assignment.len() || !selected.is_subset(&candidates) {
+            return None;
+        }
+        let fixed_values = patch
+            .candidate_seed_ids
+            .iter()
+            .enumerate()
+            .fold(0usize, |mask, (bit, seed)| {
+                mask | (usize::from(selected.contains(seed)) << bit)
+            });
+        let mut fixed_mask = (1usize << candidate_seed_count) - 1;
+        let initial =
+            m0_prove_legalization_nogood_subcube(checkpoint, patch, fixed_mask, fixed_values);
+        if !initial.safe {
+            return None;
+        }
+        let mut generalization_evaluations = initial.evaluated_assignments;
+        for bit in 0..candidate_seed_count {
+            let trial = fixed_mask & !(1usize << bit);
+            let proof =
+                m0_prove_legalization_nogood_subcube(checkpoint, patch, trial, fixed_values);
+            generalization_evaluations += proof.evaluated_assignments;
+            if proof.safe {
+                fixed_mask = trial;
+            }
+        }
+        let verification =
+            m0_prove_legalization_nogood_subcube(checkpoint, patch, fixed_mask, fixed_values);
+        if !verification.safe {
+            return None;
+        }
+        let fixed_seed_states = patch
+            .candidate_seed_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(bit, &seed)| {
+                (fixed_mask & (1usize << bit) != 0)
+                    .then_some((seed, fixed_values & (1usize << bit) != 0))
+            })
+            .collect::<Vec<_>>();
+        let free_seed_count = candidate_seed_count - fixed_seed_states.len();
+        Some(M0LegalizationNogoodReport {
+            cluster_index: patch.cluster_index,
+            candidate_seed_count,
+            fixed_seed_states,
+            free_seed_count,
+            blocked_assignments: 1usize << free_seed_count,
+            generalization_evaluations,
+            verification_evaluations: verification.evaluated_assignments,
+            hard_rejected_assignments: verification.hard_rejected_assignments,
+            exact_failure_counts: verification.exact_failure_counts,
+        })
+    }
+
+    #[test]
+    fn cross_level_support_maps_stable_w_lineages_to_face_demands() {
+        let mesh = MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100)
+            .expect("build canonical mesh");
+        let lineages = mesh
+            .gridfile_m_cell_lineages()
+            .expect("read W-face lineages");
+        let requested = BTreeSet::from([lineages[1], lineages[lineages.len() - 1]]);
+        let mut face_demand = vec![false; mesh.nwd + 1];
+
+        assert_eq!(
+            add_method_c_face_lineage_demands(&mesh, &mut face_demand, &requested)
+                .expect("map support"),
+            2
+        );
+        assert!(face_demand[2]);
+        assert!(face_demand[mesh.nwd]);
+    }
+
+    #[test]
+    fn m0_legalization_checkpoint_is_byte_stable_and_round_trips() {
+        let mesh = MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100)
+            .expect("build canonical mesh");
+        let face_demand = vec![false; mesh.nwd + 1];
+        let selection = mesh
+            .selection_checkpoint_from_target_levels_and_face_demands(
+                |_, _| 0,
+                &face_demand,
+                2,
+                false,
+            )
+            .expect("selection checkpoint");
+        let checkpoint = M0MethodCLegalizationCheckpoint {
+            schema: M0_LEGALIZATION_CHECKPOINT_SCHEMA.to_string(),
+            pass: 2,
+            child_grid_number: 3,
+            field_max_level: 3,
+            max_mrows: MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            support_lineages: vec![Vec::new(), vec![17, 23], Vec::new(), Vec::new()],
+            selection,
+            preflight: MethodCHfieldLegalizationPreflight {
+                prepared_selected_faces: face_demand,
+                perimeter_lengths: Vec::new(),
+                perimeter_remainders: Vec::new(),
+                perimeter_candidate_seed_ids: Vec::new(),
+                self_loop_witnesses: Vec::new(),
+                witness_dependency_clusters: Vec::new(),
+                patches: Vec::new(),
+            },
+            mesh,
+        };
+        let first = m0_legalization_checkpoint_bytes(&checkpoint).expect("serialize checkpoint");
+        let second = m0_legalization_checkpoint_bytes(&checkpoint).expect("serialize checkpoint");
+        assert_eq!(first, second);
+        assert_eq!(
+            serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(&first)
+                .expect("parse checkpoint"),
+            checkpoint
+        );
+
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_method_c_legalization_checkpoint_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join("checkpoint.json");
+        let provenance = M0LegalizationCheckpointProvenance {
+            build_profile: "test".to_string(),
+            executable_sha256: "11".repeat(32),
+            namelist_sha256: "22".repeat(32),
+            landcover_file_name: "landtype.nc".to_string(),
+            landcover_sha256: "33".repeat(32),
+            source_nlon: 86_400,
+            source_nlat: 43_200,
+            source_samples_per_degree: 240,
+        };
+        let first_hash = write_m0_method_c_legalization_checkpoint(&path, &checkpoint, &provenance)
+            .expect("write checkpoint");
+        let first_file = fs::read(&path).expect("read checkpoint");
+        let second_hash =
+            write_m0_method_c_legalization_checkpoint(&path, &checkpoint, &provenance)
+                .expect("rewrite checkpoint");
+        assert_eq!(first_hash, second_hash);
+        assert_eq!(
+            fs::read(&path).expect("read rewritten checkpoint"),
+            first_file
+        );
+        assert_eq!(
+            fs::read_to_string(m0_sidecar_path(&path, ".sha256").expect("sidecar path"))
+                .expect("read sidecar"),
+            format!("{first_hash}\n")
+        );
+        assert_eq!(
+            serde_json::from_slice::<M0MethodCLegalizationCheckpointReceipt>(
+                &fs::read(
+                    m0_sidecar_path(&path, ".provenance.json").expect("provenance sidecar path"),
+                )
+                .expect("read provenance sidecar"),
+            )
+            .expect("parse provenance sidecar"),
+            M0MethodCLegalizationCheckpointReceipt {
+                checkpoint_sha256: first_hash,
+                provenance,
+            }
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn m0_legalization_enumerator_finds_known_sat() {
+        let mesh = MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100)
+            .expect("build canonical mesh");
+        let mut face_demand = vec![false; mesh.nwd + 1];
+        face_demand[2] = true;
+        let selection = mesh
+            .selection_checkpoint_from_target_levels_and_face_demands(
+                |_, _| 0,
+                &face_demand,
+                1,
+                true,
+            )
+            .expect("selection checkpoint");
+        let preflight = mesh
+            .legalization_preflight_from_selected_faces(
+                &selection.selected_faces,
+                &selection.legal_seed_ids,
+                &selection.selected_seed_ids,
+                2,
+            )
+            .expect("legalization preflight");
+        let mut candidate_seeds = selection
+            .selected_seed_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for &seed in &selection.legal_seed_ids {
+            candidate_seeds.insert(seed);
+            if candidate_seeds.len() == 8 {
+                break;
+            }
+        }
+        let candidate_seed_ids = candidate_seeds.into_iter().collect::<Vec<_>>();
+        assert_eq!(candidate_seed_ids.len(), 8);
+        let mutable_faces = mesh
+            .selected_faces_from_method_c_seed_ids(&candidate_seed_ids)
+            .expect("candidate footprints")
+            .iter()
+            .enumerate()
+            .skip(2)
+            .filter_map(|(iw, &selected)| selected.then_some(iw))
+            .collect();
+        let patch = MethodCHfieldLegalizationPatch {
+            cluster_index: 0,
+            witness_indices: Vec::new(),
+            witness_perimeter_components: Vec::new(),
+            perimeter_components: Vec::new(),
+            perimeter_interfaces: Vec::new(),
+            dependency_faces: Vec::new(),
+            dependency_face_lineages: Vec::new(),
+            candidate_seed_lineages: Vec::new(),
+            selected_candidate_seed_ids: Vec::new(),
+            candidate_seed_ids,
+            mutable_faces,
+            mutable_face_lineages: Vec::new(),
+        };
+        assert!(patch.candidate_seed_ids.len() < usize::BITS as usize);
+        let checkpoint = M0MethodCLegalizationCheckpoint {
+            schema: M0_LEGALIZATION_CHECKPOINT_SCHEMA.to_string(),
+            pass: 1,
+            child_grid_number: 2,
+            field_max_level: 1,
+            max_mrows: MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            support_lineages: Vec::new(),
+            selection,
+            preflight,
+            mesh,
+        };
+        let report = m0_enumerate_legalization_patch(
+            &checkpoint,
+            &patch,
+            0,
+            1usize << patch.candidate_seed_ids.len(),
+        );
+        let sharded = m0_enumerate_legalization_patch(&checkpoint, &patch, 1, 1);
+
+        assert_eq!(report.status, "SAT");
+        assert!(report.assignment.is_some());
+        assert!(report.evaluated_assignments > 1);
+        assert_eq!(sharded.status, "SAT");
+        assert_eq!(sharded.skipped_assignments, 1);
+        assert_eq!(sharded.evaluated_assignments, 1);
+        assert_eq!(sharded.assignment, report.assignment);
+        assert!(!report.covers_current_perimeter_scope);
+        assert_eq!(report.current_perimeter_scope_candidate_seed_ids, None);
+        assert!(
+            m0_generalize_legalization_nogood(
+                &checkpoint,
+                &patch,
+                report.assignment.as_deref().expect("SAT assignment"),
+            )
+            .is_none(),
+            "a SAT assignment must never produce a blocking nogood"
+        );
+
+        let mut empty_scope_patch = patch;
+        empty_scope_patch.candidate_seed_ids.clear();
+        empty_scope_patch.selected_candidate_seed_ids.clear();
+        empty_scope_patch.mutable_faces.clear();
+        let empty_scope = m0_enumerate_legalization_patch(&checkpoint, &empty_scope_patch, 0, 1);
+        assert_ne!(empty_scope.status, "PATCH_UNSAT");
+        assert!(!empty_scope.covers_current_perimeter_scope);
+        assert_eq!(empty_scope.current_perimeter_scope_candidate_seed_ids, None);
+    }
+
+    #[test]
+    #[ignore = "requires one frozen successful M0 gridfile"]
+    fn m0_legalization_enumerator_finds_sat_on_frozen_m0_grid() {
+        let gridfile = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_SAT_GRIDFILE")
+                .expect("frozen successful M0 gridfile"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_SAT_OUTPUT")
+                .expect("positive-control output path"),
+        );
+        let nxp = std::env::var("EARTHMESH_M0_LEGALIZATION_SAT_NXP")
+            .unwrap_or_else(|_| "81".to_string())
+            .parse::<usize>()
+            .expect("numeric positive-control NXP");
+        let source = read_unstructured_mesh_netcdf(&gridfile).expect("read frozen M0 gridfile");
+        let levels = crate::grid_quality_pipeline::read_gridfile_mesh_points(&gridfile)
+            .expect("read frozen M0 levels");
+        let lineages = crate::grid_quality_pipeline::read_gridfile_cell_lineages(&gridfile)
+            .expect("read frozen M0 lineages");
+        let mesh = method_c_delaunay_mesh_from_unstructured_gridfile(
+            &source,
+            MethodCGridfileMetadataSlices {
+                m_lineage: (!lineages.m.is_empty()).then_some(lineages.m.as_slice()),
+                m_refine_level: (!levels.m_refine_level.is_empty())
+                    .then_some(levels.m_refine_level.as_slice()),
+                m_refine_level_orig: (!levels.m_refine_level_orig.is_empty())
+                    .then_some(levels.m_refine_level_orig.as_slice()),
+                m_ngr: (!levels.m_ngr.is_empty()).then_some(levels.m_ngr.as_slice()),
+                w_lineage: (!lineages.w.is_empty()).then_some(lineages.w.as_slice()),
+                w_refine_level: (!levels.w_refine_level.is_empty())
+                    .then_some(levels.w_refine_level.as_slice()),
+                w_refine_level_orig: (!levels.w_refine_level_orig.is_empty())
+                    .then_some(levels.w_refine_level_orig.as_slice()),
+                w_ngr: (!levels.w_ngr.is_empty()).then_some(levels.w_ngr.as_slice()),
+            },
+            nxp,
+            0,
+            1.0,
+            0.25,
+            2_000_000,
+        )
+        .expect("rebuild frozen M0 Method-C mesh");
+        let child_grid_number = mesh
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.ngr)
+            .max()
+            .unwrap_or(1)
+            + 1;
+        let pass = child_grid_number - 1;
+        let parent_level = mesh
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.mrlw)
+            .max()
+            .expect("frozen M0 physical W faces");
+
+        let mut positive = None;
+        for demand_face in (2..=mesh.nwd)
+            .filter(|&iw| mesh.w_faces[iw].mrlw == parent_level)
+            .take(256)
+        {
+            let mut face_demand = vec![false; mesh.nwd + 1];
+            face_demand[demand_face] = true;
+            let Ok(selection) = mesh.selection_checkpoint_from_target_levels_and_face_demands(
+                |_, _| 0,
+                &face_demand,
+                pass,
+                true,
+            ) else {
+                continue;
+            };
+            if selection.selected_seed_ids.is_empty() || selection.selected_seed_ids.len() > 8 {
+                continue;
+            }
+            let Ok(preflight) = mesh.legalization_preflight_from_selected_faces(
+                &selection.selected_faces,
+                &selection.legal_seed_ids,
+                &selection.selected_seed_ids,
+                child_grid_number,
+            ) else {
+                continue;
+            };
+            let mut candidate_seeds = selection
+                .selected_seed_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            for &seed in &selection.legal_seed_ids {
+                candidate_seeds.insert(seed);
+                if candidate_seeds.len() == 8 {
+                    break;
+                }
+            }
+            if candidate_seeds.len() != 8 {
+                continue;
+            }
+            let candidate_seed_ids = candidate_seeds.into_iter().collect::<Vec<_>>();
+            let mutable_faces = mesh
+                .selected_faces_from_method_c_seed_ids(&candidate_seed_ids)
+                .expect("positive-control candidate footprints")
+                .iter()
+                .enumerate()
+                .skip(2)
+                .filter_map(|(iw, &selected)| selected.then_some(iw))
+                .collect();
+            let mut patch = MethodCHfieldLegalizationPatch {
+                cluster_index: 0,
+                witness_indices: Vec::new(),
+                witness_perimeter_components: Vec::new(),
+                perimeter_components: Vec::new(),
+                perimeter_interfaces: Vec::new(),
+                dependency_faces: Vec::new(),
+                dependency_face_lineages: Vec::new(),
+                candidate_seed_lineages: Vec::new(),
+                selected_candidate_seed_ids: selection.selected_seed_ids.clone(),
+                candidate_seed_ids,
+                mutable_faces,
+                mutable_face_lineages: Vec::new(),
+            };
+            let Ok(known) = mesh.legalization_patch_boundary_check(
+                &selection,
+                &preflight,
+                &patch,
+                &patch.selected_candidate_seed_ids,
+                child_grid_number,
+                MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            ) else {
+                continue;
+            };
+            if !known.is_closed() || !known.exact_materializable {
+                continue;
+            }
+            patch.selected_candidate_seed_ids.clear();
+            let checkpoint = M0MethodCLegalizationCheckpoint {
+                schema: M0_LEGALIZATION_CHECKPOINT_SCHEMA.to_string(),
+                pass,
+                child_grid_number,
+                field_max_level: pass,
+                max_mrows: MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                support_lineages: Vec::new(),
+                selection,
+                preflight,
+                mesh: mesh.clone(),
+            };
+            let report = m0_enumerate_legalization_patch(&checkpoint, &patch, 0, 256);
+            if report.status == "SAT" && report.evaluated_assignments > 1 {
+                positive = Some((demand_face, checkpoint, report));
+                break;
+            }
+        }
+
+        let (demand_face, checkpoint, report) =
+            positive.expect("find an uninjected 8-variable SAT positive control");
+        let artifact = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_frozen_m0_sat_control",
+            "gridfile_sha256": earthmesh_project::file_content_hash(&gridfile)
+                .expect("frozen gridfile hash"),
+            "enumerator_executable_sha256": earthmesh_project::file_content_hash(
+                &std::env::current_exe().expect("current test executable")
+            ).expect("enumerator executable hash"),
+            "child_grid_number": checkpoint.child_grid_number,
+            "max_mrows": checkpoint.max_mrows,
+            "demand_face": demand_face,
+            "result": report,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create positive-control output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&artifact).expect("serialize positive-control artifact"),
+        )
+        .expect("write positive-control artifact");
+        let hash = earthmesh_project::file_content_hash(&output).expect("artifact hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("positive-control sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write positive-control sidecar");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_enumeration_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_ENUMERATION_OUTPUT")
+                .expect("enumeration output path"),
+        );
+        let cluster_index = std::env::var("EARTHMESH_M0_LEGALIZATION_PATCH_CLUSTER")
+            .expect("patch cluster")
+            .parse::<usize>()
+            .expect("numeric patch cluster");
+        let max_assignments = std::env::var("EARTHMESH_M0_LEGALIZATION_MAX_ASSIGNMENTS")
+            .unwrap_or_else(|_| "1024".to_string())
+            .parse::<usize>()
+            .expect("numeric assignment limit");
+        let skip_assignments = std::env::var("EARTHMESH_M0_LEGALIZATION_SKIP_ASSIGNMENTS")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse::<usize>()
+            .expect("numeric assignment skip");
+        let expansion_rings = std::env::var("EARTHMESH_M0_LEGALIZATION_PATCH_RINGS")
+            .unwrap_or_else(|_| "0".to_string())
+            .parse::<usize>()
+            .expect("numeric patch expansion rings");
+        let include_local_phases =
+            std::env::var_os("EARTHMESH_M0_LEGALIZATION_LOCAL_PHASES").is_some();
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let enumerator_executable_sha256 = earthmesh_project::file_content_hash(
+            &std::env::current_exe().expect("current test executable"),
+        )
+        .expect("enumerator executable hash");
+        let mut patch = checkpoint
+            .preflight
+            .patches
+            .iter()
+            .find(|patch| patch.cluster_index == cluster_index)
+            .expect("checkpoint patch cluster")
+            .clone();
+        for _ in 0..expansion_rings {
+            patch = checkpoint
+                .mesh
+                .expand_legalization_patch_one_ring(
+                    &checkpoint.selection,
+                    &checkpoint.preflight,
+                    &patch,
+                )
+                .expect("expand checkpoint patch");
+        }
+        if include_local_phases {
+            patch = checkpoint
+                .mesh
+                .expand_legalization_patch_local_phases(
+                    &checkpoint.selection,
+                    &checkpoint.preflight,
+                    &patch,
+                )
+                .expect("expand checkpoint local phase candidates");
+        }
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_enumeration_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "enumerator_executable_sha256": enumerator_executable_sha256,
+            "child_grid_number": checkpoint.child_grid_number,
+            "max_mrows": checkpoint.max_mrows,
+            "expansion_rings": expansion_rings,
+            "include_local_phases": include_local_phases,
+            "result": m0_enumerate_legalization_patch(
+                &checkpoint,
+                &patch,
+                skip_assignments,
+                max_assignments,
+            ),
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_compiled_table_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_TABLE_OUTPUT")
+                .expect("compiled-table output path"),
+        );
+        let cluster_index = std::env::var("EARTHMESH_M0_LEGALIZATION_PATCH_CLUSTER")
+            .expect("patch cluster")
+            .parse::<usize>()
+            .expect("numeric patch cluster");
+        let max_variables = std::env::var("EARTHMESH_M0_LEGALIZATION_TABLE_MAX_VARIABLES")
+            .unwrap_or_else(|_| "12".to_string())
+            .parse::<usize>()
+            .expect("numeric compiled-table variable limit");
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let patch = checkpoint
+            .preflight
+            .patches
+            .iter()
+            .find(|patch| patch.cluster_index == cluster_index)
+            .expect("checkpoint patch cluster");
+        let compiled = checkpoint
+            .mesh
+            .compile_bounded_exact_legalization_patch_table_for_diagnostics(
+                &checkpoint.selection,
+                &checkpoint.preflight,
+                patch,
+                checkpoint.child_grid_number,
+                checkpoint.max_mrows,
+                max_variables,
+            )
+            .expect("compile exact patch table");
+        let status = match compiled.status {
+            MethodCHfieldExactPatchTableStatus::Sat => "SAT",
+            MethodCHfieldExactPatchTableStatus::PatchUnsat => "PATCH_UNSAT",
+            MethodCHfieldExactPatchTableStatus::Incomplete => "INCOMPLETE",
+        };
+        let propagation = compiled.propagation.as_ref().map(|propagation| {
+            serde_json::json!({
+                "consistent": propagation.consistent,
+                "rounds": propagation.rounds,
+                "pruned_values": propagation.pruned_values,
+                "residual_variable_count": propagation.residual_variable_count,
+                "active_row_counts": propagation.active_row_counts,
+            })
+        });
+        let system_analysis = compiled.system_analysis.as_ref().map(|analysis| {
+            serde_json::json!({
+                "residual_components": analysis.residual_components,
+                "max_residual_component_width": analysis.max_residual_component_width,
+            })
+        });
+        let demand_coverage = serde_json::json!({
+            "anchor_count": compiled.demand_anchor_count,
+            "fixed_direct_covered": compiled.fixed_direct_covered_demand_anchors,
+            "fixed_closed_covered": compiled.fixed_closed_covered_demand_anchors,
+            "maximal_direct_covered": compiled.maximal_direct_covered_demand_anchors,
+            "maximal_closed_covered": compiled.maximal_closed_covered_demand_anchors,
+            "fixed_uncovered": compiled.fixed_uncovered_demand_anchors,
+            "direct_unsupported": compiled.direct_unsupported_demand_anchors,
+            "distinct_direct_candidate_support_scope_count":
+                compiled.distinct_direct_candidate_support_scope_count,
+            "min_direct_candidate_support_count":
+                compiled.min_direct_candidate_support_count,
+            "max_direct_candidate_support_count":
+                compiled.max_direct_candidate_support_count,
+            "direct_coverage_clause_satisfying_assignments":
+                compiled.direct_coverage_clause_satisfying_assignments,
+        });
+        let ordered_perimeter_scope_analyses = compiled
+            .ordered_perimeter_scope_analyses
+            .iter()
+            .map(|analysis| {
+                serde_json::json!({
+                    "component_index": analysis.component_index,
+                    "perimeter_point_count": analysis.perimeter_point_count,
+                    "candidate_seed_count": analysis.candidate_seed_count,
+                    "point_seed_incidences": analysis.point_seed_incidences,
+                    "max_point_candidate_seed_count": analysis.max_point_candidate_seed_count,
+                    "distinct_incidence_signature_count":
+                        analysis.distinct_incidence_signature_count,
+                    "max_incidence_signature_multiplicity":
+                        analysis.max_incidence_signature_multiplicity,
+                    "max_local_ring_face_count": analysis.max_local_ring_face_count,
+                    "max_distinct_local_footprint_mask_count":
+                        analysis.max_distinct_local_footprint_mask_count,
+                    "max_local_union_state_count": analysis.max_local_union_state_count,
+                    "projected_interface_face_count": analysis.projected_interface_face_count,
+                    "projected_direct_union_state_cap":
+                        analysis.projected_direct_union_state_cap,
+                    "projected_direct_union_state_count":
+                        analysis.projected_direct_union_state_count,
+                    "projected_direct_union_state_cap_exceeded_after_variables":
+                        analysis.projected_direct_union_state_cap_exceeded_after_variables,
+                    "candidate_footprint_face_count":
+                        analysis.candidate_footprint_face_count,
+                    "candidate_footprint_union_state_count":
+                        analysis.candidate_footprint_union_state_count,
+                    "candidate_footprint_union_state_cap_exceeded_after_variables":
+                        analysis.candidate_footprint_union_state_cap_exceeded_after_variables,
+                    "closure_prefix_variable_count":
+                        analysis.closure_prefix_variable_count,
+                    "closure_prefix_assignment_count":
+                        analysis.closure_prefix_assignment_count,
+                    "closure_prefix_distinct_direct_mask_count":
+                        analysis.closure_prefix_distinct_direct_mask_count,
+                    "closure_prefix_distinct_closed_mask_count":
+                        analysis.closure_prefix_distinct_closed_mask_count,
+                    "closure_prefix_max_closed_mask_multiplicity":
+                        analysis.closure_prefix_max_closed_mask_multiplicity,
+                    "closure_incremental_prefix_parity":
+                        analysis.closure_incremental_prefix_parity,
+                    "best_cut_point": analysis.best_cut_point,
+                    "min_linearized_frontier_width": analysis.min_linearized_frontier_width,
+                })
+            })
+            .collect::<Vec<_>>();
+        // Only populated when EARTHMESH_M0_LEGALIZATION_ASSIGNMENT_DUMP is set;
+        // omitted from the report otherwise so existing evidence hashes stay
+        // byte-identical.
+        let assignment_outcome_records = (!compiled.assignment_outcome_records.is_empty())
+            .then(|| {
+                compiled
+                    .assignment_outcome_records
+                    .iter()
+                    .map(|record| {
+                        serde_json::json!({
+                            "value_mask": record.value_mask,
+                            "outcome": record.outcome,
+                            "exact_state_ordinal": record.exact_state_ordinal,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+        let mut report = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_compiled_table_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "compiler_executable_sha256": earthmesh_project::file_content_hash(
+                &std::env::current_exe().expect("current test executable")
+            ).expect("compiler executable hash"),
+            "cluster_index": cluster_index,
+            "max_variables": max_variables,
+            "candidate_seed_ids": compiled.candidate_seed_ids,
+            "demand_coverage": demand_coverage,
+            "status": status,
+            "total_assignments": compiled.total_assignments,
+            "evaluated_assignments": compiled.evaluated_assignments,
+            "sat_assignments": compiled.sat_assignments,
+            "boundary_incomplete_assignments": compiled.boundary_incomplete_assignments,
+            "hard_rejected_assignments": compiled.hard_rejected_assignments,
+            "exact_failure_assignments": compiled.exact_failure_assignments,
+            "unclassified_error_assignments": compiled.unclassified_error_assignments,
+            "first_unclassified_error": compiled.first_unclassified_error,
+            "triplet_assignment_count": compiled.triplet_assignment_count,
+            "distinct_exact_state_count": compiled.distinct_exact_state_count,
+            "max_exact_state_multiplicity": compiled.max_exact_state_multiplicity,
+            "mixed_exact_outcome_state_count": compiled.mixed_exact_outcome_state_count,
+            "current_perimeter_scope_candidate_seed_ids":
+                compiled.current_perimeter_scope_candidate_seed_ids,
+            "covers_current_perimeter_scope": compiled.covers_current_perimeter_scope,
+            "ordered_perimeter_scope_analyses": ordered_perimeter_scope_analyses,
+            "propagation": propagation,
+            "system_analysis": system_analysis,
+        });
+        if let Some(records) = assignment_outcome_records {
+            report
+                .as_object_mut()
+                .expect("compiled-table report object")
+                .insert(
+                    "assignment_outcome_records".to_string(),
+                    serde_json::Value::Array(records),
+                );
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize compiled-table report"),
+        )
+        .expect("write compiled-table report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_nogood_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_NOGOOD_OUTPUT").expect("nogood output path"),
+        );
+        let cluster_index = std::env::var("EARTHMESH_M0_LEGALIZATION_PATCH_CLUSTER")
+            .expect("patch cluster")
+            .parse::<usize>()
+            .expect("numeric patch cluster");
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let patch = checkpoint
+            .preflight
+            .patches
+            .iter()
+            .find(|patch| patch.cluster_index == cluster_index)
+            .expect("checkpoint patch cluster");
+        assert!(
+            patch.candidate_seed_ids.len() <= 20,
+            "nogood probe is intentionally bounded to at most 20 variables"
+        );
+        let nogood = m0_generalize_legalization_nogood(
+            &checkpoint,
+            patch,
+            &patch.selected_candidate_seed_ids,
+        )
+        .expect("starting assignment must be an exactly classified failure");
+        let mut full_counts = BTreeMap::<String, usize>::new();
+        let mut pruned_counts = BTreeMap::<String, usize>::new();
+        let mut skipped_assignments = 0usize;
+        for value_mask in 0..(1usize << patch.candidate_seed_ids.len()) {
+            let assignment = m0_assignment_from_value_mask(patch, value_mask);
+            let label = |outcome| match outcome {
+                M0LegalizationAssignmentOutcome::BoundaryIncomplete => {
+                    "boundary_incomplete".to_string()
+                }
+                M0LegalizationAssignmentOutcome::Sat => "sat".to_string(),
+                M0LegalizationAssignmentOutcome::HardRejected(kind) => {
+                    format!("hard:{kind}")
+                }
+                M0LegalizationAssignmentOutcome::ExactFailure(kind) => {
+                    format!("exact:{kind}")
+                }
+                M0LegalizationAssignmentOutcome::Unclassified(_) => "unclassified".to_string(),
+            };
+            *full_counts
+                .entry(label(m0_evaluate_legalization_assignment(
+                    &checkpoint,
+                    patch,
+                    &assignment,
+                )))
+                .or_default() += 1;
+            let selected = assignment.iter().copied().collect::<BTreeSet<_>>();
+            if nogood
+                .fixed_seed_states
+                .iter()
+                .all(|(seed, value)| selected.contains(seed) == *value)
+            {
+                skipped_assignments += 1;
+            } else {
+                *pruned_counts
+                    .entry(label(m0_evaluate_legalization_assignment(
+                        &checkpoint,
+                        patch,
+                        &assignment,
+                    )))
+                    .or_default() += 1;
+            }
+        }
+        for (kind, count) in &nogood.hard_rejected_assignments {
+            *pruned_counts.entry(format!("hard:{kind}")).or_default() += count;
+        }
+        for (kind, count) in &nogood.exact_failure_counts {
+            *pruned_counts.entry(format!("exact:{kind}")).or_default() += count;
+        }
+        assert_eq!(skipped_assignments, nogood.blocked_assignments);
+        assert_eq!(pruned_counts, full_counts);
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_exact_nogood_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "enumerator_executable_sha256": earthmesh_project::file_content_hash(
+                &std::env::current_exe().expect("current test executable")
+            ).expect("enumerator executable hash"),
+            "child_grid_number": checkpoint.child_grid_number,
+            "max_mrows": checkpoint.max_mrows,
+            "starting_assignment": &patch.selected_candidate_seed_ids,
+            "nogood": nogood,
+            "parity": {
+                "full_assignment_counts": full_counts,
+                "pruned_plus_proof_counts": pruned_counts,
+                "skipped_assignments": skipped_assignments,
+                "matches": true,
+            },
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_phase_inventory_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_PHASE_INVENTORY_OUTPUT")
+                .expect("phase inventory output path"),
+        );
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        assert!(
+            !checkpoint.selection.component_phases.is_empty(),
+            "checkpoint predates component seed ownership diagnostics"
+        );
+        let mut seed_component = BTreeMap::new();
+        for component in &checkpoint.selection.component_phases {
+            for &seed in &component.legal_seed_ids {
+                assert!(
+                    seed_component
+                        .insert(seed, component.component_index)
+                        .is_none(),
+                    "legal seed {seed} belongs to more than one demand component"
+                );
+            }
+        }
+        let mut affected_components = BTreeSet::new();
+        let patches = checkpoint
+            .preflight
+            .patches
+            .iter()
+            .map(|patch| {
+                let mut candidate_counts = BTreeMap::<usize, usize>::new();
+                let mut selected_counts = BTreeMap::<usize, usize>::new();
+                let mut unmapped_candidate_seed_ids = Vec::new();
+                for &seed in &patch.candidate_seed_ids {
+                    if let Some(&component) = seed_component.get(&seed) {
+                        *candidate_counts.entry(component).or_default() += 1;
+                        affected_components.insert(component);
+                    } else {
+                        unmapped_candidate_seed_ids.push(seed);
+                    }
+                }
+                for &seed in &patch.selected_candidate_seed_ids {
+                    if let Some(&component) = seed_component.get(&seed) {
+                        *selected_counts.entry(component).or_default() += 1;
+                    }
+                }
+                serde_json::json!({
+                    "cluster_index": patch.cluster_index,
+                    "candidate_seed_count": patch.candidate_seed_ids.len(),
+                    "component_candidate_seed_counts": candidate_counts,
+                    "component_selected_seed_counts": selected_counts,
+                    "unmapped_candidate_seed_ids": unmapped_candidate_seed_ids,
+                })
+            })
+            .collect::<Vec<_>>();
+        let baseline_combination_count = checkpoint
+            .selection
+            .component_phases
+            .iter()
+            .filter(|component| affected_components.contains(&component.component_index))
+            .try_fold(1usize, |count, component| {
+                count.checked_mul(component.phase_class_count)
+            });
+        let affected = checkpoint
+            .selection
+            .component_phases
+            .iter()
+            .filter(|component| affected_components.contains(&component.component_index))
+            .map(|component| {
+                let point_json = |im: usize| {
+                    let point = checkpoint.mesh.m_points[im];
+                    serde_json::json!([point.x, point.y, point.z])
+                };
+                serde_json::json!({
+                    "component_index": component.component_index,
+                    "component_m_point_count": component.component_m_points.len(),
+                    "component_anchor": point_json(component.demand_start),
+                    "phase_class_count": component.phase_class_count,
+                    "phase_anchors": component.phase_starts.iter()
+                        .map(|&im| point_json(im))
+                        .collect::<Vec<_>>(),
+                    "selected_phase_ordinal": component.selected_phase_ordinal,
+                    "legal_seed_count": component.legal_seed_ids.len(),
+                    "selected_seed_count": component.selected_seed_ids.len(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_phase_inventory",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "affected_component_count": affected.len(),
+            "baseline_phase_combination_count": baseline_combination_count,
+            "affected_components": affected,
+            "patches": patches,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_perimeter_component_offset_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_PERIMETER_OFFSET_OUTPUT")
+                .expect("perimeter offset output path"),
+        );
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let affected_components = checkpoint
+            .preflight
+            .self_loop_witnesses
+            .iter()
+            .map(|witness| witness.perimeter_component)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let total_assignments = 3usize
+            .checked_pow(
+                u32::try_from(affected_components.len()).expect("component count fits u32"),
+            )
+            .expect("perimeter offset assignment count fits usize");
+        let assignment_limit = std::env::var("EARTHMESH_M0_PERIMETER_OFFSET_MAX_ASSIGNMENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(total_assignments)
+            .min(total_assignments);
+        let mut failure_counts = BTreeMap::<&'static str, usize>::new();
+        let mut first_failure_messages = BTreeMap::<&'static str, String>::new();
+        let mut evaluated_assignments = 0usize;
+        let mut sat_assignment = None;
+
+        'search: for hamming_weight in 0..=affected_components.len() {
+            for encoded in 0..total_assignments {
+                let mut value = encoded;
+                let mut offsets = vec![0usize; checkpoint.preflight.perimeter_lengths.len()];
+                let mut assignment = Vec::new();
+                for &component in &affected_components {
+                    let offset = value % 3;
+                    value /= 3;
+                    offsets[component] = offset;
+                    if offset != 0 {
+                        assignment.push((component, offset));
+                    }
+                }
+                if assignment.len() != hamming_weight {
+                    continue;
+                }
+                if evaluated_assignments == assignment_limit {
+                    break 'search;
+                }
+                evaluated_assignments += 1;
+                match checkpoint
+                    .mesh
+                    .spawn_nest_pass_method_c_with_perimeter_component_offsets_for_diagnostics(
+                        &checkpoint.preflight.prepared_selected_faces,
+                        &offsets,
+                        checkpoint.child_grid_number,
+                        checkpoint.max_mrows,
+                        true,
+                    ) {
+                    Ok(mesh) => {
+                        mesh.validate_topology().expect("SAT topology");
+                        sat_assignment = Some(assignment);
+                        break 'search;
+                    }
+                    Err(error) => {
+                        let kind = method_c_hfield_failure_kind(&error).as_str();
+                        *failure_counts.entry(kind).or_default() += 1;
+                        first_failure_messages
+                            .entry(kind)
+                            .or_insert_with(|| error.to_string());
+                    }
+                }
+            }
+        }
+        let status = if sat_assignment.is_some() {
+            "SAT"
+        } else if evaluated_assignments == total_assignments {
+            "PATCH_UNSAT"
+        } else {
+            "INCOMPLETE"
+        };
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_perimeter_component_offset_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "status": status,
+            "affected_perimeter_components": affected_components,
+            "perimeter_component_count": checkpoint.preflight.perimeter_lengths.len(),
+            "total_assignments": total_assignments,
+            "assignment_limit": assignment_limit,
+            "evaluated_assignments": evaluated_assignments,
+            "failure_counts": failure_counts,
+            "first_failure_messages": first_failure_messages,
+            "sat_assignment": sat_assignment,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_all_legal_seeds_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_ALL_SEEDS_OUTPUT")
+                .expect("all-seeds output path"),
+        );
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let selected = checkpoint
+            .mesh
+            .selected_faces_from_method_c_seed_ids(&checkpoint.selection.legal_seed_ids)
+            .expect("all legal seed footprints");
+        checkpoint
+            .selection
+            .validate_demand_coverage(&selected)
+            .expect("all legal seeds preserve hard coverage");
+        let selected_face_count = selected.iter().skip(2).filter(|&&face| face).count();
+        let report = match checkpoint.mesh.legalization_preflight_from_selected_faces(
+            &selected,
+            &checkpoint.selection.legal_seed_ids,
+            &checkpoint.selection.legal_seed_ids,
+            checkpoint.child_grid_number,
+        ) {
+            Ok(preflight) => {
+                let offsets = vec![0usize; preflight.perimeter_lengths.len()];
+                match checkpoint
+                    .mesh
+                    .spawn_nest_pass_method_c_with_perimeter_component_offsets_for_diagnostics(
+                        &preflight.prepared_selected_faces,
+                        &offsets,
+                        checkpoint.child_grid_number,
+                        checkpoint.max_mrows,
+                        true,
+                    ) {
+                    Ok(mesh) => {
+                        mesh.validate_topology().expect("all-seeds SAT topology");
+                        serde_json::json!({
+                            "kind": "earthmesh_method_c_all_legal_seeds_probe",
+                            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                                .expect("checkpoint hash"),
+                            "status": "SAT",
+                            "legal_seed_count": checkpoint.selection.legal_seed_ids.len(),
+                            "baseline_selected_seed_count": checkpoint.selection.selected_seed_ids.len(),
+                            "selected_face_count": selected_face_count,
+                            "prepared_selected_face_count": preflight.prepared_selected_faces
+                                .iter().skip(2).filter(|&&face| face).count(),
+                            "perimeter_lengths": preflight.perimeter_lengths,
+                            "self_loop_witness_count": preflight.self_loop_witnesses.len(),
+                            "child_counts": {"m": mesh.nmd, "u": mesh.nud, "w": mesh.nwd},
+                        })
+                    }
+                    Err(error) => serde_json::json!({
+                        "kind": "earthmesh_method_c_all_legal_seeds_probe",
+                        "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                            .expect("checkpoint hash"),
+                        "status": "exact_failure",
+                        "legal_seed_count": checkpoint.selection.legal_seed_ids.len(),
+                        "baseline_selected_seed_count": checkpoint.selection.selected_seed_ids.len(),
+                        "selected_face_count": selected_face_count,
+                        "prepared_selected_face_count": preflight.prepared_selected_faces
+                            .iter().skip(2).filter(|&&face| face).count(),
+                        "perimeter_lengths": preflight.perimeter_lengths,
+                        "self_loop_witness_count": preflight.self_loop_witnesses.len(),
+                        "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                        "error": error.to_string(),
+                    }),
+                }
+            }
+            Err(error) => serde_json::json!({
+                "kind": "earthmesh_method_c_all_legal_seeds_probe",
+                "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                    .expect("checkpoint hash"),
+                "status": "preflight_failure",
+                "legal_seed_count": checkpoint.selection.legal_seed_ids.len(),
+                "baseline_selected_seed_count": checkpoint.selection.selected_seed_ids.len(),
+                "selected_face_count": selected_face_count,
+                "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                "error": error.to_string(),
+            }),
+        };
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_face_demand_dilation_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_DEMAND_DILATION_OUTPUT")
+                .expect("demand dilation output path"),
+        );
+        let max_rings = std::env::var("EARTHMESH_M0_DEMAND_DILATION_MAX_RINGS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(6);
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let levels = m0_frozen_target_levels(&checkpoint);
+        let mut demand = checkpoint.selection.face_demand.clone();
+        let mut rings = Vec::new();
+        for ring in 0..=max_rings {
+            let mut ring_report = m0_evaluate_face_demand(&checkpoint, &levels, &demand);
+            ring_report
+                .as_object_mut()
+                .expect("face-demand report object")
+                .insert("ring".to_string(), serde_json::json!(ring));
+            let sat = ring_report["status"] == "SAT";
+            rings.push(ring_report);
+            if sat || ring == max_rings {
+                break;
+            }
+            let dilated = m0_dilate_face_demands_same_level(&checkpoint.mesh, &demand);
+            if dilated == demand {
+                break;
+            }
+            demand = dilated;
+        }
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_face_demand_dilation_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "max_rings": max_rings,
+            "rings": rings,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_component_dilation_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_COMPONENT_DILATION_OUTPUT")
+                .expect("component dilation output path"),
+        );
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let levels = m0_frozen_target_levels(&checkpoint);
+        let baseline_demand = &checkpoint.selection.face_demand;
+        let components = m0_face_demand_components_same_level(&checkpoint.mesh, baseline_demand);
+        let baseline = m0_evaluate_face_demand(&checkpoint, &levels, baseline_demand);
+        let mut variants = Vec::with_capacity(components.len());
+        for (component_index, component) in components.iter().enumerate() {
+            let trial =
+                m0_dilate_one_face_demand_component(&checkpoint.mesh, baseline_demand, component);
+            let added_face_count = trial
+                .iter()
+                .zip(baseline_demand)
+                .skip(2)
+                .filter(|(trial, baseline)| **trial && !**baseline)
+                .count();
+            let mut variant = m0_evaluate_face_demand(&checkpoint, &levels, &trial);
+            let fields = variant
+                .as_object_mut()
+                .expect("component-dilation report object");
+            fields.insert(
+                "component_index".to_string(),
+                serde_json::json!(component_index),
+            );
+            fields.insert(
+                "component_first_face".to_string(),
+                serde_json::json!(component[0]),
+            );
+            fields.insert(
+                "component_face_count".to_string(),
+                serde_json::json!(component.len()),
+            );
+            fields.insert(
+                "added_face_count".to_string(),
+                serde_json::json!(added_face_count),
+            );
+            variants.push(variant);
+        }
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_component_dilation_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "component_count": components.len(),
+            "baseline": baseline,
+            "variants": variants,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_greedy_component_dilation_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_GREEDY_DILATION_OUTPUT")
+                .expect("greedy dilation output path"),
+        );
+        let max_steps = std::env::var("EARTHMESH_M0_GREEDY_DILATION_MAX_STEPS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(4);
+        let initial_component_faces =
+            m0_usize_list_env("EARTHMESH_M0_GREEDY_DILATION_INITIAL_COMPONENT_FACES");
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let levels = m0_frozen_target_levels(&checkpoint);
+        let mut demand = checkpoint.selection.face_demand.clone();
+        for &face in &initial_component_faces {
+            let components = m0_face_demand_components_same_level(&checkpoint.mesh, &demand);
+            let component = components
+                .iter()
+                .find(|component| component.binary_search(&face).is_ok())
+                .unwrap_or_else(|| panic!("initial face {face} is not in a demand component"));
+            demand = m0_dilate_one_face_demand_component(&checkpoint.mesh, &demand, component);
+        }
+        let initial = m0_evaluate_face_demand(&checkpoint, &levels, &demand);
+        let mut current = initial.clone();
+        let mut steps = Vec::new();
+        let mut terminal_status = "STEP_LIMIT";
+
+        for step in 1..=max_steps {
+            if current["status"] == "SAT" {
+                terminal_status = "SAT";
+                break;
+            }
+            let current_witnesses = current["self_loop_witness_count"]
+                .as_u64()
+                .map(|value| value as usize)
+                .expect("greedy baseline must expose self-loop witnesses");
+            let components = m0_face_demand_components_same_level(&checkpoint.mesh, &demand);
+            let mut candidates = Vec::with_capacity(components.len());
+            let mut best: Option<((usize, usize, usize), Vec<bool>, serde_json::Value)> = None;
+            for (component_index, component) in components.iter().enumerate() {
+                let trial =
+                    m0_dilate_one_face_demand_component(&checkpoint.mesh, &demand, component);
+                let added_face_count = trial
+                    .iter()
+                    .zip(&demand)
+                    .skip(2)
+                    .filter(|(trial, baseline)| **trial && !**baseline)
+                    .count();
+                let outcome = m0_evaluate_face_demand(&checkpoint, &levels, &trial);
+                let witness_count = outcome["self_loop_witness_count"]
+                    .as_u64()
+                    .map(|value| value as usize);
+                candidates.push(serde_json::json!({
+                    "component_index": component_index,
+                    "component_first_face": component[0],
+                    "component_face_count": component.len(),
+                    "added_face_count": added_face_count,
+                    "status": outcome["status"],
+                    "self_loop_witness_count": witness_count,
+                    "failure_kind": outcome.get("failure_kind"),
+                }));
+                let admissible = outcome["status"] == "SAT"
+                    || (outcome["status"] == "exact_failure"
+                        && outcome["failure_kind"] == "transition_patch"
+                        && witness_count.is_some_and(|count| count < current_witnesses));
+                if !admissible {
+                    continue;
+                }
+                let key = (witness_count.unwrap_or(0), added_face_count, component[0]);
+                if best.as_ref().is_none_or(|(best_key, _, _)| key < *best_key) {
+                    best = Some((key, trial, outcome));
+                }
+            }
+            let Some((chosen_key, chosen_demand, chosen)) = best else {
+                terminal_status = "LOCAL_MINIMUM";
+                steps.push(serde_json::json!({
+                    "step": step,
+                    "component_count": components.len(),
+                    "current_self_loop_witness_count": current_witnesses,
+                    "chosen": null,
+                    "candidates": candidates,
+                }));
+                break;
+            };
+            let added_face_count = chosen_demand
+                .iter()
+                .zip(&demand)
+                .skip(2)
+                .filter(|(trial, baseline)| **trial && !**baseline)
+                .count();
+            steps.push(serde_json::json!({
+                "step": step,
+                "component_count": components.len(),
+                "current_self_loop_witness_count": current_witnesses,
+                "chosen_added_face_count": added_face_count,
+                "chosen_component_first_face": chosen_key.2,
+                "chosen": chosen,
+                "candidates": candidates,
+            }));
+            demand = chosen_demand;
+            current = steps
+                .last()
+                .and_then(|step| step.get("chosen"))
+                .cloned()
+                .expect("chosen outcome");
+            if current["status"] == "SAT" {
+                terminal_status = "SAT";
+                break;
+            }
+        }
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_greedy_component_dilation_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "max_steps": max_steps,
+            "initial_component_faces": initial_component_faces,
+            "terminal_status": terminal_status,
+            "initial": initial,
+            "final": current,
+            "steps": steps,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_single_component_phase_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_PHASE_PROBE_OUTPUT")
+                .expect("phase probe output path"),
+        );
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let levels = m0_frozen_target_levels(&checkpoint);
+        let target_level = |lon: f64, lat: f64| {
+            *levels
+                .get(&(lon.to_bits(), lat.to_bits()))
+                .expect("selection sampled outside the frozen target-level coordinates")
+        };
+        let mut seed_component = BTreeMap::new();
+        for component in &checkpoint.selection.component_phases {
+            for &seed in &component.legal_seed_ids {
+                assert!(
+                    seed_component
+                        .insert(seed, component.component_index)
+                        .is_none(),
+                    "legal seed {seed} belongs to more than one demand component"
+                );
+            }
+        }
+        let affected_components = checkpoint
+            .preflight
+            .patches
+            .iter()
+            .flat_map(|patch| &patch.candidate_seed_ids)
+            .map(|seed| {
+                *seed_component
+                    .get(seed)
+                    .expect("patch candidate seed has no demand component")
+            })
+            .collect::<BTreeSet<_>>();
+        let mut variants = Vec::new();
+        for component in checkpoint
+            .selection
+            .component_phases
+            .iter()
+            .filter(|component| affected_components.contains(&component.component_index))
+        {
+            let component_anchor = checkpoint.mesh.m_points[component.demand_start];
+            for phase_ordinal in 1..component.phase_class_count {
+                let phase_anchor = checkpoint.mesh.m_points[component.phase_starts[phase_ordinal]];
+                let variant = format!(
+                    "{}:{}:{}:{}:{}:{}:{}",
+                    checkpoint.pass,
+                    component_anchor.x,
+                    component_anchor.y,
+                    component_anchor.z,
+                    phase_anchor.x,
+                    phase_anchor.y,
+                    phase_anchor.z,
+                );
+                std::env::set_var("EARTHMESH_M0_HFIELD_PHASE_VARIANT", variant);
+                let selection = checkpoint
+                    .mesh
+                    .selection_checkpoint_from_target_levels_and_face_demands(
+                        &target_level,
+                        &checkpoint.selection.face_demand,
+                        checkpoint.pass,
+                        checkpoint.selection.preserve_all_demands,
+                    );
+                std::env::remove_var("EARTHMESH_M0_HFIELD_PHASE_VARIANT");
+                let Ok(selection) = selection else {
+                    let error = selection.expect_err("selection error");
+                    variants.push(serde_json::json!({
+                        "component_index": component.component_index,
+                        "phase_ordinal": phase_ordinal,
+                        "status": "selection_error",
+                        "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                        "error": error.to_string(),
+                    }));
+                    continue;
+                };
+                let preflight = checkpoint.mesh.legalization_preflight_from_selected_faces(
+                    &selection.selected_faces,
+                    &selection.legal_seed_ids,
+                    &selection.selected_seed_ids,
+                    checkpoint.child_grid_number,
+                );
+                let Ok(preflight) = preflight else {
+                    let error = preflight.expect_err("preflight error");
+                    variants.push(serde_json::json!({
+                        "component_index": component.component_index,
+                        "phase_ordinal": phase_ordinal,
+                        "status": "preflight_error",
+                        "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                        "error": error.to_string(),
+                    }));
+                    continue;
+                };
+                let target_seeds = selection
+                    .component_phases
+                    .iter()
+                    .find(|item| item.component_index == component.component_index)
+                    .expect("variant target component")
+                    .legal_seed_ids
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let target_witnesses = preflight
+                    .patches
+                    .iter()
+                    .filter(|patch| {
+                        patch
+                            .candidate_seed_ids
+                            .iter()
+                            .any(|seed| target_seeds.contains(seed))
+                    })
+                    .map(|patch| patch.witness_indices.len())
+                    .sum::<usize>();
+                let mutable_faces = checkpoint
+                    .mesh
+                    .selected_faces_from_method_c_seed_ids(&selection.legal_seed_ids)
+                    .expect("variant legal seed footprints")
+                    .iter()
+                    .enumerate()
+                    .skip(2)
+                    .filter_map(|(iw, &selected)| selected.then_some(iw))
+                    .collect::<Vec<_>>();
+                let patch = MethodCHfieldLegalizationPatch {
+                    cluster_index: usize::MAX,
+                    witness_indices: Vec::new(),
+                    witness_perimeter_components: Vec::new(),
+                    perimeter_components: Vec::new(),
+                    perimeter_interfaces: Vec::new(),
+                    dependency_faces: Vec::new(),
+                    dependency_face_lineages: Vec::new(),
+                    candidate_seed_lineages: Vec::new(),
+                    selected_candidate_seed_ids: selection.selected_seed_ids.clone(),
+                    candidate_seed_ids: selection.legal_seed_ids.clone(),
+                    mutable_faces,
+                    mutable_face_lineages: Vec::new(),
+                };
+                match checkpoint.mesh.legalization_patch_boundary_check(
+                    &selection,
+                    &preflight,
+                    &patch,
+                    &selection.selected_seed_ids,
+                    checkpoint.child_grid_number,
+                    checkpoint.max_mrows,
+                ) {
+                    Ok(check) => variants.push(serde_json::json!({
+                        "component_index": component.component_index,
+                        "phase_ordinal": phase_ordinal,
+                        "status": if check.exact_materializable { "SAT" } else { "exact_failure" },
+                        "selected_seed_count": selection.selected_seed_ids.len(),
+                        "self_loop_witness_count": preflight.self_loop_witnesses.len(),
+                        "target_component_witness_count": target_witnesses,
+                        "exact_failure_kind": check.exact_failure_kind.map(|kind| kind.as_str()),
+                        "exact_failure_message": check.exact_failure_message,
+                    })),
+                    Err(error) => variants.push(serde_json::json!({
+                        "component_index": component.component_index,
+                        "phase_ordinal": phase_ordinal,
+                        "status": "hard_rejected",
+                        "failure_kind": method_c_hfield_failure_kind(&error).as_str(),
+                        "error": error.to_string(),
+                    })),
+                }
+            }
+        }
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_single_component_phase_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "variants": variants,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
+
+    #[test]
+    #[ignore = "requires a saved Method-C legalization checkpoint"]
+    fn m0_legalization_checkpoint_first_toggle_boundary_probe() {
+        let input = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_CHECKPOINT_INPUT")
+                .expect("checkpoint input path"),
+        );
+        let output = PathBuf::from(
+            std::env::var("EARTHMESH_M0_LEGALIZATION_BOUNDARY_PROBE_OUTPUT")
+                .expect("boundary probe output path"),
+        );
+        let checkpoint = serde_json::from_slice::<M0MethodCLegalizationCheckpoint>(
+            &fs::read(&input).expect("read checkpoint"),
+        )
+        .expect("parse checkpoint");
+        let mut patches = Vec::new();
+        for patch in &checkpoint.preflight.patches {
+            let seed = *patch
+                .candidate_seed_ids
+                .first()
+                .expect("patch candidate seed");
+            let mut assignment = patch.selected_candidate_seed_ids.clone();
+            let action = if let Ok(index) = assignment.binary_search(&seed) {
+                assignment.remove(index);
+                "remove"
+            } else {
+                assignment.push(seed);
+                assignment.sort_unstable();
+                "add"
+            };
+            let result = checkpoint.mesh.legalization_patch_boundary_check(
+                &checkpoint.selection,
+                &checkpoint.preflight,
+                patch,
+                &assignment,
+                checkpoint.child_grid_number,
+                checkpoint.max_mrows,
+            );
+            patches.push(match result {
+                Ok(boundary) => serde_json::json!({
+                    "cluster_index": patch.cluster_index,
+                    "seed": seed,
+                    "action": action,
+                    "status": if boundary.is_closed() { "closed" } else { "incomplete" },
+                    "outside_changed_face_count": boundary.outside_changed_faces.len(),
+                    "outside_changed_faces": boundary.outside_changed_faces,
+                    "outside_perimeter_interface_changed": boundary.outside_perimeter_interface_changed,
+                    "perimeter_lengths": boundary.perimeter_lengths,
+                    "vertex_only_contact_count": boundary.vertex_only_contact_count,
+                    "predicted_transition_self_loop_count": boundary.predicted_transition_self_loop_count,
+                    "exact_materializable": boundary.exact_materializable,
+                    "exact_failure_kind": boundary.exact_failure_kind.map(|kind| kind.as_str()),
+                    "exact_failure_message": boundary.exact_failure_message,
+                }),
+                Err(error) => serde_json::json!({
+                    "cluster_index": patch.cluster_index,
+                    "seed": seed,
+                    "action": action,
+                    "status": "candidate_invalid",
+                    "error": error.to_string(),
+                }),
+            });
+        }
+        let report = serde_json::json!({
+            "kind": "earthmesh_method_c_legalization_first_toggle_boundary_probe",
+            "checkpoint_sha256": earthmesh_project::file_content_hash(&input)
+                .expect("checkpoint hash"),
+            "patches": patches,
+        });
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent).expect("create output directory");
+        }
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report).expect("serialize report"),
+        )
+        .expect("write report");
+        let hash = earthmesh_project::file_content_hash(&output).expect("report hash");
+        fs::write(
+            m0_sidecar_path(&output, ".sha256").expect("report sidecar path"),
+            format!("{hash}\n"),
+        )
+        .expect("write report hash");
+    }
 
     fn minimal_state(mrlm: i32, mrlw: i32) -> earthmesh_mesh::VoronoiGridState {
         earthmesh_mesh::VoronoiGridState {
@@ -773,5 +3957,155 @@ mod tests {
         let err = method_c_w_refine_levels_zero_based(&bad_w)
             .expect_err("zero Method-C W level must fail");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn method_c_topology_gradation_uses_active_transition_clearance() {
+        let mut refine = RefineConfig::default();
+        assert_eq!(method_c_topology_gradation_g(&refine, 2, 0.2, false), 0.2);
+        assert_eq!(method_c_topology_gradation_g(&refine, 1, 0.2, true), 0.2);
+        assert_eq!(method_c_topology_gradation_g(&refine, 2, 0.2, true), 0.0625);
+        assert_eq!(method_c_topology_gradation_g(&refine, 2, 0.05, true), 0.05);
+
+        refine.max_transition_row[1] = 5;
+        refine.max_transition_row[2] = 8;
+        assert_eq!(method_c_topology_gradation_g(&refine, 2, 0.2, true), 0.05);
+        assert_eq!(
+            method_c_topology_gradation_g(&refine, 3, 0.2, true),
+            0.03125
+        );
+    }
+
+    #[test]
+    fn hfield_raster_resolution_warning_reports_only_underresolved_bins() {
+        let mut field = earthmesh_hfield::HField::uniform(360, 180, 200_000.0).unwrap();
+        assert_eq!(hfield_raster_resolution_warning(&field), None);
+
+        field.set(180, 90, 25_000.0);
+        let warning = hfield_raster_resolution_warning(&field).unwrap();
+        assert!(warning.contains("under-resolves 1/64800 bins"));
+        assert!(warning.contains("required <=1"));
+    }
+
+    fn refinement_stats_fixture() -> (UnstructuredMesh, Vec<i32>, Vec<i32>) {
+        let mesh = UnstructuredMesh {
+            m_points: vec![
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 0.2, lat: 0.2 },
+                LonLatPoint {
+                    lon: 20.2,
+                    lat: 20.2,
+                },
+            ],
+            w_points: vec![
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 0.1, lat: 0.1 },
+                LonLatPoint { lon: 0.3, lat: 0.1 },
+                LonLatPoint { lon: 0.2, lat: 0.3 },
+                LonLatPoint {
+                    lon: 20.1,
+                    lat: 20.1,
+                },
+                LonLatPoint {
+                    lon: 20.3,
+                    lat: 20.1,
+                },
+                LonLatPoint {
+                    lon: 20.2,
+                    lat: 20.3,
+                },
+            ],
+            m_to_w: vec![[1, 1, 1], [2, 3, 4], [5, 6, 7]],
+            w_to_m: vec![
+                vec![1],
+                vec![2],
+                vec![2],
+                vec![2],
+                vec![3],
+                vec![3],
+                vec![3],
+            ],
+            n_w_to_m: vec![1; 7],
+        };
+        (mesh, vec![0, 2, 7], vec![0, 1, 3, 0, 0, 4, 0])
+    }
+
+    #[test]
+    fn final_output_refinement_stats_selects_cells_for_tri_and_hex() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_final_refine_stats_modes_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let output = root.join("gridfile.nc4");
+        let (mesh, m_levels, w_levels) = refinement_stats_fixture();
+        crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            &output,
+            &mesh,
+            MethodCGridfileMetadataSlices {
+                m_refine_level: Some(&m_levels),
+                w_refine_level: Some(&w_levels),
+                ..Default::default()
+            },
+        )
+        .expect("write final output");
+
+        assert_eq!(
+            final_output_refinement_stats(&output, "tri").expect("tri statistics"),
+            (7, 2)
+        );
+        assert_eq!(
+            final_output_refinement_stats(&output, "hex").expect("hex statistics"),
+            (4, 3)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn final_output_refinement_stats_exclude_cells_removed_by_regional_crop() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_final_refine_stats_crop_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temp root");
+        let input = root.join("global.nc4");
+        let output = root.join("regional.nc4");
+        let (mesh, m_levels, w_levels) = refinement_stats_fixture();
+        crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            &input,
+            &mesh,
+            MethodCGridfileMetadataSlices {
+                m_refine_level: Some(&m_levels),
+                w_refine_level: Some(&w_levels),
+                ..Default::default()
+            },
+        )
+        .expect("write global input");
+        let kept = crate::write_regional_gridfile_with_refine_levels(
+            &input,
+            &output,
+            &GridRegion::Bbox {
+                west: -1.0,
+                east: 1.0,
+                north: 1.0,
+                south: -1.0,
+            },
+            "tri",
+            None,
+            None,
+        )
+        .expect("crop final output");
+
+        assert_eq!(kept, 1);
+        assert_eq!(
+            final_output_refinement_stats(&output, "tri").expect("cropped statistics"),
+            (2, 1),
+            "the removed level-7 cell must not remain in final statistics"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -520,11 +520,13 @@ fn project_validation_rejects_engine_incompatible_target_format() {
     assert!(err.contains("atmosphere target model_format must be MPAS or MPAS-Simple"));
 
     p.target.kind = MeshDomainKind::Ocean;
+    p.target.cell = MeshCellKind::Tri;
     p.target.model_format = ModelFormat::CoLM;
     let err = yaml_err(&p);
     assert!(err.contains("ocean target model_format must be FVCOM"));
 
     p.target.kind = MeshDomainKind::Coupled;
+    p.target.cell = MeshCellKind::Hex;
     p.target.model_format = ModelFormat::Fvcom;
     let err = json_err(&p);
     assert!(err.contains("coupled target model_format must be CoLM"));
@@ -1276,6 +1278,11 @@ fn landtype_is_required_for_surface_targets_but_skipped_for_idle_atmosphere() {
     ] {
         let mut p = sample();
         p.target.kind = kind;
+        p.target.cell = if kind == MeshDomainKind::Ocean {
+            MeshCellKind::Tri
+        } else {
+            MeshCellKind::Hex
+        };
         p.target.model_format = format;
         p.data_layers[0].enabled = false;
         let error = p
@@ -1365,6 +1372,27 @@ fn hex_mesh_lowers_with_is_transition_and_one_spring() {
         lowered.refine.spring_global_type,
         lowered.refine.spring_regional_type
     );
+}
+
+#[test]
+fn ocean_tri_lowers_with_domain_appropriate_transition_spring() {
+    let mut project = sample();
+    project.target.kind = MeshDomainKind::Ocean;
+    project.target.cell = MeshCellKind::Tri;
+    project.target.model_format = ModelFormat::Fvcom;
+    project.expert.spring_global_type = None;
+    project.expert.spring_regional_type = None;
+
+    let lowered = project.lower();
+    assert!(lowered.refine.is_transition);
+    assert_eq!(lowered.refine.spring_global_type, 0);
+    assert_eq!(lowered.refine.spring_regional_type, 1);
+
+    project.domain = DomainConfig::Global;
+    let lowered = project.lower();
+    assert!(lowered.refine.is_transition);
+    assert_eq!(lowered.refine.spring_global_type, 1);
+    assert_eq!(lowered.refine.spring_regional_type, 0);
 }
 
 #[test]

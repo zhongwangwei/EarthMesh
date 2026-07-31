@@ -193,14 +193,20 @@ fn run_prepared_mkgrd(
         let mut pending_quality_repair: Option<(
             earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport,
             PathBuf,
+            earthmesh_cli::PreparedAutoRefineDemandEpoch,
         )> = None;
         let mut last_acceptable_report = None;
         let mut last_acceptable_quality = None;
+        let mut gradation_retry_attempted = false;
         let mut report = loop {
-            let (engine_result, candidate_namelist) = if let Some((report, path)) =
+            let (engine_result, candidate_namelist, mut candidate_epoch) = if let Some((
+                report,
+                path,
+                epoch,
+            )) =
                 pending_quality_repair.take()
             {
-                (Ok(report), Some(path))
+                (Ok(report), Some(path), Some(epoch))
             } else {
                 (
                     earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
@@ -214,9 +220,10 @@ fn run_prepared_mkgrd(
                         mask_postproc_num_vertex,
                     ),
                     None,
+                    None,
                 )
             };
-            let report = match engine_result {
+            let mut report = match engine_result {
                 Ok(report) => report,
                 Err(err) => {
                     let message = err.to_string();
@@ -234,14 +241,14 @@ fn run_prepared_mkgrd(
                     return Err(message);
                 }
             };
-            let was_quality_repair_candidate = candidate_namelist.is_some();
+            let mut selected_candidate_was_recorded = candidate_namelist.is_some();
             let Some(spec) = project.as_mut() else {
                 break report;
             };
             if spec.config.quality.on_violation != earthmesh_project::ViolationPolicy::AutoRefine {
                 break report;
             }
-            let Some(gridfile) = final_gridfile(&report) else {
+            let Some(gridfile) = final_gridfile(&report).map(std::path::Path::to_path_buf) else {
                 return Err(
                     "auto_refine requires a completed gridfile-producing project run".to_string(),
                 );
@@ -249,15 +256,15 @@ fn run_prepared_mkgrd(
             let quality_namelist = candidate_namelist
                 .as_deref()
                 .unwrap_or_else(|| std::path::Path::new(&namelist));
-            let quality = project_quality_report_with_namelist(spec, gridfile, quality_namelist)?;
-            let verdict = quality.verdict;
+            let mut quality =
+                project_quality_report_with_namelist(spec, &gridfile, quality_namelist)?;
             let current_pass = auto_refine_state
                 .as_ref()
                 .map(earthmesh_project::AutoRefineState::current_pass)
                 .ok_or_else(|| "auto_refine orchestration state was not initialized".to_string())?;
             eprintln!(
                 "earthmesh_cli: auto_refine quality={} level={}",
-                verdict.as_str(),
+                quality.verdict.as_str(),
                 current_pass
             );
             if let Some(previous_quality) = last_acceptable_quality.take() {
@@ -278,17 +285,17 @@ fn run_prepared_mkgrd(
                         "rejected",
                         "candidate did not strictly improve all guarded quality metrics",
                         Some(selected_gridfile),
-                        gridfile,
+                        &gridfile,
                         selected_gridfile,
                         Some(previous_quality.verdict),
-                        verdict,
+                        quality.verdict,
                         previous_quality.verdict,
                         &regressions,
                     )?;
                     eprintln!(
                         "earthmesh_cli: warning: auto_refine rejected pass {current_pass} because the candidate did not strictly improve quality ({} -> {}); keeping the previous mesh",
                         previous_quality.verdict.as_str(),
-                        verdict.as_str()
+                        quality.verdict.as_str()
                     );
                     enforce_project_quality_policy(
                         spec.config.quality.on_violation,
@@ -300,22 +307,163 @@ fn run_prepared_mkgrd(
                     .as_ref()
                     .and_then(final_gridfile)
                     .ok_or_else(|| "auto_refine baseline gridfile was not retained".to_string())?;
+                let candidate_namelist_path = candidate_namelist.as_deref().ok_or_else(|| {
+                    "accepted local AutoRefine candidate did not retain its namelist".to_string()
+                })?;
+                let epoch = candidate_epoch.take().ok_or_else(|| {
+                    "accepted local AutoRefine candidate did not retain an immutable absolute target"
+                        .to_string()
+                })?;
+                earthmesh_cli::publish_accepted_auto_refine_demand_epoch(
+                    baseline_gridfile,
+                    std::path::Path::new(&namelist),
+                    &gridfile,
+                    candidate_namelist_path,
+                    epoch,
+                )
+                .map_err(|error| {
+                    format!(
+                        "auto_refine cannot publish accepted demand epoch at pass {current_pass}: {error}"
+                    )
+                })?;
                 record_auto_refine_decision(
                     current_pass,
                     "accepted",
                     "candidate strictly improved quality without guarded regressions",
                     Some(baseline_gridfile),
-                    gridfile,
-                    gridfile,
+                    &gridfile,
+                    &gridfile,
                     Some(previous_quality.verdict),
-                    verdict,
-                    verdict,
+                    quality.verdict,
+                    quality.verdict,
                     &regressions,
                 )?;
                 if let Some(path) = candidate_namelist {
                     namelist = path.to_string_lossy().into_owned();
                 }
             }
+
+            if let Some(candidate_g) =
+                earthmesh_cli::project_quality::tighter_hfield_gradation_for_quality(
+                    &quality,
+                    gradation_retry_attempted,
+                )
+            {
+                gradation_retry_attempted = true;
+                let current_g = quality
+                    .hfield
+                    .as_ref()
+                    .and_then(|hfield| hfield.config.g)
+                    .ok_or_else(|| {
+                        "auto_refine gradation retry lost its HField configuration".to_string()
+                    })?;
+                let parent_gridfile = gradation_source_gridfile(&report)
+                    .map(std::path::Path::to_path_buf)
+                    .ok_or_else(|| {
+                        "auto_refine gradation retry requires the realized base gridfile"
+                            .to_string()
+                    })?;
+                let quality_dir = gridfile
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                let retry_dir = quality_dir
+                    .join("quality_auto_refine")
+                    .join("gradation_retry");
+                let adapter_namelist = retry_dir.join("adapter.nml");
+                eprintln!(
+                    "earthmesh_cli: auto_refine evaluating HField gradation adjustment g={current_g} -> {candidate_g} at level {current_pass}"
+                );
+                match earthmesh_cli::hydro_refinement_adapter::run_quality_gradation_adapter(
+                    PathBuf::from(&namelist),
+                    &parent_gridfile,
+                    &adapter_namelist,
+                    &workdir,
+                    max_tris,
+                    source_gridnum_perdegree,
+                    candidate_g,
+                ) {
+                    Ok(pipeline) => {
+                        let candidate_report = earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline(pipeline);
+                        let candidate_gridfile = final_gridfile(&candidate_report)
+                            .map(std::path::Path::to_path_buf)
+                            .ok_or_else(|| {
+                                "auto_refine gradation retry did not produce a gridfile".to_string()
+                            })?;
+                        let candidate_quality = project_quality_report_with_namelist(
+                            spec,
+                            &candidate_gridfile,
+                            &adapter_namelist,
+                        )?;
+                        let regressions = candidate_quality.guarded_metric_regressions(&quality);
+                        if earthmesh_cli::project_quality::select_auto_refine_candidate(
+                            &quality,
+                            &candidate_quality,
+                        ) == earthmesh_cli::project_quality::AutoRefineCandidateSelection::Candidate
+                        {
+                            earthmesh_cli::publish_accepted_gradation_retry_demand(
+                                &gridfile,
+                                std::path::Path::new(&namelist),
+                                &candidate_gridfile,
+                                &adapter_namelist,
+                            )
+                            .map_err(|error| {
+                                format!(
+                                    "auto_refine cannot publish accepted gradation retry: {error}"
+                                )
+                            })?;
+                            record_auto_refine_decision(
+                                current_pass,
+                                "accepted",
+                                "tighter HField gradation strictly improved quality without guarded regressions",
+                                Some(&gridfile),
+                                &candidate_gridfile,
+                                &candidate_gridfile,
+                                Some(quality.verdict),
+                                candidate_quality.verdict,
+                                candidate_quality.verdict,
+                                &regressions,
+                            )?;
+                            eprintln!(
+                                "earthmesh_cli: auto_refine accepted HField gradation adjustment g={current_g} -> {candidate_g} ({} -> {})",
+                                quality.verdict.as_str(),
+                                candidate_quality.verdict.as_str()
+                            );
+                            namelist = adapter_namelist.to_string_lossy().into_owned();
+                            report = candidate_report;
+                            quality = candidate_quality;
+                            selected_candidate_was_recorded = true;
+                        } else {
+                            record_auto_refine_decision(
+                                current_pass,
+                                "rejected",
+                                "tighter HField gradation did not strictly improve all guarded quality metrics",
+                                Some(&gridfile),
+                                &candidate_gridfile,
+                                &gridfile,
+                                Some(quality.verdict),
+                                candidate_quality.verdict,
+                                quality.verdict,
+                                &regressions,
+                            )?;
+                            eprintln!(
+                                "earthmesh_cli: warning: auto_refine rejected HField gradation adjustment g={current_g} -> {candidate_g} ({} -> {}); continuing with local quality repair",
+                                quality.verdict.as_str(),
+                                candidate_quality.verdict.as_str()
+                            );
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "earthmesh_cli: warning: auto_refine HField gradation adjustment g={current_g} -> {candidate_g} failed: {error}; continuing with local quality repair"
+                    ),
+                }
+            }
+
+            let gridfile = final_gridfile(&report)
+                .map(std::path::Path::to_path_buf)
+                .ok_or_else(|| {
+                    "auto_refine selected candidate did not retain a gridfile".to_string()
+                })?;
+            let verdict = quality.verdict;
             if quality.has_unrepairable_failure() {
                 return Err(format!(
                     "auto_refine cannot repair final quality failure at level {current_pass}; report={}",
@@ -336,14 +484,14 @@ fn run_prepared_mkgrd(
             };
             match state.transition(event) {
                 earthmesh_project::AutoRefineAction::Complete { .. } => {
-                    if !was_quality_repair_candidate {
+                    if !selected_candidate_was_recorded {
                         record_auto_refine_decision(
                             current_pass,
                             "complete",
                             "quality gates passed",
                             None,
-                            gridfile,
-                            gridfile,
+                            &gridfile,
+                            &gridfile,
                             None,
                             verdict,
                             verdict,
@@ -353,22 +501,37 @@ fn run_prepared_mkgrd(
                     break report;
                 }
                 earthmesh_project::AutoRefineAction::Retry { next_pass } => {
-                    if quality.repair_cells.is_empty() {
+                    let local_repair_is_useful =
+                        earthmesh_cli::project_quality::should_attempt_local_quality_refinement(
+                            &quality,
+                        );
+                    if quality.repair_cells.is_empty() || !local_repair_is_useful {
+                        let reason = if quality.repair_cells.is_empty() {
+                            "no locally repairable connected defect cells"
+                        } else {
+                            "conforming HField transition warnings are not safely repaired by adding a refinement level"
+                        };
                         record_auto_refine_decision(
                             current_pass,
                             "kept",
-                            "no locally repairable connected defect cells",
+                            reason,
                             None,
-                            gridfile,
-                            gridfile,
+                            &gridfile,
+                            &gridfile,
                             None,
                             verdict,
                             verdict,
                             &[],
                         )?;
-                        eprintln!(
-                            "earthmesh_cli: warning: auto_refine found no locally repairable cells at pass {current_pass}; keeping the current mesh instead of applying an unscoped global refinement"
-                        );
+                        if quality.repair_cells.is_empty() {
+                            eprintln!(
+                                "earthmesh_cli: warning: auto_refine found no locally repairable cells at pass {current_pass}; keeping the current mesh instead of applying an unscoped global refinement"
+                            );
+                        } else {
+                            eprintln!(
+                                "earthmesh_cli: warning: auto_refine kept the conforming HField mesh at pass {current_pass}; adding a refinement level would deepen rather than repair the transition"
+                            );
+                        }
                         break report;
                     }
                     let parent_gridfile = refinement_parent_gridfile(&report).ok_or_else(|| {
@@ -381,26 +544,52 @@ fn run_prepared_mkgrd(
                     let repair_dir = quality_dir
                         .join("quality_auto_refine")
                         .join(format!("pass_{next_pass}"));
-                    let adapter =
-                        earthmesh_cli::hydro_refinement_adapter::run_quality_refinement_adapter(
-                            PathBuf::from(&namelist),
-                            parent_gridfile,
-                            quality_dir.join("quality_repair_cells.geojson"),
-                            quality_dir.join("quality_repair_plan.json"),
-                            repair_dir.join("adapter.nml"),
-                            &workdir,
-                            max_tris,
-                            source_gridnum_perdegree,
-                        )
-                        .map_err(|error| {
-                            format!(
-                                "auto_refine local quality repair pass {next_pass} failed: {error}"
-                            )
-                        })?;
+                    let repair_cells = quality_dir.join("quality_repair_cells.geojson");
+                    let repair_plan = quality_dir.join("quality_repair_plan.json");
                     eprintln!(
                         "earthmesh_cli: auto_refine applying {} local quality targets at pass {next_pass}",
                         quality.repair_cells.len()
                     );
+                    let demand_epoch = earthmesh_cli::prepare_auto_refine_demand_epoch(
+                        PathBuf::from(&namelist),
+                        &repair_cells,
+                        &repair_plan,
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "auto_refine local quality repair pass {next_pass} has no immutable absolute target: {error}"
+                        )
+                    })?;
+                    let adapter = match earthmesh_cli::hydro_refinement_adapter::run_quality_refinement_adapter(
+                            PathBuf::from(&namelist),
+                            parent_gridfile,
+                            repair_cells,
+                            repair_plan,
+                            repair_dir.join("adapter.nml"),
+                            &workdir,
+                            max_tris,
+                            source_gridnum_perdegree,
+                        ) {
+                            Ok(adapter) => adapter,
+                            Err(error) => {
+                                record_auto_refine_decision(
+                                    current_pass,
+                                    "kept",
+                                    "local quality repair candidate failed; kept the last valid mesh",
+                                    None,
+                                    &gridfile,
+                                    &gridfile,
+                                    None,
+                                    verdict,
+                                    verdict,
+                                    &[],
+                                )?;
+                                eprintln!(
+                                    "earthmesh_cli: warning: auto_refine local quality repair pass {next_pass} failed: {error}; keeping the last valid mesh"
+                                );
+                                break report;
+                            }
+                        };
                     last_acceptable_quality = Some(quality);
                     last_acceptable_report = Some(report);
                     pending_quality_repair = Some((
@@ -408,6 +597,7 @@ fn run_prepared_mkgrd(
                             adapter.pipeline,
                         ),
                         adapter.adapter_namelist,
+                        demand_epoch,
                     ));
                 }
                 earthmesh_project::AutoRefineAction::CapReached { cap, .. } => {
@@ -419,14 +609,14 @@ fn run_prepared_mkgrd(
                     eprintln!(
                         "earthmesh_cli: warning: auto_refine reached the supported level cap {cap}; keeping the last valid mesh"
                     );
-                    if !was_quality_repair_candidate {
+                    if !selected_candidate_was_recorded {
                         record_auto_refine_decision(
                             current_pass,
                             "cap_reached",
                             "supported AutoRefine level cap reached",
                             None,
-                            gridfile,
-                            gridfile,
+                            &gridfile,
+                            &gridfile,
                             None,
                             verdict,
                             verdict,
@@ -443,6 +633,7 @@ fn run_prepared_mkgrd(
                 }
             }
         };
+        let mut authoritative_quality_report = None;
         if let Some(spec) = project.as_ref() {
             if spec.config.hydro_execution_plan()?.is_some() {
                 let gridfile = final_gridfile(&report).ok_or_else(|| {
@@ -471,6 +662,8 @@ fn run_prepared_mkgrd(
                     "earthmesh_cli: project hydro final gridfile={}",
                     closed.final_gridfile.display()
                 );
+                authoritative_quality_report =
+                    Some(closed.final_quality_dir.join("quality_summary.json"));
                 if spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::Block
                     && closed.final_coupling_quality_verdict.as_deref() == Some("fail")
                 {
@@ -497,8 +690,28 @@ fn run_prepared_mkgrd(
                 .verdict;
                 enforce_project_quality_policy(spec.config.quality.on_violation, verdict)?;
             }
+            if authoritative_quality_report.is_none() {
+                let gridfile = final_gridfile(&report).ok_or_else(|| {
+                    "project quality requires a completed gridfile-producing run".to_string()
+                })?;
+                let quality_report = gridfile
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("quality_summary.json");
+                if !quality_report.is_file() {
+                    project_quality_report_with_namelist(
+                        spec,
+                        gridfile,
+                        std::path::Path::new(&namelist),
+                    )?;
+                }
+                authoritative_quality_report = Some(quality_report);
+            }
         }
         if !quiet {
+            if let Some(path) = authoritative_quality_report {
+                println!("quality_report={}", path.display());
+            }
             match &report {
                 earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
                     print_top_level_dispatch_report(report);
@@ -724,6 +937,28 @@ fn refinement_parent_gridfile(
         DefaultReport::RefinePipeline(run)
         | DefaultReport::Dispatch(DispatchReport::RefinePipeline(run)) => {
             Some(run.refinement_parent_gridfile())
+        }
+        DefaultReport::Dispatch(DispatchReport::Gridinit(run)) => {
+            Some(run.gridfile.output.as_path())
+        }
+        _ => None,
+    }
+}
+
+/// Base grid for replaying the complete HField with different controls.
+/// Unlike a local repair, a gradation retry must not start from the already
+/// refined mesh or the old refinement pattern would accumulate.
+fn gradation_source_gridfile(
+    report: &earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport,
+) -> Option<&std::path::Path> {
+    use earthmesh_cli::mkgrd_run_types::{
+        MkgrdTopLevelDefaultRestartRefineRunReport as DefaultReport,
+        MkgrdTopLevelDispatchRunReport as DispatchReport,
+    };
+    match report {
+        DefaultReport::RefinePipeline(run)
+        | DefaultReport::Dispatch(DispatchReport::RefinePipeline(run)) => {
+            Some(run.gridinit.gridfile.output.as_path())
         }
         DefaultReport::Dispatch(DispatchReport::Gridinit(run)) => {
             Some(run.gridfile.output.as_path())

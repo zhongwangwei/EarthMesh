@@ -463,9 +463,11 @@ fn gridfile_writer_round_trips_full_method_c_metadata() {
         n_w_to_m: vec![1, 3, 3],
     };
     let m_levels = [0, 2];
+    let m_lineages = [1_i64, 101];
     let m_orig = [0, 1];
     let m_ngr = [0, 7];
     let w_levels = [0, 1, 2];
+    let w_lineages = [1_i64, 201, 202];
     let w_orig = [0, 1, 1];
     let w_ngr = [0, 8, 9];
 
@@ -473,9 +475,11 @@ fn gridfile_writer_round_trips_full_method_c_metadata() {
         &output,
         &mesh,
         earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+            m_lineage: Some(&m_lineages),
             m_refine_level: Some(&m_levels),
             m_refine_level_orig: Some(&m_orig),
             m_ngr: Some(&m_ngr),
+            w_lineage: Some(&w_lineages),
             w_refine_level: Some(&w_levels),
             w_refine_level_orig: Some(&w_orig),
             w_ngr: Some(&w_ngr),
@@ -484,10 +488,15 @@ fn gridfile_writer_round_trips_full_method_c_metadata() {
     .expect("write mesh");
     let read_back = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&output)
         .expect("read quality mesh");
+    let lineage_read_back =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&output)
+            .expect("read cell lineages");
 
+    assert_eq!(lineage_read_back.m, m_lineages.to_vec());
     assert_eq!(read_back.m_refine_level, m_levels.to_vec());
     assert_eq!(read_back.m_refine_level_orig, m_orig.to_vec());
     assert_eq!(read_back.m_ngr, m_ngr.to_vec());
+    assert_eq!(lineage_read_back.w, w_lineages.to_vec());
     assert_eq!(read_back.w_refine_level, w_levels.to_vec());
     assert_eq!(read_back.w_refine_level_orig, w_orig.to_vec());
     assert_eq!(read_back.w_ngr, w_ngr.to_vec());
@@ -524,9 +533,11 @@ fn regional_clip_preserves_method_c_metadata_after_inserted_placeholder() {
         &input,
         &mesh,
         earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+            m_lineage: Some(&[1, 101]),
             m_refine_level: Some(&[0, 5]),
             m_refine_level_orig: Some(&[0, 3]),
             m_ngr: Some(&[0, 6]),
+            w_lineage: Some(&[1, 201, 202, 203]),
             w_refine_level: Some(&[0, 7, 8, 9]),
             w_refine_level_orig: Some(&[0, 4, 5, 6]),
             w_ngr: Some(&[0, 10, 11, 12]),
@@ -549,9 +560,14 @@ fn regional_clip_preserves_method_c_metadata_after_inserted_placeholder() {
     assert_eq!(kept, 1);
     let clipped = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&output)
         .expect("read clipped");
+    let clipped_lineages =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&output)
+            .expect("read clipped lineages");
+    assert_eq!(clipped_lineages.m, vec![0, 1, 101]);
     assert_eq!(clipped.m_refine_level, vec![0, 0, 5]);
     assert_eq!(clipped.m_refine_level_orig, vec![0, 0, 3]);
     assert_eq!(clipped.m_ngr, vec![0, 0, 6]);
+    assert_eq!(clipped_lineages.w, vec![0, 1, 201, 202, 203]);
     assert_eq!(clipped.w_refine_level, vec![0, 0, 7, 8, 9]);
     assert_eq!(clipped.w_refine_level_orig, vec![0, 0, 4, 5, 6]);
     assert_eq!(clipped.w_ngr, vec![0, 0, 10, 11, 12]);

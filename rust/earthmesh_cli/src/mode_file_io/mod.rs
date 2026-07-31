@@ -84,13 +84,14 @@ fn validate_connectivity_base(
 }
 
 fn earthmesh_canonical_connectivity_id(value: i32, base: ConnectivityBase) -> i32 {
+    // Compact output reserves canonical id 1 for its sentinel row.
     match base {
-        ConnectivityBase::Zero => value + 1,
+        ConnectivityBase::Zero => value + 2,
         ConnectivityBase::One => {
             if value == 0 {
                 1
             } else {
-                value
+                value + 1
             }
         }
     }
@@ -107,16 +108,16 @@ mod tests {
     fn connectivity_base_detects_earthmesh_zero_based_dialect() {
         let base = detect_connectivity_base("cellsOnVertex", &[0, 1, 2], 3).unwrap();
         assert_eq!(base, ConnectivityBase::Zero);
-        assert_eq!(earthmesh_canonical_connectivity_id(0, base), 1);
-        assert_eq!(earthmesh_canonical_connectivity_id(2, base), 3);
+        assert_eq!(earthmesh_canonical_connectivity_id(0, base), 2);
+        assert_eq!(earthmesh_canonical_connectivity_id(2, base), 4);
     }
 
     #[test]
     fn connectivity_base_accepts_standard_one_based_max_id() {
         let base = detect_connectivity_base("cellsOnVertex", &[1, 2, 3], 3).unwrap();
         assert_eq!(base, ConnectivityBase::One);
-        assert_eq!(earthmesh_canonical_connectivity_id(1, base), 1);
-        assert_eq!(earthmesh_canonical_connectivity_id(3, base), 3);
+        assert_eq!(earthmesh_canonical_connectivity_id(1, base), 2);
+        assert_eq!(earthmesh_canonical_connectivity_id(3, base), 4);
     }
 
     #[test]
@@ -130,7 +131,7 @@ mod tests {
         let base = ConnectivityBase::One;
         validate_connectivity_base("cellsOnVertex", &[0, 1, 3], 3, base, true).unwrap();
         assert_eq!(earthmesh_canonical_connectivity_id(0, base), 1);
-        assert_eq!(earthmesh_canonical_connectivity_id(3, base), 3);
+        assert_eq!(earthmesh_canonical_connectivity_id(3, base), 4);
     }
 
     #[test]

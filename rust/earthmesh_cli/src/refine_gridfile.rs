@@ -76,9 +76,11 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
             &w_face_m_points,
             &m_face_counts,
             MethodCGridfileMetadata {
+                m_lineage: metadata.m_lineage,
                 m_refine_level: metadata.m_refine_level,
                 m_refine_level_orig: metadata.m_refine_level_orig,
                 m_ngr: metadata.m_ngr,
+                w_lineage: metadata.w_lineage,
                 w_refine_level: metadata.w_refine_level,
                 w_refine_level_orig: metadata.w_refine_level_orig,
                 w_ngr: metadata.w_ngr,

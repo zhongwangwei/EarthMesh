@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use earthmesh_project::{MeshCellKind, ProjectConfig};
+use earthmesh_project::{DomainConfig, MeshCellKind, MeshDomainKind, ProjectConfig};
 
 /// Which mesh survives comparison of an AutoRefine candidate with its baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +23,121 @@ pub fn select_auto_refine_candidate(
         AutoRefineCandidateSelection::Candidate
     } else {
         AutoRefineCandidateSelection::Baseline
+    }
+}
+
+const MIN_AUTO_REFINE_HFIELD_G: f64 = 0.01;
+
+fn primary_quality_output_is_masked(kind: MeshDomainKind, domain: &DomainConfig) -> bool {
+    matches!(kind, MeshDomainKind::Land | MeshDomainKind::Ocean)
+        || matches!(domain, DomainConfig::Regional { .. })
+}
+
+/// Return one bounded HField gradation retry for transition-shaped defects.
+///
+/// Tightening `g` smooths refinement transitions without changing target
+/// sources or the maximum refinement level. The caller still measures the
+/// candidate and applies the normal strict-improvement guard before accepting
+/// it.
+pub fn tighter_hfield_gradation_for_quality(
+    report: &earthmesh_quality::MeshQualityReport,
+    already_attempted: bool,
+) -> Option<f64> {
+    if already_attempted
+        || report.verdict == earthmesh_quality::QualityLevel::Pass
+        || report.has_unrepairable_failure()
+    {
+        return None;
+    }
+    let config = report.hfield.as_ref()?.config;
+    let current = config
+        .g
+        .filter(|g| config.enabled && g.is_finite() && *g > 0.0)?;
+    let has_gradation_defect = report.gates.iter().any(|gate| {
+        gate.level != earthmesh_quality::QualityLevel::Pass
+            && matches!(
+                gate.metric.as_str(),
+                "max_adjacent_resolution_ratio"
+                    | "transition_continuity_warning_count"
+                    | "isolated_refined_cell_count"
+                    | "hfield_actual_level_jump_gt_one_count"
+            )
+    });
+    if !has_gradation_defect {
+        return None;
+    }
+    let candidate = (current * 0.5).max(MIN_AUTO_REFINE_HFIELD_G);
+    (candidate < current).then_some(candidate)
+}
+
+/// Whether adding one local refinement level is a plausible repair.
+///
+/// A conforming HField whose warnings are limited to transition shape or the
+/// expected multi-resolution area spread is not missing resolution. Refining
+/// the worst cell creates a deeper transition instead of repairing those
+/// metrics.
+pub fn should_attempt_local_quality_refinement(
+    report: &earthmesh_quality::MeshQualityReport,
+) -> bool {
+    let non_pass = report
+        .gates
+        .iter()
+        .filter(|gate| gate.level != earthmesh_quality::QualityLevel::Pass)
+        .collect::<Vec<_>>();
+    if non_pass.is_empty() {
+        return false;
+    }
+    if non_pass.iter().any(|gate| {
+        !matches!(
+            gate.metric.as_str(),
+            "aspect_ratio_max"
+                | "cell_edge_length_cv_max"
+                | "cell_area_cv"
+                | "cell_area_cv_normalized"
+                | "cell_area_ratio"
+                | "hfield_target_level_jump_gt_one_count"
+        )
+    }) {
+        return true;
+    }
+    if !has_conforming_hfield(report) {
+        return true;
+    }
+    report
+        .repair_cells
+        .iter()
+        .any(|cell| cell.metric != "cell_edge_length_cv")
+}
+
+fn has_conforming_hfield(report: &earthmesh_quality::MeshQualityReport) -> bool {
+    report.hfield.as_ref().is_some_and(|hfield| {
+        hfield.config.enabled
+            && hfield.missing_target_level_count == 0
+            && hfield.extra_target_level_count == 0
+            && hfield.missing_actual_refine_level_count == 0
+            && hfield.target_above_actual_count == 0
+            && hfield.actual_level_jump_gt_one_count == 0
+    })
+}
+
+fn prefer_non_transition_repair(
+    report: &mut earthmesh_quality::MeshQualityReport,
+    input: &earthmesh_quality::QualityMeshInput,
+    thresholds: &earthmesh_quality::QualityThresholds,
+) {
+    if !has_conforming_hfield(report)
+        || report.repair_cells.is_empty()
+        || report
+            .repair_cells
+            .iter()
+            .any(|cell| cell.metric != "cell_edge_length_cv")
+    {
+        return;
+    }
+    let alternate =
+        earthmesh_quality::repair_batch_without_metric(input, thresholds, "cell_edge_length_cv");
+    if !alternate.is_empty() {
+        report.repair_cells = alternate;
     }
 }
 
@@ -155,6 +270,7 @@ pub fn write_project_quality_report_with_namelist(
         &thresholds,
         earthmesh_quality::QualityComputationOptions {
             expected_euler_characteristic: project.expected_euler_characteristic(),
+            masked_subset: primary_quality_output_is_masked(project.target.kind, &project.domain),
         },
     );
     report.mesh_name = gridfile.display().to_string();
@@ -166,14 +282,16 @@ pub fn write_project_quality_report_with_namelist(
     if let Some(path) = target_namelist {
         let namelist = fs::read_to_string(path)
             .map_err(|err| format!("project quality read {}: {err}", path.display()))?;
-        crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
+        crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist_for_gridfile(
             &mut report,
             &input,
             &mesh,
+            gridfile,
             cell_view,
             &namelist,
         )
         .map_err(|err| format!("project quality attach h-field diagnostics: {err}"))?;
+        prefer_non_transition_repair(&mut report, &input, &thresholds);
     }
     earthmesh_quality::io::write_all(&report, out_dir)
         .map_err(|err| format!("project quality write report: {err}"))?;
@@ -237,6 +355,48 @@ mod tests {
     }
 
     #[test]
+    fn only_carved_primary_outputs_use_masked_quality_semantics() {
+        let global = DomainConfig::Global;
+        let regional = DomainConfig::Regional {
+            shape: earthmesh_project::RegionShape::Bbox {
+                w: 0.0,
+                e: 1.0,
+                n: 1.0,
+                s: 0.0,
+            },
+            sea_ratio: None,
+        };
+
+        assert!(primary_quality_output_is_masked(
+            MeshDomainKind::Land,
+            &global
+        ));
+        assert!(primary_quality_output_is_masked(
+            MeshDomainKind::Ocean,
+            &global
+        ));
+        assert!(!primary_quality_output_is_masked(
+            MeshDomainKind::Coupled,
+            &global
+        ));
+        assert!(!primary_quality_output_is_masked(
+            MeshDomainKind::Earth,
+            &global
+        ));
+        assert!(!primary_quality_output_is_masked(
+            MeshDomainKind::Atmosphere,
+            &global
+        ));
+        for kind in [
+            MeshDomainKind::Coupled,
+            MeshDomainKind::Earth,
+            MeshDomainKind::Atmosphere,
+        ] {
+            assert!(primary_quality_output_is_masked(kind, &regional));
+        }
+    }
+
+    #[test]
     fn candidate_selection_accepts_only_strict_improvement() {
         let baseline = baseline_quality();
         let mut improved = baseline.clone();
@@ -266,6 +426,236 @@ mod tests {
             select_auto_refine_candidate(&failed, &warned),
             AutoRefineCandidateSelection::Candidate
         );
+    }
+
+    fn quality_with_hfield_g(g: f64) -> earthmesh_quality::MeshQualityReport {
+        let mut quality = baseline_quality();
+        quality.hfield = Some(earthmesh_quality::HfieldDiagnostics {
+            config: earthmesh_quality::HfieldConfigDiagnostics {
+                enabled: true,
+                g: Some(g),
+                max_level: Some(2),
+                base_m: Some(100_000.0),
+            },
+            ..earthmesh_quality::HfieldDiagnostics::default()
+        });
+        quality
+    }
+
+    fn set_repair_metric(quality: &mut earthmesh_quality::MeshQualityReport, metric: &str) {
+        quality.repair_cells = vec![earthmesh_quality::WorstCell {
+            cell_index: 0,
+            refine_level: Some(0),
+            centroid: Point::new(0.0, 0.0),
+            ring: Vec::new(),
+            metric: metric.to_string(),
+            value: 1.0,
+            level: earthmesh_quality::QualityLevel::Warn,
+        }];
+    }
+
+    #[test]
+    fn gradation_retry_is_relative_bounded_and_attempted_once() {
+        let mut quality = quality_with_hfield_g(0.24);
+        quality.verdict = earthmesh_quality::QualityLevel::Warn;
+        quality
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "max_adjacent_resolution_ratio")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+
+        assert_eq!(
+            tighter_hfield_gradation_for_quality(&quality, false),
+            Some(0.12)
+        );
+        assert_eq!(tighter_hfield_gradation_for_quality(&quality, true), None);
+
+        quality.hfield.as_mut().unwrap().config.g = Some(0.015);
+        assert_eq!(
+            tighter_hfield_gradation_for_quality(&quality, false),
+            Some(0.01)
+        );
+        quality.hfield.as_mut().unwrap().config.g = Some(0.01);
+        assert_eq!(tighter_hfield_gradation_for_quality(&quality, false), None);
+    }
+
+    #[test]
+    fn gradation_retry_only_targets_transition_shaped_quality_gates() {
+        for metric in [
+            "max_adjacent_resolution_ratio",
+            "transition_continuity_warning_count",
+            "isolated_refined_cell_count",
+        ] {
+            let mut quality = quality_with_hfield_g(0.2);
+            quality.verdict = earthmesh_quality::QualityLevel::Warn;
+            quality
+                .gates
+                .iter_mut()
+                .find(|gate| gate.metric == metric)
+                .unwrap()
+                .level = earthmesh_quality::QualityLevel::Warn;
+            assert_eq!(
+                tighter_hfield_gradation_for_quality(&quality, false),
+                Some(0.1),
+                "metric={metric}"
+            );
+        }
+
+        let mut angle_only = quality_with_hfield_g(0.2);
+        angle_only.verdict = earthmesh_quality::QualityLevel::Warn;
+        angle_only
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "aspect_ratio_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        assert_eq!(
+            tighter_hfield_gradation_for_quality(&angle_only, false),
+            None
+        );
+
+        let mut hfield_jump = quality_with_hfield_g(0.2);
+        hfield_jump.verdict = earthmesh_quality::QualityLevel::Warn;
+        hfield_jump.gates.push(earthmesh_quality::GateResult {
+            metric: "hfield_target_level_jump_gt_one_count".to_string(),
+            value: 1.0,
+            level: earthmesh_quality::QualityLevel::Warn,
+            detail: "adjacent target refinement level jump > 1".to_string(),
+        });
+        assert_eq!(
+            tighter_hfield_gradation_for_quality(&hfield_jump, false),
+            None
+        );
+
+        hfield_jump.gates.last_mut().unwrap().metric =
+            "hfield_actual_level_jump_gt_one_count".to_string();
+        assert_eq!(
+            tighter_hfield_gradation_for_quality(&hfield_jump, false),
+            Some(0.1)
+        );
+
+        let mut deep_edge_cv = quality_with_hfield_g(0.2);
+        deep_edge_cv.hfield.as_mut().unwrap().config.max_level = Some(3);
+        deep_edge_cv.verdict = earthmesh_quality::QualityLevel::Warn;
+        deep_edge_cv
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "cell_edge_length_cv_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        assert_eq!(
+            tighter_hfield_gradation_for_quality(&deep_edge_cv, false),
+            None
+        );
+    }
+
+    #[test]
+    fn local_refinement_skips_conforming_hfield_transition_only_warnings() {
+        let mut shallow_edge_cv = quality_with_hfield_g(0.2);
+        shallow_edge_cv.verdict = earthmesh_quality::QualityLevel::Warn;
+        shallow_edge_cv
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "cell_edge_length_cv_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        set_repair_metric(&mut shallow_edge_cv, "cell_edge_length_cv");
+        assert!(!should_attempt_local_quality_refinement(&shallow_edge_cv));
+
+        shallow_edge_cv.hfield.as_mut().unwrap().config.max_level = Some(3);
+        shallow_edge_cv.gates.push(earthmesh_quality::GateResult {
+            metric: "cell_area_cv".to_string(),
+            value: 1.6,
+            level: earthmesh_quality::QualityLevel::Warn,
+            detail: "multi-resolution area spread".to_string(),
+        });
+        shallow_edge_cv.gates.push(earthmesh_quality::GateResult {
+            metric: "hfield_target_level_jump_gt_one_count".to_string(),
+            value: 19.0,
+            level: earthmesh_quality::QualityLevel::Warn,
+            detail: "target field is steeper than the realized mesh".to_string(),
+        });
+        assert!(!should_attempt_local_quality_refinement(&shallow_edge_cv));
+
+        shallow_edge_cv
+            .hfield
+            .as_mut()
+            .unwrap()
+            .actual_level_jump_gt_one_count = 1;
+        assert!(should_attempt_local_quality_refinement(&shallow_edge_cv));
+
+        let mut shape_only = quality_with_hfield_g(0.2);
+        shape_only.verdict = earthmesh_quality::QualityLevel::Warn;
+        shape_only
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "aspect_ratio_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        shape_only
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "cell_edge_length_cv_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        set_repair_metric(&mut shape_only, "cell_edge_length_cv");
+        assert!(!should_attempt_local_quality_refinement(&shape_only));
+
+        set_repair_metric(&mut shape_only, "aspect_ratio");
+        assert!(should_attempt_local_quality_refinement(&shape_only));
+
+        set_repair_metric(&mut shape_only, "cell_edge_length_cv");
+        shape_only
+            .hfield
+            .as_mut()
+            .unwrap()
+            .target_above_actual_count = 1;
+        assert!(should_attempt_local_quality_refinement(&shape_only));
+    }
+
+    #[test]
+    fn conforming_hfield_repair_plan_does_not_hide_aspect_behind_batch_one() {
+        let input = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(5.0, 0.0),
+                Point::new(5.0, 1.0),
+                Point::new(0.0, 1.0),
+            ],
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2, 3],
+                refine_level: Some(0),
+                neighbors: vec![],
+            }],
+        };
+        let thresholds = QualityThresholds {
+            min_angle_warn_deg: 0.0,
+            angle_deviation_warn_deg: 180.0,
+            ..QualityThresholds::default()
+        };
+        let mut quality = earthmesh_quality::compute(&input, &thresholds);
+        quality.hfield = quality_with_hfield_g(0.2).hfield;
+        assert_eq!(quality.repair_cells[0].metric, "cell_edge_length_cv");
+
+        prefer_non_transition_repair(&mut quality, &input, &thresholds);
+
+        assert_eq!(quality.repair_cells[0].metric, "aspect_ratio");
+        assert!(should_attempt_local_quality_refinement(&quality));
+    }
+
+    #[test]
+    fn gradation_retry_skips_unrepairable_failures() {
+        let mut quality = quality_with_hfield_g(0.2);
+        quality.verdict = earthmesh_quality::QualityLevel::Fail;
+        quality
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "cell_edge_length_cv_max")
+            .unwrap()
+            .level = earthmesh_quality::QualityLevel::Warn;
+        assert!(quality.has_unrepairable_failure());
+        assert_eq!(tighter_hfield_gradation_for_quality(&quality, false), None);
     }
 
     #[test]

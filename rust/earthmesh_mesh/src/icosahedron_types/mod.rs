@@ -1,4 +1,5 @@
 use crate::{CartesianPoint, SpringDiagnosticMaxDisplacement};
+use serde::{Deserialize, Serialize};
 
 /// Count metadata from `icosahedron.F90:icosahedron`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +46,7 @@ pub struct IcosahedronRelaxedGrid {
 
 /// Minimal Rust equivalent of the `itab_ud` fields written by
 /// `icosahedron.F90:fill_diamond`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IcosahedronUEdge {
     pub im: [usize; 2],
     pub iw: [usize; 6],
@@ -66,7 +67,7 @@ impl Default for IcosahedronUEdge {
 
 /// Minimal Rust equivalent of the `itab_wd` fields written by
 /// `icosahedron.F90:fill_diamond`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IcosahedronWFace {
     pub iu: [usize; 3],
     pub npoly: usize,
@@ -95,7 +96,7 @@ impl Default for IcosahedronWFace {
 
 /// Minimal Rust equivalent of the `itab_md` neighbor fields completed by
 /// `icosahedron.F90:tri_neighbors`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IcosahedronMPointNeighbors {
     pub npoly: usize,
     pub iu: [usize; 7],
@@ -113,7 +114,7 @@ impl Default for IcosahedronMPointNeighbors {
 }
 
 /// Minimal Rust equivalent of Method-C `itab_md` refinement/grid metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IcosahedronMPointMetadata {
     pub mrlm: usize,
     pub mrlm_orig: usize,

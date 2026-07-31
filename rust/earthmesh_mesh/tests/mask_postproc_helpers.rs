@@ -1,9 +1,10 @@
 use earthmesh_mesh::{
     boundary_closed_curves_one_based, boundary_connection_one_based,
-    classify_boundary_orders_one_based, extract_unique_vertices_one_based,
-    fill_vertex_only_ocean_contacts_one_based, finalize_mask_postproc_data_one_based,
-    reindex_final_center_vertices_one_based, remove_isolated_ocean_one_based,
-    renew_mask_postproc_data_one_based, renew_mask_postproc_domain_triangles_one_based,
+    classify_boundary_orders_one_based, classify_boundary_orders_with_source_domain_one_based,
+    extract_unique_vertices_one_based, fill_vertex_only_ocean_contacts_one_based,
+    finalize_mask_postproc_data_one_based, reindex_final_center_vertices_one_based,
+    remove_isolated_ocean_one_based, renew_mask_postproc_data_one_based,
+    renew_mask_postproc_domain_triangles_one_based,
     renew_mask_postproc_opposite_domain_triangles_one_based, sort_and_reindex_vertices,
     widen_narrow_waterway_one_based,
 };
@@ -478,4 +479,37 @@ fn boundary_classification_maps_vertices_and_converts_singleton_obc_to_ibc() {
     assert_eq!(classified.obc_order, vec![1, 1, 1, 1, 1]);
     assert_eq!(classified.ibc_order, vec![1, 110, 111, 112, 113]);
     assert_eq!(classified.rotation_start, None);
+}
+
+#[test]
+fn boundary_classification_distinguishes_open_domain_edges_from_internal_coasts() {
+    let num_bdy_long = [4, 1, 1];
+    let bdy_long_order = vec![1, 4, 5, 6];
+    let vertex_neighbors = vec![
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![2, 3],
+        vec![2, 4],
+        vec![2, 3],
+    ];
+    let vertex_neighbor_counts = vec![0, 0, 0, 0, 2, 2, 2];
+    let vertex_mapping = vec![0, 0, 0, 0, 10, 11, 12];
+    let is_in_domain = vec![0, 0, 1, -1, -1];
+    let source_domain = vec![0, 0, 1, -1, 1];
+
+    let classified = classify_boundary_orders_with_source_domain_one_based(
+        num_bdy_long,
+        &bdy_long_order,
+        &vertex_neighbors,
+        &vertex_neighbor_counts,
+        &vertex_mapping,
+        &is_in_domain,
+        &source_domain,
+    )
+    .expect("classify source-domain boundary");
+
+    assert_eq!(classified.obc_order, vec![1, 10, 1, 12]);
+    assert_eq!(classified.ibc_order, vec![1, 1, 11, 1]);
 }

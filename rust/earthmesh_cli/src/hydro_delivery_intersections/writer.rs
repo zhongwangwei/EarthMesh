@@ -16,6 +16,21 @@ use super::geometry::{
 };
 use super::json::json_node_to_string;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct HydroDomainComponent {
+    pub shell: Vec<(f64, f64)>,
+    pub holes: Vec<Vec<(f64, f64)>>,
+}
+
+impl HydroDomainComponent {
+    pub fn shell(shell: Vec<(f64, f64)>) -> Self {
+        Self {
+            shell,
+            holes: Vec::new(),
+        }
+    }
+}
+
 struct CorridorRing {
     ring: Vec<earthmesh_geometry::Point>,
     cap: SphericalCap,
@@ -30,6 +45,212 @@ struct CorridorRing {
 enum SameClassOverlap {
     Possible,
     Disjoint,
+}
+
+struct DomainRingSource {
+    ring: Vec<earthmesh_geometry::Point>,
+    cap: SphericalCap,
+}
+
+struct DomainComponentSource {
+    shell: DomainRingSource,
+    holes: Vec<DomainRingSource>,
+}
+
+struct ProjectedDomainComponent {
+    shell: Vec<earthmesh_geometry::Point>,
+    holes: Vec<Vec<earthmesh_geometry::Point>>,
+}
+
+#[derive(Clone, Default)]
+struct DomainClippedPieces {
+    positive: Vec<Vec<earthmesh_geometry::Point>>,
+    negative: Vec<Vec<earthmesh_geometry::Point>>,
+}
+
+fn segment_intersection_x(
+    first_start: earthmesh_geometry::Point,
+    first_end: earthmesh_geometry::Point,
+    second_start: earthmesh_geometry::Point,
+    second_end: earthmesh_geometry::Point,
+) -> Option<f64> {
+    let first = (first_end.x - first_start.x, first_end.y - first_start.y);
+    let second = (second_end.x - second_start.x, second_end.y - second_start.y);
+    let denominator = first.0 * second.1 - first.1 * second.0;
+    if denominator.abs() < 1.0e-15 {
+        return None;
+    }
+    let t = ((second_start.x - first_start.x) * second.1
+        - (second_start.y - first_start.y) * second.0)
+        / denominator;
+    let u = ((second_start.x - first_start.x) * first.1
+        - (second_start.y - first_start.y) * first.0)
+        / denominator;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(first_start.x + t * first.0)
+}
+
+fn polygon_intervals_at_x(polygon: &[earthmesh_geometry::Point], x: f64) -> Vec<(f64, f64)> {
+    let mut intersections = Vec::new();
+    for index in 0..polygon.len() {
+        let start = polygon[index];
+        let end = polygon[(index + 1) % polygon.len()];
+        if (start.x < x && x < end.x) || (end.x < x && x < start.x) {
+            let t = (x - start.x) / (end.x - start.x);
+            intersections.push(start.y + t * (end.y - start.y));
+        }
+    }
+    intersections.sort_by(f64::total_cmp);
+    intersections
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+fn merge_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    intervals.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (start, end) in intervals {
+        if end <= start {
+            continue;
+        }
+        if let Some(last) = merged.last_mut().filter(|last| start <= last.1 + 1.0e-14) {
+            last.1 = last.1.max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    merged
+}
+
+fn polygon_set_intervals_at_x(
+    polygons: &[Vec<earthmesh_geometry::Point>],
+    x: f64,
+) -> Vec<(f64, f64)> {
+    merge_intervals(
+        polygons
+            .iter()
+            .flat_map(|polygon| polygon_intervals_at_x(polygon, x))
+            .collect(),
+    )
+}
+
+fn subtract_intervals(positive: &[(f64, f64)], negative: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut result = Vec::new();
+    for &(start, end) in positive {
+        let mut cursor = start;
+        for &(cut_start, cut_end) in negative {
+            if cut_end <= cursor {
+                continue;
+            }
+            if cut_start >= end {
+                break;
+            }
+            if cut_start > cursor {
+                result.push((cursor, cut_start.min(end)));
+            }
+            cursor = cursor.max(cut_end);
+            if cursor >= end {
+                break;
+            }
+        }
+        if cursor < end {
+            result.push((cursor, end));
+        }
+    }
+    result
+}
+
+/// Exact planar area of `union(component.positive - component.negative)`.
+///
+/// All clip edges are straight in the cell-local equal-area plane. Vertex and
+/// edge-intersection x coordinates partition the arrangement into slabs whose
+/// vertical coverage is linear, so midpoint integration is exact.
+fn domain_union_area(components: &[DomainClippedPieces]) -> f64 {
+    let polygons = components
+        .iter()
+        .flat_map(|component| component.positive.iter().chain(&component.negative))
+        .filter(|polygon| polygon.len() >= 3)
+        .collect::<Vec<_>>();
+    if polygons.is_empty() {
+        return 0.0;
+    }
+    let mut edges = Vec::new();
+    let mut xs = Vec::new();
+    for polygon in &polygons {
+        for index in 0..polygon.len() {
+            let start = polygon[index];
+            let end = polygon[(index + 1) % polygon.len()];
+            edges.push((start, end));
+            xs.push(start.x);
+        }
+    }
+    for left in 0..edges.len() {
+        for right in (left + 1)..edges.len() {
+            if let Some(x) =
+                segment_intersection_x(edges[left].0, edges[left].1, edges[right].0, edges[right].1)
+            {
+                xs.push(x);
+            }
+        }
+    }
+    xs.sort_by(f64::total_cmp);
+    xs.dedup_by(|left, right| (*left - *right).abs() < 1.0e-12);
+
+    xs.windows(2)
+        .filter_map(|window| {
+            let width = window[1] - window[0];
+            (width > 1.0e-15).then(|| {
+                let x = 0.5 * (window[0] + window[1]);
+                let intervals = components
+                    .iter()
+                    .flat_map(|component| {
+                        let positive = polygon_set_intervals_at_x(&component.positive, x);
+                        let negative = polygon_set_intervals_at_x(&component.negative, x);
+                        subtract_intervals(&positive, &negative)
+                    })
+                    .collect();
+                merge_intervals(intervals)
+                    .iter()
+                    .map(|(start, end)| end - start)
+                    .sum::<f64>()
+                    * width
+            })
+        })
+        .sum()
+}
+
+fn polygon_intersection_pieces(
+    subject: &[earthmesh_geometry::Point],
+    clip: &[earthmesh_geometry::Point],
+) -> Vec<Vec<earthmesh_geometry::Point>> {
+    if is_convex(clip) {
+        let piece = earthmesh_geometry::clip_convex_polygon(subject, clip);
+        (piece.len() >= 3).then_some(piece).into_iter().collect()
+    } else {
+        earthmesh_geometry::polygon_intersection_pieces(subject, clip)
+    }
+}
+
+fn clip_piece_to_domain(
+    piece: &[earthmesh_geometry::Point],
+    domain: &ProjectedDomainComponent,
+    output: &mut DomainClippedPieces,
+) {
+    for shell_piece in polygon_intersection_pieces(piece, &domain.shell) {
+        for hole in &domain.holes {
+            output
+                .negative
+                .extend(polygon_intersection_pieces(&shell_piece, hole));
+        }
+        output.positive.push(shell_piece);
+    }
+}
+
+fn extend_domain_pieces(target: &mut [DomainClippedPieces], source: &[DomainClippedPieces]) {
+    for (target, source) in target.iter_mut().zip(source) {
+        target.positive.extend(source.positive.iter().cloned());
+        target.negative.extend(source.negative.iter().cloned());
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -252,6 +473,35 @@ pub fn write_earthmesh_intersection_geojson(
     unit_sphere_area: bool,
     domain: Option<&[Vec<(f64, f64)>]>,
 ) -> io::Result<usize> {
+    let domain = domain.map(|rings| {
+        rings
+            .iter()
+            .cloned()
+            .map(HydroDomainComponent::shell)
+            .collect::<Vec<_>>()
+    });
+    write_earthmesh_intersection_geojson_with_domain(
+        cell_geojson,
+        corridor_geojson,
+        output_geojson,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain.as_deref(),
+    )
+}
+
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn write_earthmesh_intersection_geojson_with_domain(
+    cell_geojson: impl AsRef<Path>,
+    corridor_geojson: impl AsRef<Path>,
+    output_geojson: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[HydroDomainComponent]>,
+) -> io::Result<usize> {
     write_earthmesh_intersection_geojson_with_overlap(
         cell_geojson,
         corridor_geojson,
@@ -279,6 +529,35 @@ pub fn write_disjoint_earthmesh_intersection_geojson(
     unit_sphere_area: bool,
     domain: Option<&[Vec<(f64, f64)>]>,
 ) -> io::Result<usize> {
+    let domain = domain.map(|rings| {
+        rings
+            .iter()
+            .cloned()
+            .map(HydroDomainComponent::shell)
+            .collect::<Vec<_>>()
+    });
+    write_disjoint_earthmesh_intersection_geojson_with_domain(
+        cell_geojson,
+        corridor_geojson,
+        output_geojson,
+        include_classes,
+        min_fraction,
+        unit_sphere_area,
+        domain.as_deref(),
+    )
+}
+
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn write_disjoint_earthmesh_intersection_geojson_with_domain(
+    cell_geojson: impl AsRef<Path>,
+    corridor_geojson: impl AsRef<Path>,
+    output_geojson: impl AsRef<Path>,
+    include_classes: &[String],
+    min_fraction: f64,
+    unit_sphere_area: bool,
+    domain: Option<&[HydroDomainComponent]>,
+) -> io::Result<usize> {
     write_earthmesh_intersection_geojson_with_overlap(
         cell_geojson,
         corridor_geojson,
@@ -299,19 +578,12 @@ fn write_earthmesh_intersection_geojson_with_overlap(
     include_classes: &[String],
     min_fraction: f64,
     unit_sphere_area: bool,
-    domain: Option<&[Vec<(f64, f64)>]>,
+    domain: Option<&[HydroDomainComponent]>,
     same_class_overlap: SameClassOverlap,
 ) -> io::Result<usize> {
     use earthmesh_geometry::{
-        clip_convex_polygon, polygon_area, polygon_intersection_pieces, polygon_union_area,
-        try_spherical_polygon_excess, Point, SphericalAreaBranch,
+        clip_convex_polygon, polygon_area, try_spherical_polygon_excess, Point, SphericalAreaBranch,
     };
-    let domain_rings: Option<Vec<Vec<Point>>> = domain.map(|polys| {
-        polys
-            .iter()
-            .map(|ring| ring.iter().map(|&(x, y)| Point::new(x, y)).collect())
-            .collect()
-    });
     let validate_ring = |ring: &[Point], kind: &str| -> io::Result<f64> {
         try_spherical_polygon_excess(ring, SphericalAreaBranch::Minor).map_err(|error| {
             io::Error::new(
@@ -320,11 +592,54 @@ fn write_earthmesh_intersection_geojson_with_overlap(
             )
         })
     };
-    if let Some(rings) = &domain_rings {
-        for ring in rings {
-            validate_ring(ring, "domain")?;
-        }
-    }
+    let domain_components = domain
+        .map(|components| {
+            components
+                .iter()
+                .map(|component| {
+                    let shell = component
+                        .shell
+                        .iter()
+                        .map(|&(x, y)| Point::new(x, y))
+                        .collect::<Vec<_>>();
+                    validate_ring(&shell, "domain shell")?;
+                    let shell_cap = SphericalCap::for_rings(std::slice::from_ref(&shell))
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "domain shell has no spherical cap",
+                            )
+                        })?;
+                    let holes = component
+                        .holes
+                        .iter()
+                        .map(|hole| {
+                            let ring = hole
+                                .iter()
+                                .map(|&(x, y)| Point::new(x, y))
+                                .collect::<Vec<_>>();
+                            validate_ring(&ring, "domain hole")?;
+                            let cap = SphericalCap::for_rings(std::slice::from_ref(&ring))
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "domain hole has no spherical cap",
+                                    )
+                                })?;
+                            Ok(DomainRingSource { ring, cap })
+                        })
+                        .collect::<io::Result<Vec<_>>>()?;
+                    Ok(DomainComponentSource {
+                        shell: DomainRingSource {
+                            ring: shell,
+                            cap: shell_cap,
+                        },
+                        holes,
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()
+        })
+        .transpose()?;
     if !(0.0..=1.0).contains(&min_fraction) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -402,18 +717,36 @@ fn write_earthmesh_intersection_geojson_with_overlap(
         if projected_cell_area <= 0.0 || cell_area_sr <= 0.0 {
             continue;
         }
-        let projected_domains = domain_rings
+        let projected_domains = domain_components
             .as_ref()
-            .map(|rings| {
-                rings
+            .map(|components| {
+                components
                     .iter()
-                    .map(|ring| {
-                        projection.project_ring(ring).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "domain cannot be represented in the cell equal-area hemisphere",
-                            )
-                        })
+                    .filter(|component| cell_cap.overlaps(component.shell.cap))
+                    .map(|component| {
+                        let shell =
+                            projection
+                                .project_ring(&component.shell.ring)
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "domain shell cannot be represented in the cell equal-area hemisphere",
+                                    )
+                                })?;
+                        let holes = component
+                            .holes
+                            .iter()
+                            .filter(|hole| cell_cap.overlaps(hole.cap))
+                            .map(|hole| {
+                                projection.project_ring(&hole.ring).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "domain hole cannot be represented in the cell equal-area hemisphere",
+                                    )
+                                })
+                            })
+                            .collect::<io::Result<Vec<_>>>()?;
+                        Ok(ProjectedDomainComponent { shell, holes })
                     })
                     .collect::<io::Result<Vec<_>>>()
             })
@@ -433,8 +766,9 @@ fn write_earthmesh_intersection_geojson_with_overlap(
             .and_then(JsonNode::as_f64);
 
         for (class, rings) in &class_rings {
-            let mut clipped: Vec<Vec<earthmesh_geometry::Point>> = Vec::new();
-            let mut estuary_clipped: Vec<Vec<earthmesh_geometry::Point>> = Vec::new();
+            let component_count = projected_domains.as_ref().map_or(1, Vec::len);
+            let mut clipped = vec![DomainClippedPieces::default(); component_count];
+            let mut estuary_clipped = vec![DomainClippedPieces::default(); component_count];
             let mut disjoint_area = 0.0;
             let mut disjoint_estuary_area = 0.0;
             let mut corridor_sources = std::collections::BTreeSet::new();
@@ -457,34 +791,20 @@ fn write_earthmesh_intersection_geojson_with_overlap(
                 if !bounds_overlap(cell_bounds, corridor_bounds) {
                     continue;
                 }
-                let mut corridor_clipped = Vec::new();
+                let mut corridor_clipped = vec![DomainClippedPieces::default(); component_count];
                 for cr in &projected_cells {
                     let piece = clip_convex_polygon(&projected_corridor, cr);
                     if piece.len() >= 3 {
                         if let Some(domains) = &projected_domains {
-                            for domain in domains {
-                                if is_convex(domain) {
-                                    let domain_piece = clip_convex_polygon(&piece, domain);
-                                    if domain_piece.len() >= 3 {
-                                        corridor_clipped.push(domain_piece);
-                                    }
-                                } else {
-                                    corridor_clipped
-                                        .extend(polygon_intersection_pieces(&piece, domain));
-                                }
+                            for (index, domain) in domains.iter().enumerate() {
+                                clip_piece_to_domain(&piece, domain, &mut corridor_clipped[index]);
                             }
                         } else {
-                            corridor_clipped.push(piece);
+                            corridor_clipped[0].positive.push(piece);
                         }
                     }
                 }
-                let corridor_area = match same_class_overlap {
-                    SameClassOverlap::Possible => polygon_union_area(&corridor_clipped),
-                    SameClassOverlap::Disjoint => corridor_clipped
-                        .iter()
-                        .map(|piece| polygon_area(piece))
-                        .sum(),
-                };
+                let corridor_area = domain_union_area(&corridor_clipped);
                 if corridor_area <= 0.0 {
                     continue;
                 }
@@ -505,18 +825,20 @@ fn write_earthmesh_intersection_geojson_with_overlap(
                 if corridor.is_estuary {
                     match same_class_overlap {
                         SameClassOverlap::Possible => {
-                            estuary_clipped.extend(corridor_clipped.iter().cloned())
+                            extend_domain_pieces(&mut estuary_clipped, &corridor_clipped)
                         }
                         SameClassOverlap::Disjoint => disjoint_estuary_area += corridor_area,
                     }
                 }
                 match same_class_overlap {
-                    SameClassOverlap::Possible => clipped.extend(corridor_clipped),
+                    SameClassOverlap::Possible => {
+                        extend_domain_pieces(&mut clipped, &corridor_clipped)
+                    }
                     SameClassOverlap::Disjoint => disjoint_area += corridor_area,
                 }
             }
             let projected_intersection = match same_class_overlap {
-                SameClassOverlap::Possible => polygon_union_area(&clipped),
+                SameClassOverlap::Possible => domain_union_area(&clipped),
                 SameClassOverlap::Disjoint => disjoint_area,
             }
             .min(projected_cell_area);
@@ -586,7 +908,7 @@ fn write_earthmesh_intersection_geojson_with_overlap(
             props.insert("overlap_fraction".into(), format!("{fraction}"));
             props.insert(
                 "domain_clip_applied".into(),
-                if domain_rings.is_some() {
+                if domain_components.is_some() {
                     "true".into()
                 } else {
                     "false".into()
@@ -594,7 +916,7 @@ fn write_earthmesh_intersection_geojson_with_overlap(
             );
             if class.to_ascii_uppercase().starts_with('R') {
                 let estuary_area = match same_class_overlap {
-                    SameClassOverlap::Possible => polygon_union_area(&estuary_clipped),
+                    SameClassOverlap::Possible => domain_union_area(&estuary_clipped),
                     SameClassOverlap::Disjoint => disjoint_estuary_area,
                 };
                 let estuary_fraction = (estuary_area.min(projected_intersection)

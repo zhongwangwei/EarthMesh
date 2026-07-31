@@ -283,6 +283,22 @@ check(
 log("globe rendering preserves raw GeoJSON identities and updates existing MapLibre sources");
 
 check(
+  html.includes('function globeMeshNeedsGeographicPlane(data)') &&
+    html.includes('const _olPolarReachCache=new WeakMap()') &&
+    html.includes('_olPolarReachCache.has(data)') &&
+    html.includes('lat < -85.0511287798066||lat > 85.0511287798066') &&
+    html.includes('_olPolarReachCache.set(data,reaches)') &&
+    html.includes('function useGeographicPlaneForPolarMesh(map,doFit)') &&
+    html.includes('changeOlProjection(map,"EPSG:4326")') &&
+    html.includes('if(globeMeshNeedsGeographicPlane(mesh)){ useGeographicPlaneForPolarMesh(map,doFit); return; }') &&
+    html.includes('if(renderer==="globe"&&globeMeshNeedsGeographicPlane(mesh)) return useGeographicPlaneForPolarMesh(map,doFit)') &&
+    !html.includes('Math.max(-85.0511287798066') &&
+    !html.includes('Math.min(85.0511287798066'),
+  "meshes reaching the poles must use exact EPSG:4326 planar rendering without coordinate clamping",
+);
+log("polar meshes fall back to exact geographic planar rendering");
+
+check(
   html.includes('const ALL_MAP_STATE=["mesh","domain","coastal","settings"]') &&
     html.includes('if(selected.has("mesh")) payload.mesh=_meshGeojson') &&
     html.includes('if ("mesh" in payload) _meshGeojson = payload.mesh') &&
@@ -363,15 +379,19 @@ log("map exploration controls preserve existing OpenLayers and MapLibre sources"
 
 check(
   html.includes("function updateOlLegend(map)") &&
+    html.includes("function meshRefineStyle(style,p)") &&
+    html.includes("p.refine_level||0") &&
+    html.includes('["get","refine_level"]') &&
+    html.includes('"个细化单元":"refined cells"') &&
     html.includes('map._meshLayer.getFeatures(event.pixel)') &&
     html.includes("meshFeatureLabel(feature.getProperties())") &&
     html.includes('globe.queryRenderedFeatures(event.point,{layers:["earthmesh-mesh-fill"]})') &&
     html.includes('showCellInspectorProperties(map,features[0]&&features[0].properties)') &&
     html.includes('tooltip.className="ol-cell-tooltip"') &&
     html.includes('addEventListener("pointerleave"'),
-  "both renderers must preserve the hydro legend and cell inspection",
+  "both renderers must preserve refinement styling, the hydro legend, and cell inspection",
 );
-log("OpenLayers and MapLibre preserve legend and cell inspection");
+log("OpenLayers and MapLibre preserve refinement styling, legend, and cell inspection");
 
 check(
   html.includes('lang=b.dataset.lang==="zh"?1:0; applyI18n();};') &&
@@ -730,6 +750,39 @@ check(
 );
 log("log clears use textContent");
 
+{
+  const body = section(html, /function logLine\(txt\) \{([\s\S]*?)\n  \}/, "logLine body");
+  check(
+    html.includes(".logbox{min-height:0;overflow-y:scroll") &&
+      html.includes("scrollbar-gutter:stable") &&
+      html.includes(".logbox::-webkit-scrollbar") &&
+      body.includes("box.scrollHeight - box.scrollTop - box.clientHeight <= 24") &&
+      body.includes("if (follow) box.scrollTop = box.scrollHeight;"),
+    "log pane must expose a stable scrollbar and follow appended output while already at the tail",
+  );
+  log("log scrolling and tail-follow check passed");
+}
+
+{
+  const body = section(html, /async function copyLog\(\)\{([\s\S]*?)\n\}/, "copyLog body");
+  check(
+    html.includes('id="copyLogBtn"') &&
+      body.includes("lb.innerText") &&
+      body.includes("navigator.clipboard.writeText(text)") &&
+      body.includes('document.execCommand("copy")'),
+    "log copy must preserve the full rendered text and keep a clipboard fallback",
+  );
+  log("log copy button check passed");
+}
+
+check(
+  html.includes("runCancelRequested&&!r.ok") &&
+    html.includes('setStatus(zh()?"已取消":"cancelled"') &&
+    !html.includes('runCancelRequested&&!r.ok;\n        logLine'),
+  "an explicitly killed run must render as cancelled instead of failed",
+);
+log("run cancellation status check passed");
+
 check(!html.includes(".logbox .ok") && !html.includes(".logbox .wn"), "dead log status CSS");
 log("dead log status CSS check passed");
 
@@ -821,6 +874,16 @@ log("opened project layers preserve disabled state");
     "quality errors must render as text",
   );
   log("quality errors render as text");
+}
+
+{
+  const body = section(html, /async function doRun\(\) \{([\s\S]*?)\n  \}/, "doRun body");
+  check(
+    body.includes("finalQuality = r.final_quality || null;") &&
+      body.includes("loadQualityAndMesh(runInfo.gridfile, finalQuality)"),
+    "successful project runs must render the engine's authoritative quality report",
+  );
+  log("project runs reuse authoritative quality reports");
 }
 
 {

@@ -31,8 +31,10 @@ impl MethodCDelaunayMesh {
                         radius,
                     )?;
                     let ll = xyz_to_lonlat_degrees(center);
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
+                    return Err(method_c_parent_level_mismatch_error(
+                        iw,
+                        face.mrlw,
+                        expected_mrlw,
                         format!(
                             "Current nested grid {child_level} crosses (or is too close to) the next coarser grid boundary at W face {iw} (mrlw={}, expected_mrlw={}, lon={:.3}, lat={:.3})",
                             face.mrlw, expected_mrlw, ll.lon_degrees, ll.lat_degrees

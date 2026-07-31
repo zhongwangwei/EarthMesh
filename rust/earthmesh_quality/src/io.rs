@@ -6,9 +6,60 @@ use std::io;
 use std::path::Path;
 
 use crate::{
-    GeometryMetrics, HfieldDiagnostics, LevelCount, MeshQualityReport, RefineLevelQualitySummary,
-    Stat5, TopologyMetrics,
+    GeometryMetrics, HfieldDiagnostics, LevelCount, MeshQualityReport, QualityLevel,
+    RefineLevelQualitySummary, Stat5, ThresholdExceedance, TopologyMetrics,
 };
+
+/// Calibration coverage for the report's current cell view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GateCalibration {
+    pub status: &'static str,
+    pub scope: &'static str,
+    pub reference_set: Option<&'static str>,
+    pub caveat: &'static str,
+    pub triggered_uncalibrated_gates: Vec<&'static str>,
+}
+
+pub fn gate_calibration(r: &MeshQualityReport) -> GateCalibration {
+    let triggered_uncalibrated_gates = r
+        .gates
+        .iter()
+        .filter(|gate| {
+            gate.level != QualityLevel::Pass
+                && matches!(
+                    gate.metric.as_str(),
+                    "aspect_ratio_max" | "cell_edge_length_cv_max"
+                )
+        })
+        .map(|gate| match gate.metric.as_str() {
+            "aspect_ratio_max" => "aspect_ratio_max",
+            _ => "cell_edge_length_cv_max",
+        })
+        .collect();
+    match r.cell_view.as_str() {
+        "hex" => GateCalibration {
+            status: "provisional",
+            scope: "hex_absolute_max_shape",
+            reference_set: Some("mpas_hex_2026-07-26_v1"),
+            caveat: "absolute-max shape gates are not calibrated as universal validity gates for variable-resolution hex meshes",
+            triggered_uncalibrated_gates,
+        },
+        "tri" => GateCalibration {
+            status: "provisional",
+            scope: "tri_absolute_max_shape",
+            reference_set: Some("noaa_ngofs2_fvcom_tri_2026-07-29_v1"),
+            caveat: "one operational NOAA FVCOM positive reference has been measured, but negative, stability, and product coverage are still missing",
+            triggered_uncalibrated_gates,
+        },
+        _ => GateCalibration {
+            status: "unknown",
+            scope: "unknown_cell_view",
+            reference_set: None,
+            caveat: "cell-view and product calibration coverage is unknown",
+            triggered_uncalibrated_gates,
+        },
+    }
+}
 
 fn esc(v: &str) -> String {
     let mut out = String::with_capacity(v.len() + 2);
@@ -42,6 +93,27 @@ fn stat_json(s: &Stat5) -> String {
         num(s.mean),
         num(s.std),
         num(s.cv)
+    )
+}
+
+fn threshold_exceedance_json(value: &ThresholdExceedance) -> String {
+    format!(
+        "{{\"threshold\":{},\"sample_count\":{},\"count\":{},\"fraction\":{}}}",
+        num(value.threshold),
+        value.sample_count,
+        value.count,
+        num(value.fraction)
+    )
+}
+
+fn string_array_json(values: &[&str]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| format!("\"{}\"", esc(value)))
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 
@@ -161,6 +233,7 @@ fn fixed_or_na(value: f64, precision: usize) -> String {
 pub fn to_summary_json(r: &MeshQualityReport) -> String {
     let g: &GeometryMetrics = &r.geometry;
     let t: &TopologyMetrics = &r.topology;
+    let calibration = gate_calibration(r);
     let mut s = String::new();
     s.push_str("{\n");
     s.push_str("  \"kind\": \"earthmesh_mesh_quality\",\n");
@@ -171,6 +244,17 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         esc(&r.tool_version)
     ));
     s.push_str(&format!("  \"verdict\": \"{}\",\n", r.verdict.as_str()));
+    s.push_str(&format!(
+        "  \"gate_calibration\": {{\"status\":\"{}\",\"scope\":\"{}\",\"reference_set\":{},\"uncalibrated_gate_classes\":[\"absolute_max_shape\"],\"triggered_uncalibrated_gates\":{},\"caveat\":\"{}\"}},\n",
+        calibration.status,
+        calibration.scope,
+        calibration
+            .reference_set
+            .map(|value| format!("\"{}\"", esc(value)))
+            .unwrap_or_else(|| "null".to_string()),
+        string_array_json(&calibration.triggered_uncalibrated_gates),
+        esc(calibration.caveat)
+    ));
     s.push_str("  \"geometry\": {\n");
     s.push_str(&format!("    \"cell_count\": {},\n", g.cell_count));
     s.push_str(&format!("    \"vertex_count\": {},\n", g.vertex_count));
@@ -190,6 +274,15 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "    \"cell_edge_length_cv\": {},\n",
         stat_json(&g.cell_edge_length_cv)
+    ));
+    s.push_str(&format!(
+        "    \"cell_edge_length_cv_percentiles\": {{\"p95\":{},\"p99\":{}}},\n",
+        num(g.cell_edge_length_cv_percentiles.p95),
+        num(g.cell_edge_length_cv_percentiles.p99)
+    ));
+    s.push_str(&format!(
+        "    \"cell_edge_length_cv_above_warn\": {},\n",
+        threshold_exceedance_json(&g.cell_edge_length_cv_above_warn)
     ));
     s.push_str(&format!(
         "    \"min_angle_deg\": {},\n",
@@ -214,6 +307,19 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "    \"aspect_ratio\": {},\n",
         stat_json(&g.aspect_ratio)
+    ));
+    s.push_str(&format!(
+        "    \"aspect_ratio_percentiles\": {{\"p95\":{},\"p99\":{}}},\n",
+        num(g.aspect_ratio_percentiles.p95),
+        num(g.aspect_ratio_percentiles.p99)
+    ));
+    s.push_str(&format!(
+        "    \"aspect_ratio_above_warn\": {},\n",
+        threshold_exceedance_json(&g.aspect_ratio_above_warn)
+    ));
+    s.push_str(&format!(
+        "    \"aspect_ratio_above_fail\": {},\n",
+        threshold_exceedance_json(&g.aspect_ratio_above_fail)
     ));
     s.push_str(&format!(
         "    \"compactness\": {},\n",
@@ -288,6 +394,14 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
     s.push_str(&format!(
         "    \"boundary_edge_count\": {},\n",
         t.boundary_edge_count
+    ));
+    s.push_str(&format!(
+        "    \"boundary_loop_count\": {},\n",
+        t.boundary_loop_count
+    ));
+    s.push_str(&format!(
+        "    \"boundary_vertex_degree_violation_count\": {},\n",
+        t.boundary_vertex_degree_violation_count
     ));
     s.push_str(&format!(
         "    \"misoriented_shared_edge_count\": {},\n",
@@ -409,6 +523,7 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
     let mut s = String::from("category,metric,value,level\n");
     let g = &r.geometry;
     let t = &r.topology;
+    let calibration = gate_calibration(r);
     let rows: Vec<(&str, &str, f64)> = vec![
         ("geometry", "cell_count", g.cell_count as f64),
         ("geometry", "vertex_count", g.vertex_count as f64),
@@ -423,6 +538,31 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             "cell_edge_length_cv_max",
             g.cell_edge_length_cv.max,
         ),
+        (
+            "geometry",
+            "cell_edge_length_cv_p95",
+            g.cell_edge_length_cv_percentiles.p95,
+        ),
+        (
+            "geometry",
+            "cell_edge_length_cv_p99",
+            g.cell_edge_length_cv_percentiles.p99,
+        ),
+        (
+            "geometry",
+            "cell_edge_length_cv_warn_threshold",
+            g.cell_edge_length_cv_above_warn.threshold,
+        ),
+        (
+            "geometry",
+            "cell_edge_length_cv_above_warn_count",
+            g.cell_edge_length_cv_above_warn.count as f64,
+        ),
+        (
+            "geometry",
+            "cell_edge_length_cv_above_warn_fraction",
+            g.cell_edge_length_cv_above_warn.fraction,
+        ),
         ("geometry", "min_angle_deg", g.min_angle_deg),
         ("geometry", "max_angle_deg", g.max_angle_deg),
         (
@@ -433,6 +573,46 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
         ("geometry", "triangle_eta_local_min", g.triangle_eta.min),
         ("geometry", "triangle_nsr_local_min", g.triangle_nsr.min),
         ("geometry", "aspect_ratio_max", g.aspect_ratio.max),
+        (
+            "geometry",
+            "aspect_ratio_p95",
+            g.aspect_ratio_percentiles.p95,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_p99",
+            g.aspect_ratio_percentiles.p99,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_warn_threshold",
+            g.aspect_ratio_above_warn.threshold,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_above_warn_count",
+            g.aspect_ratio_above_warn.count as f64,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_above_warn_fraction",
+            g.aspect_ratio_above_warn.fraction,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_fail_threshold",
+            g.aspect_ratio_above_fail.threshold,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_above_fail_count",
+            g.aspect_ratio_above_fail.count as f64,
+        ),
+        (
+            "geometry",
+            "aspect_ratio_above_fail_fraction",
+            g.aspect_ratio_above_fail.fraction,
+        ),
         ("geometry", "compactness_min", g.compactness.min),
         (
             "geometry",
@@ -503,6 +683,16 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             "topology",
             "boundary_edge_count",
             t.boundary_edge_count as f64,
+        ),
+        (
+            "topology",
+            "boundary_loop_count",
+            t.boundary_loop_count as f64,
+        ),
+        (
+            "topology",
+            "boundary_vertex_degree_violation_count",
+            t.boundary_vertex_degree_violation_count as f64,
         ),
         (
             "topology",
@@ -670,6 +860,22 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
     }
     s.push_str(&format!("summary,cell_view,,{}\n", r.cell_view));
     s.push_str(&format!("summary,verdict,,{}\n", r.verdict.as_str()));
+    s.push_str(&format!(
+        "summary,gate_calibration_status,,{}\n",
+        calibration.status
+    ));
+    s.push_str(&format!(
+        "summary,gate_calibration_scope,,{}\n",
+        calibration.scope
+    ));
+    s.push_str(&format!(
+        "summary,gate_calibration_reference_set,,{}\n",
+        calibration.reference_set.unwrap_or("none")
+    ));
+    s.push_str(&format!(
+        "summary,triggered_uncalibrated_gates,,{}\n",
+        calibration.triggered_uncalibrated_gates.join("|")
+    ));
     s
 }
 
@@ -782,6 +988,7 @@ pub fn to_quality_repair_plan_json_capped(r: &MeshQualityReport, max_level: u8) 
 pub fn to_report_md(r: &MeshQualityReport) -> String {
     let g = &r.geometry;
     let t = &r.topology;
+    let calibration = gate_calibration(r);
     let mut s = String::new();
     s.push_str(&format!(
         "# Mesh Quality Report — {}\n\n",
@@ -791,7 +998,18 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
     if !r.cell_view.is_empty() {
         s.push_str(&format!("- cell view: `{}`\n", r.cell_view));
     }
-    s.push_str(&format!("- tool: earthmesh_quality {}\n\n", r.tool_version));
+    s.push_str(&format!("- tool: earthmesh_quality {}\n", r.tool_version));
+    s.push_str(&format!(
+        "- gate calibration: `{}` (`{}`) — {}\n",
+        calibration.status, calibration.scope, calibration.caveat
+    ));
+    if !calibration.triggered_uncalibrated_gates.is_empty() {
+        s.push_str(&format!(
+            "- triggered provisional gates: `{}`\n",
+            calibration.triggered_uncalibrated_gates.join("`, `")
+        ));
+    }
+    s.push('\n');
     s.push_str("## Geometry\n\n");
     s.push_str(&format!(
         "- cells: {} · vertices: {} · edges: {}\n",
@@ -802,16 +1020,40 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
         g.cell_area.mean, g.cell_area.cv, g.cell_area_ratio
     ));
     s.push_str(&format!(
-        "- edge length (km): min {:.3}, mean {:.3}; max per-cell edge CV {:.3}\n",
-        g.edge_length_km.min, g.edge_length_km.mean, g.cell_edge_length_cv.max
+        "- edge length (km): min {:.3}, mean {:.3}; per-cell edge CV p95 {:.3}, p99 {:.3}, max {:.3}\n",
+        g.edge_length_km.min,
+        g.edge_length_km.mean,
+        g.cell_edge_length_cv_percentiles.p95,
+        g.cell_edge_length_cv_percentiles.p99,
+        g.cell_edge_length_cv.max
     ));
     s.push_str(&format!(
-        "- min angle: {}° · max angle: {}° · max angle deviation: {}° · max aspect: {} · min compactness: {}\n",
+        "- edge CV > {}: {} / {} ({:.4}%)\n",
+        g.cell_edge_length_cv_above_warn.threshold,
+        g.cell_edge_length_cv_above_warn.count,
+        g.cell_edge_length_cv_above_warn.sample_count,
+        100.0 * g.cell_edge_length_cv_above_warn.fraction
+    ));
+    s.push_str(&format!(
+        "- min angle: {}° · max angle: {}° · max angle deviation: {}° · aspect p95 {} / p99 {} / max {} · min compactness: {}\n",
         fixed_or_na(g.min_angle_deg, 2),
         fixed_or_na(g.max_angle_deg, 2),
         fixed_or_na(g.angle_deviation_deg.max, 2),
+        fixed_or_na(g.aspect_ratio_percentiles.p95, 2),
+        fixed_or_na(g.aspect_ratio_percentiles.p99, 2),
         fixed_or_na(g.aspect_ratio.max, 2),
         fixed_or_na(g.compactness.min, 3)
+    ));
+    s.push_str(&format!(
+        "- aspect > {}: {} / {} ({:.4}%) · aspect > {}: {} / {} ({:.4}%)\n",
+        g.aspect_ratio_above_warn.threshold,
+        g.aspect_ratio_above_warn.count,
+        g.aspect_ratio_above_warn.sample_count,
+        100.0 * g.aspect_ratio_above_warn.fraction,
+        g.aspect_ratio_above_fail.threshold,
+        g.aspect_ratio_above_fail.count,
+        g.aspect_ratio_above_fail.sample_count,
+        100.0 * g.aspect_ratio_above_fail.fraction
     ));
     s.push_str(&format!(
         "- local shape metric samples: {} · excluded coarse cells: {}\n",
@@ -829,12 +1071,14 @@ pub fn to_report_md(r: &MeshQualityReport) -> String {
     ));
     s.push_str("## Topology\n\n");
     s.push_str(&format!(
-        "- invalid vertex idx: {} · invalid cell idx: {} · duplicate edges: {} · dangling edges: {} · boundary edges: {}\n",
+        "- invalid vertex idx: {} · invalid cell idx: {} · duplicate edges: {} · dangling edges: {} · boundary edges: {} · boundary loops: {} · invalid boundary degrees: {}\n",
         t.invalid_vertex_index_count,
         t.invalid_cell_index_count,
         t.duplicate_edge_count,
         t.dangling_edge_count,
-        t.boundary_edge_count
+        t.boundary_edge_count,
+        t.boundary_loop_count,
+        t.boundary_vertex_degree_violation_count
     ));
     s.push_str(&format!(
         "- orphan cells: {} · neighbor-reciprocity fails: {} · neighbor-degree mismatch: {} · misoriented shared edges: {} · abnormal polygons: {}\n",

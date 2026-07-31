@@ -1,9 +1,10 @@
 use std::io;
 
 use earthmesh_core::{deg_to_rad, rad_to_deg};
+use serde::{Deserialize, Serialize};
 
 /// Earth-centered Cartesian point using the same axis convention as `mkgrd.F90`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CartesianPoint {
     pub x: f64,
     pub y: f64,

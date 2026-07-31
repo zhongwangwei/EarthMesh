@@ -4,7 +4,6 @@ use crate::plan_mask_postproc_domain_io;
 use crate::read_obc_order_netcdf;
 use crate::read_unstructured_mesh_netcdf;
 use crate::run_getcontain_refine_file_one_based;
-use crate::run_mask_postproc_ocean_domain;
 use crate::write_area_judge_grid_netcdf;
 use crate::write_close_mask_netcdf;
 use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
@@ -66,6 +65,29 @@ pub fn write_clean_regional_ocean_gridfile(
     gridnum_perdegree: usize,
     mask_sea_ratio: f64,
     work_dir: &Path,
+) -> io::Result<MaskPostprocDomainIoPlan> {
+    write_clean_regional_ocean_gridfile_with_hard_demand(
+        global_gridfile,
+        close_points,
+        landtype_file,
+        nxp,
+        gridnum_perdegree,
+        mask_sea_ratio,
+        work_dir,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_clean_regional_ocean_gridfile_with_hard_demand(
+    global_gridfile: &Path,
+    close_points: &[LonLatPoint],
+    landtype_file: &Path,
+    nxp: usize,
+    gridnum_perdegree: usize,
+    mask_sea_ratio: f64,
+    work_dir: &Path,
+    hard_center_demand: &[bool],
 ) -> io::Result<MaskPostprocDomainIoPlan> {
     let nlons_source = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
         io::Error::new(
@@ -187,13 +209,27 @@ pub fn write_clean_regional_ocean_gridfile(
     })?;
     rebase_clean_ocean_contain_indices(&plan.contain_domain, bounds)?;
 
-    let report = run_mask_postproc_ocean_domain(
+    let report = crate::run_mask_postproc_ocean_domain_with_hard_demand(
         &plan,
         MaskPostprocOceanRunOptions {
             mask_sea_ratio,
             num_vertex: 0,
         },
+        hard_center_demand,
     )?;
+    if !report
+        .renewal
+        .excluded_unsupported_hard_demand_cells
+        .is_empty()
+    {
+        eprintln!(
+            "earthmesh_cli: excluded {} ocean hard-demand cell(s) outside simulation-ready product support",
+            report
+                .renewal
+                .excluded_unsupported_hard_demand_cells
+                .len()
+        );
+    }
     let source_levels = refine_levels_from_gridfile(&plan.source_gridfile)?;
     let final_metadata = final_method_c_metadata_for_mask_postproc(
         "tri",

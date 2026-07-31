@@ -122,7 +122,9 @@ fn w_row_is_sentinel(mesh: &GridfileMeshPoints, row: usize) -> bool {
         && mesh
             .w_to_m
             .get(start..start + mesh.w_to_m_width)
-            .is_some_and(row_is_constant)
+            .is_some_and(|row| {
+                row.first() == Some(&1) && row.iter().skip(1).all(|&id| id == 0 || id == 1)
+            })
 }
 
 fn authoritative_w_connectivity_references_id(mesh: &GridfileMeshPoints, id: usize) -> bool {

@@ -1,22 +1,19 @@
-pub(super) fn unwrap_ring_lon(ring: &mut [(f64, f64)], ref_lon: f64) {
-    for p in ring.iter_mut() {
-        while p.0 - ref_lon > 180.0 {
-            p.0 -= 360.0;
+fn unwrap_ring_lon(ring: &mut [(f64, f64)], ref_lon: f64) {
+    let mut previous = ref_lon;
+    for point in ring {
+        while point.0 - previous > 180.0 {
+            point.0 -= 360.0;
         }
-        while p.0 - ref_lon < -180.0 {
-            p.0 += 360.0;
+        while point.0 - previous < -180.0 {
+            point.0 += 360.0;
         }
+        previous = point.0;
     }
 }
 
-/// Reject only cells whose center/corner or edge arcs leave the hemisphere
-/// supported by the local equal-area overlay. Compact polar cells are valid.
-pub(super) fn cell_exceeds_supported_arc(
-    corners: &[(f64, f64)],
-    clon: f64,
-    clat: f64,
-    max_deg: f64,
-) -> bool {
+/// Reject only mesh edges too large for the minor-arc overlay. The source cell
+/// center is not authoritative for GeoJSON geometry and can wrap independently.
+pub(super) fn cell_has_unsupported_edge_arc(corners: &[(f64, f64)], max_deg: f64) -> bool {
     fn gc_deg(a: (f64, f64), b: (f64, f64)) -> f64 {
         let xyz = |lon: f64, lat: f64| {
             let (lo, la) = (lon.to_radians(), lat.to_radians());
@@ -28,11 +25,102 @@ pub(super) fn cell_exceeds_supported_arc(
             .acos()
             .to_degrees()
     }
-    if corners.iter().any(|&c| gc_deg((clon, clat), c) > max_deg) {
-        return true;
-    }
     let n = corners.len();
     (0..n).any(|i| gc_deg(corners[i], corners[(i + 1) % n]) > max_deg)
+}
+
+fn clip_ring_at_longitude(
+    ring: &[(f64, f64)],
+    boundary: f64,
+    keep_greater: bool,
+) -> Vec<(f64, f64)> {
+    let inside = |point: (f64, f64)| {
+        if keep_greater {
+            point.0 >= boundary
+        } else {
+            point.0 <= boundary
+        }
+    };
+    let intersection = |left: (f64, f64), right: (f64, f64)| {
+        let t = (boundary - left.0) / (right.0 - left.0);
+        (boundary, left.1 + t * (right.1 - left.1))
+    };
+    let Some(&last) = ring.last() else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    let mut previous = last;
+    let mut previous_inside = inside(previous);
+    for &current in ring {
+        let current_inside = inside(current);
+        if current_inside != previous_inside {
+            output.push(intersection(previous, current));
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    output.dedup_by(|left, right| {
+        (left.0 - right.0).abs() <= 1.0e-12 && (left.1 - right.1).abs() <= 1.0e-12
+    });
+    if output.len() > 1
+        && (output[0].0 - output[output.len() - 1].0).abs() <= 1.0e-12
+        && (output[0].1 - output[output.len() - 1].1).abs() <= 1.0e-12
+    {
+        output.pop();
+    }
+    output
+}
+
+/// Split one ordered, non-polar spherical cell at ±180° into bounded GeoJSON
+/// rings. Each returned ring is closed and every longitude is in [-180, 180].
+pub(super) fn split_ring_at_antimeridian(
+    corners: &[(f64, f64)],
+    ref_lon: f64,
+) -> Vec<Vec<(f64, f64)>> {
+    if corners.len() < 3 {
+        return Vec::new();
+    }
+    let mut unwrapped = corners.to_vec();
+    unwrap_ring_lon(&mut unwrapped, ref_lon);
+    let lon_min = unwrapped
+        .iter()
+        .map(|point| point.0)
+        .fold(f64::INFINITY, f64::min);
+    let lon_max = unwrapped
+        .iter()
+        .map(|point| point.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let first_slab = ((lon_min + 180.0) / 360.0).floor() as i32;
+    let last_slab = ((lon_max + 180.0) / 360.0).floor() as i32;
+    let mut rings = Vec::new();
+    for slab in first_slab..=last_slab {
+        let west = -180.0 + f64::from(slab) * 360.0;
+        let east = west + 360.0;
+        let clipped = clip_ring_at_longitude(&unwrapped, west, true);
+        let mut clipped = clip_ring_at_longitude(&clipped, east, false);
+        if clipped.len() < 3 {
+            continue;
+        }
+        let clipped_lon_span = clipped
+            .iter()
+            .map(|point| point.0)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), lon| {
+                (lo.min(lon), hi.max(lon))
+            });
+        if clipped_lon_span.1 - clipped_lon_span.0 <= 1.0e-12 {
+            continue;
+        }
+        let shift = f64::from(slab) * 360.0;
+        for point in &mut clipped {
+            point.0 = (point.0 - shift).clamp(-180.0, 180.0);
+        }
+        clipped.push(clipped[0]);
+        rings.push(clipped);
+    }
+    rings
 }
 
 pub(super) fn ring_intersects_directed_bbox(ring: &[(f64, f64)], bbox: Option<[f64; 4]>) -> bool {

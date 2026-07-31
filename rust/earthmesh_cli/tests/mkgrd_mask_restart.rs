@@ -132,34 +132,28 @@ fn restart_ocean_source_mesh() -> earthmesh_cli::unstructured_mesh_support::Unst
         point.lat = idx as f64 * 0.5;
     }
     let mut w_points =
-        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
+        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 15];
     for (idx, point) in w_points.iter_mut().enumerate() {
         point.lon = 100.0 + idx as f64;
         point.lat = 40.0 + idx as f64 * 0.25;
     }
     let mut m_to_w = vec![[1, 1, 1]; 8];
-    m_to_w[2] = [10, 11, 2];
-    m_to_w[3] = [11, 12, 3];
-    m_to_w[4] = [12, 13, 4];
-    m_to_w[5] = [13, 10, 5];
-    let mut w_to_m = vec![vec![1; 7]; 14];
-    w_to_m[2] = vec![2, 1, 1, 1, 1, 1, 1];
-    w_to_m[3] = vec![3, 1, 1, 1, 1, 1, 1];
-    w_to_m[4] = vec![4, 1, 1, 1, 1, 1, 1];
-    w_to_m[5] = vec![5, 1, 1, 1, 1, 1, 1];
+    m_to_w[2] = [10, 11, 14];
+    m_to_w[3] = [11, 12, 14];
+    m_to_w[4] = [12, 13, 14];
+    m_to_w[5] = [13, 10, 14];
+    let mut w_to_m = vec![vec![1; 7]; 15];
     w_to_m[10] = vec![2, 5, 6, 7, 1, 1, 1];
     w_to_m[11] = vec![2, 3, 6, 7, 1, 1, 1];
     w_to_m[12] = vec![3, 4, 6, 7, 1, 1, 1];
     w_to_m[13] = vec![4, 5, 6, 7, 1, 1, 1];
-    let mut n_w_to_m = vec![0; 14];
-    n_w_to_m[2] = 1;
-    n_w_to_m[3] = 1;
-    n_w_to_m[4] = 1;
-    n_w_to_m[5] = 1;
+    w_to_m[14] = vec![2, 3, 4, 5, 1, 1, 1];
+    let mut n_w_to_m = vec![0; 15];
     n_w_to_m[10] = 5;
     n_w_to_m[11] = 5;
     n_w_to_m[12] = 5;
     n_w_to_m[13] = 5;
+    n_w_to_m[14] = 4;
     earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points,
         w_points,

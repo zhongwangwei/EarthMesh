@@ -94,6 +94,15 @@ fn write_standard_fvcom(path: &Path) {
         ],
         &[1, 1, 1],
     );
+    let mut file = netcdf::append(path).unwrap();
+    file.variable_mut("lon")
+        .unwrap()
+        .put_values(&[0.0, 0.0, 1.0], ..)
+        .unwrap();
+    file.variable_mut("lat")
+        .unwrap()
+        .put_values(&[0.0, 1.0, 0.0], ..)
+        .unwrap();
 }
 
 #[test]
@@ -108,8 +117,8 @@ fn standard_mpas_one_based_connectivity_is_converted_automatically() {
     let mesh =
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&report.output).unwrap();
 
-    assert_eq!(mesh.m_to_w[1], [1, 1, 1]);
-    assert_eq!(&mesh.w_to_m[1][..3], &[1, 2, 3]);
+    assert_eq!(mesh.m_to_w[1], [2, 1, 1]);
+    assert_eq!(&mesh.w_to_m[1][..3], &[2, 3, 4]);
     assert_eq!(mesh.n_w_to_m[1], 3);
 }
 
@@ -125,9 +134,13 @@ fn standard_fvcom_one_based_connectivity_is_converted_automatically() {
     let mesh =
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&report.output).unwrap();
 
-    assert_eq!(mesh.m_to_w[1], [1, 2, 3]);
+    assert_eq!(
+        mesh.m_to_w[1],
+        [2, 4, 3],
+        "clockwise FVCOM connectivity must be canonicalized to CCW"
+    );
     for node in 1..=3 {
-        assert_eq!(mesh.w_to_m[node][0], 1);
+        assert_eq!(mesh.w_to_m[node][0], 2);
         assert_eq!(mesh.n_w_to_m[node], 1);
     }
 }
@@ -154,7 +167,7 @@ fn standard_fvcom_maxelem_below_earthmesh_minimum_is_padded_automatically() {
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&report.output).unwrap();
 
     assert_eq!(mesh.n_w_to_m[1], 1);
-    assert_eq!(mesh.w_to_m[1][0], 1);
+    assert_eq!(mesh.w_to_m[1][0], 2);
 }
 
 #[test]
@@ -181,6 +194,6 @@ fn standard_fvcom_preserves_more_than_seven_incident_elements() {
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&report.output).unwrap();
 
     assert_eq!(mesh.n_w_to_m[1], 8);
-    assert_eq!(&mesh.w_to_m[1][..8], &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(&mesh.w_to_m[1][..8], &[2, 3, 4, 5, 6, 7, 8, 9]);
     assert_eq!(mesh.w_to_m[1].len(), 9);
 }

@@ -1,22 +1,16 @@
 use std::io;
+use std::path::{Path, PathBuf};
 
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_quality::{HfieldConfigDiagnostics, MeshQualityReport, QualityMeshInput};
 
-use crate::hfield_refine::{
-    build_composed_hfield, constrain_hfield_to_domain, has_threshold_hfield_sources,
-    read_hfield_refine_options,
-};
+use crate::hfield_refine::read_hfield_refine_options;
 
-use super::gridfile::{
-    hex_quality_cells_from_gridfile, read_gridfile_mesh_points, tri_quality_cells_from_gridfile,
-};
+use super::gridfile::read_gridfile_mesh_points;
+use super::hfield_support_coverage::target_levels_with_hard_coverage;
 use crate::{
-    namelist_has_section, native_grid_refinement_depth, native_grid_refinement_requested,
-    native_spawn_uses_cartesian_xy, read_method_c_calculated_refinement_regions,
-    read_method_c_specified_refinement_regions, read_native_grid_mdomain,
-    read_native_grid_refine_controls, read_native_grid_refinement_regions,
-    read_native_grid_sfcgrid_res_factor, GridfileMeshPoints,
+    namelist_has_section, native_grid_refinement_requested, native_spawn_uses_cartesian_xy,
+    read_native_grid_mdomain, read_native_grid_refine_controls, GridfileMeshPoints,
 };
 
 /// Attach h-field diagnostics to a mesh-quality report when `namelist_contents`
@@ -26,6 +20,35 @@ pub fn attach_hfield_diagnostics_from_namelist(
     report: &mut MeshQualityReport,
     input: &QualityMeshInput,
     mesh: &GridfileMeshPoints,
+    kind: &str,
+    namelist_contents: &str,
+) -> io::Result<bool> {
+    attach_hfield_diagnostics(report, input, mesh, None, kind, namelist_contents)
+}
+
+pub fn attach_hfield_diagnostics_from_namelist_for_gridfile(
+    report: &mut MeshQualityReport,
+    input: &QualityMeshInput,
+    mesh: &GridfileMeshPoints,
+    gridfile: impl AsRef<Path>,
+    kind: &str,
+    namelist_contents: &str,
+) -> io::Result<bool> {
+    attach_hfield_diagnostics(
+        report,
+        input,
+        mesh,
+        Some(gridfile.as_ref()),
+        kind,
+        namelist_contents,
+    )
+}
+
+fn attach_hfield_diagnostics(
+    report: &mut MeshQualityReport,
+    input: &QualityMeshInput,
+    _mesh: &GridfileMeshPoints,
+    gridfile: Option<&Path>,
     kind: &str,
     namelist_contents: &str,
 ) -> io::Result<bool> {
@@ -46,125 +69,60 @@ pub fn attach_hfield_diagnostics_from_namelist(
     let Some(hfield) = read_hfield_refine_options(namelist_contents)? else {
         return Ok(false);
     };
-    let has_hydro_target = hfield.hydro_target_paths().is_some();
-    let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
     let native_mdomain = read_native_grid_mdomain(namelist_contents)?;
-    let native_global_like_domain =
-        native_mdomain.map_or(config.mask_domain_global, |mdomain| mdomain < 2);
-    let native_surface_global_expansion =
-        !is_atmosmesh && read_native_grid_sfcgrid_res_factor(namelist_contents)? > 1;
-    let native_regions = read_native_grid_refinement_regions(
-        namelist_contents,
-        is_atmosmesh,
-        native_global_like_domain,
-    )?;
-    let native_regions_requested =
+    let native_requested =
         native_grid_refinement_requested(namelist_contents, config.mesh_type.trim())?;
-    let refine = match RefineConfig::from_mkrefine_namelist_with_external_field(
+    let refine = RefineConfig::from_mkrefine_namelist_with_external_field(
         namelist_contents,
         config.mesh_type.trim(),
         config.mode_grid.trim(),
-        has_hydro_target,
-    ) {
-        Ok(refine) => refine,
-        Err(_err) if !native_regions.is_empty() || native_surface_global_expansion => {
-            read_native_grid_refine_controls(namelist_contents)?
-        }
-        Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err)),
-    };
-    let max_spc_level = if refine.refine_spc {
-        non_negative_usize(refine.max_iter_spc, "RL%max_iter_spc")?
-    } else {
-        0
-    };
-    let max_cal_level = if refine.refine_cal {
-        non_negative_usize(refine.max_iter_cal, "RL%max_iter_cal")?
-    } else {
-        0
-    };
-    let max_native_level = native_grid_refinement_depth(namelist_contents, is_atmosmesh)?;
-    let max_surface_expansion_level = usize::from(native_surface_global_expansion);
-    let max_level = max_spc_level
-        .max(max_cal_level)
-        .max(max_native_level)
-        .max(max_surface_expansion_level);
-    let native_only_spawn = !native_regions.is_empty() && !refine.refine_spc && !refine.refine_cal;
-    if native_spawn_uses_cartesian_xy(native_mdomain, config.mask_domain_global, native_only_spawn)
+        hfield.hydro_target_paths().is_some(),
+    )
+    .or_else(|_| {
+        read_native_grid_refine_controls(namelist_contents).map_err(|error| error.to_string())
+    })
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let native_only = native_requested && !refine.refine_spc && !refine.refine_cal;
+    if native_spawn_uses_cartesian_xy(native_mdomain, config.mask_domain_global, native_only)
+        || native_mdomain == Some(5)
     {
-        return Ok(false);
-    }
-
-    let mesh_type = config.mesh_type.trim();
-    let has_threshold_hfield_sources =
-        refine.refine_cal && has_threshold_hfield_sources(&refine, mesh_type);
-
-    let mut regions = native_regions;
-    if refine.refine_spc {
-        regions.extend(read_method_c_specified_refinement_regions(
-            &refine,
-            max_spc_level,
-            nxp,
-            false,
-        )?);
-    }
-    let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
-    let has_configured_calculated_regions =
-        !calculated_region_prefix.is_empty() && calculated_region_prefix != "/tmp";
-    if refine.refine_cal && (!has_threshold_hfield_sources || has_configured_calculated_regions) {
-        regions.extend(read_method_c_calculated_refinement_regions(
-            &refine,
-            max_cal_level,
-        )?);
-    }
-    if regions.is_empty() && !has_threshold_hfield_sources && !has_hydro_target {
-        let requested = if native_regions_requested {
-            "native Method-C or mask-refine"
-        } else {
-            "mask-refine"
-        };
         return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "h-field diagnostics found no {requested} region sources; check RL%mask_refine_*_fprefix/type or native Method-C ngrids/nsfcgrids"
-            ),
+            io::ErrorKind::Unsupported,
+            "Cartesian-XY HField source-demand snapshots are not implemented; refusing to silently skip or rebuild quality targets",
         ));
     }
 
-    let base_m = hfield.base_m.unwrap_or_else(|| {
-        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64)
+    let inferred_gridfile = gridfile.is_none().then(|| {
+        PathBuf::from(config.file_dir())
+            .join("result")
+            .join(format!(
+                "gridfile_NXP{nxp:04}_{}.nc4",
+                config.mode_grid.trim()
+            ))
     });
-    let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
-    let domain = crate::read_method_c_domain_region(&config)?;
-    let mut field = build_composed_hfield(
-        &regions,
-        &refine,
-        mesh_type,
-        Some(&config),
-        base_m,
-        &hfield,
-        max_cal_level.clamp(1, field_max_level),
-        domain.as_ref(),
-    )?;
-    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-        &mut field,
-        &hfield,
-        base_m,
-        domain.as_ref(),
-    )?;
-    constrain_hfield_to_domain(&mut field, domain.as_ref(), base_m, hfield.g)?;
-    let target_levels = hfield_target_levels_for_quality_cells(mesh, kind, |lon, lat| {
-        field.level_at(lon, lat, base_m, field_max_level as u8) as u32
-    })?;
-    if target_levels.len() != input.cells.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "h-field target levels ({}) do not match quality cells ({})",
-                target_levels.len(),
-                input.cells.len()
-            ),
-        ));
+    let gridfile = gridfile
+        .or(inferred_gridfile.as_deref())
+        .expect("an explicit or inferred gridfile always exists");
+    let demand =
+        crate::source_demand_artifact::load_hfield_source_demand(gridfile, namelist_contents)?;
+    let _demand_chain_identity = (demand.snapshot_hash, demand.chain_tip_hash);
+    match kind.trim() {
+        "tri" | "hex" => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("h-field quality diagnostics support tri or hex view, got {other}"),
+            ));
+        }
     }
+    let (target_levels, coverage) = target_levels_with_hard_coverage(
+        input,
+        demand.nlon,
+        demand.nlat,
+        &demand.hard_levels,
+        &demand.hard_levels,
+        &demand.intended_output_support,
+    )?;
 
     earthmesh_quality::attach_hfield_diagnostics(
         report,
@@ -172,10 +130,15 @@ pub fn attach_hfield_diagnostics_from_namelist(
         &target_levels,
         HfieldConfigDiagnostics {
             enabled: true,
-            g: Some(hfield.g),
-            max_level: Some(field_max_level as u32),
-            base_m: Some(base_m),
+            g: Some(demand.g),
+            max_level: Some(u32::from(demand.max_level)),
+            base_m: Some(demand.base_m),
         },
+    );
+    earthmesh_quality::attach_hfield_support_coverage(
+        report,
+        coverage.active_bin_count,
+        coverage.adequately_covered_bin_count,
     );
     Ok(true)
 }
@@ -187,50 +150,16 @@ pub fn attach_hfield_diagnostics_from_gridfile_namelist(
     kind: &str,
     namelist_contents: &str,
 ) -> io::Result<bool> {
+    let gridfile = gridfile.as_ref();
     let mesh = read_gridfile_mesh_points(gridfile)?;
-    attach_hfield_diagnostics_from_namelist(report, input, &mesh, kind, namelist_contents)
-}
-
-fn hfield_target_levels_for_quality_cells(
-    mesh: &GridfileMeshPoints,
-    kind: &str,
-    mut level_at: impl FnMut(f64, f64) -> u32,
-) -> io::Result<Vec<u32>> {
-    match kind.trim() {
-        "tri" => Ok(tri_quality_cells_from_gridfile(mesh)?
-            .into_iter()
-            .map(|(mi, _)| level_at(mesh.m_lon[mi], mesh.m_lat[mi]))
-            .collect()),
-        "hex" => Ok(hex_quality_cells_from_gridfile(mesh)?
-            .into_iter()
-            .map(|(_wi, corners)| max_corner_level(mesh, &corners, &mut level_at))
-            .collect()),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("h-field quality diagnostics support tri or hex view, got {other}"),
-        )),
-    }
-}
-
-fn max_corner_level(
-    mesh: &GridfileMeshPoints,
-    corners: &[usize],
-    level_at: &mut impl FnMut(f64, f64) -> u32,
-) -> u32 {
-    corners
-        .iter()
-        .filter_map(|&mi| Some(level_at(*mesh.m_lon.get(mi)?, *mesh.m_lat.get(mi)?)))
-        .max()
-        .unwrap_or(0)
-}
-
-fn non_negative_usize(value: i32, field: &str) -> io::Result<usize> {
-    usize::try_from(value).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{field} must be non-negative, got {value}"),
-        )
-    })
+    attach_hfield_diagnostics_from_namelist_for_gridfile(
+        report,
+        input,
+        &mesh,
+        gridfile,
+        kind,
+        namelist_contents,
+    )
 }
 
 #[cfg(test)]
@@ -239,38 +168,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn hex_hfield_targets_follow_corner_demand_not_cell_center_only() {
-        let mesh = GridfileMeshPoints {
-            m_lon: vec![0.0, 0.0, 1.0, 2.0],
-            m_lat: vec![0.0, 1.0, 0.0, 0.0],
-            w_lon: vec![100.0, 101.0, 102.0],
-            w_lat: vec![0.0, 0.0, 0.0],
-            m_to_w: vec![1, 2, 3, 1, 2, 3, 1, 2, 3, 2, 3, 1],
-            m_refine_level: Vec::new(),
-            m_refine_level_orig: Vec::new(),
-            m_ngr: Vec::new(),
-            w_to_m: Vec::new(),
-            w_to_m_width: 0,
-            n_w: Vec::new(),
-            w_refine_level: Vec::new(),
-            w_refine_level_orig: Vec::new(),
-            w_ngr: Vec::new(),
-        };
-
-        let targets = hfield_target_levels_for_quality_cells(&mesh, "hex", |lon, _lat| {
-            if (lon - 2.0).abs() < f64::EPSILON {
-                2
-            } else {
-                0
-            }
-        })
-        .unwrap();
-
-        assert!(targets.contains(&2));
-    }
-
-    #[test]
-    fn diagnostics_accept_hydro_only_external_hfield() {
+    fn diagnostics_require_and_use_the_persisted_hydro_snapshot() {
         let root = std::env::temp_dir().join(format!(
             "earthmesh_hydro_hfield_diagnostics_{}",
             std::process::id()
@@ -309,11 +207,28 @@ mod tests {
         let mut report =
             earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
         let namelist = format!(
-            "&mkgrd\n NL%NXP=4\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n NL%refine=.true.\n NL%mask_domain_global=.true.\n/\n&mkrefine\n RL%SpringGlobal_type=1\n RL%refine_spc=.false.\n RL%refine_cal=.false.\n/\n&hfield\n NL%hfield_on=.true.\n NL%hfield_g=0.2\n NL%hfield_max_level=1\n NL%hfield_nlon=36\n NL%hfield_nlat=18\n NL%hfield_target_cells_geojson='{}'\n NL%hfield_target_levels_json='{}'\n/\n",
+            "&mkgrd\n NL%EXPNME='case'\n NL%base_dir='{}/'\n NL%NXP=4\n NL%mesh_type='landmesh'\n NL%mode_grid='tri'\n NL%output_format='CoLM'\n NL%refine=.true.\n NL%mask_domain_global=.true.\n/\n&mkrefine\n RL%SpringGlobal_type=1\n RL%refine_spc=.false.\n RL%refine_cal=.false.\n/\n&hfield\n NL%hfield_on=.true.\n NL%hfield_g=0.2\n NL%hfield_max_level=1\n NL%hfield_base_m=100.0\n NL%hfield_nlon=36\n NL%hfield_nlat=18\n NL%hfield_target_cells_geojson='{}'\n NL%hfield_target_levels_json='{}'\n/\n",
+            root.display(),
             cells.display(),
             plan.display()
         );
 
+        let missing =
+            attach_hfield_diagnostics_from_namelist(&mut report, &input, &mesh, "tri", &namelist)
+                .unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+
+        let expected_gridfile = root.join("case/result/gridfile_NXP0004_tri.nc4");
+        fs::create_dir_all(expected_gridfile.parent().unwrap()).unwrap();
+        fs::write(&expected_gridfile, b"final-gridfile").unwrap();
+        let mut field = earthmesh_hfield::HField::uniform(36, 18, 100.0).unwrap();
+        field.set(0, 0, 50.0);
+        crate::source_demand_artifact::PreparedHfieldDemand::capture(
+            &field, 100.0, 1, 0.2, &namelist,
+        )
+        .unwrap()
+        .persist_for_gridfile(&expected_gridfile)
+        .unwrap();
         assert!(attach_hfield_diagnostics_from_namelist(
             &mut report,
             &input,
@@ -323,6 +238,11 @@ mod tests {
         )
         .unwrap());
         assert_eq!(report.hfield.as_ref().unwrap().config.g, Some(0.2));
+        assert!(report.gates.iter().any(|gate| {
+            gate.metric == "hfield_uncovered_hard_support_bin_count"
+                && gate.value == 1.0
+                && gate.level == earthmesh_quality::QualityLevel::Fail
+        }));
         let _ = fs::remove_dir_all(root);
     }
 }

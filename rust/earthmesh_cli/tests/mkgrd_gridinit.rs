@@ -226,7 +226,7 @@ fn run_mkgrd_gridinit_global_converts_existing_mpas_mode_file() {
             .expect("itab_m%iw")
             .get_values::<i32, _>((.., ..))
             .expect("read itab_m%iw"),
-        vec![1, 1, 1, 1, 2, 1, 2, 1, 1]
+        vec![1, 1, 1, 2, 3, 1, 3, 2, 1]
     );
     assert_eq!(
         file.variable("itab_w%im")
@@ -235,8 +235,8 @@ fn run_mkgrd_gridinit_global_converts_existing_mpas_mode_file() {
             .expect("read itab_w%im"),
         vec![
             1, 0, 0, 0, 0, 0, 0, //
-            1, 2, 1, 1, 0, 0, 0, //
-            2, 1, 1, 1, 0, 0, 0,
+            2, 3, 1, 1, 0, 0, 0, //
+            3, 2, 1, 1, 0, 0, 0,
         ]
     );
     assert_eq!(
@@ -300,7 +300,7 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
             .expect("itab_m%iw")
             .get_values::<i32, _>((.., ..))
             .expect("read itab_m%iw"),
-        vec![1, 1, 1, 1, 2, 3, 3, 2, 1]
+        vec![1, 1, 1, 2, 3, 4, 4, 3, 2]
     );
     assert_eq!(
         file.variable("itab_w%im")
@@ -309,9 +309,9 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
             .expect("read itab_w%im"),
         vec![
             1, 1, 1, 1, 1, 1, 1, //
-            1, 2, 1, 1, 1, 1, 1, //
-            2, 1, 1, 1, 1, 1, 1, //
-            2, 1, 1, 1, 1, 1, 1,
+            2, 3, 1, 1, 1, 1, 1, //
+            3, 2, 1, 1, 1, 1, 1, //
+            3, 2, 1, 1, 1, 1, 1,
         ]
     );
     assert_eq!(

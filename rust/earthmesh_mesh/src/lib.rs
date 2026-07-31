@@ -146,7 +146,10 @@ pub use mask_postproc_boundary::{boundary_closed_curves_one_based, BoundaryClose
 mod mask_postproc_boundary_connection;
 pub use mask_postproc_boundary_connection::{boundary_connection_one_based, BoundaryConnection};
 mod mask_postproc_orders;
-pub use mask_postproc_orders::{classify_boundary_orders_one_based, BoundaryOrders};
+pub use mask_postproc_orders::{
+    classify_boundary_orders_one_based, classify_boundary_orders_with_source_domain_one_based,
+    BoundaryOrders,
+};
 mod mask_postproc_waterway;
 pub use mask_postproc_waterway::{
     fill_vertex_only_ocean_contacts_one_based, widen_narrow_waterway_one_based,
@@ -241,6 +244,7 @@ pub use icosahedron_spring_grid::{
     icosahedron_spring_dynamics1_canonical, icosahedron_spring_iteration_canonical,
 };
 mod icosahedron_m_neighbors;
+pub(crate) use icosahedron_m_neighbors::collect_icosahedron_m_valence_witnesses_canonical;
 pub use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical;
 #[cfg(test)]
 pub(crate) use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical_checked;
@@ -358,7 +362,14 @@ mod method_c_incidence;
 mod method_c_incidence_ring;
 mod method_c_tables;
 pub(crate) use method_c_tables::*;
+mod method_c_legalization_table;
+pub(crate) use method_c_legalization_table::count_method_c_u8_union_states;
 mod method_c_mask_annealing;
+pub use method_c_legalization_table::{
+    analyze_method_c_binary_table_system, analyze_method_c_cyclic_binary_scope,
+    propagate_method_c_binary_tables, MethodCBinaryTableConstraint, MethodCBinaryTablePropagation,
+    MethodCBinaryTableSystemAnalysis, MethodCCyclicBinaryScopeAnalysis,
+};
 mod method_c_parent_mrlw_validation;
 mod method_c_patch;
 mod method_c_perimeter;
@@ -381,6 +392,16 @@ mod method_c_selection_start;
 mod method_c_selection_topology;
 mod method_c_spawn;
 mod method_c_spawn_hfield;
+pub use method_c_spawn_hfield::{
+    method_c_hfield_failure_kind, method_c_hfield_spawn_failure, MethodCHfieldCandidateValidation,
+    MethodCHfieldDemandAnchorCheckpoint, MethodCHfieldExactPatchTableCompilation,
+    MethodCHfieldExactPatchTableStatus, MethodCHfieldFailureKind, MethodCHfieldLegalizationPatch,
+    MethodCHfieldLegalizationPatchBoundaryCheck, MethodCHfieldLegalizationPreflight,
+    MethodCHfieldOrderedPerimeterScopeAnalysis, MethodCHfieldPassDiagnostics,
+    MethodCHfieldPerimeterComponentCheckpoint, MethodCHfieldPerimeterPointCheckpoint,
+    MethodCHfieldSelectionCheckpoint, MethodCHfieldSpawnFailure,
+    MethodCTransitionSelfLoopCheckpointWitness,
+};
 mod method_c_spawn_internal;
 mod method_c_spawn_pass;
 mod method_c_spawn_retry;
@@ -391,8 +412,8 @@ pub(crate) use method_c_checks::{
     require_method_c_id, require_method_c_len, require_unique_active_triplet,
 };
 pub(crate) use method_c_distance::{
-    method_c_corridor_segment_distance_meters, method_c_ec_ps_distance_meters,
-    plane_segment_distance,
+    method_c_corridor_segment_distance_meters, method_c_corridor_segment_pole,
+    method_c_ec_ps_distance_meters, method_c_ll_ps_project, plane_segment_distance,
 };
 pub(crate) use method_c_geometry::{
     face_following_two_vertices, face_following_vertex, lookup_method_c_midpoint,
@@ -408,14 +429,19 @@ pub(crate) use method_c_rebuild_metadata::{
     method_c_identity_prognostic_map,
 };
 pub(crate) use method_c_rebuild_neighbors::fill_method_c_w_face_neighbors_from_edges;
+pub use method_c_region_corridor::method_c_corridor_swept_footprint;
 pub(crate) use method_c_region_corridor::{
     method_c_cartesian_xy_segment_distance, method_c_closed_corridor_contains_cartesian,
     method_c_corridor_radius_at_segment, method_c_open_corridor_contains_cartesian,
 };
 mod method_c_spring;
-pub use method_c_nest_spring::method_c_edge_target_lengths_from_field;
 #[cfg(test)]
 pub(crate) use method_c_nest_spring::method_c_nest_movable_m_points;
+pub use method_c_nest_spring::{
+    method_c_edge_target_lengths_from_field, MethodCHfieldNestSpringFailure,
+    MethodCHfieldSpringTrace, MethodCHfieldSpringTraceEdge, MethodCHfieldSpringTraceSample,
+    MethodCNestSpringDiagnostics, MethodCNestSpringStepGuardDiagnostics,
+};
 pub(crate) use method_c_spring::active_mesh_radius;
 mod method_c_nest_spring;
 mod method_c_spring_iteration;
@@ -429,9 +455,10 @@ pub(crate) use method_c_spring_iteration::{
     method_c_global_spring_iteration_into, MethodCGlobalSpringScratch,
 };
 pub(crate) use method_c_table_helpers::{
-    canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_repairable_error,
-    method_c_repairable_payload, method_c_split_outer_edges, other_edge_face, set_first_two,
-    MethodCRepairableKind,
+    canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_parent_level_mismatch_error,
+    method_c_parent_level_mismatch_payload, method_c_repairable_error, method_c_repairable_payload,
+    method_c_repairable_perimeter_error, method_c_split_outer_edges, other_edge_face,
+    set_first_two, MethodCRepairableKind,
 };
 mod method_c_w_face_edge_replacement;
 pub(crate) use method_c_w_face_edge_replacement::{

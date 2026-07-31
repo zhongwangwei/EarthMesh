@@ -7,6 +7,292 @@
 
 ---
 
+## 2026-07-25 实施状态复核：当前问题与下一步
+
+> 本节是对 2026-07-02 研究结论的实施复核，优先级高于后文的历史判断。
+>
+> 当前结论不是“继续调几个参数就能完成”，也不是“现有 HField 已经替代全部离散拓扑规则”，而是：**统一 HField 方向正确，但生产消费链、拓扑最小化和真实案例验证尚未闭环。**
+
+### 0.1 当前总判断
+
+EarthMesh 现在已经具备三类重要基础：
+
+1. 阈值细化和 bbox/circle/polygon/corridor 等几何细化可以降低为统一的 HField；
+2. Method-C 能按目标层级生成共形的球面局地细化网格，并具备需求覆盖、质量检查和回滚框架；
+3. 仓库中已经存在按 HField 边长目标驱动的弹簧原语，以及受检查的 Delaunay LOP 翻边原语。
+
+但这三类能力目前还没有组成一个完整、可证明通用的生产闭环。下一步不应再：
+
+- 针对单个日志不断修改阈值、迭代次数或特殊分支；
+- 通过排除过渡区、放宽质量阈值或改变统计口径制造 PASS；
+- 恢复曾增长到约 15,807 行的单体“万能优化器”；
+- 把所有六边形、三角形、全球、区域、流域和内部边界强塞进同一个拓扑函数。
+
+推荐顺序是：
+
+**冻结基线并建立真实引擎案例矩阵 → 把现有 HField 边长弹簧接入球面 Method-C 生产路径 → 给额外细化单元做原因归因并最小化拓扑闭包 → 若固定拓扑质量确实触底，再增加受限的 Method-C 原生翻边 → 只有本地方案仍不能满足质量/复杂度预算时，才评估 JIGSAW 后端。**
+
+### 0.2 已确认的主要问题
+
+#### 问题 A：HField 的“生产消费链”只完成了一半
+
+当前球面生产路径已经使用
+[`HField::topology_level_at`](../rust/earthmesh_hfield/src/lib.rs)
+把连续目标场量化为 Method-C 目标层级；调用入口位于
+[`global_source.rs`](../rust/earthmesh_cli/src/refine_pipeline/global_source.rs)。
+
+但是每个 Method-C pass 完成后的生产平滑仍调用兼容旧逻辑的
+`spring_nest_with_radius_projection`，见
+[`method_c_spawn_hfield/mod.rs`](../rust/earthmesh_mesh/src/method_c_spawn_hfield/mod.rs)。
+仓库中虽然已经有：
+
+- `spring_nest_with_edge_targets`
+- `method_c_edge_target_lengths_from_field`
+
+但当前可检索到的调用只在测试中，尚未接入 HField 的生产生成路径。因此现在的网格是“**用 HField 决定哪里细化，但仍用近似固定自然长度的弹簧决定细化后节点位置**”。这会造成：
+
+- 过渡区目标尺寸与平滑能量不一致；
+- 继续增加 2,000/5,000 次迭代只是在更充分地求解错误或不完整的目标；
+- edge-CV 可能改善到某个平台后停止，而非随着迭代数持续下降。
+
+#### 问题 B：连续 HField 不能消除 Method-C 的离散拓扑约束
+
+HField 梯度限制解决的是“目标尺寸场应怎样平滑变化”，但 Method-C 还必须同时满足：
+
+- stride-3 相位和格点对齐；
+- rad3 细化足迹；
+- 父层支撑与 pass 闭包；
+- 合法周界、父边界和球面接缝；
+- M/U/W 互反连接、`mrow` 和层级谱系不变量。
+
+因此 `actual_above_target_count > 0` 不必然表示 HField 正则化失败；其中一部分是实现共形网格所需的离散拓扑开销。当前质量报告能统计“实际层级高于目标”的数量，却没有回答每个单元为什么被抬高，导致无法区分：
+
+- 硬需求本身；
+- 父层闭包；
+- 相位 halo；
+- rad3 足迹；
+- 连通桥接；
+- 周界/父边界回退；
+- 可以安全删除的冗余细化。
+
+没有这层归因，继续收缩过渡带容易再次造成跨父边界、非法周界或需求丢失；继续扩张则会出现大量不必要单元。
+
+#### 问题 C：固定拓扑弹簧存在不可突破的质量下限
+
+弹簧或 Lloyd 类节点移动只能优化现有连接关系，不能：
+
+- 改变三角形邻接；
+- 删除由闭包引入的单元；
+- 消除错误的局部边连接；
+- 改变六边形/Voronoi 对偶的局部价数结构。
+
+因此 edge-CV 或归一化 area-CV 在大量迭代后进入平台，并不等于“算法还差几千次迭代”，更可能表示当前拓扑已经成为质量下限。必须先证明“按 HField 目标边长平滑后仍然触底”，才能合理进入翻边或重构阶段。
+
+#### 问题 D：现有 LOP 翻边原语还不是 Method-C 生产实现
+
+仓库已有
+[`checked_lop_edge_flip`](../rust/earthmesh_mesh/src/refine_edge_flip/mod.rs)
+和
+[`refine_delaunay_lop_one_based`](../rust/earthmesh_mesh/src/refine_lop/mod.rs)，
+但当前只由测试直接调用。它们证明了局部 Delaunay 判定和简单三角面更新可行，尚未维护 Method-C 生产网格所需的：
+
+- M/U/W 三套互反表；
+- `mrow`、网格层级和父子谱系；
+- 球面接缝及极区连接；
+- 转换区保护边和父层边界；
+- 翻边后的需求覆盖与全部质量不变量。
+
+所以不能直接把现有 LOP 循环接到生成器末尾。真正困难之处不是“写一个 in-circle 判断”，而是**原子地更新 Method-C 全部派生拓扑，并在每次候选操作失败时完整回滚**。
+
+#### 问题 E：当前测试矩阵证明了能力声明，尚未证明真实引擎闭环
+
+现有 capability matrix 中仍有名为
+`geometric_edge_projects_validate_and_lower_without_running_the_engine`
+的测试，见
+[`refinement_capability_matrix.rs`](../rust/earthmesh_project/tests/refinement_capability_matrix.rs)。
+这类测试能证明 schema、校验和 lowering 正确，但不能证明最终网格：
+
+- 实际覆盖了所有细化需求；
+- 没有极区空洞、孤立单元或非流形连接；
+- 在日期变更线、区域边界、流域闭合边界和内部孔洞附近仍合法；
+- 六边形和三角形后端都得到合理单元数及质量；
+- mask/hydro 后处理没有重新引入孤立分量；
+- 多次运行确定性一致。
+
+这也是单个案例反复通过、另一个案例又失败的根本测试缺口。
+
+#### 问题 F：质量阈值尚未用参考生产网格校准
+
+当前默认警告阈值包括：
+
+- `cell_edge_length_cv_max = 0.35`
+- `cell_area_cv_normalized = 0.5`
+
+这些阈值可以作为回归门，但还缺少对官方或公认良好 MPAS SCVT/变分辨率网格的同口径测量。未校准前：
+
+- 不能因为某个案例为 WARN 就断言网格不可用于模拟；
+- 也不能为了得到 PASS 随意放宽阈值；
+- 应同时观察最大值、分位数、超阈值数量及其空间聚集，而不是只看单个最大值。
+
+#### 问题 G：当前工作树过大，继续叠加算法改动风险很高
+
+2026-07-25 快照中，工作树共有 84 条状态记录，已跟踪差异为 77 个文件、约 `+10,878/-1,473` 行。这里混合了 HField、Method-C、质量策略、mask、hydro、Studio 和测试等多条改动。
+
+在这个状态下继续扩大算法范围，会让“哪一次修改导致某个 case 退化”难以追踪。下一步首先应冻结一个可复现基线，并把后续工作拆成可单独验证和回退的小阶段。
+
+#### 问题 H：“通用解”应是共享契约，不是单一生成函数
+
+需要统一的是：
+
+- HField 表达和组合；
+- 硬需求覆盖语义；
+- 质量指标；
+- 拓扑不变量；
+- 决策记录和回归案例。
+
+不应强行统一的是生成后端：
+
+- 全球/球面 MPAS 六边形可继续由 Method-C 的 Delaunay/Voronoi 对偶路径承担；
+- 区域三角形、海洋裁剪、mask 和内部边界应保留各自正确的约束三角化/后处理路径；
+- 流域和 hydro corridor 需要保留边界与水文连通性约束；
+- Cartesian 区域网格不应因修复球面相位问题而被无条件改变。
+
+这才是适用于六边形、三角形、全球、区域、极区、流域和多种内部边界的全局方案：**共享输入和验收契约，后端按拓扑类别实现。**
+
+### 0.3 下一步实施计划
+
+#### M0：冻结基线并建立真实引擎回归矩阵
+
+先不继续改算法。固定一个可运行 commit/工作树快照、配置、输入数据版本和随机种子，建立约 10–12 个两两覆盖案例，而不是穷举全部笛卡尔积：
+
+| 类别 | 至少包含的案例 |
+|---|---|
+| 全球六边形 | AtmosphereMpas：圆形细化；碎片化 landcover/阈值细化；level 1/2/3 |
+| 球面特殊位置 | 跨日期变更线 bbox；北极/南极圆形细化 |
+| 区域六边形 | bbox、circle、polygon 各一个代表案例 |
+| 区域/海洋三角形 | CoastalOcean + 精确海陆 mask + 小分量清理 |
+| 边界复杂案例 | 闭合流域、多边形内孔、狭窄 corridor/内部边界 |
+| 耦合与水文 | LandOceanCoupled、MeritHydroCoast/hydro corridor |
+| 坐标系保护 | 至少一个 Cartesian 区域案例 |
+
+每个案例保存并比较：
+
+- 硬需求覆盖率：必须 100%；
+- orphan、non-manifold、邻接不互反等拓扑错误：必须为 0；
+- requested/actual max level；
+- edge-CV 的最大值、P95/P99 和超阈值单元数；
+- level-normalized area-CV；
+- `actual_above_target_count / nCells`；
+- 总单元数、运行时间、峰值内存；
+- 同输入重复运行的结果哈希或关键数组一致性。
+
+同时选取至少一个小型官方 MPAS SCVT 网格和一个公开变分辨率 MPAS 网格，用完全相同的质量实现测量上述指标，校准“警告”和“不可用”的边界。
+
+**M0 完成条件：** 真实引擎案例可一条命令重复运行；失败能稳定复现；结果报告可比较，而不是依赖手工看地图。
+
+#### M1：把 HField 目标边长接入球面 Method-C 生产弹簧
+
+这是下一项最小且最有证据支持的代码改动：
+
+1. 每个 Method-C pass 生成后，从同一个已正则化 HField 在边中点采样目标长度；
+2. 调用现有 `spring_nest_with_edge_targets`；
+3. 第一版只移动当前 pass 的过渡/新增节点，保护父层、接缝、极点和边界节点；
+4. legacy、Cartesian、非 HField 和其他网格后端保持原路径；
+5. 不增加新的优化框架或第三方依赖。
+
+**M1 验收条件：**
+
+- 拓扑、需求覆盖、refine level 分布和总单元数与接入前一致；
+- edge-CV/area-CV 在案例矩阵中总体改善或不退化；
+- 不出现新的极区空洞、父边界越界、孤立单元或运行时间失控；
+- 固定输入结果确定。
+
+如果 M1 已显著改善质量，停止增加复杂度，先进入 M2；不要预先实现翻边。
+
+#### M2：给拓扑额外细化做归因，并在硬约束下最小化
+
+在选择/闭包阶段给每个实际细化单元附加一个可组合的原因位：
+
+- `hard_demand`
+- `parent_closure`
+- `phase_halo`
+- `rad3_footprint`
+- `connectivity_bridge`
+- `boundary_backtrack`
+
+报告各类数量及重叠。然后把过渡带缩减改写为一个明确目标：
+
+> 在硬需求覆盖 100%、拓扑合法、相邻层级跳变合法和质量不退化的前提下，最小化 `nCells` 和 `actual_above_target_count`。
+
+删除候选应从最外层、非硬需求单元开始，执行后必须重算闭包和不变量；任何需求缺失、非法周界、断连或质量退化都回滚。`actual_above_target_count = 0` 不是合理的普适验收条件，因为离散共形闭包本身可能需要额外单元。
+
+**M2 验收条件：** 在碎片化阈值和区域边界案例中，额外细化率与总单元数可测量下降；其他案例的覆盖、拓扑和质量不回退。
+
+#### M3：仅在固定拓扑质量触底时增加受限的 Method-C 原生翻边
+
+只有当 M1 后仍有稳定的平台案例，且坏单元集中在可翻转的同层过渡 patch，才实现翻边。第一版边界必须严格：
+
+- 只处理同层、内部、非接缝、非父边界、非 `mrow` 关键边；
+- 按最坏质量优先，候选必须严格改善多指标目标；
+- 不得破坏需求覆盖、局部 Delaunay、M/U/W 互反和网格定向；
+- 每次操作可完整回滚；
+- 有确定的最大工作量和停滞退出条件；
+- 候选顺序稳定，结果确定。
+
+可以复用现有 `checked_lop_edge_flip` 的几何判断，但必须新写一个小而完整的 Method-C 拓扑更新器；不能复用旧的“追加新面、清空旧面”循环作为生产更新方式。
+
+**M3 验收条件：** 只在 M1 明确触底的案例上启用；质量严格改善；拓扑与覆盖全部通过；未触底案例默认不运行。
+
+#### M4：外部生成后端的决策门
+
+若 M1–M3 后仍无法在可接受复杂度和运行时间内满足案例矩阵，再做 JIGSAW 隔离原型：
+
+- 输入仍使用同一 HField；
+- 通过外部进程或清晰 FFI 边界运行；
+- 输出进入现有 MPAS/FVCOM writer、mask 和质量管线；
+- 不立即替换 Method-C；
+- 先解决 JIGSAW 的非 OSI/商业分发许可问题。
+
+JIGSAW 是备选生成后端，不是修复当前生产链缺口的第一步。
+
+### 0.4 阶段决策门
+
+| 阶段 | 继续的条件 | 停止/回退的条件 |
+|---|---|---|
+| M0 基线 | 真实案例可重复、指标完整 | 任何案例仍只能手工判断 |
+| M1 HField 弹簧 | 质量改善且拓扑/单元数不变 | 覆盖、拓扑或其他后端回退 |
+| M2 拓扑最小化 | 单元数/额外细化率下降且质量不降 | 为减单元破坏硬需求或合法性 |
+| M3 受限翻边 | 已证明固定拓扑触底且翻边严格改善 | 需要大范围重写或结果不确定 |
+| M4 JIGSAW | 本地路径超过复杂度/质量预算 | 许可证或集成成本不可接受 |
+
+### 0.5 明确的非目标
+
+- 不用排除过渡区的统计方式掩盖 edge-CV/area-CV；
+- 不把 WARN 自动解释为模拟不可用，也不通过放宽阈值强行 PASS；
+- 不为某个 NXP、某个经纬度或某个日志面编号增加特例；
+- 不试图让一个函数同时承担全球六边形、区域三角形、mask、流域和 hydro 的全部拓扑；
+- 不在缺少真实引擎回归矩阵时继续扩大优化器。
+
+### 0.6 当前验证证据及其边界
+
+已运行的针对性测试：
+
+- `cargo test -p earthmesh_mesh --lib method_c_hfield_spring -- --nocapture`：3 项通过；
+- `cargo test -p earthmesh_mesh --test refine_delaunay_lop -- --nocapture`：4 项通过。
+
+这些结果只证明“按 HField 边长弹簧”和“受检查 LOP 翻边”两个原语成立，**不能证明它们已进入生产路径，也不能替代 M0 的真实引擎案例矩阵。**
+
+### 0.7 本次修正所依据的外部参考
+
+- MPAS mesh creation：<https://mpas-dev.github.io/MPAS-Tools/master/mesh_creation.html>
+- MPAS atmosphere meshes / limited-area meshes：<https://mpas-dev.github.io/atmosphere/atmosphere_meshes.html>
+- Ringler et al. (2011), variable-resolution spherical centroidal Voronoi grids：<https://www.osti.gov/servlets/purl/1090860>
+- Persson & Strang, DistMesh：<https://persson.berkeley.edu/pub/persson04mesh.pdf>
+- Engwirda (2017), JIGSAW-GEO：<https://gmd.copernicus.org/articles/10/2117/2017/>
+- JIGSAW repository and license：<https://github.com/dengwirda/jigsaw>
+
+---
+
 ## 一、结论（先说答案）
 
 **存在，而且方向明确：连续网格密度场（cell-width field）范式。** 把"阈值细化"和"指定细化"统一表示为一个标量场 h(x)（目标单元尺寸），各判据独立生成各自的 h 场，逐点取 min 合成，再做梯度限制（|∇h| ≤ g），最后交给一个以 h(x) 为驱动的生成/优化内核。这是 E3SM/MPAS-Ocean 生产网格（JIGSAW + compass）、OceanMesh2D（ADCIRC 社区）、FESOM 的共同做法，工程上完全成熟。
@@ -23,7 +309,7 @@
 ### 密度场范式（连续）
 1. **每个判据一个场**：阈值判据（LAI、坡度、SST 梯度…）直接把栅格数据映射为 h 场；指定区域（bbox/polygon/corridor）用带符号距离函数（signed distance）+ tanh 过渡带生成 h 场——E3SM compass 教程中的标准做法就是 `weights = 0.5*(1+tanh(signed_distance/trans_width)); h = h_fine*(1-w) + h_base*w`，且可嵌套（30–60km 背景 → 20km 南大西洋 → 10km 亚马逊河口三层嵌套的实例）[MPAS-Dev compass RRM 教程，高置信]。
 2. **合成**：逐点取 min。OceanMesh2D 原文（GMD 12, 1847–1868, Eq. 13）："h = min[(h_dis or h_lfs), h_wl, h_slp, h_ch]"[高置信，原文逐字]。
-3. **梯度限制替代过渡行**：Persson (2004/2006) 证明限制 |∇h| ≤ g 即保证相邻单元尺寸比 ≤ 1+g（原文："This corresponds to a limit on the gradient |∇h(x)| ≤ g with g = G − 1"），且最优解有闭式（点源锥 min），用 fast marching O(n log n) 求解[高置信，原文逐字]。实践取值：OceanMesh2D 各案例 g = 0.15–0.35，作者指导"g > 0.25 显著降低顶点数，g < 0.20 妨碍特征场扩展"[高置信]。**这一条数学保证吃掉了 EarthMesh 里 7 边帽/弱凹/过渡行的全部离散特判**——平滑性在场的层面一次性解决，而不是在拓扑操作层面逐例修补。
+3. **梯度限制约束目标过渡宽度**：Persson (2004/2006) 证明限制 |∇h| ≤ g 即保证相邻单元尺寸比 ≤ 1+g（原文："This corresponds to a limit on the gradient |∇h(x)| ≤ g with g = G − 1"），且最优解有闭式（点源锥 min），用 fast marching O(n log n) 求解[高置信，原文逐字]。实践取值：OceanMesh2D 各案例 g = 0.15–0.35，作者指导"g > 0.25 显著降低顶点数，g < 0.20 妨碍特征场扩展"[高置信]。**修正：这条保证统一的是连续目标场的渐变，不能替代 Method-C 为保持 stride-3 相位、rad3 足迹、父层支撑、合法周界和 M/U/W 互反关系而必须执行的离散拓扑闭包。** 它可以减少不必要的离散修补输入，但不能“吃掉全部特判”。
 
 ### 对 EarthMesh 两种细化模式的映射
 

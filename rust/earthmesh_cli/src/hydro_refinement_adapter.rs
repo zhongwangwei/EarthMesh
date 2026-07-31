@@ -10,15 +10,15 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use earthmesh_core::{EarthmeshConfig, RefineConfig};
-use earthmesh_hfield::{great_circle_distance_m, HField, HRegion, EARTH_RADIUS_METERS};
+use earthmesh_core::{rewrite_namelist_group_fields, EarthmeshConfig, RefineConfig};
+use earthmesh_hfield::{HField, EARTH_RADIUS_METERS};
 use earthmesh_project::{content_addressed_stage_key, StageCache};
 
 use crate::hfield_refine::HfieldDomainMask;
 use crate::{
-    geometry_outer_rings, hydro_delivery_refine_workflow::hydro_cell_feature_groups,
-    json_node_to_string, json_node_to_usize, read_text_maybe_gzip, GridRegion, HfieldRefineOptions,
-    JsonNode, JsonParser, RefinePipelineRunReport,
+    hydro_delivery_refine_workflow::hydro_cell_feature_groups, json_node_to_string,
+    json_node_to_usize, read_text_maybe_gzip, GridRegion, HfieldRefineOptions, JsonNode,
+    JsonParser, RefinePipelineRunReport,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +32,9 @@ pub struct HydroTargetFieldSummary {
 
 #[derive(Clone, Debug)]
 pub struct HydroTargetField {
+    /// Source-cell pins before gradation; this is the immutable hard demand.
+    pub hard_field: HField,
+    /// Gradient-limited target consumed by Method-C.
     pub field: HField,
     pub summary: HydroTargetFieldSummary,
 }
@@ -54,7 +57,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-const HFIELD_CACHE_MAGIC: &[u8] = b"EARTHMESH_HFIELD_V1\0";
+const HFIELD_CACHE_MAGIC: &[u8] = b"EARTHMESH_HFIELD_V2\0";
 
 fn hydro_target_cache_key(
     cells: &[u8],
@@ -83,8 +86,9 @@ fn hydro_target_cache_key(
 }
 
 fn encode_cached_target(target: &HydroTargetField) -> Vec<u8> {
-    let mut bytes =
-        Vec::with_capacity(HFIELD_CACHE_MAGIC.len() + 41 + target.field.values().len() * 8);
+    let mut bytes = Vec::with_capacity(
+        HFIELD_CACHE_MAGIC.len() + 41 + target.field.values().len().saturating_mul(16),
+    );
     bytes.extend_from_slice(HFIELD_CACHE_MAGIC);
     for value in [
         target.field.nlon(),
@@ -97,6 +101,9 @@ fn encode_cached_target(target: &HydroTargetField) -> Vec<u8> {
     }
     bytes.push(target.summary.max_level);
     for value in target.field.values() {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in target.hard_field.values() {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
     bytes
@@ -142,14 +149,20 @@ fn decode_cached_target(bytes: &[u8], nlon: usize, nlat: usize) -> io::Result<Hy
     let value_count = nlon
         .checked_mul(nlat)
         .ok_or_else(|| invalid("cached HField dimensions overflow usize"))?;
-    if bytes.len().saturating_sub(cursor) != value_count.saturating_mul(8) {
+    if bytes.len().saturating_sub(cursor) != value_count.saturating_mul(16) {
         return Err(invalid("cached HField payload length is invalid"));
     }
-    let values = bytes[cursor..]
+    let values_end = cursor + value_count * 8;
+    let values = bytes[cursor..values_end]
+        .chunks_exact(8)
+        .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("exact chunk")))
+        .collect();
+    let hard_values = bytes[values_end..]
         .chunks_exact(8)
         .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("exact chunk")))
         .collect();
     Ok(HydroTargetField {
+        hard_field: HField::from_values(nlon, nlat, hard_values)?,
         field: HField::from_values(nlon, nlat, values)?,
         summary: HydroTargetFieldSummary {
             total_rows,
@@ -259,54 +272,83 @@ fn levels_by_group_id(rows: &[HydroPlanRow], group_ids: &[String]) -> io::Result
         .map_err(invalid)
 }
 
-fn feature_center(
-    feature: &JsonNode,
-    rings: &[Vec<earthmesh_geometry::Point>],
-) -> Option<(f64, f64)> {
-    let props = feature
+fn geojson_ring(node: &JsonNode) -> io::Result<Vec<earthmesh_geometry::Point>> {
+    let coordinates = node
+        .as_array()
+        .ok_or_else(|| invalid("GeoJSON polygon ring must be an array"))?;
+    let mut ring = Vec::with_capacity(coordinates.len());
+    for coordinate in coordinates {
+        let pair = coordinate
+            .as_array()
+            .ok_or_else(|| invalid("GeoJSON polygon coordinate must be an array"))?;
+        let lon = pair
+            .first()
+            .and_then(JsonNode::as_f64)
+            .ok_or_else(|| invalid("GeoJSON polygon longitude must be numeric"))?;
+        let lat = pair
+            .get(1)
+            .and_then(JsonNode::as_f64)
+            .ok_or_else(|| invalid("GeoJSON polygon latitude must be numeric"))?;
+        if !lon.is_finite() || !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+            return Err(invalid(
+                "GeoJSON polygon coordinates must be finite WGS84 lon/lat",
+            ));
+        }
+        ring.push(earthmesh_geometry::Point::new(lon, lat));
+    }
+    if ring.len() > 1 && ring.first() == ring.last() {
+        ring.pop();
+    }
+    if ring.len() < 3 {
+        return Err(invalid(
+            "GeoJSON polygon ring must contain at least three distinct points",
+        ));
+    }
+    Ok(ring)
+}
+
+fn geojson_polygon_components(
+    geometry: &JsonNode,
+) -> io::Result<Vec<Vec<Vec<earthmesh_geometry::Point>>>> {
+    let object = geometry
         .as_object()
-        .and_then(|object| object.get("properties"))
-        .and_then(JsonNode::as_object);
-    match (
-        props
-            .and_then(|p| p.get("center_lon"))
-            .and_then(JsonNode::as_f64),
-        props
-            .and_then(|p| p.get("center_lat"))
-            .and_then(JsonNode::as_f64),
-    ) {
-        (Some(lon), Some(lat)) if lon.is_finite() && lat.is_finite() => Some((lon, lat)),
-        _ => rings.iter().find_map(|ring| {
-            let points = if ring.len() > 1 && ring.first() == ring.last() {
-                &ring[..ring.len() - 1]
-            } else {
-                ring.as_slice()
-            };
-            if points.is_empty() {
-                return None;
-            }
-            let (x, y, z) = points.iter().fold((0.0, 0.0, 0.0), |sum, point| {
-                let lon = point.x.to_radians();
-                let lat = point.y.to_radians();
-                (
-                    sum.0 + lat.cos() * lon.cos(),
-                    sum.1 + lat.cos() * lon.sin(),
-                    sum.2 + lat.sin(),
-                )
-            });
-            let horizontal = x.hypot(y);
-            (horizontal > 0.0 || z != 0.0)
-                .then_some((y.atan2(x).to_degrees(), z.atan2(horizontal).to_degrees()))
-        }),
+        .ok_or_else(|| invalid("GeoJSON geometry must be an object"))?;
+    let geometry_type = object
+        .get("type")
+        .and_then(JsonNode::as_str)
+        .ok_or_else(|| invalid("GeoJSON geometry requires a type"))?;
+    let coordinates = object
+        .get("coordinates")
+        .and_then(JsonNode::as_array)
+        .ok_or_else(|| invalid("GeoJSON geometry requires coordinates"))?;
+    let parse_polygon = |polygon: &JsonNode| -> io::Result<Vec<Vec<earthmesh_geometry::Point>>> {
+        let rings = polygon
+            .as_array()
+            .ok_or_else(|| invalid("GeoJSON polygon coordinates must contain rings"))?;
+        if rings.is_empty() {
+            return Err(invalid("GeoJSON polygon contains no exterior ring"));
+        }
+        rings.iter().map(geojson_ring).collect()
+    };
+    match geometry_type {
+        "Polygon" => Ok(vec![parse_polygon(
+            object
+                .get("coordinates")
+                .expect("coordinates were checked above"),
+        )?]),
+        "MultiPolygon" => coordinates.iter().map(parse_polygon).collect(),
+        other => Err(invalid(format!(
+            "hydro target geometry must be Polygon or MultiPolygon, got {other}"
+        ))),
     }
 }
 
 /// Build the hydro contribution to `h(x)` from the exact source cell polygons
 /// referenced by `refinement_plan.json`.
 ///
-/// A small centroid seed (one raster diagonal) prevents a sub-raster source
-/// cell from disappearing before fast sweeping. It is conservative: it can
-/// widen a target by one HField sample, but never loses a requested cell.
+/// A hard bin is activated only when its spherical support has positive area
+/// inside the exact Polygon/MultiPolygon (after subtracting holes). Gradation
+/// is applied once, after this immutable hard field is complete.
 pub fn load_hydro_target_field(
     cells_geojson: impl AsRef<Path>,
     target_levels_json: impl AsRef<Path>,
@@ -327,7 +369,7 @@ pub fn load_hydro_target_field(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_hydro_target_field_in_domain(
+pub(crate) fn load_hydro_target_field_in_domain(
     cells_geojson: impl AsRef<Path>,
     target_levels_json: impl AsRef<Path>,
     base_m: f64,
@@ -341,7 +383,9 @@ fn load_hydro_target_field_in_domain(
             "hydro h-field base size must be positive and finite",
         ));
     }
-    let domain = domain.map(|domain| HfieldDomainMask::new(nlon, nlat, domain));
+    let domain = domain
+        .map(|domain| HfieldDomainMask::new(nlon, nlat, domain))
+        .transpose()?;
     let cells_geojson = cells_geojson.as_ref();
     let target_levels_json = target_levels_json.as_ref();
     let cells_text = read_text_maybe_gzip(cells_geojson)?;
@@ -383,7 +427,6 @@ fn load_hydro_target_field_in_domain(
 
     let mut field = HField::uniform(nlon, nlat, base_m)?;
     let max_level = target_levels.iter().copied().max().unwrap_or(0);
-    let dlat_m = EARTH_RADIUS_METERS * (180.0 / nlat as f64).to_radians();
     let mut refined_rows = 0usize;
     let mut polygon_count = 0usize;
     for (group, &level) in groups.iter().zip(&target_levels) {
@@ -401,59 +444,27 @@ fn load_hydro_target_field_in_domain(
                     group.cell_id
                 ))
             })?;
-        let rings = geometry_outer_rings(geometry);
-        if rings.is_empty() {
-            return Err(invalid(format!(
-                "hydro target cell {} has no polygon outer ring",
-                group.cell_id
-            )));
-        }
+        let components = geojson_polygon_components(geometry)?;
         let h_inside = base_m / 2f64.powi(i32::from(level));
-        for ring in &rings {
-            let points = ring
-                .iter()
-                .map(|point| (point.x, point.y))
-                .collect::<Vec<_>>();
-            let region = HRegion::Polygon { points };
-            field.min_with_fn(|lon, lat| {
-                if domain
-                    .as_ref()
-                    .is_none_or(|domain| domain.contains(lon, lat))
-                    && region.contains(lon, lat)
-                {
-                    h_inside
-                } else {
-                    f64::INFINITY
-                }
-            });
-            polygon_count += 1;
+        for (i, j) in crate::grid_quality_inputs::hfield_support_coverage::
+            positive_area_hfield_bins_for_polygon_components(&components, nlon, nlat)?
+        {
+            if match domain.as_ref() {
+                Some(domain) => domain.polygon_source_overlaps_bin(&components, i, j)?,
+                None => true,
+            } {
+                field.set(i, j, field.get(i, j).min(h_inside));
+            }
         }
-        if let Some((lon, lat)) = feature_center(feature, &rings) {
-            let dlon_m = great_circle_distance_m(lon, lat, lon + 360.0 / nlon as f64, lat);
-            let seed_radius_m = 0.55 * dlon_m.hypot(dlat_m);
-            let seed = HRegion::Circle {
-                lon,
-                lat,
-                radius_m: seed_radius_m,
-            };
-            field.min_with_fn(|sample_lon, sample_lat| {
-                if domain
-                    .as_ref()
-                    .is_none_or(|domain| domain.contains(sample_lon, sample_lat))
-                    && seed.contains(sample_lon, sample_lat)
-                {
-                    h_inside
-                } else {
-                    f64::INFINITY
-                }
-            });
-        }
+        polygon_count += components.len();
     }
     if refined_rows == 0 {
         return Err(invalid("hydro refinement plan requests no refined cells"));
     }
+    let hard_field = field.clone();
     field.limit_gradient(g)?;
     let target = HydroTargetField {
+        hard_field,
         field,
         summary: HydroTargetFieldSummary {
             total_rows: rows.len(),
@@ -481,12 +492,22 @@ pub(crate) fn hydro_target_max_level(options: &HfieldRefineOptions) -> io::Resul
         .unwrap_or(0))
 }
 
-pub(crate) fn apply_hydro_target_to_field(
+pub(crate) fn hydro_target_plan_has_positive_level(
+    target_levels_json: impl AsRef<Path>,
+) -> io::Result<bool> {
+    let root = JsonParser::new(&read_text_maybe_gzip(target_levels_json.as_ref())?).parse()?;
+    Ok(plan_rows(&root)?
+        .into_iter()
+        .any(|row| row.target_level > 0))
+}
+
+pub(crate) fn apply_hydro_target_to_fields(
     field: &mut HField,
+    hard_field: &mut HField,
     options: &HfieldRefineOptions,
     base_m: f64,
     domain: Option<&GridRegion>,
-) -> io::Result<Option<HydroTargetFieldSummary>> {
+) -> io::Result<Option<(HydroTargetFieldSummary, HField)>> {
     let Some((cells, levels)) = options.hydro_target_paths() else {
         return Ok(None);
     };
@@ -500,8 +521,9 @@ pub(crate) fn apply_hydro_target_to_field(
         domain,
     )?;
     field.min_with_field(&hydro.field)?;
+    hard_field.min_with_field(&hydro.hard_field)?;
     field.limit_gradient(options.g)?;
-    Ok(Some(hydro.summary))
+    Ok(Some((hydro.summary, hydro.hard_field)))
 }
 
 fn quote_path(path: &Path) -> io::Result<String> {
@@ -647,6 +669,85 @@ pub fn run_quality_refinement_adapter(
         None,
         Some(MIN_QUALITY_REPAIR_SPRING_ITERATIONS),
     )
+}
+
+/// Replay the existing refinement field from its realized base grid with a
+/// tighter gradation. Target sources, maximum level, and spring controls stay
+/// unchanged; only the isolated output location and HField `g` are rewritten.
+pub fn run_quality_gradation_adapter(
+    source_namelist: impl AsRef<Path>,
+    initial_gridfile: impl AsRef<Path>,
+    adapter_namelist: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    source_gridnum_perdegree: Option<usize>,
+    hfield_g: f64,
+) -> io::Result<RefinePipelineRunReport> {
+    let source = fs::read_to_string(source_namelist.as_ref())?;
+    let initial_gridfile = fs::canonicalize(initial_gridfile.as_ref())?;
+    let adapter_namelist = adapter_namelist.as_ref();
+    let isolated_engine_root = adapter_namelist
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("engine");
+    fs::create_dir_all(&isolated_engine_root)?;
+    let rewritten = rewrite_quality_gradation_namelist_contents(
+        &source,
+        &initial_gridfile,
+        &isolated_engine_root,
+        hfield_g,
+    )?;
+    crate::ensure_parent_dir(adapter_namelist)?;
+    fs::write(adapter_namelist, rewritten)?;
+    crate::run_refine_pipeline_namelist(
+        adapter_namelist,
+        workdir,
+        max_tris,
+        source_gridnum_perdegree,
+    )
+}
+
+fn rewrite_quality_gradation_namelist_contents(
+    source: &str,
+    initial_gridfile: &Path,
+    isolated_engine_root: &Path,
+    hfield_g: f64,
+) -> io::Result<String> {
+    if !hfield_g.is_finite() || hfield_g <= 0.0 {
+        return Err(invalid(
+            "quality gradation retry requires finite hfield_g > 0",
+        ));
+    }
+    let base_dir = format!("{}/", isolated_engine_root.display());
+    if base_dir.contains('\'') {
+        return Err(invalid(format!(
+            "quality gradation output path cannot contain a single quote: {}",
+            isolated_engine_root.display()
+        )));
+    }
+    let quoted_base_dir = format!("'{base_dir}'");
+    let quoted_gridfile = quote_path(initial_gridfile)?;
+    let rewritten = rewrite_namelist_group_fields(
+        source,
+        "mkgrd",
+        "NL",
+        &[
+            ("EXPNME", "'quality_gradation'"),
+            ("base_dir", quoted_base_dir.as_str()),
+            ("mode_file", quoted_gridfile.as_str()),
+            ("mode_file_description", "'EarthMesh'"),
+            ("mask_restart", ".false."),
+            ("refine", ".true."),
+        ],
+    )
+    .map_err(invalid)?;
+    rewrite_namelist_group_fields(
+        &rewritten,
+        "hfield",
+        "NL",
+        &[("hfield_g", hfield_g.to_string().as_str())],
+    )
+    .map_err(invalid)
 }
 
 /// Execute the hydro adapter while optionally tightening (never loosening) the
@@ -874,6 +975,186 @@ mod tests {
             "earthmesh_hydro_refinement_adapter_{name}_{}",
             std::process::id()
         ))
+    }
+
+    fn hard_bins(field: &HField, base_m: f64) -> std::collections::BTreeSet<(usize, usize)> {
+        let mut bins = std::collections::BTreeSet::new();
+        for i in 0..field.nlon() {
+            for j in 0..field.nlat() {
+                if field.get(i, j) < base_m {
+                    bins.insert((i, j));
+                }
+            }
+        }
+        bins
+    }
+
+    fn write_single_target(root: &Path, geometry: &str, level: u8) -> (PathBuf, PathBuf) {
+        fs::create_dir_all(root).unwrap();
+        let cells = root.join("cells.geojson");
+        let levels = root.join("levels.json");
+        fs::write(
+            &cells,
+            format!(
+                r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"cell_id":"target"}},"geometry":{geometry}}}]}}"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &levels,
+            format!(
+                r#"{{"kind":"earthmesh_refinement_plan","total_cells":1,"cells":[{{"cell_id":"target","target_level":{level}}}]}}"#
+            ),
+        )
+        .unwrap();
+        (cells, levels)
+    }
+
+    #[test]
+    fn sub_bin_polygon_activates_only_its_exact_positive_area_hard_bin() {
+        let root = temp_path("sub_bin_exact");
+        let _ = fs::remove_dir_all(&root);
+        let (cells, levels) = write_single_target(
+            &root,
+            r#"{"type":"Polygon","coordinates":[[[1,1],[2,1],[2,2],[1,2],[1,1]]]}"#,
+            2,
+        );
+
+        let target = load_hydro_target_field(&cells, &levels, 100.0, 0.2, 36, 18).unwrap();
+
+        assert_eq!(hard_bins(&target.hard_field, 100.0), [(18, 9)].into());
+        assert_eq!(target.hard_field.get(18, 9), 25.0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn slender_polygon_crosses_only_the_bins_with_positive_area() {
+        let root = temp_path("slender_exact");
+        let _ = fs::remove_dir_all(&root);
+        let (cells, levels) = write_single_target(
+            &root,
+            r#"{"type":"Polygon","coordinates":[[[1,1],[29,1],[29,1.2],[1,1.2],[1,1]]]}"#,
+            1,
+        );
+
+        let target = load_hydro_target_field(&cells, &levels, 100.0, 0.2, 36, 18).unwrap();
+
+        assert_eq!(
+            hard_bins(&target.hard_field, 100.0),
+            [(18, 9), (19, 9), (20, 9)].into()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn polygon_boundary_touch_does_not_widen_the_hard_target() {
+        let root = temp_path("touch_only");
+        let _ = fs::remove_dir_all(&root);
+        let (cells, levels) = write_single_target(
+            &root,
+            r#"{"type":"Polygon","coordinates":[[[1,1],[10,1],[10,2],[1,2],[1,1]]]}"#,
+            1,
+        );
+
+        let target = load_hydro_target_field(&cells, &levels, 100.0, 0.2, 36, 18).unwrap();
+
+        assert_eq!(hard_bins(&target.hard_field, 100.0), [(18, 9)].into());
+        assert_eq!(target.hard_field.get(19, 9), 100.0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hydro_polygon_is_clipped_by_domain_before_coarse_bin_activation() {
+        let root = temp_path("domain_triple_intersection");
+        let _ = fs::remove_dir_all(&root);
+        let (cells, levels) = write_single_target(
+            &root,
+            r#"{"type":"Polygon","coordinates":[[[1,1],[5,1],[5,2],[1,2],[1,1]]]}"#,
+            1,
+        );
+        let domain = |west, east| GridRegion::Bbox {
+            west,
+            east,
+            south: 1.0,
+            north: 2.0,
+        };
+
+        for region in [domain(8.0, 9.0), domain(5.0, 9.0)] {
+            let target = load_hydro_target_field_in_domain(
+                &cells,
+                &levels,
+                100.0,
+                0.2,
+                36,
+                18,
+                Some(&region),
+            )
+            .unwrap();
+            assert!(
+                hard_bins(&target.hard_field, 100.0).is_empty(),
+                "same-bin disjoint and boundary-only domains cannot activate hard demand"
+            );
+        }
+        let overlapping = domain(4.0, 9.0);
+        let target = load_hydro_target_field_in_domain(
+            &cells,
+            &levels,
+            100.0,
+            0.2,
+            36,
+            18,
+            Some(&overlapping),
+        )
+        .unwrap();
+        assert_eq!(hard_bins(&target.hard_field, 100.0), [(18, 9)].into());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn polygon_holes_and_multipolygon_components_are_preserved_in_hard_demand() {
+        let root = temp_path("holes_multipart");
+        let _ = fs::remove_dir_all(&root);
+        let (cells, levels) = write_single_target(
+            &root,
+            r#"{"type":"MultiPolygon","coordinates":[
+                [[[-2,-2],[2,-2],[2,2],[-2,2],[-2,-2]],[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]]],
+                [[[100.1,1.1],[100.9,1.1],[100.9,1.9],[100.1,1.9],[100.1,1.1]]]
+            ]}"#,
+            1,
+        );
+
+        let target = load_hydro_target_field(&cells, &levels, 100.0, 0.2, 360, 180).unwrap();
+
+        assert_eq!(
+            target.hard_field.get(180, 90),
+            100.0,
+            "the bin wholly inside the interior ring must remain unrefined"
+        );
+        assert!(target.hard_field.get(181, 90) < 100.0);
+        assert!(target.hard_field.get(280, 91) < 100.0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn antimeridian_and_polar_multipolygon_targets_survive_exact_rasterization() {
+        let root = temp_path("seam_pole");
+        let _ = fs::remove_dir_all(&root);
+        let (cells, levels) = write_single_target(
+            &root,
+            r#"{"type":"MultiPolygon","coordinates":[
+                [[[179,1],[-179,1],[-179,2],[179,2],[179,1]]],
+                [[[-120,89],[0,89],[120,89],[-120,89]]]
+            ]}"#,
+            1,
+        );
+
+        let target = load_hydro_target_field(&cells, &levels, 100.0, 0.2, 36, 18).unwrap();
+        let bins = hard_bins(&target.hard_field, 100.0);
+
+        assert!(bins.contains(&(35, 9)), "{bins:?}");
+        assert!(bins.contains(&(0, 9)), "{bins:?}");
+        assert!(bins.iter().any(|(_, jlat)| *jlat == 17), "{bins:?}");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1183,5 +1464,32 @@ mod tests {
         assert_eq!(target.field.level_at(0.0, 0.0, 1_000_000.0, 5), 2);
         assert_eq!(target.field.level_at(100.0, 0.0, 1_000_000.0, 5), 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quality_gradation_rewrite_preserves_targets_level_and_refine_controls() {
+        let source = "&mkgrd\n  NL%EXPNME = 'source'\n  NL%base_dir = './source/'\n  NL%mode_file = 'old.grid'\n  NL%mask_restart = .false.\n  NL%refine = .true.\n/\n&mkrefine\n  RL%max_iter_spc = 2\n  RL%niter_refine = 37\n/\n&hfield\n  NL%hfield_on = .true.\n  NL%hfield_g = 0.2\n  NL%hfield_max_level = 2\n  NL%hfield_target_cells_geojson = 'targets.geojson'\n  NL%hfield_target_levels_json = 'levels.json'\n/\n&datalayers\n  NL%th_num_landtypes = 11\n/\n";
+        let rewritten = rewrite_quality_gradation_namelist_contents(
+            source,
+            Path::new("/tmp/exact-parent.grid"),
+            Path::new("/tmp/isolated-engine"),
+            0.1,
+        )
+        .expect("rewrite quality gradation candidate");
+
+        let hfield = crate::hfield_refine::read_hfield_refine_options(&rewritten)
+            .expect("parse hfield")
+            .expect("enabled hfield");
+        assert_eq!(hfield.g, 0.1);
+        assert_eq!(hfield.max_level, Some(2));
+        assert_eq!(
+            hfield.target_cells_geojson.as_deref(),
+            Some("targets.geojson")
+        );
+        assert_eq!(hfield.target_levels_json.as_deref(), Some("levels.json"));
+        assert!(rewritten.contains("NL%mode_file = '/tmp/exact-parent.grid'"));
+        assert!(rewritten.contains("NL%base_dir = '/tmp/isolated-engine/'"));
+        assert!(rewritten.contains("RL%max_iter_spc = 2\n  RL%niter_refine = 37"));
+        assert!(rewritten.contains("NL%th_num_landtypes = 11"));
     }
 }

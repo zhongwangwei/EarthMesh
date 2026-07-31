@@ -4,7 +4,7 @@ use earthmesh_geometry::Point as AreaJudgePoint;
 
 use crate::LonLatPoint;
 
-pub(super) fn getcontain_axis_candidate_range(
+pub(crate) fn getcontain_axis_candidate_range(
     axis: &[f64],
     min_value: f64,
     max_value: f64,
@@ -33,7 +33,7 @@ pub(super) fn getcontain_axis_candidate_range(
     (start < end).then_some(start..end)
 }
 
-pub(super) fn getcontain_south_pole_scan_polygons(
+pub(crate) fn getcontain_south_pole_scan_polygons(
     polygon: &[AreaJudgePoint],
     global_min_lat: f64,
 ) -> Vec<Vec<AreaJudgePoint>> {
@@ -78,7 +78,7 @@ pub(super) fn getcontain_south_pole_scan_polygons(
     wedges
 }
 
-pub(super) fn getcontain_restore_dateline_source_index(
+pub(crate) fn getcontain_restore_dateline_source_index(
     index: usize,
     nlons_source: usize,
 ) -> io::Result<usize> {

@@ -46,6 +46,28 @@ fn write_threshold_matrix(path: impl AsRef<Path>, var: &str, nlon: usize, nlat: 
     file.close().expect("close threshold netcdf");
 }
 
+fn persist_uniform_hfield_snapshot(
+    gridfile: &Path,
+    namelist: &Path,
+    nlon: usize,
+    nlat: usize,
+    base_m: f64,
+    max_level: u8,
+    g: f64,
+) {
+    let field =
+        earthmesh_hfield::HField::uniform(nlon, nlat, base_m / 2.0).expect("uniform HField");
+    earthmesh_cli::persist_hfield_source_demand_for_gridfile(
+        gridfile,
+        &field,
+        base_m,
+        max_level,
+        g,
+        &fs::read_to_string(namelist).expect("read quality namelist"),
+    )
+    .expect("persist source-demand snapshot");
+}
+
 #[test]
 fn mesh_quality_cli_reports_tri_and_hex_views_without_repo_fixture() {
     let _guard = MESH_QUALITY_TEST_LOCK
@@ -171,6 +193,8 @@ fn mesh_quality_cli_attaches_hfield_diagnostics_from_full_namelist() {
         ),
     )
     .expect("write namelist");
+    persist_uniform_hfield_snapshot(&gridfile, &quality_nml, 32, 16, 100_000.0, 1, 0.2);
+    fs::remove_file(root.join("hfield_bbox.nc4")).expect("remove mutable source after snapshot");
 
     let out_dir = root.join("report");
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
@@ -272,6 +296,7 @@ fn mesh_quality_cli_attaches_hfield_diagnostics_from_threshold_sources_without_r
         ),
     )
     .expect("write namelist");
+    persist_uniform_hfield_snapshot(&gridfile, &quality_nml, 4, 2, 100_000.0, 1, 0.2);
 
     let out_dir = root.join("report");
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
@@ -378,6 +403,8 @@ fn mesh_quality_cli_reports_hfield_target_actual_mismatch() {
         ),
     )
     .expect("write namelist");
+    persist_uniform_hfield_snapshot(&gridfile, &quality_nml, 32, 16, 100_000.0, 1, 0.2);
+    fs::remove_file(root.join("hfield_bbox.nc4")).expect("remove mutable source after snapshot");
 
     let out_dir = root.join("report");
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
@@ -407,7 +434,7 @@ fn mesh_quality_cli_reports_hfield_target_actual_mismatch() {
 }
 
 #[test]
-fn mesh_quality_cli_fails_loudly_when_hfield_regions_are_missing() {
+fn mesh_quality_cli_fails_loudly_without_production_source_demand_snapshot() {
     let _guard = MESH_QUALITY_TEST_LOCK
         .lock()
         .expect("mesh quality test lock");
@@ -472,10 +499,11 @@ fn mesh_quality_cli_fails_loudly_when_hfield_regions_are_missing() {
         .expect("run earthmesh_cli");
     assert!(
         !output.status.success(),
-        "mesh-quality should fail when h-field source discovery is empty"
+        "mesh-quality must not reconstruct a missing production snapshot"
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("h-field diagnostics found no"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("missing immutable source-demand snapshot"),
         "stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );

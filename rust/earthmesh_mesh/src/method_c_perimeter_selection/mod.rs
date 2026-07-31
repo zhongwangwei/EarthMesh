@@ -81,6 +81,14 @@ impl MethodCDelaunayMesh {
             m_neighbors.len(),
             self.nmd + 1,
         )?;
+        let Some(parent_mrlw) = selected_faces
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find_map(|(iw, &selected)| selected.then_some(self.w_faces[iw].mrlw))
+        else {
+            return Ok(());
+        };
         loop {
             let mut changed = false;
             for im in 2..=self.nmd {
@@ -93,14 +101,23 @@ impl MethodCDelaunayMesh {
                 if selected_count == 0 || selected_count == neighbors.npoly {
                     continue;
                 }
-                // Canonical behavior: fill when the selected incidence is at least
-                // (npoly - 1), including pentagons when exactly one face is
-                // missing and when all faces are selected.
+                // Canonical behavior: expand the rad3 footprint when exactly one
+                // incident face is missing. A fully selected ring was skipped
+                // above because it has no local concavity to close.
                 if selected_count < neighbors.npoly.saturating_sub(1) {
                     continue;
                 }
-                changed |=
-                    self.mark_fill_rad3_faces_with_neighbors(im, selected_faces, m_neighbors)?;
+                let footprint = self.method_c_rad3_faces_with_neighbors(im, m_neighbors)?;
+                if footprint
+                    .iter()
+                    .any(|&iw| iw >= 2 && self.w_faces[iw].mrlw != parent_mrlw)
+                {
+                    continue;
+                }
+                for iw in footprint {
+                    changed |= !selected_faces[iw];
+                    selected_faces[iw] = true;
+                }
             }
             if !changed {
                 return Ok(());

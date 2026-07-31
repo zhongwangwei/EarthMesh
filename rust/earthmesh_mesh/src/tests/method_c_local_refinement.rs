@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 
 #[test]
@@ -29,6 +31,45 @@ fn method_c_refines_locally_and_caps_old_m_valence() {
             "old M point {im} exceeds Method-C-supported valence after Method-C closure"
         );
     }
+}
+
+#[test]
+fn refinement_keeps_live_lineages_unique_and_preserves_parent_m_points() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let refined = mesh
+        .spawn_nest(
+            &[MethodCRefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 2_500_000.0,
+                level: 1,
+            }],
+            1,
+        )
+        .expect("Method-C nest");
+
+    let live_m = refined
+        .m_lineage
+        .iter()
+        .copied()
+        .skip(2)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(live_m.len(), refined.nmd - 1);
+    assert!(mesh
+        .m_lineage
+        .iter()
+        .skip(2)
+        .all(|lineage| live_m.contains(lineage)));
+    assert_eq!(
+        refined
+            .w_lineage
+            .iter()
+            .copied()
+            .skip(2)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        refined.nwd - 1
+    );
 }
 
 #[test]

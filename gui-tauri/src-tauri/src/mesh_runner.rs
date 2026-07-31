@@ -21,10 +21,13 @@ use crate::auto_refine::scan_auto_refine_decisions;
 use crate::dto::RunResult;
 use crate::engine::resolve_mkgrd;
 use crate::mesh_process::{begin_run, clear_running_child, record_running_child, RunId, RunLease};
+use crate::quality::{parse_quality_summary, MeshQuality};
 
 static RUN_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 type CapturedGridfile = Arc<Mutex<Option<(u8, String)>>>;
+type CapturedQualityReport = Arc<Mutex<Option<String>>>;
+type MeshChildOutcome = (bool, Option<i32>, Option<String>, Option<String>);
 
 /// Stage the complete Project and execute the canonical CLI project workflow.
 #[tauri::command]
@@ -83,9 +86,10 @@ async fn run_project_cli(
             )
         })?;
     let log_app = app.clone();
-    let (ok, code, gridfile) = capture_mesh_child_with_logger(child, run.id(), move |line| {
-        let _ = log_app.emit("mkgrd://log", line);
-    })?;
+    let (ok, code, gridfile, quality_report) =
+        capture_mesh_child_with_logger(child, run.id(), move |line| {
+            let _ = log_app.emit("mkgrd://log", line);
+        })?;
     let gridfile = if ok {
         Some(require_project_gridfile(&run_dir, gridfile.as_deref())?)
     } else {
@@ -95,13 +99,55 @@ async fn run_project_cli(
     for warning in &scan.warnings {
         let _ = app.emit("mkgrd://log", format!("⚠ AutoRefine audit: {warning}"));
     }
+    let final_quality = if ok {
+        match read_project_quality_report(&run_dir, quality_report.as_deref()) {
+            Ok(quality) => quality,
+            Err(error) => {
+                let _ = app.emit("mkgrd://log", format!("⚠ Project quality report: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
     Ok(RunResult {
         ok,
         code,
         outdir: run_dir.to_string_lossy().into_owned(),
         gridfile,
+        final_quality,
         auto_refine_decisions: scan.decisions,
     })
+}
+
+pub(crate) fn read_project_quality_report(
+    run_dir: &Path,
+    reported: Option<&str>,
+) -> Result<Option<MeshQuality>, String> {
+    let Some(reported) = reported.map(str::trim).filter(|path| !path.is_empty()) else {
+        return Ok(None);
+    };
+    let path = Path::new(reported);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        run_dir.join(path)
+    };
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("resolve {}: {error}", path.display()))?;
+    let root = run_dir
+        .canonicalize()
+        .map_err(|error| format!("resolve {}: {error}", run_dir.display()))?;
+    if !path.starts_with(&root) {
+        return Err(format!(
+            "engine reported quality file outside the run directory: {}",
+            path.display()
+        ));
+    }
+    let text =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    parse_quality_summary(&text, path.parent().unwrap_or(&root)).map(Some)
 }
 
 pub(crate) fn require_project_gridfile(
@@ -356,11 +402,29 @@ fn capture_reported_gridfile(
     Ok(())
 }
 
+fn capture_reported_quality_report(
+    captured: &CapturedQualityReport,
+    line: &str,
+    stream: &str,
+) -> Result<(), String> {
+    if stream != "stdout" {
+        return Ok(());
+    }
+    let Some(path) = line.strip_prefix("quality_report=") else {
+        return Ok(());
+    };
+    *captured
+        .lock()
+        .map_err(|_| "run quality-report state lock poisoned".to_string())? =
+        Some(path.trim().to_string());
+    Ok(())
+}
+
 pub(crate) fn capture_mesh_child_with_logger<F>(
     mut child: Child,
     run_id: RunId,
     log: F,
-) -> Result<(bool, Option<i32>, Option<String>), String>
+) -> Result<MeshChildOutcome, String>
 where
     F: Fn(String) + Clone + Send + 'static,
 {
@@ -382,12 +446,15 @@ where
     }
 
     let gridfile_seen: CapturedGridfile = Arc::new(Mutex::new(None));
+    let quality_report_seen: CapturedQualityReport = Arc::new(Mutex::new(None));
 
     let stdout_log = log.clone();
     let stdout_gridfile = Arc::clone(&gridfile_seen);
+    let stdout_quality_report = Arc::clone(&quality_report_seen);
     let stdout_thread = thread::spawn(move || {
         read_child_lines(BufReader::new(stdout), "stdout", |line| {
             capture_reported_gridfile(&stdout_gridfile, line, "stdout")?;
+            capture_reported_quality_report(&stdout_quality_report, line, "stdout")?;
             stdout_log(line.to_string());
             Ok(())
         })
@@ -422,7 +489,11 @@ where
         .map_err(|_| "run gridfile state lock poisoned".to_string())?
         .as_ref()
         .map(|(_, path)| path.clone());
-    Ok((status.success(), code, gridfile))
+    let quality_report = quality_report_seen
+        .lock()
+        .map_err(|_| "run quality-report state lock poisoned".to_string())?
+        .clone();
+    Ok((status.success(), code, gridfile, quality_report))
 }
 
 #[tauri::command]

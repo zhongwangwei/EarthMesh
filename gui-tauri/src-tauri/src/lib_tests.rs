@@ -12,6 +12,7 @@ use std::{
     process::{self, Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 static RUN_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -184,7 +185,64 @@ fn bundled_engine_directory_precedes_a_stale_repository_build() {
             "/Applications/EarthMesh Studio.app/Contents/MacOS"
         ))
     );
-    assert_eq!(roots.get(1).map(PathBuf::as_path), Some(repo));
+    assert_eq!(
+        roots.get(1).map(PathBuf::as_path),
+        Some(Path::new("/repo/target/release"))
+    );
+}
+
+#[test]
+fn source_checkout_prefers_release_roots_over_repo_copy_and_debug() {
+    let repo = Path::new("/repo");
+    let executable = Path::new("/repo/gui-tauri/src-tauri/target/debug/earthmesh_studio");
+    let roots = engine::engine_search_roots(repo, Some(executable));
+
+    assert_eq!(
+        roots,
+        vec![
+            repo.join("target/release"),
+            repo.to_path_buf(),
+            repo.join("target/debug"),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn engine_selection_uses_priority_not_binary_mtime() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_engine_priority_{}_{}",
+        process::id(),
+        nonce
+    ));
+    let release = root.join("release");
+    let debug = root.join("debug");
+    fs::create_dir_all(&release).unwrap();
+    fs::create_dir_all(&debug).unwrap();
+    for dir in [&release, &debug] {
+        let binary = dir.join("earthmesh_cli");
+        fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' '{}'\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let selected = engine::first_compatible_engine(&[release.clone(), debug], &["earthmesh_cli"])
+        .expect("compatible engine");
+
+    assert_eq!(selected, release.join("earthmesh_cli"));
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -645,9 +703,13 @@ fn sidecar_success_reports_exit_and_gridfile() {
     let run = mesh_process::begin_run().expect("reserve run");
     let logs = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&logs);
-    let child = spawn_test_sidecar("gridfile=/tmp/gui-success.nc", "sidecar warning", 0);
+    let child = spawn_test_sidecar(
+        "gridfile=/tmp/gui-success.nc\nquality_report=/tmp/quality_summary.json",
+        "sidecar warning",
+        0,
+    );
 
-    let (ok, code, gridfile) =
+    let (ok, code, gridfile, quality_report) =
         mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
             captured.lock().unwrap().push(line)
         })
@@ -656,6 +718,7 @@ fn sidecar_success_reports_exit_and_gridfile() {
     assert!(ok);
     assert_eq!(code, Some(0));
     assert_eq!(gridfile.as_deref(), Some("/tmp/gui-success.nc"));
+    assert_eq!(quality_report.as_deref(), Some("/tmp/quality_summary.json"));
     assert!(logs
         .lock()
         .unwrap()
@@ -671,7 +734,7 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
     let captured = Arc::clone(&logs);
     let child = spawn_test_sidecar("no grid", "synthetic failure", 7);
 
-    let (ok, code, gridfile) =
+    let (ok, code, gridfile, quality_report) =
         mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
             captured.lock().unwrap().push(line)
         })
@@ -680,9 +743,48 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
     assert!(!ok);
     assert_eq!(code, Some(7));
     assert_eq!(gridfile, None);
+    assert_eq!(quality_report, None);
     let logs = logs.lock().unwrap();
     assert!(logs.iter().any(|line| line == "[stderr] synthetic failure"));
     assert!(logs.iter().any(|line| line == "— exited with 7"));
+}
+
+#[test]
+fn reported_project_quality_is_parsed_with_engine_gate_levels() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_project_quality_{}_{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let report_dir = root.join("result");
+    fs::create_dir_all(&report_dir).unwrap();
+    let report = report_dir.join("quality_summary.json");
+    fs::write(
+        &report,
+        r#"{
+          "verdict":"pass",
+          "cell_view":"tri",
+          "geometry":{"cell_count":3,"vertex_count":5,"edge_count":7},
+          "topology":{"orphan_cell_count":1},
+          "gates":[{"metric":"orphan_cell_count","value":1,"level":"pass"}]
+        }"#,
+    )
+    .unwrap();
+
+    let quality =
+        mesh_runner::read_project_quality_report(&root, Some(report.to_string_lossy().as_ref()))
+            .unwrap()
+            .unwrap();
+
+    assert_eq!(quality.verdict, "pass");
+    assert!(quality
+        .gates
+        .iter()
+        .any(|gate| gate.metric == "orphan_cell_count" && gate.level == "pass"));
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

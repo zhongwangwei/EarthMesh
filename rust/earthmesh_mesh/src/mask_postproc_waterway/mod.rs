@@ -176,7 +176,7 @@ pub fn fill_vertex_only_ocean_contacts_one_based(
     Ok(activated)
 }
 
-fn cyclic_active_runs(active: &[bool]) -> usize {
+pub(crate) fn cyclic_active_runs(active: &[bool]) -> usize {
     active
         .iter()
         .enumerate()

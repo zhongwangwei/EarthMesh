@@ -26,6 +26,17 @@ pub use schema::{
 };
 mod auto_refine;
 pub use auto_refine::{AutoRefineAction, AutoRefineEvent, AutoRefineState};
+mod capability_registry;
+pub use capability_registry::{
+    classify_project_capability, preset_capability_key, project_capability_registry,
+    project_domain_classes, project_source_profiles, project_specified_sources,
+    project_target_triples, threshold_topology_source_atom, ProjectCapability,
+    ProjectCapabilityEntry, ProjectCapabilityKey, ProjectCloseBoundaryMode, ProjectContractId,
+    ProjectCoordinateMode, ProjectDomainClass, ProjectParameterizedTestId, ProjectRejectionReason,
+    ProjectSourceAtom, ProjectSourceProfile, ProjectSpecifiedSource, ProjectTargetTriple,
+    ProjectValidationTestId, PROJECT_DOMAIN_CLASS_COUNT, PROJECT_RAW_CAPABILITY_KEY_COUNT,
+    PROJECT_SOURCE_PROFILE_COUNT, PROJECT_TARGET_TRIPLE_COUNT, PROJECT_THRESHOLD_FIELDS,
+};
 mod criteria;
 pub use criteria::{
     criteria_for_domain, criterion_by_id, criterion_catalog, threshold_criterion_by_id,
@@ -40,8 +51,9 @@ pub use close_boundary::{
 };
 mod close_source;
 pub use close_source::{
-    read_close_mask_nml_points, read_lonlat_text_points, read_shapefile_polygon_rings,
-    write_close_mask_nml,
+    read_close_mask_nml_points, read_lonlat_text_points, read_shapefile_polygon_components,
+    read_shapefile_polygon_parts, read_shapefile_polygon_rings, write_close_mask_nml,
+    ShapefilePolygonComponent,
 };
 mod display;
 mod engine_mapping;
@@ -56,7 +68,7 @@ pub use lowering::LoweredProject;
 mod presets;
 pub use presets::{PresetDefaults, DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID};
 mod stage_cache;
-pub use stage_cache::{content_addressed_stage_key, StageCache};
+pub use stage_cache::{content_addressed_stage_key, file_content_hash, StageCache};
 mod validation;
 
 // ----------------------------- tests -----------------------------

@@ -3,6 +3,79 @@ use std::io;
 use super::*;
 
 impl MethodCDelaunayMesh {
+    pub(crate) fn method_c_transition_parent_boundary_witnesses(
+        &self,
+        perimeter: &[MethodCPerimeterPoint],
+        nest_wd: &[MethodCNestWd],
+        parent_level: usize,
+    ) -> io::Result<Vec<(usize, Vec<usize>)>> {
+        require_method_c_len("Method-C nest_wd", nest_wd.len(), self.nwd + 1)?;
+        let mut witnesses = Vec::new();
+        for (triple_index, triple) in perimeter.chunks_exact(3).enumerate() {
+            let [p1, p2, p3] = [triple[0], triple[1], triple[2]];
+            let p1_edge = self.u_edges[p1.iu];
+            let p2_edge = self.u_edges[p2.iu];
+            let p3_edge = self.u_edges[p3.iu];
+            let [iw26, iw27] = if p1.im == p1_edge.im[0] {
+                [p1_edge.iw[2], p1_edge.iw[0]]
+            } else {
+                [p1_edge.iw[5], p1_edge.iw[1]]
+            };
+            let [iw20, iw28, iw29, iw30] = if p2.im == p2_edge.im[0] {
+                [p2_edge.iw[1], p2_edge.iw[2], p2_edge.iw[0], p2_edge.iw[3]]
+            } else {
+                [p2_edge.iw[0], p2_edge.iw[5], p2_edge.iw[1], p2_edge.iw[4]]
+            };
+            let [iw31, iw32] = if p3.im == p3_edge.im[0] {
+                [p3_edge.iw[0], p3_edge.iw[3]]
+            } else {
+                [p3_edge.iw[1], p3_edge.iw[4]]
+            };
+            let mut invalid = [iw20, iw26, iw27, iw28, iw29, iw30, iw31, iw32]
+                .into_iter()
+                .filter(|&iw| self.w_faces[iw].mrlw != parent_level || nest_wd[iw].is_subdivided())
+                .collect::<Vec<_>>();
+            invalid.sort_unstable();
+            invalid.dedup();
+            if !invalid.is_empty() {
+                witnesses.push((triple_index, invalid));
+            }
+        }
+        Ok(witnesses)
+    }
+
+    pub(crate) fn method_c_transition_self_loop_witnesses(
+        &self,
+        perimeter: &[MethodCPerimeterPoint],
+        nest_wd: &[MethodCNestWd],
+    ) -> io::Result<Vec<(usize, usize)>> {
+        require_method_c_len("Method-C nest_wd", nest_wd.len(), self.nwd + 1)?;
+        let mut witnesses = Vec::new();
+        for (triple_index, triple) in perimeter.chunks_exact(3).enumerate() {
+            let [p2, p3] = [triple[1], triple[2]];
+            require_method_c_id("Method-C transition p2 U edge", p2.iu, self.nud)?;
+            require_method_c_id("Method-C transition p3 U edge", p3.iu, self.nud)?;
+            let p2_edge = self.u_edges[p2.iu];
+            let p3_edge = self.u_edges[p3.iu];
+            let p2_far_u = if p2.im == p2_edge.im[0] {
+                p2_edge.iu[7]
+            } else {
+                p2_edge.iu[8]
+            };
+            // Canonical perim_fill3 writes the p3 midpoint through iu51. If
+            // iu51 aliases the p3 half-edge (iu45), that edge becomes a
+            // midpoint-to-itself loop before M-ring construction.
+            let p3_uses_parent_copy = p3.im != p3_edge.im[0]
+                || p3_edge.iw[0..2]
+                    .iter()
+                    .any(|&iw| nest_wd[iw].is_suppressed());
+            if p3_uses_parent_copy && p2_far_u == p3.iu {
+                witnesses.push((triple_index, p3.iu));
+            }
+        }
+        Ok(witnesses)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn perim_fill3_method_c(
         &self,
@@ -99,7 +172,6 @@ impl MethodCDelaunayMesh {
                     iwnew[self.u_edges[ju3].iw[4]],
                 )
             };
-
             let im16 = imnew[jm1];
             let im17 = nest_ud[ju1].im;
             let im18 = imnew[jm2];
@@ -232,15 +304,20 @@ impl MethodCDelaunayMesh {
                         radius,
                     )?;
                     let ll = xyz_to_lonlat_degrees(center);
-                    return Err(method_c_repairable_error(
-                        MethodCRepairableKind::TransitionPatch,
-                        Some(jm2),
-                        format!(
-                            "Method-C perimeter length invalid: Current nested grid {child_level} crosses the parent boundary in Method-C transition at W face {iw} (mrlw={}, lon={:.3}, lat={:.3})",
-                            w_faces[iw].mrlw,
-                            ll.lon_degrees,
-                            ll.lat_degrees
+                    return Err(
+                        crate::method_c_table_helpers::method_c_repairable_error_with_parent_origin(
+                        method_c_repairable_error(
+                            MethodCRepairableKind::TransitionPatch,
+                            None,
+                            format!(
+                                "Method-C perimeter length invalid: Current nested grid {child_level} crosses the parent boundary in Method-C transition at W face {iw} (mrlw={}, lon={:.3}, lat={:.3})",
+                                w_faces[iw].mrlw,
+                                ll.lon_degrees,
+                                ll.lat_degrees
+                            ),
                         ),
+                        Some(jm2),
+                        Some(ju2),
                     ));
                 }
             }

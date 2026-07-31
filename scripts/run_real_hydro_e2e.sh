@@ -7,8 +7,8 @@ CARGO=${CARGO:-cargo}
 
 : "${EARTHMESH_REAL_MERIT_ROOT:=/Volumes/Data01/MERIT_Hydro}"
 : "${EARTHMESH_REAL_CAMA_ROOT:=/Volumes/Data01/CaMa-Map/glb_15min}"
-: "${EARTHMESH_REAL_GRIDFILE:=$repo/test/Earthmesh-project5/output/gridfile/gridfile_NXP0040_01_hex.nc4}"
-: "${EARTHMESH_REAL_SOURCE_NAMELIST:=$repo/test/Earthmesh-project5/mkgrd.nml.lowered.nml}"
+: "${EARTHMESH_REAL_GRIDFILE:=$repo/test/earthmesh-project-run-43185-1784688745021471000-3/project.yaml.earthmesh-run-14828-1784777092876404000-0/earthmesh-project/gridfile/gridfile_NXP0042_01_hex.nc4}"
+: "${EARTHMESH_REAL_SOURCE_NAMELIST:=$repo/test/earthmesh-project-run-43185-1784688745021471000-3/project.yaml.earthmesh-run-14828-1784777092876404000-0/project.nml}"
 : "${EARTHMESH_REAL_LANDTYPE:=$repo/input/landtype_igbp_update.nc}"
 : "${EARTHMESH_REAL_CELL_KIND:=hex}"
 : "${EARTHMESH_REAL_BBOX_W:=113.25}"
@@ -18,7 +18,7 @@ CARGO=${CARGO:-cargo}
 : "${EARTHMESH_REAL_EXPECT_CELL_COUNT:=1}"
 : "${EARTHMESH_REAL_MERIT_STRIDE:=1}"
 : "${EARTHMESH_REAL_KEEP_PRODUCTION_NITER:=0}"
-: "${EARTHMESH_REAL_MAX_PASSES:=1}"
+: "${EARTHMESH_REAL_MAX_PASSES:=2}"
 
 for path in "$EARTHMESH_REAL_MERIT_ROOT" "$EARTHMESH_REAL_CAMA_ROOT"; do
     if [ ! -d "$path" ]; then
@@ -48,5 +48,5 @@ export EARTHMESH_REAL_EXPECT_CELL_COUNT
 export EARTHMESH_REAL_KEEP_PRODUCTION_NITER
 export EARTHMESH_REAL_MAX_PASSES
 
-"$CARGO" test -p earthmesh_cli --lib real_merit_tiles_drive_coast_distance_across_the_antimeridian -- --ignored --nocapture
-exec "$CARGO" test -p earthmesh_cli --test project_hydro_real_e2e -- --ignored --nocapture
+"$CARGO" test --release -p earthmesh_cli --lib real_merit_tiles_drive_coast_distance_across_the_antimeridian -- --ignored --nocapture
+exec "$CARGO" test --release -p earthmesh_cli --test project_hydro_real_e2e -- --ignored --nocapture

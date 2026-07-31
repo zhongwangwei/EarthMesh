@@ -84,9 +84,13 @@ fn hfield_scratch_matches_compatibility_masks_floor_and_unshaped_targets_bitwise
         .expect("compatibility scratch");
     let targets = level_derived_targets(&refined, edge_count, dist00, false);
     let hmode = MethodCNestSpringScratch::with_edge_target_lengths(
-        &refined, &topology, &movable, &targets, true,
+        &refined, &topology, &movable, &targets, true, false,
     )
     .expect("h-field scratch");
+    let hmode_mrow = MethodCNestSpringScratch::with_edge_target_lengths(
+        &refined, &topology, &movable, &targets, true, true,
+    )
+    .expect("h-field scratch preserving mrow");
 
     assert_eq!(compatibility.moveu, hmode.moveu);
     assert_eq!(compatibility.compu, hmode.compu);
@@ -112,6 +116,10 @@ fn hfield_scratch_matches_compatibility_masks_floor_and_unshaped_targets_bitwise
             );
         } else {
             shaped += 1;
+            assert_eq!(
+                compatibility.target_mrow_multiplier[iu], hmode_mrow.target_mrow_multiplier[iu],
+                "preserved mrow multiplier on edge {iu}"
+            );
         }
     }
     assert!(

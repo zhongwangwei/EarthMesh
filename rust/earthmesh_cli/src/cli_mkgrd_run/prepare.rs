@@ -5,9 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use earthmesh_cli::resolve_project_path;
 use earthmesh_project::{
-    degree_to_nxp, km_to_nxp, read_lonlat_text_points, read_shapefile_polygon_rings,
-    write_close_mask_nml, CloseMaskFormat, DomainConfig, LoweredProject, ProjectConfig,
-    RegionShape, ResolutionSpec,
+    degree_to_nxp, km_to_nxp, read_lonlat_text_points, read_shapefile_polygon_components,
+    write_close_mask_nml, CloseBoundaryMode, CloseMaskFormat, DomainConfig, LoweredProject,
+    ProjectConfig, RegionShape, ResolutionSpec,
 };
 
 use super::super::cli_args::usage;
@@ -200,16 +200,26 @@ fn prepare_project_close_sources(
 
     if let DomainConfig::Regional { shape, .. } = &project.domain {
         let source = match shape {
-            RegionShape::Shapefile { path } => Some((path.as_str(), CloseMaskFormat::PolygonShp)),
-            RegionShape::Close { path, format, .. } => Some((path.as_str(), *format)),
+            RegionShape::Shapefile { path } => Some((
+                path.as_str(),
+                CloseMaskFormat::PolygonShp,
+                CloseBoundaryMode::Polyline,
+            )),
+            RegionShape::Close {
+                path,
+                format,
+                boundary,
+            } => Some((path.as_str(), *format, boundary.clone())),
             _ => None,
         };
-        if let Some((path, format)) = source {
+        if let Some((path, format, boundary)) = source {
             let source = resolve(path);
             match format {
                 CloseMaskFormat::PolygonShp | CloseMaskFormat::LonLatText => {
                     let rings = match format {
-                        CloseMaskFormat::PolygonShp => read_shapefile_polygon_rings(&source),
+                        CloseMaskFormat::PolygonShp => {
+                            read_shapefile_close_rings(&source, &boundary)
+                        }
                         CloseMaskFormat::LonLatText => {
                             read_lonlat_text_points(&source).map(|ring| vec![ring])
                         }
@@ -243,7 +253,7 @@ fn prepare_project_close_sources(
             .to_ascii_lowercase();
         if matches!(extension.as_str(), "shp" | "txt" | "csv") {
             let rings = if extension == "shp" {
-                read_shapefile_polygon_rings(&source)
+                read_shapefile_close_rings(&source, &close.boundary)
             } else {
                 read_lonlat_text_points(&source).map(|ring| vec![ring])
             }
@@ -264,6 +274,29 @@ fn prepare_project_close_sources(
         }
     }
     Ok(())
+}
+
+fn read_shapefile_close_rings(
+    source: &Path,
+    boundary: &CloseBoundaryMode,
+) -> std::io::Result<Vec<Vec<(f64, f64)>>> {
+    let components = read_shapefile_polygon_components(source)?;
+    if !matches!(boundary, CloseBoundaryMode::Polyline)
+        && components
+            .iter()
+            .any(|component| !component.holes.is_empty())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "SHP polygon holes require close boundary mode polyline; {boundary:?} transforms one simple ring and cannot preserve inner boundaries"
+            ),
+        ));
+    }
+    components
+        .into_iter()
+        .map(|component| component.into_close_ring())
+        .collect()
 }
 
 fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<LoweredNamelist>, String> {
@@ -309,6 +342,7 @@ fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<Lowered
 #[cfg(test)]
 mod tests {
     use super::*;
+    use earthmesh_cli::coordinate_types::GridRegion;
     use earthmesh_project::{
         CloseBoundaryMode, HfieldRefinementRecipe, MeshIntentPreset, RefinementRecipe,
         ResolutionSpec, SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
@@ -824,11 +858,209 @@ mod tests {
         assert!(nml.contains(&stage_dir.join("domain_close_").display().to_string()));
     }
 
+    #[test]
+    fn project_cli_stages_antimeridian_shapefile_holes_for_domain_and_refinement() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_project_antimeridian_hole_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_test_polygon_shp_records(
+            &root.join("seam.shp"),
+            &[vec![
+                vec![(175.0, -5.0), (175.0, 5.0), (-175.0, 5.0), (-175.0, -5.0)],
+                vec![
+                    (170.0, -10.0),
+                    (-170.0, -10.0),
+                    (-170.0, 10.0),
+                    (170.0, 10.0),
+                ],
+            ]],
+        );
+        let mut project = ProjectConfig::scaffold(
+            "antimeridian_hole",
+            MeshIntentPreset::CoastalOcean,
+            DomainConfig::Regional {
+                shape: RegionShape::Shapefile {
+                    path: "seam.shp".to_string(),
+                },
+                sea_ratio: None,
+            },
+            ResolutionSpec::Nxp(40),
+        );
+        project.refinement = RefinementRecipe {
+            enabled: true,
+            max_passes: 1,
+            specified_close: Some(SpecifiedCloseRefinement {
+                path: "seam.shp".to_string(),
+                boundary: CloseBoundaryMode::Polyline,
+            }),
+            ..RefinementRecipe::default()
+        };
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+        let prepared = compile_project_arg(&mut args).unwrap();
+        let stage_dir = Path::new(&prepared.namelist)
+            .parent()
+            .unwrap()
+            .join("inputs");
+        for path in [
+            stage_dir.join("domain_close_001.nml"),
+            stage_dir.join("specified_close_001.nml"),
+        ] {
+            let mask = earthmesh_cli::circle_close_mask_io::parse_close_mask_nml(&path, usize::MAX)
+                .unwrap()
+                .unwrap();
+            let region = GridRegion::Close {
+                points: mask.points,
+            };
+            assert!(region.contains(172.0, 0.0), "{}", path.display());
+            assert!(!region.contains(179.0, 0.0), "{}", path.display());
+            assert!(region.contains(-172.0, 0.0), "{}", path.display());
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_cli_rejects_crossing_parts_in_one_shapefile_record() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_project_crossing_shp_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_test_polygon_shp_records(
+            &root.join("crossing.shp"),
+            &[vec![
+                vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+                vec![(4.0, -1.0), (8.0, -1.0), (8.0, 3.0), (4.0, 3.0)],
+            ]],
+        );
+        let project = ProjectConfig::scaffold(
+            "crossing_shp",
+            MeshIntentPreset::CoastalOcean,
+            DomainConfig::Regional {
+                shape: RegionShape::Shapefile {
+                    path: "crossing.shp".to_string(),
+                },
+                sea_ratio: None,
+            },
+            ResolutionSpec::Nxp(40),
+        );
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+        let error = compile_project_arg(&mut args).expect_err("crossing rings must fail");
+        assert!(error.contains("intersect or touch"), "{error}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_cli_rejects_hole_losing_shapefile_boundary_transforms() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_project_hole_transform_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_test_polygon_shp_records(
+            &root.join("hole.shp"),
+            &[vec![
+                vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)],
+                vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            ]],
+        );
+        let project = ProjectConfig::scaffold(
+            "hole_transform",
+            MeshIntentPreset::CoastalOcean,
+            DomainConfig::Regional {
+                shape: RegionShape::Close {
+                    path: "hole.shp".to_string(),
+                    format: CloseMaskFormat::PolygonShp,
+                    boundary: CloseBoundaryMode::SphericalChaikin {
+                        iterations: 2,
+                        max_segment_angle_deg: 0.25,
+                    },
+                },
+                sea_ratio: None,
+            },
+            ResolutionSpec::Nxp(40),
+        );
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+        let error =
+            compile_project_arg(&mut args).expect_err("hole-losing transform must be rejected");
+        assert!(
+            error.contains("cannot preserve inner boundaries"),
+            "{error}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn write_test_polygon_shp(path: &Path, ring: &[(f64, f64)]) {
-        let mut points = ring.to_vec();
-        points.push(ring[0]);
-        let content_bytes = 48 + points.len() * 16;
-        let file_bytes = 108 + content_bytes;
+        write_test_polygon_shp_records(path, &[vec![ring.to_vec()]]);
+    }
+
+    fn write_test_polygon_shp_records(path: &Path, records: &[Vec<Vec<(f64, f64)>>]) {
+        let records = records
+            .iter()
+            .map(|rings| {
+                rings
+                    .iter()
+                    .map(|ring| {
+                        let mut closed = ring.clone();
+                        if closed.first() != closed.last() {
+                            closed.push(closed[0]);
+                        }
+                        closed
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let all_points = records
+            .iter()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        let content_sizes = records
+            .iter()
+            .map(|rings| 44 + rings.len() * 4 + rings.iter().map(Vec::len).sum::<usize>() * 16)
+            .collect::<Vec<_>>();
+        let file_bytes = 100
+            + content_sizes
+                .iter()
+                .map(|content_bytes| 8 + content_bytes)
+                .sum::<usize>();
+        let bounds = |points: &[(f64, f64)]| {
+            [
+                points
+                    .iter()
+                    .map(|point| point.0)
+                    .fold(f64::INFINITY, f64::min),
+                points
+                    .iter()
+                    .map(|point| point.1)
+                    .fold(f64::INFINITY, f64::min),
+                points
+                    .iter()
+                    .map(|point| point.0)
+                    .fold(f64::NEG_INFINITY, f64::max),
+                points
+                    .iter()
+                    .map(|point| point.1)
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ]
+        };
         let mut out = Vec::with_capacity(file_bytes);
 
         out.extend(9994_i32.to_be_bytes());
@@ -836,21 +1068,29 @@ mod tests {
         out.extend(((file_bytes / 2) as i32).to_be_bytes());
         out.extend(1000_i32.to_le_bytes());
         out.extend(5_i32.to_le_bytes());
-        for value in [100.0_f64, 10.0, 102.0, 12.0, 0.0, 0.0, 0.0, 0.0] {
+        for value in [bounds(&all_points), [0.0; 4]].concat() {
             out.extend(value.to_le_bytes());
         }
-        out.extend(1_i32.to_be_bytes());
-        out.extend(((content_bytes / 2) as i32).to_be_bytes());
-        out.extend(5_i32.to_le_bytes());
-        for value in [100.0_f64, 10.0, 102.0, 12.0] {
-            out.extend(value.to_le_bytes());
-        }
-        out.extend(1_i32.to_le_bytes());
-        out.extend((points.len() as i32).to_le_bytes());
-        out.extend(0_i32.to_le_bytes());
-        for (x, y) in points {
-            out.extend(x.to_le_bytes());
-            out.extend(y.to_le_bytes());
+        for (record_index, (rings, content_bytes)) in records.iter().zip(content_sizes).enumerate()
+        {
+            let points = rings.iter().flatten().copied().collect::<Vec<_>>();
+            out.extend(((record_index + 1) as i32).to_be_bytes());
+            out.extend(((content_bytes / 2) as i32).to_be_bytes());
+            out.extend(5_i32.to_le_bytes());
+            for value in bounds(&points) {
+                out.extend(value.to_le_bytes());
+            }
+            out.extend((rings.len() as i32).to_le_bytes());
+            out.extend((points.len() as i32).to_le_bytes());
+            let mut start = 0usize;
+            for ring in rings {
+                out.extend((start as i32).to_le_bytes());
+                start += ring.len();
+            }
+            for (x, y) in points {
+                out.extend(x.to_le_bytes());
+                out.extend(y.to_le_bytes());
+            }
         }
         fs::write(path, out).unwrap();
     }

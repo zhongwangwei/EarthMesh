@@ -5,7 +5,6 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -13,9 +12,9 @@ static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Locate the mesh-generator binary, in priority order:
 ///   1. `$EARTHMESH_MKGRD` (explicit override),
 ///   2. next to the running executable (installed / bundled case),
-///   3. well-known build outputs relative to the repo root — `make build` copies
-///      the CLI to `<repo>/mkgrd.x`; cargo leaves `earthmesh_cli` in its target
-///      dirs — so a freshly built tree "just works" with no configuration,
+///   3. Cargo workspace build outputs relative to the repo root — release
+///      first, then `<repo>/mkgrd.x`, and debug last — so a freshly built tree
+///      "just works" without a stale legacy per-crate target taking priority,
 ///   4. bare `mkgrd.x`, letting the OS search `PATH`.
 pub(crate) fn resolve_mkgrd() -> Result<String, String> {
     // Run the engine from a clean temp dir. The static netcdf/HDF5 build SIGKILLs
@@ -121,37 +120,7 @@ fn resolve_mkgrd_path() -> Result<String, String> {
     let roots = engine_search_roots(&repo, current_exe.as_deref());
     let names = ["mkgrd.x", "earthmesh_cli", "earthmesh_cli.exe", "mkgrd.exe"];
 
-    // Outside a source checkout, the sidecar next to the application is the
-    // packaged engine and must win over any build tree left on the machine.
-    // Inside the checkout, however, choose the newest compatible build. This
-    // prevents stale test stubs in target/debug from shadowing a real CLI.
-    if current_exe
-        .as_deref()
-        .is_some_and(|exe| !path_is_within(exe, &repo))
-    {
-        if let Some(dir) = current_exe.as_deref().and_then(Path::parent) {
-            for name in &names {
-                let candidate = dir.join(name);
-                if engine_candidate_is_compatible(&candidate) {
-                    return Ok(canonical_string(candidate));
-                }
-            }
-        }
-    }
-
-    let mut compatible = Vec::new();
-    for root in &roots {
-        for name in &names {
-            let candidate = root.join(name);
-            if engine_candidate_is_compatible(&candidate) {
-                compatible.push(candidate);
-            }
-        }
-    }
-    if let Some(candidate) = compatible
-        .into_iter()
-        .max_by_key(|path| candidate_modified(path))
-    {
+    if let Some(candidate) = first_compatible_engine(&roots, &names) {
         return Ok(canonical_string(candidate));
     }
 
@@ -191,10 +160,16 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
 
-fn candidate_modified(path: &Path) -> SystemTime {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or(UNIX_EPOCH)
+pub(crate) fn first_compatible_engine(roots: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+    for root in roots {
+        for name in names {
+            let candidate = root.join(name);
+            if engine_candidate_is_compatible(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn canonical_string(path: PathBuf) -> String {
@@ -206,14 +181,13 @@ fn canonical_string(path: PathBuf) -> String {
 
 pub(crate) fn engine_search_roots(repo: &Path, current_exe: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = current_exe
+        .filter(|exe| !path_is_within(exe, repo))
         .and_then(Path::parent)
         .map(|dir| vec![dir.to_path_buf()])
         .unwrap_or_default();
     roots.extend([
-        repo.to_path_buf(),
-        repo.join("rust/earthmesh_cli/target/release"),
-        repo.join("rust/earthmesh_cli/target/debug"),
         repo.join("target/release"),
+        repo.to_path_buf(),
         repo.join("target/debug"),
     ]);
     roots

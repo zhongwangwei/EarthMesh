@@ -1525,7 +1525,7 @@ fn default_surface_native_method_c_sfcgrid_res_factor_expands_global_surface() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_method_c_surface_sfcgrid_res_factor'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n  NL%sfcgrid_res_factor=2\n  NL%nsfcgrids=0\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n",
+            "&mkgrd\n  NL%EXPNME='case_method_c_surface_sfcgrid_res_factor'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n  NL%sfcgrid_res_factor=2\n  NL%nsfcgrids=0\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_max_level=1\n  NL%hfield_base_m=100000.0\n  NL%hfield_nlon=12\n  NL%hfield_nlat=6\n/\n",
         ),
     )
     .expect("write native surface expansion namelist");
@@ -1545,6 +1545,26 @@ fn default_surface_native_method_c_sfcgrid_res_factor_expands_global_surface() {
     assert_eq!(run.max_level, 1);
     assert_eq!(run.spring_nest_iterations, 0);
     assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    let artifact = run.output.output.with_file_name(format!(
+        "{}.source-demand.json",
+        run.output
+            .output
+            .file_name()
+            .expect("gridfile name")
+            .to_string_lossy()
+    ));
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &fs::read(&artifact).expect("native surface run must persist source demand"),
+    )
+    .expect("source-demand json");
+    assert!(
+        persisted["hard_levels"]
+            .as_array()
+            .expect("hard levels")
+            .iter()
+            .all(|level| level.as_u64() == Some(1)),
+        "global surface expansion is a global level-1 source demand"
+    );
 }
 
 #[test]

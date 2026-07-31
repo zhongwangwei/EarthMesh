@@ -41,3 +41,9 @@ test/**/output/
 cargo-flamegraph.trace/
 docs/perf/
 /test
+
+# Downloaded external reference meshes (large, not versioned)
+/reference_meshes/
+
+# R session leftovers
+.Rhistory

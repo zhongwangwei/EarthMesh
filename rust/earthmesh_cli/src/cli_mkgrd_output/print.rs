@@ -151,9 +151,15 @@ pub(crate) fn print_refine_pipeline_report(
     println!("lbx_points={}", report.output.lbx_points);
     println!("refine_regions={}", report.regions.len());
     println!("refine_max_level={}", report.max_level);
+    println!("refine_requested_max_level={}", report.max_level);
+    println!("refine_actual_max_level={}", report.actual_max_level);
+    println!("refine_refined_cells={}", report.refined_cells);
     println!("refine_transition_faces={}", report.transition_faces);
     println!("refine_spring_passes={}", report.spring_nest_passes);
     println!("refine_spring_iterations={}", report.spring_nest_iterations);
+    if let Some(warning) = refinement_no_effect_warning(report.max_level, report.refined_cells) {
+        eprintln!("{warning}");
+    }
     if let Some(raw_output) = &report.raw_output {
         println!("refine_raw_gridfile={}", raw_output.output.display());
     }
@@ -180,5 +186,33 @@ pub(crate) fn print_refine_pipeline_report(
         );
         println!("refine_coupling_manifest={}", coupled.manifest.display());
         println!("refine_coupling_rows={}", coupled.coupling_netcdf.rows);
+    }
+}
+
+fn refinement_no_effect_warning(
+    requested_max_level: usize,
+    refined_cells: usize,
+) -> Option<String> {
+    (requested_max_level > 0 && refined_cells == 0).then(|| {
+        format!(
+            "earthmesh_cli: warning: refinement requested through level {requested_max_level} but the final output contains no refined cells"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refinement_no_effect_warning;
+
+    #[test]
+    fn no_effect_warning_uses_final_cell_count_for_every_refinement_source() {
+        assert_eq!(
+            refinement_no_effect_warning(2, 0).as_deref(),
+            Some(
+                "earthmesh_cli: warning: refinement requested through level 2 but the final output contains no refined cells"
+            )
+        );
+        assert_eq!(refinement_no_effect_warning(0, 0), None);
+        assert_eq!(refinement_no_effect_warning(2, 1), None);
     }
 }

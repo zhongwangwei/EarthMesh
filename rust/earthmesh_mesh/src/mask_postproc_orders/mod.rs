@@ -22,6 +22,33 @@ pub fn classify_boundary_orders_one_based(
     vertex_mapping: &[usize],
     is_in_domain: &[i32],
 ) -> io::Result<BoundaryOrders> {
+    let source_domain = vec![1; is_in_domain.len()];
+    classify_boundary_orders_with_source_domain_one_based(
+        num_bdy_long,
+        bdy_long_order,
+        vertex_neighbors,
+        vertex_neighbor_counts,
+        vertex_mapping,
+        is_in_domain,
+        &source_domain,
+    )
+}
+
+/// Classify boundary vertices while preserving the source regional-domain edge.
+///
+/// `source_domain` is the mask before land/ocean product removal. An inactive
+/// adjacent center outside that source domain identifies an open regional edge;
+/// an inactive center still inside it identifies an internal land/coast edge.
+#[allow(clippy::too_many_arguments)]
+pub fn classify_boundary_orders_with_source_domain_one_based(
+    num_bdy_long: [usize; 3],
+    bdy_long_order: &[usize],
+    vertex_neighbors: &[Vec<usize>],
+    vertex_neighbor_counts: &[usize],
+    vertex_mapping: &[usize],
+    is_in_domain: &[i32],
+    source_domain: &[i32],
+) -> io::Result<BoundaryOrders> {
     let bdy_num = num_bdy_long[0];
     if bdy_num == 0 || bdy_long_order.len() < bdy_num {
         return Err(io::Error::new(
@@ -51,24 +78,32 @@ pub fn classify_boundary_orders_one_based(
             ));
         }
 
-        let mut all_adjacent_centers_active = true;
+        let mut all_source_domain_centers_active = true;
         for &center_id in vertex_neighbors[vertex_id].iter().take(count) {
-            if center_id >= is_in_domain.len() {
+            if center_id >= is_in_domain.len() || center_id >= source_domain.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "boundary vertex {vertex_id} canonicals center {center_id}, outside is_in_domain"
+                        "boundary vertex {vertex_id} canonicals center {center_id}, outside product/source domain masks"
                     ),
                 ));
             }
-            if is_in_domain[center_id] != 1 {
-                all_adjacent_centers_active = false;
+            if is_in_domain[center_id] == 1 && source_domain[center_id] != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "active product center {center_id} is outside its source regional domain"
+                    ),
+                ));
+            }
+            if source_domain[center_id] == 1 && is_in_domain[center_id] != 1 {
+                all_source_domain_centers_active = false;
                 break;
             }
         }
 
         bdy_order[idx] = vertex_mapping[vertex_id];
-        if all_adjacent_centers_active {
+        if all_source_domain_centers_active {
             obc_order[idx] = bdy_order[idx];
         } else {
             ibc_order[idx] = bdy_order[idx];

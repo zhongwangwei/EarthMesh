@@ -247,7 +247,12 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
 .ol-cell-inspector-close{border:0;background:transparent;color:var(--muted);padding:0 3px;font-size:16px;line-height:1}
 .ol-cell-inspector-row{display:grid;grid-template-columns:minmax(86px,.8fr) minmax(100px,1.2fr);gap:8px;padding:3px 0;border-top:1px solid var(--border-soft)}
 .ol-cell-inspector-row span:first-child{color:var(--muted);overflow-wrap:anywhere}.ol-cell-inspector-row span:last-child{font-family:var(--mono);overflow-wrap:anywhere}
-.logbox{font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+.logbox{min-height:0;overflow-y:scroll;overscroll-behavior:contain;scrollbar-gutter:stable;
+  padding-right:4px;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+.logbox::-webkit-scrollbar{width:10px}
+.logbox::-webkit-scrollbar-track{background:var(--surface-2);border-radius:5px}
+.logbox::-webkit-scrollbar-thumb{background:var(--faint);border:2px solid var(--surface-2);border-radius:5px}
+.logbox::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 .mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
 .mini-metric b{font-weight:700}
 .progress{height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden;margin:10px 0}
@@ -328,10 +333,11 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
           <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
             <span class="rdot" id="logDot" style="flex:none"></span>
             <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
-            <span class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">🗑 <span data-i18n="log.clear">Clear</span></span>
+            <button type="button" class="btn-ghost" id="copyLogBtn" title="copy log" style="flex:none;padding:2px 9px;font-size:11px">⧉ <span data-i18n="log.copy">Copy</span></button>
+            <button type="button" class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px">🗑 <span data-i18n="log.clear">Clear</span></button>
           </div>
         </div>
-        <div class="logbox" id="logbox" style="flex:1;min-height:0;overflow:auto"></div>
+        <div class="logbox" id="logbox" style="flex:1;min-height:0"></div>
       </div>
     </div>
   </aside>
@@ -439,7 +445,7 @@ const I = {
  "map.layers":["Layers","图层"],"map.layer.mesh":["Mesh","网格"],"map.layer.boundary":["Project boundary","项目边界"],"map.layer.domain":["Domain frame","区域框"],"map.layer.graticule":["Graticule","经纬网"],"map.layer.legend":["Legend","图例"],
  "map.measure":["Measure","量测"],"map.measure.none":["Pointer","指针"],"map.measure.distance":["Distance","距离"],"map.measure.area":["Area","面积"],"map.measure.clear":["Clear","清除"],
  "map.export.scope":["Export","导出"],"map.export.region":["Project region","项目区域"],"map.export.view":["Current view","当前视图"],"map.export.global":["Full extent","全域"],"map.export.size":["Size","尺寸"],"map.export.png":["Save PNG","保存 PNG"],
- "log.clear":["Clear","清空"],
+ "log.copy":["Copy","复制"],"log.clear":["Clear","清空"],
  "q.pass":["PASS","通过"],"q.cells":["Cells","单元"],"q.verts":["Vertices","顶点"],
  "q.minangle":["Min angle","最小角"],"q.aspect":["Aspect ratio","纵横比"],
  "q.note":["Full dashboard appears in Run / Results after a run.","运行后在「运行 / 结果」中显示完整仪表盘。"],
@@ -469,7 +475,7 @@ const STEPS=[
  {t:["Run / Results","运行 / 结果"],d:["Generate + dashboard","生成 + 仪表盘"]},
 ];
 let cur=0;
-let runInProgress=false;
+let runInProgress=false, runCancelRequested=false;
 
 function renderSteps(){
   const el=document.getElementById("steps");el.textContent="";
@@ -920,6 +926,12 @@ function meshFeatureIsCoast(p){
   const coastFraction=Number(p.coastal_fraction||p.coast_fraction||0);
   return !!p.has_coast || surface==="3" || mask.includes("coast") || /^[123]$/.test(coastCode) || coastFraction>0;
 }
+function meshRefineStyle(style,p){
+  const level=Number(p.refine_level||0);
+  if(level<1) return style;
+  const color=level>=2?"#f43f5e":"#f59e0b";
+  return {...style,color,weight:level>=2?2:1.6,fillColor:style.fillColor||color,fillOpacity:Math.max(Number(style.fillOpacity||0),style.fillColor?0.18:(level>=2?0.52:0.34))};
+}
 function meshFeatureStyle(f){
   const p=(f&&f.properties)||{};
   const surface=String(p.surface_class||p.surface_class_code||p.zone||"").toLowerCase();
@@ -929,34 +941,35 @@ function meshFeatureStyle(f){
   const riverColor=river==="R3" ? "#c0266b" : river==="R2" ? "#7c3aed" : "";
   const riverOutline=!!riverColor && primary!==river;
   const coastFraction=Number(p.coastal_fraction||p.coast_fraction||0);
-  if(primary==="R3") return {color:"#c0266b",weight:1.4,fillColor:"#c0266b",fillOpacity:0.40};
-  if(primary==="R2") return {color:"#7c3aed",weight:1.2,fillColor:"#7c3aed",fillOpacity:0.32};
+  if(primary==="R3") return meshRefineStyle({color:"#c0266b",weight:1.4,fillColor:"#c0266b",fillOpacity:0.40},p);
+  if(primary==="R2") return meshRefineStyle({color:"#7c3aed",weight:1.2,fillColor:"#7c3aed",fillOpacity:0.32},p);
   const hasCoast=meshFeatureIsCoast(p);
   if(hasCoast){
     const color=cssVarColor("--coast","#dc963c");
     const style={color:riverOutline?riverColor:color,weight:riverOutline?1.6:1.5,fillColor:color,fillOpacity:Math.min(0.48,0.18+coastFraction*0.7)};
     if(riverOutline) style.dashArray="3 2";
-    return style;
+    return meshRefineStyle(style,p);
   }
   if(surface.includes("ocean") || surface==="2" || mask==="ocean"){
     const color=cssVarColor("--ocean","#3c78c8");
     const style={color:riverOutline?riverColor:color,weight:riverOutline?1.2:0.8,fillColor:color,fillOpacity:0.12};
     if(riverOutline) style.dashArray="3 2";
-    return style;
+    return meshRefineStyle(style,p);
   }
   if(surface.includes("land") || surface==="1" || mask==="land"){
     const color=cssVarColor("--land","#78aa5a");
     const style={color:riverOutline?riverColor:color,weight:riverOutline?1.2:0.8,fillColor:color,fillOpacity:0.12};
     if(riverOutline) style.dashArray="3 2";
-    return style;
+    return meshRefineStyle(style,p);
   }
-  return {color:"#22d3ee",weight:0.9,fillOpacity:0.05};
+  return meshRefineStyle({color:"#22d3ee",weight:0.9,fillOpacity:0.05},p);
 }
 function meshFeatureLabel(p){
   const primary=p.mask_class||p.surface_class||p.label||"";
   const river=p.river_class ? ` + ${p.river_class}` : "";
   const frac=Number(p.river_fraction||0);
-  return `${primary}${river}${frac?` (${(frac*100).toFixed(1)}%)`:""}`;
+  const refine=Number(p.refine_level||0);
+  return `${refine>0?`L${refine} `:""}${primary}${river}${frac?` (${(frac*100).toFixed(1)}%)`:""}`.trim();
 }
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
 let _domainGeojson=null; // watershed/domain outline overlay
@@ -1038,6 +1051,7 @@ function loadOlMapPrefs(){
 }
 let _olMapPrefs=loadOlMapPrefs();
 const _olGeoFrameCache=new WeakMap();
+const _olPolarReachCache=new WeakMap();
 function saveOlMapPrefs(patch){
   _olMapPrefs={..._olMapPrefs,...patch};
   try{ localStorage.setItem(OL_MAP_PREFS_KEY,JSON.stringify(_olMapPrefs)); }catch(e){}
@@ -1081,6 +1095,29 @@ function olGeojsonFrame(geojson){
   const west=start>180?start-360:start, east=west+Math.max(0,360-largestGap);
   const frame={west,east,south,north,crossesDateline:east>180}; _olGeoFrameCache.set(geojson,frame); return frame;
 }
+function globeMeshNeedsGeographicPlane(data){
+  if(!data||typeof data!=="object") return false;
+  if(_olPolarReachCache.has(data)) return _olPolarReachCache.get(data);
+  let reaches=false;
+  const scan=(coordinates)=>{
+    if(reaches||!Array.isArray(coordinates)) return;
+    if(coordinates.length>=2&&typeof coordinates[0]==="number"&&typeof coordinates[1]==="number"){
+      const lat=Number(coordinates[1]);
+      reaches=Number.isFinite(lat)&&(lat < -85.0511287798066||lat > 85.0511287798066);
+      return;
+    }
+    for(const child of coordinates){ scan(child); if(reaches) break; }
+  };
+  const scanGeometry=(geometry)=>{
+    if(reaches||!geometry) return;
+    scan(geometry.coordinates);
+    for(const child of geometry.geometries||[]){ scanGeometry(child); if(reaches) break; }
+  };
+  for(const feature of data.features||[]){ scanGeometry(feature.geometry); if(reaches) break; }
+  if(!reaches&&data.type!=="FeatureCollection") scanGeometry(data.geometry||data);
+  _olPolarReachCache.set(data,reaches);
+  return reaches;
+}
 function currentOlDomainFrame(){
   if(!regional) return null;
   if((domainMode==="regional"||domainMode==="bbox")&&Array.isArray(domBbox)&&domBbox.length===4){
@@ -1120,7 +1157,6 @@ function resolveOlProjectionChoice(map,choice){
   return choice==="EPSG:4326"?"EPSG:4326":"EPSG:3857";
 }
 const _olStyleCache=new Map();
-const OL_DEFAULT_MESH_STYLE=new ol.style.Style({stroke:new ol.style.Stroke({color:"#22d3ee",width:0.9}),fill:new ol.style.Fill({color:"rgba(34,211,238,.05)"})});
 function rgbaColor(color,opacity){
   const m=String(color||"").match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
   return m?`rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${opacity})`:color;
@@ -1252,10 +1288,12 @@ const GLOBE_LAYER_IDS={mesh:["earthmesh-mesh-fill","earthmesh-mesh-line"],bounda
 function globeKindExpression(){ return ["downcase",["to-string",["coalesce",["get","zone"],["get","mask_class"],["get","hydro_mask_class"],["get","surface_class"],["get","surface_class_code"],""]]]; }
 function globeRiverExpression(){ return ["upcase",["to-string",["coalesce",["get","river_class"],["get","overlap_class"],""]]]; }
 function globeMeshPaint(){
-  const kind=globeKindExpression(),river=globeRiverExpression(),land=cssVarColor("--land","#78aa5a"),ocean=cssVarColor("--ocean","#3c78c8"),coast=cssVarColor("--coast","#dc963c"),opacity=Number(_olMapPrefs.meshOpacity??1);
+  const kind=globeKindExpression(),river=globeRiverExpression(),refine=["to-number",["coalesce",["get","refine_level"],0]],land=cssVarColor("--land","#78aa5a"),ocean=cssVarColor("--ocean","#3c78c8"),coast=cssVarColor("--coast","#dc963c"),opacity=Number(_olMapPrefs.meshOpacity??1);
   const color=["match",kind,"r3","#c0266b","r2","#7c3aed","coast",coast,"3",coast,"ocean",ocean,"2",ocean,"land",land,"1",land,"#22d3ee"];
-  const lineColor=["case",["==",river,"R3"],"#c0266b",["==",river,"R2"],"#7c3aed",color];
-  return {fill:{"fill-color":color,"fill-opacity":["*",opacity,["match",kind,"r3",0.40,"r2",0.32,"coast",0.30,"3",0.30,"ocean",0.12,"2",0.12,"land",0.12,"1",0.12,0.05]]},line:{"line-color":lineColor,"line-opacity":opacity,"line-width":["match",kind,"r3",1.4,"r2",1.2,"coast",1.5,"3",1.5,0.8]}};
+  const rawRefined=["all",[">",refine,0],["==",kind,""]];
+  const fillColor=["case",["all",rawRefined,[">=",refine,2]],"#fb7185",rawRefined,"#fbbf24",color];
+  const lineColor=["case",[">=",refine,2],"#f43f5e",[">=",refine,1],"#f59e0b",["==",river,"R3"],"#c0266b",["==",river,"R2"],"#7c3aed",color];
+  return {fill:{"fill-color":fillColor,"fill-opacity":["*",opacity,["case",["all",rawRefined,[">=",refine,2]],0.52,rawRefined,0.34,["match",kind,"r3",0.40,"r2",0.32,"coast",0.30,"3",0.30,"ocean",0.12,"2",0.12,"land",0.12,"1",0.12,0.05]]]},line:{"line-color":lineColor,"line-opacity":opacity,"line-width":["case",[">=",refine,2],2,[">=",refine,1],1.6,["match",kind,"r3",1.4,"r2",1.2,"coast",1.5,"3",1.5,0.8]]}};
 }
 function globeGraticuleGeojson(){
   if(globeGraticuleGeojson.cache) return globeGraticuleGeojson.cache;
@@ -1362,17 +1400,27 @@ function ensureGlobeMap(map){
   }catch(error){ console.error("MapLibre globe:",error); return null; }
 }
 function updateGlobeMap(map,doFit){
+  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson;
+  if(globeMeshNeedsGeographicPlane(mesh)){ useGeographicPlaneForPolarMesh(map,doFit); return; }
   const globe=map._globe;
   if(!globe||!map._globeLoaded){ map._globePendingFit=map._globePendingFit||!!doFit; return; }
-  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson;
   syncGlobeSource(map,"mesh",mesh); syncGlobeSource(map,"boundary",_domainGeojson); syncGlobeSource(map,"domain",globeDomainGeojson(map));
   syncGlobeBasemap(map); syncGlobePaint(map);
   setGlobeLayerVisible(map,"mesh",_olMapPrefs.mesh!==false); setGlobeLayerVisible(map,"boundary",_olMapPrefs.boundary!==false); setGlobeLayerVisible(map,"domain",_olMapPrefs.domain!==false); setGlobeLayerVisible(map,"graticule",_olMapPrefs.graticule===true);
   updateOlLegend(map); syncOlMapTools(map,true); if(doFit) fitGlobeMap(map,"region",0);
 }
+function useGeographicPlaneForPolarMesh(map,doFit){
+  setMapRenderer(map,"plane",false);
+  if(map._projectionChoice!=="EPSG:4326") changeOlProjection(map,"EPSG:4326");
+  else updateOlMap(map,doFit);
+  const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=lang?"网格包含 ±85.05° 外的极区单元；已切换到平面·地理坐标以精确显示":"The mesh reaches beyond ±85.05°; switched to Plane · Geographic for exact polar display";
+  return true;
+}
 function setMapRenderer(map,renderer,doFit=true){
   renderer=renderer==="globe"?"globe":"plane";
   if(map._exporting||map.getTargetElement().id!=="mapsvgModal") return false;
+  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson;
+  if(renderer==="globe"&&globeMeshNeedsGeographicPlane(mesh)) return useGeographicPlaneForPolarMesh(map,doFit);
   const plane=map.getTargetElement(), globeContainer=document.getElementById("mapglobeModal"), select=document.getElementById("mapRendererSelect");
   if(renderer==="globe"){
     if(map._measureMode!=="none") setOlMeasureMode(map,"none");
@@ -1447,7 +1495,7 @@ function updateOlMap(map,doFit){
   if(syncOlProjectionOption(map)) return;
   const classified=hasGeojson(_coastalGeojson), mesh=classified?_coastalGeojson:_meshGeojson;
   const styleMode=classified?"classified":"raw";
-  if(map._meshStyleMode!==styleMode){ map._meshStyleMode=styleMode; map._meshLayer.setStyle(classified?olMeshStyle:OL_DEFAULT_MESH_STYLE); }
+  if(map._meshStyleMode!==styleMode){ map._meshStyleMode=styleMode; map._meshLayer.setStyle(olMeshStyle); }
   setOlSource(map,"boundary",map._boundarySource,_domainGeojson);
   setOlSource(map,"mesh",map._meshSource,mesh);
   const domainKey=JSON.stringify([regional,domainMode,domBbox,olProjectionCode(map)]);
@@ -1609,7 +1657,7 @@ function ensureOlMap(elId){
   const baseLayer=new ol.layer.Tile({zIndex:0});
   const graticule=new ol.layer.Graticule({zIndex:2,showLabels:true,wrapX:true,visible:_olMapPrefs.graticule===true,strokeStyle:new ol.style.Stroke({color:"rgba(148,163,184,.45)",width:1,lineDash:[3,5]})});
   const meshSource=new ol.source.Vector({wrapX:true}), domainSource=new ol.source.Vector({wrapX:true}), boundarySource=new ol.source.Vector({wrapX:true}), measureSource=new ol.source.Vector({wrapX:false});
-  const meshLayer=new ol.layer.VectorImage({source:meshSource,zIndex:10,imageRatio:1.4,visible:_olMapPrefs.mesh!==false,opacity:Number(_olMapPrefs.meshOpacity??1),style:OL_DEFAULT_MESH_STYLE});
+  const meshLayer=new ol.layer.VectorImage({source:meshSource,zIndex:10,imageRatio:1.4,visible:_olMapPrefs.mesh!==false,opacity:Number(_olMapPrefs.meshOpacity??1),style:olMeshStyle});
   const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,visible:_olMapPrefs.domain!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})});
   const boundaryLayer=new ol.layer.Vector({source:boundarySource,zIndex:21,visible:_olMapPrefs.boundary!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.2,lineDash:[5,3]}),fill:new ol.style.Fill({color:"rgba(250,204,21,.08)"})})});
   const measureLayer=new ol.layer.Vector({source:measureSource,zIndex:30,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.5}),fill:new ol.style.Fill({color:"rgba(250,204,21,.18)"}),image:new ol.style.Circle({radius:5,fill:new ol.style.Fill({color:"#facc15"}),stroke:new ol.style.Stroke({color:"#713f12",width:1})})})});
@@ -1754,8 +1802,20 @@ async function saveOlMapPng(map){
   }
 }
 function clearLog(){const lb=document.getElementById("logbox"); if(lb) lb.textContent="";}
+async function copyLog(){
+  const lb=document.getElementById("logbox"); if(!lb) return;
+  const text=lb.innerText;
+  try{
+    if(!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+  }catch(_){
+    const area=document.createElement("textarea"); area.value=text; area.style.cssText="position:fixed;opacity:0"; document.body.appendChild(area); area.select();
+    try{document.execCommand("copy");}finally{area.remove();}
+  }
+}
 document.getElementById("mapEnlargeBtn").onclick=()=>openMapWindow();
 document.getElementById("mapModalCloseBtn").onclick=closeMapModal;
+document.getElementById("copyLogBtn").onclick=copyLog;
 document.getElementById("clearLogBtn").onclick=clearLog;
 document.getElementById("mapModal").onclick=e=>{if(e.target===e.currentTarget)closeMapModal();};
 function setLogStatus(text, ok){
@@ -1778,14 +1838,16 @@ async function killRun(){
   const lb=document.getElementById("logbox");
   const add=(s)=>{ if(lb){ const div=document.createElement("div"); div.textContent=s; lb.appendChild(div); lb.scrollTop=lb.scrollHeight; } };
   if(!inv){ add("✗ "+(lang?"无法连接后端":"backend unavailable")); return false; }
+  if(runInProgress) runCancelRequested=true;
   try{
     const r = await inv("kill_run");
+    if(!r) runCancelRequested=false;
     add("■ "+(r?(lang?"已终止正在运行的引擎":"killed the running engine"):(lang?"当前没有正在运行的程序":"no running process")));
     if(r){ setRunControls(false); }
     else { setRunControls(false); }
     const rt=document.getElementById("rtext"); if(rt) rt.textContent=r?(lang?"已终止":"killed"):(lang?"未在运行":"not running");
     return true;
-  }catch(e){ add("✗ kill: "+e); return false; }
+  }catch(e){ runCancelRequested=false; add("✗ kill: "+e); return false; }
 }
 
 /* ---------------- toggles ---------------- */
@@ -2263,10 +2325,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function logLine(txt) {
     const box = document.getElementById("logbox") || document.querySelector('.live-pane[data-pane="log"]');
     if (box) {
+      const follow = box.clientHeight === 0 || box.scrollHeight - box.scrollTop - box.clientHeight <= 24;
       const div = document.createElement("div");
       div.style.whiteSpace = "pre-wrap";
       div.textContent = txt;
       box.appendChild(div);
+      if (follow) box.scrollTop = box.scrollHeight;
     }
     console.log("[EarthMesh]", txt);
   }
@@ -3660,6 +3724,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (rdot) rdot.classList.toggle("on", !!done);
     };
     setStatus(zh() ? "运行中…" : "running…", false);
+    runCancelRequested=false;
     setRunControls(true);
     clearRunArtifacts();
     // show the Log pane because the Run button now lives inside the step footer
@@ -3673,19 +3738,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         try { lastSummary = await api.summary(yaml); } catch (e) {}
         logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
         const r = await api.runProject(yaml, outputPath || null);
-        logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
-                     : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
-        setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
+        finalQuality = r.final_quality || null;
+        const cancelled=runCancelRequested&&!r.ok;
+        if(!cancelled) logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
+                                   : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
+        setStatus(cancelled?(zh()?"已取消":"cancelled"):(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed")), true);
         const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, autoRefineDecisions: decisions };
+        hasRun = !cancelled; runInfo = cancelled?null:{ ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, autoRefineDecisions: decisions };
         if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
         break;
       }
     } catch (e) {
-      logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
-      setStatus(zh() ? "运行失败" : "failed", true);
-      hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
+      if(runCancelRequested){
+        setStatus(zh()?"已取消":"cancelled", true); hasRun=false; runInfo=null;
+      }else{
+        logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
+        setStatus(zh() ? "运行失败" : "failed", true);
+        hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
+      }
     }
+    runCancelRequested=false;
     setRunControls(false);
     if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") renderStep(6);
     if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile, finalQuality);
@@ -3884,7 +3956,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
     invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })
-      .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map"); loadMeshMeritCells(gridfile, kind); })
+      .then((txt) => {
+        const mesh=JSON.parse(txt),refined=(mesh.features||[]).filter((feature)=>Number(feature&&feature.properties&&feature.properties.refine_level)>0).length;
+        applyMesh(mesh);
+        logLine((zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map")+(refined?` · ${refined} ${zh()?"个细化单元":"refined cells"}`:""));
+        loadMeshMeritCells(gridfile, kind);
+      })
       .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
   }
 

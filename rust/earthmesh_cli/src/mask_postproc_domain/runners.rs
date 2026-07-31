@@ -2,8 +2,8 @@ use crate::apply_ocean_mask_sea_ratio_one_based;
 use crate::build_earth_patchtypes_one_based;
 use crate::build_land_patchtypes_one_based;
 use crate::finalize_mask_postproc_layout_with_reindex_report;
+use crate::mask_postproc_ocean::renew_mask_postproc_ocean_domain_one_based_with_hard_demand;
 use crate::read_mask_postproc_domain_inputs;
-use crate::renew_mask_postproc_ocean_domain_one_based;
 use crate::write_mask_postproc_earth_info_netcdf;
 use crate::write_mask_postproc_final_gridfile;
 use crate::write_mask_postproc_patchtype_netcdf;
@@ -21,7 +21,7 @@ use crate::UnstructuredMesh;
 use std::collections::HashSet;
 use std::io;
 
-use earthmesh_mesh::classify_boundary_orders_one_based;
+use earthmesh_mesh::classify_boundary_orders_with_source_domain_one_based;
 
 /// File-backed composition of the current
 /// `MOD_mask_postproc.F90:mask_postproc_Earth` branch.
@@ -140,6 +140,20 @@ pub fn run_mask_postproc_ocean_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocOceanRunOptions,
 ) -> io::Result<MaskPostprocOceanDomainReport> {
+    run_mask_postproc_ocean_domain_with_hard_demand(plan, options, &[])
+}
+
+/// Run the ocean product postprocessor with an exact immutable source-demand
+/// mask in physical-cell or one-based mask-postproc order.
+///
+/// This separate entry point keeps compatibility callers demand-free while the
+/// HField pipeline can provide the frozen demand ledger explicitly. Actual
+/// refinement levels are never interpreted as hard demand.
+pub fn run_mask_postproc_ocean_domain_with_hard_demand(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocOceanRunOptions,
+    hard_center_demand: &[bool],
+) -> io::Result<MaskPostprocOceanDomainReport> {
     if plan.mesh_type != "oceanmesh" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -156,8 +170,12 @@ pub fn run_mask_postproc_ocean_domain(
         options.num_vertex,
         options.mask_sea_ratio,
     )?;
-    let renewal =
-        renew_mask_postproc_ocean_domain_one_based(&inputs.layout, &ocean_mask, &plan.mode_grid)?;
+    let renewal = renew_mask_postproc_ocean_domain_one_based_with_hard_demand(
+        &inputs.layout,
+        &ocean_mask,
+        &plan.mode_grid,
+        hard_center_demand,
+    )?;
     let finalization = finalize_mask_postproc_layout_with_reindex_report(
         &inputs.layout,
         &renewal.is_in_domain_ustr,
@@ -201,13 +219,15 @@ pub fn run_mask_postproc_ocean_domain(
         })?;
         obcv2 = Some(write_obcv2_boundary_netcdf(obcv2_output, boundary)?);
 
-        let orders = classify_boundary_orders_one_based(
+        let source_domain = ocean_source_domain_mask(&inputs.contain, &renewal.is_in_domain_ustr)?;
+        let orders = classify_boundary_orders_with_source_domain_one_based(
             isolated.num_bdy_long,
             &isolated.bdy_long_order,
             &inputs.layout.vertex_neighbors,
             &inputs.layout.vertex_neighbor_counts,
             &finalization.vertex_reindex.vertex_mapping,
             &renewal.is_in_domain_ustr,
+            &source_domain,
         )?;
         let orders = split_disconnected_obc_segments(orders, &finalization.mesh);
         let obc_output = plan.obc_output.as_ref().ok_or_else(|| {
@@ -228,6 +248,32 @@ pub fn run_mask_postproc_ocean_domain(
         obc,
         obcv2,
     })
+}
+
+fn ocean_source_domain_mask(
+    contain: &crate::ContainMesh,
+    active_product: &[i32],
+) -> io::Result<Vec<i32>> {
+    contain
+        .ustr_id
+        .iter()
+        .enumerate()
+        .map(|(row, values)| {
+            let total_inside = values.get(2).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("ocean contain ustr_id row {row} has fewer than three columns"),
+                )
+            })?;
+            Ok(
+                if *total_inside > 0 || active_product.get(row) == Some(&1) {
+                    1
+                } else {
+                    -1
+                },
+            )
+        })
+        .collect()
 }
 
 fn split_disconnected_obc_segments(
@@ -293,6 +339,20 @@ fn edge_key(a: usize, b: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocean_source_domain_includes_close_pixels_and_compatibility_fill() {
+        let contain = crate::ContainMesh {
+            ustr_id: vec![vec![0, 1, 0], vec![0, 1, 4], vec![0, 1, 0]],
+            ustr_ii: Vec::new(),
+            is_in_area_ustr: vec![0; 3],
+        };
+
+        assert_eq!(
+            ocean_source_domain_mask(&contain, &[0, 0, 1]).unwrap(),
+            vec![-1, 1, 1]
+        );
+    }
 
     #[test]
     fn split_disconnected_obc_segments_inserts_separator_between_non_edges() {

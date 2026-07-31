@@ -46,6 +46,8 @@ pub enum TopologyIssueType {
     TransitionDiscontinuity,
     DisconnectedMesh,
     NonManifoldVertexFan,
+    BoundaryVertexDegree,
+    EulerCharacteristicMismatch,
 }
 
 impl TopologyIssueType {
@@ -65,6 +67,8 @@ impl TopologyIssueType {
             TopologyIssueType::TransitionDiscontinuity => "transition_discontinuity",
             TopologyIssueType::DisconnectedMesh => "disconnected_mesh",
             TopologyIssueType::NonManifoldVertexFan => "non_manifold_vertex_fan",
+            TopologyIssueType::BoundaryVertexDegree => "boundary_vertex_degree",
+            TopologyIssueType::EulerCharacteristicMismatch => "euler_characteristic_mismatch",
         }
     }
     /// Connectivity errors are catastrophic (Fail); refinement issues degrade (Warn).
@@ -89,6 +93,124 @@ fn valid_edge_cells(mesh: &QualityMeshInput) -> BTreeMap<(usize, usize), Vec<usi
         }
     }
     edge_cells
+}
+
+/// Boundary graph derived from edges with exactly one incident cell.
+///
+/// Each loop is an open vertex ring (the first vertex is not repeated), starts
+/// at its smallest vertex id, and is deterministic. Components containing a
+/// vertex whose boundary degree is not two are reported but not emitted as
+/// loops.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BoundaryTopology {
+    pub edge_count: usize,
+    pub loops: Vec<Vec<usize>>,
+    pub invalid_vertex_degrees: Vec<(usize, usize)>,
+}
+
+pub fn boundary_topology(mesh: &QualityMeshInput) -> BoundaryTopology {
+    let boundary_edges = valid_edge_cells(mesh)
+        .into_iter()
+        .filter_map(|(edge, cells)| (cells.len() == 1).then_some(edge))
+        .collect::<Vec<_>>();
+    let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
+    for &(a, b) in &boundary_edges {
+        adjacency.entry(a).or_default().push(b);
+        adjacency.entry(b).or_default().push(a);
+    }
+    for neighbors in adjacency.values_mut() {
+        neighbors.sort_unstable();
+        neighbors.dedup();
+    }
+
+    let invalid_vertex_degrees = adjacency
+        .iter()
+        .filter_map(|(&vertex, neighbors)| {
+            (neighbors.len() != 2).then_some((vertex, neighbors.len()))
+        })
+        .collect::<Vec<_>>();
+    let mut loops = Vec::new();
+    let mut seen = BTreeSet::new();
+    for &start in adjacency.keys() {
+        if seen.contains(&start) {
+            continue;
+        }
+        let mut component = BTreeSet::from([start]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(vertex) = queue.pop_front() {
+            for &next in &adjacency[&vertex] {
+                if component.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+        seen.extend(component.iter().copied());
+        if component.iter().any(|vertex| adjacency[vertex].len() != 2) {
+            continue;
+        }
+
+        let mut ring = Vec::with_capacity(component.len());
+        let mut ring_vertices = BTreeSet::new();
+        let mut previous = None;
+        let mut current = start;
+        loop {
+            if !ring_vertices.insert(current) {
+                ring.clear();
+                break;
+            }
+            ring.push(current);
+            let neighbors = &adjacency[&current];
+            let next = neighbors
+                .iter()
+                .copied()
+                .find(|candidate| Some(*candidate) != previous)
+                .unwrap_or(neighbors[0]);
+            if next == start {
+                break;
+            }
+            previous = Some(current);
+            current = next;
+        }
+        if ring.len() == component.len() {
+            loops.push(ring);
+        }
+    }
+
+    BoundaryTopology {
+        edge_count: boundary_edges.len(),
+        loops,
+        invalid_vertex_degrees,
+    }
+}
+
+/// Expected Euler characteristic for a manifold genus-zero spherical domain.
+///
+/// Returns `None` when invalid rings, non-manifold edges/fans, or an open
+/// boundary make the boundary count insufficient. For `C` cell components and
+/// `B` closed boundary loops, `χ = 2*C - B`; a global closed sphere is therefore
+/// `χ = 2`.
+pub fn genus_zero_euler_expectation(
+    mesh: &QualityMeshInput,
+    boundary: &BoundaryTopology,
+) -> Option<isize> {
+    let edge_cells = valid_edge_cells(mesh);
+    if mesh.cells.is_empty()
+        || !boundary.invalid_vertex_degrees.is_empty()
+        || mesh.cells.iter().any(|cell| {
+            let distinct = cell.vertices.iter().copied().collect::<BTreeSet<_>>();
+            cell.vertices.len() < 3
+                || distinct.len() != cell.vertices.len()
+                || distinct.iter().any(|&vertex| vertex >= mesh.vertices.len())
+        })
+        || edge_cells.values().any(|incidents| incidents.len() > 2)
+        || !non_manifold_vertex_fans_from_edges(mesh, &edge_cells).is_empty()
+    {
+        return None;
+    }
+    Some(
+        2 * connected_component_count_from_edges(mesh, &edge_cells) as isize
+            - isize::try_from(boundary.loops.len()).ok()?,
+    )
 }
 
 /// Euler characteristic of the represented cell complex (`used vertices - edges + cells`).
@@ -116,11 +238,18 @@ pub fn euler_characteristic(mesh: &QualityMeshInput) -> isize {
 /// Number of edge-connected cell components. Cells touching only at a vertex are
 /// deliberately separate: such a vertex is a non-manifold fan junction.
 pub fn connected_component_count(mesh: &QualityMeshInput) -> usize {
+    connected_component_count_from_edges(mesh, &valid_edge_cells(mesh))
+}
+
+fn connected_component_count_from_edges(
+    mesh: &QualityMeshInput,
+    edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+) -> usize {
     if mesh.cells.is_empty() {
         return 0;
     }
     let mut adjacency = vec![Vec::<usize>::new(); mesh.cells.len()];
-    for cells in valid_edge_cells(mesh).values() {
+    for cells in edge_cells.values() {
         for &a in cells {
             for &b in cells {
                 if a != b && !adjacency[a].contains(&b) {
@@ -152,6 +281,13 @@ pub fn connected_component_count(mesh: &QualityMeshInput) -> usize {
 
 fn non_manifold_vertex_fans(mesh: &QualityMeshInput) -> Vec<(usize, usize)> {
     let edge_cells = valid_edge_cells(mesh);
+    non_manifold_vertex_fans_from_edges(mesh, &edge_cells)
+}
+
+fn non_manifold_vertex_fans_from_edges(
+    mesh: &QualityMeshInput,
+    edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+) -> Vec<(usize, usize)> {
     let mut incidents = vec![Vec::<usize>::new(); mesh.vertices.len()];
     for (ci, cell) in mesh.cells.iter().enumerate() {
         for &vertex in &cell.vertices {
@@ -161,7 +297,7 @@ fn non_manifold_vertex_fans(mesh: &QualityMeshInput) -> Vec<(usize, usize)> {
         }
     }
     let mut connections = vec![Vec::<(usize, usize)>::new(); mesh.vertices.len()];
-    for (&(a, b), edge_incidents) in &edge_cells {
+    for (&(a, b), edge_incidents) in edge_cells {
         for (index, &left) in edge_incidents.iter().enumerate() {
             for &right in &edge_incidents[index + 1..] {
                 connections[a].push((left, right));
@@ -702,6 +838,63 @@ impl<'a> MeshTopologyValidator<'a> {
             .collect()
     }
 
+    pub fn validate_boundary_loops(&self) -> Vec<TopologyIssue> {
+        self.boundary_degree_issues(&boundary_topology(self.mesh))
+    }
+
+    fn boundary_degree_issues(&self, boundary: &BoundaryTopology) -> Vec<TopologyIssue> {
+        boundary
+            .invalid_vertex_degrees
+            .iter()
+            .copied()
+            .take(MAX_ISSUES_PER_TYPE)
+            .map(|(vertex, degree)| {
+                TopologyIssue::new(
+                    TopologyIssueType::BoundaryVertexDegree,
+                    None,
+                    None,
+                    Some(vertex),
+                    format!("boundary vertex {vertex} has degree {degree}, expected 2"),
+                    "close the boundary chain or split the boundary junction",
+                )
+            })
+            .collect()
+    }
+
+    pub fn validate_genus_zero_euler(&self) -> Vec<TopologyIssue> {
+        let boundary = boundary_topology(self.mesh);
+        self.genus_zero_euler_issues(&boundary)
+    }
+
+    fn genus_zero_euler_issues(&self, boundary: &BoundaryTopology) -> Vec<TopologyIssue> {
+        let Some(expected) = genus_zero_euler_expectation(self.mesh, boundary) else {
+            return Vec::new();
+        };
+        let actual = euler_characteristic(self.mesh);
+        if actual == expected {
+            return Vec::new();
+        }
+        vec![TopologyIssue::new(
+            TopologyIssueType::EulerCharacteristicMismatch,
+            None,
+            None,
+            None,
+            format!(
+                "Euler characteristic {actual} differs from genus-zero boundary expectation {expected} (components={}, boundary_loops={})",
+                connected_component_count(self.mesh),
+                boundary.loops.len()
+            ),
+            "repair missing/duplicate cells or boundary connectivity",
+        )]
+    }
+
+    pub fn validate_boundary_contract(&self) -> Vec<TopologyIssue> {
+        let boundary = boundary_topology(self.mesh);
+        let mut issues = self.boundary_degree_issues(&boundary);
+        issues.extend(self.genus_zero_euler_issues(&boundary));
+        issues
+    }
+
     /// Run every validator. Issues are capped per type ([`MAX_ISSUES_PER_TYPE`]).
     pub fn validate_all(&self) -> Vec<TopologyIssue> {
         let mut all = Vec::new();
@@ -718,6 +911,7 @@ impl<'a> MeshTopologyValidator<'a> {
         all.extend(self.validate_transition_continuity());
         all.extend(self.validate_connected_components());
         all.extend(self.validate_non_manifold_vertex_fans());
+        all.extend(self.validate_boundary_contract());
         all
     }
 }
@@ -882,6 +1076,8 @@ pub fn mark_unrepairable(issues: &[TopologyIssue]) -> Vec<TopologyIssue> {
                     | AbnormalPolygonEdgeCount
                     | DisconnectedMesh
                     | NonManifoldVertexFan
+                    | BoundaryVertexDegree
+                    | EulerCharacteristicMismatch
             )
         })
         .cloned()
@@ -939,6 +1135,192 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn square_ring_mesh() -> QualityMeshInput {
+        let vertices = (0..4)
+            .flat_map(|y| (0..4).map(move |x| Point::new(f64::from(x), f64::from(y))))
+            .collect();
+        let vertex = |x: usize, y: usize| y * 4 + x;
+        let cells = (0..3)
+            .flat_map(|y| {
+                (0..3).filter_map(move |x| {
+                    (x != 1 || y != 1).then_some(QualityCell {
+                        vertices: vec![
+                            vertex(x, y),
+                            vertex(x + 1, y),
+                            vertex(x + 1, y + 1),
+                            vertex(x, y + 1),
+                        ],
+                        refine_level: Some(0),
+                        neighbors: Vec::new(),
+                    })
+                })
+            })
+            .collect();
+        QualityMeshInput { vertices, cells }
+    }
+
+    fn two_component_mesh() -> QualityMeshInput {
+        let left = two_square_mesh();
+        let mut vertices = left.vertices.clone();
+        vertices.extend(
+            left.vertices
+                .iter()
+                .map(|point| Point::new(point.x + 4.0, point.y)),
+        );
+        let offset = left.vertices.len();
+        let mut cells = left.cells.clone();
+        cells.extend(left.cells.iter().cloned().map(|mut cell| {
+            cell.vertices
+                .iter_mut()
+                .for_each(|vertex| *vertex += offset);
+            cell.neighbors
+                .iter_mut()
+                .for_each(|neighbor| *neighbor += 2);
+            cell
+        }));
+        QualityMeshInput { vertices, cells }
+    }
+
+    #[test]
+    fn boundary_contract_enumerates_region_hole_and_multipart_loops() {
+        let cases = [
+            (two_square_mesh(), 1, 1, 1),
+            (square_ring_mesh(), 1, 2, 0),
+            (two_component_mesh(), 2, 2, 2),
+        ];
+
+        for (mesh, components, loops, expected_euler) in cases {
+            let boundary = boundary_topology(&mesh);
+            assert!(boundary.invalid_vertex_degrees.is_empty());
+            assert_eq!(boundary.loops.len(), loops);
+            assert_eq!(connected_component_count(&mesh), components);
+            assert_eq!(
+                genus_zero_euler_expectation(&mesh, &boundary),
+                Some(expected_euler)
+            );
+            assert_eq!(euler_characteristic(&mesh), expected_euler);
+        }
+    }
+
+    #[test]
+    fn boundary_contract_keeps_closed_sphere_euler_two() {
+        let mesh = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(0.0, 1.0),
+                Point::new(-1.0, -1.0),
+            ],
+            cells: vec![
+                QualityCell {
+                    vertices: vec![0, 2, 1],
+                    ..QualityCell::default()
+                },
+                QualityCell {
+                    vertices: vec![0, 1, 3],
+                    ..QualityCell::default()
+                },
+                QualityCell {
+                    vertices: vec![1, 2, 3],
+                    ..QualityCell::default()
+                },
+                QualityCell {
+                    vertices: vec![2, 0, 3],
+                    ..QualityCell::default()
+                },
+            ],
+        };
+
+        let boundary = boundary_topology(&mesh);
+        assert_eq!(boundary.edge_count, 0);
+        assert!(boundary.loops.is_empty());
+        assert_eq!(genus_zero_euler_expectation(&mesh, &boundary), Some(2));
+        assert_eq!(euler_characteristic(&mesh), 2);
+    }
+
+    #[test]
+    fn boundary_contract_rejects_non_spherical_closed_genus() {
+        let vertex = |x: usize, y: usize| (y % 3) * 3 + (x % 3);
+        let mesh = QualityMeshInput {
+            vertices: (0..3)
+                .flat_map(|y| (0..3).map(move |x| Point::new(x as f64, y as f64)))
+                .collect(),
+            cells: (0..3)
+                .flat_map(|y| {
+                    (0..3).map(move |x| QualityCell {
+                        vertices: vec![
+                            vertex(x, y),
+                            vertex(x + 1, y),
+                            vertex(x + 1, y + 1),
+                            vertex(x, y + 1),
+                        ],
+                        ..QualityCell::default()
+                    })
+                })
+                .collect(),
+        };
+
+        let boundary = boundary_topology(&mesh);
+        assert_eq!(boundary.edge_count, 0);
+        assert_eq!(euler_characteristic(&mesh), 0);
+        assert_eq!(genus_zero_euler_expectation(&mesh, &boundary), Some(2));
+        assert!(MeshTopologyValidator::new(&mesh)
+            .validate_genus_zero_euler()
+            .iter()
+            .any(|issue| {
+                issue.issue_type == TopologyIssueType::EulerCharacteristicMismatch
+                    && issue.severity == Severity::Fail
+            }));
+    }
+
+    #[test]
+    fn boundary_contract_rejects_open_chain_and_vertex_junction() {
+        let open = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(0.0, 1.0),
+            ],
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2, 99],
+                ..QualityCell::default()
+            }],
+        };
+        let open_boundary = boundary_topology(&open);
+        assert_eq!(open_boundary.invalid_vertex_degrees, vec![(0, 1), (2, 1)]);
+        assert_eq!(genus_zero_euler_expectation(&open, &open_boundary), None);
+        assert!(MeshTopologyValidator::new(&open)
+            .validate_boundary_loops()
+            .iter()
+            .all(|issue| issue.issue_type == TopologyIssueType::BoundaryVertexDegree));
+
+        let junction = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(0.0, 1.0),
+                Point::new(-1.0, 0.0),
+                Point::new(0.0, -1.0),
+            ],
+            cells: vec![
+                QualityCell {
+                    vertices: vec![0, 1, 2],
+                    ..QualityCell::default()
+                },
+                QualityCell {
+                    vertices: vec![0, 3, 4],
+                    ..QualityCell::default()
+                },
+            ],
+        };
+        let junction_boundary = boundary_topology(&junction);
+        assert_eq!(junction_boundary.invalid_vertex_degrees, vec![(0, 4)]);
+        assert_eq!(
+            genus_zero_euler_expectation(&junction, &junction_boundary),
+            None
+        );
     }
 
     #[test]

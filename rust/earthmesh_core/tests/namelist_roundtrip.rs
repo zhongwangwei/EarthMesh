@@ -256,6 +256,7 @@ const SAMPLE_QUALITY: &str = "\
   NL%aspect_ratio_fail = 10
   NL%cell_edge_cv_warn = 0.3
   NL%area_cv_warn = 1.2
+  NL%normalized_area_cv_warn = 0.4
   NL%max_adjacent_resolution_ratio_warn = 1.8
   NL%worst_cells_limit = 100
   NL%on_violation = 'block'
@@ -273,6 +274,8 @@ fn quality_namelist_round_trips_through_writer() {
     assert_eq!(original.min_angle_warn_deg, 25.0);
     assert_eq!(original.angle_deviation_warn_deg, 30.0);
     assert_eq!(original.cell_edge_cv_warn, 0.3);
+    assert_eq!(original.area_cv_warn, 1.2);
+    assert_eq!(original.normalized_area_cv_warn, 0.4);
     assert_eq!(original.worst_cells_limit, 100);
     assert_eq!(original.repair_batch_limit, 1);
 }

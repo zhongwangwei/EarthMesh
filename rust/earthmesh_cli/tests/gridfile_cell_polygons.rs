@@ -35,6 +35,19 @@ fn gridfile_cell_polygons_geojson_with_report(
         .expect("valid gridfile cell arrays")
 }
 
+fn assert_longitudes_are_geojson_safe(value: &serde_json::Value) {
+    if let Some(array) = value.as_array() {
+        if array.len() >= 2 && array[0].is_number() && array[1].is_number() {
+            let lon = array[0].as_f64().expect("numeric longitude");
+            assert!((-180.0..=180.0).contains(&lon), "unsafe longitude {lon}");
+        } else {
+            for child in array {
+                assert_longitudes_are_geojson_safe(child);
+            }
+        }
+    }
+}
+
 fn empty_mesh() -> GridfileMeshPoints {
     GridfileMeshPoints {
         m_lon: vec![],
@@ -63,6 +76,7 @@ fn tri_view_emits_one_polygon_per_triangle() {
     mesh.m_lon = vec![100.67, 100.33];
     mesh.m_lat = vec![20.33, 20.67];
     mesh.m_to_w = vec![1, 2, 3, 1, 3, 4]; // 1-based: A=(W1,W2,W3), B=(W1,W3,W4)
+    mesh.m_refine_level = vec![1, 2];
 
     let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None);
 
@@ -71,6 +85,8 @@ fn tri_view_emits_one_polygon_per_triangle() {
         assert!(json.contains(needle), "missing {needle} in:\n{json}");
     }
     assert!(json.contains("\"grid_kind\": \"earthmesh_cell\""), "{json}");
+    assert!(json.contains("\"refine_level\": 1"), "{json}");
+    assert!(json.contains("\"refine_level\": 2"), "{json}");
 }
 
 #[test]
@@ -171,6 +187,7 @@ fn hex_view_emits_polygon_from_w_to_m_corners() {
     mesh.w_to_m = vec![1, 2, 3, 4];
     mesh.w_to_m_width = 4;
     mesh.n_w = vec![4];
+    mesh.w_refine_level = vec![2];
 
     let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
 
@@ -179,6 +196,7 @@ fn hex_view_emits_polygon_from_w_to_m_corners() {
         assert!(json.contains(needle), "missing {needle} in:\n{json}");
     }
     assert!(json.contains("\"center_lon\": 10.5"), "{json}");
+    assert!(json.contains("\"refine_level\": 2"), "{json}");
 }
 
 #[test]
@@ -323,9 +341,7 @@ fn bbox_broad_phase_keeps_cells_that_cross_the_boundary() {
 }
 
 #[test]
-fn tri_skips_cells_spanning_the_antimeridian() {
-    // A triangle whose vertices span >180° of longitude (antimeridian / pole) would
-    // be drawn as a band across a flat map; it must be dropped.
+fn tri_splits_cells_spanning_the_antimeridian_instead_of_dropping_them() {
     let mut mesh = empty_mesh();
     mesh.w_lon = vec![170.0, -170.0, 10.0]; // spans 340°
     mesh.w_lat = vec![10.0, 12.0, 80.0];
@@ -335,9 +351,74 @@ fn tri_skips_cells_spanning_the_antimeridian() {
 
     let (json, report) =
         gridfile_cell_polygons_geojson_with_report(&mesh, GridfileCellKind::Tri, None, None);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid GeoJSON");
+    let geometry = &value["features"][0]["geometry"];
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert_eq!(geometry["type"], "MultiPolygon");
+    assert_longitudes_are_geojson_safe(&geometry["coordinates"]);
+    assert_eq!(report.rejected_unsupported_cells, 0);
+}
+
+#[test]
+fn tri_still_rejects_an_edge_longer_than_the_supported_minor_arc() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![0.0, 130.0, 0.0];
+    mesh.w_lat = vec![0.0, 0.0, 10.0];
+    mesh.m_lon = vec![40.0];
+    mesh.m_lat = vec![3.0];
+    mesh.m_to_w = vec![1, 2, 3];
+
+    let (json, report) =
+        gridfile_cell_polygons_geojson_with_report(&mesh, GridfileCellKind::Tri, None, None);
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 0, "{json}");
     assert_eq!(report.rejected_unsupported_cells, 1);
+}
+
+#[test]
+fn hex_splits_compact_antimeridian_cells_into_bounded_polygons() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![-180.0];
+    mesh.w_lat = vec![0.0];
+    mesh.m_lon = vec![179.0, -179.0, -179.0, 179.0];
+    mesh.m_lat = vec![-1.0, -1.0, 1.0, 1.0];
+    mesh.w_to_m = vec![1, 2, 3, 4];
+    mesh.w_to_m_width = 4;
+    mesh.n_w = vec![4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid GeoJSON");
+    let geometry = &value["features"][0]["geometry"];
+
+    assert_eq!(geometry["type"], "MultiPolygon");
+    assert_longitudes_are_geojson_safe(&geometry["coordinates"]);
+}
+
+#[test]
+fn tri_exports_a_pole_enclosing_cell_as_a_closed_cap() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![-120.0, 0.0, 120.0];
+    mesh.w_lat = vec![85.0; 3];
+    mesh.m_lon = vec![0.0];
+    mesh.m_lat = vec![89.0];
+    mesh.m_to_w = vec![1, 2, 3];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, None);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid GeoJSON");
+    let geometry = &value["features"][0]["geometry"];
+    let ring = geometry["coordinates"][0]
+        .as_array()
+        .expect("polar cap ring");
+
+    assert_eq!(geometry["type"], "Polygon");
+    assert_eq!(ring.first(), ring.last(), "ring must be closed: {json}");
+    assert!(ring
+        .iter()
+        .any(|point| point[0].as_f64() == Some(180.0) && point[1].as_f64() == Some(90.0)));
+    assert!(ring
+        .iter()
+        .any(|point| point[0].as_f64() == Some(-180.0) && point[1].as_f64() == Some(90.0)));
 }
 
 #[test]
@@ -355,6 +436,121 @@ fn hex_exports_compact_polar_cells_spanning_all_longitudes() {
     let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"type\": \"Polygon\""), "{json}");
+    assert!(json.contains("[180, 90]"), "{json}");
+    assert!(json.contains("[-180, 90]"), "{json}");
+}
+
+#[test]
+fn hex_does_not_turn_a_local_high_latitude_cell_into_a_polar_cap() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![10.0];
+    mesh.w_lat = vec![88.0];
+    mesh.m_lon = vec![8.0, 12.0, 11.0, 9.0];
+    mesh.m_lat = vec![87.0; 4];
+    mesh.w_to_m = vec![1, 2, 3, 4];
+    mesh.w_to_m_width = 4;
+    mesh.n_w = vec![4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+
+    assert!(json.contains("\"type\": \"Polygon\""), "{json}");
+    assert!(!json.contains("[180, 90]"), "{json}");
+}
+
+#[test]
+fn hex_exports_north_pole_cell_as_one_closed_polar_cap() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![5.0];
+    mesh.w_lat = vec![89.999_999];
+    mesh.m_lon = vec![-144.0, -72.0, 0.0, 72.0, 144.0];
+    mesh.m_lat = vec![85.0; 5];
+    mesh.w_to_m = vec![1, 2, 3, 4, 5];
+    mesh.w_to_m_width = 5;
+    mesh.n_w = vec![5];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid GeoJSON");
+    let geometry = &value["features"][0]["geometry"];
+    let rings = geometry["coordinates"]
+        .as_array()
+        .expect("Polygon coordinates");
+    let ring = rings[0].as_array().expect("polar cap ring");
+
+    assert_eq!(geometry["type"], "Polygon");
+    assert_eq!(ring.first(), ring.last(), "ring must be closed: {json}");
+    assert!(ring
+        .iter()
+        .any(|point| { point[0].as_f64() == Some(180.0) && point[1].as_f64() == Some(90.0) }));
+    assert!(ring
+        .iter()
+        .any(|point| { point[0].as_f64() == Some(-180.0) && point[1].as_f64() == Some(90.0) }));
+}
+
+#[test]
+fn hex_exports_south_pole_cell_as_one_closed_polar_cap() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![-5.0];
+    mesh.w_lat = vec![-89.999_999];
+    mesh.m_lon = vec![-144.0, -72.0, 0.0, 72.0, 144.0];
+    mesh.m_lat = vec![-85.0; 5];
+    mesh.w_to_m = vec![1, 2, 3, 4, 5];
+    mesh.w_to_m_width = 5;
+    mesh.n_w = vec![5];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid GeoJSON");
+    let geometry = &value["features"][0]["geometry"];
+    let rings = geometry["coordinates"]
+        .as_array()
+        .expect("Polygon coordinates");
+    let ring = rings[0].as_array().expect("polar cap ring");
+
+    assert_eq!(geometry["type"], "Polygon");
+    assert_eq!(ring.first(), ring.last(), "ring must be closed: {json}");
+    assert!(ring
+        .iter()
+        .any(|point| { point[0].as_f64() == Some(180.0) && point[1].as_f64() == Some(-90.0) }));
+    assert!(ring
+        .iter()
+        .any(|point| { point[0].as_f64() == Some(-180.0) && point[1].as_f64() == Some(-90.0) }));
+}
+
+#[test]
+fn polar_cap_bbox_uses_the_true_pole_extent() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![0.0];
+    mesh.w_lat = vec![89.999_999];
+    mesh.m_lon = vec![-144.0, -72.0, 0.0, 72.0, 144.0];
+    mesh.m_lat = vec![85.0; 5];
+    mesh.w_to_m = vec![1, 2, 3, 4, 5];
+    mesh.w_to_m_width = 5;
+    mesh.n_w = vec![5];
+
+    let json = gridfile_cell_polygons_geojson(
+        &mesh,
+        GridfileCellKind::Hex,
+        Some([20.0, 89.8, 30.0, 90.0]),
+        None,
+    );
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+}
+
+#[test]
+fn hex_skips_a_cell_that_deduplicates_below_three_corners() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![10.0];
+    mesh.w_lat = vec![88.0];
+    mesh.m_lon = vec![8.0, 8.0, 12.0];
+    mesh.m_lat = vec![87.0, 87.0, 87.0];
+    mesh.w_to_m = vec![1, 2, 3];
+    mesh.w_to_m_width = 3;
+    mesh.n_w = vec![3];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 0, "{json}");
 }
 
 #[test]

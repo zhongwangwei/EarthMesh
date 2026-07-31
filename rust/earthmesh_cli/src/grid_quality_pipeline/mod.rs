@@ -7,7 +7,10 @@ pub use crate::grid_quality_global::{
 };
 pub use crate::grid_quality_inputs::{
     attach_hfield_diagnostics_from_gridfile_namelist, attach_hfield_diagnostics_from_namelist,
-    quality_input_from_gridfile, quality_input_from_gridfile_hex, read_gridfile_mesh_points,
+    attach_hfield_diagnostics_from_namelist_for_gridfile, quality_input_from_gridfile,
+    quality_input_from_gridfile_hex, quality_input_from_gridfile_hex_delaunay_interior,
+    quality_input_from_gridfile_hex_with_source_rows, read_gridfile_cell_lineages,
+    read_gridfile_mesh_points, HexDelaunayRowCounts,
 };
 pub use crate::springjustment_gridfile_adapters::{
     run_springjustment_global_from_unstructured_gridfile,

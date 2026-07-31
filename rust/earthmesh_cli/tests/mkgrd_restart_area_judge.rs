@@ -187,53 +187,69 @@ fn restart_hex_postproc_source_mesh() -> UnstructuredMesh {
 }
 
 fn restart_ocean_postproc_source_mesh() -> UnstructuredMesh {
-    let mut m_points = vec![
-        LonLatPoint {
-            lon: -176.0,
-            lat: 86.0
-        };
-        8
-    ];
-    for point in m_points.iter_mut().take(5).skip(1) {
-        point.lon = -178.0;
-        point.lat = 88.0;
-    }
-    let mut w_points = vec![
-        LonLatPoint {
-            lon: -176.0,
-            lat: 86.0
-        };
-        14
-    ];
-    for vertex_id in [2_usize, 3, 4, 5, 6, 10, 11, 12, 13] {
-        w_points[vertex_id - 1] = LonLatPoint {
-            lon: -178.8 + (vertex_id % 3) as f64 * 0.7,
-            lat: 88.8 - (vertex_id % 2) as f64 * 0.8,
-        };
-    }
-    let mut m_to_w = vec![[1, 1, 1]; 8];
-    m_to_w[1] = [2, 10, 11];
-    m_to_w[2] = [10, 11, 3];
-    m_to_w[3] = [11, 12, 4];
-    m_to_w[4] = [12, 13, 5];
-    m_to_w[5] = [13, 10, 6];
-    let mut w_to_m = vec![vec![1; 7]; 14];
-    w_to_m[1] = vec![2, 1, 1, 1, 1, 1, 1];
-    w_to_m[2] = vec![3, 1, 1, 1, 1, 1, 1];
-    w_to_m[3] = vec![4, 1, 1, 1, 1, 1, 1];
-    w_to_m[4] = vec![5, 1, 1, 1, 1, 1, 1];
-    w_to_m[5] = vec![6, 1, 1, 1, 1, 1, 1];
-    w_to_m[9] = vec![2, 3, 6, 7, 1, 1, 1];
-    w_to_m[10] = vec![2, 3, 6, 7, 1, 1, 1];
-    w_to_m[11] = vec![3, 4, 6, 7, 1, 1, 1];
-    w_to_m[12] = vec![4, 5, 6, 7, 1, 1, 1];
-    let n_w_to_m = vec![5; 14];
     UnstructuredMesh {
-        m_points,
-        w_points,
-        m_to_w,
-        w_to_m,
-        n_w_to_m,
+        m_points: vec![
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+            LonLatPoint {
+                lon: -178.3,
+                lat: 88.1,
+            },
+            LonLatPoint {
+                lon: -177.7,
+                lat: 88.5,
+            },
+            LonLatPoint {
+                lon: -178.3,
+                lat: 88.9,
+            },
+            LonLatPoint {
+                lon: -178.7,
+                lat: 88.5,
+            },
+        ],
+        w_points: vec![
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+            LonLatPoint { lon: 0.0, lat: 0.0 },
+            LonLatPoint {
+                lon: -178.8,
+                lat: 87.8,
+            },
+            LonLatPoint {
+                lon: -177.2,
+                lat: 87.8,
+            },
+            LonLatPoint {
+                lon: -177.2,
+                lat: 89.2,
+            },
+            LonLatPoint {
+                lon: -178.8,
+                lat: 89.2,
+            },
+            LonLatPoint {
+                lon: -178.0,
+                lat: 88.5,
+            },
+        ],
+        m_to_w: vec![
+            [1, 1, 1],
+            [1, 1, 1],
+            [2, 3, 6],
+            [3, 4, 6],
+            [4, 5, 6],
+            [5, 2, 6],
+        ],
+        w_to_m: vec![
+            vec![1; 7],
+            vec![1; 7],
+            vec![2, 5, 1, 1, 1, 1, 1],
+            vec![2, 3, 1, 1, 1, 1, 1],
+            vec![3, 4, 1, 1, 1, 1, 1],
+            vec![4, 5, 1, 1, 1, 1, 1],
+            vec![2, 3, 4, 5, 1, 1, 1],
+        ],
+        n_w_to_m: vec![0, 0, 2, 2, 2, 2, 4],
     }
 }
 

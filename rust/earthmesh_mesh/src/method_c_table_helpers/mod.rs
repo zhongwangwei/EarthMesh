@@ -7,10 +7,15 @@ pub(crate) enum MethodCRepairableKind {
     NonTripletPerimeter,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct MethodCRepairableError {
     pub(crate) kind: MethodCRepairableKind,
     pub(crate) m_point: Option<usize>,
+    pub(crate) parent_m_point: Option<usize>,
+    pub(crate) parent_u_edge: Option<usize>,
+    pub(crate) parent_m_valence_witnesses: Vec<usize>,
+    pub(crate) perimeter_lengths: Vec<usize>,
+    pub(crate) repair_attempts: usize,
     message: String,
 }
 
@@ -32,6 +37,32 @@ pub(crate) fn method_c_repairable_error(
         MethodCRepairableError {
             kind,
             m_point,
+            parent_m_point: None,
+            parent_u_edge: None,
+            parent_m_valence_witnesses: Vec::new(),
+            perimeter_lengths: Vec::new(),
+            repair_attempts: 0,
+            message: message.into(),
+        },
+    )
+}
+
+pub(crate) fn method_c_repairable_perimeter_error(
+    kind: MethodCRepairableKind,
+    perimeter_lengths: Vec<usize>,
+    repair_attempts: usize,
+    message: impl Into<String>,
+) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        MethodCRepairableError {
+            kind,
+            m_point: None,
+            parent_m_point: None,
+            parent_u_edge: None,
+            parent_m_valence_witnesses: Vec::new(),
+            perimeter_lengths,
+            repair_attempts,
             message: message.into(),
         },
     )
@@ -39,6 +70,73 @@ pub(crate) fn method_c_repairable_error(
 
 pub(crate) fn method_c_repairable_payload(error: &io::Error) -> Option<&MethodCRepairableError> {
     error.get_ref()?.downcast_ref::<MethodCRepairableError>()
+}
+
+pub(crate) fn method_c_repairable_error_with_parent_origin(
+    error: io::Error,
+    parent_m_point: Option<usize>,
+    parent_u_edge: Option<usize>,
+) -> io::Error {
+    let Some(payload) = method_c_repairable_payload(&error) else {
+        return error;
+    };
+    let mut payload = payload.clone();
+    payload.parent_m_point = parent_m_point;
+    payload.parent_u_edge = parent_u_edge;
+    io::Error::new(error.kind(), payload)
+}
+
+pub(crate) fn method_c_repairable_error_with_parent_m_valence_witnesses(
+    error: io::Error,
+    parent_m_valence_witnesses: Vec<usize>,
+) -> io::Error {
+    let Some(payload) = method_c_repairable_payload(&error) else {
+        return error;
+    };
+    let mut payload = payload.clone();
+    payload.parent_m_valence_witnesses = parent_m_valence_witnesses;
+    io::Error::new(error.kind(), payload)
+}
+
+#[derive(Debug)]
+pub(crate) struct MethodCParentLevelMismatchError {
+    pub(crate) w_face: usize,
+    pub(crate) actual_mrlw: usize,
+    pub(crate) expected_mrlw: usize,
+    message: String,
+}
+
+impl std::fmt::Display for MethodCParentLevelMismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MethodCParentLevelMismatchError {}
+
+pub(crate) fn method_c_parent_level_mismatch_error(
+    w_face: usize,
+    actual_mrlw: usize,
+    expected_mrlw: usize,
+    message: impl Into<String>,
+) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        MethodCParentLevelMismatchError {
+            w_face,
+            actual_mrlw,
+            expected_mrlw,
+            message: message.into(),
+        },
+    )
+}
+
+pub(crate) fn method_c_parent_level_mismatch_payload(
+    error: &io::Error,
+) -> Option<&MethodCParentLevelMismatchError> {
+    error
+        .get_ref()?
+        .downcast_ref::<MethodCParentLevelMismatchError>()
 }
 
 use super::IcosahedronUEdge;
@@ -104,9 +202,13 @@ pub(crate) fn method_c_split_outer_edges(
                 .unwrap_or_else(|| format!("{iu}:<missing>"))
         })
         .join(", ");
-    Err(method_c_repairable_error(
-        MethodCRepairableKind::TransitionPatch,
+    Err(method_c_repairable_error_with_parent_origin(
+        method_c_repairable_error(
+            MethodCRepairableKind::TransitionPatch,
+            Some(m_point),
+            format!("Method-C {label} transition patch has no solid split edge ({edge_summary})"),
+        ),
         Some(m_point),
-        format!("Method-C {label} transition patch has no solid split edge ({edge_summary})"),
+        None,
     ))
 }

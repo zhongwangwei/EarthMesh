@@ -135,6 +135,65 @@ impl Stat5 {
     }
 }
 
+/// Upper-tail percentiles for a sample, using the deterministic nearest-rank
+/// definition (`ceil(p * n) - 1`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PercentileTail {
+    pub p95: f64,
+    pub p99: f64,
+}
+
+impl PercentileTail {
+    pub fn from_slice(values: &[f64]) -> Self {
+        if values.is_empty() {
+            return Self::default();
+        }
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        let at = |percent: usize| {
+            let rank = (percent * sorted.len()).div_ceil(100);
+            sorted[rank.saturating_sub(1)]
+        };
+        Self {
+            p95: at(95),
+            p99: at(99),
+        }
+    }
+}
+
+/// Count and share of valid samples strictly above an active quality threshold.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ThresholdExceedance {
+    pub threshold: f64,
+    pub sample_count: usize,
+    pub count: usize,
+    pub fraction: f64,
+}
+
+impl ThresholdExceedance {
+    fn from_slice(values: &[f64], threshold: f64) -> Self {
+        let count = values.iter().filter(|&&value| value > threshold).count();
+        Self {
+            threshold,
+            sample_count: values.len(),
+            count,
+            fraction: if values.is_empty() {
+                0.0
+            } else {
+                count as f64 / values.len() as f64
+            },
+        }
+    }
+}
+
+/// Per-cell samples already computed by the quality pass. They are retained in
+/// memory for diagnostics and are not added to the regular report files.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CellQualitySample {
+    pub edge_length_cv: Option<f64>,
+    pub level_normalized_area: Option<f64>,
+}
+
 /// One cell of the quality input mesh.
 #[derive(Clone, Debug, Default)]
 pub struct QualityCell {
@@ -164,6 +223,8 @@ pub struct GeometryMetrics {
     pub edge_length_km: Stat5,
     /// Per-cell edge-length CV; catches skew that a global edge statistic hides.
     pub cell_edge_length_cv: Stat5,
+    pub cell_edge_length_cv_percentiles: PercentileTail,
+    pub cell_edge_length_cv_above_warn: ThresholdExceedance,
     pub min_angle_deg: f64,
     pub max_angle_deg: f64,
     /// Per-cell max deviation from the equal-angle spherical n-gon with the
@@ -176,6 +237,9 @@ pub struct GeometryMetrics {
     /// longer than 15 degrees.
     pub triangle_nsr: Stat5,
     pub aspect_ratio: Stat5,
+    pub aspect_ratio_percentiles: PercentileTail,
+    pub aspect_ratio_above_warn: ThresholdExceedance,
+    pub aspect_ratio_above_fail: ThresholdExceedance,
     /// Exact spherical isoperimetric quotient `a(4π-a)/l²`.
     pub compactness: Stat5,
     /// Cells eligible for the local triangle eta/NSR compatibility metrics.
@@ -212,6 +276,10 @@ pub struct TopologyMetrics {
     pub dangling_edge_count: usize,
     /// Edges with exactly one incident cell; informational for regional meshes.
     pub boundary_edge_count: usize,
+    /// Closed components in the graph formed by single-incidence edges.
+    pub boundary_loop_count: usize,
+    /// Boundary vertices whose single-incidence edge degree is not two.
+    pub boundary_vertex_degree_violation_count: usize,
     /// Shared edges traversed in the same direction by both incident cells.
     pub misoriented_shared_edge_count: usize,
     /// Closed cells whose declared neighbors do not match edge-derived neighbors.
@@ -318,7 +386,12 @@ pub struct QualityThresholds {
     pub aspect_ratio_warn: f64,
     pub aspect_ratio_fail: f64,
     pub cell_edge_cv_warn: f64,
+    /// Backward-compatible warn threshold for raw global area CV, used when
+    /// refinement-level metadata is incomplete.
     pub area_cv_warn: f64,
+    /// Warn threshold for `CV(area * 4^refinement_level)` when complete level
+    /// metadata is available.
+    pub normalized_area_cv_warn: f64,
     pub max_adjacent_resolution_ratio_warn: f64,
     pub worst_cells_limit: usize,
     /// Maximum number of mutually connected cells in one local repair pass.
@@ -341,6 +414,7 @@ impl Default for QualityThresholds {
             aspect_ratio_fail: 10.0,
             cell_edge_cv_warn: 0.35,
             area_cv_warn: 1.5,
+            normalized_area_cv_warn: 0.5,
             max_adjacent_resolution_ratio_warn: 2.0,
             worst_cells_limit: 50,
             repair_batch_limit: 1,
@@ -351,12 +425,16 @@ impl Default for QualityThresholds {
 
 /// Optional topology context for quality computation.
 ///
-/// The legacy [`compute`] entry point uses `None`, because an Euler expectation
-/// cannot be inferred safely from connectivity alone (regional holes and
-/// multipart domains change it).
+/// The final boundary graph supplies the genus-zero Euler expectation when it
+/// is a closed 2-manifold. Callers may still provide an explicit expectation
+/// for domains known before the final mask is built.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QualityComputationOptions {
     pub expected_euler_characteristic: Option<isize>,
+    /// A final land/ocean mask can remove otherwise valid neighbors, leaving
+    /// disconnected islands or apparently isolated refined cells. Their
+    /// geometry and retained-neighbor transitions are still checked normally.
+    pub masked_subset: bool,
 }
 
 /// Full quality report. `to_*` serializers are in [`io`].
@@ -374,6 +452,8 @@ pub struct MeshQualityReport {
     /// Optional h-field target-vs-actual diagnostics, attached by callers that
     /// have sampled target levels for the measured cell view.
     pub hfield: Option<HfieldDiagnostics>,
+    /// Input-cell-aligned samples used by opt-in measurement tooling.
+    pub cell_samples: Vec<CellQualitySample>,
     pub gates: Vec<GateResult>,
     pub worst_cells: Vec<WorstCell>,
     /// Geometry defects that can be repaired by one bounded local refinement
@@ -536,11 +616,6 @@ impl MeshQualityReport {
                 baseline.topology.transition_continuity_warning_count,
                 self.topology.transition_continuity_warning_count,
             ),
-            (
-                "isolated_refined_cell_count",
-                baseline.topology.isolated_refined_cell_count,
-                self.topology.isolated_refined_cell_count,
-            ),
         ];
         for (metric, prior, candidate) in discrete {
             if candidate > prior {
@@ -552,6 +627,21 @@ impl MeshQualityReport {
                     candidate as f64,
                 );
             }
+        }
+        let isolated_refined_is_guarded = self.gates.iter().chain(&baseline.gates).any(|gate| {
+            gate.metric == "isolated_refined_cell_count" && gate.level != QualityLevel::Pass
+        });
+        if isolated_refined_is_guarded
+            && self.topology.isolated_refined_cell_count
+                > baseline.topology.isolated_refined_cell_count
+        {
+            push(
+                &mut regressions,
+                "isolated_refined_cell_count",
+                QualityMetricPreference::Lower,
+                baseline.topology.isolated_refined_cell_count as f64,
+                self.topology.isolated_refined_cell_count as f64,
+            );
         }
 
         let lower_is_better = [
@@ -681,11 +771,13 @@ impl MeshQualityReport {
                 self.topology.transition_continuity_warning_count,
                 baseline.topology.transition_continuity_warning_count,
             ),
-            (
-                self.topology.isolated_refined_cell_count,
-                baseline.topology.isolated_refined_cell_count,
-            ),
         ];
+        let isolated_refined_is_guarded = self.gates.iter().chain(&baseline.gates).any(|gate| {
+            gate.metric == "isolated_refined_cell_count" && gate.level != QualityLevel::Pass
+        });
+        let isolated_refined_improved = isolated_refined_is_guarded
+            && self.topology.isolated_refined_cell_count
+                < baseline.topology.isolated_refined_cell_count;
         let lower_is_better = [
             (
                 self.geometry.aspect_ratio.max,
@@ -706,6 +798,7 @@ impl MeshQualityReport {
         ];
         baseline.verdict.is_worse_than(self.verdict)
             || discrete.iter().any(|(candidate, prior)| candidate < prior)
+            || isolated_refined_improved
             || lower_is_better
                 .iter()
                 .any(|&(candidate, prior)| metric_change(candidate, prior) < 0)
@@ -936,6 +1029,7 @@ pub fn compute_with_options(
     let mut topo = TopologyMetrics::default();
 
     let mut areas = Vec::new();
+    let mut level_normalized_areas = Vec::new();
     let mut edge_lengths = Vec::new();
     let mut cell_edge_cvs = Vec::new();
     let mut angle_deviations = Vec::new();
@@ -943,6 +1037,7 @@ pub fn compute_with_options(
     let mut triangle_nsrs = Vec::new();
     let mut aspects = Vec::new();
     let mut compactnesses = Vec::new();
+    let mut cell_samples = vec![CellQualitySample::default(); input.cells.len()];
     let mut min_angle = f64::INFINITY;
     let mut max_angle = f64::NEG_INFINITY;
 
@@ -1048,6 +1143,16 @@ pub fn compute_with_options(
                 geom.zero_area_cell_count += 1;
             } else {
                 areas.push(area);
+                if let Some(level) = cell
+                    .refine_level
+                    .and_then(|level| i32::try_from(level).ok())
+                {
+                    let normalized = area * 4.0_f64.powi(level);
+                    if normalized.is_finite() {
+                        level_normalized_areas.push(normalized);
+                        cell_samples[ci].level_normalized_area = Some(normalized);
+                    }
+                }
                 let group = refine_groups.entry(cell.refine_level).or_default();
                 group.areas.push(area);
                 // aspect ratio = longest/shortest edge in great-circle km (the ratio is
@@ -1065,6 +1170,7 @@ pub fn compute_with_options(
                 }
                 let edge_cv = Stat5::from_slice(&km_lens).cv;
                 cell_edge_cvs.push(edge_cv);
+                cell_samples[ci].edge_length_cv = Some(edge_cv);
                 group.edge_cvs.push(edge_cv);
                 let area_sr = area / (EARTH_RADIUS_KM * EARTH_RADIUS_KM);
                 let perimeter_rad = km_lens.iter().sum::<f64>() / EARTH_RADIUS_KM;
@@ -1120,10 +1226,18 @@ pub fn compute_with_options(
     };
     geom.edge_length_km = Stat5::from_slice(&edge_lengths);
     geom.cell_edge_length_cv = Stat5::from_slice(&cell_edge_cvs);
+    geom.cell_edge_length_cv_percentiles = PercentileTail::from_slice(&cell_edge_cvs);
+    geom.cell_edge_length_cv_above_warn =
+        ThresholdExceedance::from_slice(&cell_edge_cvs, thresholds.cell_edge_cv_warn);
     geom.angle_deviation_deg = Stat5::from_slice_or_nan(&angle_deviations);
     geom.triangle_eta = Stat5::from_slice_or_nan(&triangle_etas);
     geom.triangle_nsr = Stat5::from_slice_or_nan(&triangle_nsrs);
     geom.aspect_ratio = Stat5::from_slice(&aspects);
+    geom.aspect_ratio_percentiles = PercentileTail::from_slice(&aspects);
+    geom.aspect_ratio_above_warn =
+        ThresholdExceedance::from_slice(&aspects, thresholds.aspect_ratio_warn);
+    geom.aspect_ratio_above_fail =
+        ThresholdExceedance::from_slice(&aspects, thresholds.aspect_ratio_fail);
     geom.compactness = Stat5::from_slice_or_nan(&compactnesses);
     geom.min_angle_deg = if min_angle.is_finite() {
         min_angle
@@ -1135,19 +1249,27 @@ pub fn compute_with_options(
     } else {
         f64::NAN
     };
+    let level_normalized_area_cv = (!areas.is_empty()
+        && level_normalized_areas.len() == areas.len())
+    .then(|| Stat5::from_slice(&level_normalized_areas).cv)
+    .filter(|cv| cv.is_finite());
 
     // non-manifold edges (shared by > 2 cells)
     topo.duplicate_edge_count = edge_cells.values().filter(|c| c.len() > 2).count();
-    topo.boundary_edge_count = edge_cells.values().filter(|c| c.len() == 1).count();
+    let boundary = topology::boundary_topology(input);
+    topo.boundary_edge_count = boundary.edge_count;
+    topo.boundary_loop_count = boundary.loops.len();
+    topo.boundary_vertex_degree_violation_count = boundary.invalid_vertex_degrees.len();
     topo.misoriented_shared_edge_count = edge_orientations
         .values()
         .filter(|occ| occ.len() == 2 && occ[0].1 == occ[1].1 && occ[0].2 == occ[1].2)
         .count();
     topo.euler_characteristic = topology::euler_characteristic(input);
-    topo.expected_euler_characteristic = options.expected_euler_characteristic;
+    topo.expected_euler_characteristic = options
+        .expected_euler_characteristic
+        .or_else(|| topology::genus_zero_euler_expectation(input, &boundary));
     topo.euler_characteristic_mismatch_count = usize::from(
-        options
-            .expected_euler_characteristic
+        topo.expected_euler_characteristic
             .is_some_and(|expected| expected != topo.euler_characteristic),
     );
     topo.connected_component_count = topology::connected_component_count(input);
@@ -1262,16 +1384,30 @@ pub fn compute_with_options(
         }
     }
 
-    let (gates, worst_cells, repair_cells, gate_verdict) =
-        evaluate(input, &geom, &topo, thresholds);
     let refine_level_groups = refine_groups
         .into_iter()
         .map(|(level, acc)| acc.finish(level))
-        .collect();
+        .collect::<Vec<_>>();
+    let (gates, worst_cells, repair_cells, gate_verdict) = evaluate(
+        input,
+        &geom,
+        &topo,
+        level_normalized_area_cv,
+        thresholds,
+        options,
+    );
 
     // Run the detailed topology validator and fold its worst severity into the
     // verdict (catastrophic connectivity = Fail; transition degradation = Warn).
-    let topology_issues = topology::MeshTopologyValidator::new(input).validate_all();
+    let mut topology_issues = topology::MeshTopologyValidator::new(input).validate_all();
+    if options.masked_subset {
+        topology_issues.retain(|issue| {
+            !matches!(
+                issue.issue_type,
+                topology::TopologyIssueType::DisconnectedMesh
+            )
+        });
+    }
     let validator_level = match topology::worst_severity(&topology_issues) {
         Some(topology::Severity::Fail) => QualityLevel::Fail,
         Some(topology::Severity::Warn) => QualityLevel::Warn,
@@ -1287,6 +1423,7 @@ pub fn compute_with_options(
         topology: topo,
         refine_level_groups,
         hfield: None,
+        cell_samples,
         gates,
         worst_cells,
         repair_cells,
@@ -1411,9 +1548,9 @@ pub fn compute_hfield_diagnostics(
 }
 
 /// Attach h-field diagnostics and warn only for unmet demand, missing mappings,
-/// or discontinuous levels. Conforming refinement may legitimately place a
-/// cell one level above its sampled target; that safe over-refinement remains
-/// observable in `actual_above_target_count` but is not a quality violation.
+/// or discontinuities in the realized mesh. A jump in the requested target
+/// field remains observable, but is informational when conforming refinement
+/// safely grades the actual mesh and meets or exceeds that demand.
 pub fn attach_hfield_diagnostics(
     report: &mut MeshQualityReport,
     input: &QualityMeshInput,
@@ -1421,12 +1558,10 @@ pub fn attach_hfield_diagnostics(
     config: HfieldConfigDiagnostics,
 ) {
     let diagnostics = compute_hfield_diagnostics(input, target_levels, config);
-    let mut add_gate = |metric: &str, value: usize, detail: &str| {
-        let level = if value > 0 {
-            QualityLevel::Warn
-        } else {
-            QualityLevel::Pass
-        };
+    let missing_level_count = diagnostics.missing_target_level_count
+        + diagnostics.extra_target_level_count
+        + diagnostics.missing_actual_refine_level_count;
+    let mut add_gate = |metric: &str, value: usize, level: QualityLevel, detail: &str| {
         report.gates.push(GateResult {
             metric: metric.to_string(),
             value: value as f64,
@@ -1438,33 +1573,72 @@ pub fn attach_hfield_diagnostics(
     add_gate(
         "hfield_target_above_actual_count",
         diagnostics.target_above_actual_count,
+        if diagnostics.target_above_actual_count > 0 {
+            QualityLevel::Fail
+        } else {
+            QualityLevel::Pass
+        },
         "h-field target level exceeds actual refinement level",
     );
     add_gate(
         "hfield_missing_level_count",
-        diagnostics.missing_target_level_count
-            + diagnostics.extra_target_level_count
-            + diagnostics.missing_actual_refine_level_count,
+        missing_level_count,
+        if missing_level_count > 0 {
+            QualityLevel::Warn
+        } else {
+            QualityLevel::Pass
+        },
         "h-field target/actual level mapping is incomplete",
     );
     add_gate(
         "hfield_target_level_jump_gt_one_count",
         diagnostics.target_level_jump_gt_one_count,
-        "adjacent h-field target level jump > 1",
+        QualityLevel::Pass,
+        "adjacent requested h-field target level jump > 1; informational when the realized mesh is conforming",
     );
     add_gate(
         "hfield_actual_level_jump_gt_one_count",
         diagnostics.actual_level_jump_gt_one_count,
+        if diagnostics.actual_level_jump_gt_one_count > 0 {
+            QualityLevel::Warn
+        } else {
+            QualityLevel::Pass
+        },
         "adjacent actual refinement level jump > 1",
     );
     report.hfield = Some(diagnostics);
+}
+
+/// Fail when immutable nonzero HField support has no final-cell positive-area
+/// coverage. Omitted support has no cell index, so it needs its own gate.
+pub fn attach_hfield_support_coverage(
+    report: &mut MeshQualityReport,
+    active_bin_count: usize,
+    covered_bin_count: usize,
+) {
+    let uncovered = active_bin_count.saturating_sub(covered_bin_count);
+    let level = if uncovered > 0 {
+        QualityLevel::Fail
+    } else {
+        QualityLevel::Pass
+    };
+    report.gates.push(GateResult {
+        metric: "hfield_uncovered_hard_support_bin_count".to_string(),
+        value: uncovered as f64,
+        level,
+        detail: "immutable nonzero HField bins without final-cell positive-area coverage"
+            .to_string(),
+    });
+    report.verdict = report.verdict.worse(level);
 }
 
 fn evaluate(
     input: &QualityMeshInput,
     geom: &GeometryMetrics,
     topo: &TopologyMetrics,
+    level_normalized_area_cv: Option<f64>,
     th: &QualityThresholds,
+    options: QualityComputationOptions,
 ) -> (
     Vec<GateResult>,
     Vec<WorstCell>,
@@ -1490,6 +1664,10 @@ fn evaluate(
         ("invalid_cell_index_count", topo.invalid_cell_index_count),
         ("duplicate_edge_count", topo.duplicate_edge_count),
         ("dangling_edge_count", topo.dangling_edge_count),
+        (
+            "boundary_vertex_degree_violation_count",
+            topo.boundary_vertex_degree_violation_count,
+        ),
         (
             "misoriented_shared_edge_count",
             topo.misoriented_shared_edge_count,
@@ -1540,9 +1718,9 @@ fn evaluate(
                 QualityLevel::Pass
             },
             if mismatch {
-                "measured Euler characteristic differs from the explicit domain expectation"
+                "measured Euler characteristic differs from the final domain expectation"
             } else {
-                "matches the explicit domain expectation"
+                "matches the final domain expectation"
             },
         );
     }
@@ -1610,17 +1788,34 @@ fn evaluate(
         "max deviation from regular n-gon angle",
     );
 
-    let cv_level = if geom.cell_area.cv >= th.area_cv_warn {
+    // A raw global area CV mostly measures the intentional 4:1 area ratio
+    // between refinement levels. When every valid cell carries an explicit
+    // level, gate CV(area * 4^level): this removes only the expected dyadic
+    // scale while still detecting a uniformly wrong level and every transition
+    // outlier. Keep the raw global value in `geometry.cell_area.cv` for
+    // diagnostics and fall back to it when level metadata is incomplete.
+    let (area_cv_metric, area_cv, area_cv_warn, area_cv_detail) = level_normalized_area_cv.map_or(
+        (
+            "cell_area_cv",
+            geom.cell_area.cv,
+            th.area_cv_warn,
+            "cell area coefficient of variation",
+        ),
+        |value| {
+            (
+                "cell_area_cv_normalized",
+                value,
+                th.normalized_area_cv_warn,
+                "cell area coefficient of variation normalized by expected 4^refinement-level scale",
+            )
+        },
+    );
+    let cv_level = if area_cv > area_cv_warn {
         QualityLevel::Warn
     } else {
         QualityLevel::Pass
     };
-    push(
-        "cell_area_cv",
-        geom.cell_area.cv,
-        cv_level,
-        "cell area coefficient of variation",
-    );
+    push(area_cv_metric, area_cv, cv_level, area_cv_detail);
     push(
         "cell_area_ratio",
         geom.cell_area_ratio,
@@ -1652,7 +1847,7 @@ fn evaluate(
         "adjacent level jump > 1",
     );
 
-    let isolated_level = if topo.isolated_refined_cell_count > 0 {
+    let isolated_level = if topo.isolated_refined_cell_count > 0 && !options.masked_subset {
         QualityLevel::Warn
     } else {
         QualityLevel::Pass
@@ -1661,7 +1856,11 @@ fn evaluate(
         "isolated_refined_cell_count",
         topo.isolated_refined_cell_count as f64,
         isolated_level,
-        "refined cell with only coarser neighbors",
+        if topo.isolated_refined_cell_count > 0 && options.masked_subset {
+            "diagnostic only because the final mask can remove same-level neighbors"
+        } else {
+            "refined cell with only coarser neighbors"
+        },
     );
 
     let verdict = gates
@@ -1676,6 +1875,29 @@ fn collect_worst_cells(
     input: &QualityMeshInput,
     th: &QualityThresholds,
 ) -> (Vec<WorstCell>, Vec<WorstCell>) {
+    let mut scored = score_worst_cells(input, th, None);
+    let repair_cells =
+        connected_repair_batch(input, &scored, th.repair_batch_limit, th.repair_level_cap);
+    scored.truncate(th.worst_cells_limit);
+    (scored, repair_cells)
+}
+
+/// Build one bounded repair batch while ignoring a metric that the caller has
+/// established is non-actionable for the current mesh-generation policy.
+pub fn repair_batch_without_metric(
+    input: &QualityMeshInput,
+    th: &QualityThresholds,
+    ignored_metric: &str,
+) -> Vec<WorstCell> {
+    let scored = score_worst_cells(input, th, Some(ignored_metric));
+    connected_repair_batch(input, &scored, th.repair_batch_limit, th.repair_level_cap)
+}
+
+fn score_worst_cells(
+    input: &QualityMeshInput,
+    th: &QualityThresholds,
+    ignored_metric: Option<&str>,
+) -> Vec<WorstCell> {
     let mut scored: Vec<WorstCell> = Vec::new();
     for (ci, cell) in input.cells.iter().enumerate() {
         let Some(ring) = cell_ring(input, cell) else {
@@ -1693,7 +1915,7 @@ fn collect_worst_cells(
             Ok(area) if area.minor_sr * EARTH_RADIUS_KM * EARTH_RADIUS_KM <= 1.0e-12 => {
                 ("zero_area".to_string(), 0.0, QualityLevel::Fail)
             }
-            Ok(area) => match worst_local_shape_defect(&ring, area, th) {
+            Ok(area) => match worst_local_shape_defect(&ring, area, th, ignored_metric) {
                 Some(defect) => defect,
                 None => continue,
             },
@@ -1720,16 +1942,14 @@ fn collect_worst_cells(
             })
             .then_with(|| a.cell_index.cmp(&b.cell_index))
     });
-    let repair_cells =
-        connected_repair_batch(input, &scored, th.repair_batch_limit, th.repair_level_cap);
-    scored.truncate(th.worst_cells_limit);
-    (scored, repair_cells)
+    scored
 }
 
 fn worst_local_shape_defect(
     ring: &[Point],
     area: SphericalArea,
     th: &QualityThresholds,
+    ignored_metric: Option<&str>,
 ) -> Option<(String, f64, QualityLevel)> {
     let angles = interior_angles_deg(ring, area.winding);
     let edge_lengths = (0..ring.len())
@@ -1793,15 +2013,18 @@ fn worst_local_shape_defect(
         }
     }
 
-    defects.into_iter().max_by(|left, right| {
-        quality_level_rank(left.2)
-            .cmp(&quality_level_rank(right.2))
-            .then_with(|| {
-                local_defect_badness(&left.0, left.1, th)
-                    .partial_cmp(&local_defect_badness(&right.0, right.1, th))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-    })
+    defects
+        .into_iter()
+        .filter(|defect| ignored_metric != Some(defect.0.as_str()))
+        .max_by(|left, right| {
+            quality_level_rank(left.2)
+                .cmp(&quality_level_rank(right.2))
+                .then_with(|| {
+                    local_defect_badness(&left.0, left.1, th)
+                        .partial_cmp(&local_defect_badness(&right.0, right.1, th))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
 }
 
 fn repair_defect_badness(cell: &WorstCell, th: &QualityThresholds) -> f64 {
@@ -1885,6 +2108,56 @@ fn repair_candidate_below_cap(cell: &WorstCell, level_cap: Option<u32>) -> bool 
 mod tests {
     use super::*;
 
+    #[test]
+    fn percentile_tail_uses_nearest_rank() {
+        let values = (1..=100).map(|value| value as f64).collect::<Vec<_>>();
+        assert_eq!(
+            PercentileTail::from_slice(&values),
+            PercentileTail {
+                p95: 95.0,
+                p99: 99.0,
+            }
+        );
+    }
+
+    #[test]
+    fn threshold_exceedance_records_active_threshold_and_valid_sample_share() {
+        assert_eq!(
+            ThresholdExceedance::from_slice(&[1.0, 4.0, 4.1, 10.1], 4.0),
+            ThresholdExceedance {
+                threshold: 4.0,
+                sample_count: 4,
+                count: 2,
+                fraction: 0.5,
+            }
+        );
+    }
+
+    #[test]
+    fn quality_report_retains_input_aligned_cell_samples() {
+        let mesh = two_square_mesh();
+        let report = compute(&mesh, &QualityThresholds::default());
+        assert_eq!(report.cell_samples.len(), mesh.cells.len());
+        assert!(report.cell_samples.iter().all(
+            |sample| sample.edge_length_cv.is_some() && sample.level_normalized_area.is_some()
+        ));
+        assert!(report
+            .geometry
+            .cell_edge_length_cv_percentiles
+            .p95
+            .is_finite());
+        assert!(report
+            .geometry
+            .cell_edge_length_cv_percentiles
+            .p99
+            .is_finite());
+        assert!(report.geometry.aspect_ratio_percentiles.p95.is_finite());
+        assert_eq!(
+            report.geometry.aspect_ratio_above_warn.sample_count,
+            report.geometry.cell_count
+        );
+    }
+
     fn square_cell(a: usize, b: usize, c: usize, d: usize) -> QualityCell {
         QualityCell {
             vertices: vec![a, b, c, d],
@@ -1919,6 +2192,47 @@ mod tests {
         }
     }
 
+    fn two_level_square_mesh(coarse_size: f64) -> QualityMeshInput {
+        let mut vertices = Vec::new();
+        let mut cells = Vec::new();
+        for (lon, size, level) in [
+            (0.0, coarse_size, 0),
+            (coarse_size + 1.0, coarse_size, 0),
+            (2.0 * coarse_size + 2.0, 1.0, 1),
+            (2.0 * coarse_size + 4.0, 1.0, 1),
+        ] {
+            let base = vertices.len();
+            vertices.extend([
+                Point::new(lon, 0.0),
+                Point::new(lon + size, 0.0),
+                Point::new(lon + size, size),
+                Point::new(lon, size),
+            ]);
+            cells.push(QualityCell {
+                vertices: vec![base, base + 1, base + 2, base + 3],
+                refine_level: Some(level),
+                neighbors: vec![],
+            });
+        }
+        QualityMeshInput { vertices, cells }
+    }
+
+    fn expected_level_normalized_area_cv(mesh: &QualityMeshInput) -> f64 {
+        let areas = mesh
+            .cells
+            .iter()
+            .map(|cell| {
+                let ring = cell_ring(mesh, cell).expect("cell ring");
+                let area = try_spherical_polygon_area(&ring).expect("spherical area");
+                area.minor_sr
+                    * EARTH_RADIUS_KM
+                    * EARTH_RADIUS_KM
+                    * 4.0_f64.powi(cell.refine_level.unwrap() as i32)
+            })
+            .collect::<Vec<_>>();
+        Stat5::from_slice(&areas).cv
+    }
+
     #[test]
     fn tiny_valid_mesh_passes() {
         let r = compute(&two_square_mesh(), &QualityThresholds::default());
@@ -1934,6 +2248,164 @@ mod tests {
         // 3D chord corner angle of a 1°×1° equatorial square is ~90° (not exactly,
         // since the chord vectors live on the sphere) — sane, not a planar artifact.
         assert!((r.geometry.min_angle_deg - 90.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn edge_cv_gate_includes_refinement_transition_zone_cells() {
+        let mut vertices = Vec::new();
+        // Cell 1 spans three degrees while sharing its left edge with the
+        // level-0 cell 0, so the high edge CV is on the actual level-change
+        // transition. Cells 2..4 provide the historical three-ring exclusion
+        // depth; the final disconnected square is the regular control cell.
+        for x in [0.0, 1.0, 4.0, 5.0, 6.0, 7.0, 10.0, 11.0] {
+            vertices.extend([Point::new(x, 0.0), Point::new(x, 1.0)]);
+        }
+        let mesh = QualityMeshInput {
+            vertices,
+            cells: (0..5)
+                .map(|cell_index| QualityCell {
+                    vertices: vec![
+                        cell_index * 2,
+                        cell_index * 2 + 2,
+                        cell_index * 2 + 3,
+                        cell_index * 2 + 1,
+                    ],
+                    refine_level: Some(u32::from(cell_index > 0)),
+                    neighbors: (cell_index.saturating_sub(1)..=(cell_index + 1).min(4))
+                        .filter(|&neighbor| neighbor != cell_index)
+                        .collect(),
+                })
+                .chain([QualityCell {
+                    vertices: vec![12, 14, 15, 13],
+                    refine_level: Some(0),
+                    neighbors: vec![],
+                }])
+                .collect(),
+        };
+        let thresholds = QualityThresholds {
+            min_angle_warn_deg: 0.0,
+            angle_deviation_warn_deg: 180.0,
+            aspect_ratio_warn: 100.0,
+            aspect_ratio_fail: 200.0,
+            cell_edge_cv_warn: 0.1,
+            ..QualityThresholds::default()
+        };
+
+        let transition_report = compute(&mesh, &thresholds);
+        assert!(transition_report.geometry.cell_edge_length_cv.max > 0.1);
+        let transition_gate = transition_report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "cell_edge_length_cv_max")
+            .unwrap();
+        assert_eq!(
+            transition_gate.value,
+            transition_report.geometry.cell_edge_length_cv.max
+        );
+        assert_eq!(transition_gate.level, QualityLevel::Warn);
+        assert!(transition_report
+            .repair_cells
+            .iter()
+            .any(|cell| cell.metric == "cell_edge_length_cv"));
+    }
+
+    #[test]
+    fn area_cv_gate_removes_only_expected_inter_level_scale() {
+        let mesh = two_level_square_mesh(2.0);
+        let thresholds = QualityThresholds {
+            normalized_area_cv_warn: 0.1,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&mesh, &thresholds);
+        assert!(
+            report.geometry.cell_area.cv > thresholds.normalized_area_cv_warn,
+            "raw global CV must retain the intentional coarse/fine area spread"
+        );
+        assert_eq!(
+            report
+                .refine_level_groups
+                .iter()
+                .map(|group| group.cell_count)
+                .sum::<usize>(),
+            report.geometry.cell_count,
+            "no transition or interior cell may be excluded from diagnostics"
+        );
+        let expected = expected_level_normalized_area_cv(&mesh);
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "cell_area_cv_normalized")
+            .unwrap();
+        assert_eq!(gate.value, expected);
+        assert_eq!(gate.level, QualityLevel::Pass);
+    }
+
+    #[test]
+    fn area_cv_gate_detects_a_uniformly_wrong_refinement_scale() {
+        let mesh = two_level_square_mesh(4.0);
+        let thresholds = QualityThresholds {
+            normalized_area_cv_warn: 0.1,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&mesh, &thresholds);
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "cell_area_cv_normalized")
+            .unwrap();
+        assert_eq!(gate.value, expected_level_normalized_area_cv(&mesh));
+        assert_eq!(gate.level, QualityLevel::Warn);
+    }
+
+    #[test]
+    fn area_cv_value_equal_to_the_threshold_passes() {
+        let mesh = two_level_square_mesh(4.0);
+        let measured = expected_level_normalized_area_cv(&mesh);
+        let thresholds = QualityThresholds {
+            normalized_area_cv_warn: measured,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&mesh, &thresholds);
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "cell_area_cv_normalized")
+            .unwrap();
+        assert_eq!(gate.value, measured);
+        assert_eq!(gate.level, QualityLevel::Pass);
+    }
+
+    #[test]
+    fn area_cv_gate_falls_back_to_raw_cv_when_a_level_is_missing() {
+        let mut mesh = two_level_square_mesh(2.0);
+        mesh.cells[3].refine_level = None;
+        let thresholds = QualityThresholds {
+            area_cv_warn: 0.1,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&mesh, &thresholds);
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "cell_area_cv")
+            .unwrap();
+        assert_eq!(gate.value, report.geometry.cell_area.cv);
+        assert_eq!(gate.level, QualityLevel::Warn);
+    }
+
+    #[test]
+    fn raw_area_cv_fallback_keeps_the_legacy_default_threshold() {
+        let mut mesh = two_level_square_mesh(2.0);
+        mesh.cells[3].refine_level = None;
+        let report = compute(&mesh, &QualityThresholds::default());
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.metric == "cell_area_cv")
+            .unwrap();
+        assert!(gate.value > QualityThresholds::default().normalized_area_cv_warn);
+        assert!(gate.value < QualityThresholds::default().area_cv_warn);
+        assert_eq!(gate.level, QualityLevel::Pass);
     }
 
     #[test]
@@ -2062,30 +2534,57 @@ mod tests {
 
     #[test]
     fn repair_plan_can_target_aspect_ratio_without_an_edge_cv_gate() {
-        let report = compute(
-            &QualityMeshInput {
-                vertices: vec![
-                    Point::new(0.0, 0.0),
-                    Point::new(5.0, 0.0),
-                    Point::new(5.0, 1.0),
-                    Point::new(0.0, 1.0),
-                ],
-                cells: vec![QualityCell {
-                    vertices: vec![0, 1, 2, 3],
-                    refine_level: Some(0),
-                    neighbors: vec![],
-                }],
-            },
-            &QualityThresholds {
-                min_angle_warn_deg: 0.0,
-                cell_edge_cv_warn: 10.0,
-                angle_deviation_warn_deg: 180.0,
-                ..QualityThresholds::default()
-            },
-        );
+        let input = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(5.0, 0.0),
+                Point::new(5.0, 1.0),
+                Point::new(0.0, 1.0),
+            ],
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2, 3],
+                refine_level: Some(0),
+                neighbors: vec![],
+            }],
+        };
+        let thresholds = QualityThresholds {
+            min_angle_warn_deg: 0.0,
+            cell_edge_cv_warn: 10.0,
+            angle_deviation_warn_deg: 180.0,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&input, &thresholds);
 
         assert_eq!(report.repair_cells.len(), 1);
         assert_eq!(report.repair_cells[0].metric, "aspect_ratio");
+    }
+
+    #[test]
+    fn alternate_repair_batch_can_see_aspect_hidden_by_edge_cv_ranking() {
+        let input = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(5.0, 0.0),
+                Point::new(5.0, 1.0),
+                Point::new(0.0, 1.0),
+            ],
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2, 3],
+                refine_level: Some(0),
+                neighbors: vec![],
+            }],
+        };
+        let thresholds = QualityThresholds {
+            min_angle_warn_deg: 0.0,
+            angle_deviation_warn_deg: 180.0,
+            ..QualityThresholds::default()
+        };
+        let report = compute(&input, &thresholds);
+        assert_eq!(report.repair_cells[0].metric, "cell_edge_length_cv");
+
+        let alternate = repair_batch_without_metric(&input, &thresholds, "cell_edge_length_cv");
+        assert_eq!(alternate.len(), 1);
+        assert_eq!(alternate[0].metric, "aspect_ratio");
     }
 
     #[test]
@@ -2151,14 +2650,14 @@ mod tests {
         swapped_warning
             .gates
             .iter_mut()
-            .find(|gate| gate.metric == "cell_area_cv")
+            .find(|gate| gate.metric == "cell_area_cv_normalized")
             .unwrap()
             .level = QualityLevel::Warn;
         assert!(!swapped_warning.is_strict_improvement_over(&warned_baseline));
         let regressions = swapped_warning.guarded_metric_regressions(&warned_baseline);
         assert!(regressions
             .iter()
-            .any(|item| item.metric == "gate.cell_area_cv.level"));
+            .any(|item| item.metric == "gate.cell_area_cv_normalized.level"));
 
         let mut failed_baseline = baseline.clone();
         failed_baseline.verdict = QualityLevel::Fail;
@@ -2192,7 +2691,31 @@ mod tests {
 
         let mut topology_regressed = warned_candidate;
         topology_regressed.topology.isolated_refined_cell_count += 1;
+        topology_regressed
+            .gates
+            .iter_mut()
+            .find(|gate| gate.metric == "isolated_refined_cell_count")
+            .unwrap()
+            .level = QualityLevel::Warn;
         assert!(!topology_regressed.is_strict_improvement_over(&failed_baseline));
+    }
+
+    #[test]
+    fn diagnostic_isolated_refined_counts_do_not_drive_candidate_selection() {
+        let baseline = compute_with_options(
+            &two_square_mesh(),
+            &QualityThresholds::default(),
+            QualityComputationOptions {
+                masked_subset: true,
+                ..QualityComputationOptions::default()
+            },
+        );
+        let mut candidate = baseline.clone();
+        candidate.topology.isolated_refined_cell_count += 1;
+        candidate.geometry.aspect_ratio.max *= 0.9;
+
+        assert!(candidate.guarded_metric_regressions(&baseline).is_empty());
+        assert!(candidate.is_strict_improvement_over(&baseline));
     }
 
     #[test]

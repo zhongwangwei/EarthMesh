@@ -83,11 +83,19 @@ pub fn convert_fvcom_mode_file_to_earthmesh(
     m_to_w.push([1, 1, 1]);
     for element in 0..n_elements {
         let base = element * 3;
-        m_to_w.push([
+        let mut triangle = [
             earthmesh_canonical_connectivity_id(nv[base], connectivity_base),
             earthmesh_canonical_connectivity_id(nv[base + 1], connectivity_base),
             earthmesh_canonical_connectivity_id(nv[base + 2], connectivity_base),
-        ]);
+        ];
+        let ring = triangle.map(|node| {
+            let point = w_points[(node - 1) as usize];
+            earthmesh_geometry::Point::new(point.lon, point.lat)
+        });
+        if earthmesh_geometry::signed_spherical_polygon_area_km2(&ring) < 0.0 {
+            triangle.swap(1, 2);
+        }
+        m_to_w.push(triangle);
     }
 
     let mut w_to_m = Vec::with_capacity(n_nodes + 1);

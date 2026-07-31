@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, time::Instant};
 
 use super::*;
 
@@ -12,6 +12,18 @@ impl MethodCDelaunayMesh {
         max_mrows: usize,
         project_to_radius: bool,
     ) -> io::Result<Self> {
+        let mut m0_stage_started = std::env::var_os("EARTHMESH_M0_DIAGNOSTICS")
+            .is_some()
+            .then(Instant::now);
+        let mut report_m0_stage = |stage: &str| {
+            if let Some(started) = m0_stage_started.as_mut() {
+                eprintln!(
+                    "earthmesh_mesh: M0 Method-C emit stage={stage} seconds={:.6}",
+                    started.elapsed().as_secs_f64()
+                );
+                *started = Instant::now();
+            }
+        };
         let radius = active_mesh_radius(self)?;
         let parent_level = child_level - 1;
         require_method_c_len(
@@ -97,7 +109,18 @@ impl MethodCDelaunayMesh {
             imnext += 1;
         }
         let nmd0 = imnext - 1;
+        report_m0_stage("index-plan");
 
+        require_method_c_len(
+            "Method-C M-point lineage",
+            self.m_lineage.len(),
+            self.nmd + 1,
+        )?;
+        require_method_c_len(
+            "Method-C W-face lineage",
+            self.w_lineage.len(),
+            self.nwd + 1,
+        )?;
         let mut impent = [1usize; 12];
         for (slot, &old_im) in self.impent.iter().enumerate() {
             if old_im <= 1 {
@@ -109,6 +132,8 @@ impl MethodCDelaunayMesh {
 
         let mut m_points = vec![CartesianPoint::new(0.0, 0.0, 0.0); nmd0 + 1];
         let mut m_metadata = default_method_c_m_metadata(nmd0);
+        let mut m_lineage = vec![0usize; nmd0 + 1];
+        m_lineage[1] = 1;
         let mut u_edges = vec![IcosahedronUEdge::default(); nud0 + 1];
         let mut w_faces = vec![IcosahedronWFace::default(); nwd0 + 1];
 
@@ -116,6 +141,7 @@ impl MethodCDelaunayMesh {
             let imn = imnew[im];
             m_points[imn] = self.m_points[im];
             m_metadata[imn] = self.m_metadata[im];
+            m_lineage[imn] = self.m_lineage[im];
         }
 
         let mut parent_mrlm = 0usize;
@@ -196,6 +222,7 @@ impl MethodCDelaunayMesh {
                 )?;
             }
         }
+        report_m0_stage("base-remap-and-full-subdivision");
 
         let transition_parent_mrlw = if parent_mrlw == 0 {
             parent_level
@@ -217,12 +244,14 @@ impl MethodCDelaunayMesh {
             radius,
             child_level,
         )?;
+        report_m0_stage("transition-patch");
 
         if project_to_radius {
             for point in m_points.iter_mut().take(nmd0 + 1).skip(2) {
                 *point = normalize_cartesian_to_radius(*point, radius)?;
             }
         }
+        report_m0_stage("projection");
 
         let mut connectivity = IcosahedronDiamondConnectivity { u_edges, w_faces };
         derive_icosahedron_w_neighbors_canonical(&mut connectivity).ok_or_else(|| {
@@ -237,6 +266,7 @@ impl MethodCDelaunayMesh {
                 "failed to derive Method-C U-edge neighbors",
             )
         })?;
+        report_m0_stage("connectivity-neighbors");
         require_method_c_len(
             "Method-C M prognostic map",
             self.m_prognostic.len(),
@@ -252,6 +282,18 @@ impl MethodCDelaunayMesh {
             self.w_prognostic.len(),
             self.nwd + 1,
         )?;
+        let mut next_m_lineage = self.next_m_lineage;
+        for lineage in m_lineage.iter_mut().skip(2) {
+            if *lineage == 0 {
+                *lineage = next_m_lineage;
+                next_m_lineage = next_m_lineage.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Method-C M-point lineage space exhausted",
+                    )
+                })?;
+            }
+        }
         let mut m_prognostic = method_c_identity_prognostic_map(nmd0);
         for old_im in 2..=self.nmd {
             let partner = self.m_prognostic[old_im];
@@ -276,6 +318,25 @@ impl MethodCDelaunayMesh {
                 w_prognostic[iwnew[old_iw]] = iwnew[partner];
             }
         }
+        let mut w_lineage = vec![0usize; nwd0 + 1];
+        w_lineage[1] = 1;
+        for old_iw in 2..=self.nwd {
+            if !nest_wd[old_iw].is_subdivided() {
+                w_lineage[iwnew[old_iw]] = self.w_lineage[old_iw];
+            }
+        }
+        let mut next_w_lineage = self.next_w_lineage;
+        for lineage in w_lineage.iter_mut().skip(2) {
+            if *lineage == 0 {
+                *lineage = next_w_lineage;
+                next_w_lineage = next_w_lineage.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Method-C W-face lineage space exhausted",
+                    )
+                })?;
+            }
+        }
         let has_prognostic_w_faces = w_prognostic
             .iter()
             .enumerate()
@@ -289,13 +350,87 @@ impl MethodCDelaunayMesh {
                 &w_prognostic,
             )?
         } else {
-            derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
+            match derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
                 nmd0,
                 &connectivity.u_edges,
                 &connectivity.w_faces,
                 None,
-            )?
+            ) {
+                Ok(neighbors) => neighbors,
+                Err(error) => {
+                    report_m0_stage("prognostic-lineage-and-m-neighbors");
+                    // M0-only post-failure census: preserve the production
+                    // fail-fast error while exposing every stable parent-M
+                    // witness from the already-built child connectivity.
+                    let mut parent_m_valence_witnesses = if std::env::var_os(
+                        "EARTHMESH_M0_DIAGNOSTICS",
+                    )
+                    .is_some()
+                    {
+                        match collect_icosahedron_m_valence_witnesses_canonical(
+                            nmd0,
+                            &connectivity.u_edges,
+                            &connectivity.w_faces,
+                            None,
+                        ) {
+                            Ok(witnesses) => witnesses
+                                .into_iter()
+                                .filter_map(|witness| {
+                                    imnew.iter().enumerate().skip(2).find_map(
+                                        |(parent_im, &child_im)| {
+                                            (child_im == witness.m_point).then_some(parent_im)
+                                        },
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                            Err(census_error) => {
+                                if std::env::var_os("EARTHMESH_M0_REPAIR_TRACE").is_some() {
+                                    eprintln!(
+                                            "earthmesh_mesh: parent-M valence census unavailable: {census_error}"
+                                        );
+                                }
+                                Vec::new()
+                            }
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    parent_m_valence_witnesses.sort_unstable();
+                    parent_m_valence_witnesses.dedup();
+                    let child_m_point =
+                        method_c_repairable_payload(&error).and_then(|payload| payload.m_point);
+                    let parent_m_point = child_m_point.and_then(|child_im| {
+                        imnew
+                            .iter()
+                            .enumerate()
+                            .skip(2)
+                            .find_map(|(parent_im, &child)| {
+                                (child == child_im).then_some(parent_im)
+                            })
+                    });
+                    let parent_u_edge = child_m_point.and_then(|child_im| {
+                        nest_ud
+                            .iter()
+                            .enumerate()
+                            .skip(2)
+                            .find_map(|(parent_iu, child)| {
+                                (child.im == child_im).then_some(parent_iu)
+                            })
+                    });
+                    let error =
+                        crate::method_c_table_helpers::method_c_repairable_error_with_parent_origin(
+                            error,
+                            parent_m_point,
+                            parent_u_edge,
+                        );
+                    return Err(crate::method_c_table_helpers::method_c_repairable_error_with_parent_m_valence_witnesses(
+                        error,
+                        parent_m_valence_witnesses,
+                    ));
+                }
+            }
         };
+        report_m0_stage("prognostic-lineage-and-m-neighbors");
 
         let mut mesh = MethodCDelaunayMesh {
             nmd: nmd0,
@@ -304,8 +439,12 @@ impl MethodCDelaunayMesh {
             impent,
             m_points,
             m_metadata,
+            m_lineage,
+            next_m_lineage,
             u_edges: connectivity.u_edges,
             w_faces: connectivity.w_faces,
+            w_lineage,
+            next_w_lineage,
             m_neighbors,
             m_prognostic,
             u_prognostic,
@@ -318,6 +457,7 @@ impl MethodCDelaunayMesh {
         // `method_c_spring`/`method_c_nest_spring` validate theirs, so an in-range but
         // wrong id cannot silently escape to callers.
         mesh.validate_topology()?;
+        report_m0_stage("perimeter-mrows-and-validation");
         Ok(mesh)
     }
 }

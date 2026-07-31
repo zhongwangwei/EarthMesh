@@ -7,7 +7,10 @@ use earthmesh_cli::{
     hydro_delivery_colm::colm_coupling_rows_from_intersections,
     hydro_delivery_colm::write_colm_coupling_csv_from_intersections,
     hydro_delivery_intersections::{
-        write_disjoint_earthmesh_intersection_geojson, write_earthmesh_intersection_geojson,
+        write_disjoint_earthmesh_intersection_geojson,
+        write_disjoint_earthmesh_intersection_geojson_with_domain,
+        write_earthmesh_intersection_geojson, write_earthmesh_intersection_geojson_with_domain,
+        HydroDomainComponent,
     },
 };
 use flate2::{write::GzEncoder, Compression};
@@ -365,6 +368,157 @@ fn non_convex_domain_clips_corridor_exactly() {
         (frac - 0.75).abs() < 2.0e-3,
         "spherical L-domain fraction near 0.75, got {frac}\n{json}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn domain_holes_are_subtracted_and_nested_islands_are_restored() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_hole_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    let domain = vec![
+        HydroDomainComponent {
+            shell: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            holes: vec![vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)]],
+        },
+        HydroDomainComponent::shell(vec![(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]),
+    ];
+    let out = dir.join("x.geojson");
+    write_earthmesh_intersection_geojson_with_domain(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        Some(&domain),
+    )
+    .unwrap();
+
+    let json = std::fs::read_to_string(&out).unwrap();
+    let fraction = property_numbers(&json, "river_fraction")[0];
+    assert!(
+        (fraction - 0.68).abs() < 5.0e-3,
+        "shell minus hole plus island should retain 68%, got {fraction}:\n{json}"
+    );
+    let disjoint_out = dir.join("disjoint.geojson");
+    write_disjoint_earthmesh_intersection_geojson_with_domain(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &disjoint_out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        Some(&domain),
+    )
+    .unwrap();
+    let disjoint_fraction = property_numbers(
+        &std::fs::read_to_string(disjoint_out).unwrap(),
+        "river_fraction",
+    )[0];
+    assert!((disjoint_fraction - fraction).abs() < 1.0e-12);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn overlapping_domain_components_use_union_not_sum() {
+    let dir = std::env::temp_dir().join(format!("em3_xsect_domain_union_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+    let domain = vec![
+        HydroDomainComponent::shell(vec![(0.0, 0.0), (0.6, 0.0), (0.6, 1.0), (0.0, 1.0)]),
+        HydroDomainComponent::shell(vec![(0.4, 0.0), (0.8, 0.0), (0.8, 1.0), (0.4, 1.0)]),
+        HydroDomainComponent::shell(vec![(0.2, 0.2), (0.4, 0.2), (0.4, 0.8), (0.2, 0.8)]),
+    ];
+    let out = dir.join("x.geojson");
+    write_earthmesh_intersection_geojson_with_domain(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        Some(&domain),
+    )
+    .unwrap();
+    let fraction = property_numbers(&std::fs::read_to_string(out).unwrap(), "river_fraction")[0];
+    assert!(
+        (fraction - 0.8).abs() < 5.0e-3,
+        "domain record/component union should retain 80%, got {fraction}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn antipodal_disjoint_domain_component_is_skipped_before_projection() {
+    let dir =
+        std::env::temp_dir().join(format!("em3_xsect_domain_antipode_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cells.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"cell_id":"c1"},
+         "geometry":{"type":"Polygon","coordinates":[[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]]]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("corridors.geojson"),
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"river_class":"R3"},
+         "geometry":{"type":"Polygon","coordinates":[[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]]]}}]}"#,
+    )
+    .unwrap();
+    let domain = vec![
+        HydroDomainComponent::shell(vec![(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]),
+        HydroDomainComponent::shell(vec![
+            (178.0, 0.0),
+            (179.0, -1.0),
+            (180.0, 0.0),
+            (179.0, 1.0),
+        ]),
+    ];
+    let out = dir.join("x.geojson");
+    write_earthmesh_intersection_geojson_with_domain(
+        dir.join("cells.geojson"),
+        dir.join("corridors.geojson"),
+        &out,
+        &["R3".to_string()],
+        0.0,
+        false,
+        Some(&domain),
+    )
+    .unwrap();
+    let fraction = property_numbers(&std::fs::read_to_string(out).unwrap(), "river_fraction")[0];
+    assert!((fraction - 1.0).abs() < 5.0e-3);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

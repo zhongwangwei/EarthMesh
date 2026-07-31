@@ -27,6 +27,25 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
             }
         }
     }
+    let canonical = mesh
+        .spawn_nest_pass_method_c_without_mask_repair(&selected, 2, 10, true)
+        .expect("canonical transition materialization");
+    let perimeter_components = mesh
+        .method_c_perimeters_from_selected_faces(&selected, &method_c_m_neighbors)
+        .expect("Method-C perimeter components");
+    let zero_offset = mesh
+        .spawn_nest_pass_method_c_with_perimeter_component_offsets_for_diagnostics(
+            &selected,
+            &vec![0; perimeter_components.len()],
+            2,
+            10,
+            true,
+        )
+        .expect("zero-offset transition materialization");
+    assert_eq!(
+        zero_offset, canonical,
+        "zero component offsets must preserve canonical materialization"
+    );
 
     let mut nest_wd = vec![MethodCNestWd::default(); mesh.nwd + 1];
     for iw in 2..=mesh.nwd {
@@ -47,6 +66,77 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
         };
         nest_wd[suppressed_w].iw[2] = -1;
     }
+    assert!(
+        mesh.method_c_transition_self_loop_witnesses(&perimeter, &nest_wd)
+            .expect("transition self-loop prediction")
+            .is_empty(),
+        "canonical transition fixture must not predict a child U self-loop"
+    );
+    assert!(
+        mesh.method_c_transition_parent_boundary_witnesses(
+            &perimeter,
+            &nest_wd,
+            selected_parent_mrl.expect("selected parent level"),
+        )
+        .expect("transition parent-boundary prediction")
+        .is_empty(),
+        "canonical transition fixture must stay inside its parent level"
+    );
+    let mut shifted_perimeter = perimeter.clone();
+    shifted_perimeter.rotate_left(1);
+    let mut canonical_points = perimeter
+        .iter()
+        .map(|point| {
+            (
+                point.im,
+                point.iu,
+                point.npoly,
+                point.nwdiv,
+                point.near_pentagon,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut shifted_points = shifted_perimeter
+        .iter()
+        .map(|point| {
+            (
+                point.im,
+                point.iu,
+                point.npoly,
+                point.nwdiv,
+                point.near_pentagon,
+            )
+        })
+        .collect::<Vec<_>>();
+    canonical_points.sort_unstable();
+    shifted_points.sort_unstable();
+    assert_eq!(
+        shifted_points, canonical_points,
+        "transition legality must retain cyclic perimeter phase, not only local point occupancy"
+    );
+    let mut shifted_nest_wd = mesh
+        .method_c_nest_wd_from_selected_and_perimeter(&selected, &shifted_perimeter)
+        .expect("shifted transition flags");
+    let shifted_witnesses = mesh
+        .method_c_transition_self_loop_witnesses(&shifted_perimeter, &shifted_nest_wd)
+        .expect("shifted transition self-loop prediction");
+    let shifted_error = mesh
+        .emit_method_c_tables(
+            &shifted_perimeter,
+            &method_c_m_neighbors,
+            &mut shifted_nest_wd,
+            2,
+            10,
+            true,
+        )
+        .expect_err("shifted transition should not materialize");
+    let shifted_failure =
+        method_c_repairable_payload(&shifted_error).expect("repairable transition failure");
+    assert_eq!(shifted_failure.kind, MethodCRepairableKind::Valence);
+    assert!(
+        !shifted_witnesses.is_empty(),
+        "the shifted canonical transition must predict its child U alias"
+    );
 
     let mut iwnew = vec![1usize; mesh.nwd + 1];
     let mut iwnext = 2usize;

@@ -2,8 +2,9 @@
 
 use earthmesh_geometry::Point;
 use earthmesh_quality::{
-    attach_hfield_diagnostics, compute, compute_with_options, io, HfieldConfigDiagnostics,
-    QualityCell, QualityComputationOptions, QualityLevel, QualityMeshInput, QualityThresholds,
+    attach_hfield_diagnostics, attach_hfield_support_coverage, compute, compute_with_options, io,
+    HfieldConfigDiagnostics, QualityCell, QualityComputationOptions, QualityLevel,
+    QualityMeshInput, QualityThresholds,
 };
 
 fn two_square_mesh() -> QualityMeshInput {
@@ -40,18 +41,29 @@ fn quality_json_output_has_required_fields() {
         "earthmesh_mesh_quality",
         "\"cell_view\": \"hex\"",
         "\"verdict\": \"pass\"",
+        "\"gate_calibration\": {\"status\":\"provisional\"",
+        "\"scope\":\"hex_absolute_max_shape\"",
+        "\"reference_set\":\"mpas_hex_2026-07-26_v1\"",
+        "\"triggered_uncalibrated_gates\":[]",
         "\"cell_count\": 2",
         "\"edge_count\": 7",
         "\"cell_area\"",
         "\"cell_area_ratio\"",
         "\"edge_length_km\"",
         "\"cell_edge_length_cv\"",
+        "\"cell_edge_length_cv_percentiles\"",
+        "\"cell_edge_length_cv_above_warn\"",
         "\"min_angle_deg\"",
         "\"angle_deviation_deg\"",
         "\"triangle_eta_local\"",
         "\"triangle_nsr_local\"",
+        "\"aspect_ratio_percentiles\"",
+        "\"aspect_ratio_above_warn\"",
+        "\"aspect_ratio_above_fail\"",
         "\"duplicate_edge_count\": 0",
         "\"boundary_edge_count\": 6",
+        "\"boundary_loop_count\": 1",
+        "\"boundary_vertex_degree_violation_count\": 0",
         "\"misoriented_shared_edge_count\": 0",
         "\"neighbor_degree_mismatch_count\": 0",
         "\"neighbor_reciprocity_failure_count\": 0",
@@ -72,11 +84,48 @@ fn quality_csv_output_has_rows_and_verdict() {
     let csv = io::to_summary_csv(&r);
     assert!(csv.starts_with("category,metric,value,level\n"));
     assert!(csv.contains("geometry,cell_count,2"));
+    assert!(csv.contains("geometry,cell_edge_length_cv_above_warn_count,"));
+    assert!(csv.contains("geometry,aspect_ratio_p99,"));
+    assert!(csv.contains("geometry,aspect_ratio_above_fail_count,"));
     assert!(csv.contains("geometry,triangle_eta_local_min,null"));
     assert!(csv.contains("topology,quadrilateral_cell_count,2"));
+    assert!(csv.contains("topology,boundary_loop_count,1"));
     assert!(csv.contains("refine_level,0:cell_count,2"));
     assert!(csv.contains("summary,cell_view,,tri"));
     assert!(csv.contains("summary,verdict,,pass"));
+    assert!(csv.contains("summary,gate_calibration_status,,provisional"));
+    assert!(csv.contains("summary,gate_calibration_scope,,tri_absolute_max_shape"));
+    assert!(
+        csv.contains("summary,gate_calibration_reference_set,,noaa_ngofs2_fvcom_tri_2026-07-29_v1")
+    );
+
+    let md = io::to_report_md(&r);
+    assert!(md.contains("gate calibration: `provisional`"));
+    assert!(md.contains("one operational NOAA FVCOM positive reference"));
+    assert!(md.contains("edge CV >"));
+    assert!(md.contains("aspect p95"));
+    assert!(md.contains("aspect >"));
+}
+
+#[test]
+fn calibration_metadata_names_triggered_provisional_hex_gates() {
+    let mut r = compute(&two_square_mesh(), &QualityThresholds::default());
+    r.cell_view = "hex".to_string();
+    r.gates
+        .iter_mut()
+        .find(|gate| gate.metric == "aspect_ratio_max")
+        .unwrap()
+        .level = QualityLevel::Warn;
+
+    let calibration = io::gate_calibration(&r);
+    assert_eq!(calibration.status, "provisional");
+    assert_eq!(
+        calibration.triggered_uncalibrated_gates,
+        vec!["aspect_ratio_max"]
+    );
+    assert!(
+        io::to_summary_json(&r).contains("\"triggered_uncalibrated_gates\":[\"aspect_ratio_max\"]")
+    );
 }
 
 fn regular_cell(
@@ -232,20 +281,31 @@ fn topology_reports_euler_components_and_non_manifold_vertex_fan() {
 }
 
 #[test]
-fn expected_euler_characteristic_is_opt_in_and_enforced() {
+fn expected_euler_characteristic_is_inferred_from_closed_boundary_loops_and_enforced() {
     let mesh = two_square_mesh(); // regional disk: V-E+F = 6-7+2 = 1
     let default_report = compute(&mesh, &QualityThresholds::default());
     assert!(default_report
         .gates
         .iter()
-        .all(|gate| gate.metric != "euler_characteristic"));
-    assert_eq!(default_report.topology.expected_euler_characteristic, None);
+        .any(|gate| gate.metric == "euler_characteristic" && gate.level == QualityLevel::Pass));
+    assert_eq!(
+        default_report.topology.expected_euler_characteristic,
+        Some(1)
+    );
+    assert_eq!(default_report.topology.boundary_loop_count, 1);
+    assert_eq!(
+        default_report
+            .topology
+            .boundary_vertex_degree_violation_count,
+        0
+    );
 
     let matching = compute_with_options(
         &mesh,
         &QualityThresholds::default(),
         QualityComputationOptions {
             expected_euler_characteristic: Some(1),
+            ..QualityComputationOptions::default()
         },
     );
     assert_eq!(matching.topology.expected_euler_characteristic, Some(1));
@@ -260,6 +320,7 @@ fn expected_euler_characteristic_is_opt_in_and_enforced() {
         &QualityThresholds::default(),
         QualityComputationOptions {
             expected_euler_characteristic: Some(2),
+            ..QualityComputationOptions::default()
         },
     );
     assert_eq!(mismatching.topology.euler_characteristic_mismatch_count, 1);
@@ -268,6 +329,140 @@ fn expected_euler_characteristic_is_opt_in_and_enforced() {
         .iter()
         .any(|gate| { gate.metric == "euler_characteristic" && gate.level == QualityLevel::Fail }));
     assert_eq!(mismatching.verdict, QualityLevel::Fail);
+}
+
+#[test]
+fn masked_domain_keeps_components_diagnostic_but_rejects_orphans() {
+    let mesh = QualityMeshInput {
+        vertices: vec![
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(0.0, 1.0),
+            Point::new(2.0, 0.0),
+            Point::new(2.0, 1.0),
+            Point::new(4.0, 0.0),
+            Point::new(5.0, 0.0),
+            Point::new(5.0, 1.0),
+            Point::new(4.0, 1.0),
+        ],
+        cells: vec![
+            QualityCell {
+                vertices: vec![0, 1, 2, 3],
+                refine_level: Some(0),
+                neighbors: vec![1],
+            },
+            QualityCell {
+                vertices: vec![1, 4, 5, 2],
+                refine_level: Some(1),
+                neighbors: vec![0],
+            },
+            QualityCell {
+                vertices: vec![6, 7, 8, 9],
+                refine_level: Some(0),
+                neighbors: vec![],
+            },
+        ],
+    };
+    let thresholds = QualityThresholds {
+        normalized_area_cv_warn: 10.0,
+        ..QualityThresholds::default()
+    };
+    let unmasked = compute(&mesh, &thresholds);
+    assert_eq!(unmasked.verdict, QualityLevel::Fail);
+
+    let masked = compute_with_options(
+        &mesh,
+        &thresholds,
+        QualityComputationOptions {
+            masked_subset: true,
+            ..QualityComputationOptions::default()
+        },
+    );
+    assert_eq!(masked.verdict, QualityLevel::Fail);
+    assert_eq!(masked.topology.connected_component_count, 2);
+    assert_eq!(masked.topology.orphan_cell_count, 1);
+    assert_eq!(masked.topology.isolated_refined_cell_count, 1);
+    for metric in ["cell_edge_length_cv_max", "cell_area_cv_normalized"] {
+        let unmasked_gate = unmasked
+            .gates
+            .iter()
+            .find(|gate| gate.metric == metric)
+            .unwrap();
+        let masked_gate = masked
+            .gates
+            .iter()
+            .find(|gate| gate.metric == metric)
+            .unwrap();
+        assert_eq!(masked_gate.value, unmasked_gate.value, "metric={metric}");
+        assert_eq!(masked_gate.level, unmasked_gate.level, "metric={metric}");
+    }
+    assert!(masked.topology_issues.iter().any(|issue| matches!(
+        issue.issue_type,
+        earthmesh_quality::topology::TopologyIssueType::OrphanCell
+    )));
+    assert!(masked.topology_issues.iter().all(|issue| !matches!(
+        issue.issue_type,
+        earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
+    )));
+
+    let mut invalid = mesh;
+    invalid.cells[0].vertices[0] = invalid.vertices.len();
+    let invalid_masked = compute_with_options(
+        &invalid,
+        &thresholds,
+        QualityComputationOptions {
+            masked_subset: true,
+            ..QualityComputationOptions::default()
+        },
+    );
+    assert_eq!(invalid_masked.verdict, QualityLevel::Fail);
+    assert!(invalid_masked.gates.iter().any(|gate| {
+        gate.metric == "invalid_vertex_index_count" && gate.level == QualityLevel::Fail
+    }));
+}
+
+#[test]
+fn masked_multipart_domain_validates_each_closed_boundary_component() {
+    let mut mesh = two_square_mesh();
+    let vertex_offset = mesh.vertices.len();
+    let vertices = mesh.vertices.clone();
+    mesh.vertices.extend(
+        vertices
+            .into_iter()
+            .map(|point| Point::new(point.x + 4.0, point.y)),
+    );
+    let cells = mesh.cells.clone();
+    mesh.cells.extend(cells.into_iter().map(|mut cell| {
+        cell.vertices
+            .iter_mut()
+            .for_each(|vertex| *vertex += vertex_offset);
+        cell.neighbors
+            .iter_mut()
+            .for_each(|neighbor| *neighbor += 2);
+        cell
+    }));
+
+    let report = compute_with_options(
+        &mesh,
+        &QualityThresholds::default(),
+        QualityComputationOptions {
+            masked_subset: true,
+            ..QualityComputationOptions::default()
+        },
+    );
+
+    assert_eq!(report.topology.connected_component_count, 2);
+    assert_eq!(report.topology.boundary_loop_count, 2);
+    assert_eq!(report.topology.euler_characteristic, 2);
+    assert_eq!(report.topology.expected_euler_characteristic, Some(2));
+    assert_eq!(report.topology.euler_characteristic_mismatch_count, 0);
+    assert!(report.topology_issues.iter().all(|issue| !matches!(
+        issue.issue_type,
+        earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
+            | earthmesh_quality::topology::TopologyIssueType::BoundaryVertexDegree
+            | earthmesh_quality::topology::TopologyIssueType::EulerCharacteristicMismatch
+    )));
 }
 
 #[test]
@@ -331,9 +526,9 @@ fn hfield_diagnostics_report_target_actual_mismatch_and_jumps() {
     assert_eq!(hfield.actual_refine_level_distribution[0].count, 1);
     assert_eq!(hfield.actual_refine_level_distribution[1].level, 1);
     assert_eq!(hfield.actual_refine_level_distribution[1].count, 1);
-    assert_eq!(r.verdict, QualityLevel::Warn);
+    assert_eq!(r.verdict, QualityLevel::Fail);
     assert!(r.gates.iter().any(|gate| {
-        gate.metric == "hfield_target_above_actual_count" && gate.level == QualityLevel::Warn
+        gate.metric == "hfield_target_above_actual_count" && gate.level == QualityLevel::Fail
     }));
 
     let json = io::to_summary_json(&r);
@@ -349,6 +544,37 @@ fn hfield_diagnostics_report_target_actual_mismatch_and_jumps() {
     let md = io::to_report_md(&r);
     assert!(md.contains("H-field diagnostics"));
     assert!(md.contains("target/actual mismatch: 1"));
+}
+
+#[test]
+fn uncovered_immutable_hfield_support_is_a_failure() {
+    let mesh = two_square_mesh();
+    let mut report = compute(&mesh, &QualityThresholds::default());
+
+    attach_hfield_support_coverage(&mut report, 3, 2);
+
+    assert_eq!(report.verdict, QualityLevel::Fail);
+    assert!(report.gates.iter().any(|gate| {
+        gate.metric == "hfield_uncovered_hard_support_bin_count"
+            && gate.value == 1.0
+            && gate.level == QualityLevel::Fail
+    }));
+}
+
+#[test]
+fn fully_covered_immutable_hfield_support_preserves_the_prior_verdict() {
+    let mesh = two_square_mesh();
+    let mut report = compute(&mesh, &QualityThresholds::default());
+    let prior = report.verdict;
+
+    attach_hfield_support_coverage(&mut report, 3, 3);
+
+    assert_eq!(report.verdict, prior);
+    assert!(report.gates.iter().any(|gate| {
+        gate.metric == "hfield_uncovered_hard_support_bin_count"
+            && gate.value == 0.0
+            && gate.level == QualityLevel::Pass
+    }));
 }
 
 #[test]
@@ -381,6 +607,64 @@ fn conforming_over_refinement_is_diagnostic_not_warning() {
         .iter()
         .filter(|gate| gate.metric.starts_with("hfield_"))
         .all(|gate| gate.level == QualityLevel::Pass));
+}
+
+#[test]
+fn safely_realized_target_jump_is_diagnostic_not_warning() {
+    let mut mesh = two_square_mesh();
+    mesh.cells[0].refine_level = Some(1);
+    mesh.cells[1].refine_level = Some(2);
+    let mut report = compute(&mesh, &QualityThresholds::default());
+    let base_verdict = report.verdict;
+
+    attach_hfield_diagnostics(
+        &mut report,
+        &mesh,
+        &[0, 2],
+        HfieldConfigDiagnostics {
+            enabled: true,
+            g: Some(0.2),
+            max_level: Some(2),
+            base_m: Some(100_000.0),
+        },
+    );
+
+    let hfield = report.hfield.as_ref().unwrap();
+    assert_eq!(hfield.target_level_jump_gt_one_count, 1);
+    assert_eq!(hfield.actual_level_jump_gt_one_count, 0);
+    assert_eq!(hfield.target_above_actual_count, 0);
+    assert_eq!(report.verdict, base_verdict);
+    assert!(report.gates.iter().any(|gate| {
+        gate.metric == "hfield_target_level_jump_gt_one_count"
+            && gate.value == 1.0
+            && gate.level == QualityLevel::Pass
+    }));
+}
+
+#[test]
+fn realized_level_jump_remains_a_warning() {
+    let mut mesh = two_square_mesh();
+    mesh.cells[0].refine_level = Some(2);
+    mesh.cells[1].refine_level = Some(0);
+    let mut report = compute(&mesh, &QualityThresholds::default());
+
+    attach_hfield_diagnostics(
+        &mut report,
+        &mesh,
+        &[2, 0],
+        HfieldConfigDiagnostics::default(),
+    );
+
+    let hfield = report.hfield.as_ref().unwrap();
+    assert_eq!(hfield.target_level_jump_gt_one_count, 1);
+    assert_eq!(hfield.actual_level_jump_gt_one_count, 1);
+    assert!(report.gates.iter().any(|gate| {
+        gate.metric == "hfield_target_level_jump_gt_one_count" && gate.level == QualityLevel::Pass
+    }));
+    assert!(report.gates.iter().any(|gate| {
+        gate.metric == "hfield_actual_level_jump_gt_one_count" && gate.level == QualityLevel::Warn
+    }));
+    assert_eq!(report.verdict, QualityLevel::Warn);
 }
 
 #[test]

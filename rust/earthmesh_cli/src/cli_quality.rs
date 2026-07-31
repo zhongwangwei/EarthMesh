@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::cli_args::usage;
 
-/// `--mesh-quality <gridfile.nc4> [out_dir] [quality.nml] [--kind tri|hex]`:
+/// `--mesh-quality <gridfile.nc4> [out_dir] [quality.nml] [--kind tri|hex|hex-delaunay]`:
 /// read a gridfile, build the selected cell-view quality input, and write
 /// quality_summary.json /.csv, worst_cells.geojson and quality_report.md. The
 /// optional third arg is a namelist whose `&quality` block configures the gate
@@ -11,10 +11,8 @@ use crate::cli_args::usage;
 /// verdict exits non-zero (CI gate). Absent ⇒ default thresholds, warn-only
 /// (unchanged compatibility behavior).
 pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(), String> {
-    // Optional `--kind tri|hex` selects the cell view: hex/atmos (MPAS) meshes are
-    // measured as their W-cell hexagons (≈120° angles); tri/FVCOM meshes as the M
-    // triangles. Default tri for backward compatibility. The rest stays positional:
-    // <gridfile> [out_dir] [quality.nml].
+    // Optional `--kind` selects the production tri/hex view or the diagnostic
+    // interior-Delaunay view of a hex gridfile.
     let mut kind = String::from("tri");
     let mut positional: Vec<String> = Vec::new();
     let mut args = args;
@@ -22,7 +20,7 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
         if a == "--kind" {
             kind = args
                 .next()
-                .ok_or_else(|| usage("--kind needs a value (tri|hex)"))?;
+                .ok_or_else(|| usage("--kind needs a value (tri|hex|hex-delaunay)"))?;
         } else if a.starts_with('-') {
             return Err(usage(&format!("unknown --mesh-quality option `{a}`")));
         } else {
@@ -48,10 +46,17 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
 
     let mesh = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&gridfile)
         .map_err(|e| format!("read gridfile {}: {e}", gridfile.display()))?;
-    let input = if kind == "hex" {
-        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh)
-    } else {
-        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&mesh)
+    let (input, delaunay_rows) = match kind {
+        "hex" => earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh)
+            .map(|input| (input, None)),
+        "hex-delaunay" => {
+            earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_delaunay_interior(
+                &mesh,
+            )
+            .map(|(input, rows)| (input, Some(rows)))
+        }
+        _ => earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&mesh)
+            .map(|input| (input, None)),
     }
     .map_err(|e| format!("validate gridfile {} for quality: {e}", gridfile.display()))?;
 
@@ -85,11 +90,16 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     report.cell_view = kind.to_string();
     if let Some(text) = &quality_cfg_text {
         let attached =
-            earthmesh_cli::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
+            earthmesh_cli::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist_for_gridfile(
                 &mut report,
                 &input,
                 &mesh,
-                kind,
+                &gridfile,
+                if kind == "hex-delaunay" {
+                    "tri"
+                } else {
+                    kind
+                },
                 text,
             )
             .map_err(|e| format!("attach h-field diagnostics: {e}"))?;
@@ -100,7 +110,30 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     let written = earthmesh_quality::io::write_all(&report, &out_dir)
         .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
     println!("mesh_quality_kind={kind}");
+    if let Some(rows) = delaunay_rows {
+        println!(
+            "mesh_quality_delaunay_rows=placeholder:{} interior:{} boundary_dual:{} invalid:0",
+            rows.placeholder_rows, rows.interior_triangle_rows, rows.boundary_dual_rows
+        );
+    }
     println!("mesh_quality_verdict={}", report.verdict.as_str());
+    let calibration = earthmesh_quality::io::gate_calibration(&report);
+    println!(
+        "mesh_quality_gate_calibration={} scope={} reference_set={}",
+        calibration.status,
+        calibration.scope,
+        calibration.reference_set.unwrap_or("none")
+    );
+    if !calibration.triggered_uncalibrated_gates.is_empty() {
+        println!(
+            "mesh_quality_triggered_uncalibrated_gates={}",
+            calibration.triggered_uncalibrated_gates.join(",")
+        );
+    }
+    eprintln!(
+        "earthmesh_cli: quality gate calibration={} scope={}: {}",
+        calibration.status, calibration.scope, calibration.caveat
+    );
     println!("mesh_quality_cells={}", report.geometry.cell_count);
     println!(
         "mesh_quality_min_angle_deg={}",
@@ -109,6 +142,29 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     println!(
         "mesh_quality_edge_cv_max={}",
         report.geometry.cell_edge_length_cv.max
+    );
+    println!(
+        "mesh_quality_edge_cv_p95={}",
+        report.geometry.cell_edge_length_cv_percentiles.p95
+    );
+    println!(
+        "mesh_quality_edge_cv_p99={}",
+        report.geometry.cell_edge_length_cv_percentiles.p99
+    );
+    println!(
+        "mesh_quality_edge_cv_above_warn={}/{}",
+        report.geometry.cell_edge_length_cv_above_warn.count,
+        report.geometry.cell_edge_length_cv_above_warn.sample_count
+    );
+    println!(
+        "mesh_quality_aspect_ratio=max:{} p95:{} p99:{} above_warn:{}/{} above_fail:{}/{}",
+        report.geometry.aspect_ratio.max,
+        report.geometry.aspect_ratio_percentiles.p95,
+        report.geometry.aspect_ratio_percentiles.p99,
+        report.geometry.aspect_ratio_above_warn.count,
+        report.geometry.aspect_ratio_above_warn.sample_count,
+        report.geometry.aspect_ratio_above_fail.count,
+        report.geometry.aspect_ratio_above_fail.sample_count
     );
     println!(
         "mesh_quality_angle_deviation_deg_max={}",
@@ -148,8 +204,9 @@ fn parse_quality_kind(kind: &str) -> Result<&'static str, String> {
     match kind.trim() {
         "tri" => Ok("tri"),
         "hex" => Ok("hex"),
+        "hex-delaunay" => Ok("hex-delaunay"),
         other => Err(usage(&format!(
-            "--kind must be `tri` or `hex`, got `{other}`"
+            "--kind must be `tri`, `hex`, or `hex-delaunay`, got `{other}`"
         ))),
     }
 }
@@ -167,6 +224,7 @@ fn quality_thresholds_from_namelist(
         aspect_ratio_fail: q.aspect_ratio_fail,
         cell_edge_cv_warn: q.cell_edge_cv_warn,
         area_cv_warn: q.area_cv_warn,
+        normalized_area_cv_warn: q.normalized_area_cv_warn,
         max_adjacent_resolution_ratio_warn: q.max_adjacent_resolution_ratio_warn,
         worst_cells_limit: q.worst_cells_limit.max(0) as usize,
         repair_batch_limit: q.repair_batch_limit.max(0) as usize,

@@ -154,9 +154,9 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
         "local repair must refine the measured mesh"
     );
     assert!(
-        initial_quality.contains("\"verdict\": \"fail\"")
+        initial_quality.contains("\"verdict\": \"warn\"")
             && pass_2_quality.contains("\"verdict\": \"warn\""),
-        "the compatible effective NXP case must improve the baseline verdict from fail to warn"
+        "the compatible effective NXP case must remain publishable while guarded metrics improve"
     );
     assert!(
         json_stat_max(&pass_2_quality, "aspect_ratio")
@@ -196,7 +196,7 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
     let decision = fs::read_to_string(decision).unwrap();
     assert!(decision.contains("\"schema_version\": 1"));
     assert!(decision.contains("\"decision\": \"accepted\""));
-    assert!(decision.contains("\"baseline_verdict\": \"fail\""));
+    assert!(decision.contains("\"baseline_verdict\": \"warn\""));
     assert!(decision.contains("\"candidate_verdict\": \"warn\""));
     assert!(decision.contains("\"selected_verdict\": \"warn\""));
     assert!(decision.contains("\"regressions\": []"));
@@ -227,7 +227,7 @@ fn project_block_quality_includes_hfield_gates() {
         .unwrap_or_else(|error| panic!("read {}: {error}", example_path.display()))
         .replace("!Nxp 40", "!Nxp 9")
         .replace("on_violation: AutoRefine", "on_violation: Block");
-    fs::write(&project_path, project).unwrap();
+    fs::write(&project_path, &project).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
         .current_dir(&root)
@@ -260,7 +260,7 @@ fn project_block_quality_includes_hfield_gates() {
 }
 
 #[test]
-fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses() {
+fn project_cli_does_not_deepen_a_conforming_hfield_transition_warning() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("project.yaml");
@@ -274,7 +274,7 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
     let project = example
         .replace("  niter: 1", "  niter: 20")
         .replace("  niter_refine: 1", "  niter_refine: 20");
-    fs::write(&project_path, project).unwrap();
+    fs::write(&project_path, &project).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
         .current_dir(&root)
@@ -286,79 +286,88 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
             "--quiet",
         ])
         .output()
-        .expect("run Project AutoRefine rejection CLI");
+        .expect("run Project AutoRefine no-op CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("auto_refine applying") && stderr.contains("auto_refine rejected pass 2"),
-        "the complete CLI path must generate and reject a real candidate:\n{stderr}"
+        stderr.contains("auto_refine kept the conforming HField mesh at pass 1")
+            && !stderr.contains("auto_refine applying"),
+        "a satisfied HField with only transition edge-CV warning must not be refined deeper:\n{stderr}"
     );
 
     let mut decisions = Vec::new();
     find_named(&root, "auto_refine_decision.json", &mut decisions);
-    let decision_path = decisions
-        .iter()
-        .find(|path| {
-            path.to_string_lossy()
-                .contains("quality_auto_refine/pass_2")
-        })
-        .expect("pass-2 rejection decision");
+    assert_eq!(
+        decisions.len(),
+        1,
+        "no candidate decision should be emitted"
+    );
+    let decision_path = &decisions[0];
     let decision = fs::read_to_string(decision_path).unwrap();
     assert!(decision.contains("\"schema_version\": 1"));
-    assert!(decision.contains("\"decision\": \"rejected\""));
-    assert!(decision.contains("\"baseline_verdict\": \"warn\""));
+    assert!(decision.contains("\"decision\": \"kept\""));
+    assert!(decision.contains(
+        "\"reason\": \"conforming HField transition warnings are not safely repaired by adding a refinement level\""
+    ));
+    assert!(decision.contains("\"baseline_verdict\": null"));
     assert!(decision.contains("\"candidate_verdict\": \"warn\""));
     assert!(decision.contains("\"selected_verdict\": \"warn\""));
-    assert!(decision.contains("\"regressions\": ["));
-    assert!(decision.contains("\"metric\": \"aspect_ratio.max\""));
-    assert!(decision.contains("\"preferred\": \"lower\""));
-    for key in ["baseline", "candidate", "delta"] {
-        assert!(
-            decision.contains(&format!("\"{key}\":")),
-            "rejection manifest is missing {key}:\n{decision}"
-        );
-    }
-
-    let baseline_gridfile = json_string(&decision, "baseline_gridfile");
     let candidate_gridfile = json_string(&decision, "candidate_gridfile");
     let selected_gridfile = json_string(&decision, "selected_gridfile");
-    assert_eq!(selected_gridfile, baseline_gridfile);
-    assert_ne!(selected_gridfile, candidate_gridfile);
-    for path in [&baseline_gridfile, &candidate_gridfile, &selected_gridfile] {
-        assert!(
-            root.join(path).is_file(),
-            "missing gridfile {}",
-            root.join(path).display()
-        );
-    }
+    assert_eq!(selected_gridfile, candidate_gridfile);
+    assert!(Path::new(&selected_gridfile).is_file());
 
-    let baseline_report = json_string(&decision, "baseline_quality_report");
-    let candidate_report = json_string(&decision, "candidate_quality_report");
-    let selected_report = json_string(&decision, "selected_quality_report");
-    assert_eq!(selected_report, baseline_report);
-    assert_ne!(selected_report, candidate_report);
-    let baseline_quality = fs::read_to_string(root.join(&baseline_report)).unwrap();
-    let candidate_quality = fs::read_to_string(root.join(&candidate_report)).unwrap();
+    let warn_root = root.join("warn");
+    fs::create_dir_all(&warn_root).unwrap();
+    let warn_project_path = warn_root.join("project.yaml");
+    fs::write(
+        &warn_project_path,
+        project.replace("on_violation: AutoRefine", "on_violation: Warn"),
+    )
+    .unwrap();
+    let warn_output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .current_dir(&warn_root)
+        .args([
+            "--project",
+            warn_project_path.to_str().unwrap(),
+            "--max-tris",
+            "100000",
+            "--quiet",
+        ])
+        .output()
+        .expect("run matching Project Warn CLI");
     assert!(
-        json_usize(&candidate_quality, "cell_count") > json_usize(&baseline_quality, "cell_count"),
-        "the rejected candidate must be a genuinely refined engine output"
+        warn_output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&warn_output.stderr)
     );
-    let guarded_shape_regressed = json_stat_max(&candidate_quality, "aspect_ratio")
-        > json_stat_max(&baseline_quality, "aspect_ratio")
-        || json_stat_max(&candidate_quality, "cell_edge_length_cv")
-            > json_stat_max(&baseline_quality, "cell_edge_length_cv")
-        || json_stat_max(&candidate_quality, "angle_deviation_deg")
-            > json_stat_max(&baseline_quality, "angle_deviation_deg")
-        || json_f64(&candidate_quality, "min_angle_deg")
-            < json_f64(&baseline_quality, "min_angle_deg");
-    assert!(
-        guarded_shape_regressed,
-        "a natural guarded-metric regression must explain the rejection"
+    let mut warn_quality_reports = Vec::new();
+    find_named(
+        &warn_root,
+        "quality_summary.json",
+        &mut warn_quality_reports,
     );
+    let warn_result_dir = warn_quality_reports
+        .iter()
+        .find(|path| !path.to_string_lossy().contains("quality_auto_refine"))
+        .and_then(|path| path.parent())
+        .expect("Warn result directory");
+    let warn_gridfile = fs::read_dir(warn_result_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension().and_then(|value| value.to_str()) == Some("nc4")
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with("gridfile_"))
+        })
+        .expect("Warn final gridfile");
     assert_eq!(
-        fs::read_to_string(root.join(selected_report)).unwrap(),
-        baseline_quality,
-        "the selected quality artifact must remain the baseline report"
+        fs::read(&selected_gridfile).unwrap(),
+        fs::read(&warn_gridfile).unwrap(),
+        "quality-policy strictness must not alter a conforming HField mesh when the bounded repair plan contains only transition edge-CV defects"
     );
 
     let _ = fs::remove_dir_all(root);
@@ -393,9 +402,10 @@ fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
     );
     let mut decisions = Vec::new();
     find_named(&root, "auto_refine_decision.json", &mut decisions);
-    assert!(decisions.iter().any(|path| path
-        .to_string_lossy()
-        .contains("quality_auto_refine/pass_1")));
+    assert!(decisions.iter().any(|path| {
+        path.to_string_lossy()
+            .contains("quality_auto_refine/pass_1")
+    }));
 
     let _ = fs::remove_dir_all(root);
 }

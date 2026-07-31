@@ -11,9 +11,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use earthmesh_project::{
-    read_close_mask_nml_points, read_lonlat_text_points, read_shapefile_polygon_rings,
-    transform_close_boundary, CloseBoundaryGeometry, CloseMaskFormat, GeometryPoint, MeshCellKind,
-    MeshDomainKind, ProjectConfig, ProjectLayerRole, RegionShape,
+    read_close_mask_nml_points, read_lonlat_text_points, read_shapefile_polygon_components,
+    read_shapefile_polygon_parts, transform_close_boundary, CloseBoundaryGeometry, CloseMaskFormat,
+    GeometryPoint, MeshCellKind, MeshDomainKind, ProjectConfig, ProjectLayerRole, RegionShape,
 };
 
 use crate::cama_binary_io::{
@@ -24,6 +24,7 @@ use crate::cama_reach_inventory::{
     write_cama_reach_inventory_point_geojson,
 };
 use crate::hydro_delivery_cells::write_gridfile_cell_polygons_geojson_with_report;
+use crate::hydro_delivery_intersections::HydroDomainComponent;
 use crate::hydro_delivery_refine_workflow::{run_project_hydro_workflow, HydroRefinementPolicy};
 use crate::hydro_workflow_types::HydroWorkflowReport;
 use crate::merit_hydro_io::{
@@ -52,11 +53,28 @@ pub struct ProjectHydroReport {
 
 #[derive(Clone, Debug)]
 struct ProjectHydroDomain {
-    rings: Vec<Vec<(f64, f64)>>,
+    components: Vec<HydroDomainComponent>,
     /// Directed west/south/east/north bbox used to filter mesh-cell centers.
     bbox: [f64; 4],
     /// Non-wrapping windows used by rectangular MERIT/CaMa readers.
     query_bboxes: Vec<[f64; 4]>,
+    /// Preserve O(1) center filtering for literal bbox domains. The densified
+    /// spherical components remain the source of truth for polygon clipping.
+    directed_bbox: Option<[f64; 4]>,
+}
+
+impl ProjectHydroDomain {
+    fn contains(&self, point: (f64, f64)) -> bool {
+        if let Some(bbox) = self.directed_bbox {
+            return directed_bbox_contains(bbox, point);
+        }
+        self.components.iter().any(|component| {
+            spherical_point_relation(point, &component.shell) != SphericalPointRelation::Outside
+                && component.holes.iter().all(|hole| {
+                    spherical_point_relation(point, hole) == SphericalPointRelation::Outside
+                })
+        })
+    }
 }
 
 /// Execute the hydro stage declared by `project.hydro_coast`, if present.
@@ -183,7 +201,7 @@ pub fn run_project_hydro_postprocess(
 
     let mut windows = Vec::new();
     // Read the larger of one native MERIT cell or the requested coast distance
-    // beyond the footprint. Workflow clipping remains tied to `domain.rings`,
+    // beyond the footprint. Workflow clipping remains tied to `domain.components`,
     // so the halo cannot enlarge the output domain.
     let coast_buffer_km = if plan.max_level >= 1
         && plan.coast_refinement_enabled
@@ -232,7 +250,7 @@ pub fn run_project_hydro_postprocess(
         write_merit_hydro_mask_geojson_layers(&windows, thresholds, &merit_dir, false, false)?;
     let coast_refinement_cells = if coast_buffer_km > 0.0 {
         let output = out_dir.join("coast_refinement_cells.geojson");
-        let count = write_project_coast_refinement_cells(
+        write_project_coast_refinement_cells(
             &cells_geojson,
             &merit.combined_geojson,
             &windows,
@@ -241,6 +259,7 @@ pub fn run_project_hydro_postprocess(
             plan.coast_ocean_refinement_enabled,
             &output,
         )?;
+        let count = filter_centered_geojson_to_domain(&output, &domain)?;
         eprintln!(
             "earthmesh_cli: project hydro: selected {count} coast-distance cells within {coast_buffer_km} km"
         );
@@ -268,8 +287,14 @@ pub fn run_project_hydro_postprocess(
         cama_river_mouth_count,
         cama_corridor_count,
     ) = if let Some(cama_root) = &cama_root {
-        let inventory =
+        let mut inventory =
             read_project_cama_inventory(cama_root, &domain.query_bboxes, plan.target_dx_km)?;
+        let before = inventory.records.len();
+        inventory
+            .records
+            .retain(|record| domain.contains((record.lon, record.lat)));
+        inventory.skipped_cells += before - inventory.records.len();
+        inventory.valid_channel_cells = inventory.records.len();
         let reaches = out_dir.join("cama_reaches.geojson");
         write_cama_reach_inventory_point_geojson(&inventory, &reaches)?;
         let reach_count = inventory.records.len();
@@ -312,7 +337,7 @@ pub fn run_project_hydro_postprocess(
         &plan.include_classes,
         0.0,
         false,
-        Some(&domain.rings),
+        Some(&domain.components),
         plan.max_level,
         None,
         landtype.as_ref().map(|_| gridfile),
@@ -347,7 +372,7 @@ pub fn run_project_hydro_postprocess(
         &manifest_path,
         format!(
             "{{\n  \"kind\": \"earthmesh_project_hydro\",\n  \"domain_parts\": {},\n  \"cell_count\": {},\n  \"rejected_unsupported_cell_count\": {},\n  \"merit_window_count\": {},\n  \"merit_stride\": {},\n  \"cama_reach_count\": {},\n  \"cama_river_mouth_count\": {},\n  \"cama_corridor_count\": {},\n  \"artifacts\": {{\n    \"cells_geojson\": \"{}\",\n    \"corridors_geojson\": \"{}\",\n    \"merit_corridors_geojson\": \"{}\",\n    \"cama_reaches_geojson\": {},\n    \"cama_river_mouths_geojson\": {},\n    \"cama_corridors_geojson\": {},\n    \"coast_refinement_cells_geojson\": {},\n    \"hydro_workflow_manifest\": \"{}\"\n  }}\n}}\n",
-            domain.rings.len(),
+            domain.components.len(),
             cell_export.emitted_cells,
             cell_export.rejected_unsupported_cells,
             merit_window_count,
@@ -405,11 +430,7 @@ fn expanded_merit_query_bboxes(
     } else {
         (lat_halo / max_abs_lat.to_radians().cos()).min(180.0)
     };
-    let span = if west <= east {
-        east - west
-    } else {
-        360.0 - (west - east)
-    };
+    let span = directed_longitude_span(west, east);
     if span + 2.0 * lon_halo >= 360.0 {
         return vec![[-180.0, expanded_south, 180.0, expanded_north]];
     }
@@ -419,6 +440,43 @@ fn expanded_merit_query_bboxes(
         wrap_lon(east + lon_halo),
         expanded_north,
     ])
+}
+
+fn filter_centered_geojson_to_domain(
+    path: &Path,
+    domain: &ProjectHydroDomain,
+) -> io::Result<usize> {
+    let root = crate::JsonParser::new(&crate::read_text_maybe_gzip(path)?).parse()?;
+    let mut features = Vec::new();
+    for feature in crate::geojson_feature_nodes(&root) {
+        let center = feature
+            .as_object()
+            .and_then(|object| object.get("properties"))
+            .and_then(crate::JsonNode::as_object)
+            .and_then(|properties| {
+                Some((
+                    properties.get("center_lon")?.as_f64()?,
+                    properties.get("center_lat")?.as_f64()?,
+                ))
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "coast refinement cell is missing center_lon/center_lat",
+                )
+            })?;
+        if domain.contains(center) {
+            features.push(crate::json_node_to_string(feature));
+        }
+    }
+    fs::write(
+        path,
+        format!(
+            "{{\"type\":\"FeatureCollection\",\"features\":[{}]}}\n",
+            features.join(",")
+        ),
+    )?;
+    Ok(features.len())
 }
 
 fn reset_project_hydro_output_dir(out_dir: &Path) -> io::Result<()> {
@@ -703,8 +761,14 @@ fn project_hydro_domain(
         } => domain_from_circle(*lon, *lat, *radius_km),
         RegionShape::Shapefile { path } => {
             let path = resolve_project_path(project_path, path);
-            let rings = read_shapefile_polygon_rings(&path)?;
-            domain_from_outer_rings(rings, "shapefile")
+            let components = read_shapefile_polygon_components(&path)?
+                .into_iter()
+                .map(|component| HydroDomainComponent {
+                    shell: component.shell,
+                    holes: component.holes,
+                })
+                .collect();
+            domain_from_components(components, "shapefile")
         }
         RegionShape::Close {
             path,
@@ -712,46 +776,53 @@ fn project_hydro_domain(
             boundary,
         } => {
             let path = resolve_project_path(project_path, path);
-            let rings = match format {
-                CloseMaskFormat::PolygonShp => read_shapefile_polygon_rings(&path)?,
-                CloseMaskFormat::LonLatText => vec![read_lonlat_text_points(&path)?],
-                CloseMaskFormat::Nml => vec![read_close_mask_nml_points(&path)?],
-                CloseMaskFormat::Netcdf => vec![crate::read_close_mask_netcdf(&path)?
+            let records = match format {
+                CloseMaskFormat::PolygonShp => read_shapefile_polygon_parts(&path)?,
+                CloseMaskFormat::LonLatText => vec![vec![read_lonlat_text_points(&path)?]],
+                CloseMaskFormat::Nml => vec![vec![read_close_mask_nml_points(&path)?]],
+                CloseMaskFormat::Netcdf => vec![vec![crate::read_close_mask_netcdf(&path)?
                     .points
                     .into_iter()
                     .map(|point| (point.lon, point.lat))
-                    .collect()],
+                    .collect()]],
             };
-            if rings.len() != 1
-                && !matches!(boundary, earthmesh_project::CloseBoundaryMode::Polyline)
+            if records.iter().map(Vec::len).sum::<usize>() != 1
+                && matches!(
+                    boundary,
+                    earthmesh_project::CloseBoundaryMode::EnclosingCap { .. }
+                )
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "transformed multi-part close domains are not supported",
+                    "enclosing_cap cannot preserve a multi-part close domain",
                 ));
             }
-            let mut transformed_rings = Vec::new();
-            for ring in rings {
-                let points = ring
-                    .iter()
-                    .map(|&(lon, lat)| GeometryPoint::new(lon, lat))
-                    .collect::<Vec<_>>();
-                match transform_close_boundary(&points, boundary)
-                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?
-                    .geometry
-                {
-                    CloseBoundaryGeometry::Polygon(points) => transformed_rings.push(
-                        points
-                            .into_iter()
-                            .map(|point| (point.lon, point.lat))
-                            .collect(),
-                    ),
-                    CloseBoundaryGeometry::EnclosingCap { center, radius_km } => {
-                        return domain_from_circle(center.lon, center.lat, radius_km)
+            let mut transformed_records = Vec::with_capacity(records.len());
+            for record in records {
+                let mut transformed_rings = Vec::with_capacity(record.len());
+                for ring in record {
+                    let points = ring
+                        .iter()
+                        .map(|&(lon, lat)| GeometryPoint::new(lon, lat))
+                        .collect::<Vec<_>>();
+                    match transform_close_boundary(&points, boundary)
+                        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?
+                        .geometry
+                    {
+                        CloseBoundaryGeometry::Polygon(points) => transformed_rings.push(
+                            points
+                                .into_iter()
+                                .map(|point| (point.lon, point.lat))
+                                .collect(),
+                        ),
+                        CloseBoundaryGeometry::EnclosingCap { center, radius_km } => {
+                            return domain_from_circle(center.lon, center.lat, radius_km)
+                        }
                     }
                 }
+                transformed_records.push(transformed_rings);
             }
-            domain_from_outer_rings(transformed_rings, "close domain")
+            domain_from_ring_records(transformed_records, "close domain")
         }
     }
 }
@@ -763,62 +834,122 @@ fn domain_from_directed_bbox(
     north: f64,
 ) -> io::Result<ProjectHydroDomain> {
     let query_bboxes = split_directed_bbox([west, south, east, north]);
-    let rings = query_bboxes.iter().map(|bbox| bbox_ring(*bbox)).collect();
+    let longitude_span = directed_longitude_span(west, east);
+    let component_count = (longitude_span / 90.0).ceil().max(1.0) as usize;
+    let components = (0..component_count)
+        .map(|index| {
+            let start = west + longitude_span * index as f64 / component_count as f64;
+            let end = west + longitude_span * (index + 1) as f64 / component_count as f64;
+            let segment_west = if index == 0 { west } else { wrap_lon(start) };
+            let segment_east = if index + 1 == component_count {
+                east
+            } else {
+                wrap_lon(end)
+            };
+            HydroDomainComponent::shell(bbox_ring([segment_west, south, segment_east, north]))
+        })
+        .collect();
     Ok(ProjectHydroDomain {
-        rings,
+        components,
         bbox: [west, south, east, north],
         query_bboxes,
+        directed_bbox: Some([west, south, east, north]),
     })
 }
 
 fn domain_from_circle(lon: f64, lat: f64, radius_km: f64) -> io::Result<ProjectHydroDomain> {
     const EARTH_RADIUS_KM: f64 = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
     let angular = radius_km / EARTH_RADIUS_KM;
-    let center_lat = lat.to_radians();
-    let center_lon = lon.to_radians();
+    let center = lonlat_unit((lon, lat));
+    let lon_radians = lon.to_radians();
+    let east = [-lon_radians.sin(), lon_radians.cos(), 0.0];
+    let north = spherical_cross(center, east);
     let mut ring = Vec::with_capacity(181);
     for index in 0..180 {
         let bearing = 2.0 * PI * index as f64 / 180.0;
-        let point_lat = (center_lat.sin() * angular.cos()
-            + center_lat.cos() * angular.sin() * bearing.cos())
-        .asin();
-        let point_lon = center_lon
-            + (bearing.sin() * angular.sin() * center_lat.cos())
-                .atan2(angular.cos() - center_lat.sin() * point_lat.sin());
-        ring.push((wrap_lon(point_lon.to_degrees()), point_lat.to_degrees()));
+        let tangent = [
+            north[0] * bearing.cos() + east[0] * bearing.sin(),
+            north[1] * bearing.cos() + east[1] * bearing.sin(),
+            north[2] * bearing.cos() + east[2] * bearing.sin(),
+        ];
+        let point = [
+            center[0] * angular.cos() + tangent[0] * angular.sin(),
+            center[1] * angular.cos() + tangent[1] * angular.sin(),
+            center[2] * angular.cos() + tangent[2] * angular.sin(),
+        ];
+        ring.push((
+            wrap_lon(point[1].atan2(point[0]).to_degrees()),
+            point[2].clamp(-1.0, 1.0).asin().to_degrees(),
+        ));
     }
     ring.push(ring[0]);
     domain_from_outer_rings(vec![ring], "circle")
 }
 
 fn domain_from_outer_rings(
-    mut rings: Vec<Vec<(f64, f64)>>,
+    rings: Vec<Vec<(f64, f64)>>,
     label: &str,
 ) -> io::Result<ProjectHydroDomain> {
-    rings.retain(|ring| ring.len() >= 3);
-    if rings.is_empty() {
+    domain_from_ring_records(vec![rings], label)
+}
+
+fn domain_from_ring_records(
+    records: Vec<Vec<Vec<(f64, f64)>>>,
+    label: &str,
+) -> io::Result<ProjectHydroDomain> {
+    if records.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{label} contains no polygon rings"),
         ));
     }
-    if rings
-        .iter()
-        .any(|ring| has_nonadjacent_duplicate_vertex(ring))
-    {
+    let mut components = Vec::new();
+    for (record, rings) in records.into_iter().enumerate() {
+        components.extend(domain_components_from_record(
+            rings,
+            &format!("{label} record {}", record + 1),
+        )?);
+    }
+    if components.is_empty() {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "{label} contains a bridged hole or self-touching polygon; Project hydro refuses to silently fill or flatten it"
-            ),
+            io::ErrorKind::InvalidData,
+            format!("{label} contains no polygon rings"),
         ));
     }
-    if has_nested_ring(&rings) {
+    domain_from_components(components, label)
+}
+
+fn domain_from_components(
+    components: Vec<HydroDomainComponent>,
+    label: &str,
+) -> io::Result<ProjectHydroDomain> {
+    if components.is_empty() {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "{label} contains polygon holes; the current Project hydro domain interface cannot represent holes without filling them"
-            ),
+            io::ErrorKind::InvalidData,
+            format!("{label} contains no polygon components"),
+        ));
+    }
+    let shells = components
+        .iter()
+        .map(|component| component.shell.clone())
+        .collect::<Vec<_>>();
+    let bbox = minimal_directed_bbox(&shells)?;
+    Ok(ProjectHydroDomain {
+        query_bboxes: split_directed_bbox(bbox),
+        bbox,
+        components,
+        directed_bbox: None,
+    })
+}
+
+fn domain_components_from_record(
+    mut rings: Vec<Vec<(f64, f64)>>,
+    label: &str,
+) -> io::Result<Vec<HydroDomainComponent>> {
+    if rings.is_empty() || rings.iter().any(|ring| ring.len() < 3) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} contains a polygon ring with fewer than three vertices"),
         ));
     }
     for ring in &mut rings {
@@ -826,12 +957,105 @@ fn domain_from_outer_rings(
             ring.push(ring[0]);
         }
     }
-    let bbox = minimal_directed_bbox(&rings)?;
-    Ok(ProjectHydroDomain {
-        query_bboxes: split_directed_bbox(bbox),
-        bbox,
-        rings,
-    })
+    if rings
+        .iter()
+        .any(|ring| has_nonadjacent_duplicate_vertex(ring))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{label} contains a bridged hole or self-touching polygon; Project hydro refuses to silently fill or flatten it"
+            ),
+        ));
+    }
+    let areas = rings
+        .iter()
+        .enumerate()
+        .map(|(ring_index, ring)| {
+            let points = ring
+                .iter()
+                .map(|&(lon, lat)| earthmesh_geometry::Point::new(lon, lat))
+                .collect::<Vec<_>>();
+            earthmesh_geometry::try_spherical_polygon_excess(
+                &points,
+                earthmesh_geometry::SphericalAreaBranch::Minor,
+            )
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{label} ring {} is invalid: {error}", ring_index + 1),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut contains = vec![vec![false; rings.len()]; rings.len()];
+    for left in 0..rings.len() {
+        for right in (left + 1)..rings.len() {
+            if spherical_rings_intersect_or_touch(&rings[left], &rings[right]) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{label} rings {} and {} intersect or touch; rings within one polygon record must be strictly nested or disjoint",
+                        left + 1,
+                        right + 1
+                    ),
+                ));
+            }
+            contains[right][left] = spherical_point_relation(rings[left][0], &rings[right])
+                == SphericalPointRelation::Inside;
+            contains[left][right] = spherical_point_relation(rings[right][0], &rings[left])
+                == SphericalPointRelation::Inside;
+            if contains[right][left] && contains[left][right] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{label} rings {} and {} have ambiguous spherical nesting",
+                        left + 1,
+                        right + 1
+                    ),
+                ));
+            }
+        }
+    }
+    let mut parents = vec![None; rings.len()];
+    for child in 0..rings.len() {
+        parents[child] = (0..rings.len())
+            .filter(|&candidate| {
+                candidate != child
+                    && areas[candidate] > areas[child] + 1.0e-12
+                    && contains[candidate][child]
+            })
+            .min_by(|&left, &right| areas[left].total_cmp(&areas[right]));
+    }
+    let mut depths = vec![0usize; rings.len()];
+    for index in 0..rings.len() {
+        let mut cursor = index;
+        for depth in 0..rings.len() {
+            let Some(parent) = parents[cursor] else {
+                depths[index] = depth;
+                break;
+            };
+            cursor = parent;
+            if depth + 1 == rings.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{label} contains cyclic polygon nesting"),
+                ));
+            }
+        }
+    }
+    Ok((0..rings.len())
+        .filter(|&index| depths[index] % 2 == 0)
+        .map(|shell| HydroDomainComponent {
+            shell: rings[shell].clone(),
+            holes: (0..rings.len())
+                .filter(|&index| {
+                    parents[index] == Some(shell) && depths[index] == depths[shell] + 1
+                })
+                .map(|index| rings[index].clone())
+                .collect(),
+        })
+        .collect())
 }
 
 fn has_nonadjacent_duplicate_vertex(ring: &[(f64, f64)]) -> bool {
@@ -851,16 +1075,74 @@ fn has_nonadjacent_duplicate_vertex(ring: &[(f64, f64)]) -> bool {
 }
 
 fn bbox_ring([west, south, east, north]: [f64; 4]) -> Vec<(f64, f64)> {
-    vec![
-        (west, south),
-        (east, south),
-        (east, north),
-        (west, north),
-        (west, south),
-    ]
+    const POLE_EPSILON: f64 = 1.0e-12;
+    const MAX_PARALLEL_STEP_DEGREES: f64 = 0.1;
+    let south_is_pole = south <= -90.0 + POLE_EPSILON;
+    let north_is_pole = north >= 90.0 - POLE_EPSILON;
+    if south_is_pole && north_is_pole {
+        return vec![
+            (east, 0.0),
+            (east, north),
+            (west, 0.0),
+            (west, south),
+            (east, 0.0),
+        ];
+    }
+    let span = directed_longitude_span(west, east);
+    let segments = (span / MAX_PARALLEL_STEP_DEGREES).ceil().max(1.0) as usize;
+    let longitude_at = |index: usize| wrap_lon(west + span * index as f64 / segments as f64);
+    let mut ring = Vec::with_capacity(2 * (segments + 1) + 1);
+    if south_is_pole {
+        ring.push((west, south));
+    } else {
+        ring.extend((0..=segments).map(|index| (longitude_at(index), south)));
+    }
+    if north_is_pole {
+        ring.push((east, north));
+    } else {
+        ring.extend(
+            (0..=segments)
+                .rev()
+                .map(|index| (longitude_at(index), north)),
+        );
+    }
+    ring.push(ring[0]);
+    ring
+}
+
+fn directed_longitude_span(west: f64, east: f64) -> f64 {
+    let raw = east - west;
+    if raw.abs() >= 360.0 - 1.0e-12 {
+        360.0
+    } else if raw < 0.0 {
+        raw + 360.0
+    } else {
+        raw
+    }
+}
+
+fn directed_bbox_contains([west, south, east, north]: [f64; 4], point: (f64, f64)) -> bool {
+    const EPSILON: f64 = 1.0e-12;
+    if !point.0.is_finite() || !point.1.is_finite() {
+        return false;
+    }
+    let in_latitude =
+        point.1 >= south.min(north) - EPSILON && point.1 <= south.max(north) + EPSILON;
+    if !in_latitude {
+        return false;
+    }
+    let span = directed_longitude_span(west, east);
+    if span >= 360.0 - EPSILON {
+        return true;
+    }
+    let offset = (wrap_lon(point.0) - wrap_lon(west)).rem_euclid(360.0);
+    offset <= span + EPSILON
 }
 
 fn split_directed_bbox([west, south, east, north]: [f64; 4]) -> Vec<[f64; 4]> {
+    if directed_longitude_span(west, east) >= 360.0 - 1.0e-12 {
+        return vec![[-180.0, south, 180.0, north]];
+    }
     if west <= east {
         vec![[west, south, east, north]]
     } else {
@@ -874,12 +1156,12 @@ fn minimal_directed_bbox(rings: &[Vec<(f64, f64)>]) -> io::Result<[f64; 4]> {
         .flatten()
         .map(|point| wrap_lon(point.0))
         .collect::<Vec<_>>();
-    let south = rings
+    let mut south = rings
         .iter()
         .flatten()
         .map(|point| point.1)
         .fold(f64::INFINITY, f64::min);
-    let north = rings
+    let mut north = rings
         .iter()
         .flatten()
         .map(|point| point.1)
@@ -889,6 +1171,21 @@ fn minimal_directed_bbox(rings: &[Vec<(f64, f64)>]) -> io::Result<[f64; 4]> {
             io::ErrorKind::InvalidData,
             "non-finite domain bounds",
         ));
+    }
+    let contains_north_pole = rings
+        .iter()
+        .any(|ring| spherical_point_relation((0.0, 90.0), ring) != SphericalPointRelation::Outside);
+    let contains_south_pole = rings.iter().any(|ring| {
+        spherical_point_relation((0.0, -90.0), ring) != SphericalPointRelation::Outside
+    });
+    if contains_north_pole || contains_south_pole {
+        if contains_north_pole {
+            north = 90.0;
+        }
+        if contains_south_pole {
+            south = -90.0;
+        }
+        return Ok([-180.0, south, 180.0, north]);
     }
     lons.sort_by(f64::total_cmp);
     lons.dedup_by(|a, b| (*a - *b).abs() < 1.0e-12);
@@ -917,41 +1214,167 @@ fn minimal_directed_bbox(rings: &[Vec<(f64, f64)>]) -> io::Result<[f64; 4]> {
     ])
 }
 
-fn has_nested_ring(rings: &[Vec<(f64, f64)>]) -> bool {
-    rings.iter().enumerate().any(|(index, ring)| {
-        let Some(&sample) = ring.first() else {
-            return false;
-        };
-        rings
-            .iter()
-            .enumerate()
-            .any(|(other_index, other)| index != other_index && point_in_ring(sample, other))
-    })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SphericalPointRelation {
+    Outside,
+    Boundary,
+    Inside,
 }
 
-fn point_in_ring(point: (f64, f64), ring: &[(f64, f64)]) -> bool {
-    let mut inside = false;
-    let px = point.0;
-    for index in 0..ring.len() {
-        let (mut ax, ay) = ring[index];
-        let (mut bx, by) = ring[(index + 1) % ring.len()];
-        while ax - px > 180.0 {
-            ax -= 360.0;
-        }
-        while ax - px < -180.0 {
-            ax += 360.0;
-        }
-        while bx - px > 180.0 {
-            bx -= 360.0;
-        }
-        while bx - px < -180.0 {
-            bx += 360.0;
-        }
-        if (ay > point.1) != (by > point.1) && px < (bx - ax) * (point.1 - ay) / (by - ay) + ax {
-            inside = !inside;
-        }
+type SphericalVector = [f64; 3];
+
+fn spherical_dot(left: SphericalVector, right: SphericalVector) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn spherical_cross(left: SphericalVector, right: SphericalVector) -> SphericalVector {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn spherical_normalize(vector: SphericalVector) -> Option<SphericalVector> {
+    let norm = spherical_dot(vector, vector).sqrt();
+    (norm > 64.0 * f64::EPSILON).then(|| [vector[0] / norm, vector[1] / norm, vector[2] / norm])
+}
+
+fn lonlat_unit((lon, lat): (f64, f64)) -> SphericalVector {
+    let lon = lon.to_radians();
+    let lat = lat.to_radians();
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+fn spherical_angle(left: SphericalVector, right: SphericalVector) -> f64 {
+    spherical_dot(left, right).clamp(-1.0, 1.0).acos()
+}
+
+fn point_on_minor_arc(
+    point: SphericalVector,
+    start: SphericalVector,
+    end: SphericalVector,
+) -> bool {
+    (spherical_angle(start, point) + spherical_angle(point, end) - spherical_angle(start, end))
+        .abs()
+        <= 1.0e-9
+}
+
+fn open_ring_units(ring: &[(f64, f64)]) -> Vec<SphericalVector> {
+    let mut units = ring.iter().copied().map(lonlat_unit).collect::<Vec<_>>();
+    if units.len() > 1
+        && spherical_dot(units[0], *units.last().expect("non-empty ring")) >= 1.0 - 1.0e-14
+    {
+        units.pop();
     }
-    inside
+    units
+}
+
+fn tangent_winding(point: SphericalVector, vertices: &[SphericalVector]) -> Option<f64> {
+    let mut winding = 0.0;
+    for index in 0..vertices.len() {
+        let start = vertices[index];
+        let end = vertices[(index + 1) % vertices.len()];
+        let start_tangent = spherical_normalize([
+            start[0] - point[0] * spherical_dot(point, start),
+            start[1] - point[1] * spherical_dot(point, start),
+            start[2] - point[2] * spherical_dot(point, start),
+        ])?;
+        let end_tangent = spherical_normalize([
+            end[0] - point[0] * spherical_dot(point, end),
+            end[1] - point[1] * spherical_dot(point, end),
+            end[2] - point[2] * spherical_dot(point, end),
+        ])?;
+        winding += spherical_dot(point, spherical_cross(start_tangent, end_tangent))
+            .atan2(spherical_dot(start_tangent, end_tangent));
+    }
+    Some(winding)
+}
+
+fn spherical_point_relation(point: (f64, f64), ring: &[(f64, f64)]) -> SphericalPointRelation {
+    let vertices = open_ring_units(ring);
+    if vertices.len() < 3 {
+        return SphericalPointRelation::Outside;
+    }
+    let point = lonlat_unit(point);
+    if (0..vertices.len()).any(|index| {
+        point_on_minor_arc(
+            point,
+            vertices[index],
+            vertices[(index + 1) % vertices.len()],
+        )
+    }) {
+        return SphericalPointRelation::Boundary;
+    }
+    let classify = |probe| tangent_winding(probe, &vertices).map(|winding| winding.abs() > PI);
+    let inside = classify(point).unwrap_or_else(|| {
+        let seed = if point[2].abs() < 0.9 {
+            [0.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let tangent = spherical_normalize(spherical_cross(seed, point))
+            .expect("axis seed is not parallel to point");
+        let perturbed = spherical_normalize([
+            point[0] + 1.0e-10 * tangent[0],
+            point[1] + 1.0e-10 * tangent[1],
+            point[2] + 1.0e-10 * tangent[2],
+        ])
+        .expect("perturbed unit point");
+        classify(perturbed).unwrap_or(false)
+    });
+    if inside {
+        SphericalPointRelation::Inside
+    } else {
+        SphericalPointRelation::Outside
+    }
+}
+
+fn minor_arcs_intersect_or_touch(
+    left_start: SphericalVector,
+    left_end: SphericalVector,
+    right_start: SphericalVector,
+    right_end: SphericalVector,
+) -> bool {
+    let intersections = spherical_cross(
+        spherical_cross(left_start, left_end),
+        spherical_cross(right_start, right_end),
+    );
+    if let Some(intersection) = spherical_normalize(intersections) {
+        for point in [
+            intersection,
+            [-intersection[0], -intersection[1], -intersection[2]],
+        ] {
+            if point_on_minor_arc(point, left_start, left_end)
+                && point_on_minor_arc(point, right_start, right_end)
+            {
+                return true;
+            }
+        }
+        false
+    } else {
+        [left_start, left_end]
+            .into_iter()
+            .any(|point| point_on_minor_arc(point, right_start, right_end))
+            || [right_start, right_end]
+                .into_iter()
+                .any(|point| point_on_minor_arc(point, left_start, left_end))
+    }
+}
+
+fn spherical_rings_intersect_or_touch(left: &[(f64, f64)], right: &[(f64, f64)]) -> bool {
+    let left = open_ring_units(left);
+    let right = open_ring_units(right);
+    (0..left.len()).any(|left_index| {
+        (0..right.len()).any(|right_index| {
+            minor_arcs_intersect_or_touch(
+                left[left_index],
+                left[(left_index + 1) % left.len()],
+                right[right_index],
+                right[(right_index + 1) % right.len()],
+            )
+        })
+    })
 }
 
 fn wrap_lon(lon: f64) -> f64 {
@@ -967,16 +1390,19 @@ fn wrap_lon(lon: f64) -> f64 {
 mod tests {
     use super::{
         cama_downstream_point, domain_from_circle, domain_from_directed_bbox,
-        domain_from_outer_rings, expanded_merit_query_bboxes, merge_corridor_geojson,
-        reset_project_hydro_output_dir, run_project_hydro_postprocess,
-        write_cama_reach_corridor_geojson,
+        domain_from_outer_rings, expanded_merit_query_bboxes, filter_centered_geojson_to_domain,
+        merge_corridor_geojson, project_hydro_domain, reset_project_hydro_output_dir,
+        run_project_hydro_postprocess, write_cama_reach_corridor_geojson,
     };
     use crate::cama_binary_io::{
         CamaBinaryGridSpec, CamaBinaryWindow, CamaReachInventoryReport, CamaReachRecord,
     };
     use crate::hydro_delivery_refine_workflow::run_hydro_workflow;
     use crate::resolve_project_path;
-    use earthmesh_project::{DomainConfig, HydroCoastConfig, ProjectConfig, RegionShape};
+    use earthmesh_project::{
+        CloseBoundaryMode, CloseMaskFormat, DomainConfig, HydroCoastConfig, ProjectConfig,
+        RegionShape,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -1074,7 +1500,83 @@ mod tests {
             domain.query_bboxes,
             vec![[170.0, -10.0, 180.0, 10.0], [-180.0, -10.0, -170.0, 10.0]]
         );
-        assert_eq!(domain.rings.len(), 2);
+        assert_eq!(domain.components.len(), 1);
+    }
+
+    #[test]
+    fn polar_and_full_longitude_bboxes_use_valid_spherical_components() {
+        let validate = |domain: &super::ProjectHydroDomain| {
+            for component in &domain.components {
+                let ring = component
+                    .shell
+                    .iter()
+                    .map(|&(lon, lat)| earthmesh_geometry::Point::new(lon, lat))
+                    .collect::<Vec<_>>();
+                earthmesh_geometry::try_spherical_polygon_excess(
+                    &ring,
+                    earthmesh_geometry::SphericalAreaBranch::Minor,
+                )
+                .expect("bbox component must be a valid minor-arc spherical polygon");
+            }
+        };
+
+        let north = domain_from_directed_bbox(-45.0, 80.0, 45.0, 90.0).unwrap();
+        validate(&north);
+        assert!(north.contains((0.0, 90.0)));
+        assert!(north.contains((0.0, 85.0)));
+        assert!(!north.contains((90.0, 85.0)));
+
+        let pole_to_pole = domain_from_directed_bbox(-20.0, -90.0, 20.0, 90.0).unwrap();
+        validate(&pole_to_pole);
+        assert!(pole_to_pole.contains((0.0, 0.0)));
+        assert!(!pole_to_pole.contains((90.0, 0.0)));
+
+        let mut full_longitude = domain_from_directed_bbox(-180.0, -80.0, 180.0, 80.0).unwrap();
+        validate(&full_longitude);
+        assert_eq!(full_longitude.components.len(), 4);
+        let edge_count = full_longitude
+            .components
+            .iter()
+            .map(|component| component.shell.len() - 1)
+            .sum::<usize>();
+        assert!(
+            edge_count <= 7_208,
+            "0.1-degree parallel sampling has a bounded full-world edge count: {edge_count}"
+        );
+        for longitude in [-179.0, -91.0, -1.0, 89.0, 179.0] {
+            assert!(full_longitude.contains((longitude, 0.0)));
+            assert!(full_longitude.contains((longitude, 80.0)));
+            assert!(
+                !full_longitude.contains((longitude, 80.001)),
+                "constant-latitude bbox edge must not bow poleward at {longitude}"
+            );
+        }
+        assert!(!full_longitude.contains((0.0, 85.0)));
+        full_longitude.components.clear();
+        assert!(
+            full_longitude.contains((179.0, 0.0)),
+            "literal bbox center filtering must use its O(1) predicate, not scan densified edges"
+        );
+        assert!(!full_longitude.contains((0.0, 85.0)));
+
+        let reversed_full_longitude =
+            domain_from_directed_bbox(180.0, -80.0, -180.0, 80.0).unwrap();
+        assert_eq!(
+            reversed_full_longitude.query_bboxes,
+            vec![[-180.0, -80.0, 180.0, 80.0]],
+            "the alternate full-longitude spelling must not become zero-width query windows"
+        );
+        assert_eq!(
+            expanded_merit_query_bboxes([180.0, -80.0, -180.0, 80.0], 0.0),
+            vec![[-180.0, -80.00083333333333, 180.0, 80.00083333333333]],
+            "MERIT query expansion must preserve a reversed full-longitude bbox"
+        );
+
+        let seam = domain_from_directed_bbox(170.0, 70.0, -170.0, 80.0).unwrap();
+        assert!(seam.contains((179.0, 79.999)));
+        assert!(seam.contains((-179.0, 80.0)));
+        assert!(!seam.contains((179.0, 80.001)));
+        assert!(!seam.contains((0.0, 75.0)));
     }
 
     #[test]
@@ -1112,11 +1614,11 @@ mod tests {
         let domain = domain_from_circle(179.0, 0.0, 500.0).unwrap();
         assert!(domain.bbox[0] > domain.bbox[2]);
         assert_eq!(domain.query_bboxes.len(), 2);
-        assert_eq!(domain.rings.len(), 1);
+        assert_eq!(domain.components.len(), 1);
     }
 
     #[test]
-    fn bridged_shapefile_hole_is_rejected_instead_of_silently_filled() {
+    fn self_touching_ring_is_rejected_instead_of_guessed() {
         let bridged = vec![
             (0.0, 0.0),
             (10.0, 0.0),
@@ -1134,6 +1636,224 @@ mod tests {
     }
 
     #[test]
+    fn nested_rings_preserve_holes_islands_and_multipart_union() {
+        let shell = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let hole = vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)];
+        let island = vec![(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
+        let disjoint = vec![(20.0, 0.0), (22.0, 0.0), (22.0, 2.0), (20.0, 2.0)];
+        let domain = domain_from_outer_rings(vec![hole, disjoint, island, shell], "test").unwrap();
+
+        assert_eq!(domain.components.len(), 3);
+        assert_eq!(
+            domain
+                .components
+                .iter()
+                .map(|component| component.holes.len())
+                .sum::<usize>(),
+            1
+        );
+        assert!(domain.contains((1.0, 1.0)));
+        assert!(!domain.contains((3.0, 3.0)));
+        assert!(domain.contains((5.0, 5.0)));
+        assert!(domain.contains((21.0, 1.0)));
+        assert_eq!(domain.bbox, [0.0, 0.0, 22.0, 10.0]);
+    }
+
+    #[test]
+    fn crossing_or_touching_rings_inside_one_record_are_rejected() {
+        let crossing = domain_from_outer_rings(
+            vec![
+                vec![(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0)],
+                vec![(4.0, -1.0), (8.0, -1.0), (8.0, 3.0), (4.0, 3.0)],
+            ],
+            "crossing",
+        )
+        .unwrap_err();
+        assert_eq!(crossing.kind(), std::io::ErrorKind::InvalidData);
+        assert!(crossing.to_string().contains("intersect or touch"));
+
+        let touching = domain_from_outer_rings(
+            vec![
+                vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
+                vec![(4.0, 1.0), (6.0, 1.0), (6.0, 3.0), (4.0, 3.0)],
+            ],
+            "touching",
+        )
+        .unwrap_err();
+        assert_eq!(touching.kind(), std::io::ErrorKind::InvalidData);
+        assert!(touching.to_string().contains("intersect or touch"));
+    }
+
+    #[test]
+    fn polar_circles_contain_their_centers_and_query_every_longitude() {
+        for latitude in [90.0, 89.0, -89.0, -90.0] {
+            let domain = domain_from_circle(17.0, latitude, 500.0).unwrap();
+            assert!(
+                domain.contains((17.0, latitude)),
+                "polar circle at {latitude} excluded its center"
+            );
+            assert_eq!(domain.bbox[0], -180.0);
+            assert_eq!(domain.bbox[2], 180.0);
+            assert_eq!(domain.query_bboxes.len(), 1);
+            if latitude > 0.0 {
+                assert_eq!(domain.bbox[3], 90.0);
+            } else {
+                assert_eq!(domain.bbox[1], -90.0);
+            }
+        }
+    }
+
+    #[test]
+    fn every_hole_boundary_edge_and_vertex_is_excluded() {
+        let midpoint = |left: (f64, f64), right: (f64, f64)| {
+            let left = super::lonlat_unit(left);
+            let right = super::lonlat_unit(right);
+            let point = super::spherical_normalize([
+                left[0] + right[0],
+                left[1] + right[1],
+                left[2] + right[2],
+            ])
+            .unwrap();
+            (
+                point[1].atan2(point[0]).to_degrees(),
+                point[2].asin().to_degrees(),
+            )
+        };
+        let domain = domain_from_outer_rings(
+            vec![
+                vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+                vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)],
+            ],
+            "hole-boundary",
+        )
+        .unwrap();
+        for point in [
+            midpoint((2.0, 2.0), (2.0, 8.0)),
+            midpoint((2.0, 8.0), (8.0, 8.0)),
+            midpoint((8.0, 8.0), (8.0, 2.0)),
+            midpoint((8.0, 2.0), (2.0, 2.0)),
+            (2.0, 2.0),
+            (8.0, 8.0),
+        ] {
+            assert!(!domain.contains(point), "hole boundary retained {point:?}");
+        }
+    }
+
+    #[test]
+    fn refinement_only_cells_inside_holes_are_removed() {
+        let root = temp_root("domain-cell-filter");
+        let path = root.join("refinement.geojson");
+        fs::write(
+            &path,
+            r#"{"type":"FeatureCollection","features":[
+              {"type":"Feature","properties":{"cell_id":"kept","center_lon":1,"center_lat":1},"geometry":null},
+              {"type":"Feature","properties":{"cell_id":"hole","center_lon":5,"center_lat":5},"geometry":null}
+            ]}"#,
+        )
+        .unwrap();
+        let domain = domain_from_outer_rings(
+            vec![
+                vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+                vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)],
+            ],
+            "test",
+        )
+        .unwrap();
+        assert_eq!(
+            filter_centered_geojson_to_domain(&path, &domain).unwrap(),
+            1
+        );
+        let filtered = fs::read_to_string(path).unwrap();
+        assert!(filtered.contains("\"kept\""));
+        assert!(!filtered.contains("\"hole\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn antimeridian_shell_and_hole_keep_directed_queries_and_containment() {
+        let shell = vec![
+            (170.0, -10.0),
+            (-170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+        ];
+        let hole = vec![(175.0, -5.0), (-175.0, -5.0), (-175.0, 5.0), (175.0, 5.0)];
+        let domain = domain_from_outer_rings(vec![hole, shell], "seam").unwrap();
+
+        assert_eq!(domain.components.len(), 1);
+        assert_eq!(domain.components[0].holes.len(), 1);
+        assert_eq!(domain.bbox, [170.0, -10.0, -170.0, 10.0]);
+        assert_eq!(domain.query_bboxes.len(), 2);
+        assert!(domain.contains((172.0, 0.0)));
+        assert!(!domain.contains((179.0, 0.0)));
+        assert!(!domain.contains((-179.0, 0.0)));
+        assert!(domain.contains((-172.0, 0.0)));
+    }
+
+    #[test]
+    fn shapefile_parts_reach_project_hydro_as_shell_and_hole() {
+        let root = temp_root("shapefile-hole");
+        let shape = root.join("domain.shp");
+        write_test_polygon_shp_parts(
+            &shape,
+            &[
+                vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+                vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)],
+            ],
+        );
+
+        let domain = project_hydro_domain(
+            &root.join("project.yaml"),
+            &RegionShape::Shapefile {
+                path: "domain.shp".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(domain.components.len(), 1);
+        assert_eq!(domain.components[0].holes.len(), 1);
+        assert!(domain.contains((1.0, 1.0)));
+        assert!(!domain.contains((5.0, 5.0)));
+
+        let close_domain = project_hydro_domain(
+            &root.join("project.yaml"),
+            &RegionShape::Close {
+                path: "domain.shp".to_string(),
+                format: CloseMaskFormat::PolygonShp,
+                boundary: CloseBoundaryMode::Polyline,
+            },
+        )
+        .unwrap();
+        assert_eq!(close_domain.components, domain.components);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn nested_shapefile_records_remain_a_union_not_a_hole() {
+        let root = temp_root("shapefile-record-union");
+        let shape = root.join("domain.shp");
+        write_test_polygon_shp_records(
+            &shape,
+            &[
+                vec![vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]],
+                vec![vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)]],
+            ],
+        );
+        let domain = project_hydro_domain(
+            &root.join("project.yaml"),
+            &RegionShape::Shapefile {
+                path: "domain.shp".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(domain.contains((1.0, 1.0)));
+        assert!(
+            domain.contains((5.0, 5.0)),
+            "a nested polygon in a separate SHP record is union, not a hole"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn disjoint_multi_part_domain_is_preserved() {
         let domain = domain_from_outer_rings(
             vec![
@@ -1143,8 +1863,102 @@ mod tests {
             "shapefile",
         )
         .unwrap();
-        assert_eq!(domain.rings.len(), 2);
+        assert_eq!(domain.components.len(), 2);
         assert_eq!(domain.bbox, [100.0, 10.0, 111.0, 21.0]);
+    }
+
+    fn write_test_polygon_shp_parts(path: &Path, rings: &[Vec<(f64, f64)>]) {
+        write_test_polygon_shp_records(path, &[rings.to_vec()]);
+    }
+
+    fn write_test_polygon_shp_records(path: &Path, records: &[Vec<Vec<(f64, f64)>>]) {
+        let records = records
+            .iter()
+            .map(|rings| {
+                rings
+                    .iter()
+                    .map(|ring| {
+                        let mut ring = ring.clone();
+                        ring.push(ring[0]);
+                        ring
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let points = records
+            .iter()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        let content_bytes = records
+            .iter()
+            .map(|rings| 44 + rings.len() * 4 + rings.iter().map(Vec::len).sum::<usize>() * 16)
+            .collect::<Vec<_>>();
+        let file_bytes = 100 + content_bytes.iter().map(|bytes| 8 + bytes).sum::<usize>();
+        let min_x = points
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::INFINITY, f64::min);
+        let min_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = points
+            .iter()
+            .map(|point| point.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let max_y = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut bytes = Vec::with_capacity(file_bytes);
+        bytes.extend(9994_i32.to_be_bytes());
+        bytes.extend([0_u8; 20]);
+        bytes.extend(((file_bytes / 2) as i32).to_be_bytes());
+        bytes.extend(1000_i32.to_le_bytes());
+        bytes.extend(5_i32.to_le_bytes());
+        for value in [min_x, min_y, max_x, max_y, 0.0, 0.0, 0.0, 0.0] {
+            bytes.extend(value.to_le_bytes());
+        }
+        for (record_index, (rings, content_bytes)) in records.iter().zip(content_bytes).enumerate()
+        {
+            let record_points = rings.iter().flatten().copied().collect::<Vec<_>>();
+            let record_min_x = record_points
+                .iter()
+                .map(|point| point.0)
+                .fold(f64::INFINITY, f64::min);
+            let record_min_y = record_points
+                .iter()
+                .map(|point| point.1)
+                .fold(f64::INFINITY, f64::min);
+            let record_max_x = record_points
+                .iter()
+                .map(|point| point.0)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let record_max_y = record_points
+                .iter()
+                .map(|point| point.1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            bytes.extend(((record_index + 1) as i32).to_be_bytes());
+            bytes.extend(((content_bytes / 2) as i32).to_be_bytes());
+            bytes.extend(5_i32.to_le_bytes());
+            for value in [record_min_x, record_min_y, record_max_x, record_max_y] {
+                bytes.extend(value.to_le_bytes());
+            }
+            bytes.extend((rings.len() as i32).to_le_bytes());
+            bytes.extend((record_points.len() as i32).to_le_bytes());
+            let mut start = 0usize;
+            for ring in rings {
+                bytes.extend((start as i32).to_le_bytes());
+                start += ring.len();
+            }
+            for (lon, lat) in record_points {
+                bytes.extend(lon.to_le_bytes());
+                bytes.extend(lat.to_le_bytes());
+            }
+        }
+        fs::write(path, bytes).unwrap();
     }
 
     #[test]

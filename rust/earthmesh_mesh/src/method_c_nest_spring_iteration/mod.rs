@@ -1,6 +1,120 @@
 use super::*;
 use rayon::prelude::*;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MethodCNestSpringIterationFailure {
+    BufferShapeMismatch,
+    MissingEdgePoint {
+        edge_id: usize,
+    },
+    InvalidEdgeDistance {
+        edge_id: usize,
+    },
+    MissingNeighborEdge {
+        edge_id: usize,
+        neighbor_edge_id: usize,
+    },
+    ZeroNeighborDistance {
+        edge_id: usize,
+    },
+    NonFiniteAngleRatio {
+        edge_id: usize,
+    },
+    InvalidLocalArea {
+        edge_id: usize,
+        area1_squared: f32,
+        area2_squared: f32,
+    },
+    TooManyNeighbors {
+        m_point: usize,
+        count: usize,
+    },
+    MissingEdgeDisplacement {
+        m_point: usize,
+        edge_id: usize,
+    },
+    InvalidProjectionNorm {
+        m_point: usize,
+    },
+}
+
+impl std::fmt::Display for MethodCNestSpringIterationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::BufferShapeMismatch => formatter.write_str("buffer shape mismatch"),
+            Self::MissingEdgePoint { edge_id } => {
+                write!(formatter, "missing point for U edge {edge_id}")
+            }
+            Self::InvalidEdgeDistance { edge_id } => {
+                write!(formatter, "zero or non-finite distance on U edge {edge_id}")
+            }
+            Self::MissingNeighborEdge {
+                edge_id,
+                neighbor_edge_id,
+            } => write!(
+                formatter,
+                "U edge {edge_id} references missing neighbor U edge {neighbor_edge_id}"
+            ),
+            Self::ZeroNeighborDistance { edge_id } => {
+                write!(formatter, "U edge {edge_id} has a zero-distance neighbor")
+            }
+            Self::NonFiniteAngleRatio { edge_id } => {
+                write!(formatter, "U edge {edge_id} has a non-finite angle ratio")
+            }
+            Self::InvalidLocalArea {
+                edge_id,
+                area1_squared,
+                area2_squared,
+            } => write!(
+                formatter,
+                "U edge {edge_id} has invalid adjacent Heron areas squared \
+                 ({area1_squared}, {area2_squared})"
+            ),
+            Self::TooManyNeighbors { m_point, count } => {
+                write!(formatter, "M point {m_point} has {count} neighbors")
+            }
+            Self::MissingEdgeDisplacement { m_point, edge_id } => write!(
+                formatter,
+                "M point {m_point} references missing displacement for U edge {edge_id}"
+            ),
+            Self::InvalidProjectionNorm { m_point } => {
+                write!(
+                    formatter,
+                    "M point {m_point} has zero or non-finite projection norm"
+                )
+            }
+        }
+    }
+}
+
+impl MethodCNestSpringIterationFailure {
+    pub(crate) fn edge_id(self) -> Option<usize> {
+        match self {
+            Self::MissingEdgePoint { edge_id }
+            | Self::InvalidEdgeDistance { edge_id }
+            | Self::ZeroNeighborDistance { edge_id }
+            | Self::NonFiniteAngleRatio { edge_id }
+            | Self::InvalidLocalArea { edge_id, .. }
+            | Self::MissingNeighborEdge { edge_id, .. } => Some(edge_id),
+            Self::MissingEdgeDisplacement { edge_id, .. } => Some(edge_id),
+            Self::BufferShapeMismatch
+            | Self::TooManyNeighbors { .. }
+            | Self::InvalidProjectionNorm { .. } => None,
+        }
+    }
+
+    pub(crate) fn adjacent_area_squared(self) -> Option<[f32; 2]> {
+        match self {
+            Self::InvalidLocalArea {
+                area1_squared,
+                area2_squared,
+                ..
+            } => Some([area1_squared, area2_squared]),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn method_c_nest_mrow_distance_multiplier(mrow1: isize, mrow2: isize) -> f64 {
     let mrmax = mrow1.max(mrow2);
     let mrmin = mrow1.min(mrow2);
@@ -54,6 +168,7 @@ pub(crate) struct MethodCNestSpringScratch {
     pub(crate) compu: Vec<bool>,
     pub(crate) target_level_base: Vec<f32>,
     pub(crate) target_mrow_multiplier: Vec<f32>,
+    pub(crate) target_min_distance: f32,
     pub(crate) min_area_squared: f32,
     pub(crate) radius: Option<f64>,
     pub(crate) edge_vectors: Vec<CartesianPoint>,
@@ -113,6 +228,7 @@ impl MethodCNestSpringScratch {
             compu,
             target_level_base,
             target_mrow_multiplier,
+            target_min_distance: dmin,
             min_area_squared,
             radius,
             edge_vectors: vec![CartesianPoint::new(0.0, 0.0, 0.0); edge_count],
@@ -142,6 +258,7 @@ impl MethodCNestSpringScratch {
         movable_m_points: &[bool],
         edge_targets_m: &[f64],
         project_to_radius: bool,
+        preserve_mrow: bool,
     ) -> Option<Self> {
         let (moveu, compu) = build_nest_move_masks(topology, movable_m_points)?;
         let edge_count = topology.edge_m_points.len();
@@ -170,12 +287,19 @@ impl MethodCNestSpringScratch {
         let min_area_squared = 0.1875_f32 * dmin.powi(4);
 
         let mut target_level_base = vec![0.0_f32; edge_count];
-        let target_mrow_multiplier = vec![1.0_f32; edge_count];
+        let mut target_mrow_multiplier = vec![1.0_f32; edge_count];
         for edge_id in 2..edge_count {
             if !moveu[edge_id] {
                 continue;
             }
             target_level_base[edge_id] = (edge_targets_m[edge_id] as f32) / 1.2;
+            if preserve_mrow {
+                let edge = *mesh.u_edges.get(edge_id)?;
+                let face1 = *mesh.w_faces.get(edge.iw[0])?;
+                let face2 = *mesh.w_faces.get(edge.iw[1])?;
+                target_mrow_multiplier[edge_id] =
+                    method_c_nest_mrow_distance_multiplier(face1.mrow, face2.mrow) as f32;
+            }
         }
 
         let radius = if project_to_radius {
@@ -189,6 +313,7 @@ impl MethodCNestSpringScratch {
             compu,
             target_level_base,
             target_mrow_multiplier,
+            target_min_distance: dmin,
             min_area_squared,
             radius,
             edge_vectors: vec![CartesianPoint::new(0.0, 0.0, 0.0); edge_count],
@@ -209,7 +334,7 @@ pub(crate) fn method_c_nest_spring_iteration_into(
     movable_m_points: &[bool],
     scratch: &mut MethodCNestSpringScratch,
     updated_m_points: &mut [CartesianPoint],
-) -> Option<()> {
+) -> Result<(), MethodCNestSpringIterationFailure> {
     // Destructure once: routing every hot-loop slice access through
     // `scratch.field` projections degraded inlining/alias analysis (profiles
     // showed `SliceIndex::get` surfacing as a real call); independent local
@@ -219,6 +344,7 @@ pub(crate) fn method_c_nest_spring_iteration_into(
         compu,
         target_level_base,
         target_mrow_multiplier,
+        target_min_distance: _,
         min_area_squared,
         radius,
         edge_vectors,
@@ -236,7 +362,7 @@ pub(crate) fn method_c_nest_spring_iteration_into(
         || edge_displacements.len() != topology.edge_m_points.len()
         || updated_m_points.len() != m_points.len()
     {
-        return None;
+        return Err(MethodCNestSpringIterationFailure::BufferShapeMismatch);
     }
 
     edge_vectors
@@ -246,21 +372,28 @@ pub(crate) fn method_c_nest_spring_iteration_into(
         .skip(2)
         .try_for_each(|(edge_id, (edge_vector, edge_distance))| {
             if !compu[edge_id] {
-                return Some(());
+                return Ok(());
             }
-            let [im1, im2] = topology.edge_m_points[edge_id];
-            let point1 = *m_points.get(im1)?;
-            let point2 = *m_points.get(im2)?;
+            let [im1, im2] = *topology
+                .edge_m_points
+                .get(edge_id)
+                .ok_or(MethodCNestSpringIterationFailure::MissingEdgePoint { edge_id })?;
+            let point1 = *m_points
+                .get(im1)
+                .ok_or(MethodCNestSpringIterationFailure::MissingEdgePoint { edge_id })?;
+            let point2 = *m_points
+                .get(im2)
+                .ok_or(MethodCNestSpringIterationFailure::MissingEdgePoint { edge_id })?;
             let dx = (point2.x - point1.x) as f32;
             let dy = (point2.y - point1.y) as f32;
             let dz = (point2.z - point1.z) as f32;
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
             if distance == 0.0 || !distance.is_finite() {
-                return None;
+                return Err(MethodCNestSpringIterationFailure::InvalidEdgeDistance { edge_id });
             }
             *edge_vector = CartesianPoint::new(dx as f64, dy as f64, dz as f64);
             *edge_distance = distance as f64;
-            Some(())
+            Ok(())
         })?;
 
     edge_displacements
@@ -269,23 +402,36 @@ pub(crate) fn method_c_nest_spring_iteration_into(
         .skip(2)
         .try_for_each(|(edge_id, edge_displacement)| {
             if !moveu[edge_id] {
-                return Some(());
+                return Ok(());
             }
-            let [iu1, iu2, iu3, iu4] = topology.edge_neighbor_u[edge_id];
-            let dist = *edge_distances.get(edge_id)? as f32;
-            let dist1 = *edge_distances.get(iu1)? as f32;
-            let dist2 = *edge_distances.get(iu2)? as f32;
-            let dist3 = *edge_distances.get(iu3)? as f32;
-            let dist4 = *edge_distances.get(iu4)? as f32;
+            let [iu1, iu2, iu3, iu4] = *topology.edge_neighbor_u.get(edge_id).ok_or(
+                MethodCNestSpringIterationFailure::MissingNeighborEdge {
+                    edge_id,
+                    neighbor_edge_id: edge_id,
+                },
+            )?;
+            let distance = |neighbor_edge_id| {
+                edge_distances.get(neighbor_edge_id).copied().ok_or(
+                    MethodCNestSpringIterationFailure::MissingNeighborEdge {
+                        edge_id,
+                        neighbor_edge_id,
+                    },
+                )
+            };
+            let dist = distance(edge_id)? as f32;
+            let dist1 = distance(iu1)? as f32;
+            let dist2 = distance(iu2)? as f32;
+            let dist3 = distance(iu3)? as f32;
+            let dist4 = distance(iu4)? as f32;
             if dist1 == 0.0 || dist2 == 0.0 || dist3 == 0.0 || dist4 == 0.0 {
-                return None;
+                return Err(MethodCNestSpringIterationFailure::ZeroNeighborDistance { edge_id });
             }
 
             let twocosphi3 = (dist1.powi(2) + dist2.powi(2) - dist.powi(2)) / (dist1 * dist2);
             let twocosphi4 = (dist3.powi(2) + dist4.powi(2) - dist.powi(2)) / (dist3 * dist4);
             let angle_ratio = (twocosphi3 + twocosphi4).clamp(0.15, 1.2);
             if !angle_ratio.is_finite() {
-                return None;
+                return Err(MethodCNestSpringIterationFailure::NonFiniteAngleRatio { edge_id });
             }
 
             let mut target_distance = target_level_base[edge_id] * angle_ratio;
@@ -297,7 +443,11 @@ pub(crate) fn method_c_nest_spring_iteration_into(
             let area2_squared = s2 * (s2 - dist) * (s2 - dist3) * (s2 - dist4);
             let min_local_area_squared = area1_squared.min(area2_squared);
             if min_local_area_squared <= 0.0 || !min_local_area_squared.is_finite() {
-                return None;
+                return Err(MethodCNestSpringIterationFailure::InvalidLocalArea {
+                    edge_id,
+                    area1_squared,
+                    area2_squared,
+                });
             }
             let area_ratio = (*min_area_squared / min_local_area_squared).max(1.0);
             target_distance *= area_ratio;
@@ -309,7 +459,7 @@ pub(crate) fn method_c_nest_spring_iteration_into(
                 (edge_vector.y as f32 * frac_change) as f64,
                 (edge_vector.z as f32 * frac_change) as f64,
             );
-            Some(())
+            Ok(())
         })?;
 
     updated_m_points
@@ -318,19 +468,27 @@ pub(crate) fn method_c_nest_spring_iteration_into(
         .skip(2)
         .try_for_each(|(im, updated_point)| {
             if !movable_m_points[im] {
-                return Some(());
+                return Ok(());
             }
 
             let npoly = topology.m_npoly[im];
             if npoly > 7 {
-                return None;
+                return Err(MethodCNestSpringIterationFailure::TooManyNeighbors {
+                    m_point: im,
+                    count: npoly,
+                });
             }
             // Reading the input buffer is identical to the historical read of the
             // freshly cloned output slot (they held the same value at this point).
             let mut point = m_points[im];
             for j in 0..npoly {
                 let edge_id = topology.m_u_edges[im][j];
-                let displacement = *edge_displacements.get(edge_id)?;
+                let displacement = *edge_displacements.get(edge_id).ok_or(
+                    MethodCNestSpringIterationFailure::MissingEdgeDisplacement {
+                        m_point: im,
+                        edge_id,
+                    },
+                )?;
                 let direction = topology.directions[im][j] as f32;
                 point.x += (direction * displacement.x as f32) as f64;
                 point.y += (direction * displacement.y as f32) as f64;
@@ -340,7 +498,9 @@ pub(crate) fn method_c_nest_spring_iteration_into(
             if let Some(radius) = *radius {
                 let norm = magnitude(point);
                 if norm == 0.0 || !norm.is_finite() {
-                    return None;
+                    return Err(MethodCNestSpringIterationFailure::InvalidProjectionNorm {
+                        m_point: im,
+                    });
                 }
                 let expansion = radius / norm;
                 *updated_point = CartesianPoint::new(
@@ -351,8 +511,8 @@ pub(crate) fn method_c_nest_spring_iteration_into(
             } else {
                 *updated_point = point;
             }
-            Some(())
+            Ok(())
         })?;
 
-    Some(())
+    Ok(())
 }

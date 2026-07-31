@@ -6,6 +6,20 @@ use std::path::Path;
 const WGS84_A: f64 = 6_378_137.0;
 const WGS84_E2: f64 = 0.006_694_379_990_141_316_5;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapefilePolygonComponent {
+    pub shell: Vec<(f64, f64)>,
+    pub holes: Vec<Vec<(f64, f64)>>,
+}
+
+impl ShapefilePolygonComponent {
+    /// Lower one validated spherical component to the legacy close-mask
+    /// even/odd ring representation used by the current engine.
+    pub fn into_close_ring(self) -> io::Result<Vec<(f64, f64)>> {
+        assemble_polygon_component(self)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ShapefileCrs {
     Wgs84,
@@ -54,6 +68,30 @@ pub fn write_close_mask_nml(
 }
 
 pub fn read_shapefile_polygon_rings(path: &Path) -> io::Result<Vec<Vec<(f64, f64)>>> {
+    read_shapefile_polygon_components(path)?
+        .into_iter()
+        .map(ShapefilePolygonComponent::into_close_ring)
+        .collect()
+}
+
+/// Read validated polygon components while preserving SHP feature-record union
+/// semantics and even/odd nesting within each record.
+pub fn read_shapefile_polygon_components(
+    path: &Path,
+) -> io::Result<Vec<ShapefilePolygonComponent>> {
+    polygon_components_from_records(read_shapefile_polygon_records(path)?, "shapefile")
+}
+
+/// Read native polygon parts grouped by their SHP record.
+///
+/// A record's rings use even/odd nesting; records are independent polygon
+/// features whose areas are unioned. Keeping this boundary prevents a polygon
+/// nested inside a different record from being misclassified as a hole.
+pub fn read_shapefile_polygon_parts(path: &Path) -> io::Result<Vec<Vec<Vec<(f64, f64)>>>> {
+    read_shapefile_polygon_records(path)
+}
+
+fn read_shapefile_polygon_records(path: &Path) -> io::Result<Vec<Vec<Vec<(f64, f64)>>>> {
     let bytes = fs::read(path)?;
     if bytes.len() < 100 || be_i32(&bytes, 0)? != 9994 || le_i32(&bytes, 28)? != 1000 {
         return Err(io::Error::new(
@@ -62,7 +100,7 @@ pub fn read_shapefile_polygon_rings(path: &Path) -> io::Result<Vec<Vec<(f64, f64
         ));
     }
     let mut offset = 100;
-    let mut rings = Vec::new();
+    let mut records = Vec::new();
     while offset < bytes.len() {
         if offset + 8 > bytes.len() {
             return Err(io::Error::new(
@@ -83,18 +121,23 @@ pub fn read_shapefile_polygon_rings(path: &Path) -> io::Result<Vec<Vec<(f64, f64
                 "truncated shapefile record content",
             ));
         }
-        read_polygon_record(&bytes[start..end], &mut rings)?;
+        if let Some(rings) = read_polygon_record(&bytes[start..end])? {
+            records.push(rings);
+        }
         offset = end;
     }
-    if rings.is_empty() {
+    if records.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "shapefile contains no polygon rings",
         ));
     }
-    let crs = read_shapefile_crs(path, &rings)?;
-    reproject_rings(&mut rings, &crs)?;
-    Ok(rings)
+    let all_rings = records.iter().flatten().cloned().collect::<Vec<_>>();
+    let crs = read_shapefile_crs(path, &all_rings)?;
+    for rings in &mut records {
+        reproject_rings(rings, &crs)?;
+    }
+    Ok(records)
 }
 
 fn read_lonlat_rows<'a>(lines: impl Iterator<Item = &'a str>) -> io::Result<Vec<(f64, f64)>> {
@@ -343,7 +386,7 @@ fn validate_lonlat(lon: f64, lat: f64) -> io::Result<()> {
     Ok(())
 }
 
-fn read_polygon_record(content: &[u8], out: &mut Vec<Vec<(f64, f64)>>) -> io::Result<()> {
+fn read_polygon_record(content: &[u8]) -> io::Result<Option<Vec<Vec<(f64, f64)>>>> {
     if content.len() < 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -352,7 +395,7 @@ fn read_polygon_record(content: &[u8], out: &mut Vec<Vec<(f64, f64)>>) -> io::Re
     }
     let shape_type = le_i32(content, 0)?;
     if shape_type == 0 {
-        return Ok(());
+        return Ok(None);
     }
     if !matches!(shape_type, 5 | 15 | 25) {
         return Err(io::Error::new(
@@ -395,6 +438,12 @@ fn read_polygon_record(content: &[u8], out: &mut Vec<Vec<(f64, f64)>>) -> io::Re
     let mut starts = (0..num_parts)
         .map(|index| le_usize(content, 44 + index * 4))
         .collect::<io::Result<Vec<_>>>()?;
+    if starts.first().copied() != Some(0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "first polygon part must start at point zero",
+        ));
+    }
     starts.push(num_points);
     let mut rings = Vec::new();
     for pair in starts.windows(2) {
@@ -414,72 +463,232 @@ fn read_polygon_record(content: &[u8], out: &mut Vec<Vec<(f64, f64)>>) -> io::Re
         if same_point(ring.first(), ring.last()) {
             ring.pop();
         }
-        if ring.len() >= 3 && ring.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
-            rings.push(ring);
+        if ring.len() < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "polygon part has fewer than three distinct vertices",
+            ));
         }
+        if !ring.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "polygon part contains a non-finite coordinate",
+            ));
+        }
+        rings.push(ring);
     }
-    out.extend(assemble_polygon_rings(rings));
-    Ok(())
+    if rings.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rings))
+    }
 }
 
 /// Convert an ESRI multipart polygon into simple rings that retain holes.
 /// A hole is joined to its containing shell with a doubled bridge; the existing
 /// even/odd point-in-polygon engine then excludes the hole without a parallel
 /// topology representation or a new mask file format.
-fn assemble_polygon_rings(mut rings: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
-    if rings.len() < 2 {
-        return rings;
+fn polygon_components_from_records(
+    records: Vec<Vec<Vec<(f64, f64)>>>,
+    label: &str,
+) -> io::Result<Vec<ShapefilePolygonComponent>> {
+    let mut components = Vec::new();
+    for (record, rings) in records.into_iter().enumerate() {
+        components.extend(polygon_components_from_record(
+            rings,
+            &format!("{label} record {}", record + 1),
+        )?);
+    }
+    if components.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} contains no polygon rings"),
+        ));
+    }
+    Ok(components)
+}
+
+fn polygon_components_from_record(
+    mut rings: Vec<Vec<(f64, f64)>>,
+    label: &str,
+) -> io::Result<Vec<ShapefilePolygonComponent>> {
+    if rings.is_empty() || rings.iter().any(|ring| ring.len() < 3) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} contains a polygon ring with fewer than three vertices"),
+        ));
+    }
+    for ring in &mut rings {
+        if ring.first() != ring.last() {
+            ring.push(ring[0]);
+        }
+    }
+    let areas = rings
+        .iter()
+        .enumerate()
+        .map(|(ring_index, ring)| {
+            let points = ring
+                .iter()
+                .map(|&(lon, lat)| earthmesh_geometry::Point::new(lon, lat))
+                .collect::<Vec<_>>();
+            earthmesh_geometry::try_spherical_polygon_excess(
+                &points,
+                earthmesh_geometry::SphericalAreaBranch::Minor,
+            )
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{label} ring {} is invalid: {error}", ring_index + 1),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut contains = vec![vec![false; rings.len()]; rings.len()];
+    for left in 0..rings.len() {
+        for right in (left + 1)..rings.len() {
+            if spherical_rings_intersect_or_touch(&rings[left], &rings[right]) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{label} rings {} and {} intersect or touch; rings within one polygon record must be strictly nested or disjoint",
+                        left + 1,
+                        right + 1
+                    ),
+                ));
+            }
+            contains[right][left] = spherical_point_relation(rings[left][0], &rings[right])
+                == SphericalPointRelation::Inside;
+            contains[left][right] = spherical_point_relation(rings[right][0], &rings[left])
+                == SphericalPointRelation::Inside;
+            if contains[right][left] && contains[left][right] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{label} rings {} and {} have ambiguous spherical nesting",
+                        left + 1,
+                        right + 1
+                    ),
+                ));
+            }
+        }
     }
     let mut parents = vec![None; rings.len()];
     for child in 0..rings.len() {
-        let probe = rings[child][0];
         parents[child] = (0..rings.len())
             .filter(|&candidate| {
                 candidate != child
-                    && signed_area(&rings[candidate]).abs() > signed_area(&rings[child]).abs()
-                    && point_in_ring(probe, &rings[candidate])
+                    && areas[candidate] > areas[child] + 1.0e-12
+                    && contains[candidate][child]
             })
-            .min_by(|&a, &b| {
-                signed_area(&rings[a])
-                    .abs()
-                    .total_cmp(&signed_area(&rings[b]).abs())
-            });
+            .min_by(|&left, &right| areas[left].total_cmp(&areas[right]));
     }
-    let depth = |mut index: usize| {
-        let mut value = 0usize;
-        while let Some(parent) = parents[index] {
-            value += 1;
-            index = parent;
+    let mut depths = vec![0usize; rings.len()];
+    for index in 0..rings.len() {
+        let mut cursor = index;
+        for depth in 0..rings.len() {
+            let Some(parent) = parents[cursor] else {
+                depths[index] = depth;
+                break;
+            };
+            cursor = parent;
+            if depth + 1 == rings.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{label} contains cyclic polygon nesting"),
+                ));
+            }
         }
-        value
-    };
-    let mut output = Vec::new();
-    for shell_index in 0..rings.len() {
-        let shell_depth = depth(shell_index);
-        if shell_depth % 2 != 0 {
-            continue;
-        }
-        let mut shell = std::mem::take(&mut rings[shell_index]);
-        let mut holes = (0..rings.len())
-            .filter(|&index| parents[index] == Some(shell_index) && depth(index) == shell_depth + 1)
-            .collect::<Vec<_>>();
-        holes.sort_by(|&a, &b| ring_rightmost_x(&rings[b]).total_cmp(&ring_rightmost_x(&rings[a])));
-        for hole_index in holes {
-            let hole = std::mem::take(&mut rings[hole_index]);
-            shell = bridge_hole(shell, hole);
-        }
-        output.push(shell);
     }
-    output
+    Ok((0..rings.len())
+        .filter(|&index| depths[index] % 2 == 0)
+        .map(|shell| ShapefilePolygonComponent {
+            shell: rings[shell].clone(),
+            holes: (0..rings.len())
+                .filter(|&index| {
+                    parents[index] == Some(shell) && depths[index] == depths[shell] + 1
+                })
+                .map(|index| rings[index].clone())
+                .collect(),
+        })
+        .collect())
 }
 
+fn assemble_polygon_component(
+    mut component: ShapefilePolygonComponent,
+) -> io::Result<Vec<(f64, f64)>> {
+    if [90.0, -90.0].into_iter().any(|latitude| {
+        spherical_point_relation((0.0, latitude), &component.shell)
+            != SphericalPointRelation::Outside
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "polar SHP polygons cannot be lowered to a planar close ring; use an enclosing_cap or bbox/circle domain",
+        ));
+    }
+    if same_point(component.shell.first(), component.shell.last()) {
+        component.shell.pop();
+    }
+    for hole in &mut component.holes {
+        if same_point(hole.first(), hole.last()) {
+            hole.pop();
+        }
+    }
+    let anchor = component.shell[0].0;
+    let mut shell = unwrap_ring_near(&component.shell, anchor);
+    let mut holes = component
+        .holes
+        .into_iter()
+        .map(|hole| unwrap_ring_near(&hole, anchor))
+        .collect::<Vec<_>>();
+    holes.sort_by(|left, right| ring_rightmost_x(right).total_cmp(&ring_rightmost_x(left)));
+    for hole in holes {
+        shell = bridge_hole(shell, hole);
+    }
+    Ok(shell
+        .into_iter()
+        .map(|(lon, lat)| (wrap_lon(lon), lat))
+        .collect())
+}
+
+fn unwrap_ring_near(ring: &[(f64, f64)], anchor: f64) -> Vec<(f64, f64)> {
+    let mut previous = unwrap_lon_near(ring[0].0, anchor);
+    let mut unwrapped = vec![(previous, ring[0].1)];
+    for &(lon, lat) in &ring[1..] {
+        previous = unwrap_lon_near(lon, previous);
+        unwrapped.push((previous, lat));
+    }
+    let mean = unwrapped.iter().map(|point| point.0).sum::<f64>() / unwrapped.len() as f64;
+    let shift = ((anchor - mean) / 360.0).round() * 360.0;
+    for point in &mut unwrapped {
+        point.0 += shift;
+    }
+    unwrapped
+}
+
+fn unwrap_lon_near(lon: f64, anchor: f64) -> f64 {
+    anchor + (lon - anchor + 180.0).rem_euclid(360.0) - 180.0
+}
+
+fn wrap_lon(lon: f64) -> f64 {
+    let wrapped = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped == -180.0 && lon > 0.0 {
+        180.0
+    } else {
+        wrapped
+    }
+}
+
+#[cfg(test)]
 fn point_in_ring(point: (f64, f64), ring: &[(f64, f64)]) -> bool {
+    let point = (unwrap_lon_near(point.0, ring[0].0), point.1);
     let mut inside = false;
     for (&a, &b) in ring
         .iter()
         .zip(ring.iter().cycle().skip(1))
         .take(ring.len())
     {
+        let a = (unwrap_lon_near(a.0, point.0), a.1);
+        let b = (unwrap_lon_near(b.0, point.0), b.1);
         if (a.1 > point.1) != (b.1 > point.1)
             && point.0 < a.0 + (point.1 - a.1) * (b.0 - a.0) / (b.1 - a.1)
         {
@@ -487,6 +696,167 @@ fn point_in_ring(point: (f64, f64), ring: &[(f64, f64)]) -> bool {
         }
     }
     inside
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SphericalPointRelation {
+    Outside,
+    Boundary,
+    Inside,
+}
+
+type SphericalVector = [f64; 3];
+
+fn spherical_dot(left: SphericalVector, right: SphericalVector) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn spherical_cross(left: SphericalVector, right: SphericalVector) -> SphericalVector {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn spherical_normalize(vector: SphericalVector) -> Option<SphericalVector> {
+    let norm = spherical_dot(vector, vector).sqrt();
+    (norm > 64.0 * f64::EPSILON).then(|| [vector[0] / norm, vector[1] / norm, vector[2] / norm])
+}
+
+fn lonlat_unit((lon, lat): (f64, f64)) -> SphericalVector {
+    let lon = lon.to_radians();
+    let lat = lat.to_radians();
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+fn spherical_angle(left: SphericalVector, right: SphericalVector) -> f64 {
+    spherical_dot(left, right).clamp(-1.0, 1.0).acos()
+}
+
+fn point_on_minor_arc(
+    point: SphericalVector,
+    start: SphericalVector,
+    end: SphericalVector,
+) -> bool {
+    (spherical_angle(start, point) + spherical_angle(point, end) - spherical_angle(start, end))
+        .abs()
+        <= 1.0e-9
+}
+
+fn open_ring_units(ring: &[(f64, f64)]) -> Vec<SphericalVector> {
+    let mut units = ring.iter().copied().map(lonlat_unit).collect::<Vec<_>>();
+    if units.len() > 1
+        && spherical_dot(units[0], *units.last().expect("non-empty ring")) >= 1.0 - 1.0e-14
+    {
+        units.pop();
+    }
+    units
+}
+
+fn tangent_winding(point: SphericalVector, vertices: &[SphericalVector]) -> Option<f64> {
+    let mut winding = 0.0;
+    for index in 0..vertices.len() {
+        let start = vertices[index];
+        let end = vertices[(index + 1) % vertices.len()];
+        let start_tangent = spherical_normalize([
+            start[0] - point[0] * spherical_dot(point, start),
+            start[1] - point[1] * spherical_dot(point, start),
+            start[2] - point[2] * spherical_dot(point, start),
+        ])?;
+        let end_tangent = spherical_normalize([
+            end[0] - point[0] * spherical_dot(point, end),
+            end[1] - point[1] * spherical_dot(point, end),
+            end[2] - point[2] * spherical_dot(point, end),
+        ])?;
+        winding += spherical_dot(point, spherical_cross(start_tangent, end_tangent))
+            .atan2(spherical_dot(start_tangent, end_tangent));
+    }
+    Some(winding)
+}
+
+fn spherical_point_relation(point: (f64, f64), ring: &[(f64, f64)]) -> SphericalPointRelation {
+    let vertices = open_ring_units(ring);
+    if vertices.len() < 3 {
+        return SphericalPointRelation::Outside;
+    }
+    let point = lonlat_unit(point);
+    if (0..vertices.len()).any(|index| {
+        point_on_minor_arc(
+            point,
+            vertices[index],
+            vertices[(index + 1) % vertices.len()],
+        )
+    }) {
+        return SphericalPointRelation::Boundary;
+    }
+    let classify = |probe| tangent_winding(probe, &vertices).map(|winding| winding.abs() > PI);
+    let inside = classify(point).unwrap_or_else(|| {
+        let seed = if point[2].abs() < 0.9 {
+            [0.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let tangent = spherical_normalize(spherical_cross(seed, point))
+            .expect("axis seed is not parallel to point");
+        let perturbed = spherical_normalize([
+            point[0] + 1.0e-10 * tangent[0],
+            point[1] + 1.0e-10 * tangent[1],
+            point[2] + 1.0e-10 * tangent[2],
+        ])
+        .expect("perturbed unit point");
+        classify(perturbed).unwrap_or(false)
+    });
+    if inside {
+        SphericalPointRelation::Inside
+    } else {
+        SphericalPointRelation::Outside
+    }
+}
+
+fn minor_arcs_intersect_or_touch(
+    left_start: SphericalVector,
+    left_end: SphericalVector,
+    right_start: SphericalVector,
+    right_end: SphericalVector,
+) -> bool {
+    let intersections = spherical_cross(
+        spherical_cross(left_start, left_end),
+        spherical_cross(right_start, right_end),
+    );
+    if let Some(intersection) = spherical_normalize(intersections) {
+        [
+            intersection,
+            [-intersection[0], -intersection[1], -intersection[2]],
+        ]
+        .into_iter()
+        .any(|point| {
+            point_on_minor_arc(point, left_start, left_end)
+                && point_on_minor_arc(point, right_start, right_end)
+        })
+    } else {
+        [left_start, left_end]
+            .into_iter()
+            .any(|point| point_on_minor_arc(point, right_start, right_end))
+            || [right_start, right_end]
+                .into_iter()
+                .any(|point| point_on_minor_arc(point, left_start, left_end))
+    }
+}
+
+fn spherical_rings_intersect_or_touch(left: &[(f64, f64)], right: &[(f64, f64)]) -> bool {
+    let left = open_ring_units(left);
+    let right = open_ring_units(right);
+    (0..left.len()).any(|left_index| {
+        (0..right.len()).any(|right_index| {
+            minor_arcs_intersect_or_touch(
+                left[left_index],
+                left[(left_index + 1) % left.len()],
+                right[right_index],
+                right[(right_index + 1) % right.len()],
+            )
+        })
+    })
 }
 
 fn bridge_hole(mut shell: Vec<(f64, f64)>, mut hole: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
@@ -655,15 +1025,147 @@ mod tests {
     }
 
     #[test]
+    fn projected_shapefile_coordinates_are_reprojected_exactly_once() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_project_projected_shp_once_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("projected.shp");
+        let mercator = |lon: f64, lat: f64| {
+            (
+                WGS84_A * lon.to_radians(),
+                WGS84_A * (PI / 4.0 + lat.to_radians() / 2.0).tan().ln(),
+            )
+        };
+        write_test_polygon_shp(
+            &path,
+            &[
+                mercator(9.0, -1.0),
+                mercator(11.0, -1.0),
+                mercator(11.0, 1.0),
+                mercator(9.0, 1.0),
+            ],
+        );
+        fs::write(
+            path.with_extension("prj"),
+            r#"PROJCS["WGS_1984_Web_Mercator_Auxiliary_Sphere"]"#,
+        )
+        .unwrap();
+
+        let components = read_shapefile_polygon_components(&path).unwrap();
+        assert_eq!(components.len(), 1);
+        let first = components[0].shell[0];
+        assert!((first.0 - 9.0).abs() < 1.0e-9, "{first:?}");
+        assert!((first.1 + 1.0).abs() < 1.0e-9, "{first:?}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn preserves_holes_and_nested_islands_as_even_odd_polygons() {
         let shell = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
         let hole = vec![(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)];
         let island = vec![(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
-        let polygons = assemble_polygon_rings(vec![hole, island, shell]);
+        let polygons =
+            polygon_components_from_records(vec![vec![hole, island, shell]], "test shapefile")
+                .unwrap()
+                .into_iter()
+                .map(assemble_polygon_component)
+                .collect::<io::Result<Vec<_>>>()
+                .unwrap();
         assert_eq!(polygons.len(), 2);
         let bridged_shell = polygons.iter().max_by_key(|ring| ring.len()).unwrap();
         assert!(point_in_ring((1.0, 1.0), bridged_shell));
         assert!(!point_in_ring((3.0, 3.0), bridged_shell));
         assert!(polygons.iter().any(|ring| point_in_ring((5.0, 5.0), ring)));
+    }
+
+    #[test]
+    fn antimeridian_holes_use_spherical_parity_and_a_local_planar_bridge() {
+        let shell = vec![
+            (170.0, -10.0),
+            (-170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+        ];
+        let hole = vec![(175.0, -5.0), (175.0, 5.0), (-175.0, 5.0), (-175.0, -5.0)];
+        let components = polygon_components_from_records(vec![vec![hole, shell]], "seam").unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].holes.len(), 1);
+        let bridged = assemble_polygon_component(components[0].clone()).unwrap();
+        assert!(point_in_ring((172.0, 0.0), &bridged));
+        assert!(!point_in_ring((179.0, 0.0), &bridged));
+        assert!(point_in_ring((-172.0, 0.0), &bridged));
+    }
+
+    #[test]
+    fn shapefile_records_union_while_crossing_parts_in_one_record_fail() {
+        let outer = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let nested_record = vec![(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)];
+        let union = polygon_components_from_records(
+            vec![vec![outer.clone()], vec![nested_record]],
+            "records",
+        )
+        .unwrap();
+        assert_eq!(union.len(), 2);
+        assert!(union.iter().all(|component| component.holes.is_empty()));
+
+        let crossing = vec![(4.0, -1.0), (8.0, -1.0), (8.0, 3.0), (4.0, 3.0)];
+        let error = polygon_components_from_records(vec![vec![outer, crossing]], "crossing")
+            .expect_err("crossing parts must not be guessed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("intersect or touch"));
+    }
+
+    fn write_test_polygon_shp(path: &Path, ring: &[(f64, f64)]) {
+        let mut points = ring.to_vec();
+        if points.first() != points.last() {
+            points.push(points[0]);
+        }
+        let bounds = [
+            points
+                .iter()
+                .map(|point| point.0)
+                .fold(f64::INFINITY, f64::min),
+            points
+                .iter()
+                .map(|point| point.1)
+                .fold(f64::INFINITY, f64::min),
+            points
+                .iter()
+                .map(|point| point.0)
+                .fold(f64::NEG_INFINITY, f64::max),
+            points
+                .iter()
+                .map(|point| point.1)
+                .fold(f64::NEG_INFINITY, f64::max),
+        ];
+        let content_bytes = 48 + points.len() * 16;
+        let file_bytes = 108 + content_bytes;
+        let mut bytes = Vec::with_capacity(file_bytes);
+        bytes.extend(9994_i32.to_be_bytes());
+        bytes.extend([0_u8; 20]);
+        bytes.extend(((file_bytes / 2) as i32).to_be_bytes());
+        bytes.extend(1000_i32.to_le_bytes());
+        bytes.extend(5_i32.to_le_bytes());
+        for value in [bounds, [0.0; 4]].concat() {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(1_i32.to_be_bytes());
+        bytes.extend(((content_bytes / 2) as i32).to_be_bytes());
+        bytes.extend(5_i32.to_le_bytes());
+        for value in bounds {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(1_i32.to_le_bytes());
+        bytes.extend((points.len() as i32).to_le_bytes());
+        bytes.extend(0_i32.to_le_bytes());
+        for (x, y) in points {
+            bytes.extend(x.to_le_bytes());
+            bytes.extend(y.to_le_bytes());
+        }
+        fs::write(path, bytes).unwrap();
     }
 }

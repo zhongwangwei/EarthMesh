@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use earthmesh_core::{EarthmeshRuntimeState, RefineConfig};
+use earthmesh_mesh::{MethodCHfieldPassDiagnostics, MethodCNestSpringDiagnostics};
 
 use crate::{
     ColmCouplingNetcdfWriteReport, ColmSurfaceCounts, MethodCRefinementRegion,
@@ -26,10 +27,19 @@ pub struct RefinePipelineRunReport {
     pub gridinit: MkgrdGridinitRunReport,
     pub refine: RefineConfig,
     pub regions: Vec<MethodCRefinementRegion>,
+    /// Requested/configured refinement depth.
     pub max_level: usize,
+    /// Highest refinement level present among active cells in the final output
+    /// (`M` cells for `tri`, `W` cells for `hex`).
+    pub actual_max_level: usize,
+    /// Number of active cells in the final output with a positive refinement
+    /// level (`M` cells for `tri`, `W` cells for `hex`).
+    pub refined_cells: usize,
     pub transition_faces: usize,
     pub spring_nest_passes: usize,
     pub spring_nest_iterations: usize,
+    pub spring_diagnostics: Vec<MethodCNestSpringDiagnostics>,
+    pub hfield_pass_diagnostics: Vec<MethodCHfieldPassDiagnostics>,
     pub raw_output: Option<UnstructuredMeshWriteReport>,
     pub landtype_masked_cells: Option<usize>,
     pub coupled_outputs: Option<RefineCoupledOutputReport>,
