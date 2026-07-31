@@ -1579,3 +1579,79 @@ materialize** 的网格；退让分量不进网格，弹簧只是少了可松弛
 倾向 **A**：只加入口，不改 Method-C 既有约束。
 
 两个开关均保持默认关闭；生产语义未变。Case 9 状态仍为 `INCOMPLETE`。
+
+
+## 30. pass 3 的自锁：支撑预言器复用了会失败的 repair（2026-07-31）
+
+### 30.1 起点：一个被误判的因果关系
+
+§29.5 把 pass 3 的失败面 `W face 517469 (mrlw=1)` 判定为「pass 2 退让的 82 个面之一」，
+并据此推出「退让在下一层暴露代价」。**该判定错误。**
+
+网格里 `mrlw=1` 的面有数十万个——pass 2 只细化了 `1098` 个，其余区域本就无需求、天然停在
+level 1。失败面只是其中一个普通未细化面。在 `mrlw=1` 这个巧合上建立因果链是错的。
+
+### 30.2 据此实现的三个机制全部未生效
+
+按「退让区由更细粒度阶段一路负责到底、Method-C 后续 pass 主动避开」实现（均默认关闭）：
+
+| 机制 | 实现 | 实测 |
+|---|---|---|
+| 持久退让集（按稳定 lineage，非面 ID） | `record_conceded_lineages` / `conceded_lineage_snapshot` | 正确记录 |
+| 跨层支撑跳过退让 lineage | `required_parent_support_lineages_from_selected_and_perimeter` 内过滤 | **从未触发** |
+| 两圈避让余量 | `clear_method_c_conceded_margin` | **`cleared` 一次都未打印** |
+
+三个开关全开的运行与不开时**失败面逐字相同**，证明避让与该失败无关。
+`earthmesh_mesh` 全部 `159` 个测试在默认路径下通过。
+
+### 30.3 真正的机制：预言器内部的自锁
+
+`required_parent_support_lineages_from_target_levels_and_face_demands`
+（`method_c_spawn_hfield/mod.rs:2715`）在计算支撑需求前，**先跑一遍完整的
+non-triplet repair**：
+
+```rust
+let perimeter =
+    self.repair_method_c_non_triplet_perimeter(&mut selected, &m_neighbors, pass + 1)?;
+```
+
+pass 3 中该 repair 内部撞上跨父边界并抛错，`?` 直接向上传播，**预言器因此没有机会算出
+任何支撑需求**。日志中 pass 3 一条 `requested ... stable parent-face support` 都没有，
+不是「算出来为空」，而是**死在预言器内部**。
+
+因果链：
+
+```text
+pass 3 选择 -> repair non-triplet -> 内部撞跨父边界 -> 抛错 ?
+                                                        |
+                                          预言器未产出任何支撑请求
+                                                        |
+                                            pass 3 无支撑可补 -> 失败
+```
+
+**这是一个自锁**：要算支撑得先过 repair，而 repair 过不去正是因为缺支撑。
+pass 2 之所以成功，是其 repair 恰好能完成，于是预言器算出了 `39` 与 `5` 个请求。
+
+这同时解释了 §30.2：三个退让机制都挂在 non-triplet 出口上，而 pass 3 抛的是
+**跨父边界**（`method_c_emit/mod.rs:207` 的 `old.mrlw != parent_mrlw`），走的是另一条出口。
+
+### 30.4 §29 中仍然成立的部分
+
+- **分量退让让 Method-C 合法化 93% 的细化**（5 分量退 1、82/1181 面）——两次运行一致；
+- **原生 15″ Case 9 首次走到 pass 3**——repair 由 32/64 退出变为 64/64 跑满；
+- **弹簧不受影响**（§29.6 的论证独立于本节，仍成立）。
+
+§29.5 关于「退让不可逆、跨 pass 累积、制造层级跳变」的三条推论**在机制上仍然正确**
+（选择只取当代面，`mrlw == level`），但**尚未被任何实测触发**，应降级为 `unverified`。
+
+### 30.5 一个明确的解法方向
+
+预言器不应在 repair 失败时直接抛错。它的职责是回答「需要哪些父层支撑」，而这个问题在
+周界尚不合法时**依然有意义**——当前（不完整的）周界已经足以枚举 `perim_fill3` 会消费的
+父面。
+
+因此可行的改动是：**repair 失败时仍从当前周界提取支撑需求并返回**，让外层补齐父层后
+重试，而不是让整条链在预言器内部断掉。这不改变 repair 的语义，只是不再让它的失败
+吞掉预言结果。
+
+该改动尚未实现。Case 9 状态仍为 `INCOMPLETE`。
