@@ -136,11 +136,14 @@ impl MethodCDelaunayMesh {
                         .filter(|&iw| {
                             self.w_faces[iw].mrlw < parent_level && !nest_wd[iw].is_subdivided()
                         })
-                        .count();
+                        .map(|iw| self.w_lineage[iw])
+                        .collect::<BTreeSet<_>>();
                     eprintln!(
                         "earthmesh_mesh: method_c post-drop support recheck parent_level={parent_level} \
-                         unsupported_witness_faces={stale}"
+                         unsupported_witness_faces={}",
+                        stale.len()
                     );
+                    record_post_drop_support(stale);
                 }
                 return Ok(perimeter);
             }
@@ -360,5 +363,31 @@ pub(crate) fn conceded_lineage_snapshot() -> BTreeSet<usize> {
     conceded_lineages()
         .lock()
         .map(|set| set.clone())
+        .unwrap_or_default()
+}
+
+/// Parent faces a concession left unsupported, keyed by stable W-face lineage.
+///
+/// The support oracle answers before a concession happens, so removing a
+/// component invalidates that answer: the boundary moves and `perim_fill3`
+/// consumes a different set of parent faces. Recording the difference lets the
+/// outer support loop request it instead of proceeding to an emit that will
+/// fail on it.
+fn post_drop_support() -> &'static Mutex<BTreeSet<usize>> {
+    static PENDING: OnceLock<Mutex<BTreeSet<usize>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn record_post_drop_support(lineages: BTreeSet<usize>) {
+    if let Ok(mut set) = post_drop_support().lock() {
+        set.extend(lineages);
+    }
+}
+
+/// Take the pending post-concession support requirements, clearing them.
+pub fn take_post_drop_support_lineages() -> Vec<usize> {
+    post_drop_support()
+        .lock()
+        .map(|mut set| std::mem::take(&mut *set).into_iter().collect())
         .unwrap_or_default()
 }

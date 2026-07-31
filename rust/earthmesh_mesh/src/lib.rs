@@ -375,6 +375,7 @@ mod method_c_patch;
 mod method_c_perimeter;
 mod method_c_perimeter_mrows;
 mod method_c_perimeter_repair;
+pub use method_c_perimeter_repair::take_post_drop_support_lineages;
 mod method_c_perimeter_repair_candidates;
 mod method_c_perimeter_repair_grow;
 mod method_c_perimeter_repair_shrink;

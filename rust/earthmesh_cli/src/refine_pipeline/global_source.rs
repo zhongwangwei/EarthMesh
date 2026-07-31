@@ -1100,7 +1100,7 @@ pub fn run_refine_pipeline_namelist(
                 }
                 let preserve_all_demands = pass == field_max_level;
                 if cross_level_support && pass > 1 {
-                    let required = refined
+                    let mut required = refined
                         .required_parent_support_lineages_from_target_levels_and_face_demands(
                             |lon, lat| {
                                 field.topology_level_at(lon, lat, base_m, field_max_level as u8)
@@ -1109,6 +1109,25 @@ pub fn run_refine_pipeline_namelist(
                             pass,
                             preserve_all_demands,
                         )?;
+                    // A concession in the previous attempt moved the boundary
+                    // after the oracle had already answered, so the faces the
+                    // new perimeter needs were never requested. Fold them in
+                    // here; the `added == 0` guard below still stops the loop if
+                    // this stops making progress.
+                    let post_drop = earthmesh_mesh::take_post_drop_support_lineages();
+                    if !post_drop.is_empty() {
+                        eprintln!(
+                            "earthmesh_cli: Method-C pass {pass} folding {} post-concession support lineages",
+                            post_drop.len()
+                        );
+                        for lineage in post_drop {
+                            if let Ok(value) = i64::try_from(lineage) {
+                                required.push(value);
+                            }
+                        }
+                        required.sort_unstable();
+                        required.dedup();
+                    }
                     if !required.is_empty() {
                         let parent_pass = pass - 1;
                         let mut added = 0usize;
