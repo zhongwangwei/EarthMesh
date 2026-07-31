@@ -1216,3 +1216,61 @@ Method-C 内部表的定长 `[usize; 7]` **完全未被触碰**；hex/MPAS 所�
 4. 二分后网格的 hex 视图未测，且按 §23 预期不应用于 TRiSK 产品。
 
 Case 9 状态仍为 `INCOMPLETE`；本节未改动任何生产代码，探针为只读外部脚本。
+
+## 25. 最终产物契约：哪些字段是规范的（2026-07-31）
+
+形态二要求最终 gridfile 是一份**自足的扁平产物**——每个单元出现一次、独立可解释、
+不依赖细化历史，因为该三角网不只服务 FVCOM。本节用实测确定现有 gridfile 距离该目标
+还差什么，并据此钉死字段契约。
+
+### 25.1 现状实测（NXP=243 单 pass，840,025 三角形）
+
+| 检查 | 结果 |
+|---|---|
+| 三角形唯一性 | `840,025` 个，**唯一 `840,025`，重复 `0`** |
+| lineage 唯一性 | `840,027` 唯一 / `840,027` 行 |
+| 连接自洽 | 拓扑硬门全 `pass`，Euler `-252` 匹配 |
+| `earthmesh_m_ngr` 分布 | `{1: 836,498, 2: 3,527}` |
+| `earthmesh_m_refine_level` | `{0: 839,433, 1: 594}` |
+
+前三项说明**几何与连接层面已经是扁平最终产物**。`ngr` 混有两代嵌套编号，是
+Method-C 内部语义向产物的泄露；`refine_level` 则是通用的。
+
+### 25.2 字段消费者审计
+
+| 字段 | 唯一消费者 | 缺失行为 |
+|---|---|---|
+| `earthmesh_*_ngr` | 仅 `method_c_mesh_gridfile/mod.rs:149,209`（gridfile → `MethodCDelaunayMesh` 反序列化，即 restart/续算） | `unwrap_or(1)`，不报错 |
+| `earthmesh_*_refine_level` | **`project_quality.rs:117-118`**：`missing_actual_refine_level_count`、`target_above_actual_count` | `optional_values_i32_exact`，可缺失 |
+| `earthmesh_*_lineage` | 唯一标识与溯源 | 可缺失 |
+
+`project_hydro.rs`、`project_quality.rs`、`fvcom_mesh_writer.rs`、`hydro_delivery_*`、
+`colm_*` **均不读 `ngr`**（grep 全为空）。
+
+### 25.3 契约
+
+| 字段 | 地位 |
+|---|---|
+| `GLONM`/`GLATM`/`GLONW`/`GLATW`、`itab_m%iw`、`itab_w%im`、`n_ngrwm` | **规范**——几何与连接，自足 |
+| `earthmesh_m_refine_level` / `earthmesh_w_refine_level` | **规范**——通用分辨率标记，任何细化方式都必须填 |
+| `earthmesh_m_lineage` / `earthmesh_w_lineage` | **规范**——唯一标识与溯源 |
+| `earthmesh_*_ngr` | **Method-C restart 专用**，下游不得依赖 |
+| `earthmesh_*_refine_level_orig` | **诊断** |
+
+三点后果：
+
+1. gridfile 交给 FVCOM 之外的消费者时只需规范三组，`ngr` 可忽略；
+2. 二分单元**不需要发明 `ngr` 语义**——填父值或留空，restart 路径 `unwrap_or(1)` 兜底；
+3. 代价是二分后的网格不能再走 Method-C restart 续算。这是正确的：它已不是 Method-C 拓扑。
+
+### 25.4 必须补的语义：二分单元的 `refine_level`
+
+`refine_level` 是规范字段，且 **hard coverage 验收直接读它**。§24 的探针给新三角形填 `0`，
+这是错的：二分单元实际更细却标为未细化，覆盖校验会把已达标区域判成未达标（反之亦然）。
+§24 那次 `warn` 通过属于探针随机选中的枢纽恰好不在 hard bin 上，是运气而非正确性。
+
+定义方式应为**由实际单元尺度反推等效层级**，与产生方式无关：Method-C 一级为边长
+`x1/3`（rad3），二分一次为面积减半、等效边长 `x1/sqrt(2)`。该定义顺带修正一处既有缺陷——
+当前 `refine_level` 语义绑定 Method-C 嵌套结构，本就不是通用分辨率度量。
+
+在该定义落地前，形态二不得用于任何 hard-demand 验收；Case 9 状态仍为 `INCOMPLETE`。
