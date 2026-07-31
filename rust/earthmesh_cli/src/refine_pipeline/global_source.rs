@@ -1099,17 +1099,45 @@ pub fn run_refine_pipeline_namelist(
                 if let Some(path) = std::env::var_os("EARTHMESH_M0_FACE_DEMAND_DUMP_DIR") {
                     let dir = PathBuf::from(path);
                     fs::create_dir_all(&dir)?;
+                    // Face ids index the internal W table, which is rebuilt
+                    // every pass and does not line up with the written
+                    // gridfile. Carry the centre coordinate so a demand point
+                    // stays identifiable across passes and meshes.
                     let demanded = face_demand
                         .iter()
                         .enumerate()
                         .filter_map(|(iw, &wanted)| wanted.then_some(iw))
+                        .map(|iw| {
+                            let corners = refined.w_faces[iw].im;
+                            let points = corners
+                                .iter()
+                                .take(3)
+                                .map(|&im| refined.m_points[im])
+                                .collect::<Vec<_>>();
+                            let centre = points.iter().fold([0.0f64; 3], |mut acc, p| {
+                                acc[0] += p.x / 3.0;
+                                acc[1] += p.y / 3.0;
+                                acc[2] += p.z / 3.0;
+                                acc
+                            });
+                            let norm =
+                                (centre[0].powi(2) + centre[1].powi(2) + centre[2].powi(2)).sqrt();
+                            let lat = (centre[2] / norm).asin().to_degrees();
+                            let lon = centre[1].atan2(centre[0]).to_degrees();
+                            serde_json::json!({
+                                "face": iw,
+                                "mrlw": refined.w_faces[iw].mrlw,
+                                "lon": lon,
+                                "lat": lat,
+                            })
+                        })
                         .collect::<Vec<_>>();
                     let report = serde_json::json!({
                         "kind": "earthmesh_native_landcover_face_demand",
                         "pass": pass,
                         "face_count": face_demand.len(),
                         "demanded_face_count": demanded.len(),
-                        "demanded_faces": demanded,
+                        "demanded": demanded,
                     });
                     let out = dir.join(format!("face-demand-pass{pass}.json"));
                     fs::write(&out, serde_json::to_vec_pretty(&report)?)?;
