@@ -57,6 +57,11 @@ at W face 517469 (mrlw=1, lon=-71.974, lat=-52.473)
 其中**唯一够格称为 `PATCH_UNSAT`** 的是周界 triple offset 域：域明确、穷尽、可重放。
 其余因边界越界或域未完备，严格状态为 `INCOMPLETE`。
 
+> **溯源说明**：§3 与 §4 的枚举结果记录在
+> `docs/method_c_case9_legalization_tasklist_2026-07-29.md`（该文件保存 Case 9 的逐次
+> 实验与证据哈希）；§5–§7 及四开关部分记录在
+> `docs/method_c_high_speed_exact_legalization_research_2026-07-30.md` §12–§32。
+
 ---
 
 ## 4. 已否证的解释
@@ -122,7 +127,9 @@ at W face 517469 (mrlw=1, lon=-71.974, lat=-52.473)
 
 ## 附：溯源
 
-- 完整实验记录：`docs/method_c_high_speed_exact_legalization_research_2026-07-30.md`（§12–§32）
-- 合法化任务单：`docs/method_c_case9_legalization_tasklist_2026-07-29.md`
+- **枚举与穷举证据**：`docs/method_c_case9_legalization_tasklist_2026-07-29.md`
+  （§3、§4 的全部数字与证据哈希出自此处）
+- **求解器路线与四开关记录**：
+  `docs/method_c_high_speed_exact_legalization_research_2026-07-30.md` §12–§32
 - 外部算法图谱：`docs/mesh_algorithm_landscape_survey_2026-07-29.md`
 - 证据目录：`target/case9-*`、`target/mesh-refinement-m0-*`
