@@ -755,6 +755,50 @@ impl HField {
     }
 }
 
+/// Refinement level implied by a cell that actually achieved size `h_m`.
+///
+/// This is the same `floor(log2(h_base / h))` convention `topology_level_at`
+/// quantizes demand with, applied in the opposite direction: it reports what a
+/// cell *is*, not what a location *asks for*. Deriving the level from the
+/// achieved scale keeps `earthmesh_*_refine_level` meaningful for cells that
+/// were not produced by Method-C nesting — a bisected cell has no nesting
+/// level, but it does have a size.
+///
+/// Flooring is what hard-coverage acceptance needs: one Method-C level halves
+/// the edge, while one bisection only halves the area, so a singly bisected
+/// cell sits between two levels and must report the coarser one rather than
+/// claim a target it has not reached.
+pub fn refine_level_for_cell_size(h_base_m: f64, h_m: f64, max_level: u8) -> u8 {
+    if !h_base_m.is_finite() || h_base_m <= 0.0 || !h_m.is_finite() || h_m <= 0.0 {
+        return 0;
+    }
+    if h_m >= h_base_m {
+        return 0;
+    }
+    let raw = ((h_base_m / h_m).log2() + 1e-9).floor();
+    if raw <= 0.0 {
+        0
+    } else if raw >= f64::from(max_level) {
+        max_level
+    } else {
+        raw as u8
+    }
+}
+
+/// Level of a cell reached by `bisections` conforming bisections below Method-C
+/// nesting level `nesting_level`.
+///
+/// Two bisections halve the area twice, which is exactly one Method-C level, so
+/// the equivalent level advances by one per bisection pair. An odd bisection
+/// count lands between levels and floors to the coarser one, matching
+/// [`refine_level_for_cell_size`].
+pub fn refine_level_after_bisections(nesting_level: u8, bisections: u32, max_level: u8) -> u8 {
+    let equivalent = u32::from(nesting_level).saturating_add(bisections / 2);
+    u8::try_from(equivalent)
+        .unwrap_or(u8::MAX)
+        .min(max_level)
+}
+
 fn limit_metric_row(row: &mut [f64], distances: &[f64], g: f64) -> f64 {
     // Local longitude edges overestimate polar great-circle distances, so the
     // two outer rows need their exact metric lower envelope.
@@ -1310,6 +1354,66 @@ mod tests {
             f.topology_level_at(120.0, -90.0, 100_000.0, 5),
             1,
             "longitude is not physically distinct at the pole"
+        );
+    }
+
+    #[test]
+    fn refine_level_from_achieved_size_matches_the_demand_quantizer() {
+        // A cell that is exactly the base size is level 0; each halving of the
+        // edge advances one level, which is the convention topology_level_at
+        // quantizes demand with.
+        assert_eq!(refine_level_for_cell_size(32.0, 32.0, 5), 0);
+        assert_eq!(refine_level_for_cell_size(32.0, 16.0, 5), 1);
+        assert_eq!(refine_level_for_cell_size(32.0, 8.0, 5), 2);
+        // Coarser than base, and non-finite or non-positive inputs, stay at 0.
+        assert_eq!(refine_level_for_cell_size(32.0, 64.0, 5), 0);
+        assert_eq!(refine_level_for_cell_size(32.0, 0.0, 5), 0);
+        assert_eq!(refine_level_for_cell_size(f64::NAN, 16.0, 5), 0);
+        // max_level clamps rather than reporting an unreachable level.
+        assert_eq!(refine_level_for_cell_size(32.0, 0.25, 2), 2);
+    }
+
+    #[test]
+    fn refine_level_from_achieved_size_reproduces_the_measured_nxp243_mesh() {
+        // Measured medians from the NXP=243 single-pass Case 9 gridfile: level 0
+        // cells are 32.692 km and level 1 cells are 16.181 km. Both must map
+        // back to the level the gridfile recorded.
+        let h_base_km = 32.692;
+        assert_eq!(refine_level_for_cell_size(h_base_km, 32.692, 5), 0);
+        assert_eq!(refine_level_for_cell_size(h_base_km, 16.181, 5), 1);
+    }
+
+    #[test]
+    fn one_method_c_level_is_worth_two_bisections() {
+        // A Method-C level halves the edge, so it removes three quarters of the
+        // area; a bisection removes half. Two bisections therefore equal one
+        // level, and an odd count floors to the coarser level rather than
+        // claiming a target it has not reached.
+        assert_eq!(refine_level_after_bisections(1, 0, 5), 1);
+        assert_eq!(refine_level_after_bisections(1, 1, 5), 1);
+        assert_eq!(refine_level_after_bisections(1, 2, 5), 2);
+        assert_eq!(refine_level_after_bisections(1, 3, 5), 2);
+        assert_eq!(refine_level_after_bisections(1, 4, 5), 3);
+        assert_eq!(refine_level_after_bisections(1, 100, 5), 5, "clamped");
+    }
+
+    #[test]
+    fn bisection_levels_agree_with_the_size_derived_levels() {
+        // The two entry points must not drift: bisecting twice from a level-1
+        // cell has to land on the same level as measuring the resulting size.
+        let h_base = 32.0;
+        let level_one_size = 16.0;
+        let after_two_bisections = level_one_size / 2.0;
+        assert_eq!(
+            refine_level_after_bisections(1, 2, 5),
+            refine_level_for_cell_size(h_base, after_two_bisections, 5)
+        );
+        // A single bisection scales the edge by 1/sqrt(2) and must still floor
+        // to level 1 from both directions.
+        let after_one_bisection = level_one_size / std::f64::consts::SQRT_2;
+        assert_eq!(
+            refine_level_after_bisections(1, 1, 5),
+            refine_level_for_cell_size(h_base, after_one_bisection, 5)
         );
     }
 }

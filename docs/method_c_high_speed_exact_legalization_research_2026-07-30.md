@@ -1274,3 +1274,47 @@ Method-C 内部语义向产物的泄露；`refine_level` 则是通用的。
 当前 `refine_level` 语义绑定 Method-C 嵌套结构，本就不是通用分辨率度量。
 
 在该定义落地前，形态二不得用于任何 hard-demand 验收；Case 9 状态仍为 `INCOMPLETE`。
+
+## 26. 等效层级换算：由达到的尺度反推（2026-07-31）
+
+§25 指出 `refine_level` 是规范字段且被 hard-coverage 验收直接读取，因此二分单元必须
+填真实层级而非 `0`。本节实测确定换算底数并落地该定义。
+
+### 26.1 换算底数由实测确定，不是按名称推断
+
+量化器为 `level = log2(h_base / h)`（`earthmesh_hfield/src/lib.rs:640,704`），即
+**一级 = 边长减半、面积 `/4`**。NXP=243 单 pass gridfile 的实测中位边长：
+
+| refine_level | 中位边长 | 比值 |
+|---:|---:|---:|
+| 0 | `32.692 km` | — |
+| 1 | `16.181 km` | `2.02` |
+
+与 `log2` 约定一致。**「rad3」指 stride-3 种子格的足迹形状，不是边长比**；此前按
+边长 `×1/3` 推算的换算是错的。
+
+而一次二分是**面积减半**。因此换算是整数关系：
+
+> **1 个 Method-C 级 = 2 次二分**，`L_equivalent = L_nesting + floor(bisections / 2)`
+
+### 26.2 落地
+
+`earthmesh_hfield` 新增两个纯函数（不依赖栅格，因此任何产生路径都能调用）：
+
+- `refine_level_for_cell_size(h_base_m, h_m, max_level)`——由**达到的单元尺度**反推层级，
+  沿用 `topology_level_at` 的 `floor(log2(...))` 约定；
+- `refine_level_after_bisections(nesting_level, bisections, max_level)`——由嵌套层级与
+  二分次数推等效层级。
+
+**取 floor 是 hard-coverage 验收所需**：单次二分只把面积减半，单元落在两级之间，必须
+报较粗的一级，而不能宣称尚未达到的目标。
+
+四个测试锁定语义，其中一个以 §26.1 的实测中位边长作正对照，另一个交叉验证两个入口
+不漂移（从 level 1 二分两次，必须与直接测量结果尺度得到同一层级）。
+`earthmesh_hfield` 全部 `29` 个测试通过。
+
+### 26.3 尚未接线
+
+本节只提供换算，**未修改任何写出路径**。二分单元的 `refine_level` 仍需在实现二分时按
+此定义填写；在此之前 §24 探针产出的网格不得用于 hard-demand 验收。
+Case 9 状态仍为 `INCOMPLETE`。
