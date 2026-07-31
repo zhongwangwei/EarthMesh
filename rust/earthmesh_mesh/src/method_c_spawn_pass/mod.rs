@@ -397,6 +397,19 @@ impl MethodCDelaunayMesh {
                         attempt + 1,
                         max_repair_attempts,
                     )?;
+                    if crate::method_c_spawn_hfield::coverage_relaxation_enabled() {
+                        if let Some(coverage) = coverage {
+                            let conceded = coverage.uncovered_anchors(&selected);
+                            eprintln!(
+                                "earthmesh_mesh: method_c coverage relaxation child_level={child_level} \
+                                 attempt={} anchors={} conceded={} first={:?}",
+                                attempt + 1,
+                                coverage.anchor_count(),
+                                conceded.len(),
+                                conceded.iter().take(16).collect::<Vec<_>>()
+                            );
+                        }
+                    }
                     return Ok(mesh);
                 }
                 Err(error) if Self::is_repairable_method_c_transition_error(&error) => {

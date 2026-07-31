@@ -1157,8 +1157,15 @@ NVB 二分细化（levels k+1..）
 
 gridfile SHA256 `0553082fa5802d93799a433036125a1810e46d155c6c278f6385695e94242464`。
 
-**这是本次调查中首次在原生 15″ 输入上得到 `pass`。** 它只说明 NVB 的起点合法，
-不说明需求已满足——该网格为 level 1，而 Case 9 的 hard demand 要求 level 3。
+> **[更正 2026-07-31]** 该 `pass` 的范围比初稿写的窄得多。把 `max_level` 由 `3` 降到 `1`
+> 同时**削掉了需求本身**：流水线自身报告记录
+> `hfield.max_level=1`、`target_level_0_count=840,025`，即**全部单元的目标层级都是 0**。
+> 因此 `hfield_uncovered_hard_support_bin_count=0` 与 `hfield_target_above_actual_count=0`
+> 是「无需求可覆盖」，不是「15″ 需求已满足」。
+>
+> 该结果证明的是**Method-C 能在 NXP=243 上产出合法基底**（840,025 单元、拓扑与几何硬门
+> 全通过、`base_m=32,947.83 m` 与实测 level-0 中位边长 `32.692 km` 吻合），
+> 这对形态二仍是必要前提，但不构成需求侧的任何结论。
 
 ### 24.2 输出端：`dimc` 动态，硬门接受价数 > 7
 
@@ -1209,7 +1216,15 @@ Method-C 内部表的定长 `[usize; 7]` **完全未被触碰**；hex/MPAS 所�
 
 ### 24.4 尚未验证
 
-1. **hard demand 覆盖校验未跑**——探针按几何选枢纽，不由需求驱动；
+> **[更正 2026-07-31]** §24.2 对二分网格跑的 `--project-quality` **未评估 hfield 覆盖门**。
+> 该 CLI 只接 project/gridfile/out_dir 三个参数，不传 namelist，而
+> `project_quality.rs:282` 的 `if let Some(path) = target_namelist` 使整个 hfield 诊断
+> 被跳过；两次报告中 `hfield` 指标均为空。因此 §24.2 的 `pass`/`warn` 只覆盖几何与拓扑，
+> **完全没有触及 hard demand**。流水线自身运行时会传 namelist，其报告才含
+> `hfield_*` 门。
+
+1. **hard demand 覆盖校验未跑**——探针按几何选枢纽，不由需求驱动；且独立
+   `--project-quality` 会跳过该门（见上）；
 2. **质量门阈值对二分网格是否适用未知**——`min_angle 25°` 是为 Method-C 校准的，
    二分网格角度分布不同；这回到 R5 未完成的分族校准；
 3. **真正的 NVB 未实现**——最长边/最新顶点选择、compatibility chain、血缘编码全部待做；
@@ -1318,3 +1333,74 @@ Method-C 内部语义向产物的泄露；`refine_level` 则是通用的。
 本节只提供换算，**未修改任何写出路径**。二分单元的 `refine_level` 仍需在实现二分时按
 此定义填写；在此之前 §24 探针产出的网格不得用于 hard-demand 验收。
 Case 9 状态仍为 `INCOMPLETE`。
+
+## 27. 覆盖退让实测：硬需求不是阻塞点（2026-07-31）
+
+### 27.1 被检验的假设
+
+若 Method-C 的 repair 因「任何丢失 hard-demand anchor 的候选都被一票否决」而走投无路，
+则允许它**记账式退让**——保留合法化自由度、记录让掉的 anchor、把残余交给更细粒度阶段——
+就能既保住 Method-C 的变分辨率能力，又只在局部启用二分。这是「无法细化时才用 NVB」的
+最小实现形式。
+
+该假设可直接实测： 是全部覆盖约束的唯一汇合点。
+
+### 27.2 改动（默认关闭）
+
+-  在 `EARTHMESH_M0_COVERAGE_RELAXATION` 置位时返回 `Ok`，否则行为不变；
+- 新增 `uncovered_anchors()`，**不受该开关影响**，因此松弛运行报告的退让集合是精确的；
+- pass 成功返回时打印 `anchors=N conceded=M`。
+
+`earthmesh_mesh` 全部 `159` 个测试在默认（关闭）路径下通过。
+
+### 27.3 结果：
+
+原生 `86400×43200`、NXP=243、`max_level=3`、`EARTHMESH_M0_CROSS_LEVEL_SUPPORT=1`
+加上松弛开关，release 运行 `3 min 45 s`：
+
+```
+method_c coverage relaxation child_level=2 attempt=1 anchors=40 conceded=0 first=[]
+method_c coverage relaxation child_level=2 attempt=1 anchors=79 conceded=0 first=[]
+method_c coverage relaxation child_level=2 attempt=1 anchors=84 conceded=0 first=[]
+```
+
+随后仍以逐字相同的失败退出：
+
+`perimeter lengths [48, 54, 18, 18, 22] cannot be grouped into transition triples
+without crossing the parent boundary`
+
+证据：`/Users/zhongwangwei/Desktop/Github/EarthMesh/target/case9-coverage-relaxation-1785473426/run.log`。
+
+### 27.4 读数
+
+**假设被否证，且否得干净。** 三次 pass-2 均成功返回且退让数为 `0`——覆盖否决**从未触发**。
+repair 走投无路不是因为硬需求约束太紧：放松覆盖给了它更大的自由度，**但它没用上，因为
+它缺的不是自由度，是可行解**。
+
+真正的阻塞是周界的模 3 分解本身（`22 mod 3 = 1`，且不能在不越过 parent boundary 的
+条件下分解），这是拓扑约束，与需求覆盖无关。
+
+由此排除一整类解释：
+
+| 假设 | 状态 |
+|---|---|
+| Method-C 撞墙源于硬需求约束过紧 | **实测否证**（`conceded = 0`） |
+| 退让少量 anchor 即可通过 | 否证：不需要退让，退让也不通过 |
+| MCS / 最小修正集是出路 | 否证：修正集为空 |
+
+**因此「Method-C 尽力细化 + NVB 补缺」这一分工无效**：不存在「Method-C 差一点点」的
+中间态，它卡在一个与需求无关的拓扑约束上。
+
+### 27.5 对形态二入口的后果
+
+「无法细化时才用 NVB」作为原则仍然成立，但**其判定不能由覆盖退让产生**。当前可确定：
+
+- Method-C 在 NXP=243 上能产出**合法基底**（840,025 单元、全门 pass，见 §24.1 及其更正）；
+- Method-C 在同一配置下做**需求驱动细化**必然撞 non-triplet；
+- 二者之间没有中间态。
+
+故形态二的入口只能是「Method-C 出基底 → 需求在 gridfile 层面重新求值 → 二分消化」。
+放弃 Method-C 变分辨率是真实代价，但实测未发现保留它的技术路径——除非先解决
+non-triplet 本身。
+
+松弛开关保留为默认关闭的诊断；生产语义未变。Case 9 状态仍为 `INCOMPLETE`。

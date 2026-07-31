@@ -647,6 +647,14 @@ impl MethodCHfieldDemandCoverage {
     }
 
     pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
+        if coverage_relaxation_enabled() {
+            // Diagnostic mode: let legalization proceed past anchors it cannot
+            // cover so the run reports which demands Method-C had to concede
+            // instead of aborting the pass. The concession list is what a
+            // finer-granularity stage would have to satisfy afterwards, so the
+            // hard-coverage contract is deferred here, never lowered.
+            return Ok(());
+        }
         for (im, faces) in &self.anchors {
             if !faces
                 .iter()
@@ -657,6 +665,35 @@ impl MethodCHfieldDemandCoverage {
         }
         Ok(())
     }
+
+    /// Parent M points whose demand no face in `selected` covers.
+    ///
+    /// Always exact regardless of the relaxation switch, so a relaxed run can
+    /// report precisely what it conceded.
+    pub(crate) fn uncovered_anchors(&self, selected: &[bool]) -> Vec<usize> {
+        self.anchors
+            .iter()
+            .filter(|(_, faces)| {
+                !faces
+                    .iter()
+                    .any(|&iw| selected.get(iw).copied().unwrap_or(false))
+            })
+            .map(|(im, _)| *im)
+            .collect()
+    }
+
+    pub(crate) fn anchor_count(&self) -> usize {
+        self.anchors.len()
+    }
+}
+
+/// Whether hard-demand coverage may be conceded during legalization.
+///
+/// Off by default: production still fails a pass that cannot cover every
+/// anchor. `EARTHMESH_M0_COVERAGE_RELAXATION` turns the failure into a recorded
+/// concession so the size of the residue can be measured.
+pub(crate) fn coverage_relaxation_enabled() -> bool {
+    std::env::var_os("EARTHMESH_M0_COVERAGE_RELAXATION").is_some()
 }
 
 /// Method-C spawning driven by a quantized target-level field instead of
