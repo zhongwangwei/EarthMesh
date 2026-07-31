@@ -687,6 +687,15 @@ impl MethodCHfieldDemandCoverage {
     }
 }
 
+/// Whether the parent-support oracle may answer from an unrepaired perimeter.
+///
+/// Off by default: a pass that cannot repair its perimeter still fails. When
+/// set, the oracle reports the support that perimeter would need anyway, so the
+/// outer loop can supply it and retry instead of stalling with no request.
+pub(crate) fn support_oracle_best_effort_enabled() -> bool {
+    std::env::var_os("EARTHMESH_M0_SUPPORT_ORACLE_BEST_EFFORT").is_some()
+}
+
 /// Whether hard-demand coverage may be conceded during legalization.
 ///
 /// Off by default: production still fails a pass that cannot cover every
@@ -2711,10 +2720,37 @@ impl MethodCDelaunayMesh {
         self.close_method_c_concavities_for_level_with_neighbors(&mut selected, &m_neighbors)?;
         coverage.validate(&selected)?;
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, pass + 1)?;
-        let perimeter =
-            self.repair_method_c_non_triplet_perimeter(&mut selected, &m_neighbors, pass + 1)?;
-        coverage.validate(&selected)?;
-        self.required_parent_support_lineages_from_selected_and_perimeter(&selected, &perimeter)
+        match self.repair_method_c_non_triplet_perimeter(&mut selected, &m_neighbors, pass + 1) {
+            Ok(perimeter) => {
+                coverage.validate(&selected)?;
+                self.required_parent_support_lineages_from_selected_and_perimeter(
+                    &selected, &perimeter,
+                )
+            }
+            Err(error) if support_oracle_best_effort_enabled() => {
+                // Which parent faces `perim_fill3` would consume is answerable
+                // from the perimeter as it stands: consumption reads the faces
+                // just outside the selection and does not depend on the
+                // perimeter being decomposable. Repairing first is a
+                // convenience, not a precondition, and letting its failure
+                // propagate leaves the pass with no support request at all --
+                // support cannot be computed because repair failed, and repair
+                // failed for want of support.
+                eprintln!(
+                    "earthmesh_mesh: method_c support oracle best-effort pass={pass} \
+                     repair_error={error}"
+                );
+                let perimeter = self
+                    .method_c_perimeters_from_selected_faces(&selected, &m_neighbors)?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                self.required_parent_support_lineages_from_selected_and_perimeter(
+                    &selected, &perimeter,
+                )
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Stable parent-face support required by one complete canonical seed

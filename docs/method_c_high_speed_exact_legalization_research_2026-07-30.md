@@ -1606,6 +1606,13 @@ level 1。失败面只是其中一个普通未细化面。在 `mrlw=1` 这个巧
 
 ### 30.3 真正的机制：预言器内部的自锁
 
+> **[更正 2026-07-31，见 §31]** 本小节的自锁结论**错误**，基于对 `Current nested grid 3`
+> 的误读——那是 `child_level=3`（`method_c_emit/mod.rs:28` 有 `parent_level = child_level - 1`），
+> 即 **pass 2 生成第 3 层**，不是「第 3 个 pass」。实测时序显示 pass 3 从未开始，
+> 预言器在 pass 2 被正常调用三次并收敛（`39 → 5 → 0`），
+> `EARTHMESH_M0_SUPPORT_ORACLE_BEST_EFFORT` 一次都未触发——不是没走到，是不需要。
+> 真实机制见 §31。
+
 `required_parent_support_lineages_from_target_levels_and_face_demands`
 （`method_c_spawn_hfield/mod.rs:2715`）在计算支撑需求前，**先跑一遍完整的
 non-triplet repair**：
@@ -1655,3 +1662,68 @@ pass 2 之所以成功，是其 repair 恰好能完成，于是预言器算出�
 吞掉预言结果。
 
 该改动尚未实现。Case 9 状态仍为 `INCOMPLETE`。
+
+
+## 31. 退让使支撑答案过期（2026-07-31）
+
+### 31.1 三次连续误诊
+
+本轮对同一个失败面 `W face 517469` 连续作出三次错误判断，均因先套假设、后验语义：
+
+| # | 错误判断 | 实际 |
+|---|---|---|
+| 1（§29.5） | 失败面 `mrlw=1` 即 pass 2 退让的 82 面之一 | 网格中 `mrlw=1` 的面有数十万个，pass 2 只细化 `1098` 个，其余本就无需求 |
+| 2（§30.3） | pass 3 不发支撑请求是预言器自锁 | pass 3 从未开始；预言器在 pass 2 正常调用三次 |
+| 3（§30.3） | `Current nested grid 3` 指第 3 个 pass | 指 `child_level=3`，对应 **pass 2** |
+
+### 31.2 实测时序
+
+四开关（跨层支撑、分量退让、覆盖松弛、best-effort）全开的运行日志：
+
+```text
+27  coverage relaxation child_level=2  anchors=40      <- pass 2 第一次
+29  pass 2 requested 39 stable parent-face support
+31  coverage relaxation child_level=2  anchors=79      <- 重建后第二次
+33  pass 2 requested 5 stable parent-face support
+35  coverage relaxation child_level=2  anchors=84      <- 第三次，返回空
+48  component triplet drop  dropped_faces=82 kept_faces=1098
+59  Current nested grid 3 crosses the parent boundary at W face 517469
+```
+
+**支撑收敛（`39 -> 5 -> 0`）发生在退让之前。** 预言器三次调用的 repair 均成功（周界当时
+合法），因此都没有走到退让出口——退让只在最终生成的那一次 repair 中触发。
+
+### 31.3 机制：退让让支撑答案过期，且缺口大于退让量
+
+在退让出口后立刻重算 `method_c_transition_parent_boundary_witnesses`：
+
+```text
+component triplet drop     dropped_faces=82  kept_faces=1098
+post-drop support recheck  parent_level=2  unsupported_witness_faces=87
+```
+
+因果链闭合：
+
+```text
+预言器算支撑 -> 收敛到 0（基于退让前的周界）
+        |
+分量退让 -82 面 -> 周界改变 -> perim_fill3 消费的父面集合改变
+        |
+新周界需要 87 个父面，父层未细化它们
+        |
+emit 撞 W face 517469 -> 失败
+```
+
+**退让 `82` 个面制造了 `87` 个未支撑见证面。** 代价不是等量的，会外溢。
+
+### 31.4 修法与风险
+
+修法直接：退让改变掩码后应回到外层重新请求父层支撑，而不是直接进 emit。现有跨层支撑
+循环（`refine_pipeline/global_source.rs:1101`）本就是「预言器 → 请求 → 回滚重建 → 重试」，
+pass 2 已经跑过三轮；需要的只是让退让也能触发同一循环再转一轮。
+
+**但 `87 > 82` 是危险信号。** 若每轮外溢都大于退让量，循环就是 §29.4 记录过的
+support treadmill，会发散。因此实现必须带收敛判据：记录每轮的 `dropped_faces` 与
+`unsupported_witness_faces`，不单调下降即停止并报告，而非无限重试。
+
+该修法尚未实现。Case 9 状态仍为 `INCOMPLETE`。

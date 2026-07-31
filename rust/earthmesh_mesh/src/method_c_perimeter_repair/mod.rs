@@ -110,6 +110,38 @@ impl MethodCDelaunayMesh {
             if let Some(perimeter) =
                 self.drop_non_triplet_components_for_diagnostics(selected, m_neighbors)?
             {
+                // The parent-support oracle ran against the mask as it stood
+                // before this drop, so its answer no longer describes the
+                // perimeter about to be materialized: removing a component
+                // moves the boundary and therefore changes which parent faces
+                // perim_fill3 consumes. Report the faces the new perimeter
+                // needs but the parent has not refined, so the caller can tell
+                // a stale support answer from a genuine one.
+                let parent_level = selected
+                    .iter()
+                    .enumerate()
+                    .skip(2)
+                    .find_map(|(iw, &is_selected)| is_selected.then_some(self.w_faces[iw].mrlw));
+                if let Some(parent_level) = parent_level {
+                    let nest_wd =
+                        self.method_c_nest_wd_from_selected_and_perimeter(selected, &perimeter)?;
+                    let stale = self
+                        .method_c_transition_parent_boundary_witnesses(
+                            &perimeter,
+                            &nest_wd,
+                            parent_level,
+                        )?
+                        .into_iter()
+                        .flat_map(|(_, faces)| faces)
+                        .filter(|&iw| {
+                            self.w_faces[iw].mrlw < parent_level && !nest_wd[iw].is_subdivided()
+                        })
+                        .count();
+                    eprintln!(
+                        "earthmesh_mesh: method_c post-drop support recheck parent_level={parent_level} \
+                         unsupported_witness_faces={stale}"
+                    );
+                }
                 return Ok(perimeter);
             }
         }
