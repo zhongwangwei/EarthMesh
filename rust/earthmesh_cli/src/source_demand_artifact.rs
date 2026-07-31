@@ -316,6 +316,25 @@ impl PreparedHfieldDemand {
         })
     }
 
+    /// Write the demand snapshot to an explicit path, without a gridfile.
+    ///
+    /// The demand is composed before Method-C materializes anything, so it
+    /// exists even when the run later fails. Anchoring the artifact to a
+    /// gridfile means exactly the runs worth diagnosing leave nothing behind:
+    /// a failed pass writes no gridfile, and a run with no demand writes an
+    /// artifact full of zeros. `gridfile_hash` is left empty because no
+    /// gridfile was produced.
+    pub(crate) fn persist_to_path(&self, path: &Path) -> io::Result<PathBuf> {
+        let mut persisted = self.persisted.clone();
+        persisted.gridfile_hash = String::new();
+        persisted.artifact_hash = artifact_hash(&persisted)?.to_hex();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, serde_json::to_vec_pretty(&persisted)?)?;
+        Ok(path.to_path_buf())
+    }
+
     pub(crate) fn persist_for_gridfile(&self, gridfile: &Path) -> io::Result<PathBuf> {
         let mut persisted = self.persisted.clone();
         persisted.gridfile_hash = earthmesh_project::file_content_hash(gridfile)?;

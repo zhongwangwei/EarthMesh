@@ -1091,6 +1091,33 @@ pub fn run_refine_pipeline_namelist(
                         pass,
                         domain_region.as_ref(),
                     )?;
+                // The native landcover path carries demand per face rather than
+                // through the HField raster, so the persisted HField snapshot is
+                // all zeros for these runs. Dump the per-face demand instead,
+                // before materialization, so a failing pass still leaves the
+                // demand behind for analysis.
+                if let Some(path) = std::env::var_os("EARTHMESH_M0_FACE_DEMAND_DUMP_DIR") {
+                    let dir = PathBuf::from(path);
+                    fs::create_dir_all(&dir)?;
+                    let demanded = face_demand
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(iw, &wanted)| wanted.then_some(iw))
+                        .collect::<Vec<_>>();
+                    let report = serde_json::json!({
+                        "kind": "earthmesh_native_landcover_face_demand",
+                        "pass": pass,
+                        "face_count": face_demand.len(),
+                        "demanded_face_count": demanded.len(),
+                        "demanded_faces": demanded,
+                    });
+                    let out = dir.join(format!("face-demand-pass{pass}.json"));
+                    fs::write(&out, serde_json::to_vec_pretty(&report)?)?;
+                    eprintln!(
+                        "earthmesh_cli: pass {pass} face demand {}/{} -> {}",
+                        report["demanded_face_count"], face_demand.len(), out.display()
+                    );
+                }
                 if cross_level_support {
                     add_method_c_face_lineage_demands(
                         &refined,
