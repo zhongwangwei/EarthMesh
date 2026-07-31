@@ -254,6 +254,12 @@ impl MethodCDelaunayMesh {
 
         let mut selected = selected_faces.to_vec();
         let method_c_m_neighbors = self.method_c_m_neighbors()?;
+        // Keep this pass clear of anything an earlier pass conceded. A conceded
+        // region stays a generation behind for good, so a transition band that
+        // reaches into it can never be satisfied by parent support.
+        // `perim_fill3` consumes faces just outside the selection, hence the
+        // two-ring margin.
+        self.clear_method_c_conceded_margin(&mut selected, &method_c_m_neighbors, 2)?;
         self.close_method_c_concavities_for_level_with_neighbors(
             &mut selected,
             &method_c_m_neighbors,

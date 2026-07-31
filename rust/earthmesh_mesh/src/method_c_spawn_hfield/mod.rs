@@ -2651,11 +2651,16 @@ impl MethodCDelaunayMesh {
                     "Method-C HField support preflight has no selected parent level",
                 )
             })?;
+        // A conceded region can never be refined, so asking for parent support
+        // there would loop forever. Those witnesses are dropped here and the
+        // selection has to keep clear of them instead.
+        let conceded = crate::method_c_perimeter_repair::conceded_lineage_snapshot();
         let mut lineages = self
             .method_c_transition_parent_boundary_witnesses(perimeter, &nest_wd, parent_level)?
             .into_iter()
             .flat_map(|(_, faces)| faces)
             .filter(|&iw| self.w_faces[iw].mrlw < parent_level && !nest_wd[iw].is_subdivided())
+            .filter(|&iw| !conceded.contains(&self.w_lineage[iw]))
             .map(|iw| {
                 i64::try_from(self.w_lineage[iw]).map_err(|_| {
                     io::Error::new(

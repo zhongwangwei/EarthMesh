@@ -160,6 +160,10 @@ impl MethodCDelaunayMesh {
             } else {
                 dropped_components += 1;
                 dropped_faces += component.len();
+                // Face ids are rebuilt every pass; the stable lineage is not.
+                // Record the concession against lineage so later passes can
+                // recognise the same region after the parent is re-materialized.
+                record_conceded_lineages(component.iter().map(|&iw| self.w_lineage[iw]));
             }
         }
 
@@ -230,10 +234,99 @@ impl MethodCDelaunayMesh {
         }
         Ok(components)
     }
+
+    /// Deselect anything within `rings` M-point hops of a conceded region.
+    ///
+    /// Conceded faces keep the lineage they had when they were given up, so a
+    /// later pass recognises them even after the parent is re-materialized and
+    /// face ids change. No-op when nothing has been conceded.
+    pub(crate) fn clear_method_c_conceded_margin(
+        &self,
+        selected: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        rings: usize,
+    ) -> io::Result<usize> {
+        let conceded = conceded_lineage_snapshot();
+        if conceded.is_empty() {
+            return Ok(0);
+        }
+        let mut blocked = vec![false; selected.len()];
+        for iw in 2..selected.len().min(self.nwd + 1) {
+            if conceded.contains(&self.w_lineage[iw]) {
+                blocked[iw] = true;
+            }
+        }
+        if !blocked.iter().any(|&item| item) {
+            return Ok(0);
+        }
+        for _ in 0..rings {
+            let mut grown = blocked.clone();
+            for iw in 2..blocked.len().min(self.nwd + 1) {
+                if !blocked[iw] {
+                    continue;
+                }
+                for im in self.w_faces[iw].im {
+                    if im < 2 || im > self.nmd {
+                        continue;
+                    }
+                    let neighbors = m_neighbors[im];
+                    for &near in neighbors.iw.iter().take(neighbors.npoly) {
+                        if near >= 2 && near <= self.nwd {
+                            grown[near] = true;
+                        }
+                    }
+                }
+            }
+            blocked = grown;
+        }
+        let mut cleared = 0usize;
+        for (iw, is_selected) in selected.iter_mut().enumerate() {
+            if *is_selected && blocked.get(iw).copied().unwrap_or(false) {
+                *is_selected = false;
+                cleared += 1;
+            }
+        }
+        if cleared > 0 {
+            eprintln!(
+                "earthmesh_mesh: method_c conceded margin cleared={cleared} rings={rings} \
+                 conceded_lineages={}",
+                conceded.len()
+            );
+        }
+        Ok(cleared)
+    }
 }
 
 /// Whether a pass may drop the selection components whose perimeter cannot be
 /// decomposed, instead of failing outright.
 fn component_triplet_drop_enabled() -> bool {
     std::env::var_os("EARTHMESH_M0_COMPONENT_TRIPLET_DROP").is_some()
+}
+
+use std::collections::BTreeSet;
+use std::sync::{Mutex, OnceLock};
+
+/// Regions a pass gave up on, keyed by stable W-face lineage.
+///
+/// A conceded component can never be refined by a later pass: selection only
+/// admits faces of the current generation, so the concession stays a generation
+/// behind for good. Later passes therefore have to keep their transition bands
+/// clear of it rather than request parent support that can never arrive.
+fn conceded_lineages() -> &'static Mutex<BTreeSet<usize>> {
+    static CONCEDED: OnceLock<Mutex<BTreeSet<usize>>> = OnceLock::new();
+    CONCEDED.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn record_conceded_lineages(lineages: impl IntoIterator<Item = usize>) {
+    if let Ok(mut set) = conceded_lineages().lock() {
+        set.extend(lineages);
+    }
+}
+
+/// Stable lineages conceded so far in this process.
+pub(crate) fn conceded_lineage_snapshot() -> BTreeSet<usize> {
+    conceded_lineages()
+        .lock()
+        .map(|set| set.clone())
+        .unwrap_or_default()
 }
