@@ -23,3 +23,4 @@ mod method_c_split_u;
 mod method_c_split_u_midpoints;
 mod method_c_summaries;
 mod refine_regions;
+mod method_c_single_seed_perimeter;
