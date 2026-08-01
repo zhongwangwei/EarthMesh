@@ -378,7 +378,7 @@ fn post_drop_support() -> &'static Mutex<BTreeSet<usize>> {
     PENDING.get_or_init(|| Mutex::new(BTreeSet::new()))
 }
 
-fn record_post_drop_support(lineages: BTreeSet<usize>) {
+pub(crate) fn record_post_drop_support(lineages: BTreeSet<usize>) {
     if let Ok(mut set) = post_drop_support().lock() {
         set.extend(lineages);
     }

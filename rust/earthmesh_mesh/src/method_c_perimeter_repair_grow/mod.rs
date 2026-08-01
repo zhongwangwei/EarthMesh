@@ -12,6 +12,7 @@ struct MethodCRepairTrial {
     added: usize,
     remainder: usize,
     unsupported: usize,
+    unsupported_lineages: BTreeSet<usize>,
     mask: Vec<bool>,
     perimeter: Vec<MethodCPerimeterPoint>,
 }
@@ -81,19 +82,20 @@ impl MethodCDelaunayMesh {
     /// the nested grid crosses its boundary. Counting them lets the search
     /// prefer a mask that satisfies both constraints rather than trading one
     /// for the other.
-    fn method_c_unsupported_witness_count(
+    fn method_c_unsupported_witness_lineages(
         &self,
         selected: &[bool],
         perimeter: &[MethodCPerimeterPoint],
         parent_level: usize,
-    ) -> io::Result<usize> {
+    ) -> io::Result<BTreeSet<usize>> {
         let nest_wd = self.method_c_nest_wd_from_selected_and_perimeter(selected, perimeter)?;
         Ok(self
             .method_c_transition_parent_boundary_witnesses(perimeter, &nest_wd, parent_level)?
             .into_iter()
             .flat_map(|(_, faces)| faces)
             .filter(|&iw| self.w_faces[iw].mrlw < parent_level && !nest_wd[iw].is_subdivided())
-            .count())
+            .map(|iw| self.w_lineage[iw])
+            .collect())
     }
 
     /// Faces that may be added next: those touching the perimeter when one is
@@ -193,21 +195,24 @@ impl MethodCDelaunayMesh {
                         added,
                         remainder: 0,
                         unsupported: 0,
+                        unsupported_lineages: BTreeSet::new(),
                         mask: trial,
                         perimeter: trial_perimeter,
                     }),
                     scored,
                 ));
             }
-            let unsupported = if decomposes {
-                self.method_c_unsupported_witness_count(&trial, &trial_perimeter, parent_mrlw)?
+            let unsupported_lineages = if decomposes {
+                self.method_c_unsupported_witness_lineages(&trial, &trial_perimeter, parent_mrlw)?
             } else {
-                0
+                BTreeSet::new()
             };
+            let unsupported = unsupported_lineages.len();
             let scored_trial = MethodCRepairTrial {
                 added,
                 remainder: Self::method_c_perimeter_remainder_score(&trial_perimeters),
                 unsupported,
+                unsupported_lineages,
                 mask: trial,
                 perimeter: trial_perimeter,
             };
@@ -300,6 +305,7 @@ impl MethodCDelaunayMesh {
                         added: trial.added,
                         remainder: trial.remainder,
                         unsupported: trial.unsupported,
+                        unsupported_lineages: trial.unsupported_lineages.clone(),
                         mask: trial.mask.clone(),
                         perimeter: trial.perimeter.clone(),
                     });
@@ -314,6 +320,7 @@ impl MethodCDelaunayMesh {
                     added: best.added,
                     remainder: best.remainder,
                     unsupported: best.unsupported,
+                    unsupported_lineages: best.unsupported_lineages.clone(),
                     mask: best.mask.clone(),
                     perimeter: best.perimeter.clone(),
                 });
@@ -335,9 +342,20 @@ impl MethodCDelaunayMesh {
                 .collect();
         }
 
+        // A decomposable perimeter the parent cannot support is not a dead
+        // end, it is a request. The outer support loop rewinds to the parent
+        // pass and refines these faces, so hand them over rather than emitting
+        // a mask that is known to fail materialization.
         Ok(decomposable_fallback
             .or(first_step_fallback)
-            .map(|trial| (trial.mask, trial.perimeter)))
+            .map(|trial| {
+                if !trial.unsupported_lineages.is_empty() {
+                    crate::method_c_perimeter_repair::record_post_drop_support(
+                        trial.unsupported_lineages,
+                    );
+                }
+                (trial.mask, trial.perimeter)
+            }))
     }
 
     /// Repair entry point: greedy by default, widened when configured.

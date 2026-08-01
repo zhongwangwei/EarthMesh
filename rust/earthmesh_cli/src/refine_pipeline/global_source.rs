@@ -1124,26 +1124,60 @@ pub fn run_refine_pipeline_namelist(
                                 (centre[0].powi(2) + centre[1].powi(2) + centre[2].powi(2)).sqrt();
                             let lat = (centre[2] / norm).asin().to_degrees();
                             let lon = centre[1].atan2(centre[0]).to_degrees();
+                            // Whether this demand point can be served at all:
+                            // each of its M points is a candidate seed, and a
+                            // seed whose footprint perimeter is not a multiple
+                            // of three can never decompose into transition
+                            // triples, however the repair loop searches.
+                            let seed_perimeters = corners
+                                .iter()
+                                .take(3)
+                                .filter_map(|&im| {
+                                    refined
+                                        .seed_footprint_perimeter_length(im)
+                                        .ok()
+                                        .flatten()
+                                        .map(|len| (im, len))
+                                })
+                                .collect::<Vec<_>>();
+                            let decomposable = seed_perimeters
+                                .iter()
+                                .any(|(_, len)| len % 3 == 0);
                             serde_json::json!({
                                 "face": iw,
                                 "mrlw": refined.w_faces[iw].mrlw,
                                 "lon": lon,
                                 "lat": lat,
+                                "seed_perimeters": seed_perimeters
+                                    .iter()
+                                    .map(|(im, len)| serde_json::json!({
+                                        "m_point": im, "length": len, "remainder": len % 3,
+                                    }))
+                                    .collect::<Vec<_>>(),
+                                "has_decomposable_seed": decomposable,
                             })
                         })
                         .collect::<Vec<_>>();
+                    let undecomposable = demanded
+                        .iter()
+                        .filter(|entry| entry["has_decomposable_seed"] == serde_json::json!(false))
+                        .count();
                     let report = serde_json::json!({
                         "kind": "earthmesh_native_landcover_face_demand",
                         "pass": pass,
                         "face_count": face_demand.len(),
                         "demanded_face_count": demanded.len(),
+                        "undecomposable_demand_count": undecomposable,
                         "demanded": demanded,
                     });
                     let out = dir.join(format!("face-demand-pass{pass}.json"));
                     fs::write(&out, serde_json::to_vec_pretty(&report)?)?;
                     eprintln!(
-                        "earthmesh_cli: pass {pass} face demand {}/{} -> {}",
-                        report["demanded_face_count"], face_demand.len(), out.display()
+                        "earthmesh_cli: pass {pass} face demand {}/{} undecomposable={} -> {}",
+                        report["demanded_face_count"],
+                        face_demand.len(),
+                        report["undecomposable_demand_count"],
+                        out.display()
                     );
                 }
                 if cross_level_support {
@@ -1290,15 +1324,56 @@ pub fn run_refine_pipeline_namelist(
                         );
                     }
                 }
-                let Some(next) = refined.spawn_nest_pass_from_target_levels_and_face_demands(
+                let spawned = refined.spawn_nest_pass_from_target_levels_and_face_demands(
                     |lon, lat| field.topology_level_at(lon, lat, base_m, field_max_level as u8),
                     &face_demand,
                     pass,
                     grid_number,
                     max_mrows,
                     preserve_all_demands,
-                )?
-                else {
+                );
+                let spawned = match spawned {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        // The perimeter repair may have found a decomposable
+                        // perimeter whose transition needs parent faces this
+                        // pass left coarse, and handed those witnesses over
+                        // instead of emitting a mask known to fail here. The
+                        // support oracle only predicts from target levels
+                        // before a pass runs, so this is the one channel by
+                        // which a repair decision can reach the parent.
+                        let pending = earthmesh_mesh::take_post_drop_support_lineages();
+                        if !cross_level_support || pass < 2 || pending.is_empty() {
+                            return Err(error);
+                        }
+                        let parent_pass = pass - 1;
+                        let mut added = 0usize;
+                        for lineage in pending {
+                            if let Ok(value) = i64::try_from(lineage) {
+                                added +=
+                                    usize::from(support_lineages[parent_pass].insert(value));
+                            }
+                        }
+                        // Nothing new to refine means retrying would rebuild
+                        // the same parent and fail identically.
+                        if added == 0 {
+                            return Err(error);
+                        }
+                        eprintln!(
+                            "earthmesh_cli: Method-C pass {pass} folding {added} unsupported transition witnesses into pass {parent_pass}"
+                        );
+                        refined = checkpoints[parent_pass - 1].clone();
+                        checkpoints.truncate(parent_pass - 1);
+                        for pending in support_lineages.iter_mut().skip(parent_pass + 1) {
+                            pending.clear();
+                        }
+                        pass = parent_pass;
+                        passes = parent_pass - 1;
+                        grid_number = first_grid_number + parent_pass - 1;
+                        continue;
+                    }
+                };
+                let Some(next) = spawned else {
                     break;
                 };
                 refined = if spring_nest_iterations > 0 {
