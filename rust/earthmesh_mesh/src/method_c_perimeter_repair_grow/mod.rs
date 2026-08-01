@@ -8,12 +8,17 @@ use super::*;
 /// triples. `unsupported` is only meaningful once it does — counting the parent
 /// faces a transition would consume costs a full `nest_wd` build, so the search
 /// pays for it only on masks it might actually accept.
+///
+/// The mask itself is deliberately absent. Scoring a candidate needs one, but
+/// keeping one per candidate meant holding a `nwd`-sized vector for every face
+/// the search merely looked at. Only the survivors get a mask, rebuilt from the
+/// face id, so allocation tracks the beam width rather than the fan-out.
 struct MethodCRepairTrial {
+    candidate: usize,
     added: usize,
     remainder: usize,
     unsupported: usize,
     unsupported_lineages: BTreeSet<usize>,
-    mask: Vec<bool>,
     perimeter: Vec<MethodCPerimeterPoint>,
 }
 
@@ -139,6 +144,23 @@ impl MethodCDelaunayMesh {
         Ok(candidates)
     }
 
+    /// Apply one candidate face to `scratch` and close the concavities it opens.
+    ///
+    /// `scratch` is overwritten, never read on entry, so the caller can hand the
+    /// same buffer back for every candidate instead of allocating per trial.
+    fn method_c_apply_repair_candidate(
+        &self,
+        selected: &[bool],
+        candidate: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        scratch: &mut Vec<bool>,
+    ) -> io::Result<()> {
+        scratch.clear();
+        scratch.extend_from_slice(selected);
+        scratch[candidate] = true;
+        self.close_method_c_concavities_for_level_with_neighbors(scratch, m_neighbors)
+    }
+
     /// Evaluate every single-face addition to `selected`.
     ///
     /// With `support_aware` off this stops at the first decomposable mask, which
@@ -146,6 +168,9 @@ impl MethodCDelaunayMesh {
     /// that the parent cannot support is not an answer — it stays in the running
     /// so the search can keep adding faces instead of committing to a perimeter
     /// that will fail materialization.
+    ///
+    /// The returned trials carry face ids, not masks; `scratch` holds whichever
+    /// one was evaluated last and is not meaningful to the caller.
     fn method_c_scored_repair_trials(
         &self,
         selected: &[bool],
@@ -154,6 +179,7 @@ impl MethodCDelaunayMesh {
         perimeter: Option<&[MethodCPerimeterPoint]>,
         coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
         support_aware: bool,
+        scratch: &mut Vec<bool>,
     ) -> io::Result<(Option<MethodCRepairTrial>, Vec<MethodCRepairTrial>)> {
         let parent_mrlw = self.method_c_repair_parent_mrlw(selected)?;
         let selected_count = selected.iter().filter(|&&item| item).count();
@@ -162,20 +188,18 @@ impl MethodCDelaunayMesh {
 
         let mut scored = Vec::new();
         for candidate in candidates {
-            let mut trial = selected.to_vec();
-            trial[candidate] = true;
-            self.close_method_c_concavities_for_level_with_neighbors(&mut trial, m_neighbors)?;
-            if !Self::method_c_repair_candidate_preserves_coverage(coverage, &trial) {
+            self.method_c_apply_repair_candidate(selected, candidate, m_neighbors, scratch)?;
+            if !Self::method_c_repair_candidate_preserves_coverage(coverage, scratch) {
                 continue;
             }
             if self
-                .ensure_method_c_selected_faces_share_parent_mrlw(&trial, child_level)
+                .ensure_method_c_selected_faces_share_parent_mrlw(scratch, child_level)
                 .is_err()
             {
                 continue;
             }
             let Ok(trial_perimeters) =
-                self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)
+                self.method_c_perimeters_from_selected_faces(scratch, m_neighbors)
             else {
                 continue;
             };
@@ -184,7 +208,7 @@ impl MethodCDelaunayMesh {
                 .flatten()
                 .copied()
                 .collect::<Vec<_>>();
-            let added = trial.iter().filter(|&&item| item).count() - selected_count;
+            let added = scratch.iter().filter(|&&item| item).count() - selected_count;
             if added == 0 {
                 continue;
             }
@@ -192,28 +216,28 @@ impl MethodCDelaunayMesh {
             if decomposes && !support_aware {
                 return Ok((
                     Some(MethodCRepairTrial {
+                        candidate,
                         added,
                         remainder: 0,
                         unsupported: 0,
                         unsupported_lineages: BTreeSet::new(),
-                        mask: trial,
                         perimeter: trial_perimeter,
                     }),
                     scored,
                 ));
             }
             let unsupported_lineages = if decomposes {
-                self.method_c_unsupported_witness_lineages(&trial, &trial_perimeter, parent_mrlw)?
+                self.method_c_unsupported_witness_lineages(scratch, &trial_perimeter, parent_mrlw)?
             } else {
                 BTreeSet::new()
             };
             let unsupported = unsupported_lineages.len();
             let scored_trial = MethodCRepairTrial {
+                candidate,
                 added,
                 remainder: Self::method_c_perimeter_remainder_score(&trial_perimeters),
                 unsupported,
                 unsupported_lineages,
-                mask: trial,
                 perimeter: trial_perimeter,
             };
             if decomposes && unsupported == 0 {
@@ -224,6 +248,18 @@ impl MethodCDelaunayMesh {
         Ok((None, scored))
     }
 
+    /// Rebuild the mask a scored trial stands for.
+    fn method_c_repair_trial_mask(
+        &self,
+        selected: &[bool],
+        candidate: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<Vec<bool>> {
+        let mut mask = Vec::with_capacity(selected.len());
+        self.method_c_apply_repair_candidate(selected, candidate, m_neighbors, &mut mask)?;
+        Ok(mask)
+    }
+
     pub(crate) fn try_grow_method_c_non_triplet_perimeter_once(
         &self,
         selected: &[bool],
@@ -232,6 +268,7 @@ impl MethodCDelaunayMesh {
         perimeter: Option<&[MethodCPerimeterPoint]>,
         coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
     ) -> io::Result<Option<(Vec<bool>, Vec<MethodCPerimeterPoint>)>> {
+        let mut scratch = Vec::with_capacity(selected.len());
         let (solved, mut scored) = self.method_c_scored_repair_trials(
             selected,
             m_neighbors,
@@ -239,15 +276,20 @@ impl MethodCDelaunayMesh {
             perimeter,
             coverage,
             false,
+            &mut scratch,
         )?;
-        if let Some(solved) = solved {
-            return Ok(Some((solved.mask, solved.perimeter)));
-        }
-        scored.sort_by_key(MethodCRepairTrial::greedy_key);
-        Ok(scored
-            .into_iter()
-            .next()
-            .map(|trial| (trial.mask, trial.perimeter)))
+        let chosen = match solved {
+            Some(solved) => Some(solved),
+            None => {
+                scored.sort_by_key(MethodCRepairTrial::greedy_key);
+                scored.into_iter().next()
+            }
+        };
+        let Some(chosen) = chosen else {
+            return Ok(None);
+        };
+        let mask = self.method_c_repair_trial_mask(selected, chosen.candidate, m_neighbors)?;
+        Ok(Some((mask, chosen.perimeter)))
     }
 
     /// Widened, support-aware repair: keep the best `width` trials at each step
@@ -274,13 +316,16 @@ impl MethodCDelaunayMesh {
         width: usize,
         depth: usize,
     ) -> io::Result<Option<(Vec<bool>, Vec<MethodCPerimeterPoint>)>> {
+        let mut scratch = Vec::with_capacity(selected.len());
         let mut frontier = vec![(selected.to_vec(), perimeter.map(<[_]>::to_vec))];
-        let mut decomposable_fallback: Option<MethodCRepairTrial> = None;
-        let mut first_step_fallback: Option<MethodCRepairTrial> = None;
+        let mut decomposable_fallback: Option<(Vec<bool>, Vec<MethodCPerimeterPoint>, BTreeSet<usize>)> =
+            None;
+        let mut first_step_fallback: Option<(Vec<bool>, Vec<MethodCPerimeterPoint>, BTreeSet<usize>)> =
+            None;
 
         for _ in 0..depth {
             let mut scored = Vec::new();
-            for (mask, mask_perimeter) in &frontier {
+            for (parent_index, (mask, mask_perimeter)) in frontier.iter().enumerate() {
                 let (solved, trials) = self.method_c_scored_repair_trials(
                     mask,
                     m_neighbors,
@@ -288,58 +333,69 @@ impl MethodCDelaunayMesh {
                     mask_perimeter.as_deref(),
                     coverage,
                     true,
+                    &mut scratch,
                 )?;
                 if let Some(solved) = solved {
-                    return Ok(Some((solved.mask, solved.perimeter)));
+                    let repaired =
+                        self.method_c_repair_trial_mask(mask, solved.candidate, m_neighbors)?;
+                    return Ok(Some((repaired, solved.perimeter)));
                 }
-                scored.extend(trials);
+                scored.extend(trials.into_iter().map(|trial| (parent_index, trial)));
             }
             if scored.is_empty() {
                 break;
             }
-            scored.sort_by_key(MethodCRepairTrial::beam_key);
+            scored.sort_by_key(|(_, trial)| trial.beam_key());
             if decomposable_fallback.is_none() {
-                if let Some(position) = scored.iter().position(|trial| trial.remainder == 0) {
-                    let trial = &scored[position];
-                    decomposable_fallback = Some(MethodCRepairTrial {
-                        added: trial.added,
-                        remainder: trial.remainder,
-                        unsupported: trial.unsupported,
-                        unsupported_lineages: trial.unsupported_lineages.clone(),
-                        mask: trial.mask.clone(),
-                        perimeter: trial.perimeter.clone(),
-                    });
+                if let Some((parent_index, trial)) =
+                    scored.iter().find(|(_, trial)| trial.remainder == 0)
+                {
+                    let parent = &frontier[*parent_index].0;
+                    decomposable_fallback = Some((
+                        self.method_c_repair_trial_mask(parent, trial.candidate, m_neighbors)?,
+                        trial.perimeter.clone(),
+                        trial.unsupported_lineages.clone(),
+                    ));
                 }
             }
             if first_step_fallback.is_none() {
-                let best = scored
+                let (parent_index, trial) = scored
                     .iter()
-                    .min_by_key(|trial| trial.greedy_key())
+                    .min_by_key(|(_, trial)| trial.greedy_key())
                     .expect("scored is non-empty");
-                first_step_fallback = Some(MethodCRepairTrial {
-                    added: best.added,
-                    remainder: best.remainder,
-                    unsupported: best.unsupported,
-                    unsupported_lineages: best.unsupported_lineages.clone(),
-                    mask: best.mask.clone(),
-                    perimeter: best.perimeter.clone(),
-                });
+                let parent = &frontier[*parent_index].0;
+                first_step_fallback = Some((
+                    self.method_c_repair_trial_mask(parent, trial.candidate, m_neighbors)?,
+                    trial.perimeter.clone(),
+                    trial.unsupported_lineages.clone(),
+                ));
             }
             // Face count and perimeter length together stand in for the shape,
             // so the frontier does not fill up with the same trial reached by
-            // different orders of the same two additions.
+            // different orders of the same two additions. Only survivors get a
+            // mask built for them.
+            let parent_face_counts = frontier
+                .iter()
+                .map(|(mask, _)| mask.iter().filter(|&&item| item).count())
+                .collect::<Vec<_>>();
             let mut seen = BTreeSet::new();
-            frontier = scored
-                .into_iter()
-                .filter(|trial| {
-                    seen.insert((
-                        trial.mask.iter().filter(|&&item| item).count(),
-                        trial.perimeter.len(),
-                    ))
-                })
-                .take(width)
-                .map(|trial| (trial.mask, Some(trial.perimeter)))
-                .collect();
+            let mut next = Vec::with_capacity(width);
+            for (parent_index, trial) in scored {
+                if next.len() >= width {
+                    break;
+                }
+                let faces = parent_face_counts[parent_index] + trial.added;
+                if !seen.insert((faces, trial.perimeter.len())) {
+                    continue;
+                }
+                let parent = &frontier[parent_index].0;
+                let mask = self.method_c_repair_trial_mask(parent, trial.candidate, m_neighbors)?;
+                next.push((mask, Some(trial.perimeter)));
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
         }
 
         // A decomposable perimeter the parent cannot support is not a dead
@@ -348,13 +404,13 @@ impl MethodCDelaunayMesh {
         // a mask that is known to fail materialization.
         Ok(decomposable_fallback
             .or(first_step_fallback)
-            .map(|trial| {
-                if !trial.unsupported_lineages.is_empty() {
+            .map(|(mask, trial_perimeter, unsupported_lineages)| {
+                if !unsupported_lineages.is_empty() {
                     crate::method_c_perimeter_repair::record_post_drop_support(
-                        trial.unsupported_lineages,
+                        unsupported_lineages,
                     );
                 }
-                (trial.mask, trial.perimeter)
+                (mask, trial_perimeter)
             }))
     }
 
