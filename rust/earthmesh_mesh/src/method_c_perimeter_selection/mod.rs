@@ -2,19 +2,77 @@ use std::io;
 
 use super::*;
 
+/// Reusable scratch for the Method-C perimeter walk.
+///
+/// Holds the `nest_wd` vector the walk reads plus the indices last marked, so
+/// resetting costs one pass over the selection rather than over the mesh.
+#[derive(Default)]
+pub(crate) struct MethodCPerimeterProbe {
+    nest_wd: Vec<MethodCNestWd>,
+    marked: Vec<usize>,
+    m_candidates: Vec<usize>,
+}
+
+impl MethodCPerimeterProbe {
+    fn reset(&mut self, len: usize) {
+        if self.nest_wd.len() == len {
+            for &iw in &self.marked {
+                self.nest_wd[iw].iw[2] = 0;
+            }
+        } else {
+            self.nest_wd.clear();
+            self.nest_wd.resize(len, MethodCNestWd::default());
+        }
+        self.marked.clear();
+        self.m_candidates.clear();
+    }
+
+    fn mark(&mut self, iw: usize, corners: [usize; 3]) {
+        self.nest_wd[iw].iw[2] = 1;
+        self.marked.push(iw);
+        self.m_candidates.extend_from_slice(&corners);
+    }
+
+}
+
 impl MethodCDelaunayMesh {
     pub(crate) fn method_c_perimeters_from_selected_faces(
         &self,
         selected: &[bool],
         m_neighbors: &[IcosahedronMPointNeighbors],
     ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
-        let mut probe_nest_wd = vec![MethodCNestWd::default(); self.nwd + 1];
+        let mut probe = MethodCPerimeterProbe::default();
+        self.method_c_perimeters_from_selected_faces_with_probe(selected, m_neighbors, &mut probe)
+    }
+
+    /// Perimeter walk over a caller-owned probe buffer.
+    ///
+    /// The plain entry point allocates and zeroes a `nwd`-sized
+    /// `MethodCNestWd` vector every call — 57 MB at NXP=243 — to describe a
+    /// selection of a few hundred faces. The repair search calls this once per
+    /// candidate face, so it keeps one buffer alive and clears only the entries
+    /// it set last time.
+    pub(crate) fn method_c_perimeters_from_selected_faces_with_probe(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        probe: &mut MethodCPerimeterProbe,
+    ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
+        probe.reset(self.nwd + 1);
         for iw in 2..=self.nwd {
             if selected[iw] {
-                probe_nest_wd[iw].iw[2] = 1;
+                probe.mark(iw, self.w_faces[iw].im);
             }
         }
-        self.perim_maps2_method_c(&probe_nest_wd, m_neighbors)
+        // Borrow the candidate list before the walk so the sort happens once.
+        let candidates = std::mem::take(&mut probe.m_candidates);
+        let mut candidates = candidates;
+        candidates.sort_unstable();
+        candidates.dedup();
+        let perimeters =
+            self.perim_maps2_method_c_over(&probe.nest_wd, m_neighbors, Some(&candidates));
+        probe.m_candidates = candidates;
+        perimeters
     }
 
     /// Perimeter length of the selection one canonical seed would produce.

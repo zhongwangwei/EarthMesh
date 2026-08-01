@@ -21,6 +21,24 @@ impl MethodCDelaunayMesh {
         nest_wd: &[MethodCNestWd],
         m_neighbors: &[IcosahedronMPointNeighbors],
     ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
+        self.perim_maps2_method_c_over(nest_wd, m_neighbors, None)
+    }
+
+    /// Perimeter walk restricted to a candidate set of start points.
+    ///
+    /// A start needs `nwdiv == 2`, so it must touch a subdivided face; the M
+    /// corners of the selection are therefore a complete candidate set. Scanning
+    /// all of `nmd` instead visits half a million M points to find a perimeter
+    /// of a hundred, which is where the repair search spends most of its time.
+    ///
+    /// `candidates` must be ascending and deduplicated, so the perimeters come
+    /// back in the order a full scan would produce them.
+    pub(crate) fn perim_maps2_method_c_over(
+        &self,
+        nest_wd: &[MethodCNestWd],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        candidates: Option<&[usize]>,
+    ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
         require_method_c_len("Method-C nest_wd", nest_wd.len(), self.nwd + 1)?;
         require_method_c_len(
             "Method-C perim M-neighbors",
@@ -29,19 +47,29 @@ impl MethodCDelaunayMesh {
         )?;
         let mut perimeters = Vec::new();
         let mut seen = BTreeSet::new();
-        for im in 2..=self.nmd {
-            let neighbors = m_neighbors[im];
-            let mut nwdiv = 0usize;
-            for &iw in neighbors.iw.iter().take(neighbors.npoly) {
-                require_method_c_id("Method-C perimeter W face", iw, self.nwd)?;
-                if nest_wd[iw].is_subdivided() {
-                    nwdiv += 1;
+        match candidates {
+            Some(candidates) => {
+                for &im in candidates {
+                    require_method_c_id("Method-C perimeter candidate M point", im, self.nmd)?;
+                    self.perim_maps2_method_c_visit(
+                        im,
+                        nest_wd,
+                        m_neighbors,
+                        &mut seen,
+                        &mut perimeters,
+                    )?;
                 }
             }
-            if nwdiv == 2 && !seen.contains(&im) {
-                let perimeter = self.perim_map2_method_c_from(im, nest_wd, m_neighbors)?;
-                seen.extend(perimeter.iter().map(|point| point.im));
-                perimeters.push(perimeter);
+            None => {
+                for im in 2..=self.nmd {
+                    self.perim_maps2_method_c_visit(
+                        im,
+                        nest_wd,
+                        m_neighbors,
+                        &mut seen,
+                        &mut perimeters,
+                    )?;
+                }
             }
         }
         if perimeters.is_empty() {
@@ -52,6 +80,31 @@ impl MethodCDelaunayMesh {
         } else {
             Ok(perimeters)
         }
+    }
+
+    /// Start a perimeter at `im` if it qualifies and has not been walked.
+    fn perim_maps2_method_c_visit(
+        &self,
+        im: usize,
+        nest_wd: &[MethodCNestWd],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        seen: &mut BTreeSet<usize>,
+        perimeters: &mut Vec<Vec<MethodCPerimeterPoint>>,
+    ) -> io::Result<()> {
+        let neighbors = m_neighbors[im];
+        let mut nwdiv = 0usize;
+        for &iw in neighbors.iw.iter().take(neighbors.npoly) {
+            require_method_c_id("Method-C perimeter W face", iw, self.nwd)?;
+            if nest_wd[iw].is_subdivided() {
+                nwdiv += 1;
+            }
+        }
+        if nwdiv == 2 && !seen.contains(&im) {
+            let perimeter = self.perim_map2_method_c_from(im, nest_wd, m_neighbors)?;
+            seen.extend(perimeter.iter().map(|point| point.im));
+            perimeters.push(perimeter);
+        }
+        Ok(())
     }
 
     fn perim_map2_method_c_from(

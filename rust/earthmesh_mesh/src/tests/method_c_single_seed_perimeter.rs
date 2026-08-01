@@ -965,3 +965,204 @@ fn case9_bad_component_minimal_repair_depth() {
         }
     }
 }
+
+/// Where does repair actually spend its time?
+///
+/// The widened search costs about twenty times the greedy walk, and the
+/// suspicion is that each candidate sweeps arrays sized for the whole mesh
+/// while the component being fixed is under eighty faces. Before changing any
+/// helper signature it is worth knowing which sweep dominates — the mask copy,
+/// the concavity closure, the perimeter walk, the parent check, or the nest_wd
+/// build the support test needs. Ignored by default: this is a measurement, not
+/// an assertion.
+#[test]
+#[ignore = "timing measurement, run explicitly"]
+fn repair_candidate_cost_breakdown() {
+    use std::time::Instant;
+
+    let mesh = MethodCDelaunayMesh::from_icosahedron(243, 0, 1.0, 0.25, 0)
+        .expect("NXP=243 base Method-C mesh");
+    let m_neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+
+    let nearest_seed = |lon_deg: f64, lat_deg: f64| -> usize {
+        let (lon, lat) = (lon_deg.to_radians(), lat_deg.to_radians());
+        let query = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+        let mut best = (f64::NEG_INFINITY, 0usize);
+        for im in 2..=mesh.nmd {
+            let point = mesh.m_points[im];
+            let dot = point.x * query[0] + point.y * query[1] + point.z * query[2];
+            if dot > best.0 {
+                best = (dot, im);
+            }
+        }
+        best.1
+    };
+
+    let mut region = vec![false; mesh.nwd + 1];
+    for &(lon, lat) in CASE9_PASS2_DEMAND {
+        for iw in mesh
+            .method_c_rad3_faces_with_neighbors(nearest_seed(lon, lat), &m_neighbors)
+            .expect("footprint")
+        {
+            if iw >= 2 && iw <= mesh.nwd {
+                region[iw] = true;
+            }
+        }
+    }
+    mesh.close_method_c_concavities_for_level_with_neighbors(&mut region, &m_neighbors)
+        .expect("closure");
+    let selected_count = region.iter().filter(|&&item| item).count();
+    let perimeter = mesh
+        .method_c_perimeters_from_selected_faces(&region, &m_neighbors)
+        .expect("perimeters")
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    eprintln!(
+        "nwd={} selected={selected_count} perimeter={}",
+        mesh.nwd,
+        perimeter.len()
+    );
+
+    const REPS: usize = 20;
+    let mut scratch = vec![false; mesh.nwd + 1];
+
+    let started = Instant::now();
+    for _ in 0..REPS {
+        scratch.clear();
+        scratch.extend_from_slice(&region);
+        std::hint::black_box(&scratch);
+    }
+    let copy = started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..REPS {
+        scratch.clear();
+        scratch.extend_from_slice(&region);
+        mesh.close_method_c_concavities_for_level_with_neighbors(&mut scratch, &m_neighbors)
+            .expect("closure");
+    }
+    let copy_and_close = started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..REPS {
+        std::hint::black_box(
+            mesh.method_c_perimeters_from_selected_faces(&region, &m_neighbors)
+                .expect("perimeters"),
+        );
+    }
+    let perimeters = started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..REPS {
+        std::hint::black_box(region.iter().filter(|&&item| item).count());
+    }
+    let count = started.elapsed();
+
+    let mut probe = crate::method_c_perimeter_selection::MethodCPerimeterProbe::default();
+    let started = Instant::now();
+    for _ in 0..REPS {
+        std::hint::black_box(
+            mesh.method_c_perimeters_from_selected_faces_with_probe(
+                &region,
+                &m_neighbors,
+                &mut probe,
+            )
+            .expect("perimeters"),
+        );
+    }
+    let perimeters_probed = started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..REPS {
+        std::hint::black_box(
+            mesh.method_c_nest_wd_from_selected_and_perimeter(&region, &perimeter)
+                .expect("nest_wd"),
+        );
+    }
+    let nest_wd = started.elapsed();
+
+    let each = |total: std::time::Duration| total.as_secs_f64() * 1000.0 / REPS as f64;
+    let close = each(copy_and_close) - each(copy);
+    eprintln!("per candidate, milliseconds:");
+    eprintln!("  mask copy                {:8.3}", each(copy));
+    eprintln!("  concavity closure        {close:8.3}");
+    eprintln!("  perimeter walk           {:8.3}", each(perimeters));
+    eprintln!("  perimeter walk (probed)  {:8.3}", each(perimeters_probed));
+    eprintln!("  selected count           {:8.3}", each(count));
+    eprintln!("  nest_wd build (support)  {:8.3}", each(nest_wd));
+    eprintln!(
+        "  total                    {:8.3}",
+        each(copy) + close + each(perimeters) + each(count) + each(nest_wd)
+    );
+}
+
+/// Does restricting the start scan change what the walk returns?
+///
+/// The candidate set is meant to be complete: a start needs `nwdiv == 2`, so it
+/// touches a subdivided face and is therefore a corner of one. A spawn_nest
+/// regression says otherwise, so compare the two directly over many selections.
+#[test]
+fn candidate_scan_matches_full_scan() {
+    for nxp in [6usize, 9, 12] {
+        let mesh = MethodCDelaunayMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0)
+            .expect("base Method-C mesh");
+        let m_neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+        let mut differing = 0usize;
+        let mut compared = 0usize;
+        for im in 2..=mesh.nmd {
+            let Ok(footprint) = mesh.method_c_rad3_faces_with_neighbors(im, &m_neighbors) else {
+                continue;
+            };
+            let mut selected = vec![false; mesh.nwd + 1];
+            for iw in footprint {
+                if iw >= 2 && iw <= mesh.nwd {
+                    selected[iw] = true;
+                }
+            }
+            let mut nest_wd = vec![MethodCNestWd::default(); mesh.nwd + 1];
+            let mut candidates = Vec::new();
+            for iw in 2..=mesh.nwd {
+                if selected[iw] {
+                    nest_wd[iw].iw[2] = 1;
+                    candidates.extend_from_slice(&mesh.w_faces[iw].im);
+                }
+            }
+            candidates.sort_unstable();
+            candidates.dedup();
+            let full = mesh.perim_maps2_method_c_over(&nest_wd, &m_neighbors, None);
+            let restricted =
+                mesh.perim_maps2_method_c_over(&nest_wd, &m_neighbors, Some(&candidates));
+            compared += 1;
+            let same = match (&full, &restricted) {
+                (Ok(left), Ok(right)) => left == right,
+                (Err(left), Err(right)) => left.to_string() == right.to_string(),
+                _ => false,
+            };
+            if !same {
+                if differing < 3 {
+                    let describe = |result: &io::Result<Vec<Vec<MethodCPerimeterPoint>>>| match result
+                    {
+                        Ok(perimeters) => {
+                            format!("{:?}", perimeters.iter().map(Vec::len).collect::<Vec<_>>())
+                        }
+                        Err(error) => format!("Err({error})"),
+                    };
+                    eprintln!(
+                        "  nxp={nxp} seed {im}: full={} restricted={} candidates={}",
+                        describe(&full),
+                        describe(&restricted),
+                        candidates.len()
+                    );
+                }
+                differing += 1;
+            }
+        }
+        eprintln!("nxp={nxp}: {differing}/{compared} 不一致");
+        assert_eq!(
+            differing, 0,
+            "restricting the perimeter start scan to the selection's M corners changed \
+             {differing} of {compared} results at nxp={nxp}"
+        );
+    }
+}

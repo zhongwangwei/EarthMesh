@@ -349,10 +349,17 @@ fn spawn_nest_rejects_tiny_contained_region_that_crosses_method_c_boundary() {
         "Canonical Method-C rejects a tiny nest that is too close to the coarse boundary",
     );
 
+    // Two gates can catch this, and which one does depends on how far the
+    // perimeter repair gets. It used to stop at the length check. Now that
+    // repair searches wider it reaches a decomposable perimeter first, and the
+    // patch builder rejects instead: the transition reaches a face the nest
+    // never covered, so all three of its candidate split edges are still
+    // default. That is the same illegality the length check was standing in
+    // for, named more precisely, so accept either.
+    let message = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("Method-C perimeter length invalid"),
+        message.contains("Method-C perimeter length invalid")
+            || message.contains("transition patch has no solid split edge"),
         "unexpected error: {error}"
     );
 }
