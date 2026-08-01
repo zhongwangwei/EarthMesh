@@ -70,7 +70,7 @@ impl MethodCDelaunayMesh {
                     }
                 };
             report("method_c-non-triplet-grow-start", attempt + 1)?;
-            let repaired = self.try_grow_method_c_non_triplet_perimeter_once(
+            let repaired = self.try_grow_method_c_non_triplet_perimeter(
                 selected,
                 m_neighbors,
                 child_level,
@@ -222,7 +222,7 @@ impl MethodCDelaunayMesh {
     }
 
     /// Connected components of the selected faces under shared-edge adjacency.
-    fn method_c_selected_face_components(
+    pub(crate) fn method_c_selected_face_components(
         &self,
         selected: &[bool],
         m_neighbors: &[IcosahedronMPointNeighbors],

@@ -583,7 +583,7 @@ impl MethodCDelaunayMesh {
                             max_repair_attempts,
                         )?;
                         let stage_started = start_stage();
-                        repaired = self.try_grow_method_c_non_triplet_perimeter_once(
+                        repaired = self.try_grow_method_c_non_triplet_perimeter(
                             &selected,
                             &method_c_m_neighbors,
                             child_level,

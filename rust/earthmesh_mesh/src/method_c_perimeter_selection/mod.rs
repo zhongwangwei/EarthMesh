@@ -17,6 +17,39 @@ impl MethodCDelaunayMesh {
         self.perim_maps2_method_c(&probe_nest_wd, m_neighbors)
     }
 
+    /// Perimeter length of the selection one canonical seed would produce.
+    ///
+    /// Answers, without materializing anything, whether a single demand point
+    /// can be served at all: the seed's rad3 footprint plus concavity closure
+    /// is exactly what selection would hand to `perim_fill3`, and a length that
+    /// is not a multiple of three cannot be decomposed into transition triples
+    /// no matter what the repair loop does afterwards.
+    pub fn seed_footprint_perimeter_length(&self, im: usize) -> io::Result<Option<usize>> {
+        if im < 2 || im > self.nmd {
+            return Ok(None);
+        }
+        let m_neighbors = self.method_c_m_neighbors()?;
+        let Ok(footprint) = self.method_c_rad3_faces_with_neighbors(im, &m_neighbors) else {
+            return Ok(None);
+        };
+        let mut selected = vec![false; self.nwd + 1];
+        for iw in footprint {
+            if iw >= 2 && iw <= self.nwd {
+                selected[iw] = true;
+            }
+        }
+        if self
+            .close_method_c_concavities_for_level_with_neighbors(&mut selected, &m_neighbors)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .method_c_perimeters_from_selected_faces(&selected, &m_neighbors)
+            .ok()
+            .map(|perimeters| perimeters.iter().map(Vec::len).sum()))
+    }
+
     pub(crate) fn method_c_perimeters_are_triplets(
         perimeters: &[Vec<MethodCPerimeterPoint>],
     ) -> bool {
