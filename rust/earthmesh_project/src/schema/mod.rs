@@ -306,6 +306,18 @@ pub struct HfieldRefinementRecipe {
     pub origin_lon: Option<f64>,
     #[serde(default)]
     pub origin_lat: Option<f64>,
+    /// Field raster size. `None` derives it from the target resolution so the
+    /// raster resolves the finest cell the run asks for.
+    ///
+    /// The h-field is sampled per triangle centre and per edge midpoint, so a
+    /// raster coarser than the target cell aliases the level map and hands
+    /// Method-C a ragged selection. `earthmesh_hfield` states the requirement as
+    /// "spacing <= the local h (ideally half)"; the fixed 720x360 default only
+    /// satisfies it down to roughly 100 km cells.
+    #[serde(default)]
+    pub nlon: Option<usize>,
+    #[serde(default)]
+    pub nlat: Option<usize>,
 }
 
 impl Default for HfieldRefinementRecipe {
@@ -317,6 +329,8 @@ impl Default for HfieldRefinementRecipe {
             base_m: None,
             origin_lon: None,
             origin_lat: None,
+            nlon: None,
+            nlat: None,
         }
     }
 }

@@ -326,6 +326,7 @@ mod method_c_selection_start;
 mod method_c_selection_topology;
 mod method_c_spawn;
 mod method_c_spawn_hfield;
+pub use method_c_spawn_hfield::MethodCHfieldSpawnDiagnostics;
 mod method_c_spawn_internal;
 mod method_c_spawn_pass;
 mod method_c_spawn_retry;

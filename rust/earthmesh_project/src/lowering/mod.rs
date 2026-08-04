@@ -5,7 +5,7 @@ use crate::{
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
-    RefineConfig,
+    RefineConfig, EARTH_RADIUS_METERS,
 };
 
 /// The L3 engine execution plan produced by [`ProjectConfig::lower`].
@@ -44,9 +44,10 @@ impl LoweredProject {
                     ),
                     _ => String::new(),
                 };
+                let (nlon, nlat) = hfield_raster_size(recipe, &self.mkgrd, &self.refine);
                 format!(
-                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n{}{}/\n\n",
-                    recipe.g, recipe.max_level, base_line, origin_lines
+                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n   NL%hfield_nlon = {}\n   NL%hfield_nlat = {}\n{}{}/\n\n",
+                    recipe.g, recipe.max_level, nlon, nlat, base_line, origin_lines
                 )
             }
             _ => String::new(),
@@ -457,4 +458,70 @@ fn bbox_geometry(w: f64, e: f64, s: f64, n: f64) -> Result<String, String> {
 
 fn circle_geometry(lon: f64, lat: f64, radius_km: f64) -> Result<String, String> {
     GeometryIr::circle(lon, lat, radius_km).to_inline_mask_source()
+}
+
+/// Field raster size for a lowered project, explicit values winning over the
+/// derived ones.
+///
+/// The h-field is sampled at triangle centres and edge midpoints, so a raster
+/// coarser than the finest requested cell aliases the level map and hands
+/// Method-C a ragged selection — which it then rejects, deep inside
+/// `perim_fill3`, as a transition patch with no solid split edge. The fixed
+/// 720x360 engine default is ~55 km of meridional spacing, already short of the
+/// ~49 km needed by a single-level NXP 81 run and far short of a two-level one.
+///
+/// `earthmesh_hfield` documents the requirement as "spacing <= the local h
+/// (ideally half)", but half is measured to be too coarse: a single-level NXP 81
+/// run at exactly h_min/2 still fails in `perim_fill3`, and only h_min/4 clears
+/// it. Two-level runs happened to pass at their own h_min/2 because their finer
+/// h_min put the absolute spacing at the same ~12 km — the binding constraint is
+/// the absolute spacing, not the ratio. h_min/8 buys nothing further.
+///
+/// ```text
+/// h_min = 2*pi*R / (5 * NXP * 2^L)
+/// nlat  = ceil(pi*R / (h_min/4))
+/// nlon  = 2 * nlat
+/// ```
+///
+/// Raster size is measured to be free: the same project at 842x421 and
+/// 3240x1620 both finish in 42 s, because the gradient limiter is nowhere near
+/// the bottleneck. That is why this errs coarse-side-safe rather than trying to
+/// find the smallest raster that works.
+fn hfield_raster_size(
+    recipe: &HfieldRefinementRecipe,
+    mkgrd: &EarthmeshConfig,
+    refine: &RefineConfig,
+) -> (usize, usize) {
+    const ENGINE_DEFAULT_NLON: usize = 720;
+    const ENGINE_DEFAULT_NLAT: usize = 360;
+    // Beyond this the gradient limiter's sweep cost stops paying for itself;
+    // deeper runs should narrow the domain rather than refine the whole globe.
+    const MAX_DERIVED_NLAT: usize = 8192;
+
+    let nxp = mkgrd.nxp.max(1) as f64;
+    let level = if recipe.max_level > 0 {
+        u32::from(recipe.max_level)
+    } else {
+        u32::try_from(refine.max_iter_cal.max(refine.max_iter_spc).max(1)).unwrap_or(1)
+    }
+    .min(5);
+
+    let h_min =
+        2.0 * std::f64::consts::PI * EARTH_RADIUS_METERS / (5.0 * nxp * 2f64.powi(level as i32));
+    let derived_nlat = if h_min.is_finite() && h_min > 0.0 {
+        (std::f64::consts::PI * EARTH_RADIUS_METERS / (h_min / 4.0)).ceil() as usize
+    } else {
+        ENGINE_DEFAULT_NLAT
+    }
+    .clamp(ENGINE_DEFAULT_NLAT, MAX_DERIVED_NLAT);
+
+    let nlat = recipe
+        .nlat
+        .filter(|value| *value > 0)
+        .unwrap_or(derived_nlat);
+    let nlon = recipe
+        .nlon
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| (2 * nlat).max(ENGINE_DEFAULT_NLON));
+    (nlon, nlat)
 }

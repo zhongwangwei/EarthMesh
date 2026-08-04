@@ -1405,6 +1405,48 @@ fn global_tri_mesh_lowers_to_the_global_spring() {
 }
 
 #[test]
+fn hfield_raster_resolves_a_quarter_of_the_finest_cell() {
+    // Measured, not guessed: an NXP 81 single-level run at exactly h_min/2
+    // (nlat 811) still fails inside perim_fill3, and h_min/4 (nlat 1620) clears
+    // it. The engine's own 720x360 default is coarser than either.
+    let mut project = sample();
+    project.target.cell = MeshCellKind::Tri;
+    project.target.resolution = ResolutionSpec::Nxp(81);
+    project.refinement.max_passes = 1;
+    project.expert.max_iter_cal = None;
+    project.expert.max_iter_spc = None;
+    let nml = project.lower().to_namelist();
+
+    assert!(
+        nml.contains("NL%hfield_nlat = 1620"),
+        "single-level NXP 81 must resolve h_min/4; got:\n{nml}"
+    );
+    assert!(nml.contains("NL%hfield_nlon = 3240"));
+
+    // One level deeper halves h_min, so the raster doubles.
+    project.refinement.max_passes = 2;
+    let deeper = project.lower().to_namelist();
+    assert!(
+        deeper.contains("NL%hfield_nlat = 3240"),
+        "two-level must double the raster; got:\n{deeper}"
+    );
+}
+
+#[test]
+fn explicit_hfield_raster_overrides_the_derivation() {
+    let mut project = sample();
+    project.refinement.hfield = Some(crate::HfieldRefinementRecipe {
+        enabled: true,
+        nlon: Some(512),
+        nlat: Some(256),
+        ..crate::HfieldRefinementRecipe::default()
+    });
+    let nml = project.lower().to_namelist();
+    assert!(nml.contains("NL%hfield_nlon = 512"));
+    assert!(nml.contains("NL%hfield_nlat = 256"));
+}
+
+#[test]
 fn baseline_grid_without_refinement_omits_mkrefine() {
     // A baseline grid (refine off) must omit &mkrefine — the engine would
     // validate it and reject the hex+no-Istransition / no-refine_spc combo.

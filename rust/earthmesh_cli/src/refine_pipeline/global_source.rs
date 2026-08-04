@@ -303,6 +303,9 @@ pub fn run_refine_pipeline_namelist(
     } else {
         method_c_spring_iterations(&refine, is_atmosmesh)?
     };
+    // Captured out of the h-field branch so every arm of this chain keeps the
+    // same tuple shape; stays at its default for the geometric region paths.
+    let mut hfield_diagnostics = earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default();
     let (mesh, spring_nest_passes) = if !is_atmosmesh
         && (native_only_spawn || native_surface_global_expansion)
         && !refine.refine_spc
@@ -461,35 +464,38 @@ pub fn run_refine_pipeline_namelist(
             // native ngrids-only path; honor its niter_refine controls instead
             // of forcing Method-C's 5000-iteration native spawn default.
             let hfield_spring_iterations = method_c_spring_iterations(&refine, is_atmosmesh)?;
-            mesh.spawn_nest_from_cartesian_xy_target_levels_with_spring_deltax(
-                |x, y| {
-                    let region_level = crate::hfield_refine::cartesian_hfield_level_at(
-                        &regions,
-                        x,
-                        y,
-                        base_m,
-                        hfield.g,
-                        field_max_level,
-                    );
-                    let threshold_level = geographic_threshold_field
-                        .as_ref()
-                        .map(|field| {
-                            let (origin_lon, origin_lat) =
-                                hfield.geographic_origin.expect("origin checked above");
-                            let (lon, lat) = crate::hfield_refine::cartesian_xy_to_lonlat(
-                                x, y, origin_lon, origin_lat,
-                            );
-                            field.level_at(lon, lat, base_m, field_max_level as u8)
-                        })
-                        .unwrap_or(0);
-                    region_level.max(threshold_level)
-                },
-                field_max_level,
-                max_mrows,
-                nxp,
-                hfield_spring_iterations,
-                native_deltax,
-            )?
+            let (refined, passes, diagnostics) = mesh
+                .spawn_nest_from_cartesian_xy_target_levels_with_spring_deltax(
+                    |x, y| {
+                        let region_level = crate::hfield_refine::cartesian_hfield_level_at(
+                            &regions,
+                            x,
+                            y,
+                            base_m,
+                            hfield.g,
+                            field_max_level,
+                        );
+                        let threshold_level = geographic_threshold_field
+                            .as_ref()
+                            .map(|field| {
+                                let (origin_lon, origin_lat) =
+                                    hfield.geographic_origin.expect("origin checked above");
+                                let (lon, lat) = crate::hfield_refine::cartesian_xy_to_lonlat(
+                                    x, y, origin_lon, origin_lat,
+                                );
+                                field.level_at(lon, lat, base_m, field_max_level as u8)
+                            })
+                            .unwrap_or(0);
+                        region_level.max(threshold_level)
+                    },
+                    field_max_level,
+                    max_mrows,
+                    nxp,
+                    hfield_spring_iterations,
+                    native_deltax,
+                )?;
+            hfield_diagnostics = diagnostics;
+            (refined, passes)
         } else {
             let mut field = crate::hfield_refine::build_composed_hfield(
                 &regions,
@@ -513,13 +519,15 @@ pub fn run_refine_pipeline_namelist(
                 base_m,
                 hfield.g,
             )?;
-            mesh.spawn_nest_from_target_levels_with_spring(
+            let (refined, passes, diagnostics) = mesh.spawn_nest_from_target_levels_with_spring(
                 |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
                 field_max_level,
                 max_mrows,
                 nxp,
                 spring_nest_iterations,
-            )?
+            )?;
+            hfield_diagnostics = diagnostics;
+            (refined, passes)
         }
     } else if spring_nest_iterations > 0 {
         if native_cartesian_xy {
@@ -593,6 +601,10 @@ pub fn run_refine_pipeline_namelist(
     let m_refine_levels_orig = method_c_m_refine_levels_orig_zero_based(&state)?;
     let m_ngr = method_c_m_ngr(&state)?;
     let w_refine_levels = method_c_w_refine_levels_zero_based(&state)?;
+    // Measured from the produced mesh, not from the request: a pass whose demand
+    // is clipped away stops descending without failing, and `max_level` alone
+    // cannot show that.
+    let realized_max_level = w_refine_levels.iter().copied().max().unwrap_or(0).max(0) as usize;
     let w_refine_levels_orig = method_c_w_refine_levels_orig_zero_based(&state)?;
     let w_ngr = method_c_w_ngr(&state)?;
     let outputs = write_method_c_refined_outputs(
@@ -630,6 +642,8 @@ pub fn run_refine_pipeline_namelist(
         refine,
         regions,
         max_level,
+        realized_max_level,
+        hfield_diagnostics,
         transition_faces,
         spring_nest_passes,
         spring_nest_iterations,

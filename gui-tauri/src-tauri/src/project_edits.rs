@@ -521,12 +521,23 @@ pub(crate) fn set_hfield_refinement(
     base_m: Option<f64>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
-    let (origin_lon, origin_lat) = cfg
+    // The GUI does not expose these; carry whatever the project file already had
+    // so editing an unrelated h-field setting cannot silently drop them. Raster
+    // size is derived during lowering when unset, and the derivation is what the
+    // GUI relies on.
+    let (origin_lon, origin_lat, nlon, nlat) = cfg
         .refinement
         .hfield
         .as_ref()
-        .map(|recipe| (recipe.origin_lon, recipe.origin_lat))
-        .unwrap_or((None, None));
+        .map(|recipe| {
+            (
+                recipe.origin_lon,
+                recipe.origin_lat,
+                recipe.nlon,
+                recipe.nlat,
+            )
+        })
+        .unwrap_or((None, None, None, None));
     if matches!(base_m, Some(base) if !base.is_finite() || base <= 0.0) {
         return Err("h-field base_m must be positive when set".to_string());
     }
@@ -546,12 +557,16 @@ pub(crate) fn set_hfield_refinement(
             base_m,
             origin_lon,
             origin_lat,
+            nlon,
+            nlat,
         })
     } else {
         Some(HfieldRefinementRecipe {
             enabled: false,
             origin_lon,
             origin_lat,
+            nlon,
+            nlat,
             ..HfieldRefinementRecipe::default()
         })
     };

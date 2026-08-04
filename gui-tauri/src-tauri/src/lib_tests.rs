@@ -1711,6 +1711,8 @@ fn hfield_origin_survives_opened_project_compose_and_canonical_save() {
         base_m: Some(12_000.0),
         origin_lon: Some(123.5),
         origin_lat: Some(-31.25),
+        nlon: None,
+        nlat: None,
     });
     let edited = ProjectConfig::scaffold(
         "edited_hfield_origin",

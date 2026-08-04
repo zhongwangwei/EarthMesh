@@ -151,6 +151,35 @@ pub(crate) fn print_refine_pipeline_report(
     println!("lbx_points={}", report.output.lbx_points);
     println!("refine_regions={}", report.regions.len());
     println!("refine_max_level={}", report.max_level);
+    println!("refine_realized_max_level={}", report.realized_max_level);
+    let hfield = report.hfield_diagnostics;
+    if hfield.requested_anchor_count > 0 {
+        println!(
+            "refine_hfield_requested_anchors={}",
+            hfield.requested_anchor_count
+        );
+        println!(
+            "refine_hfield_covered_anchors={}",
+            hfield.covered_anchor_count
+        );
+        println!(
+            "refine_hfield_boundary_clipped_anchors={}",
+            hfield.boundary_clipped_anchor_count
+        );
+    }
+    // An empty demand legitimately produces no refinement, so a shortfall is
+    // only worth reporting when the field actually asked for something that
+    // Method-C then clipped away.
+    if report.realized_max_level < report.max_level && hfield.boundary_clipped_anchor_count > 0 {
+        eprintln!(
+            "earthmesh_cli: warning: refinement reached level {} of the {} requested; \
+             {} of {} h-field demand anchors were clipped for lacking a legal rad3 footprint",
+            report.realized_max_level,
+            report.max_level,
+            hfield.boundary_clipped_anchor_count,
+            hfield.requested_anchor_count
+        );
+    }
     println!("refine_transition_faces={}", report.transition_faces);
     println!("refine_spring_passes={}", report.spring_nest_passes);
     println!("refine_spring_iterations={}", report.spring_nest_iterations);

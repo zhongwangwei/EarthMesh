@@ -26,7 +26,19 @@ pub struct RefinePipelineRunReport {
     pub gridinit: MkgrdGridinitRunReport,
     pub refine: RefineConfig,
     pub regions: Vec<MethodCRefinementRegion>,
+    /// Refinement depth the configuration asked for, derived from
+    /// `max_iter_spc`/`max_iter_cal` before any refinement runs.
     pub max_level: usize,
+    /// Deepest refinement level actually present in the produced mesh.
+    ///
+    /// A pass whose demand is clipped away — for example an h-field anchor with
+    /// no complete rad3 footprint — stops descending without failing the run, so
+    /// this can be lower than [`Self::max_level`]. Reporting only the requested
+    /// depth made that outcome indistinguishable from a fully realized one.
+    pub realized_max_level: usize,
+    /// What the h-field asked for versus what survived Method-C legality, summed
+    /// over passes. All zero for the geometric region paths.
+    pub hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
     pub transition_faces: usize,
     pub spring_nest_passes: usize,
     pub spring_nest_iterations: usize,

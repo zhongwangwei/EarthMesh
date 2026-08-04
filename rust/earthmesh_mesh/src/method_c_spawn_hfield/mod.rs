@@ -5,6 +5,21 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(crate) struct MethodCHfieldDemandCoverage {
     anchors: Vec<(usize, Vec<usize>)>,
+    /// Anchors sampled from the field before any legality clipping.
+    requested_anchor_count: usize,
+    /// Anchors dropped for lacking a complete rad3 footprint. `validate` only
+    /// ever sees the survivors, so without this count a partly-honoured pass is
+    /// indistinguishable from a fully-honoured one.
+    clipped_anchor_count: usize,
+}
+
+/// Per-run tally of what the h-field asked for versus what survived Method-C's
+/// legality rules, accumulated over every pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MethodCHfieldSpawnDiagnostics {
+    pub requested_anchor_count: usize,
+    pub covered_anchor_count: usize,
+    pub boundary_clipped_anchor_count: usize,
 }
 
 enum MethodCHfieldRad3Footprint {
@@ -15,7 +30,24 @@ enum MethodCHfieldRad3Footprint {
 impl MethodCHfieldDemandCoverage {
     #[cfg(test)]
     pub(crate) fn from_anchors(anchors: Vec<(usize, Vec<usize>)>) -> Self {
-        Self { anchors }
+        let requested_anchor_count = anchors.len();
+        Self {
+            anchors,
+            requested_anchor_count,
+            clipped_anchor_count: 0,
+        }
+    }
+
+    pub(crate) fn requested_anchor_count(&self) -> usize {
+        self.requested_anchor_count
+    }
+
+    pub(crate) fn covered_anchor_count(&self) -> usize {
+        self.anchors.len()
+    }
+
+    pub(crate) fn clipped_anchor_count(&self) -> usize {
+        self.clipped_anchor_count
     }
 
     pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
@@ -923,12 +955,37 @@ impl MethodCDelaunayMesh {
         // anchors: clip them based on the existence of an atomic aligned
         // footprint, rather than letting a partial footprint cross the seam or
         // failing an otherwise valid deeper interior pass.
+        let requested_anchor_count = anchors.len();
         anchors.retain(|(_, faces)| {
             faces
                 .iter()
                 .any(|&iw| alignable_faces.get(iw).copied().unwrap_or(false))
         });
-        let coverage = MethodCHfieldDemandCoverage { anchors };
+        let clipped_anchor_count = requested_anchor_count - anchors.len();
+        // Clipping apron anchors is deliberate and normally touches a thin
+        // boundary layer: every healthy run measured so far clips exactly zero.
+        // Losing the majority of the demand is a different situation — the field
+        // is asking for something this parent cannot carry — and silently
+        // delivering the remainder produced an `exit 0` mesh with 84% of the
+        // requested refinement missing, indistinguishable from a good one.
+        // Fail instead, and say what to change.
+        if clipped_anchor_count > anchors.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Method-C h-field pass {pass} could only place {} of {requested_anchor_count} demand anchors; \
+                     {clipped_anchor_count} lack a complete rad3 footprint. The parent refined region is too \
+                     narrow for this demand: coarsen the h-field raster (hfield_nlon/nlat), lower hfield_g to \
+                     widen the graded skirt, or reduce the requested level.",
+                    anchors.len()
+                ),
+            ));
+        }
+        let coverage = MethodCHfieldDemandCoverage {
+            anchors,
+            requested_anchor_count,
+            clipped_anchor_count,
+        };
         coverage.validate(&selected)?;
         Ok((selected, coverage))
     }
@@ -971,10 +1028,11 @@ impl MethodCDelaunayMesh {
         max_mrows: usize,
         spring: Option<(usize, usize, Option<f64>)>,
         use_cartesian_xy: bool,
-    ) -> io::Result<(Self, usize)> {
+    ) -> io::Result<(Self, usize, MethodCHfieldSpawnDiagnostics)> {
         self.validate_topology()?;
+        let mut diagnostics = MethodCHfieldSpawnDiagnostics::default();
         if max_level == 0 {
-            return Ok((self.clone(), 0));
+            return Ok((self.clone(), 0, diagnostics));
         }
         if max_mrows == 0 {
             return Err(io::Error::new(
@@ -1013,6 +1071,9 @@ impl MethodCDelaunayMesh {
                     use_cartesian_xy,
                     !has_deeper_demand,
                 )?;
+            diagnostics.requested_anchor_count += coverage.requested_anchor_count();
+            diagnostics.covered_anchor_count += coverage.covered_anchor_count();
+            diagnostics.boundary_clipped_anchor_count += coverage.clipped_anchor_count();
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
                 if mesh.hfield_has_current_parent_demand(target_level, pass, use_cartesian_xy)? {
                     return Err(io::Error::new(
@@ -1059,7 +1120,7 @@ impl MethodCDelaunayMesh {
             grid_number += 1;
         }
 
-        Ok((mesh, spring_passes))
+        Ok((mesh, spring_passes, diagnostics))
     }
 
     /// Spawn Method-C nests from a quantized target-level closure, typically
@@ -1080,7 +1141,7 @@ impl MethodCDelaunayMesh {
             None,
             false,
         )
-        .map(|(mesh, _)| mesh)
+        .map(|(mesh, _, _)| mesh)
     }
 
     /// Same as [`Self::spawn_nest_from_target_levels`], with the compatibility
@@ -1094,7 +1155,7 @@ impl MethodCDelaunayMesh {
         max_mrows: usize,
         nxp: usize,
         niter: usize,
-    ) -> io::Result<(Self, usize)> {
+    ) -> io::Result<(Self, usize, MethodCHfieldSpawnDiagnostics)> {
         self.spawn_nest_from_target_levels_internal(
             &target_level,
             max_level,
@@ -1116,7 +1177,7 @@ impl MethodCDelaunayMesh {
         nxp: usize,
         niter: usize,
         deltax_meters: f64,
-    ) -> io::Result<(Self, usize)> {
+    ) -> io::Result<(Self, usize, MethodCHfieldSpawnDiagnostics)> {
         if !deltax_meters.is_finite() || deltax_meters < 0.001 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
