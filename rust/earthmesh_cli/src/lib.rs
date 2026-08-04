@@ -394,6 +394,7 @@ pub mod workspace_mask_apply;
 use workspace_mask_apply::{apply_workspace_and_mask_operations, WorkspaceMaskApplyReport};
 pub mod data_preprocess_types;
 use data_preprocess_types::{DataPreprocessAreaJudgeSourceReport, MkgrdDataPreprocessSourceState};
+pub mod coast_refinement_regions;
 pub mod mkgrd_data_preprocess_source;
 use mkgrd_data_preprocess_source::sample_landtype_values_for_points_one_based;
 pub mod mkgrd_restart_types;

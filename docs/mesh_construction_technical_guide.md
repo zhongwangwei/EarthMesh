@@ -297,6 +297,10 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    两级的约束是**层间距必须大于一个父单元**（NXP 21 父单元约 381 km，间距 150 km 不够、1050 km 够），与 `perim_fill3` "子层不得贴近父层边界"的构造前提一致。**这个约束是几何的、可预先计算的**——与栅格那个至今找不到决定变量的经验窗口形成对照，这是"栅格是否必要"那条议题的实证支撑。
 
+   **从 landtype 自动导出圆链已实现**（`earthmesh_cli/src/coast_refinement_regions/`）：按引擎自身的陆海规则（`landtype != 0`）在半个半径大小的块上判定"块内既有陆又有海"，为每个海岸块发一个圆。块取半径的一半，使相邻圆重叠一半——正是 h 场碎片化时缺的那个连续性。半径下界 `materializable_radius_meters = 0.4 · base_cell`（实测：NXP 21 父单元 381 km 时 150 km 可细化）。端到端测试（`tests/coast_refinement_regions.rs`）：真实 landtype → 圆链 → `spawn_nest` 细化成功，0.42 s；内陆 bbox 正确返回空。
+
+   仍缺的一环是 **Project schema 只支持单个圆**（`specified_circle: Option<SpecifiedCircleRefinement>`，无 `Vec`），所以这条链目前只能从 CLI/测试调用，GUI 用户无法表达圆链。这也解释了为什么 h 场成了 Project 的默认路径——它是当前唯一能表达"沿海岸线细化"这类分布式需求的方式。
+
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 
    **场级形态学不是出路（2026-08 实测两次均失败）**。在 level map 上按可物化尺度做形态学，两种算子都试过：
