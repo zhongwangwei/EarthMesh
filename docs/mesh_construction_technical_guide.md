@@ -355,9 +355,15 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
    - **与分辨率无关**（`sst > 28°C`、`slope > 15°`、离海岸 < 50 km）:一次算清即可，逐轮重算得到同样答案。
    - **与分辨率有关**（单元内 landcover 异质度、子网格标准差、地形未解析方差）:必须逐轮重算，因为"还要不要再细"问的就是"这个单元里还剩多少没解析的变化"。
 
-   `landcover`（`refine_num_landtypes` / `th_num_landtypes`）属于第二类，而现在的实现落在第一类的机器上——`hfield_refine/mod.rs:1398` 的 `bins.distinct_at(idx)` 里 `idx` 遍历的是 `field.nlon() * field.nlat()`，即 **h 场栅格格点**,那个栅格的分辨率与网格单元大小无关。这也是第 8 节"栅格分辨率可用窗口找不到决定变量"的一个来源：分辨率相关的判据被绑在一个与网格无关的分辨率上，本来就没有正确答案。
+   **h 场里的三个"单元装了什么"判据已改为按层扫描**（2026-08）。`refine_num_landtypes`（单元内类别数）、`refine_area_mainland`（主导类别占比）、`th_sea_ratio`（海陆比）都属于第二类，而原先三个都在 h 场栅格格点上算：那个格点大小由基础分辨率推出（间距 = `h_base/8`），与被判定的单元无关，于是**每一层得到同一个答案，等于没在问这个问题**——参考 Fortran 是逐三角形问的。
 
-   `refinement_demand::landtype::landcover_heterogeneity_demand` 已按正确语义实现——`radius_cells` 由调用方按**被判定的那一代网格**的单元尺寸给出，合成测试证明同一张栅格在窄/宽两个半径下给出不同答案。但把它接进逐轮循环还需要两件没做的事：栅格 → 单元统计（即未移植的 `getref_mean_std`）,以及把 `spawn_nest` 从"一次给全部层级"改成可逐层增量。
+   现在（`apply_cell_content_threshold`）改为一层问一次：第 L 层用一个"该层父单元大小"的 h 场格点块来问"这么大的单元会不会太杂"，命中就令 `h ≤ h_base/2^L`。粗层用宽块给粗 `h`、细层用窄块给细 `h`，`min` 累积成 Method-C 要的嵌套场；答案对块尺度单调，所以层自然嵌套。块是网格对齐的方块而非真实网格单元（h 场看不见网格单元），所以**尺度对了、位置仍是近似**——原先两者都不对。
+
+   回归测试构造成每个 h 场格点恰好一个类别：逐格计数永远是 1，**旧实现对整张异质地图一格都不细化**；实测退回逐格实现后该测试失败。
+
+   代价要说明：任何启用这三个判据的既有工程，输出网格会变——这正是第 8 节记的那条待决事项（"所有既有 h 场项目的输出网格会变"）的一个具体来源。这也是"栅格分辨率可用窗口找不到决定变量"的一个来源：分辨率相关的判据被绑在一个与网格无关的分辨率上，本来就没有正确答案可找。
+
+   `refinement_demand::landtype::landcover_heterogeneity_demand` 已按正确语义实现——`radius_cells` 由调用方按**被判定的那一代网格**的单元尺寸给出，合成测试证明同一张栅格在窄/宽两个半径下给出不同答案。但把它接进逐轮循环还需要两件没做的事：栅格 → 单元统计（即未移植的 `getref_mean_std`），以及把 `spawn_nest` 从"一次给全部层级"改成可逐层增量。
 
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 

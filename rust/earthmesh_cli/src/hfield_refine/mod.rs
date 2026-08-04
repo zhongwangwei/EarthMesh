@@ -540,9 +540,14 @@ fn apply_landtype_basic_threshold_hfield_contributions(
     }
     let bins =
         read_landtype_source_for_hfield(Path::new(config.landtype_file.trim()), field, domain)?;
-    let h_inside = base_m / 2f64.powi(target_level.clamp(1, 5) as i32);
     let applied = apply_landtype_basic_thresholds_from_bins(
-        field, &bins, refine, mesh_type, h_inside, domain,
+        field,
+        &bins,
+        refine,
+        mesh_type,
+        base_m,
+        target_level,
+        domain,
     )?;
     if applied > 0 {
         field.limit_gradient(g)?;
@@ -646,11 +651,6 @@ impl LandtypeBinStats {
         self.slot(out).map_or(0, |slot| self.land[slot])
     }
 
-    fn distinct_at(&self, out: usize) -> usize {
-        self.slot(out)
-            .map_or(0, |slot| self.class_counts[slot].len())
-    }
-
     #[cfg(test)]
     fn contains_class(&self, out: usize, landtype: i32) -> bool {
         self.slot(out).is_some_and(|slot| {
@@ -660,14 +660,18 @@ impl LandtypeBinStats {
         })
     }
 
-    fn max_class_count_at(&self, out: usize) -> usize {
-        self.slot(out).map_or(0, |slot| {
-            self.class_counts[slot]
-                .iter()
-                .map(|(_, count)| *count)
-                .max()
-                .unwrap_or(0)
-        })
+    /// Merge one cell's class counts into `into`, so a block of cells can be
+    /// summarised without allocating per block.
+    fn merge_class_counts_into(&self, out: usize, into: &mut Vec<(i32, usize)>) {
+        let Some(slot) = self.slot(out) else {
+            return;
+        };
+        for (class, count) in &self.class_counts[slot] {
+            match into.iter_mut().find(|(seen, _)| seen == class) {
+                Some((_, total)) => *total += *count,
+                None => into.push((*class, *count)),
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1344,7 +1348,8 @@ fn apply_landtype_basic_thresholds_from_source(
     maxlc: i32,
     refine: &RefineConfig,
     mesh_type: &str,
-    h_inside: f64,
+    base_m: f64,
+    level: usize,
 ) -> io::Result<usize> {
     let src_nlon = landtypes.len().checked_sub(1).ok_or_else(|| {
         invalid("landtype source must include a Canonical placeholder row".to_string())
@@ -1374,7 +1379,96 @@ fn apply_landtype_basic_thresholds_from_source(
     }
     bins.exclude_class(maxlc);
 
-    apply_landtype_basic_thresholds_from_bins(field, &bins, refine, mesh_type, h_inside, None)
+    apply_landtype_basic_thresholds_from_bins(field, &bins, refine, mesh_type, base_m, level, None)
+}
+
+/// What a block of h-field cells contains.
+#[derive(Default)]
+struct LandtypeBlockStats {
+    total: usize,
+    ocean: usize,
+    land: usize,
+    distinct: usize,
+    max_class_count: usize,
+}
+
+/// How many h-field cells span `meters` of latitude, at least one.
+fn hfield_cells_for_meters(field: &HField, meters: f64) -> usize {
+    let meters_per_degree = std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 180.0;
+    let cell_meters = field.dlat_degrees() * meters_per_degree;
+    if !cell_meters.is_finite() || cell_meters <= 0.0 || !meters.is_finite() || meters <= 0.0 {
+        return 1;
+    }
+    ((meters / cell_meters).round() as usize).max(1)
+}
+
+/// Apply one "what does a cell contain" criterion across the level ladder.
+///
+/// How many land types crowd into a cell, whether one class dominates it, what
+/// fraction of it is sea — every one of these is a question about a cell, so the
+/// answer depends on how big the cell is. Asking it once over an h-field raster
+/// cell gives the same answer at every level, because that cell's size comes
+/// from the base resolution and has nothing to do with the cell being decided;
+/// the reference algorithm asks it per triangle instead.
+///
+/// So the question is put once per level, over a block of h-field cells the size
+/// of that level's parent cell: "would a cell of the size this level refines
+/// away be too heterogeneous?" Coarse levels use wide blocks and set a coarse
+/// `h`, fine levels narrow blocks and a fine `h`, and `min` accumulates them
+/// into the nested field Method-C wants. The answer is monotone in block size,
+/// so the levels nest by construction.
+///
+/// Blocks are grid-aligned rather than following mesh cells — the h-field cannot
+/// see mesh cells. That leaves the size right and the placement approximate,
+/// where before both were wrong.
+fn apply_cell_content_threshold(
+    field: &mut HField,
+    bins: &LandtypeBinStats,
+    base_m: f64,
+    max_level: usize,
+    domain: Option<&HfieldDomainMask>,
+    demanded: impl Fn(&LandtypeBlockStats) -> bool,
+) {
+    let nlon = field.nlon();
+    let nlat = field.nlat();
+    let len = nlon * nlat;
+    let mut classes: Vec<(i32, usize)> = Vec::new();
+    for level in 1..=max_level {
+        let parent_meters = base_m / 2f64.powi((level - 1) as i32);
+        let block = hfield_cells_for_meters(field, parent_meters);
+        let mut active = vec![false; len];
+        let mut i0 = 0usize;
+        while i0 < nlon {
+            let i1 = (i0 + block).min(nlon);
+            let mut j0 = 0usize;
+            while j0 < nlat {
+                let j1 = (j0 + block).min(nlat);
+                let mut stats = LandtypeBlockStats::default();
+                classes.clear();
+                for i in i0..i1 {
+                    for j in j0..j1 {
+                        let idx = i * nlat + j;
+                        stats.total += bins.total_at(idx);
+                        stats.ocean += bins.ocean_at(idx);
+                        stats.land += bins.land_at(idx);
+                        bins.merge_class_counts_into(idx, &mut classes);
+                    }
+                }
+                stats.distinct = classes.len();
+                stats.max_class_count = classes.iter().map(|(_, count)| *count).max().unwrap_or(0);
+                if demanded(&stats) {
+                    for i in i0..i1 {
+                        for j in j0..j1 {
+                            active[i * nlat + j] = true;
+                        }
+                    }
+                }
+                j0 = j1;
+            }
+            i0 = i1;
+        }
+        min_with_bool_matrix(field, &active, base_m / 2f64.powi(level as i32), domain);
+    }
 }
 
 fn apply_landtype_basic_thresholds_from_bins(
@@ -1382,10 +1476,12 @@ fn apply_landtype_basic_thresholds_from_bins(
     bins: &LandtypeBinStats,
     refine: &RefineConfig,
     mesh_type: &str,
-    h_inside: f64,
+    base_m: f64,
+    target_level: usize,
     domain: Option<&HfieldDomainMask>,
 ) -> io::Result<usize> {
     let len = field.nlon() * field.nlat();
+    let max_level = target_level.clamp(1, 5);
     if bins.hfield_len != len || bins.slot_by_hfield.len() != len {
         return Err(invalid(
             "landtype HField bin count does not match the target field".to_string(),
@@ -1394,33 +1490,25 @@ fn apply_landtype_basic_thresholds_from_bins(
 
     let mut applied = 0usize;
     if has_land_thresholds(refine, mesh_type) && refine.refine_num_landtypes {
-        let active = (0..len)
-            .map(|idx| bins.distinct_at(idx) as i32 > refine.th_num_landtypes)
-            .collect::<Vec<_>>();
-        min_with_bool_matrix(field, &active, h_inside, domain);
+        apply_cell_content_threshold(field, bins, base_m, max_level, domain, |block| {
+            block.distinct as i32 > refine.th_num_landtypes
+        });
         applied += 1;
     }
     if has_land_thresholds(refine, mesh_type) && refine.refine_area_mainland {
-        let active = (0..len)
-            .map(|idx| {
-                bins.land_at(idx) > 0
-                    && (bins.max_class_count_at(idx) as f64 / bins.land_at(idx) as f64)
-                        < refine.th_area_mainland
-            })
-            .collect::<Vec<_>>();
-        min_with_bool_matrix(field, &active, h_inside, domain);
+        apply_cell_content_threshold(field, bins, base_m, max_level, domain, |block| {
+            block.land > 0
+                && (block.max_class_count as f64 / block.land as f64) < refine.th_area_mainland
+        });
         applied += 1;
     }
     if has_ocean_thresholds(refine, mesh_type) {
-        let active = (0..len)
-            .map(|idx| {
-                bins.total_at(idx) > 0 && {
-                    let ratio = bins.ocean_at(idx) as f64 / bins.total_at(idx) as f64;
-                    ratio > refine.th_sea_ratio[0] && ratio < refine.th_sea_ratio[1]
-                }
-            })
-            .collect::<Vec<_>>();
-        min_with_bool_matrix(field, &active, h_inside, domain);
+        apply_cell_content_threshold(field, bins, base_m, max_level, domain, |block| {
+            block.total > 0 && {
+                let ratio = block.ocean as f64 / block.total as f64;
+                ratio > refine.th_sea_ratio[0] && ratio < refine.th_sea_ratio[1]
+            }
+        });
         applied += 1;
     }
     Ok(applied)
@@ -3078,7 +3166,7 @@ mod tests {
             assert!(has_threshold_hfield_sources(&refine, mesh_type));
             let mut field = HField::uniform(4, 2, 100.0).unwrap();
             let applied = apply_landtype_basic_thresholds_from_source(
-                &mut field, &landtypes, 9, &refine, mesh_type, 25.0,
+                &mut field, &landtypes, 9, &refine, mesh_type, 100.0, 2,
             )
             .unwrap();
 
@@ -3092,6 +3180,66 @@ mod tests {
         refine.refine_area_mainland = false;
         refine.refine_sea_ratio = false;
         assert!(!has_threshold_hfield_sources(&refine, "atmosmesh"));
+    }
+
+    #[test]
+    fn a_land_type_count_is_asked_over_each_levels_parent_cell() {
+        // One class per h-field cell, changing every cell. A per-cell count can
+        // never exceed one, so asking the question there answers "homogeneous"
+        // everywhere however heterogeneous the map is -- which is what the code
+        // did before: the neighbourhood was the raster cell, whose size comes
+        // from the base resolution, not from the cell being decided.
+        //
+        // 36x18 cells make each 10 degrees, about 1111 km. With 4444 km base
+        // cells the level ladder asks over blocks of 4, 2 and 1 cells, so the
+        // coarse levels see four distinct classes and the finest sees one.
+        let (nlon, nlat) = (36usize, 18usize);
+        let mut landtypes = vec![vec![0_i32; nlat + 1]; nlon + 1];
+        for lon in 1..=nlon {
+            for lat in 1..=nlat {
+                landtypes[lon][lat] = (lon % 4 + 1) as i32;
+            }
+        }
+        let refine = RefineConfig {
+            refine_num_landtypes: true,
+            th_num_landtypes: 1,
+            ..RefineConfig::default()
+        };
+        let base_m = 4_444_000.0;
+
+        let mut field = HField::uniform(nlon, nlat, base_m).unwrap();
+        let applied = apply_landtype_basic_thresholds_from_source(
+            &mut field,
+            &landtypes,
+            4,
+            &refine,
+            "earthmesh",
+            base_m,
+            3,
+        )
+        .unwrap();
+        assert_eq!(applied, 1);
+
+        // Every cell is heterogeneous at the two coarse levels and homogeneous
+        // at the finest, so the field settles one level short of the target.
+        let coarsest = base_m / 2.0;
+        let finest = base_m / 8.0;
+        let mut seen_refined = false;
+        for i in 0..nlon {
+            for j in 0..nlat {
+                let h = field.get(i, j);
+                assert!(
+                    h <= coarsest + 1.0,
+                    "cell {i},{j} left at {h}, coarser than one level"
+                );
+                assert!(
+                h > finest - 1.0,
+                "cell {i},{j} refined to {h}; the finest level sees one class and must not fire"
+            );
+                seen_refined |= h < base_m;
+            }
+        }
+        assert!(seen_refined, "a heterogeneous map must refine somewhere");
     }
 
     #[test]
@@ -3135,7 +3283,8 @@ mod tests {
             9,
             &refine,
             "earthmesh",
-            25.0,
+            100.0,
+            2,
         )
         .unwrap();
 
@@ -3173,7 +3322,8 @@ mod tests {
                 &stats,
                 &refine,
                 "earthmesh",
-                25.0,
+                100.0,
+                2,
                 None,
             )
             .unwrap();

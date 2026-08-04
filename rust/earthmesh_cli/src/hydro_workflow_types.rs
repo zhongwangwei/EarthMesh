@@ -28,7 +28,8 @@ pub struct HydroMeshQaReport {
     pub checks: Vec<HydroMeshQaCheck>,
 }
 
-/// Artifacts + summary produced by [`run_hydro_workflow`](crate::run_hydro_workflow).
+/// Artifacts + summary produced by
+/// [`run_hydro_workflow`](crate::hydro_delivery_refine_workflow::run_hydro_workflow).
 #[derive(Clone, Debug)]
 pub struct HydroWorkflowReport {
     pub intersection_cells: usize,

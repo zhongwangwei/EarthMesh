@@ -21,7 +21,8 @@ pub struct ColmForcingTemplateNetcdfWriteReport {
     pub rows: usize,
 }
 
-/// Per-surface-class cell tally from [`write_colm_coupling_csv_from_mesh`](crate::write_colm_coupling_csv_from_mesh).
+/// Per-surface-class cell tally from
+/// [`write_colm_coupling_csv_from_mesh`](crate::hydro_delivery_coupling_quality::write_colm_coupling_csv_from_mesh).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ColmSurfaceCounts {
     pub land: usize,
