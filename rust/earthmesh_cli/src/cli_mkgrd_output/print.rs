@@ -166,6 +166,11 @@ pub(crate) fn print_refine_pipeline_report(
             "refine_hfield_boundary_clipped_anchors={}",
             hfield.boundary_clipped_anchor_count
         );
+        println!(
+            "refine_hfield_demanded_faces={}",
+            hfield.demanded_face_count
+        );
+        println!("refine_hfield_unmet_faces={}", hfield.unmet_face_count);
     }
     // An empty demand legitimately produces no refinement, so a shortfall is
     // only worth reporting when the field actually asked for something that

@@ -119,6 +119,20 @@ an architecture goal.
   `expert.isolated_ocean`) keeps only the largest edge-connected water body and
   splits pinched vertex fans. It removes cells, so the run log always reports how
   many went and how many components were found.
+- A run reports what it produced, not what it was asked for. `refine_max_level`
+  is derived from configuration before any refinement happens, so it cannot
+  distinguish a fully realized run from one that refined nothing;
+  `refine_realized_max_level` is measured from the produced mesh, and the
+  h-field anchor counts (`requested`/`covered`/`boundary_clipped`) say whether a
+  shortfall came from an empty demand or from demand that was dropped.
+- The h-field raster is derived from the target resolution rather than fixed,
+  and both ends of its usable range fail. Too coarse aliases the level map and
+  Method-C rejects the mask; too fine resolves demand narrower than one rad3
+  footprint, which can only be refined where a footprint happens to fit. The
+  selection therefore measures unmet demand directly — demanded faces that the
+  selection does not cover — and refuses to deliver a mesh missing most of what
+  was asked for. Clipping the parent apron row stays deliberate: those anchors
+  are refined by the footprint anchored elsewhere in their own component.
 - Guarded AutoRefine comparisons separate float noise from meaningfulness:
   exact-valued metrics (counts, `max_adjacent_resolution_ratio`) use a 1e-9
   guard, continuous whole-mesh extrema (`aspect_ratio.max`, `min_angle_deg`, …)

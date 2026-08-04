@@ -7,6 +7,8 @@ pub(crate) struct MethodCHfieldDemandCoverage {
     anchors: Vec<(usize, Vec<usize>)>,
     /// Anchors sampled from the field before any legality clipping.
     requested_anchor_count: usize,
+    demanded_face_count: usize,
+    unmet_face_count: usize,
     /// Anchors dropped for lacking a complete rad3 footprint. `validate` only
     /// ever sees the survivors, so without this count a partly-honoured pass is
     /// indistinguishable from a fully-honoured one.
@@ -20,6 +22,11 @@ pub struct MethodCHfieldSpawnDiagnostics {
     pub requested_anchor_count: usize,
     pub covered_anchor_count: usize,
     pub boundary_clipped_anchor_count: usize,
+    /// Faces the field demanded at this level, and those the selection does not
+    /// cover. Reported on success too: a run well short of the error threshold
+    /// is still losing demand, and the ratio is the only way to see it.
+    pub demanded_face_count: usize,
+    pub unmet_face_count: usize,
 }
 
 enum MethodCHfieldRad3Footprint {
@@ -34,6 +41,8 @@ impl MethodCHfieldDemandCoverage {
         Self {
             anchors,
             requested_anchor_count,
+            demanded_face_count: 0,
+            unmet_face_count: 0,
             clipped_anchor_count: 0,
         }
     }
@@ -48,6 +57,14 @@ impl MethodCHfieldDemandCoverage {
 
     pub(crate) fn clipped_anchor_count(&self) -> usize {
         self.clipped_anchor_count
+    }
+
+    pub(crate) fn demanded_face_count(&self) -> usize {
+        self.demanded_face_count
+    }
+
+    pub(crate) fn unmet_face_count(&self) -> usize {
+        self.unmet_face_count
     }
 
     pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
@@ -956,34 +973,47 @@ impl MethodCDelaunayMesh {
         // footprint, rather than letting a partial footprint cross the seam or
         // failing an otherwise valid deeper interior pass.
         let requested_anchor_count = anchors.len();
+        let anchors_before_clip = anchors.clone();
         anchors.retain(|(_, faces)| {
             faces
                 .iter()
                 .any(|&iw| alignable_faces.get(iw).copied().unwrap_or(false))
         });
         let clipped_anchor_count = requested_anchor_count - anchors.len();
-        // Clipping apron anchors is deliberate and normally touches a thin
-        // boundary layer: every healthy run measured so far clips exactly zero.
-        // Losing the majority of the demand is a different situation — the field
-        // is asking for something this parent cannot carry — and silently
-        // delivering the remainder produced an `exit 0` mesh with 84% of the
-        // requested refinement missing, indistinguishable from a good one.
-        // Fail instead, and say what to change.
-        if clipped_anchor_count > anchors.len() {
+        // Not every clipped anchor is a loss. Clipping the apron row is
+        // deliberate, and an anchor there still gets refined when its own
+        // demand component hosts a legal footprint somewhere. What is a real
+        // loss is a whole demand component with no alignable face at all: it is
+        // narrower than one rad3 footprint, so nothing in it can ever be
+        // materialized at this generation. Judging by the clipped *fraction*
+        // instead only correlates with that; this measures it.
+        // Ask the direct question: of the faces the field demanded at this
+        // level, how many actually end up refined? A component-level test is
+        // too permissive — a coastline strip is one big connected component, so
+        // a handful of legal seeds inside it satisfies "has an alignable face"
+        // while the rest of the strip is still dropped. Measuring unmet demand
+        // catches that; measuring the clipped anchor fraction only correlates
+        // with it.
+        let (demanded_faces, unmet_faces) =
+            self.hfield_unmet_demand(&anchors_before_clip, &selected)?;
+        if unmet_faces * 2 > demanded_faces {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "Method-C h-field pass {pass} could only place {} of {requested_anchor_count} demand anchors; \
-                     {clipped_anchor_count} lack a complete rad3 footprint. The parent refined region is too \
-                     narrow for this demand: coarsen the h-field raster (hfield_nlon/nlat), lower hfield_g to \
-                     widen the graded skirt, or reduce the requested level.",
-                    anchors.len()
+                    "Method-C h-field pass {pass} can refine only {} of {demanded_faces} demanded faces; \
+                     {unmet_faces} lie in demand narrower than one rad3 footprint and would be dropped \
+                     silently. Raise NXP so a footprint fits, coarsen the h-field raster \
+                     (hfield_nlon/nlat) so sub-footprint speckle is not resolved, or lower the \
+                     requested level.",
+                    demanded_faces - unmet_faces
                 ),
             ));
         }
         let coverage = MethodCHfieldDemandCoverage {
             anchors,
             requested_anchor_count,
+            demanded_face_count: demanded_faces,
+            unmet_face_count: unmet_faces,
             clipped_anchor_count,
         };
         coverage.validate(&selected)?;
@@ -1074,6 +1104,8 @@ impl MethodCDelaunayMesh {
             diagnostics.requested_anchor_count += coverage.requested_anchor_count();
             diagnostics.covered_anchor_count += coverage.covered_anchor_count();
             diagnostics.boundary_clipped_anchor_count += coverage.clipped_anchor_count();
+            diagnostics.demanded_face_count += coverage.demanded_face_count();
+            diagnostics.unmet_face_count += coverage.unmet_face_count();
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
                 if mesh.hfield_has_current_parent_demand(target_level, pass, use_cartesian_xy)? {
                     return Err(io::Error::new(
@@ -1192,5 +1224,34 @@ impl MethodCDelaunayMesh {
             Some((nxp, niter, Some(cartesian_dist00))),
             true,
         )
+    }
+}
+
+/// Demanded faces versus those the selection actually refines.
+impl MethodCDelaunayMesh {
+    /// `(demanded, unmet)` face counts for one pass.
+    ///
+    /// Demand narrower than a rad3 footprint cannot be selected: only the spots
+    /// where a footprint happens to fit get refined, and the rest of the region
+    /// silently disappears. Comparing the two counts states that directly,
+    /// rather than inferring it from how many anchors were clipped.
+    fn hfield_unmet_demand(
+        &self,
+        anchors: &[(usize, Vec<usize>)],
+        selected: &[bool],
+    ) -> io::Result<(usize, usize)> {
+        let mut demanded = vec![false; self.nwd + 1];
+        for (_, faces) in anchors {
+            for &iw in faces {
+                if iw >= 2 && iw <= self.nwd {
+                    demanded[iw] = true;
+                }
+            }
+        }
+        let demanded_faces = demanded.iter().filter(|d| **d).count();
+        let unmet_faces = (2..=self.nwd)
+            .filter(|&iw| demanded[iw] && !selected.get(iw).copied().unwrap_or(false))
+            .count();
+        Ok((demanded_faces, unmet_faces))
     }
 }
