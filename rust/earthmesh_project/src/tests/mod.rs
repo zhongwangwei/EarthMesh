@@ -1405,10 +1405,9 @@ fn global_tri_mesh_lowers_to_the_global_spring() {
 }
 
 #[test]
-fn hfield_raster_resolves_a_quarter_of_the_finest_cell() {
-    // Measured, not guessed: an NXP 81 single-level run at exactly h_min/2
-    // (nlat 811) still fails inside perim_fill3, and h_min/4 (nlat 1620) clears
-    // it. The engine's own 720x360 default is coarser than either.
+fn hfield_raster_targets_eight_base_cells_per_raster_cell() {
+    // Measured window, in base cells per raster cell: 4 fails (aliased), 6.9-12
+    // passes at both resolutions, 32 fails (fragmented). Target the middle.
     let mut project = sample();
     project.target.cell = MeshCellKind::Tri;
     project.target.resolution = ResolutionSpec::Nxp(81);
@@ -1419,16 +1418,27 @@ fn hfield_raster_resolves_a_quarter_of_the_finest_cell() {
 
     assert!(
         nml.contains("NL%hfield_nlat = 1620"),
-        "single-level NXP 81 must resolve h_min/4; got:\n{nml}"
+        "NXP 81 must derive 20*NXP; got:\n{nml}"
     );
     assert!(nml.contains("NL%hfield_nlon = 3240"));
 
-    // One level deeper halves h_min, so the raster doubles.
-    project.refinement.max_passes = 2;
+    // Deeper refinement must NOT change it. An earlier level-dependent rule
+    // derived a failing raster for low-NXP multi-level runs.
+    project.refinement.max_passes = 3;
     let deeper = project.lower().to_namelist();
     assert!(
-        deeper.contains("NL%hfield_nlat = 3240"),
-        "two-level must double the raster; got:\n{deeper}"
+        deeper.contains("NL%hfield_nlat = 1620"),
+        "raster must not depend on level; got:\n{deeper}"
+    );
+
+    // The case the level-dependent rule regressed: NXP 21 two-level derived
+    // nlat 840, which fails, while 420 passes.
+    project.target.resolution = ResolutionSpec::Nxp(21);
+    project.refinement.max_passes = 2;
+    let coarse = project.lower().to_namelist();
+    assert!(
+        coarse.contains("NL%hfield_nlat = 420"),
+        "NXP 21 must stay at 20*NXP; got:\n{coarse}"
     );
 }
 
