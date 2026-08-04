@@ -119,3 +119,50 @@ fn nested_rings_closer_than_a_parent_cell_are_rejected() {
         "rejection must name the parent boundary; got {message}"
     );
 }
+
+/// Method-C documents a five-level ceiling, and point+radius reaches it.
+///
+/// Each ring must clear the next by more than that level's parent cell, and the
+/// parent halves every level, so the radii can close up as they go in. At NXP 21
+/// (base ~381 km) the required separations are 381 / 191 / 95 / 48 km, and the
+/// innermost radius still has to clear the materializable floor.
+///
+/// Measured: 8821 faces -> 17341 for the full five levels, i.e. 381 km down to
+/// 12 km for under twice the face count.
+#[test]
+fn nested_circles_reach_the_five_level_ceiling() {
+    const RADII_KM: [f64; 5] = [2000.0, 1200.0, 700.0, 400.0, 200.0];
+    let center = LonLatDegrees::new(114.0, 22.0);
+
+    for depth in 1..=5usize {
+        let mesh =
+            MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+        let regions: Vec<_> = RADII_KM[..depth]
+            .iter()
+            .enumerate()
+            .map(|(index, &radius_km)| MethodCRefinementRegion::Circle {
+                center,
+                radius_meters: radius_km * 1000.0,
+                level: index + 1,
+            })
+            .collect();
+
+        let refined = mesh
+            .spawn_nest(&regions, depth)
+            .unwrap_or_else(|error| panic!("depth {depth} must refine: {error}"));
+
+        let deepest = refined
+            .w_faces
+            .iter()
+            .skip(2)
+            .map(|face| face.mrlw)
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            deepest,
+            depth + 1,
+            "depth {depth} must reach mrlw {}",
+            depth + 1
+        );
+    }
+}
