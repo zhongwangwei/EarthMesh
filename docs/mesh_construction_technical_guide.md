@@ -287,7 +287,17 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    兜底仍在：未满足需求检查会显式报错并提示可调项，最坏情况是要求用户改配置，而非静默交付坏网格。
 
-   **点+半径原型（2026-08）未完成，不构成结论**：尝试把海岸需求表达为一批 `circle` 区域走几何路径、绕开栅格，七轮均因配置错误未能跑起来（陆海判据、`mask_refine_cal_fprefix` 哨兵值、`max_iter_cal` 边界、fprefix 目录格式等）。**这只反映配置嫁接的困难，不反映路径可行性**——`examples/default/ocean_hex_global.nml` 是可运行的 circle 细化实例，v2 亦有可跑配置。要验证应以该例为起点，或写最小 Rust 测试直接调 `spawn_nest(&regions, ...)` 绕开 namelist 层（后者也能进回归套件）。此前据这些失败推断"几何路径开关语义盘根错节、h 场可能正是为绕开它而生"，是从自身失败过度推广，不成立。
+   **点+半径路径已验证可行**（2026-08，`earthmesh_mesh/tests/point_radius_coastal_demand.rs`）。用同一份海岸需求（按引擎口径 `landtype != 0` 从 landtype 提取的 1° 海岸块）构造圆链，直接调 `spawn_nest(&regions, ...)` 绕开 namelist 层：
+
+   | 配置 | 结果 |
+   |---|---|
+   | 单级，19 圆 r=150 km | ✅ 通过 |
+   | 两级，外 300 km + 内 150 km | ❌ `crosses the parent boundary` |
+   | 两级，外 1200 km + 内 150 km | ✅ 通过 |
+
+   两级的约束是**层间距必须大于一个父单元**（NXP 21 父单元约 381 km，间距 150 km 不够、1050 km 够），与 `perim_fill3` "子层不得贴近父层边界"的构造前提一致。**这个约束是几何的、可预先计算的**——与栅格那个至今找不到决定变量的经验窗口形成对照，这是"栅格是否必要"那条议题的实证支撑。
+
+   此前七轮从 project namelist 改造的尝试全部失败，原因是 `read_hfield_refine_options` 判定的是 **`&hfield` 段是否存在**而非 `hfield_on` 的值，而 Project lowering 总是写出该段；加上 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例。
 
    **场级形态学不是出路（2026-08 实测两次均失败）**。在 level map 上按可物化尺度做形态学，两种算子都试过：
 
