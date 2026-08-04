@@ -45,6 +45,7 @@ fn sample() -> ProjectConfig {
             threshold_enabled: true,
             max_passes: 3,
             threshold_criteria: Vec::new(),
+            adaptive: None,
             specified_circle: None,
             specified_bbox: None,
             specified_close: None,
@@ -810,7 +811,7 @@ fn lower_maps_to_engine_config() {
     let nml = lowered.to_namelist();
     assert!(nml.contains("&mkgrd"));
     assert!(nml.contains("&mkrefine"));
-    assert!(nml.contains("&hfield"));
+    assert!(nml.contains("&adaptive"));
     assert!(nml.contains("&quality"));
     assert!(nml.contains("&datalayers"));
 
@@ -1327,10 +1328,34 @@ fn landtype_is_required_for_surface_targets_but_skipped_for_idle_atmosphere() {
 }
 
 #[test]
-fn hfield_is_default_unless_explicit_compatibility() {
+fn point_radius_is_the_default_and_the_h_field_is_opt_in() {
+    // A run refines one way or the other, and point+radius is the one that can
+    // re-ask a criterion after the cells it judges exist.
     let mut p = sample();
     p.refinement.hfield = None;
-    assert!(p.lower().to_namelist().contains("&hfield"));
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("&adaptive"), "{nml}");
+    assert!(!nml.contains("&hfield"), "{nml}");
+
+    // Asking for the h-field turns the adaptive route off rather than running
+    // both; two backends refining the same mesh is not a state that means
+    // anything.
+    p.refinement.hfield = Some(HfieldRefinementRecipe::default());
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("&hfield"), "{nml}");
+    assert!(!nml.contains("&adaptive"), "{nml}");
+
+    // Turning the adaptive route off without asking for the h-field leaves the
+    // run on the plain region path.
+    p.refinement.hfield = None;
+    p.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+        enabled: false,
+        ..AdaptiveRefinementRecipe::default()
+    });
+    let nml = p.lower().to_namelist();
+    assert!(!nml.contains("&adaptive"), "{nml}");
+    assert!(!nml.contains("&hfield"), "{nml}");
+    p.refinement.adaptive = None;
 
     p.refinement.hfield = Some(HfieldRefinementRecipe {
         enabled: false,
@@ -1415,6 +1440,8 @@ fn hfield_raster_targets_eight_base_cells_per_raster_cell() {
     project.refinement.max_passes = 1;
     project.expert.max_iter_cal = None;
     project.expert.max_iter_spc = None;
+    // The raster only exists on the h-field route, which is now opt-in.
+    project.refinement.hfield = Some(HfieldRefinementRecipe::default());
     let nml = project.lower().to_namelist();
 
     assert!(

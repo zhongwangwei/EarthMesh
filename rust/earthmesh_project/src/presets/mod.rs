@@ -175,6 +175,7 @@ impl ProjectConfig {
                 threshold_enabled: false,
                 max_passes: 0,
                 threshold_criteria: Vec::new(),
+                adaptive: None,
                 specified_circle: None,
                 specified_bbox: None,
                 specified_close: None,

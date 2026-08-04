@@ -1748,12 +1748,46 @@ fn set_specified_refinement_accepts_bbox_region() {
 }
 
 #[test]
-fn hfield_defaults_on_and_discrete_can_disable_it() {
-    let yaml = hydrology_yaml("hfield_default");
+fn point_radius_is_the_default_route_and_the_h_field_is_opt_in() {
+    // The panel has to say which backend the run will actually use. Reporting
+    // the h-field's defaults for a project that never asked for it would
+    // describe settings the run ignores.
+    let mut base = circle_project("route_default");
+    base.refinement.enabled = true;
+    base.refinement.max_passes = 1;
+    base.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::One(
+        earthmesh_project::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.0,
+            radius_km: 80.0,
+        },
+    ));
+    let yaml = base.to_yaml().expect("yaml");
     let summary = project_summary(yaml.clone()).expect("summary");
-    assert!(summary.hfield_enabled);
+    assert!(!summary.hfield_enabled);
+    assert!(summary.adaptive_enabled);
+    assert!(summary.adaptive_coastline);
+    let lowered = ProjectConfig::from_yaml(&yaml).expect("yaml").lower();
+    let nml = lowered.to_namelist();
+    assert!(nml.contains("&adaptive"), "{nml}");
+    assert!(!nml.contains("&hfield"), "{nml}");
 
-    let yaml = set_hfield_refinement(yaml, false, None, None, None).expect("discrete hfield off");
+    // Asking for the h-field moves the run onto it, and the panel follows.
+    let mut project = ProjectConfig::from_yaml(&yaml).expect("yaml");
+    project.refinement.hfield = Some(earthmesh_project::HfieldRefinementRecipe::default());
+    let with_hfield = project.to_yaml().expect("yaml");
+    let summary = project_summary(with_hfield.clone()).expect("summary");
+    assert!(summary.hfield_enabled);
+    assert!(!summary.adaptive_enabled);
+    let nml = ProjectConfig::from_yaml(&with_hfield)
+        .expect("yaml")
+        .lower()
+        .to_namelist();
+    assert!(nml.contains("&hfield"), "{nml}");
+    assert!(!nml.contains("&adaptive"), "{nml}");
+
+    let yaml = set_hfield_refinement(with_hfield, false, None, None, None)
+        .expect("discrete hfield off");
     let summary = project_summary(yaml.clone()).expect("summary");
     assert!(!summary.hfield_enabled);
     let lowered = ProjectConfig::from_yaml(&yaml).expect("yaml").lower();

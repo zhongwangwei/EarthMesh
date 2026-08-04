@@ -140,7 +140,13 @@ pub(crate) struct ProjectSummary {
     pub(crate) specified_refine_bbox: Option<[f64; 4]>,
     pub(crate) specified_refine_path: Option<String>,
     pub(crate) specified_refine_close_boundary: Option<earthmesh_project::CloseBoundaryMode>,
+    /// True only when the project asks for the h-field. Absent means the run
+    /// refines by point+radius.
     pub(crate) hfield_enabled: bool,
+    /// True when the run refines by point+radius, which is the default.
+    pub(crate) adaptive_enabled: bool,
+    pub(crate) adaptive_max_level: u8,
+    pub(crate) adaptive_coastline: bool,
     pub(crate) hfield_g: Option<f64>,
     pub(crate) hfield_max_level: Option<u8>,
     pub(crate) hfield_base_m: Option<f64>,

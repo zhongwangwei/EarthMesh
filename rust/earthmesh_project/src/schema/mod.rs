@@ -281,11 +281,52 @@ pub struct RefinementRecipe {
     pub specified_bbox: Option<SpecifiedBboxRefinement>,
     #[serde(default)]
     pub specified_close: Option<SpecifiedCloseRefinement>,
-    /// Default refinement backend: compose regions into a gradient-limited
+    /// Default refinement backend: ask every enabled criterion again before
+    /// each pass and cover what it demands with circles (emits the `&adaptive`
+    /// namelist group). Absent means enabled.
+    #[serde(default)]
+    pub adaptive: Option<AdaptiveRefinementRecipe>,
+    /// Legacy refinement backend: compose regions into a gradient-limited
     /// cell-width field and drive Method-C from quantized target levels
-    /// (emits the `&hfield` namelist group).
+    /// (emits the `&hfield` namelist group). Enabling it explicitly turns the
+    /// adaptive route off, because a run refines one way or the other.
     #[serde(default)]
     pub hfield: Option<HfieldRefinementRecipe>,
+}
+
+/// Point+radius refinement, re-planned before every pass.
+///
+/// A cell's need for further refinement is a question about that cell, so it
+/// cannot be settled before the cell exists. This backend asks the criteria
+/// again at each level, over a neighbourhood the size of the cell that level
+/// refines away, and covers what they demand with circles. The h-field settles
+/// everything up front instead, which is why a resolution-dependent criterion
+/// (land-cover heterogeneity) can only be honoured here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdaptiveRefinementRecipe {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 0 = follow the run's max refinement level.
+    #[serde(default)]
+    pub max_level: u8,
+    /// Base cell size in meters. `None` = 2piR/(5*NXP).
+    #[serde(default)]
+    pub base_m: Option<f64>,
+    /// Chase the land/sea boundary as its own criterion.
+    #[serde(default = "default_true")]
+    pub coastline: bool,
+}
+
+impl Default for AdaptiveRefinementRecipe {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_level: 0,
+            base_m: None,
+            coastline: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

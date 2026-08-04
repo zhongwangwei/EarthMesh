@@ -529,6 +529,42 @@ pub(crate) fn set_close_boundary(
 /// Toggle h-field refinement (continuous cell-width field driving Method-C).
 /// `enabled=false` stores an explicit discrete mask override; absent hfield
 /// recipes default to h-field during lowering.
+/// Choose the point+radius route and its settings.
+///
+/// A run refines one way or the other, so turning this on clears any h-field
+/// request rather than leaving two backends both claiming the mesh.
+#[tauri::command]
+pub(crate) fn set_adaptive_refinement(
+    yaml: String,
+    enabled: bool,
+    max_level: Option<u8>,
+    coastline: Option<bool>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let max_level = max_level.unwrap_or(0);
+    if max_level > earthmesh_project::METHOD_C_MAX_AUTO_REFINE_LEVEL {
+        return Err(format!(
+            "adaptive max_level must be 0..={}",
+            earthmesh_project::METHOD_C_MAX_AUTO_REFINE_LEVEL
+        ));
+    }
+    let base_m = cfg
+        .refinement
+        .adaptive
+        .as_ref()
+        .and_then(|recipe| recipe.base_m);
+    cfg.refinement.adaptive = Some(earthmesh_project::AdaptiveRefinementRecipe {
+        enabled,
+        max_level,
+        base_m,
+        coastline: coastline.unwrap_or(true),
+    });
+    if enabled {
+        cfg.refinement.hfield = None;
+    }
+    validated_yaml(cfg)
+}
+
 #[tauri::command]
 pub(crate) fn set_hfield_refinement(
     yaml: String,

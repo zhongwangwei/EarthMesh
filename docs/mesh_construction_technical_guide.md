@@ -377,6 +377,22 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    仍是近似的一点：判据是在**源栅格的等尺度邻域**上求的，不是在细化后网格的真实单元上求的（那需要未移植的 `getref_mean_std`）。所以**尺度对了、位置是网格对齐的方块而非真实单元**。
 
+   **点+半径已是默认路线**（2026-08）。namelist 侧新增 `&adaptive` 组（`adaptive_on` / `adaptive_max_level` / `adaptive_base_m` / `adaptive_coastline`），与 `&hfield` 一样是 opt-in；Project 侧 `refinement.adaptive` 缺省即启用，而 `refinement.hfield` 改为**纯显式**——不再"缺省就发 h 场"。
+
+   | 工程写法 | 实际路线 |
+   |---|---|
+   | 都不写 | 点+半径（`&adaptive`） |
+   | `hfield.enabled: true` | H 场（`&hfield`），自适应自动让位 |
+   | `adaptive.enabled: false` 且不写 hfield | 都不发，退回普通区域路径 |
+
+   关掉一个后端不会静默换上另一个——禁用就是禁用。GUI 的"细化方案"选择器相应改为三选一（点+半径 / H 场 / discrete），并新增 `set_adaptive_refinement` 命令；摘要里 `hfield_enabled` 现在只在工程真的要求 h 场时为真，否则面板会显示一组运行时并不生效的设置。
+
+   实测（`examples/default/ocean_hex_global.nml` 改 bbox 105–125°E / 12–32°N，NXP 64，开 `&adaptive`，两层）：真实 landtype → 793 个圆 → 81920 → 87206 面，退出码 0。两层需求相同（51381 个源格点），因为海岸是分辨率无关判据，嵌套由半径阶梯保证。
+
+   接线时踩到一个真 bug：自适应分支最初**只看判据，忽略了用户显式指定的区域**。`examples/projects/auto_refine.yaml` 恰好只有一个显式圆、没有任何判据，于是报"没有判据要求细化"，网格保持均匀而质量检查照样通过——静默少细化。显式区域是**指令**不是判据，必须照样下发；现在每层把该层的显式区域与判据导出的圆一起给 `spawn_nest`，并有回归测试锁住"只写圆、不开判据"这一档。
+
+   **待补：点+半径没有质量报告里的诊断。** h 场把"目标层级 vs 实际层级"的对账写进 `quality_summary.json`（`hfield_target_above_actual_count` / `hfield_missing_level_count` / `hfield_target_level_jump_gt_one_count`），这是发现静默少细化的网。自适应路线目前只把逐层报告打到 stderr（`AdaptiveNestReport` 里有每层的圆数、需求格点数、面数变化），没有进入质量 JSON，也没有对应的 gate。下一步应把它接进 `earthmesh_quality`，判据是"每个被需求的源格点最终是否落在它要求的那一层里"。
+
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 
    **场级形态学不是出路（2026-08 实测两次均失败）**。在 level map 上按可物化尺度做形态学，两种算子都试过：

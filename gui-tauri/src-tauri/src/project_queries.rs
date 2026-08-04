@@ -183,7 +183,17 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         } => Some(boundary.clone()),
         _ => None,
     };
+    // The h-field is opt-in now: absent means the run refines by point+radius,
+    // not that the h-field is on with defaults. Showing the defaults as if they
+    // were live is how a panel tells the user something the run will not do.
+    let hfield_requested = cfg
+        .refinement
+        .hfield
+        .as_ref()
+        .is_some_and(|recipe| recipe.enabled);
     let hfield_effective = cfg.refinement.hfield.clone().unwrap_or_default();
+    let adaptive_effective = cfg.refinement.adaptive.clone().unwrap_or_default();
+    let adaptive_active = !hfield_requested && adaptive_effective.enabled;
     let hydro = cfg.hydro_coast.as_ref();
     let mut threshold_criteria = Vec::new();
     if let Some(effective) = cfg.effective_landcover_criterion() {
@@ -294,7 +304,10 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         specified_refine_bbox: specified_bbox.map(|b| [b.w, b.e, b.s, b.n]),
         specified_refine_path: specified_close.map(|c| c.path.clone()),
         specified_refine_close_boundary: specified_close.map(|c| c.boundary.clone()),
-        hfield_enabled: hfield_effective.enabled,
+        hfield_enabled: hfield_requested,
+        adaptive_enabled: adaptive_active,
+        adaptive_max_level: adaptive_effective.max_level,
+        adaptive_coastline: adaptive_effective.coastline,
         hfield_g: Some(hfield_effective.g),
         hfield_max_level: Some(hfield_effective.max_level),
         hfield_base_m: hfield_effective.base_m,

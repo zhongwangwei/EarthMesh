@@ -20,6 +20,7 @@ use crate::read_native_grid_sfcgrid_res_factor;
 use crate::read_unstructured_mesh_netcdf;
 use crate::run_mkgrd_gridinit_global_namelist;
 use crate::validate_native_spawn_mdomain;
+use crate::GridRegion;
 use crate::MethodCGridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
 use std::fs;
@@ -80,6 +81,7 @@ pub fn run_refine_pipeline_namelist(
         ));
     }
     let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
+    let adaptive_options = crate::adaptive_refine::read_adaptive_refine_options(&contents)?;
     if hfield_options.is_some() && config.nxp % 3 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -410,6 +412,47 @@ pub fn run_refine_pipeline_namelist(
             )
         };
         (mesh, atmosphere_spring_passes + surface_spring_passes)
+    } else if let Some(adaptive) = adaptive_options {
+        // Point+radius mode: ask every enabled criterion again before each pass,
+        // cover what it demands with circles, and refine one level. The h-field
+        // reads the same criteria but settles them all up front, so a criterion
+        // whose answer depends on the cell size can only be honoured here.
+        let base_m = adaptive.base_m.unwrap_or_else(|| {
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                / (5.0 * method_c_nxp as f64)
+        });
+        let depth = adaptive.max_level.unwrap_or(max_level).clamp(1, 5);
+        let inputs = crate::refinement_demand::plan::DemandPlanInputs {
+            bounds: adaptive_demand_bounds(domain_region.as_ref(), &config)?,
+            gridnum_perdegree: usize::try_from(config.gridnum_perdegree).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "NL%gridnum_perdegree must fit usize",
+                )
+            })?,
+            landtype_file: adaptive_landtype_file(&config),
+            mesh_type,
+            refine_coastline: adaptive.coastline,
+        };
+        let (refined, report) =
+            crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+                &mesh, &refine, &inputs, &regions, base_m, depth,
+            )?;
+        for pass in &report.passes {
+            eprintln!(
+                "adaptive refine level {} judging {:.0} m cells: {} circles over {} demanded source cells, {} -> {} faces",
+                pass.level,
+                pass.cell_meters,
+                pass.circle_count,
+                pass.demanded_cells,
+                pass.faces_before,
+                pass.faces_after
+            );
+        }
+        if report.deepest_level == 0 {
+            eprintln!("adaptive refine: no criterion demanded refinement; mesh left uniform");
+        }
+        (refined, 0)
     } else if let Some(hfield) = active_hfield_options {
         // H-field mode: compose the same specified regions into a
         // gradient-limited cell-width field and let quantized target levels
@@ -739,6 +782,56 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
         ));
     }
     Ok(level - 1)
+}
+
+/// The window the adaptive route evaluates criteria over.
+///
+/// A regional run judges its own domain; a global run judges the whole sphere,
+/// which is what `source_bounds_for_bbox` returns for the full range.
+fn adaptive_demand_bounds(
+    domain_region: Option<&GridRegion>,
+    config: &EarthmeshConfig,
+) -> io::Result<earthmesh_mesh::AreaJudgeSourceBounds> {
+    let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NL%gridnum_perdegree must fit usize",
+        )
+    })?;
+    let (west, east, south, north) = match domain_region {
+        Some(GridRegion::Bbox {
+            west,
+            east,
+            south,
+            north,
+        }) => (*west, *east, *south, *north),
+        Some(GridRegion::Circle {
+            lon,
+            lat,
+            radius_km,
+        }) => {
+            // A circle's enclosing box, clipped to the sphere. Demand outside
+            // the circle is harmless: the reduction only emits circles where a
+            // criterion actually asked for one.
+            let degrees = radius_km / 111.195;
+            let lat_pad = degrees;
+            let lon_pad = degrees / lat.to_radians().cos().abs().max(0.05);
+            (
+                (lon - lon_pad).max(-180.0),
+                (lon + lon_pad).min(180.0),
+                (lat - lat_pad).max(-90.0),
+                (lat + lat_pad).min(90.0),
+            )
+        }
+        _ => (-180.0, 180.0, -90.0, 90.0),
+    };
+    crate::refinement_demand::source_bounds_for_bbox(west, east, south, north, gridnum_perdegree)
+}
+
+/// Land-type raster for the adaptive route, or `None` when the run has none.
+fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> {
+    let path = config.landtype_file.trim();
+    (!path.is_empty() && path != "none").then(|| std::path::Path::new(path))
 }
 
 #[cfg(test)]

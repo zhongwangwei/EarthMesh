@@ -171,3 +171,47 @@ fn a_resolution_dependent_criterion_changes_its_mind_between_levels() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_named_region_is_refined_even_when_no_criterion_asks() {
+    // A project that names a circle and enables nothing else must still get
+    // that circle. Naming a region is an instruction, not a criterion, so the
+    // loop cannot stop on "no criterion demanded refinement" and leave the mesh
+    // uniform -- which is exactly what it did before this case existed.
+    let root = temp_root("named_only");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 0); // open ocean: no coast, no land cover
+
+    let named = vec![earthmesh_mesh::MethodCRefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
+        radius_meters: 400_000.0,
+        level: 1,
+    }];
+    let refine = RefineConfig::default();
+    let (refined, report) =
+        earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+            &base_mesh(),
+            &refine,
+            &plan_inputs(&path, true),
+            &named,
+            base_cell_meters(),
+            1,
+        )
+        .expect("adaptive nest");
+
+    assert_eq!(report.deepest_level, 1, "{report:?}");
+    assert_eq!(report.passes.len(), 1, "{report:?}");
+    assert!(
+        report.passes[0].faces_after > report.passes[0].faces_before,
+        "{report:?}"
+    );
+    let deepest = refined
+        .w_faces
+        .iter()
+        .skip(2)
+        .map(|face| face.mrlw)
+        .max()
+        .unwrap_or(0);
+    assert_eq!(deepest, 2, "a named circle must reach mrlw 2");
+    let _ = fs::remove_dir_all(root);
+}

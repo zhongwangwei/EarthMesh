@@ -1,7 +1,7 @@
 use crate::{
-    criterion_catalog, degree_to_nxp, km_to_nxp, DomainConfig, GeometryIr, HfieldRefinementRecipe,
-    ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField,
-    ThresholdStatistic, ViolationPolicy,
+    criterion_catalog, degree_to_nxp, km_to_nxp, AdaptiveRefinementRecipe, DomainConfig,
+    GeometryIr, HfieldRefinementRecipe, ProjectConfig, ProjectLayerRole, RegionShape,
+    ResolutionSpec, ThresholdField, ThresholdStatistic, ViolationPolicy,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
@@ -15,6 +15,8 @@ pub struct LoweredProject {
     pub refine: RefineConfig,
     pub data_layers: DataLayersNamelist,
     pub quality: QualityNamelist,
+    /// Emitted as a standalone `&adaptive` group when enabled.
+    pub adaptive: Option<AdaptiveRefinementRecipe>,
     /// Emitted as a standalone `&hfield` group when enabled.
     pub hfield: Option<HfieldRefinementRecipe>,
 }
@@ -30,6 +32,22 @@ impl LoweredProject {
             format!("{}\n", self.refine.to_mkrefine_namelist())
         } else {
             String::new()
+        };
+        let adaptive = match &self.adaptive {
+            Some(recipe) if recipe.enabled && self.mkgrd.refine => {
+                let base_line = recipe
+                    .base_m
+                    .filter(|base| base.is_finite() && *base > 0.0)
+                    .map(|base| format!("   NL%adaptive_base_m = {base}\n"))
+                    .unwrap_or_default();
+                format!(
+                    "&adaptive\n   NL%adaptive_on = .true.\n   NL%adaptive_max_level = {}\n   NL%adaptive_coastline = {}\n{}/\n\n",
+                    recipe.max_level,
+                    if recipe.coastline { ".true." } else { ".false." },
+                    base_line
+                )
+            }
+            _ => String::new(),
         };
         let hfield = match &self.hfield {
             Some(recipe) if recipe.enabled && self.mkgrd.refine => {
@@ -53,9 +71,10 @@ impl LoweredProject {
             _ => String::new(),
         };
         format!(
-            "{}\n{}{}{}\n{}",
+            "{}\n{}{}{}{}\n{}",
             self.mkgrd.to_mkgrd_namelist(),
             mkrefine,
+            adaptive,
             hfield,
             self.quality.to_quality_namelist(),
             self.data_layers.to_datalayers_namelist()
@@ -321,12 +340,23 @@ impl ProjectConfig {
             mkgrd.relax = relax;
         }
 
-        let hfield = if mkgrd.refine {
-            match &self.refinement.hfield {
+        // A run refines one way or the other. Point+radius is the default
+        // because it is the only route that can re-ask a criterion after the
+        // cells it judges exist; the h-field stays reachable by asking for it.
+        let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
+        let adaptive = if mkgrd.refine && !hfield_requested {
+            match &self.refinement.adaptive {
                 Some(recipe) if recipe.enabled => Some(recipe.clone()),
                 Some(_) => None,
-                None => Some(HfieldRefinementRecipe::default()),
+                None => Some(AdaptiveRefinementRecipe::default()),
             }
+        } else {
+            None
+        };
+        // Only ever chosen by asking for it. Turning the adaptive route off
+        // disables that route; it does not silently swap in another backend.
+        let hfield = if mkgrd.refine && hfield_requested {
+            self.refinement.hfield.clone()
         } else {
             None
         };
@@ -340,6 +370,7 @@ impl ProjectConfig {
             .hydro_execution_plan()?
             .is_some_and(|plan| plan.max_level > 0);
         if hfield.is_some()
+            || adaptive.is_some()
             || hydro_local_refinement
             || self.quality.on_violation == ViolationPolicy::AutoRefine
         {
@@ -353,6 +384,7 @@ impl ProjectConfig {
         Ok(LoweredProject {
             mkgrd,
             refine,
+            adaptive,
             hfield,
             data_layers: lowering_layers,
             quality: self.quality_namelist(),

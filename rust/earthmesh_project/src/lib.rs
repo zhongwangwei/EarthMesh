@@ -14,15 +14,15 @@ pub use earthmesh_core::KM_PER_DEGREE_EQUATOR;
 mod schema;
 pub use schema::{
     auto_refine_level_cap, default_mask_sea_ratio, degree_to_nxp, effective_auto_refine_pass,
-    km_to_nxp, next_auto_refine_pass, nxp_to_km, CloseMaskFormat, CoupledMeshConfig, DomainConfig,
-    ExpertOverrides, FractionMethod, HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind,
-    MeshDomainKind, MeshIntentPreset, MeshTargetConfig, ModelFormat, ProjectConfig,
-    ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig, RefinementRecipe,
-    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCircleRefinements, SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField,
-    ViolationPolicy, DEFAULT_AUTO_REFINE_BATCH_CELLS, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
-    METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
-    PROJECT_SCHEMA_VERSION,
+    km_to_nxp, next_auto_refine_pass, nxp_to_km, AdaptiveRefinementRecipe, CloseMaskFormat,
+    CoupledMeshConfig, DomainConfig, ExpertOverrides, FractionMethod, HfieldRefinementRecipe,
+    HydroCoastConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, MeshTargetConfig,
+    ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig,
+    RefinementRecipe, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
+    SpecifiedCircleRefinement, SpecifiedCircleRefinements, SpecifiedCloseRefinement,
+    ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_AUTO_REFINE_BATCH_CELLS,
+    DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
+    METHOD_C_SPRING_NXP1_KM, PROJECT_SCHEMA_VERSION,
 };
 mod auto_refine;
 pub use auto_refine::{AutoRefineAction, AutoRefineEvent, AutoRefineState};

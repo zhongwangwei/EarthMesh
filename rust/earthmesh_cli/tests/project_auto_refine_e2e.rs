@@ -94,9 +94,15 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
     let project_path = root.join("project.yaml");
     let example_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects/auto_refine.yaml");
-    fs::copy(&example_path, &project_path).unwrap_or_else(|error| {
-        panic!("copy {}: {error}", example_path.display());
-    });
+    // Asserts h-field diagnostics reached the report from the real engine
+    // namelist, and the h-field is opt-in now that point+radius is the default.
+    let project = fs::read_to_string(&example_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", example_path.display()))
+        .replace(
+            "refinement:\n",
+            "refinement:\n  hfield:\n    enabled: true\n",
+        );
+    fs::write(&project_path, project).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
         .current_dir(&root)
         .args([
@@ -235,6 +241,11 @@ fn project_block_quality_includes_hfield_gates() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects/auto_refine.yaml");
     let project = fs::read_to_string(&example_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", example_path.display()))
+        // These exercise the h-field's own gates, and the h-field is opt-in now.
+        .replace(
+            "refinement:\n",
+            "refinement:\n  hfield:\n    enabled: true\n",
+        )
         .replace("!Nxp 40", "!Nxp 9")
         .replace("on_violation: AutoRefine", "on_violation: Block");
     fs::write(&project_path, project).unwrap();
@@ -282,6 +293,10 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
     assert!(example.contains("  niter: 1"));
     assert!(example.contains("  niter_refine: 1"));
     let project = example
+        .replace(
+            "refinement:\n",
+            "refinement:\n  hfield:\n    enabled: true\n",
+        )
         .replace("  niter: 1", "  niter: 20")
         .replace("  niter_refine: 1", "  niter_refine: 20");
     fs::write(&project_path, project).unwrap();

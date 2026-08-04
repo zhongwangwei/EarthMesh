@@ -22,7 +22,7 @@
 
 use std::io;
 
-use earthmesh_mesh::MethodCDelaunayMesh;
+use earthmesh_mesh::{MethodCDelaunayMesh, MethodCRefinementRegion};
 
 use super::ladder::nested_circle_radii_meters;
 use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
@@ -54,10 +54,17 @@ pub struct AdaptiveNestReport {
 }
 
 /// Refine `mesh` up to `max_level`, re-planning demand before every pass.
-pub fn spawn_nest_adaptive(
+/// Refine `mesh` up to `max_level`, re-planning demand before every pass.
+///
+/// `named_regions` are the regions the run asked for outright — a project's
+/// `specified_circle`, a bbox, a closed curve. They are instructions, not
+/// criteria, so they are refined whether or not any criterion also asks: a run
+/// that names a circle and enables nothing else must still get that circle.
+pub fn spawn_nest_adaptive_with_named_regions(
     mesh: &MethodCDelaunayMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
+    named_regions: &[MethodCRefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
 ) -> io::Result<(MethodCDelaunayMesh, AdaptiveNestReport)> {
@@ -77,18 +84,24 @@ pub fn spawn_nest_adaptive(
         // The cell this pass refines away is the one the previous level left.
         let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
         let plan: LevelDemand = plan_demand_at_scale(refine, inputs, level, cell_meters)?;
-        if plan.is_empty() {
-            stopped_on_empty_demand = true;
-            break;
-        }
         // Every level blocks on the finest radius so the centres coincide and
         // the levels come out concentric; only the radius changes per level.
-        let regions = reduce_demand_to_circles_on_blocks(
-            &plan.demand,
-            level,
-            radii[level - 1],
-            radii[max_level - 1],
-        )?;
+        let mut regions = if plan.is_empty() {
+            Vec::new()
+        } else {
+            reduce_demand_to_circles_on_blocks(
+                &plan.demand,
+                level,
+                radii[level - 1],
+                radii[max_level - 1],
+            )?
+        };
+        regions.extend(
+            named_regions
+                .iter()
+                .filter(|region| region.level() == level)
+                .cloned(),
+        );
         if regions.is_empty() {
             stopped_on_empty_demand = true;
             break;
@@ -127,4 +140,15 @@ pub fn spawn_nest_adaptive(
 
 fn face_count(mesh: &MethodCDelaunayMesh) -> usize {
     mesh.w_faces.len().saturating_sub(2)
+}
+
+/// Adaptive refinement with no regions named outright.
+pub fn spawn_nest_adaptive(
+    mesh: &MethodCDelaunayMesh,
+    refine: &RefineConfig,
+    inputs: &DemandPlanInputs<'_>,
+    base_cell_meters: f64,
+    max_level: usize,
+) -> io::Result<(MethodCDelaunayMesh, AdaptiveNestReport)> {
+    spawn_nest_adaptive_with_named_regions(mesh, refine, inputs, &[], base_cell_meters, max_level)
 }
