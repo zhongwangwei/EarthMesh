@@ -450,7 +450,25 @@ pub fn run_refine_pipeline_namelist(
             );
         }
         if report.deepest_level == 0 {
-            eprintln!("adaptive refine: no criterion demanded refinement; mesh left uniform");
+            // A run that asked to refine and refined nothing is the failure that
+            // stays quiet: the mesh is valid, passes its quality checks, and is
+            // simply not the mesh that was requested. It is only acceptable when
+            // nothing was named and no criterion is on -- then "uniform" is the
+            // right answer.
+            if refine.refine_spc || refine.refine_cal || !regions.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "adaptive refinement was requested ({} named regions, refine_spc={}, \
+                         refine_cal={}) but no level refined; check that the criteria have data \
+                         over the domain and that named regions carry a level in 1..={depth}",
+                        regions.len(),
+                        refine.refine_spc,
+                        refine.refine_cal
+                    ),
+                ));
+            }
+            eprintln!("adaptive refine: nothing asked for refinement; mesh left uniform");
         }
         (refined, 0)
     } else if let Some(hfield) = active_hfield_options {

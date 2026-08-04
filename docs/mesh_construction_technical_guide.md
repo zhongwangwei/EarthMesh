@@ -391,7 +391,30 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    接线时踩到一个真 bug：自适应分支最初**只看判据，忽略了用户显式指定的区域**。`examples/projects/auto_refine.yaml` 恰好只有一个显式圆、没有任何判据，于是报"没有判据要求细化"，网格保持均匀而质量检查照样通过——静默少细化。显式区域是**指令**不是判据，必须照样下发；现在每层把该层的显式区域与判据导出的圆一起给 `spawn_nest`，并有回归测试锁住"只写圆、不开判据"这一档。
 
-   **待补：点+半径没有质量报告里的诊断。** h 场把"目标层级 vs 实际层级"的对账写进 `quality_summary.json`（`hfield_target_above_actual_count` / `hfield_missing_level_count` / `hfield_target_level_jump_gt_one_count`），这是发现静默少细化的网。自适应路线目前只把逐层报告打到 stderr（`AdaptiveNestReport` 里有每层的圆数、需求格点数、面数变化），没有进入质量 JSON，也没有对应的 gate。下一步应把它接进 `earthmesh_quality`，判据是"每个被需求的源格点最终是否落在它要求的那一层里"。
+   **静默少细化的两道网已补上**（2026-08）。上面那个 bug 之所以能"报 pass 却没细化"，是因为这条路当时没有任何对账。现在：
+
+   | 网 | 位置 | 触发条件 |
+   |---|---|---|
+   | 逐层物化检查 | `spawn_nest_adaptive` | 某层发了圆但网格没出现该层的面（圆对这一代太小，seed 不进去） |
+   | 请求-结果对账 | pipeline 自适应分支 | 请求了细化（有显式区域或 `refine_spc`/`refine_cal`）却一层都没做 |
+
+   两者都是**报错**而不是打提示——网格有效、质量检查照过、只是比请求的粗，这种失败不会有别处发现。实测把"忽略显式区域"这个 bug 撤回去，回归测试立刻给出 `deepest_level: 0`。
+
+   **粗粒度的深度报告本来就覆盖了这条路**：`realized_max_level` 是在分支之后**从产出的网格量出来的**，所以自适应分支自动继承，`refine_realized_max_level=` 照样打印。深度不足对这条路而言要么已被上面两道网报错，要么是"需求耗尽"这一合法情形（`cli_mkgrd_output/print.rs` 那条 shortfall 警告由 h 场专属条件门控，对自适应不会误报）。
+
+   **仍缺的是逐单元对账**，且刻意没有先把接口摆上。h 场把"每个单元的目标层级 vs 实际层级"写进 `quality_summary.json` 并挂三个 gate，比"最深到了几层"细一档；点+半径没有。缺的一环是把逐层圆链从细化步骤传到质量步骤——质量是独立步骤，从 namelist 和 gridfile 路径出发，拿不到运行时的 `AdaptiveNestReport`。
+
+   路径关系已实测（`cases/<case>/` 下)：
+
+   ```
+   gridfile/gridfile_NXP0064_01_hex.nc4   ← gridinit 的输出，细化分支能看到的那个
+   result/gridfile_NXP0064_hex.nc4        ← 最终 gridfile，质量步骤读的那个
+   result/namelist.save                   ← 质量步骤读的 namelist
+   ```
+
+   两者**不同目录**，所以"在细化分支里按 gridinit 输出的同级目录写"这条捷径是错的。可行的路子是沿用 h 场诊断已有的做法：`hfield_diagnostics` 在 match 外声明、分支内赋值，随 `RefinePipelineRunReport` 传给知道最终输出路径的那一层，由它写进 `result/`；质量步骤再从 namelist 的同级目录读回。
+
+   `AdaptiveNestReport::target_level_at` 已就位（读**运行时真正发出的圆**而不是重新规划，所以对不上必定是细化失败、不会是规划差异），是这条链在细化侧的那一半。上面两道网不依赖它。
 
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 

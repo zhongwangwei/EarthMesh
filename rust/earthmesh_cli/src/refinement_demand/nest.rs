@@ -33,6 +33,10 @@ use earthmesh_core::RefineConfig;
 #[derive(Clone, Debug, PartialEq)]
 pub struct NestPassReport {
     pub level: usize,
+    /// Circles this pass handed to `spawn_nest`. Kept so the quality report can
+    /// ask the same question afterwards -- did the mesh reach the level these
+    /// circles asked for -- without re-planning the demand.
+    pub regions: Vec<MethodCRefinementRegion>,
     /// Cell size this pass was judging — the generation it refines away.
     pub cell_meters: f64,
     pub circle_count: usize,
@@ -117,10 +121,28 @@ pub fn spawn_nest_adaptive_with_named_regions(
                 ),
             )
         })?;
+        // A pass that emitted circles and produced no face at its level did not
+        // refine anything, and nothing downstream would notice: the mesh is
+        // valid, just coarser than the run asked for. Say so here rather than
+        // let it reach a quality report that has no reason to object.
+        let deepest_mrlw = deepest_mrlw(&current);
+        if deepest_mrlw < level + 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "adaptive refinement level {level} emitted {} circles over {} demanded source \
+                     cells but the mesh reached only mrlw {deepest_mrlw}; the circles are too \
+                     small for this generation to seed inside",
+                    regions.len(),
+                    plan.demand.demanded_count()
+                ),
+            ));
+        }
         passes.push(NestPassReport {
             level,
             cell_meters,
             circle_count: regions.len(),
+            regions: regions.clone(),
             demanded_cells: plan.demand.demanded_count(),
             faces_before,
             faces_after: face_count(&current),
@@ -142,6 +164,15 @@ fn face_count(mesh: &MethodCDelaunayMesh) -> usize {
     mesh.w_faces.len().saturating_sub(2)
 }
 
+fn deepest_mrlw(mesh: &MethodCDelaunayMesh) -> usize {
+    mesh.w_faces
+        .iter()
+        .skip(2)
+        .map(|face| face.mrlw)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Adaptive refinement with no regions named outright.
 pub fn spawn_nest_adaptive(
     mesh: &MethodCDelaunayMesh,
@@ -151,4 +182,42 @@ pub fn spawn_nest_adaptive(
     max_level: usize,
 ) -> io::Result<(MethodCDelaunayMesh, AdaptiveNestReport)> {
     spawn_nest_adaptive_with_named_regions(mesh, refine, inputs, &[], base_cell_meters, max_level)
+}
+
+impl AdaptiveNestReport {
+    /// Deepest level whose circles cover this point, zero where none do.
+    ///
+    /// This is the target-level function the quality report reconciles against
+    /// the mesh's actual levels. It reads the circles the run actually emitted
+    /// rather than re-deriving them, so a discrepancy is a refinement failure
+    /// and never a planning difference.
+    pub fn target_level_at(&self, lon_degrees: f64, lat_degrees: f64) -> u32 {
+        let mut deepest = 0u32;
+        for pass in &self.passes {
+            for region in &pass.regions {
+                let MethodCRefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    level,
+                } = region
+                else {
+                    continue;
+                };
+                let distance = earthmesh_hfield::great_circle_distance_m(
+                    center.lon_degrees,
+                    center.lat_degrees,
+                    lon_degrees,
+                    lat_degrees,
+                );
+                if distance <= *radius_meters {
+                    deepest = deepest.max(*level as u32);
+                }
+            }
+        }
+        deepest
+    }
+
+    pub fn circle_count(&self) -> usize {
+        self.passes.iter().map(|pass| pass.circle_count).sum()
+    }
 }
