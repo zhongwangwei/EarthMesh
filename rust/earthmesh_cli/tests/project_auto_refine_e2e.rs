@@ -1,17 +1,27 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 fn temp_root() -> PathBuf {
+    // `as_nanos` reports whole microseconds on macOS, and the harness starts
+    // these tests within the same microsecond, so pid+time alone handed two
+    // tests the same directory: one test's write tore the other's read, and
+    // whichever finished first deleted the other's outputs. The counter makes
+    // the name unique within the process; pid+time still separates runs.
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let sequence = ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "earthmesh_project_auto_refine_e2e_{}_{}",
+        "earthmesh_project_auto_refine_e2e_{}_{}_{}",
         std::process::id(),
-        nonce
+        nonce,
+        sequence
     ))
 }
 
