@@ -19,6 +19,8 @@
 
 pub mod ladder;
 pub mod landtype;
+pub mod nest;
+pub mod plan;
 pub mod threshold;
 
 use std::io;
@@ -171,15 +173,41 @@ pub fn reduce_demand_to_circles(
     level: usize,
     radius_meters: f64,
 ) -> io::Result<Vec<MethodCRefinementRegion>> {
+    reduce_demand_to_circles_on_blocks(demand, level, radius_meters, radius_meters)
+}
+
+/// Cover demand with circles of `radius_meters`, on blocks sized for
+/// `block_radius_meters`.
+///
+/// A nested run needs the two to differ. Blocks scale with the radius, so a
+/// chain that re-blocks per level puts each level's circles on different
+/// centres, and a deep circle can then land where its parent never refined —
+/// Method-C rejects that for crossing the parent boundary. Sizing every level's
+/// blocks from the *finest* radius makes the centres coincide, so the levels
+/// are concentric and nest the way the measured single-feature ladder does,
+/// while the blocks stay small enough that even the finest circle still covers
+/// its own block.
+pub fn reduce_demand_to_circles_on_blocks(
+    demand: &RefinementDemand,
+    level: usize,
+    radius_meters: f64,
+    block_radius_meters: f64,
+) -> io::Result<Vec<MethodCRefinementRegion>> {
     if !radius_meters.is_finite() || radius_meters <= 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "refinement circle radius must be positive and finite",
         ));
     }
+    if !block_radius_meters.is_finite() || block_radius_meters <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refinement block radius must be positive and finite",
+        ));
+    }
     let per_degree = demand.gridnum_perdegree as f64;
     let meters_per_degree = std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 180.0;
-    let block_degrees = (radius_meters / meters_per_degree) / 2.0;
+    let block_degrees = (block_radius_meters / meters_per_degree) / 2.0;
     let block_cells = ((block_degrees * per_degree).round() as usize).max(1);
 
     let mut regions = Vec::new();

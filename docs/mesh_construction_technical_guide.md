@@ -363,7 +363,19 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    代价要说明：任何启用这三个判据的既有工程，输出网格会变——这正是第 8 节记的那条待决事项（"所有既有 h 场项目的输出网格会变"）的一个具体来源。这也是"栅格分辨率可用窗口找不到决定变量"的一个来源：分辨率相关的判据被绑在一个与网格无关的分辨率上，本来就没有正确答案可找。
 
-   `refinement_demand::landtype::landcover_heterogeneity_demand` 已按正确语义实现——`radius_cells` 由调用方按**被判定的那一代网格**的单元尺寸给出，合成测试证明同一张栅格在窄/宽两个半径下给出不同答案。但把它接进逐轮循环还需要两件没做的事：栅格 → 单元统计（即未移植的 `getref_mean_std`），以及把 `spawn_nest` 从"一次给全部层级"改成可逐层增量。
+   **逐层重算已实现**（`refinement_demand::nest::spawn_nest_adaptive`，2026-08）。`spawn_nest` 本身就是逐层的（`spawn_nest_internal` 里 `for pass in pass_levels`，每轮在上一轮的网格上细化），所以不必改内核：在 pipeline 层链式调用，每层调用前重新求一次判据即可。
+
+   | 组件 | 作用 |
+   |---|---|
+   | `plan::plan_demand_at_scale` | 按给定单元尺度求出所有启用判据的需求并合并 |
+   | `ladder::nested_circle_radii_meters` | 各层半径，按引擎自己的 halo 公式 |
+   | `nest::spawn_nest_adaptive` | 逐层：重算 → 归约成圆 → `spawn_nest` 一层；需求为空即停 |
+
+   分辨率相关的判据（landcover 异质度）在第 L 层用 `cell_meters = base/2^(L-1)` 作邻域，同一张栅格在不同层给出不同答案；分辨率无关的判据（`sst > 28`）各层答案相同，靠半径阶梯的 halo 满足嵌套。停机条件是"这一层没有判据要求细化"，报告里区分了"自然停机"与"撞到 5 层上限"。
+
+   **实现中踩到的一个几何约束**：块划分随半径变化，于是各层圆心在层间偏移，深层的圆会落到浅层没细化的位置——实测在第 4 层报 `crosses the parent boundary`。修法是所有层用**最细一层的半径**做块划分，各层只改半径不改圆心，于是各层同心，退化成实测通过的单要素同心阶梯；块足够小，最细的圆也仍能覆盖自己的块。
+
+   仍是近似的一点：判据是在**源栅格的等尺度邻域**上求的，不是在细化后网格的真实单元上求的（那需要未移植的 `getref_mean_std`）。所以**尺度对了、位置是网格对齐的方块而非真实单元**。
 
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 
