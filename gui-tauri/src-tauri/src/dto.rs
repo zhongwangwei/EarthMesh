@@ -133,6 +133,10 @@ pub(crate) struct ProjectSummary {
     pub(crate) specified_refine_lon: Option<f64>,
     pub(crate) specified_refine_lat: Option<f64>,
     pub(crate) specified_refine_radius_km: Option<f64>,
+    /// How many circles the project holds. The lon/lat/radius fields describe
+    /// only the first; anything above 1 means the panel is showing a chain's
+    /// head and cannot edit the rest.
+    pub(crate) specified_refine_circle_count: usize,
     pub(crate) specified_refine_bbox: Option<[f64; 4]>,
     pub(crate) specified_refine_path: Option<String>,
     pub(crate) specified_refine_close_boundary: Option<earthmesh_project::CloseBoundaryMode>,

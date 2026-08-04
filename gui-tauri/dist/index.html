@@ -2031,7 +2031,7 @@ if(MAP_WINDOW_MODE){
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
 let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
-  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
@@ -2327,7 +2327,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
       if (t.maxPasses != null) maxPasses = t.maxPasses;
       if (t.specifiedClosePath) {
-        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
       }
       if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       clearRunArtifacts();
@@ -2762,6 +2762,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div class="grid2">
         ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合掩膜":"Close mask"}</option></select>`)}
       </div>
+      ${(specifiedRefine.circleCount ?? 0) > 1 ? `<div style="margin-top:10px;color:var(--faint);font-size:11px">${z ? `本工程用 ${specifiedRefine.circleCount} 个圆组成的圆链细化；下面显示的是链首，其余成员只能在工程文件里编辑。` : `This project refines with a chain of ${specifiedRefine.circleCount} circles. The fields below show the first one; the rest can only be edited in the project file.`}</div>` : ""}
       <div class="grid2" id="specifiedRadiusFields" style="margin-top:10px">
         ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" min="0.001" step="1" value="${specifiedRefine.radiusKm ?? 100}">`)}
         ${field(z?"中心经度":"Center lon",`<input class="input" type="number" id="specifiedLon" min="-180" max="180" step="0.01" value="${specifiedRefine.lon ?? 0}">`)}
@@ -3226,6 +3227,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         lon: sum.specified_refine_lon ?? null,
         lat: sum.specified_refine_lat ?? null,
         radiusKm: sum.specified_refine_radius_km ?? null,
+        circleCount: sum.specified_refine_circle_count ?? 0,
         w: sum.specified_refine_bbox ? sum.specified_refine_bbox[0] : null,
         e: sum.specified_refine_bbox ? sum.specified_refine_bbox[1] : null,
         s: sum.specified_refine_bbox ? sum.specified_refine_bbox[2] : null,
@@ -3301,7 +3303,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     thresholdRefine = { enabled: false };
     hydroRefine = defaultHydroRefine();
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
-    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
     metadataEdit = { authors: [], description: "" };

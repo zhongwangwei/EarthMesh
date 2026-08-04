@@ -1605,6 +1605,64 @@ fn close_boundary_command_updates_specified_close_cap() {
 }
 
 #[test]
+fn a_circle_chain_is_visible_in_the_summary() {
+    let yaml = hydrology_yaml("chain_summary");
+    let yaml = set_specified_refinement(
+        yaml,
+        true,
+        Some("radius".to_string()),
+        Some(113.5),
+        Some(22.0),
+        Some(80.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("seed one circle");
+    // Grow it into a chain the way a project file or the CLI would.
+    let mut cfg = earthmesh_project::ProjectConfig::from_yaml(&yaml).expect("parse");
+    cfg.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::Many(
+        vec![
+            earthmesh_project::SpecifiedCircleRefinement {
+                lon: 113.5,
+                lat: 22.0,
+                radius_km: 80.0,
+            },
+            earthmesh_project::SpecifiedCircleRefinement {
+                lon: 115.0,
+                lat: 22.6,
+                radius_km: 80.0,
+            },
+        ],
+    ));
+    let chained = cfg.to_yaml().expect("chain yaml");
+
+    let summary = project_summary(chained.clone()).expect("summary");
+    assert!(summary.specified_refine_enabled);
+    assert_eq!(summary.specified_refine_circle_count, 2);
+    assert_eq!(summary.specified_refine_lon, Some(113.5));
+
+    // The single-circle control must not silently drop the second member.
+    let error = set_specified_refinement(
+        chained,
+        true,
+        Some("radius".to_string()),
+        Some(120.0),
+        Some(20.0),
+        Some(50.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect_err("editing a chain through the single-circle control must fail");
+    assert!(error.contains("chain of 2 circles"), "got {error}");
+}
+
+#[test]
 fn set_specified_refinement_updates_project() {
     let yaml = hydrology_yaml("specified_refine");
     let yaml = set_specified_refinement(
@@ -1627,6 +1685,7 @@ fn set_specified_refinement_updates_project() {
     assert_eq!(summary.specified_refine_lon, Some(113.5));
     assert_eq!(summary.specified_refine_lat, Some(22.0));
     assert_eq!(summary.specified_refine_radius_km, Some(80.0));
+    assert_eq!(summary.specified_refine_circle_count, 1);
     assert!(set_specified_refinement(
         yaml,
         true,

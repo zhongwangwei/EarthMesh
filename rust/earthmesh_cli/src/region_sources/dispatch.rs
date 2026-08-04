@@ -68,6 +68,34 @@ pub(crate) fn read_method_c_specified_refinement_regions(
                     );
                 }
             }
+            ("circle", InlineMaskSource::Circles(circles)) => {
+                // Each member is pushed on its own. Handing the whole set to
+                // `push_method_c_circle_or_corridor_region` would make one
+                // Corridor — the swept tube that expresses a river — and a
+                // chain is not a polyline: it is a set of independent circles,
+                // so the tube would cut across whatever lies between them.
+                // Pushing one at a time still reuses the parent-halo
+                // derivation, per circle.
+                for (center, radius_meters) in circles {
+                    if apply_parent_halos {
+                        super::circle::push_method_c_circle_or_corridor_region_with_parent_halos(
+                            &mut regions,
+                            vec![center],
+                            vec![radius_meters],
+                            max_level,
+                            refine,
+                            nxp,
+                        )?;
+                    } else {
+                        super::circle::push_method_c_circle_or_corridor_region(
+                            &mut regions,
+                            vec![center],
+                            vec![radius_meters],
+                            max_level,
+                        );
+                    }
+                }
+            }
             (kind, _) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,

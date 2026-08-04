@@ -4,7 +4,8 @@ use earthmesh_project::{
     criterion_catalog, default_mask_sea_ratio, threshold_criterion_by_id, CloseBoundaryMode,
     CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind,
     MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole, RegionShape,
-    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
+    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
+    SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ViolationPolicy, LANDCOVER_CRITERION_ID,
 };
 use std::path::{Path, PathBuf};
@@ -428,6 +429,12 @@ pub(crate) fn set_specified_refinement(
     path: Option<String>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let existing_circle_count = cfg
+        .refinement
+        .specified_circle
+        .as_ref()
+        .map(|circles| circles.as_slice().len())
+        .unwrap_or(0);
     cfg.refinement.specified_circle = None;
     cfg.refinement.specified_bbox = None;
     cfg.refinement.specified_close = None;
@@ -440,11 +447,21 @@ pub(crate) fn set_specified_refinement(
             n: n.unwrap_or(1.0),
         });
     } else if enabled && kind == "radius" {
-        cfg.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-            lon: lon.unwrap_or(0.0),
-            lat: lat.unwrap_or(0.0),
-            radius_km: radius_km.unwrap_or(100.0),
-        });
+        // Writing a single circle over a chain would drop every member past the
+        // first, and the panel that sends this has no way to show that. Refuse
+        // instead of quietly deleting the rest of a coastline.
+        if existing_circle_count > 1 {
+            return Err(format!(
+                "this project refines with a chain of {existing_circle_count} circles, which the single-circle control cannot edit; edit specified_circle in the project file, or switch the refinement source"
+            ));
+        }
+        cfg.refinement.specified_circle = Some(SpecifiedCircleRefinements::One(
+            SpecifiedCircleRefinement {
+                lon: lon.unwrap_or(0.0),
+                lat: lat.unwrap_or(0.0),
+                radius_km: radius_km.unwrap_or(100.0),
+            },
+        ));
     } else if enabled && kind == "close" {
         cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
             path: path.unwrap_or_default(),

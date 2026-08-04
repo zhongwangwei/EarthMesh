@@ -138,6 +138,34 @@ impl GeometryIr {
         }
     }
 
+    /// Inline source for a chain of circles.
+    ///
+    /// `GeometryIr` carries one primitive, and a coastline needs many, so the
+    /// chain is emitted as its own `inline:circles:` form with semicolon
+    /// separated members rather than by widening the single-primitive IR.
+    pub fn circles_inline_mask_source(
+        circles: impl IntoIterator<Item = (f64, f64, f64)>,
+    ) -> Result<String, String> {
+        let members: Vec<String> = circles
+            .into_iter()
+            .map(|(lon, lat, radius_km)| {
+                if !radius_km.is_finite() || radius_km <= 0.0 {
+                    return Err(format!(
+                        "circle radius_km must be positive, got {radius_km}"
+                    ));
+                }
+                if !lon.is_finite() || !lat.is_finite() {
+                    return Err("circle lon/lat must be finite".to_string());
+                }
+                Ok(format!("lon={lon},lat={lat},radius_km={radius_km}"))
+            })
+            .collect::<Result<_, _>>()?;
+        if members.is_empty() {
+            return Err("circle chain must not be empty".to_string());
+        }
+        Ok(format!("inline:circles:{}", members.join(";")))
+    }
+
     pub fn parse_inline_mask_source(prefix: &str) -> Result<Option<Self>, String> {
         let Some(rest) = prefix.trim().strip_prefix("inline:") else {
             return Ok(None);

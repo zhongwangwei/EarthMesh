@@ -116,7 +116,7 @@
 ### 3.1 打标（三种来源，产物统一为 `ref_sjx ∈ {0,1}`）
 
 - **阈值细化**（`area_judge*`, `getref*`）：对判据栅格（LAI/坡度/土壤/SST/SSH/EKE…）逐三角形取均值/标准差与阈值比较；数据经 2D/3D 归约（`getref_mean_std_*`）。
-- **指定细化**：bbox（跨日界线感知）、circle（大圆距离）、closed curve（射线交点奇偶，含共享顶点退化的容差处理）、Lambert 投影域。
+- **指定细化**：bbox（跨日界线感知）、circle（大圆距离）、corridor（沿折线扫出的管道，河流细化用这个）、closed curve（射线交点奇偶，含共享顶点退化的容差处理）、Lambert 投影域。circle 可以成链（`refinement.specified_circle` 写 YAML 列表），用来表达海岸线这类分布式需求；链的每个成员独立成圆，不串成 corridor。
 - **h 场细化**（默认路径；earlier 硬掩膜仅专家模式启用）：`ref_sjx[i] = 1 ⟺ mrl_new[i]==1 且 level_at(中心) ≥ 当前轮次`。梯度限制过的场保证逐轮标记集为嵌套收缩环。
 
 ### 3.2 过渡判定链 iterA..G（`refine_iter*`）
@@ -309,7 +309,11 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    **从 landtype 自动导出圆链已实现**（`earthmesh_cli/src/coast_refinement_regions/`）：按引擎自身的陆海规则（`landtype != 0`）在半个半径大小的块上判定"块内既有陆又有海"，为每个海岸块发一个圆。块取半径的一半，使相邻圆重叠一半——正是 h 场碎片化时缺的那个连续性。半径下界 `materializable_radius_meters = 0.4 · base_cell`（实测：NXP 21 父单元 381 km 时 150 km 可细化）。端到端测试（`tests/coast_refinement_regions.rs`）：真实 landtype → 圆链 → `spawn_nest` 细化成功，0.42 s；内陆 bbox 正确返回空。
 
-   仍缺的一环是 **Project schema 只支持单个圆**（`specified_circle: Option<SpecifiedCircleRefinement>`，无 `Vec`），所以这条链目前只能从 CLI/测试调用，GUI 用户无法表达圆链。这也解释了为什么 h 场成了 Project 的默认路径——它是当前唯一能表达"沿海岸线细化"这类分布式需求的方式。
+   **Project schema 已支持圆链**（2026-08）。`refinement.specified_circle` 从单个对象放宽为 `SpecifiedCircleRefinements::{One, Many}`：既有工程写单个 mapping 照旧解析、lowering 输出逐字节不变（`inline:circle:...`），写成 YAML 列表则降为新语法 `inline:circles:lon=..,lat=..,radius_km=..;...`。至此从 Project/GUI 到内核的整条圆链路径打通，h 场不再是表达分布式需求的唯一途径。
+
+   该枚举**手写 `Deserialize`（按 map/sequence 分派）而非用 `#[serde(untagged)]`**：untagged 在所有分支都失败时只报 "data did not match any variant"，把 `lonn:` 这种拼写错误的提示从"未知字段 `lonn`，可用 `lon`/`lat`/`radius_km`"降级成一句无信息的话。分派后内层错误原样保留，列表形式还会带上索引（`specified_circle[0]: unknown field \`lonn\``）。序列化仍走 untagged，输出形状不变。
+
+   实现上有一处语义必须分开：`region_sources` 里多点共用一份半径的既有约定是 **Corridor**——沿折线扫出的管道，正是 v2 用来细化**河流**的形状（`examples/merit_hydro/gba/case.nml` 是可运行实例）。海岸圆链不是折线，它是栅格扫描出的一组互不相干的圆，串成 corridor 会在扫描换行处横跨地图连出假管道。所以 `inline:circles:` 逐个成圆下发（各自复用同一套父级 halo 推导），不走 corridor 分支；`merge_refine_regions_by_shape` 再把半径重叠刻意造成的重复圆折掉。域（domain）方向则明确拒绝圆链——域是单个区域，圆链描述的是细化需求。
 
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 
@@ -386,3 +390,4 @@ plan 通过 `hfield_target_cells_geojson + hfield_target_levels_json` 转成梯�
 - `rfind`/`=` 覆盖等分支属于当前算法契约，已由拓扑与数值回归测试锁定。
 - writers 的 NetCDF 变量布局本文未展开（属 `earthmesh_cli`，见各 `*_writer/*_io` 模块与对应测试）。
 - h 场已接入 namelist/ProjectConfig、Cartesian-XY 和地理阈值数据路径，并由 `hfield_refine`/`refine_pipeline` 测试覆盖。
+- **测试临时目录必须在进程内唯一**（2026-08 修）。`project_auto_refine_e2e` 原先用 `pid + SystemTime::now().as_nanos()` 命名临时根目录，而 macOS 上 `as_nanos()` 只有微秒粒度（实测遗留目录的 nonce 全部以 `000` 结尾），测试线程同微秒启动就会共用一个目录：一个测试写 `project.yaml` 时另一个读到半截内容（报 `unknown field 'ine'`），先跑完的 `remove_dir_all` 又会删掉另一个的产物（报 `Block quality report`）。实测复现率约 1/6（8 次 1 次、5 次 1 次），加进程内原子计数器后 10 次全绿。新增 e2e 测试沿用同一命名方式时须带唯一序号。

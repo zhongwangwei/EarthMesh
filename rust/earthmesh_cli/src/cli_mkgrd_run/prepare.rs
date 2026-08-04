@@ -311,8 +311,8 @@ mod tests {
     use super::*;
     use earthmesh_project::{
         CloseBoundaryMode, HfieldRefinementRecipe, MeshIntentPreset, RefinementRecipe,
-        ResolutionSpec, SpecifiedCircleRefinement, SpecifiedCloseRefinement, ThresholdField,
-        ViolationPolicy,
+        ResolutionSpec, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
+        SpecifiedCloseRefinement, ThresholdField, ViolationPolicy,
     };
 
     #[test]
@@ -339,11 +339,12 @@ mod tests {
         );
         project.refinement.enabled = true;
         project.refinement.max_passes = 2;
-        project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-            lon: 101.0,
-            lat: 11.0,
-            radius_km: 50.0,
-        });
+        project.refinement.specified_circle =
+            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+                lon: 101.0,
+                lat: 11.0,
+                radius_km: 50.0,
+            }));
         project.refinement.hfield = Some(HfieldRefinementRecipe {
             g: 0.15,
             max_level: 2,
@@ -406,11 +407,12 @@ mod tests {
         project.refinement.enabled = true;
         project.refinement.threshold_enabled = false;
         project.refinement.max_passes = 1;
-        project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-            lon: 0.0,
-            lat: 0.0,
-            radius_km: 50.0,
-        });
+        project.refinement.specified_circle =
+            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+                lon: 0.0,
+                lat: 0.0,
+                radius_km: 50.0,
+            }));
         let project_path = root.join("project.yaml");
         fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
         let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
@@ -774,11 +776,12 @@ mod tests {
         );
         project.refinement.enabled = true;
         project.refinement.max_passes = 3;
-        project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-            lon: 1.0,
-            lat: 1.0,
-            radius_km: 50.0,
-        });
+        project.refinement.specified_circle =
+            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+                lon: 1.0,
+                lat: 1.0,
+                radius_km: 50.0,
+            }));
         project.quality.on_violation = ViolationPolicy::AutoRefine;
         let path = root.join("project.yaml");
         fs::write(&path, project.to_yaml().unwrap()).unwrap();

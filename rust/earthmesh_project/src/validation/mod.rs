@@ -439,8 +439,16 @@ impl ThresholdCriterionConfig {
 
 impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
-        if let Some(circle) = &self.specified_circle {
-            circle.validate()?;
+        if let Some(circles) = &self.specified_circle {
+            let circles = circles.as_slice();
+            if circles.is_empty() {
+                return Err(
+                    "specified_circle must name at least one circle when present".to_string(),
+                );
+            }
+            for circle in circles {
+                circle.validate()?;
+            }
         }
         if let Some(bbox) = &self.specified_bbox {
             bbox.validate()?;

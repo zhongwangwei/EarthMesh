@@ -164,7 +164,16 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
     }
     .to_string();
     let on_violation = cfg.quality.on_violation.as_str().to_string();
-    let specified_circle = cfg.refinement.specified_circle.as_ref();
+    // The panel has one set of lon/lat/radius controls, so it shows the head of
+    // a chain. `specified_refine_circle_count` is what tells the UI a chain is
+    // there at all; without it a 19-circle coastline would look like one circle.
+    let specified_circles = cfg
+        .refinement
+        .specified_circle
+        .as_ref()
+        .map(|circles| circles.as_slice())
+        .unwrap_or_default();
+    let specified_circle = specified_circles.first();
     let specified_bbox = cfg.refinement.specified_bbox.as_ref();
     let specified_close = cfg.refinement.specified_close.as_ref();
     let domain_close_boundary = match &cfg.domain {
@@ -267,7 +276,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         hydro_r3_width_m: hydro.map(|value| value.r3_width_m),
         hydro_r3_upa_km2: hydro.map(|value| value.r3_upa_km2),
         max_passes: cfg.refinement.max_passes,
-        specified_refine_enabled: specified_circle.is_some()
+        specified_refine_enabled: !specified_circles.is_empty()
             || specified_bbox.is_some()
             || specified_close.is_some(),
         specified_refine_kind: if specified_close.is_some() {
@@ -281,6 +290,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         specified_refine_lon: specified_circle.map(|c| c.lon),
         specified_refine_lat: specified_circle.map(|c| c.lat),
         specified_refine_radius_km: specified_circle.map(|c| c.radius_km),
+        specified_refine_circle_count: specified_circles.len(),
         specified_refine_bbox: specified_bbox.map(|b| [b.w, b.e, b.s, b.n]),
         specified_refine_path: specified_close.map(|c| c.path.clone()),
         specified_refine_close_boundary: specified_close.map(|c| c.boundary.clone()),

@@ -916,11 +916,12 @@ fn landtype_mask_and_landcover_criterion_are_independent_with_legacy_fallback() 
 fn threshold_master_switch_keeps_landtype_available_without_calculated_refinement() {
     let mut project = sample();
     project.refinement.threshold_enabled = false;
-    project.refinement.specified_circle = Some(SpecifiedCircleRefinement {
-        lon: 113.0,
-        lat: 22.5,
-        radius_km: 100.0,
-    });
+    project.refinement.specified_circle =
+        Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.5,
+            radius_km: 100.0,
+        }));
 
     let lowered = project.lower();
     assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
@@ -1454,6 +1455,110 @@ fn explicit_hfield_raster_overrides_the_derivation() {
     let nml = project.lower().to_namelist();
     assert!(nml.contains("NL%hfield_nlon = 512"));
     assert!(nml.contains("NL%hfield_nlat = 256"));
+}
+
+#[test]
+fn an_existing_single_circle_yaml_still_parses() {
+    // Projects written before the chain existed must keep loading unchanged.
+    let refinement: RefinementRecipe = serde_yaml::from_str(
+        "enabled: true\nspecified_circle:\n  lon: 114.0\n  lat: 22.0\n  radius_km: 200.0\n",
+    )
+    .expect("single-circle yaml");
+    let circles = refinement
+        .specified_circle
+        .as_ref()
+        .expect("circle present")
+        .as_slice();
+    assert_eq!(circles.len(), 1);
+    assert_eq!(circles[0].lon, 114.0);
+}
+
+#[test]
+fn a_circle_chain_yaml_parses_as_a_list() {
+    let refinement: RefinementRecipe = serde_yaml::from_str(
+        "enabled: true\nspecified_circle:\n  - lon: 114.0\n    lat: 22.0\n    radius_km: 200.0\n  - lon: 115.5\n    lat: 22.5\n    radius_km: 200.0\n",
+    )
+    .expect("chain yaml");
+    let circles = refinement
+        .specified_circle
+        .as_ref()
+        .expect("circles present")
+        .as_slice();
+    assert_eq!(circles.len(), 2);
+    assert_eq!(circles[1].lon, 115.5);
+}
+
+#[test]
+fn a_mistyped_circle_key_still_names_itself() {
+    // The hand-written deserializer exists for this: `#[serde(untagged)]` would
+    // report "data did not match any variant", naming neither the bad key nor
+    // the good ones.
+    let error = serde_yaml::from_str::<RefinementRecipe>(
+        "enabled: true\nspecified_circle:\n  lonn: 114.0\n  lat: 22.0\n  radius_km: 200.0\n",
+    )
+    .expect_err("typo must not parse");
+    assert!(
+        error.to_string().contains("unknown field `lonn`"),
+        "got {error}"
+    );
+
+    let error = serde_yaml::from_str::<RefinementRecipe>(
+        "enabled: true\nspecified_circle:\n  - lonn: 114.0\n    lat: 22.0\n    radius_km: 200.0\n",
+    )
+    .expect_err("typo in a chain must not parse");
+    assert!(
+        error.to_string().contains("unknown field `lonn`"),
+        "got {error}"
+    );
+}
+
+#[test]
+fn a_single_specified_circle_lowers_exactly_as_before() {
+    let mut project = sample();
+    project.refinement.specified_circle =
+        Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+            lon: 114.0,
+            lat: 22.0,
+            radius_km: 200.0,
+        }));
+    let lowered = project.lower();
+    assert_eq!(
+        lowered.refine.mask_refine_spc_fprefix, "inline:circle:lon=114,lat=22,radius_km=200",
+        "the one-circle form must stay byte-identical"
+    );
+    assert_eq!(lowered.refine.mask_refine_spc_type, "circle");
+    assert!(lowered.refine.refine_spc);
+}
+
+#[test]
+fn a_circle_chain_lowers_to_the_chain_form() {
+    // What reducing a coastline to point+radius demand actually produces.
+    let mut project = sample();
+    project.refinement.specified_circle = Some(SpecifiedCircleRefinements::Many(vec![
+        SpecifiedCircleRefinement {
+            lon: 114.0,
+            lat: 22.0,
+            radius_km: 200.0,
+        },
+        SpecifiedCircleRefinement {
+            lon: 115.5,
+            lat: 22.5,
+            radius_km: 200.0,
+        },
+    ]));
+    let lowered = project.lower();
+    assert_eq!(
+        lowered.refine.mask_refine_spc_fprefix,
+        "inline:circles:lon=114,lat=22,radius_km=200;lon=115.5,lat=22.5,radius_km=200"
+    );
+}
+
+#[test]
+fn an_empty_circle_chain_is_rejected() {
+    let mut project = sample();
+    project.refinement.specified_circle = Some(SpecifiedCircleRefinements::Many(Vec::new()));
+    let error = project.try_lower().expect_err("empty chain must not lower");
+    assert!(error.contains("at least one circle"), "got {error}");
 }
 
 #[test]

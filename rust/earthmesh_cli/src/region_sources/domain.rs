@@ -52,6 +52,12 @@ pub(crate) fn read_method_c_domain_region(
                 lat: center.lat_degrees,
                 radius_km: radius_meters / 1_000.0,
             })),
+            // A domain is a single region; a chain describes refinement demand,
+            // not where the mesh lives. Say that instead of the generic mismatch.
+            (_, InlineMaskSource::Circles(_)) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a circle chain is a refinement source, not a regional domain",
+            )),
             (kind, _) => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("inline regional domain source does not match mask_domain_type {kind}"),

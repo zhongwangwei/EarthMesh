@@ -209,11 +209,18 @@ impl ProjectConfig {
         }
         // Refinement runs only when a real source supplies data. LandType mask
         // availability is independent from its explicit categorical criterion.
-        if let Some(circle) = &self.refinement.specified_circle {
+        if let Some(circles) = &self.refinement.specified_circle {
+            let circles = circles.as_slice();
             refine.refine_spc = true;
             refine.mask_refine_spc_type = "circle".to_string();
-            refine.mask_refine_spc_fprefix =
-                circle_geometry(circle.lon, circle.lat, circle.radius_km)?;
+            // Keep the single-circle form byte-identical so existing projects
+            // lower exactly as before; only a chain takes the new syntax.
+            refine.mask_refine_spc_fprefix = match circles {
+                [circle] => circle_geometry(circle.lon, circle.lat, circle.radius_km)?,
+                many => GeometryIr::circles_inline_mask_source(
+                    many.iter().map(|c| (c.lon, c.lat, c.radius_km)),
+                )?,
+            };
         }
         if let Some(bbox) = &self.refinement.specified_bbox {
             refine.refine_spc = true;

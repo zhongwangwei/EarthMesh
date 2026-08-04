@@ -847,11 +847,14 @@ mod tests {
         );
         project.refinement.enabled = true;
         project.refinement.max_passes = 3;
-        project.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinement {
-            lon: 0.0,
-            lat: 0.0,
-            radius_km: 100.0,
-        });
+        project.refinement.specified_circle =
+            Some(earthmesh_project::SpecifiedCircleRefinements::One(
+                earthmesh_project::SpecifiedCircleRefinement {
+                    lon: 0.0,
+                    lat: 0.0,
+                    radius_km: 100.0,
+                },
+            ));
 
         project.quality.on_violation = ViolationPolicy::Warn;
         assert_eq!(project_triangle_budget(&project).unwrap(), 821_249_280);

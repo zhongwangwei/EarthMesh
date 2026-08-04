@@ -474,3 +474,101 @@ fn close_boundary_engine_specs_drive_domain_and_specified_dispatch() {
 
     let _ = fs::remove_file(source);
 }
+
+#[test]
+fn an_inline_circle_chain_becomes_one_region_per_member() {
+    // A coastline reduced to point+radius demand arrives here as one string.
+    // Each member must survive as its own region; the alternative — a chain
+    // silently collapsing to one circle — would refine a fraction of the coast
+    // and still report success.
+    let refine = RefineConfig {
+        mask_refine_spc_type: "circle".to_string(),
+        mask_refine_spc_fprefix:
+            "inline:circles:lon=114,lat=22,radius_km=200;lon=118,lat=24,radius_km=200".to_string(),
+        ..Default::default()
+    };
+    let regions =
+        read_method_c_specified_refinement_regions(&refine, 1, 40, false).expect("chain dispatch");
+    assert_eq!(regions.len(), 2, "got {regions:?}");
+    for region in &regions {
+        let MethodCRefinementRegion::Circle {
+            radius_meters,
+            level,
+            ..
+        } = region
+        else {
+            panic!("chain members must stay circles");
+        };
+        assert!((radius_meters - 200_000.0).abs() < 1.0);
+        assert_eq!(*level, 1);
+    }
+}
+
+#[test]
+fn an_inline_circle_chain_merges_members_that_coincide() {
+    // Half-radius blocking makes consecutive circles overlap on purpose; the
+    // dispatch already folds duplicates so the seed pass does not see the same
+    // shape twice.
+    let refine = RefineConfig {
+        mask_refine_spc_type: "circle".to_string(),
+        mask_refine_spc_fprefix:
+            "inline:circles:lon=114,lat=22,radius_km=200;lon=114,lat=22,radius_km=200".to_string(),
+        ..Default::default()
+    };
+    let regions =
+        read_method_c_specified_refinement_regions(&refine, 1, 40, false).expect("chain dispatch");
+    assert_eq!(regions.len(), 1, "got {regions:?}");
+}
+
+#[test]
+fn a_circle_chain_is_not_a_regional_domain() {
+    let domain = EarthmeshConfig {
+        mask_domain_global: false,
+        mask_domain_type: "circle".to_string(),
+        mask_domain_fprefix: "inline:circles:lon=114,lat=22,radius_km=200".to_string(),
+        ..Default::default()
+    };
+    let error = read_method_c_domain_region(&domain).expect_err("chain is not a domain");
+    assert!(
+        error.to_string().contains("refinement source"),
+        "got {error}"
+    );
+}
+
+#[test]
+fn a_malformed_circle_chain_is_rejected() {
+    // Namelists are hand-written too, so the chain parser is the only guard
+    // between a typo and a region that silently refines something else.
+    for (prefix, expected) in [
+        ("inline:circles:", "must not be empty"),
+        ("inline:circles:lon=114,lat=22", "positive radius_km"),
+        (
+            "inline:circles:lon=114,lat=22,radius_km=0",
+            "positive radius_km",
+        ),
+        (
+            "inline:circles:lon=114,lat=22,radius_km=inf",
+            "positive radius_km",
+        ),
+        (
+            "inline:circles:lon=114,lat=22,radius_km=abc",
+            "invalid inline circle number",
+        ),
+        (
+            "inline:circles:lon=114,lat=22,depth=3",
+            "unsupported inline circle key",
+        ),
+    ] {
+        let refine = RefineConfig {
+            mask_refine_spc_type: "circle".to_string(),
+            mask_refine_spc_fprefix: prefix.to_string(),
+            ..Default::default()
+        };
+        let error =
+            read_method_c_specified_refinement_regions(&refine, 1, 40, false).expect_err(prefix);
+        assert!(
+            error.to_string().contains(expected),
+            "{prefix}: got {error}"
+        );
+    }
+}

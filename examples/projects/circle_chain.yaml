@@ -1,0 +1,44 @@
+schema_version: 3.0.0
+metadata:
+  name: circle_chain_example
+  authors: []
+  description: >-
+    Distributed refinement expressed as a chain of circles rather than an
+    h-field. Each circle refines independently; overlapping them by half a
+    radius is what keeps a coastline covered without gaps.
+domain: !Regional
+  shape: !Bbox
+    w: 110.0
+    e: 122.0
+    n: 26.0
+    s: 18.0
+target:
+  kind: Atmosphere
+  cell: Hex
+  intent: AtmosphereMpas
+  resolution: !Nxp 40
+  model_format: Mpas
+data_layers: []
+refinement:
+  enabled: true
+  max_passes: 1
+  # A list here, a single mapping in auto_refine.yaml — both are accepted.
+  # Radius must clear one rad3 footprint at the parent generation or Method-C
+  # cannot seed inside the circle; see coast_refinement_regions.
+  specified_circle:
+    - lon: 113.5
+      lat: 22.0
+      radius_km: 200.0
+    - lon: 115.0
+      lat: 22.6
+      radius_km: 200.0
+    - lon: 116.5
+      lat: 23.2
+      radius_km: 200.0
+quality:
+  min_angle_deg: 25.0
+expert:
+  niter: 1
+  # Regression-speed override only. Omit in production to retain Method-C's
+  # canonical 5000-atmosphere / 2000-surface spring iterations.
+  niter_refine: 1

@@ -276,7 +276,7 @@ pub struct RefinementRecipe {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threshold_criteria: Vec<ThresholdCriterionConfig>,
     #[serde(default)]
-    pub specified_circle: Option<SpecifiedCircleRefinement>,
+    pub specified_circle: Option<SpecifiedCircleRefinements>,
     #[serde(default)]
     pub specified_bbox: Option<SpecifiedBboxRefinement>,
     #[serde(default)]
@@ -349,6 +349,77 @@ pub struct SpecifiedCircleRefinement {
     pub lon: f64,
     pub lat: f64,
     pub radius_km: f64,
+}
+
+/// One circle or a chain of them.
+///
+/// A coastline is not one circle. Reducing a land/sea boundary to point+radius
+/// demand yields tens to hundreds of them (19 at one-degree sampling over the
+/// South China Sea, 115 at a quarter degree), and until this accepted a list the
+/// only way a project could express distributed refinement was the h-field —
+/// which is very likely why that became the default backend.
+///
+/// Existing files keep working: a single mapping still parses, and `null` still
+/// means no specified circle refinement.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum SpecifiedCircleRefinements {
+    One(SpecifiedCircleRefinement),
+    Many(Vec<SpecifiedCircleRefinement>),
+}
+
+/// Deserialized by hand rather than with `#[serde(untagged)]`.
+///
+/// Untagged buffers the input and reports "data did not match any variant" when
+/// every variant fails, which would turn a typo like `lonn:` into a message that
+/// names neither the bad key nor the good ones. Dispatching on map-vs-sequence
+/// first means the circle's own `unknown field` error survives intact.
+impl<'de> Deserialize<'de> for SpecifiedCircleRefinements {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CirclesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CirclesVisitor {
+            type Value = SpecifiedCircleRefinements;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a circle mapping or a list of circle mappings")
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                SpecifiedCircleRefinement::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(SpecifiedCircleRefinements::One)
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                Vec::<SpecifiedCircleRefinement>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(seq),
+                )
+                .map(SpecifiedCircleRefinements::Many)
+            }
+        }
+
+        deserializer.deserialize_any(CirclesVisitor)
+    }
+}
+
+impl SpecifiedCircleRefinements {
+    pub fn as_slice(&self) -> &[SpecifiedCircleRefinement] {
+        match self {
+            Self::One(circle) => std::slice::from_ref(circle),
+            Self::Many(circles) => circles,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

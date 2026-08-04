@@ -19,8 +19,8 @@ pub use schema::{
     MeshDomainKind, MeshIntentPreset, MeshTargetConfig, ModelFormat, ProjectConfig,
     ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig, RefinementRecipe,
     RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ViolationPolicy,
-    DEFAULT_AUTO_REFINE_BATCH_CELLS, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    SpecifiedCircleRefinements, SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField,
+    ViolationPolicy, DEFAULT_AUTO_REFINE_BATCH_CELLS, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
     METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
     PROJECT_SCHEMA_VERSION,
 };
