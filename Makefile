@@ -47,6 +47,7 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_quality/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_planner/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_project/Cargo.toml --check
+	$(CARGO) fmt --manifest-path extends/earthmesh_grid_preprocess/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 
 fmt-gui:
@@ -64,6 +65,7 @@ clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_project/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path extends/earthmesh_grid_preprocess/Cargo.toml --all-targets -- -D warnings
 
 clippy-gui:
 	CARGO_TARGET_DIR=$(GUI_TARGET_DIR) $(CARGO) clippy --manifest-path gui-tauri/src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -81,6 +83,7 @@ test-fast:
 	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_project/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path extends/earthmesh_grid_preprocess/Cargo.toml --all-targets
 
 check-gui-js:
 	node scripts/check_gui_js.js

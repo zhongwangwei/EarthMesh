@@ -21,11 +21,23 @@ earthmesh_refine_planner measured-cell target levels consumed through HField
 earthmesh_cli         executable orchestration and file-format adapters
     ↑
 EarthMesh Studio      Tauri adapter and static frontend
+
+extends/earthmesh_grid_preprocess   compatibility port, depends on earthmesh_mesh,
+                                    depended on by nothing above
 ```
 
 Arrows indicate the normal direction toward higher-level orchestration, not a
 complete Cargo dependency graph. Shared physical constants live in
 `earthmesh_core`; geometry and h-field code reuse that source of truth.
+
+## `extends/`
+
+Crates under `extends/` are verification assets, not engine layers. They may
+depend on `rust/` crates; nothing in `rust/` or EarthMesh Studio may depend on
+them, so removing one can never change mesh output. `earthmesh_grid_preprocess`
+is the port of the `MOD_grid_preprocess.F90` triangle refinement pipeline, kept
+because discrete integer topology is what makes table-level exact comparison
+against the Fortran reference possible; production refinement is Method-C.
 
 ## Canonical execution paths
 
@@ -101,6 +113,18 @@ an architecture goal.
 
 - Connectivity failures include invalid indices, non-manifold edges,
   disconnected cell components, and disconnected vertex fans.
+- Ocean projects carve by centre sample, which strands narrow bays and river
+  mouths as orphan cells or vertex-only contacts that no refinement pass can
+  repair. `NL%isolated_ocean` (on by default for `oceanmesh`, overridable via
+  `expert.isolated_ocean`) keeps only the largest edge-connected water body and
+  splits pinched vertex fans. It removes cells, so the run log always reports how
+  many went and how many components were found.
+- Guarded AutoRefine comparisons separate float noise from meaningfulness:
+  exact-valued metrics (counts, `max_adjacent_resolution_ratio`) use a 1e-9
+  guard, continuous whole-mesh extrema (`aspect_ratio.max`, `min_angle_deg`, …)
+  use 1e-4 relative. Touching one cell in a 10^5-cell mesh moves an extremum by
+  ~1e-6 in an effectively random direction; scoring that as a regression rolled
+  back otherwise sound passes.
 - Euler characteristic `V-E+F` is always reported and becomes a gate only when
   the input explicitly supplies an expectation. Before final mask topology is
   known, Projects supply χ=2 only for unmasked global Earth/atmosphere meshes;

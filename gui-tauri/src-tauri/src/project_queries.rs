@@ -304,6 +304,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         expert_beta: cfg.expert.beta,
         expert_relax: cfg.expert.relax,
         expert_weak_concav_eliminate: cfg.expert.weak_concav_eliminate,
+        expert_isolated_ocean: cfg.expert.isolated_ocean,
         layers,
     })
 }

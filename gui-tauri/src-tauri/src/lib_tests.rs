@@ -1416,6 +1416,7 @@ fn set_expert_updates_custom_overrides() {
         Some(1.123_456_789_012_3),
         Some(0.031_234_567_890_123),
         Some(true),
+        Some(true),
     )
     .expect("set expert");
     let summary = project_summary(yaml.clone()).expect("summary");
@@ -1440,6 +1441,7 @@ fn set_expert_updates_custom_overrides() {
         None,
         None,
         Some(0),
+        None,
         None,
         None,
         None,
@@ -1510,6 +1512,7 @@ fn opened_hidden_expert_overrides_survive_the_gui_compose_command_sequence() {
         summary.expert_beta,
         summary.expert_relax,
         summary.expert_weak_concav_eliminate,
+        summary.expert_isolated_ocean,
     )
     .unwrap();
     let recomposed = ProjectConfig::from_yaml(&recomposed).unwrap();

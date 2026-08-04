@@ -152,6 +152,7 @@ pub(super) fn write_method_c_refined_outputs(
             config.mesh_type.trim(),
             None,
             None,
+            config.isolated_ocean,
         )?;
         let masked_mesh = read_unstructured_mesh_netcdf(&output_path)?;
         let output = UnstructuredMeshWriteReport {
@@ -207,6 +208,7 @@ pub(super) fn write_method_c_refined_outputs(
             "landmesh",
             None,
             None,
+            false,
         )?;
         let ocean_kept = write_landtype_masked_gridfile_with_refine_levels(
             &output.output,
@@ -217,6 +219,7 @@ pub(super) fn write_method_c_refined_outputs(
             "oceanmesh",
             None,
             None,
+            config.isolated_ocean,
         )?;
         let land_mesh = read_unstructured_mesh_netcdf(&land_output_path)?;
         let ocean_mesh = read_unstructured_mesh_netcdf(&ocean_output_path)?;

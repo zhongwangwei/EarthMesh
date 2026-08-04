@@ -1,0 +1,27 @@
+[package]
+name = "earthmesh_grid_preprocess"
+version = "3.0.0-alpha2"
+edition = "2021"
+description = "Bit-for-bit compatibility port of the MOD_grid_preprocess.F90 triangle refinement pipeline. Not part of the production engine."
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[lib]
+name = "earthmesh_grid_preprocess"
+path = "src/lib.rs"
+
+[dependencies]
+earthmesh_mesh = { path = "../../rust/earthmesh_mesh" }
+
+# The h-field bridge test drives these kernels from a real gradient-limited
+# HField; the library itself does not depend on it.
+[dev-dependencies]
+earthmesh_hfield = { path = "../../rust/earthmesh_hfield" }
+
+# Numeric kernels retain algorithm-shaped data flow (multi-argument routines,
+# 1-based loops over parallel connectivity arrays, and flattened connectivity
+# tables), so these lints are allowed package-wide for the library and tests.
+[lints.clippy]
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"

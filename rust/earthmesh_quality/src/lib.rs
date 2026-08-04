@@ -570,14 +570,9 @@ impl MeshQualityReport {
                 baseline.geometry.angle_deviation_deg.max,
                 self.geometry.angle_deviation_deg.max,
             ),
-            (
-                "max_adjacent_resolution_ratio",
-                baseline.topology.max_adjacent_resolution_ratio,
-                self.topology.max_adjacent_resolution_ratio,
-            ),
         ];
         for (metric, prior, candidate) in lower_is_better {
-            if metric_change(candidate, prior) > 0 {
+            if geometry_metric_change(candidate, prior) > 0 {
                 push(
                     &mut regressions,
                     metric,
@@ -587,7 +582,23 @@ impl MeshQualityReport {
                 );
             }
         }
-        if metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg) < 0 {
+        // An exact ratio, not a continuous extremum: any increase is a real
+        // coarsening of the transition, so it keeps the strict comparison.
+        if metric_change(
+            self.topology.max_adjacent_resolution_ratio,
+            baseline.topology.max_adjacent_resolution_ratio,
+        ) > 0
+        {
+            push(
+                &mut regressions,
+                "max_adjacent_resolution_ratio",
+                QualityMetricPreference::Lower,
+                baseline.topology.max_adjacent_resolution_ratio,
+                self.topology.max_adjacent_resolution_ratio,
+            );
+        }
+        if geometry_metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg) < 0
+        {
             push(
                 &mut regressions,
                 "min_angle_deg",
@@ -699,30 +710,51 @@ impl MeshQualityReport {
                 self.geometry.angle_deviation_deg.max,
                 baseline.geometry.angle_deviation_deg.max,
             ),
-            (
-                self.topology.max_adjacent_resolution_ratio,
-                baseline.topology.max_adjacent_resolution_ratio,
-            ),
         ];
+        // Mirrors `guarded_metric_regressions`: the same tolerance decides both
+        // "is this a regression" and "is this an improvement", so a candidate
+        // can never fall into a dead zone that counts as neither.
         baseline.verdict.is_worse_than(self.verdict)
             || discrete.iter().any(|(candidate, prior)| candidate < prior)
             || lower_is_better
                 .iter()
-                .any(|&(candidate, prior)| metric_change(candidate, prior) < 0)
-            || metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg) > 0
+                .any(|&(candidate, prior)| geometry_metric_change(candidate, prior) < 0)
+            || metric_change(
+                self.topology.max_adjacent_resolution_ratio,
+                baseline.topology.max_adjacent_resolution_ratio,
+            ) < 0
+            || geometry_metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg)
+                > 0
     }
 }
 
-/// Compare finite metrics with a small scale-aware tolerance. Non-finite
+/// Float-noise guard: anything above this is a real difference in value, though
+/// not necessarily a meaningful one. Used for metrics whose values are exact
+/// (counts, resolution ratios).
+const METRIC_NOISE_TOLERANCE: f64 = 1.0e-9;
+
+/// Meaningfulness threshold for continuous geometry metrics.
+///
+/// `aspect_ratio.max`, `angle_deviation_deg.max`, `cell_edge_length_cv.max` and
+/// `min_angle_deg` are extrema over the whole mesh, so touching any single cell
+/// perturbs them, in a direction that is effectively random. On a 10^5-cell mesh
+/// a one-cell AutoRefine repair moves `aspect_ratio.max` by ~1e-6 — three orders
+/// of magnitude above the noise guard, which made
+/// [`MeshQualityReport::is_strict_improvement_over`] reject otherwise fine passes
+/// as regressions. A mesh-quality-relevant degradation is percent-level, so 1e-4
+/// relative separates the two without masking anything real.
+const GEOMETRY_METRIC_TOLERANCE: f64 = 1.0e-4;
+
+/// Compare finite metrics with a scale-aware relative tolerance. Non-finite
 /// candidate values are worse than finite baselines; two non-finite values are
 /// treated as unchanged.
-fn metric_change(candidate: f64, baseline: f64) -> i8 {
+fn metric_change_within(candidate: f64, baseline: f64, relative_tolerance: f64) -> i8 {
     match (candidate.is_finite(), baseline.is_finite()) {
         (false, false) => 0,
         (false, true) => 1,
         (true, false) => -1,
         (true, true) => {
-            let tolerance = 1.0e-9 * candidate.abs().max(baseline.abs()).max(1.0);
+            let tolerance = relative_tolerance * candidate.abs().max(baseline.abs()).max(1.0);
             if candidate > baseline + tolerance {
                 1
             } else if candidate < baseline - tolerance {
@@ -732,6 +764,16 @@ fn metric_change(candidate: f64, baseline: f64) -> i8 {
             }
         }
     }
+}
+
+/// Exact-valued metrics: any difference beyond float noise counts.
+fn metric_change(candidate: f64, baseline: f64) -> i8 {
+    metric_change_within(candidate, baseline, METRIC_NOISE_TOLERANCE)
+}
+
+/// Continuous whole-mesh extrema: only mesh-quality-relevant shifts count.
+fn geometry_metric_change(candidate: f64, baseline: f64) -> i8 {
+    metric_change_within(candidate, baseline, GEOMETRY_METRIC_TOLERANCE)
 }
 
 fn cell_ring(input: &QualityMeshInput, cell: &QualityCell) -> Option<Vec<Point>> {
@@ -2109,6 +2151,62 @@ mod tests {
 
         assert_eq!(report.repair_cells.len(), 1);
         assert_eq!(report.repair_cells[0].metric, "angle_deviation_deg");
+    }
+
+    #[test]
+    fn negligible_extremum_drift_is_not_a_regression() {
+        // Reproduces a real AutoRefine rollback: a one-cell repair on a global
+        // 100 km mesh improved the target metric but nudged aspect_ratio.max by
+        // 3.2e-6 (2.040302169 -> 2.040305343), which the old 1e-9 guard scored
+        // as a regression and rolled the whole pass back.
+        let mut baseline = compute(&two_square_mesh(), &QualityThresholds::default());
+        baseline.geometry.aspect_ratio.max = 2.040302169394414;
+        baseline.geometry.angle_deviation_deg.max = 40.0;
+
+        let mut candidate = baseline.clone();
+        candidate.geometry.aspect_ratio.max += 3.1736e-6;
+        candidate.geometry.angle_deviation_deg.max = 27.0;
+
+        assert!(
+            candidate.guarded_metric_regressions(&baseline).is_empty(),
+            "drift far below mesh-quality relevance must not read as a regression"
+        );
+        assert!(candidate.is_strict_improvement_over(&baseline));
+    }
+
+    #[test]
+    fn extremum_drift_past_the_tolerance_still_regresses() {
+        let mut baseline = compute(&two_square_mesh(), &QualityThresholds::default());
+        baseline.geometry.aspect_ratio.max = 2.0;
+        baseline.geometry.angle_deviation_deg.max = 40.0;
+
+        let mut candidate = baseline.clone();
+        // 1e-3 relative is an order of magnitude past the 1e-4 threshold.
+        candidate.geometry.aspect_ratio.max += 2.0e-3;
+        candidate.geometry.angle_deviation_deg.max = 27.0;
+
+        let regressions = candidate.guarded_metric_regressions(&baseline);
+        assert_eq!(regressions.len(), 1);
+        assert_eq!(regressions[0].metric, "aspect_ratio.max");
+        assert!(!candidate.is_strict_improvement_over(&baseline));
+    }
+
+    #[test]
+    fn adjacent_resolution_ratio_keeps_the_strict_comparison() {
+        // An exact ratio, so it must not inherit the geometry tolerance: a 2 -> 3
+        // transition coarsening is a real regression however small the delta.
+        let mut baseline = compute(&two_square_mesh(), &QualityThresholds::default());
+        baseline.topology.max_adjacent_resolution_ratio = 2.0;
+        baseline.geometry.angle_deviation_deg.max = 40.0;
+
+        let mut candidate = baseline.clone();
+        candidate.topology.max_adjacent_resolution_ratio = 2.0 + 1.0e-6;
+        candidate.geometry.angle_deviation_deg.max = 27.0;
+
+        let regressions = candidate.guarded_metric_regressions(&baseline);
+        assert_eq!(regressions.len(), 1);
+        assert_eq!(regressions[0].metric, "max_adjacent_resolution_ratio");
+        assert!(!candidate.is_strict_improvement_over(&baseline));
     }
 
     #[test]

@@ -156,6 +156,7 @@ pub(crate) struct ProjectSummary {
     pub(crate) expert_beta: Option<f64>,
     pub(crate) expert_relax: Option<f64>,
     pub(crate) expert_weak_concav_eliminate: Option<bool>,
+    pub(crate) expert_isolated_ocean: Option<bool>,
     pub(crate) layers: Vec<LayerSummary>,
 }
 

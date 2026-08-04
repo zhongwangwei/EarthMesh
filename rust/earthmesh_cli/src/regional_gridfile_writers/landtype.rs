@@ -6,6 +6,7 @@ use crate::read_unstructured_mesh_netcdf;
 use crate::sample_landtype_values_for_points_one_based;
 use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
 use crate::AreaJudgeLandtypeClass;
+use earthmesh_mesh::retain_largest_edge_connected_component_one_based;
 use std::io;
 use std::path::Path;
 
@@ -35,9 +36,17 @@ pub fn write_landtype_masked_gridfile(
         mesh_type,
         None,
         None,
+        false,
     )
 }
 
+/// As [`write_landtype_masked_gridfile`], plus the carve-time topology cleanup.
+///
+/// `retain_largest_ocean_component` drops every `oceanmesh` cell outside the
+/// largest edge-connected piece of the carved domain — the narrow bays and river
+/// mouths a centre-sample carve leaves behind as orphan cells or vertex-only
+/// contacts. It is ignored for `landmesh`, where disjoint pieces are islands and
+/// must survive.
 #[allow(clippy::too_many_arguments)]
 pub fn write_landtype_masked_gridfile_with_refine_levels(
     input_gridfile: impl AsRef<Path>,
@@ -48,6 +57,7 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
     mesh_type: &str,
     m_refine_level: Option<&[i32]>,
     w_refine_level: Option<&[i32]>,
+    retain_largest_ocean_component: bool,
 ) -> io::Result<usize> {
     let keep_land = match mesh_type.trim() {
         "landmesh" => true,
@@ -92,6 +102,26 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
             io::ErrorKind::InvalidInput,
             format!("{mesh_type} landtype mask kept no cells"),
         ));
+    }
+    if retain_largest_ocean_component && !keep_land {
+        let retention = retain_largest_edge_connected_component_one_based(
+            &mut is_in_domain,
+            &layout.center_neighbors,
+            &layout.center_neighbor_counts,
+            &layout.vertex_neighbors,
+            &layout.vertex_neighbor_counts,
+        )?;
+        if !retention.removed_cell_ids.is_empty() {
+            eprintln!(
+                "earthmesh_cli: ocean carve dropped {} cell(s) ({} from pinched vertex fans) \
+                 to keep the largest connected water body ({} components, {} cells retained)",
+                retention.removed_cell_ids.len(),
+                retention.non_manifold_removed_cell_count,
+                retention.component_count,
+                retention.retained_cell_count
+            );
+        }
+        kept = retention.retained_cell_count;
     }
     let report =
         finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;

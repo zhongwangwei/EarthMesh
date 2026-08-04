@@ -9,7 +9,7 @@ pub struct BoundaryClosedCurves {
     pub n_close_curve: Vec<usize>,
 }
 
-pub(crate) fn push_boundary_neighbor(
+pub fn push_boundary_neighbor(
     boundary_vertex_neighbors: &mut [Vec<usize>],
     vertex_id: usize,
     neighbor_id: usize,

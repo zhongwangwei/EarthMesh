@@ -181,6 +181,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "earthmesh_grid_preprocess"
+version = "3.0.0-alpha2"
+dependencies = [
+ "earthmesh_hfield",
+ "earthmesh_mesh",
+]
+
+[[package]]
 name = "earthmesh_hfield"
 version = "3.0.0-alpha2"
 dependencies = [

@@ -133,6 +133,11 @@ impl ProjectConfig {
         mkgrd.mask_patch_type = "none".to_string();
         mkgrd.mask_patch_fprefix = "none".to_string();
         mkgrd.mesh_type = self.target.kind.engine_str().to_string();
+        // An ocean carve marks cells by their own centre sample, so narrow bays
+        // and river mouths come out as orphan cells or vertex-only contacts that
+        // fail the topology gates and no refinement pass can repair. Ocean
+        // projects therefore keep only the largest connected water body.
+        mkgrd.isolated_ocean = mkgrd.mesh_type == "oceanmesh";
         mkgrd.mode_grid = self.target.cell.engine_str().to_string();
         mkgrd.output_format = self.target.model_format.engine_str().to_string();
         if let Some(coupling) = &self.coupling {
@@ -233,11 +238,21 @@ impl ProjectConfig {
 
         // Auto spring smoothing: keep the low-level SpringGlobal/SpringRegional pair
         // mutually exclusive while deriving the Method-C-compatible choice from grid/domain.
-        if mkgrd.mode_grid != "tri" {
-            refine.is_transition = true;
-            refine.spring_global_type = if mkgrd.mask_domain_global { 1 } else { 0 };
-            refine.spring_regional_type = if mkgrd.mask_domain_global { 0 } else { 1 };
-        }
+        //
+        // This applies to `tri` as well. Only hex is *required* to run with
+        // `Istransition`, but leaving tri unset made it inherit the config
+        // defaults, where `RefineConfig::validate` zeroes both spring types and
+        // `method_c_spring_iterations` then returns 0 — a Method-C refined tri
+        // mesh whose transition rows were never smoothed. Measured on a global
+        // 100 km CoastalOcean project (108k cells, 2000 iterations):
+        // angle_deviation_deg.max 40.87 -> 27.05 (clearing the 35 warn gate),
+        // min_angle_deg 28.98 -> 38.66, aspect_ratio.max 2.04 -> 1.56.
+        // Setting both fields also keeps expert overrides usable: with only one
+        // of them supplied, the other kept its default of 1 and lowering failed
+        // the mutual-exclusion check.
+        refine.is_transition = true;
+        refine.spring_global_type = if mkgrd.mask_domain_global { 1 } else { 0 };
+        refine.spring_regional_type = if mkgrd.mask_domain_global { 0 } else { 1 };
 
         // Expert overrides win last.
         if let Some(n) = self.expert.nxp {
@@ -284,6 +299,9 @@ impl ProjectConfig {
                 .expert
                 .spring_regional_type
                 .unwrap_or(refine.spring_regional_type);
+        }
+        if let Some(enabled) = self.expert.isolated_ocean {
+            mkgrd.isolated_ocean = enabled;
         }
         if let Some(enabled) = self.expert.weak_concav_eliminate {
             refine.weak_concav_eliminate = enabled;

@@ -155,6 +155,10 @@ EarthMesh/
 |-- cases/                     # generated and fixture run outputs
 |-- docs/                      # architecture and technical references
 |-- examples/                  # runnable namelists and external-data templates
+|-- extends/
+|   `-- earthmesh_grid_preprocess/ # MOD_grid_preprocess.F90 compatibility port,
+|                                  # kept for bit-for-bit verification; the
+|                                  # production engine does not depend on it
 |-- gui-tauri/                 # EarthMesh Studio desktop GUI
 |-- input/                     # small/default input references
 |-- rust/

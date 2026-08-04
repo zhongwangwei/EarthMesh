@@ -72,6 +72,7 @@ fn sample() -> ProjectConfig {
             beta: Some(1.1),
             relax: Some(0.03),
             weak_concav_eliminate: Some(true),
+            isolated_ocean: None,
         },
         hydro_coast: None,
         coupling: None,
@@ -1365,6 +1366,42 @@ fn hex_mesh_lowers_with_is_transition_and_one_spring() {
         lowered.refine.spring_global_type,
         lowered.refine.spring_regional_type
     );
+}
+
+#[test]
+fn tri_mesh_also_lowers_with_is_transition_and_one_spring() {
+    // Tri is not *required* to run with Istransition, but leaving it unset made
+    // RefineConfig::validate zero both spring types, so method_c_spring_iterations
+    // returned 0 and Method-C transition rows were never smoothed. Measured on a
+    // global 100 km CoastalOcean project, enabling the spring moved
+    // angle_deviation_deg.max from 40.87 to 27.05 and cleared its warn gate.
+    let mut project = sample();
+    project.target.cell = MeshCellKind::Tri;
+    // The fixture pins both spring fields; clear them so this exercises the
+    // automatic derivation rather than the expert override that runs after it.
+    project.expert.spring_global_type = None;
+    project.expert.spring_regional_type = None;
+    let lowered = project.lower();
+
+    assert_eq!(lowered.mkgrd.mode_grid, "tri");
+    assert!(lowered.refine.is_transition, "tri must smooth too");
+    // Regional domain => regional spring; both set so expert overrides of a
+    // single field cannot collide with the other one's default of 1.
+    assert_eq!(lowered.refine.spring_global_type, 0);
+    assert_eq!(lowered.refine.spring_regional_type, 1);
+}
+
+#[test]
+fn global_tri_mesh_lowers_to_the_global_spring() {
+    let mut project = sample();
+    project.target.cell = MeshCellKind::Tri;
+    project.domain = DomainConfig::Global;
+    project.expert.spring_global_type = None;
+    project.expert.spring_regional_type = None;
+    let lowered = project.lower();
+
+    assert_eq!(lowered.refine.spring_global_type, 1);
+    assert_eq!(lowered.refine.spring_regional_type, 0);
 }
 
 #[test]

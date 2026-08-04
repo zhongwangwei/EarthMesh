@@ -34,6 +34,10 @@
 
 两条细化路线共享初始网格与输出端，方法论差异见 `docs/mesh_refinement_method_research_2026-07-02.md`；h 场层（第 8 节）是二者共同的上游。
 
+**集成状态（重要）：生产路径只走 Method-C。** 上图左支（grid_preprocess 三角细化，第 3 节）已于 2026-08 迁出主程序，现位于独立 crate **`extends/earthmesh_grid_preprocess`**（27 个模块 + 22 个测试文件）。依赖方向是单向的：该 crate 依赖 `earthmesh_mesh`，而 `earthmesh_mesh` / `earthmesh_cli` / `earthmesh_project` / EarthMesh Studio **均不依赖它**——迁出后主程序零错误零警告编译通过，这是隔离性的编译期证据。`refine_pipeline` 的每个分支落点都是 `spawn_nest_*`。
+
+左支作为**逐位对拍的内核库**保留——离散整数拓扑才能对参考实现做表级精确比对（第 6 节验收层级的 compat 模式），这份验证能力是连续/构造式内核给不了的。阅读第 3 节时请按"可测试的算法资产"而非"运行时可选路径"理解。
+
 ---
 
 ## 1. 数据模型与索引约定
@@ -102,6 +106,10 @@
 ---
 
 ## 3. grid_preprocess 三角细化管线
+
+> **集成状态：未接入生产流水线，代码位于 `extends/earthmesh_grid_preprocess`。** 本节内核（iterB/C/D/E/F/G 判定、1→2 过渡细分、LOP 翻边、弱凹清理、`ngr_renew`）由测试驱动，主程序不调用其中任何一个。移植目的是保住对 `MOD_grid_preprocess.F90` 的逐位对拍能力（第 6 节 compat 模式）。生产细化见第 4 节 Method-C。
+>
+> 本节的模块名对应 `extends/earthmesh_grid_preprocess/src/` 下的目录（其余各节仍对应 `rust/earthmesh_mesh/src/`）。它对主程序的依赖面很浅，只用到 `earthmesh_mesh` 的 `LonLatDegrees`、`is_ngrmm`、`BoundaryConnection`、`boundary_closed_curves_one_based`、`push_boundary_neighbor`、`robust_spherical_area_unit`、`spherical_centroid_degrees` 与两个 `Refine*Segments` 类型。`MethodCRefinementRegion` 留在 `earthmesh_mesh`，因为它是 Method-C 生产路径的类型。
 
 驱动循环按"轮"（iter/level）推进：打标 → 过渡判定 → 细分 → 翻边 → 清理 → 重编号 → （最终）弹簧。
 
@@ -179,7 +187,8 @@ h 场模式（M4）以 `level_at(质心经纬) ≥ pass` 替换几何包含，�
 ## 5. 掩膜后处理（`mask_postproc_*`）
 
 - **域标记**：`IsInDmArea ∈ {0 占位, −1 陆, 1 海}`，landtype 栅格采样按 1024² 瓦片缓存或 ≤256MB 整读（逐点读法已废除——曾占 ocean 案例 30% 耗时）。
-- **孤立海剥离**：顶点邻接计数新旧对照逐层内收（`num_add==0∨1` 停）。
+- **孤立海剥离**：顶点邻接计数新旧对照逐层内收（`num_add==0∨1` 停）。此为 `mask_postproc_isolated`，仅在 `mask_restart` 路径（`--run-mask-restart-ocean`）生效。
+- **最大连通水体保留**（`mask_postproc_components`，2026-08 新增，`--project` 路径的 landtype carve 使用）：按中心点采样的海陆切割会在窄海湾与河口留下与主体不共边的碎块，触发 `orphan_cell` / `disconnected_mesh` / `non_manifold_vertex_fan` 三类 fail，且细化只会让碎块更多（分辨率越细，被"看见"的小海湾越多），AutoRefine 也修不了——`is_refinement_repairable` 只认 `min_angle_deg`/`aspect_ratio`/`cell_edge_length_cv`/`angle_deviation_deg` 四项。清理分两步交替迭代至收敛：① 以**共边**（共享两顶点，与质量检查器同口径）求连通分量，只保留最大的；② 对捏合顶点（其入域单元分成多个不共边扇区，即水体在一点自接触）只保留最大扇区——单靠 ① 消不掉它，因为两个扇区常在别处重新连通。平局按最小 canonical id 决定，保证确定性。由 `NL%isolated_ocean` 控制，Project lowering 对 `oceanmesh` 默认开启，`expert.isolated_ocean` 可覆盖。**这是破坏性清理**：被判为非最大水体的单元直接移出域，日志逐次打印删除数、捏合来源数与分量数。
 - **边界闭合曲线**：海陆界 vertex-vertex 双邻接链 `bdy_ngr[2]` 行走成环（`num_points<3` 报错）；`num_bdy_long = [最长长度+1, 次长+1, 最长曲线 id]`（两槽位最大值跟踪，2026-07 修正版）。
 - **水道加宽 / 顶点仅触海填充**：模板见 `mask_postproc_waterway`（首边即断的 EarthMesh canonical algorithm 惯用扫描）。
 - **重索引**：old→new 映射一次生成、施加到所有引用表，占位槽 0/1 保留。
@@ -222,7 +231,12 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 1. **合成**：`h(x) = min_i h_i(x)`。判据栅格 → h 场（推荐 FESOM 线性式 `r = clip(s/s_t, 1, r_max)`, `h = h_base/r`）；区域（bbox/circle/polygon/corridor，全部日界线安全）→ 域内钉 `h_inside`（硬边界，交给限制器造坡）。
 2. **梯度限制**：解 `|∇h| ≤ g` 的最大下界场 `h*(x) = min_y (h₀(y) + g·d(x,y))`（Persson 定理）。实现为球面 fast sweeping：4 序确定性扫描，双轴上风 eikonal 局部解（1D 候选 `a+g·Δx` 与二次联立 `((h−a)/Δx)² + ((h−b)/Δy)² = g²` 取小），经度周期、逐行 `cosφ` 度量。**推论**：邻胞尺寸比 ≤ 1+g；量化后每级环带宽 ≈ `h_level/g`（≈0.7/g 行），Method-C 套娃净距在 g ≤ 0.22 时构造性满足。栅格须解析局地 h（间距 ≤ h，理想 ≤ h/2）。
 3. **量化**：`level = ceil(log₂(h_base/h))`（含 1e−9 防浮点毛刺），clamp 到 max_level。
-4. **三个消费口**：`level_at → spawn_nest_from_target_levels`（Method-C，第 4.1 节）；`level_at → refine_marks_from_target_levels`（3.1 节）；`sample(边中点) → spring_nest_with_edge_targets`（4.4 节，级内伸缩）。
+4. **三个消费口**（前两个已接入生产，第三个仅测试覆盖）：
+   - `level_at → spawn_nest_from_target_levels`（Method-C 选面，第 4.1 节）——**生产路径**，由 `refine_pipeline/global_source.rs` 的 h 场分支驱动。
+   - `sample(边中点) → spring_nest_with_edge_targets`（4.4 节，级内伸缩）——**生产路径**。
+   - `level_at → refine_marks_from_target_levels`（3.1 节打标）——调用点全在 `refine_hfield_marks` 的 `#[cfg(test)]` 块内，随第 3 节管线一同处于未接入状态。
+
+   约束：h 场模式要求 `NXP % 3 == 0`（`global_source.rs:83`），因为量化层级要落在 Method-C 的 stride-3 子格上；Project lowering 会自动上调 NXP 并在日志中说明。
 
 参数建议：海洋网格 g=0.12–0.2（涡旋对陡过渡敏感），大气 0.2–0.3；`h_base` = 未细化名义尺寸 `dist00`。
 
@@ -246,8 +260,11 @@ plan 通过 `hfield_target_cells_geojson + hfield_target_levels_json` 转成梯�
 
 | 参数 | 值 | 出处 |
 |---|---|---|
-| 弹簧 relax | 0.035 | Method-C/mkgrd 同 |
-| 弹簧 β（globe） | 1.25 | dist00 系数 |
+| 弹簧 relax | **0.04**（`EarthmeshConfig::default`）；canonical 对拍案例常用 0.035 | `earthmesh_core/src/mkgrd_config/mod.rs:60` |
+| 弹簧 β（globe） | **1.2**（`EarthmeshConfig::default`）；canonical 对拍案例常用 1.0 | `earthmesh_core/src/mkgrd_config/mod.rs:59` |
+| 嵌套弹簧迭代 | 海洋 2000 / 大气 5000（`niter_refine` 未显式指定时） | `earthmesh_cli/src/refine_runtime.rs:23` |
+| 嵌套弹簧开关 | Project 按域自动派生：global→`SpringGlobal=1`，regional→`SpringRegional=1`（**tri 与 hex 同等对待**，2026-08 起） | `earthmesh_project/src/lowering/mod.rs` |
+| 质量比较容差 | 精确值指标 1e-9；连续全域极值 1e-4（相对） | `earthmesh_quality/src/lib.rs` |
 | twocosphi clamp | [0.15, 1.2] | 目标长比例窗 |
 | 目标长除数 | 1.2 | `disto12 = dist00/1.2` |
 | mrow 乘子 | 7/6, 8/6, 9/6, 10/6, 11/12 | 过渡行对 (−2,−2)…(1,1) |

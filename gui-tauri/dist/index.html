@@ -2030,7 +2030,7 @@ if(MAP_WINDOW_MODE){
   let hydroRefine = defaultHydroRefine();
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
-let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null };
+let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
   let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
@@ -2191,7 +2191,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       vertexPretectLayers: expertEdit.vertexPretectLayers,
       springGlobalType: spring.springGlobalType, springRegionalType: spring.springRegionalType,
       beta: expertEdit.beta, relax: expertEdit.relax,
-      weakConcavEliminate: expertEdit.weakConcavEliminate
+      weakConcavEliminate: expertEdit.weakConcavEliminate,
+      isolatedOcean: expertEdit.isolatedOcean
     });
     const summary = await invoke("project_summary", { yaml });
     const thresholdSourceEnabled = thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
@@ -2238,8 +2239,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
     setDomainClose: (yaml, path, format, seaRatio) => invoke("set_domain_close", { yaml, path, format, seaRatio }),
     shapefileBoundary: (path) => invoke("shapefile_boundary_geojson", { path }),
-    setExpert: (yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, springGlobalType, springRegionalType, beta, relax, weakConcavEliminate) =>
-      invoke("set_expert", { yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, springGlobalType, springRegionalType, beta, relax, weakConcavEliminate }),
+    setExpert: (yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, springGlobalType, springRegionalType, beta, relax, weakConcavEliminate, isolatedOcean) =>
+      invoke("set_expert", { yaml, nxp, openmp, niter, niterRefine, maxIterSpc, maxIterCal, halo, maxTransitionRow, setDisType, numRc, vertexPretectLayers, springGlobalType, springRegionalType, beta, relax, weakConcavEliminate, isolatedOcean }),
     setSpecifiedRefinement: (yaml, enabled, kind, lon, lat, radiusKm, w, e, s, n, path) =>
       invoke("set_specified_refinement", { yaml, enabled, kind, lon, lat, radiusKm, w, e, s, n, path }),
     pickDataFile: () => invoke("pick_data_file"),
@@ -2803,8 +2804,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"discrete 默认 4,4,3":"discrete default 4,4,3")}
         ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"discrete 距离分布函数":"discrete distance distribution")}
         ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"discrete 默认 0":"discrete default 0")}
-        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"discrete 默认 1":"discrete default 1")}
-        ${field("RL%weak_concav_eliminate",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="expertWeakConcav" ${expertEdit.weakConcavEliminate === false ? "" : "checked"} disabled> <span>${z?"当前项目值":"current project value"}</span></label>`,z?"未设置时使用引擎默认值；打开项目时原样保留":"engine default when unset; preserved exactly for opened projects")}
+        ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"仅保留最大连通水体，剔除孤立单元与捏合顶点":"keep only the largest connected water body; drops orphan cells and pinched vertices")}
       </div>
     </div>`;
     const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
@@ -2998,29 +2998,27 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const erRows = document.getElementById("expertMaxTransitionRow");
     const erSetDis = document.getElementById("expertSetDisType");
     const erNumRc = document.getElementById("expertNumRc");
-    const erVertex = document.getElementById("expertVertexPretectLayers");
     const erSpring = document.getElementById("expertRefineSpringStrategy");
-    const erWeakConcav = document.getElementById("expertWeakConcav");
+    const erIsolatedOcean = document.getElementById("expertIsolatedOcean");
     if (erNiter) erNiter.value = expertEdit.niterRefine ?? "";
     if (erHalo) erHalo.value = Array.isArray(expertEdit.halo) ? expertEdit.halo.join(",") : "";
     if (erRows) erRows.value = Array.isArray(expertEdit.maxTransitionRow) ? expertEdit.maxTransitionRow.join(",") : "";
     if (erSetDis) erSetDis.value = expertEdit.setDisType ?? "";
     if (erNumRc) erNumRc.value = expertEdit.numRc ?? "";
-    if (erVertex) erVertex.value = expertEdit.vertexPretectLayers ?? "";
     if (erSpring) erSpring.value = expertEdit.springStrategy ?? "";
-    if (erWeakConcav) erWeakConcav.checked = expertEdit.weakConcavEliminate !== false;
+    if (erIsolatedOcean) erIsolatedOcean.value = expertEdit.isolatedOcean === true ? "on" : expertEdit.isolatedOcean === false ? "off" : "";
     const syncExpertRefine = () => {
       expertEdit.niterRefine = readOptionalInt("expertNiterRefine");
       expertEdit.halo = readOptionalIntList("expertHalo");
       expertEdit.maxTransitionRow = readOptionalIntList("expertMaxTransitionRow");
       expertEdit.setDisType = erSetDis && erSetDis.value ? erSetDis.value : null;
       expertEdit.numRc = readOptionalInt("expertNumRc");
-      expertEdit.vertexPretectLayers = readOptionalInt("expertVertexPretectLayers");
       expertEdit.springStrategy = erSpring && erSpring.value ? erSpring.value : null;
+      expertEdit.isolatedOcean = erIsolatedOcean && erIsolatedOcean.value ? erIsolatedOcean.value === "on" : null;
       expertEdit.enabled = expertEnabled();
       clearRunArtifacts();
     };
-    [erNiter, erHalo, erRows, erSetDis, erNumRc, erVertex, erSpring, erWeakConcav].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
+    [erNiter, erHalo, erRows, erSetDis, erNumRc, erSpring, erIsolatedOcean].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
     const specOn = document.getElementById("specifiedRefineOn");
     const specKind = document.getElementById("specifiedKind");
     const specLon = document.getElementById("specifiedLon");
@@ -3220,6 +3218,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         beta: sum.expert_beta ?? null,
         relax: sum.expert_relax ?? null,
         weakConcavEliminate: sum.expert_weak_concav_eliminate ?? null,
+        isolatedOcean: sum.expert_isolated_ocean ?? null,
       };
       specifiedRefine = {
         enabled: !!sum.specified_refine_enabled,
@@ -3301,7 +3300,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     domainEdit = null; qualityEdit = null;
     thresholdRefine = { enabled: false };
     hydroRefine = defaultHydroRefine();
-    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null };
+    expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
     specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), hfieldEnabled: true, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
@@ -3406,7 +3405,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       (discreteMask && (expertEdit.halo != null || expertEdit.maxTransitionRow != null ||
         expertEdit.setDisType != null || expertEdit.numRc != null ||
         expertEdit.vertexPretectLayers != null || discreteMask)) ||
-      expertEdit.springStrategy != null || expertEdit.beta != null || expertEdit.relax != null;
+      expertEdit.springStrategy != null || expertEdit.beta != null || expertEdit.relax != null ||
+      expertEdit.isolatedOcean != null;
   }
 
   async function wireExpertTargetStep() {

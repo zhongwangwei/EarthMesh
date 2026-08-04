@@ -141,7 +141,9 @@ pub use mask_postproc_domain::renew_mask_postproc_domain_triangles_one_based;
 mod mask_postproc_opposite_domain;
 pub use mask_postproc_opposite_domain::renew_mask_postproc_opposite_domain_triangles_one_based;
 mod mask_postproc_boundary;
-pub(crate) use mask_postproc_boundary::push_boundary_neighbor;
+// Public for the `earthmesh_grid_preprocess` compatibility crate in `extends/`,
+// which ports the boundary walk this helper backs.
+pub use mask_postproc_boundary::push_boundary_neighbor;
 pub use mask_postproc_boundary::{boundary_closed_curves_one_based, BoundaryClosedCurves};
 mod mask_postproc_boundary_connection;
 pub use mask_postproc_boundary_connection::{boundary_connection_one_based, BoundaryConnection};
@@ -153,70 +155,13 @@ pub use mask_postproc_waterway::{
 };
 mod mask_postproc_isolated;
 pub use mask_postproc_isolated::{remove_isolated_ocean_one_based, IsolatedOceanRenewal};
+mod mask_postproc_components;
+pub use mask_postproc_components::{
+    retain_largest_edge_connected_component_one_based, LargestComponentRetention,
+};
 mod mask_postproc;
 pub(crate) use mask_postproc::require_vertex_count;
 pub use mask_postproc::{RefineBoundarySegments, RefineWeakConcavitySegments};
-mod refine_renewal;
-pub use refine_renewal::refine_ngr_renew_one_based;
-mod refine_renewal_core;
-pub use refine_renewal_core::{refine_ngr_renew_core_one_based, RefineNgrRenewCore};
-mod get_sort_new;
-pub use get_sort_new::get_sort_new_one_based;
-mod refine_array_length;
-pub use refine_array_length::{
-    refine_array_length_calculation_one_based, refine_array_length_halo_one_based,
-    RefineArrayLengthCalculation, RefineArrayLengthHalo,
-};
-mod refine_hfield_marks;
-pub use refine_hfield_marks::refine_marks_from_target_levels_one_based;
-mod refine_iter;
-pub use refine_iter::{refine_iter_b_judge_one_based, refine_orial_vertices_protect_one_based};
-mod refine_iter_helpers;
-pub(crate) use refine_iter_helpers::{
-    unique_triangle_cell, validate_refine_cell_neighbors, validate_triangle_neighbor_rows,
-};
-mod refine_iter_c;
-pub use refine_iter_c::refine_iter_c_judge_one_based;
-mod refine_iter_d;
-pub use refine_iter_d::refine_iter_d_judge_one_based;
-mod refine_iter_e;
-pub use refine_iter_e::refine_iter_e_judge_one_based;
-mod refine_iter_f;
-pub use refine_iter_f::refine_iter_f_judge_one_based;
-mod refine_iter_g;
-pub use refine_iter_g::refine_iter_g_judge_one_based;
-mod refine_onedivide_four_connection;
-pub use refine_onedivide_four_connection::refine_onedivide_four_connection_one_based;
-mod refine_isreverse_judge;
-pub use refine_isreverse_judge::refine_isreverse_judge_one_based;
-mod refine_onedivide_two;
-pub use refine_onedivide_two::refine_onedivide_two_one_based;
-mod refine_edge_flip;
-pub use refine_edge_flip::{checked_lop_edge_flip, CheckedEdgeFlip};
-mod refine_lop;
-pub use refine_lop::refine_delaunay_lop_one_based;
-mod refine_lop_pair;
-pub use refine_lop_pair::refine_m1w1_to_m11w11_one_based;
-mod refine_lop_weak_pair;
-pub use refine_lop_weak_pair::refine_weak_concav_pair_special_one_based;
-mod refine_lop_weak;
-pub use refine_lop_weak::refine_weak_concav_lop_judge_one_based;
-mod refine_lop_sharp;
-pub use refine_lop_sharp::refine_sharp_concav_lop_judge_one_based;
-mod refine_subdivision_points;
-pub(crate) use refine_subdivision_points::{
-    average_lonlat3, check_crossing_canonical_lonlat, crossline_check_canonical, midpoint_lonlat,
-};
-mod refine_boundary_segments;
-pub(crate) use refine_boundary_segments::refine_boundary_segments_one_based;
-mod refine_boundary_segments_make;
-pub use refine_boundary_segments_make::refine_boundary_segments_make_one_based;
-mod refine_boundary_weak;
-pub use refine_boundary_weak::refine_weak_concav_segment_make_one_based;
-mod refine_boundary_connection;
-pub use refine_boundary_connection::refine_boundary_connection_make_one_based;
-mod refine_boundary;
-pub(crate) use refine_boundary::refine_boundary_closed_curves_one_based;
 mod gridinit;
 pub use gridinit::{method_c_gridinit_factorization_canonical, MethodCGridinitFactors};
 mod icosahedron_types;

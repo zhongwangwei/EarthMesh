@@ -579,6 +579,7 @@ pub(crate) fn set_expert(
     beta: Option<f64>,
     relax: Option<f64>,
     weak_concav_eliminate: Option<bool>,
+    isolated_ocean: Option<bool>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.expert.nxp = nxp;
@@ -597,5 +598,6 @@ pub(crate) fn set_expert(
     cfg.expert.beta = beta;
     cfg.expert.relax = relax;
     cfg.expert.weak_concav_eliminate = weak_concav_eliminate;
+    cfg.expert.isolated_ocean = isolated_ocean;
     validated_yaml(cfg)
 }

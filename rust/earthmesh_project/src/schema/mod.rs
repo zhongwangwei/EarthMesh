@@ -439,6 +439,10 @@ pub struct ExpertOverrides {
     pub relax: Option<f64>,
     #[serde(default)]
     pub weak_concav_eliminate: Option<bool>,
+    /// Override the ocean carve's largest-connected-water-body cleanup.
+    /// `None` keeps the derived default: on for `oceanmesh`, off otherwise.
+    #[serde(default)]
+    pub isolated_ocean: Option<bool>,
 }
 
 /// MERIT-Hydro inputs used by the post-mesh hydro workflow. Project execution

@@ -5,7 +5,7 @@ use crate::read_unstructured_mesh_netcdf;
 use crate::unstructured_mesh_write_report_from_file;
 use crate::write_clean_regional_ocean_gridfile;
 use crate::write_fvcom_2dm_from_carved;
-use crate::write_landtype_masked_gridfile;
+use crate::write_landtype_masked_gridfile_with_refine_levels;
 use crate::write_method_c_mesh_with_optional_domain;
 use crate::GridRegion;
 use crate::LonLatPoint;
@@ -122,13 +122,16 @@ pub fn run_mkgrd_regional_clip_base_namelist(
             let masked = file_dir
                 .join("result")
                 .join(format!("gridfile_NXP{nxp:04}_{mode_grid}_{mesh_type}.nc4"));
-            let kept = write_landtype_masked_gridfile(
+            let kept = write_landtype_masked_gridfile_with_refine_levels(
                 &gridinit.gridfile.output,
                 &masked,
                 &landtype,
                 gpd,
                 mode_grid,
                 &mesh_type,
+                None,
+                None,
+                config.isolated_ocean,
             )?;
             if kept > 0 {
                 gridinit.gridfile = unstructured_mesh_write_report_from_file(&masked)?;
