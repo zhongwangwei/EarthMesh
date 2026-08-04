@@ -17,6 +17,7 @@
 //! the union and covers it with circles. Both start from demand, which is why
 //! they can be compared on the same criterion.
 
+pub mod ladder;
 pub mod landtype;
 pub mod threshold;
 
