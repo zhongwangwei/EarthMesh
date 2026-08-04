@@ -307,13 +307,57 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    即从 381 km 基础网格细化到 12 km，总面数仅增加 96%，五层合计 1.1 s。对照之下 h 场路径连两级都依赖栅格恰好落在那个经验窗口内。
 
-   **从 landtype 自动导出圆链已实现**（`earthmesh_cli/src/coast_refinement_regions/`）：按引擎自身的陆海规则（`landtype != 0`）在半个半径大小的块上判定"块内既有陆又有海"，为每个海岸块发一个圆。块取半径的一半，使相邻圆重叠一半——正是 h 场碎片化时缺的那个连续性。半径下界 `materializable_radius_meters = 0.4 · base_cell`（实测：NXP 21 父单元 381 km 时 150 km 可细化）。端到端测试（`tests/coast_refinement_regions.rs`）：真实 landtype → 圆链 → `spawn_nest` 细化成功，0.42 s；内陆 bbox 正确返回空。
+   **判据与归约已分层**（`earthmesh_cli/src/refinement_demand/`，2026-08）。细化不只有海岸：判据目录已有 14 项（陆 `lai`/`slope`/`dem`/`slope_max` + 4 个土壤导热参数，海 `sst`/`ssh`/`eke`/`sea_slope`，气 `typhoon`），外加分类判据 `landcover`，海床是下一个。这些判据问的是同一个问题——**这个源栅格格点需不需要更细的网格**——答案永远是一张 bool 栅格，而"bool 栅格 → 圆链"的归约与谁提出需求无关。所以两半拆开：
+
+   | 层 | 内容 |
+   |---|---|
+   | 判据层 `refinement_demand::{landtype, threshold}` | 数据源 → `RefinementDemand`（bool 栅格）。新增判据只加生产者 |
+   | 归约层 `reduce_demand_to_circles` | 任意 `RefinementDemand` → 圆链。半径下界、半个半径分块、重叠一半都在这里 |
+
+   多个判据用 `RefinementDemand::union_with` 并成一份需求再归约一次，与 h 场取 `min h_i(x)` 对位——两条路线吃的是同一个输入，因此可以在同一判据上互相对照。归约层的测试全部用手工构造的需求，不碰任何数据源，这本身就是解耦的证明。
+
+   半径下界 `materializable_radius_meters = 0.4 · base_cell`（实测：NXP 21 父单元 381 km 时 150 km 可细化）。归约保证**每个被标记的格点都落在某个圆内**：块是半个半径宽，格点到块心最远约 0.35 个半径，由构造保证。
+
+   **海岸判据顺带修了一个漏洞。** 原先问的是"这个块里既有陆又有海"，海岸若恰好沿块边界走，陆块里没有海、海块里没有陆，两块都不算海岸，圆链直接漏掉这一段；块越小越容易踩到。改为逐格边界检测（与四邻中任一格类别不同即标记）后不存在这个盲区。南海实测（landtype 240/度，108–120°E / 18–26°N）:
+
+   | 半径 | 旧规则 | 逐格边界 |
+   |---|---|---|
+   | 150 km | 54 圆 | 54 圆 |
+   | 80 km | 112 圆 | **117 圆** |
+   | 45 km | 218 圆 | **225 圆** |
+
+   半径大时块大、踩中概率低，所以 150 km 两者一致；45 km 时旧规则漏掉 3%。合成回归测试（`tests/refinement_demand_landtype.rs`）取 1 格宽的块——单格必然只有一个类别，旧规则在那张栅格上永远不可能触发。
+
+   另修一处继承来的边界缺陷：`floor + 1` 的经纬度→索引映射在**恰好 180°E / ±90°** 处会算出比栅格多一格的索引，而窗口读取器拒绝越界 bounds，于是贴着这些边缘的计算域会直接报错而不是返回海岸线。索引映射现在钳到源维度，判据读 halo 时也一并钳位（`halo_within_source`）。
+
+   端到端测试（`tests/coast_refinement_regions.rs`）：真实 landtype → 圆链 → `spawn_nest` 细化成功，1.3 s；内陆 bbox 正确返回空。
 
    **Project schema 已支持圆链**（2026-08）。`refinement.specified_circle` 从单个对象放宽为 `SpecifiedCircleRefinements::{One, Many}`：既有工程写单个 mapping 照旧解析、lowering 输出逐字节不变（`inline:circle:...`），写成 YAML 列表则降为新语法 `inline:circles:lon=..,lat=..,radius_km=..;...`。至此从 Project/GUI 到内核的整条圆链路径打通，h 场不再是表达分布式需求的唯一途径。
 
    该枚举**手写 `Deserialize`（按 map/sequence 分派）而非用 `#[serde(untagged)]`**：untagged 在所有分支都失败时只报 "data did not match any variant"，把 `lonn:` 这种拼写错误的提示从"未知字段 `lonn`，可用 `lon`/`lat`/`radius_km`"降级成一句无信息的话。分派后内层错误原样保留，列表形式还会带上索引（`specified_circle[0]: unknown field \`lonn\``）。序列化仍走 untagged，输出形状不变。
 
    实现上有一处语义必须分开：`region_sources` 里多点共用一份半径的既有约定是 **Corridor**——沿折线扫出的管道，正是 v2 用来细化**河流**的形状（`examples/merit_hydro/gba/case.nml` 是可运行实例）。海岸圆链不是折线，它是栅格扫描出的一组互不相干的圆，串成 corridor 会在扫描换行处横跨地图连出假管道。所以 `inline:circles:` 逐个成圆下发（各自复用同一套父级 halo 推导），不走 corridor 分支；`merge_refine_regions_by_shape` 再把半径重叠刻意造成的重复圆折掉。域（domain）方向则明确拒绝圆链——域是单个区域，圆链描述的是细化需求。
+
+   **尚未做的一环：判据不逐轮重算，分辨率相关的判据因此是错位的。** 现在三条路径都在细化开始前把需求算完：
+
+   | 路径 | 判据在哪算 | 是否逐轮 |
+   |---|---|---|
+   | Method-C 直接路径 | `refine_pipeline/global_source.rs` 一次性组装 regions 再调 `spawn_nest` | 否 |
+   | h 场 | `read_threshold_stats_on_hfield_masked` —— 在 **h 场栅格格点**上 | 否 |
+   | area_judge/getcontain | 每轮读当前网格算 `IsInRfArea_sjx`，但只是对**固定的栅格掩膜**做包含判定 | 判据不重算 |
+
+   `getref_mean_std_*`（逐三角形均值/标准差）**未移植到 Rust**；第 3.1 节那句描述的是参考 Fortran 算法。
+
+   但"在网格单元上求判据"并非完全没有先例：水文交付路径已经这么做了。`hydro_delivery_intersections/writer.rs` 的 `write_earthmesh_intersection_geojson` 为**当前网格的每个单元**建一个 Lambert 等积平面，把单元与河道走廊都加密成大圆弧后投影求交，再按单元的球面面积归一，得到逐单元的 `river_fraction` / `coastal_fraction`；`hydro_delivery_refine_workflow` 随后按这些分数打分决定是否细化。所以缺的不是"逐单元评估"这个概念，而是**栅格源**的那一半——矢量源已有一套经纬缠绕无关、面积保守的实现可以照搬其结构。
+
+   判据要分两类看：
+
+   - **与分辨率无关**（`sst > 28°C`、`slope > 15°`、离海岸 < 50 km）:一次算清即可，逐轮重算得到同样答案。
+   - **与分辨率有关**（单元内 landcover 异质度、子网格标准差、地形未解析方差）:必须逐轮重算，因为"还要不要再细"问的就是"这个单元里还剩多少没解析的变化"。
+
+   `landcover`（`refine_num_landtypes` / `th_num_landtypes`）属于第二类，而现在的实现落在第一类的机器上——`hfield_refine/mod.rs:1398` 的 `bins.distinct_at(idx)` 里 `idx` 遍历的是 `field.nlon() * field.nlat()`，即 **h 场栅格格点**,那个栅格的分辨率与网格单元大小无关。这也是第 8 节"栅格分辨率可用窗口找不到决定变量"的一个来源：分辨率相关的判据被绑在一个与网格无关的分辨率上，本来就没有正确答案。
+
+   `refinement_demand::landtype::landcover_heterogeneity_demand` 已按正确语义实现——`radius_cells` 由调用方按**被判定的那一代网格**的单元尺寸给出，合成测试证明同一张栅格在窄/宽两个半径下给出不同答案。但把它接进逐轮循环还需要两件没做的事：栅格 → 单元统计（即未移植的 `getref_mean_std`）,以及把 `spawn_nest` 从"一次给全部层级"改成可逐层增量。
 
    此前七轮从 project namelist 改造的尝试全部失败，**原因未查清**。已排除的假设：`hfield_on = .false.` 是有效的（`hfield_refine/mod.rs:192` 有 `if !enabled { return Ok(None) }`，实测保留段设 false 与整段删除同样返回 `None`），所以"段存在即进 h 场分支"的说法不成立。已知的干扰项是 `/tmp` 与 `'none'` 作为"未配置"哨兵在不同分支语义不一致（`has_configured_calculated_regions` 判 `!= "/tmp"`，而 `discover_mask_sources` 要求 fprefix 带父目录，`'none'` 两者都不满足）。这些是配置嫁接的障碍，与路径可行性无关——`examples/default/ocean_hex_global.nml`（circle）与 `examples/merit_hydro/gba/case.nml`（河流，用 `close`）都是可运行实例，而上面的最小测试直调 `spawn_nest` 已证明内核本身没有问题。
 
