@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_cli"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -171,18 +171,18 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_core"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 
 [[package]]
 name = "earthmesh_geometry"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
 ]
 
 [[package]]
 name = "earthmesh_grid_preprocess"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_hfield",
  "earthmesh_mesh",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_hfield"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "earthmesh_mesh",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_mesh"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "rayon",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_project"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_quality"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -228,7 +228,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_refine_planner"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",

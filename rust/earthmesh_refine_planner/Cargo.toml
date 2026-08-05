@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_refine_planner"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 edition = "2021"
 description = "Experimental score-based / physics-aware refinement planner for EarthMesh v3"
 license = "GPL-2.0-only"

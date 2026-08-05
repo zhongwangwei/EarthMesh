@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_geometry"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 edition = "2021"
 description = "Small Rust geometry kernels for EarthMesh v3 parity tests"
 license = "GPL-2.0-only"

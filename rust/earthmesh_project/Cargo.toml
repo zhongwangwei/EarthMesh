@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_project"
-version = "3.0.0-alpha2"
+version = "3.0.0-alpha3"
 edition = "2021"
 description = "EarthMesh v3 project schema (intent layer): serde ProjectConfig that lowers to the engine's EarthmeshConfig/RefineConfig"
 license = "GPL-2.0-only"

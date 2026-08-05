@@ -41,3 +41,6 @@ test/**/output/
 cargo-flamegraph.trace/
 docs/perf/
 /test
+
+# Local dev convenience: a symlink to data outside the repo.
+gui-tauri/src-tauri/input
