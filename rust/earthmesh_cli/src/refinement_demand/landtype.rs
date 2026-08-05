@@ -11,7 +11,7 @@ use std::path::Path;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-use super::class_counts::ClassPrefixSums;
+use super::class_counts::ClassCounts;
 use super::RefinementDemand;
 use crate::mkgrd_data_preprocess_source::read_landtype_bbox_window_one_based;
 
@@ -100,11 +100,20 @@ pub fn landcover_heterogeneity_demand(
     let halo = halo_within_source(bounds, gridnum_perdegree, radius_cells);
     let window = read_landtype_bbox_window_one_based(landtype_file, gridnum_perdegree, halo)?;
 
-    let sums = ClassPrefixSums::build(&window);
-    demand.fill_par(|lon, lat| {
-        let mut counts = Vec::new();
-        sums.counts_at(lon, lat, radius_cells, &mut counts);
-        counts.iter().filter(|count| **count > 0).count() > max_classes
+    let counts = ClassCounts::build(&window);
+    let class_count = counts.classes().len();
+    demand.fill_rows_par(|lat, lon_from, lon_to, row| {
+        let (mut cells, mut totals) = (Vec::new(), Vec::new());
+        counts.row_counts(lat, lon_from, lon_to, radius_cells, &mut cells, &mut totals);
+        row.clear();
+        for index in 0..totals.len() {
+            let base = index * class_count;
+            let present = cells[base..base + class_count]
+                .iter()
+                .filter(|count| **count > 0)
+                .count();
+            row.push(present > max_classes);
+        }
     });
     Ok(demand)
 }
@@ -143,17 +152,24 @@ pub fn sea_ratio_demand(
     let halo = halo_within_source(bounds, gridnum_perdegree, radius_cells);
     let window = read_landtype_bbox_window_one_based(landtype_file, gridnum_perdegree, halo)?;
 
-    let sums = ClassPrefixSums::build(&window);
-    let ocean_plane = sums.classes().iter().position(|class| *class == 0);
-    demand.fill_par(|lon, lat| {
-        let mut counts = Vec::new();
-        let total = sums.counts_at(lon, lat, radius_cells, &mut counts) as usize;
-        if total == 0 {
-            return false;
+    let counts = ClassCounts::build(&window);
+    let class_count = counts.classes().len();
+    let ocean_plane = counts.classes().iter().position(|class| *class == 0);
+    demand.fill_rows_par(|lat, lon_from, lon_to, row| {
+        let (mut cells, mut totals) = (Vec::new(), Vec::new());
+        counts.row_counts(lat, lon_from, lon_to, radius_cells, &mut cells, &mut totals);
+        row.clear();
+        for (index, total) in totals.iter().enumerate() {
+            if *total == 0 {
+                row.push(false);
+                continue;
+            }
+            let ocean = ocean_plane
+                .map(|plane| cells[index * class_count + plane] as usize)
+                .unwrap_or(0);
+            let ratio = ocean as f64 / *total as f64;
+            row.push(ratio > low && ratio < high);
         }
-        let ocean = ocean_plane.map(|index| counts[index] as usize).unwrap_or(0);
-        let ratio = ocean as f64 / total as f64;
-        ratio > low && ratio < high
     });
     Ok(demand)
 }
@@ -187,29 +203,35 @@ pub fn dominant_class_demand(
     let halo = halo_within_source(bounds, gridnum_perdegree, radius_cells);
     let window = read_landtype_bbox_window_one_based(landtype_file, gridnum_perdegree, halo)?;
 
-    let sums = ClassPrefixSums::build(&window);
-    let land_planes: Vec<usize> = sums
+    let counts = ClassCounts::build(&window);
+    let class_count = counts.classes().len();
+    let land_planes: Vec<usize> = counts
         .classes()
         .iter()
         .enumerate()
         .filter_map(|(index, class)| (*class != 0).then_some(index))
         .collect();
-    demand.fill_par(|lon, lat| {
-        let mut counts = Vec::new();
-        sums.counts_at(lon, lat, radius_cells, &mut counts);
-        let land: usize = land_planes
-            .iter()
-            .map(|index| counts[*index] as usize)
-            .sum();
-        if land == 0 {
-            return false;
+    demand.fill_rows_par(|lat, lon_from, lon_to, row| {
+        let (mut cells, mut totals) = (Vec::new(), Vec::new());
+        counts.row_counts(lat, lon_from, lon_to, radius_cells, &mut cells, &mut totals);
+        row.clear();
+        for index in 0..totals.len() {
+            let base = index * class_count;
+            let land: usize = land_planes
+                .iter()
+                .map(|plane| cells[base + plane] as usize)
+                .sum();
+            if land == 0 {
+                row.push(false);
+                continue;
+            }
+            let dominant = land_planes
+                .iter()
+                .map(|plane| cells[base + plane] as usize)
+                .max()
+                .unwrap_or(0);
+            row.push((dominant as f64 / land as f64) < min_dominant_share);
         }
-        let dominant = land_planes
-            .iter()
-            .map(|index| counts[*index] as usize)
-            .max()
-            .unwrap_or(0);
-        (dominant as f64 / land as f64) < min_dominant_share
     });
     Ok(demand)
 }

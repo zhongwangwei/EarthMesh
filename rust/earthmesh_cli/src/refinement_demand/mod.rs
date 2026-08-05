@@ -212,6 +212,44 @@ impl RefinementDemand {
         }
     }
 
+    /// Fill the window a whole latitude row at a time, in parallel.
+    ///
+    /// The neighbourhood criteria slide a window along each row, so they answer
+    /// a row far more cheaply than they answer its cells one at a time.
+    /// `decide_row` is handed the global latitude, the first and last global
+    /// longitude of the row, and a buffer to write one bool per column into.
+    ///
+    /// Rows are independent, and each cell's bit is written exactly once from
+    /// its own inputs, so how the rows are divided cannot change the answer.
+    pub fn fill_rows_par(
+        &mut self,
+        decide_row: impl Fn(usize, usize, usize, &mut Vec<bool>) + Sync + Send,
+    ) {
+        use rayon::prelude::*;
+
+        let (minlon, nlons) = (self.bounds.minlon_source, self.nlons);
+        let maxlat = self.bounds.maxlat_source;
+        let nlats = self.nlats;
+        let rows: Vec<Vec<bool>> = (0..nlats)
+            .into_par_iter()
+            .map(|lat_offset| {
+                let mut row = Vec::new();
+                decide_row(maxlat + lat_offset, minlon, minlon + nlons - 1, &mut row);
+                debug_assert_eq!(row.len(), nlons, "a row must cover the window width");
+                row
+            })
+            .collect();
+
+        for (lat_offset, row) in rows.into_iter().enumerate() {
+            for (lon_offset, demanded) in row.into_iter().enumerate() {
+                if demanded {
+                    let offset = lat_offset * nlons + lon_offset;
+                    self.words[offset / 64] |= 1u64 << (offset % 64);
+                }
+            }
+        }
+    }
+
     /// Union with another demand over the same window, so several criteria can
     /// drive one reduction. Both the window and the sampling must agree.
     pub fn union_with(&mut self, other: &Self) -> io::Result<()> {
