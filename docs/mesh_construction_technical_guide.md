@@ -528,3 +528,13 @@ plan 通过 `hfield_target_cells_geojson + hfield_target_levels_json` 转成梯�
 同批还修了两处非"沉默"问题：`adaptive_demand_bounds` 对 `Close`/`Any` 域回落到全球窗口（示例默认 `gridnum_perdegree = 120` 时是 43200×21600 ≈ 9.3 亿格，一个几度大的流域会先分配并扫完整个地球）；`scripts/run_basin_hole_regression.sh` 依赖仓库里并不存在的 shapefile，且引用了已撤销的 h 场 demand 产物变量——脚本改为自己生成 ESRI Polygon 域，现在能跑通，并真正验到 `boundary_loop_count == 2`。
 
 一条排查方法上的教训：曾判定"`GridRegion` 没有挖洞表示，带内环的 shapefile 会被静默填平"，写完拦截才发现 `read_polygon_record` 早已调用 `assemble_polygon_rings` 做环桥接，洞是对的，而那道拦截反而会误伤"洞中岛"这个已支持的用例。**看代码推出的缺陷，必须先写出能失败的测试再动手改**——那个测试没红，就是诊断错了。
+
+### 11.2 两个 Rust workspace(2026-08）
+
+根 workspace 是九个 crate（`rust/*` 加 `extends/earthmesh_grid_preprocess`）；**`gui-tauri/src-tauri` 是独立 workspace，不在其中**。于是 `cargo test --workspace`、`cargo fmt --all`、`cargo clippy --workspace` 从仓库根跑，都覆盖不到 GUI —— 而且不会失败，只会为跑过的那部分报成功，读起来就是"全过了"。
+
+v3.0.0-alpha3 的 CI 就栽在这里：本轮改了 `gui-tauri/src-tauri/src/*.rs`，根目录的 `cargo fmt --all` 碰不到它们，`fast` 和 `heavy` 两个 job 全绿、五个平台的 wheel 全部构建成功，只有 `gui` job 的 `make fmt-gui` 挂了。
+
+动过 `gui-tauri/` 之后必须单独跑这四条（正是 CI `gui` job 的全部内容）：`make check-gui-js`、`make fmt-gui`、`make clippy-gui`、`make test-gui`。`make test-full` 会把引擎与 GUI 一起带上；根目录的 `cargo test` 不会。
+
+Makefile 的 `fmt` / `clippy` 逐个列出 crate 而不是用 `--workspace`（因为 `earthmesh_cli` 需要 NetCDF，而 fast job 没有），所以**往 workspace 里加 crate 不会自动进入这些闸**，得同时改 Makefile 的列表。
