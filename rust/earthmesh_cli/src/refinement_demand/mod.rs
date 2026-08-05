@@ -16,7 +16,37 @@
 //! criteria and gradient-limits it into a continuous `h(x)`, where this takes
 //! the union and covers it with circles. Both start from demand, which is why
 //! they can be compared on the same criterion.
+//!
+//! # Where this comes from
+//!
+//! Points-plus-a-radius is not a representation invented here. Walko & Avissar
+//! (2011) give it as OLAM's own way of naming a refined area -- "a sequence of
+//! points plus a radius of influence" -- in the same paper that defines the
+//! conforming subdivision and transition rows this engine implements as
+//! Method-C. Deriving those points from data criteria rather than from a user
+//! is Fan et al. (2024). What is added here is asking the criteria again after
+//! each level, at the size of the cells that level just made.
+//!
+//! That last part is the regrid loop of structured AMR (Berger & Oliger 1984)
+//! with a different reason behind it: AMR re-evaluates because the solution
+//! moves, this re-evaluates because the answer depends on the cell. "How many
+//! land-cover classes are in this cell" cannot be asked before the cell exists,
+//! and its answer changes once the cell is halved -- which is precisely what a
+//! single up-front field has no way to express.
+//!
+//! - Walko, R. L., & Avissar, R. (2011). A direct method for constructing
+//!   refined regions in unstructured conforming triangular-hexagonal
+//!   computational grids: Application to OLAM. Monthly Weather Review 139(12),
+//!   3923-3937. doi:10.1175/MWR-D-11-00021.1
+//! - Fan, H., Xu, Q., Bai, F., Wei, Z., Zhang, Y., Lu, X., et al. (2024). An
+//!   unstructured mesh generation tool for efficient high-resolution
+//!   representation of spatial heterogeneity in land surface models.
+//!   Geophysical Research Letters 51(6). doi:10.1029/2023GL107059
+//! - Berger, M. J., & Oliger, J. (1984). Adaptive mesh refinement for
+//!   hyperbolic partial differential equations. Journal of Computational
+//!   Physics 53(3), 484-512. doi:10.1016/0021-9991(84)90073-1
 
+mod class_counts;
 pub mod ladder;
 pub mod landtype;
 pub mod nest;
@@ -37,7 +67,19 @@ pub struct RefinementDemand {
     gridnum_perdegree: usize,
     nlons: usize,
     nlats: usize,
-    demanded: Vec<bool>,
+    /// One bit per source cell, packed 64 to a word.
+    ///
+    /// A `Vec<bool>` spends a byte on each bit. That is invisible on a regional
+    /// window and decisive on a global one: at the 240 cells per degree the
+    /// production IGBP raster carries, the window is 86400x43200 -- 3.7 billion
+    /// cells, 3.5 GB per criterion before any of them are unioned. Packed, the
+    /// same window is 435 MB.
+    ///
+    /// `len` is carried separately because the last word is partly padding.
+    /// Those padding bits are held at zero by every operation here, so derived
+    /// `PartialEq` still means "the same cells are demanded".
+    words: Vec<u64>,
+    len: usize,
 }
 
 impl RefinementDemand {
@@ -70,7 +112,8 @@ impl RefinementDemand {
             gridnum_perdegree,
             nlons,
             nlats,
-            demanded: vec![false; len],
+            words: vec![0u64; len.div_ceil(64)],
+            len,
         })
     }
 
@@ -99,26 +142,74 @@ impl RefinementDemand {
     /// which lets a producer walk a halo without bounds arithmetic.
     pub fn set(&mut self, lon_index: usize, lat_index: usize, demanded: bool) {
         if let Some(offset) = self.offset(lon_index, lat_index) {
-            self.demanded[offset] = demanded;
+            let (word, bit) = (offset / 64, offset % 64);
+            if demanded {
+                self.words[word] |= 1u64 << bit;
+            } else {
+                self.words[word] &= !(1u64 << bit);
+            }
         }
     }
 
     pub fn is_demanded(&self, lon_index: usize, lat_index: usize) -> bool {
         self.offset(lon_index, lat_index)
-            .is_some_and(|offset| self.demanded[offset])
+            .is_some_and(|offset| self.words[offset / 64] >> (offset % 64) & 1 == 1)
     }
 
     /// How many source cells the window holds, demanded or not.
     pub fn bounds_cell_count(&self) -> usize {
-        self.demanded.len()
+        self.len
     }
 
     pub fn demanded_count(&self) -> usize {
-        self.demanded.iter().filter(|value| **value).count()
+        self.words
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.demanded.iter().all(|value| !value)
+        self.words.iter().all(|word| *word == 0)
+    }
+
+    /// Fill the window from a per-cell predicate, one latitude row at a time,
+    /// in parallel.
+    ///
+    /// Every criterion here decides each cell on its own, so the rows are
+    /// independent and the work is embarrassingly parallel -- and the answer
+    /// does not depend on how it is divided, because each cell's bit is written
+    /// exactly once from its own inputs. A run was measured single-threaded
+    /// with rayon's workers sitting in `wait_until_cold`.
+    ///
+    /// `decide` takes global one-based source indices, the same as
+    /// [`Self::set`].
+    pub fn fill_par(&mut self, decide: impl Fn(usize, usize) -> bool + Sync + Send) {
+        use rayon::prelude::*;
+
+        let (minlon, nlons) = (self.bounds.minlon_source, self.nlons);
+        let maxlat = self.bounds.maxlat_source;
+        let nlats = self.nlats;
+        // One row of bits per latitude, gathered in order, then packed. Packing
+        // separately keeps the words free of cross-row interference without
+        // making every write atomic.
+        let rows: Vec<Vec<bool>> = (0..nlats)
+            .into_par_iter()
+            .map(|lat_offset| {
+                let lat = maxlat + lat_offset;
+                (0..nlons)
+                    .map(|lon_offset| decide(minlon + lon_offset, lat))
+                    .collect()
+            })
+            .collect();
+
+        for (lat_offset, row) in rows.into_iter().enumerate() {
+            for (lon_offset, demanded) in row.into_iter().enumerate() {
+                if demanded {
+                    let offset = lat_offset * nlons + lon_offset;
+                    self.words[offset / 64] |= 1u64 << (offset % 64);
+                }
+            }
+        }
     }
 
     /// Union with another demand over the same window, so several criteria can
@@ -130,7 +221,7 @@ impl RefinementDemand {
                 "refinement demands must share a window and sampling to be unioned",
             ));
         }
-        for (target, source) in self.demanded.iter_mut().zip(&other.demanded) {
+        for (target, source) in self.words.iter_mut().zip(&other.words) {
             *target |= *source;
         }
         Ok(())

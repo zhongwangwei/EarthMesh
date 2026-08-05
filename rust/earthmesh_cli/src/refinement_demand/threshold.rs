@@ -105,8 +105,8 @@ pub fn threshold_stddev_demand(
         .map(|column| column.len().saturating_sub(1))
         .unwrap_or(0);
 
-    for lon_source in bounds.minlon_source..=bounds.maxlon_source {
-        for lat_source in bounds.maxlat_source..=bounds.minlat_source {
+    demand.fill_par(|lon_source, lat_source| {
+        {
             let mut count = 0usize;
             let mut sum = 0.0_f64;
             let mut sum_squares = 0.0_f64;
@@ -136,17 +136,15 @@ pub fn threshold_stddev_demand(
                 }
             }
             if count < 2 {
-                continue;
+                return false;
             }
             let mean = sum / count as f64;
             // Population variance, as the h-field's own statistic is, and
             // clamped at zero because rounding can drive it slightly negative
             // over a flat neighbourhood.
             let variance = (sum_squares / count as f64 - mean * mean).max(0.0);
-            if variance.sqrt() > threshold {
-                demand.set(lon_source, lat_source, true);
-            }
+            variance.sqrt() > threshold
         }
-    }
+    });
     Ok(demand)
 }

@@ -221,3 +221,126 @@ fn bounds_must_describe_a_real_window() {
     assert!(source_bounds_for_bbox(110.0, 120.0, 18.0, 26.0, 0).is_err());
     assert!(source_bounds_for_bbox(f64::NAN, 120.0, 18.0, 26.0, 1).is_err());
 }
+
+/// A window whose cell count is not a multiple of 64, so the last word is
+/// partly padding — the only case the packed form can get wrong.
+fn ragged_window() -> RefinementDemand {
+    let demand = window(0.0, 5.0, 0.0, 3.0);
+    assert!(
+        !demand.bounds_cell_count().is_multiple_of(64),
+        "this window must leave padding bits or it tests nothing: {} cells",
+        demand.bounds_cell_count()
+    );
+    demand
+}
+
+#[test]
+fn the_packed_form_counts_only_real_cells() {
+    let mut demand = ragged_window();
+    let cells = demand.bounds_cell_count();
+    assert_eq!(demand.demanded_count(), 0);
+    assert!(demand.is_empty());
+
+    let bounds = demand.bounds();
+    for lon in bounds.minlon_source..=bounds.maxlon_source {
+        for lat in bounds.maxlat_source..=bounds.minlat_source {
+            demand.set(lon, lat, true);
+        }
+    }
+    // Padding bits must stay clear, or this would exceed the window.
+    assert_eq!(demand.demanded_count(), cells);
+    assert!(!demand.is_empty());
+}
+
+#[test]
+fn clearing_a_cell_leaves_its_neighbours_alone() {
+    // Every cell shares a word with 63 others; a careless clear takes them out.
+    let mut demand = ragged_window();
+    let bounds = demand.bounds();
+    for lon in bounds.minlon_source..=bounds.maxlon_source {
+        for lat in bounds.maxlat_source..=bounds.minlat_source {
+            demand.set(lon, lat, true);
+        }
+    }
+    let cells = demand.bounds_cell_count();
+    demand.set(bounds.minlon_source + 2, bounds.maxlat_source + 1, false);
+
+    assert_eq!(demand.demanded_count(), cells - 1);
+    assert!(!demand.is_demanded(bounds.minlon_source + 2, bounds.maxlat_source + 1));
+    assert!(demand.is_demanded(bounds.minlon_source + 1, bounds.maxlat_source + 1));
+    assert!(demand.is_demanded(bounds.minlon_source + 3, bounds.maxlat_source + 1));
+}
+
+#[test]
+fn equality_still_means_the_same_cells_are_demanded() {
+    // Derived PartialEq compares the padding bits too, so anything that left
+    // one set would make two identical demands compare unequal.
+    let mut left = ragged_window();
+    let mut right = ragged_window();
+    let bounds = left.bounds();
+    assert_eq!(left, right);
+
+    left.set(bounds.minlon_source, bounds.maxlat_source, true);
+    assert_ne!(left, right);
+    right.set(bounds.minlon_source, bounds.maxlat_source, true);
+    assert_eq!(left, right);
+
+    // Setting then clearing must return to the original state exactly.
+    left.set(bounds.maxlon_source, bounds.minlat_source, true);
+    left.set(bounds.maxlon_source, bounds.minlat_source, false);
+    assert_eq!(left, right);
+}
+
+#[test]
+fn a_union_is_the_bitwise_or_of_the_two() {
+    let mut left = ragged_window();
+    let mut right = ragged_window();
+    let bounds = left.bounds();
+    left.set(bounds.minlon_source, bounds.maxlat_source, true);
+    right.set(bounds.maxlon_source, bounds.minlat_source, true);
+
+    left.union_with(&right).expect("union");
+    assert_eq!(left.demanded_count(), 2);
+    assert!(left.is_demanded(bounds.minlon_source, bounds.maxlat_source));
+    assert!(left.is_demanded(bounds.maxlon_source, bounds.minlat_source));
+}
+
+#[test]
+fn a_parallel_fill_lands_where_the_serial_one_would() {
+    // Rows are handed to different threads, so a mistake in the row-to-bit
+    // arithmetic shows up as cells marked in the wrong place rather than as a
+    // crash. Compared against `set` over the same predicate.
+    let mut parallel = window(0.0, 17.0, 0.0, 11.0);
+    let mut serial = window(0.0, 17.0, 0.0, 11.0);
+    let bounds = parallel.bounds();
+    // Something that varies in both axes and is not symmetric, so a transposed
+    // or off-by-one index cannot pass by accident.
+    let decide = |lon: usize, lat: usize| (lon * 3 + lat * 7) % 5 < 2;
+
+    parallel.fill_par(decide);
+    for lat in bounds.maxlat_source..=bounds.minlat_source {
+        for lon in bounds.minlon_source..=bounds.maxlon_source {
+            serial.set(lon, lat, decide(lon, lat));
+        }
+    }
+
+    assert_eq!(parallel.demanded_count(), serial.demanded_count());
+    assert_eq!(parallel, serial);
+    assert!(
+        parallel.demanded_count() > 0,
+        "the predicate must mark some"
+    );
+}
+
+#[test]
+fn a_parallel_fill_only_adds_to_what_is_already_there() {
+    // `fill_par` ORs into the bitset, as `set(.., true)` does; a criterion that
+    // fills after another has run must not wipe it.
+    let mut demand = window(0.0, 17.0, 0.0, 11.0);
+    let bounds = demand.bounds();
+    demand.set(bounds.minlon_source, bounds.maxlat_source, true);
+    demand.fill_par(|lon, _| lon == bounds.maxlon_source);
+
+    assert!(demand.is_demanded(bounds.minlon_source, bounds.maxlat_source));
+    assert!(demand.is_demanded(bounds.maxlon_source, bounds.maxlat_source));
+}

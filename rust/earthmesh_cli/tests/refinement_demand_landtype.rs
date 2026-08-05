@@ -292,3 +292,143 @@ fn the_new_criteria_reject_the_requests_they_cannot_answer() {
     assert!(dominant_class_demand(&path, 1, bounds, 2, 1.5).is_err());
     let _ = fs::remove_dir_all(root);
 }
+
+/// The nested loop the prefix-sum table replaced, kept verbatim as the oracle.
+///
+/// The producers read a *haloed* window — `halo_within_source` grows the bounds
+/// by the radius, clipped to the raster — so a cell on the edge of the domain
+/// still sees a full neighbourhood. The oracle has to sample the same cells or
+/// it is comparing against a different question.
+fn brute_force_demand(
+    class_at: impl Fn(usize, usize) -> i8,
+    bounds: earthmesh_mesh::AreaJudgeSourceBounds,
+    radius: usize,
+    decide: impl Fn(&[(i8, usize)], usize) -> bool,
+) -> Vec<(usize, usize)> {
+    let (halo_minlon, halo_maxlon) = (
+        bounds.minlon_source.saturating_sub(radius).max(1),
+        (bounds.maxlon_source + radius).min(NLONS),
+    );
+    let (halo_maxlat, halo_minlat) = (
+        bounds.maxlat_source.saturating_sub(radius).max(1),
+        (bounds.minlat_source + radius).min(NLATS),
+    );
+    let mut marked = Vec::new();
+    for lat in bounds.maxlat_source..=bounds.minlat_source {
+        for lon in bounds.minlon_source..=bounds.maxlon_source {
+            let mut counts: Vec<(i8, usize)> = Vec::new();
+            let mut total = 0usize;
+            for nlat in lat.saturating_sub(radius)..=lat + radius {
+                for nlon in lon.saturating_sub(radius)..=lon + radius {
+                    if nlon < halo_minlon
+                        || nlon > halo_maxlon
+                        || nlat < halo_maxlat
+                        || nlat > halo_minlat
+                    {
+                        continue;
+                    }
+                    let value = class_at(nlon, nlat);
+                    total += 1;
+                    match counts.iter_mut().find(|(class, _)| *class == value) {
+                        Some((_, count)) => *count += 1,
+                        None => counts.push((value, 1)),
+                    }
+                }
+            }
+            if decide(&counts, total) {
+                marked.push((lon, lat));
+            }
+        }
+    }
+    marked
+}
+
+#[test]
+fn the_prefix_sum_criteria_mark_exactly_the_cells_the_nested_loops_did() {
+    // The neighbourhood scan was O((2r+1)^2) per cell and could not finish on a
+    // production raster; the table answers in four reads. That is only a valid
+    // trade if the marked set is the same one, cell for cell -- so this compares
+    // against the loop it replaced rather than against a hand-written answer.
+    let root = temp_root("prefix_sum_equivalence");
+    let path = root.join("landtype.nc");
+    // A patchwork with several classes and real coastline, so heterogeneity,
+    // sea ratio and dominance all have something to disagree about.
+    let class_at = |lon: usize, lat: usize| -> i8 {
+        if (lon + lat).is_multiple_of(7) {
+            0
+        } else {
+            ((lon / 3 + lat / 2) % 5) as i8 + 1
+        }
+    };
+    write_landtype(&path, class_at);
+    let bounds = source_bounds_for_bbox(100.0, 112.0, 8.0, 20.0, 1).expect("bounds");
+
+    for radius in [1usize, 2, 4] {
+        let heterogeneity =
+            landcover_heterogeneity_demand(&path, 1, bounds, radius, 2).expect("heterogeneity");
+        let expected = brute_force_demand(class_at, bounds, radius, |counts, _| counts.len() > 2);
+        let got: Vec<(usize, usize)> = expected
+            .iter()
+            .copied()
+            .filter(|(lon, lat)| heterogeneity.is_demanded(*lon, *lat))
+            .collect();
+        assert_eq!(got, expected, "heterogeneity at radius {radius}");
+        assert_eq!(
+            heterogeneity.demanded_count(),
+            expected.len(),
+            "heterogeneity marked extra cells at radius {radius}"
+        );
+
+        let sea = sea_ratio_demand(&path, 1, bounds, radius, 0.1, 0.9).expect("sea ratio");
+        let expected = brute_force_demand(class_at, bounds, radius, |counts, total| {
+            if total == 0 {
+                return false;
+            }
+            let ocean = counts
+                .iter()
+                .find(|(class, _)| *class == 0)
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+            let ratio = ocean as f64 / total as f64;
+            ratio > 0.1 && ratio < 0.9
+        });
+        assert_eq!(sea.demanded_count(), expected.len(), "sea ratio r{radius}");
+        assert!(
+            expected
+                .iter()
+                .all(|(lon, lat)| sea.is_demanded(*lon, *lat)),
+            "sea ratio at radius {radius}"
+        );
+
+        let dominant = dominant_class_demand(&path, 1, bounds, radius, 0.5).expect("dominant");
+        let expected = brute_force_demand(class_at, bounds, radius, |counts, _| {
+            let land: usize = counts
+                .iter()
+                .filter(|(class, _)| *class != 0)
+                .map(|(_, count)| *count)
+                .sum();
+            if land == 0 {
+                return false;
+            }
+            let top = counts
+                .iter()
+                .filter(|(class, _)| *class != 0)
+                .map(|(_, count)| *count)
+                .max()
+                .unwrap_or(0);
+            (top as f64 / land as f64) < 0.5
+        });
+        assert_eq!(
+            dominant.demanded_count(),
+            expected.len(),
+            "dominant r{radius}"
+        );
+        assert!(
+            expected
+                .iter()
+                .all(|(lon, lat)| dominant.is_demanded(*lon, *lat)),
+            "dominant class at radius {radius}"
+        );
+    }
+    let _ = fs::remove_dir_all(root);
+}

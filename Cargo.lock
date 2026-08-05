@@ -165,6 +165,7 @@ dependencies = [
  "flate2",
  "hdf5-metno-sys",
  "netcdf",
+ "rayon",
  "serde",
  "serde_json",
 ]
