@@ -279,6 +279,7 @@ pub use method_c_mesh::MethodCDelaunayMesh;
 mod method_c_mesh_gridfile;
 pub use method_c_mesh_gridfile::MethodCGridfileMetadata;
 mod refine_regions;
+pub use method_c_selection::method_c_connected_region_groups;
 pub use refine_regions::MethodCRefinementRegion;
 pub(crate) use refine_regions::*;
 mod method_c_region_geometry;

@@ -96,7 +96,7 @@ impl MethodCDelaunayMesh {
             }
 
             let selected_faces =
-                mesh.selected_regions_faces(&pass_regions, pass, use_cartesian_xy)?;
+                mesh.selected_regions_faces_over_groups(&pass_regions, pass, use_cartesian_xy)?;
             if selected_faces.iter().skip(2).all(|selected| !*selected) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
