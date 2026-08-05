@@ -11,6 +11,14 @@ pub struct LargestComponentRetention {
     pub removed_cell_ids: Vec<usize>,
     /// How many of the dropped cells came from splitting non-manifold vertex fans.
     pub non_manifold_removed_cell_count: usize,
+    /// Demanded cells dropped anyway because they were left alone.
+    ///
+    /// Demand keeps a component whatever its size, but it cannot make a lone
+    /// cell usable: with no edge neighbour it exchanges nothing with the rest
+    /// of the mesh, and the `orphan_cell` gate rejects it. Such a cell goes,
+    /// and this is how many did, so a run can say the region it named came out
+    /// too thin to keep rather than lose it in silence.
+    pub demanded_isolated_removed_cell_count: usize,
 }
 
 /// Keep only the largest edge-connected component of the masked domain.
@@ -88,6 +96,7 @@ pub fn retain_edge_connected_components_with_hard_demand_one_based(
 
     let mut removed_cell_ids: BTreeSet<usize> = BTreeSet::new();
     let mut non_manifold_removed_cell_count = 0usize;
+    let mut demanded_isolated_removed_cell_count = 0usize;
     // Reported as the domain's own component count, so it stays a diagnostic of
     // what the carve produced rather than of what pruning converged to.
     let mut initial_component_count = None;
@@ -115,6 +124,7 @@ pub fn retain_edge_connected_components_with_hard_demand_one_based(
             vertex_neighbor_counts,
             hard_demand,
         )?;
+        demanded_isolated_removed_cell_count += pass.demanded_isolated_removed_cell_count;
         non_manifold_removed_cell_count += fan_removed.len();
         removed_cell_ids.extend(fan_removed.iter().copied());
 
@@ -128,6 +138,7 @@ pub fn retain_edge_connected_components_with_hard_demand_one_based(
         retained_cell_count: latest.retained_cell_count,
         removed_cell_ids: removed_cell_ids.into_iter().collect(),
         non_manifold_removed_cell_count,
+        demanded_isolated_removed_cell_count,
     })
 }
 
@@ -149,6 +160,7 @@ fn retain_largest_component_pass_one_based(
             retained_cell_count: 0,
             removed_cell_ids: Vec::new(),
             non_manifold_removed_cell_count: 0,
+            demanded_isolated_removed_cell_count: 0,
         });
     }
 
@@ -201,10 +213,19 @@ fn retain_largest_component_pass_one_based(
 
     let mut removed_cell_ids = Vec::new();
     let mut retained_cell_count = 0usize;
+    let mut demanded_isolated_removed_cell_count = 0usize;
     for (&cell_id, &component_id) in &component_of {
-        if component_id == retained_component || component_has_demand[component_id] {
+        // A one-cell component is an orphan by definition. Demand is why a
+        // small component survives at all, but it cannot buy this one a
+        // neighbour, and keeping it only moves the failure to the quality gate.
+        let alone = component_sizes[component_id] < 2;
+        let demanded = component_has_demand[component_id];
+        if component_id == retained_component || (demanded && !alone) {
             retained_cell_count += 1;
         } else {
+            if demanded && alone {
+                demanded_isolated_removed_cell_count += 1;
+            }
             is_in_domain[cell_id] = -1;
             removed_cell_ids.push(cell_id);
         }
@@ -215,6 +236,7 @@ fn retain_largest_component_pass_one_based(
         retained_cell_count,
         removed_cell_ids,
         non_manifold_removed_cell_count: 0,
+        demanded_isolated_removed_cell_count,
     })
 }
 

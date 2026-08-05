@@ -130,6 +130,17 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
                 retention.retained_cell_count
             );
         }
+        if retention.demanded_isolated_removed_cell_count > 0 {
+            // Named regions that came out of the carve as single cells. They
+            // cannot be kept -- a cell with no edge neighbour fails the orphan
+            // gate and exchanges nothing with the mesh -- but losing a region
+            // the run asked for is worth saying out loud.
+            eprintln!(
+                "earthmesh_cli: ocean carve dropped {} demanded cell(s) that were left with no \
+                 neighbour; those refinement regions came out too thin for this resolution",
+                retention.demanded_isolated_removed_cell_count
+            );
+        }
         kept = retention.retained_cell_count;
     }
     let mut report =

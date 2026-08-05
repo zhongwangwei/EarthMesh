@@ -361,16 +361,21 @@ fn a_pinch_keeps_the_demanded_fan_even_when_it_is_the_smaller_one() {
     // the pinch cleanup ran without ever seeing the demand -- so it kept the
     // larger fan and deleted the demanded cell the component pass had just
     // spared, in the same loop, one step later.
+    // The demanded fan is two cells sharing an edge: smaller than the other
+    // side, but not a lone cell — a lone one is an orphan and goes whatever
+    // demand says, which is a different rule tested separately.
     let mut fixture = Fixture::new(&[
         (2, vec![10, 11, 12]),
         (3, vec![11, 12, 13]),
         (4, vec![13, 12, 14]),
         (5, vec![12, 22, 23]),
+        (6, vec![22, 23, 24]),
     ]);
 
     let report = fixture.retain_with_demand(&[5]);
 
     assert!(fixture.in_domain(5), "the demanded fan must survive");
+    assert!(fixture.in_domain(6), "its neighbour holds it in the domain");
     assert!(
         report.non_manifold_removed_cell_count > 0,
         "the pinch still has to be resolved: {report:?}"
@@ -379,6 +384,7 @@ fn a_pinch_keeps_the_demanded_fan_even_when_it_is_the_smaller_one() {
         !fixture.in_domain(2) && !fixture.in_domain(3) && !fixture.in_domain(4),
         "only one fan may remain at a pinch"
     );
+    assert_eq!(report.demanded_isolated_removed_cell_count, 0, "{report:?}");
 }
 
 #[test]
@@ -394,4 +400,41 @@ fn a_pinch_with_no_demand_still_keeps_the_larger_fan() {
 
     assert!(fixture.in_domain(2) && fixture.in_domain(3) && fixture.in_domain(4));
     assert!(!fixture.in_domain(5));
+}
+
+#[test]
+fn a_demanded_cell_left_entirely_alone_still_goes_and_is_counted() {
+    // Demand keeps a component whatever its size -- but it cannot buy a lone
+    // cell a neighbour. Such a cell exchanges nothing with the mesh and the
+    // `orphan_cell` gate rejects it, so keeping it only moves the failure
+    // downstream: a real global run came out of the carve with 41 of them and
+    // failed quality. It goes, and the count says the named region was too
+    // thin to keep rather than losing it in silence.
+    let mut fixture = Fixture::new(&[
+        (2, vec![10, 11, 12, 13]),
+        (3, vec![12, 13, 14, 15]),
+        (4, vec![15, 14, 16, 17]),
+        // Alone: shares no vertex with anything.
+        (5, vec![30, 31, 32, 33]),
+    ]);
+
+    let report = fixture.retain_with_demand(&[5]);
+
+    assert!(!fixture.in_domain(5), "a lone cell cannot be kept");
+    assert_eq!(report.demanded_isolated_removed_cell_count, 1, "{report:?}");
+    assert_eq!(report.removed_cell_ids, vec![5]);
+    for cell_id in [2, 3, 4] {
+        assert!(fixture.in_domain(cell_id));
+    }
+}
+
+#[test]
+fn a_demanded_pair_is_small_but_usable_and_stays() {
+    // The line is "has an edge neighbour", not "is big". Two cells sharing an
+    // edge pass the orphan gate, so demand keeps them.
+    let mut fixture = split_domain();
+    let report = fixture.retain_with_demand(&[5]);
+
+    assert!(fixture.in_domain(5) && fixture.in_domain(6));
+    assert_eq!(report.demanded_isolated_removed_cell_count, 0, "{report:?}");
 }
