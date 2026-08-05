@@ -247,7 +247,12 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
 .ol-cell-inspector-close{border:0;background:transparent;color:var(--muted);padding:0 3px;font-size:16px;line-height:1}
 .ol-cell-inspector-row{display:grid;grid-template-columns:minmax(86px,.8fr) minmax(100px,1.2fr);gap:8px;padding:3px 0;border-top:1px solid var(--border-soft)}
 .ol-cell-inspector-row span:first-child{color:var(--muted);overflow-wrap:anywhere}.ol-cell-inspector-row span:last-child{font-family:var(--mono);overflow-wrap:anywhere}
-.logbox{font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+.logbox{min-height:0;overflow-y:scroll;overscroll-behavior:contain;scrollbar-gutter:stable;
+  padding-right:4px;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+.logbox::-webkit-scrollbar{width:10px}
+.logbox::-webkit-scrollbar-track{background:var(--surface-2);border-radius:5px}
+.logbox::-webkit-scrollbar-thumb{background:var(--faint);border:2px solid var(--surface-2);border-radius:5px}
+.logbox::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 .mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
 .mini-metric b{font-weight:700}
 .progress{height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden;margin:10px 0}
@@ -332,7 +337,7 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
             <span class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">🗑 <span data-i18n="log.clear">Clear</span></span>
           </div>
         </div>
-        <div class="logbox" id="logbox" style="flex:1;min-height:0;overflow:auto"></div>
+        <div class="logbox" id="logbox" style="flex:1"></div>
       </div>
     </div>
   </aside>
@@ -2285,10 +2290,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function logLine(txt) {
     const box = document.getElementById("logbox") || document.querySelector('.live-pane[data-pane="log"]');
     if (box) {
+      // Follow the tail only when the reader is already at it. Scrolling back
+      // through a running engine's output must not be yanked forward by the
+      // next line; 24px of slack absorbs sub-pixel and rounding drift.
+      const follow = box.clientHeight === 0 || box.scrollHeight - box.scrollTop - box.clientHeight <= 24;
       const div = document.createElement("div");
       div.style.whiteSpace = "pre-wrap";
       div.textContent = txt;
       box.appendChild(div);
+      if (follow) box.scrollTop = box.scrollHeight;
     }
     console.log("[EarthMesh]", txt);
   }
