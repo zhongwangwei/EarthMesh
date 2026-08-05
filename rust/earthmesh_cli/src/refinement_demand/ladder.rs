@@ -17,6 +17,21 @@
 //! shrinks with the level being decided (land-cover heterogeneity, sub-grid
 //! variance) nests on its own; a criterion whose demand is identical at every
 //! level (`sst > 28`, `slope > 15`) has to borrow the separation from here.
+//!
+//! # What is and is not new here
+//!
+//! The expansion formula is not. It predates this module, lives in
+//! `region_sources::circle`, and states something geometrically obvious: a
+//! transition level `t` has cell spacing `base / 2^(t-1)`, so `rows` rows of it
+//! are that much wide, summed over the levels a parent has to clear. The
+//! namelist's `halo` / `max_transition_row` exist so a hand-written circle can
+//! declare that width.
+//!
+//! What this module adds is running it backwards -- given the innermost radius
+//! and a depth, produce the whole chain -- and supplying a row count, because
+//! both namelist fields default to zero, which makes every parent circle the
+//! same size as its child and every chain fail. Do not describe the formula as
+//! a contribution; do report the row count, which is a measurement.
 
 use std::io;
 

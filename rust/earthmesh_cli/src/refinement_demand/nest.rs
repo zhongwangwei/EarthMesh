@@ -13,6 +13,11 @@
 //! performs internally between passes — the only difference is that the regions
 //! for pass N+1 are computed after pass N instead of before pass 1.
 //!
+//! This is the regrid loop of structured AMR (Berger & Oliger 1984) applied to
+//! a static field: there the grid is rebuilt because the solution moved, here
+//! because the criterion's answer depends on the cell size it is asked at. See
+//! the module docs of the parent for the full lineage.
+//!
 //! What this does **not** do is read the criterion off the refined mesh's own
 //! cells. That needs raster-to-cell statistics the port does not have (see the
 //! technical guide on `getref_mean_std`), so the scale is carried as a length
