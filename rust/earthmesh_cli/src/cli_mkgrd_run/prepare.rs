@@ -143,6 +143,7 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
             lowered.refine.threshold_dir =
                 run_dir.join("thresholds").to_string_lossy().into_owned();
         }
+        set_project_gridnum_perdegree_from_landtype(&mut lowered);
         let nml_path = run_dir.join("project.nml");
         fs::write(&nml_path, lowered.to_namelist())
             .map_err(|e| format!("write {}: {e}", nml_path.display()))?;
@@ -176,6 +177,52 @@ fn create_sibling_run_dir(source_path: &Path, tag: &str) -> Result<PathBuf, Stri
     ));
     fs::create_dir(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
     fs::canonicalize(&dir).map_err(|err| format!("resolve {}: {err}", dir.display()))
+}
+
+/// Take the source raster resolution from the raster the project names.
+///
+/// `gridnum_perdegree` describes the land-type raster, and a project has no
+/// field for it -- not even under `expert`. It therefore kept the engine
+/// default of 120 per degree whatever raster the project pointed at, and a
+/// 240-per-degree file (IGBP at 86400x43200) failed partway through the first
+/// AutoRefine pass with a dimension mismatch the user had no way to act on:
+/// the number it disagreed with appears nowhere they can edit.
+///
+/// A namelist run keeps saying what it says -- this only fills in the value a
+/// project cannot express.
+fn set_project_gridnum_perdegree_from_landtype(lowered: &mut LoweredProject) {
+    let landtype = lowered.mkgrd.landtype_file.trim();
+    if landtype.is_empty() || landtype == "none" {
+        return;
+    }
+    let path = std::path::Path::new(landtype).to_path_buf();
+    // Only a readable raster can answer this. An absent or unreadable one is
+    // the engine's to report, and it names the file it could not open -- this
+    // step exists to fill in a number, not to become a second gate on the
+    // inputs. Say what happened so the fallback is not silent.
+    let inferred = match earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(&path) {
+        Ok(inferred) => inferred,
+        Err(error) => {
+            eprintln!(
+                "earthmesh_cli: keeping source grid {}/degree; {} did not give one: {error}",
+                lowered.mkgrd.gridnum_perdegree,
+                path.display()
+            );
+            return;
+        }
+    };
+    let Ok(inferred) = i32::try_from(inferred) else {
+        return;
+    };
+    if inferred != lowered.mkgrd.gridnum_perdegree {
+        eprintln!(
+            "earthmesh_cli: source grid {}/degree taken from {} (was {}/degree)",
+            inferred,
+            path.display(),
+            lowered.mkgrd.gridnum_perdegree
+        );
+        lowered.mkgrd.gridnum_perdegree = inferred;
+    }
 }
 
 fn prepare_project_close_sources(
@@ -366,6 +413,94 @@ mod tests {
         assert!(!nml.contains("&datalayers"), "{nml}");
         let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
         assert_eq!(mkgrd.nxp, 42, "HField parent must use the stride-3 lattice");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Write a land-type raster with the dimensions a given resolution implies.
+    fn write_landtype_at(path: &Path, per_degree: usize) {
+        let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create landtype");
+        file.add_dimension("lon", per_degree * 360).expect("lon");
+        file.add_dimension("lat", per_degree * 180).expect("lat");
+    }
+
+    #[test]
+    fn a_project_takes_its_source_grid_from_the_raster_it_names() {
+        // A project has no field for `gridnum_perdegree`, not even under
+        // `expert`, so it kept the engine default of 120 whatever raster it
+        // pointed at. The production IGBP file is 240 per degree, and the run
+        // died partway through the first AutoRefine pass on a dimension
+        // mismatch whose number appears nowhere the user can edit.
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_source_grid_{}_{}",
+            std::process::id(),
+            PROJECT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let landtype = root.join("landtype.nc");
+        write_landtype_at(&landtype, 240);
+
+        let mut project = ProjectConfig::scaffold(
+            "source_grid",
+            MeshIntentPreset::CarbonLand,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.data_layers = vec![earthmesh_project::ProjectDataLayer {
+            id: "landtype".to_string(),
+            role: earthmesh_project::ProjectLayerRole::LandType,
+            path: landtype.to_string_lossy().into_owned(),
+            enabled: true,
+            threshold_value: None,
+        }];
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        project.refinement.specified_circle =
+            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+                lon: 0.0,
+                lat: 0.0,
+                radius_km: 50.0,
+            }));
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
+        let mut args = vec![project_path.to_string_lossy().into_owned()].into_iter();
+
+        let prepared = prepare_mkgrd_namelist("--project".to_string(), &mut args).unwrap();
+        let nml = fs::read_to_string(&prepared.namelist).unwrap();
+        let mkgrd = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&nml).unwrap();
+        assert_eq!(mkgrd.gridnum_perdegree, 240, "{nml}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unreadable_raster_leaves_the_source_grid_alone_rather_than_failing() {
+        // Filling in a number the project cannot express must not turn into a
+        // second gate on the inputs: the engine reports a bad raster itself,
+        // and names the file it could not open.
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_source_grid_bad_{}_{}",
+            std::process::id(),
+            PROJECT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let landtype = root.join("landtype.nc");
+        fs::write(&landtype, b"not a NetCDF file").unwrap();
+
+        let mut lowered = ProjectConfig::scaffold(
+            "bad_raster",
+            MeshIntentPreset::CarbonLand,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        )
+        .try_lower()
+        .expect("lower");
+        lowered.mkgrd.landtype_file = landtype.to_string_lossy().into_owned();
+        lowered.mkgrd.gridnum_perdegree = 120;
+        set_project_gridnum_perdegree_from_landtype(&mut lowered);
+        assert_eq!(lowered.mkgrd.gridnum_perdegree, 120);
 
         let _ = fs::remove_dir_all(root);
     }
