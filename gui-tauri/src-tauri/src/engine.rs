@@ -139,12 +139,19 @@ fn resolve_mkgrd_path() -> Result<String, String> {
         }
     }
 
+    // Kept so a failure can say what it turned down. A binary that is simply
+    // absent says nothing; one that ran and named another version is the whole
+    // answer, and reporting it as "nothing found" is what sends a user off to
+    // rebuild the tree they already rebuilt.
+    let mut rejected = Vec::new();
     let mut compatible = Vec::new();
     for root in &roots {
         for name in &names {
             let candidate = root.join(name);
-            if engine_candidate_is_compatible(&candidate) {
-                compatible.push(candidate);
+            match inspect_engine_candidate(&candidate) {
+                EngineCandidate::Compatible => compatible.push(candidate),
+                EngineCandidate::Absent => {}
+                other => rejected.push((candidate, other)),
             }
         }
     }
@@ -159,30 +166,80 @@ fn resolve_mkgrd_path() -> Result<String, String> {
         for dir in env::split_paths(&paths) {
             for name in &names {
                 let candidate = dir.join(name);
-                if engine_candidate_is_compatible(&candidate) {
-                    return Ok(canonical_string(candidate));
+                match inspect_engine_candidate(&candidate) {
+                    EngineCandidate::Compatible => return Ok(canonical_string(candidate)),
+                    EngineCandidate::Absent => {}
+                    other => rejected.push((candidate, other)),
                 }
             }
         }
     }
 
-    Err(format!(
-        "no compatible EarthMesh engine was found (expected version {}). Build earthmesh_cli or set EARTHMESH_MKGRD to its full path",
-        env!("CARGO_PKG_VERSION")
-    ))
+    Err(engine_not_found_message(&rejected))
+}
+
+/// The message a failed discovery leaves behind.
+pub(crate) fn engine_not_found_message(rejected: &[(PathBuf, EngineCandidate)]) -> String {
+    let expected = env!("CARGO_PKG_VERSION");
+    if rejected.is_empty() {
+        return format!(
+            "no EarthMesh engine was found (expected version {expected}), and no candidate was present in any search location. Build earthmesh_cli, or set EARTHMESH_MKGRD to its full path"
+        );
+    }
+    let mut message = format!(
+        "no compatible EarthMesh engine was found (expected version {expected}). {} candidate(s) were found and turned down:",
+        rejected.len()
+    );
+    for (path, reason) in rejected {
+        let reason = match reason {
+            EngineCandidate::WrongVersion(version) => format!("reports version {version}"),
+            EngineCandidate::Unusable(detail) => format!("would not run: {detail}"),
+            EngineCandidate::Compatible | EngineCandidate::Absent => continue,
+        };
+        message.push_str(&format!("\n  {} - {reason}", path.display()));
+    }
+    message.push_str(
+        "\nRebuild that engine at the expected version, or set EARTHMESH_MKGRD to a full path",
+    );
+    message
 }
 
 pub(crate) fn engine_candidate_is_compatible(path: &Path) -> bool {
+    matches!(inspect_engine_candidate(path), EngineCandidate::Compatible)
+}
+
+/// Why a candidate was accepted or turned down.
+///
+/// Absent and present-but-wrong-version are not the same situation, and the
+/// second is the one a user cannot see: a stale build in a search root is a
+/// real file that reports a real version, and reporting it as "nothing found"
+/// sends them to rebuild whatever they rebuilt last time.
+pub(crate) enum EngineCandidate {
+    Compatible,
+    /// Not a file, so not a candidate at all — never worth reporting.
+    Absent,
+    /// A binary that ran and named a different version.
+    WrongVersion(String),
+    /// A binary that would not run or said nothing usable.
+    Unusable(String),
+}
+
+pub(crate) fn inspect_engine_candidate(path: &Path) -> EngineCandidate {
     if !path.is_file() {
-        return false;
+        return EngineCandidate::Absent;
     }
-    Command::new(path)
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .is_some_and(|version| version.trim() == env!("CARGO_PKG_VERSION"))
+    let output = match Command::new(path).arg("--version").output() {
+        Ok(output) => output,
+        Err(error) => return EngineCandidate::Unusable(error.to_string()),
+    };
+    if !output.status.success() {
+        return EngineCandidate::Unusable(format!("--version exited {}", output.status));
+    }
+    match String::from_utf8(output.stdout) {
+        Ok(version) if version.trim() == env!("CARGO_PKG_VERSION") => EngineCandidate::Compatible,
+        Ok(version) => EngineCandidate::WrongVersion(version.trim().to_string()),
+        Err(_) => EngineCandidate::Unusable("--version was not text".to_string()),
+    }
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {

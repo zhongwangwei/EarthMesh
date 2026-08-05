@@ -146,6 +146,67 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
 }
 
 #[test]
+fn a_stale_engine_is_named_in_the_failure_rather_than_reported_as_missing() {
+    // A build left over from before a version bump is a real file that reports
+    // a real version, and discovery turns it down. Saying "nothing was found"
+    // sends the user to rebuild the tree they just rebuilt -- the binary is
+    // there, it is simply the wrong one, and only the message can say so.
+    use std::os::unix::fs::PermissionsExt;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_engine_reason_{}_{}",
+        process::id(),
+        nonce
+    ));
+    fs::create_dir_all(&root).unwrap();
+
+    let stale = root.join("stale-engine");
+    fs::write(&stale, "#!/bin/sh\nprintf '%s\\n' '0.0.1-ancient'\n").unwrap();
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).unwrap();
+    let broken = root.join("broken-engine");
+    fs::write(&broken, "#!/bin/sh\nexit 3\n").unwrap();
+    fs::set_permissions(&broken, fs::Permissions::from_mode(0o755)).unwrap();
+
+    match engine::inspect_engine_candidate(&stale) {
+        engine::EngineCandidate::WrongVersion(version) => assert_eq!(version, "0.0.1-ancient"),
+        _ => panic!("a stale build must be reported as a version mismatch"),
+    }
+    assert!(matches!(
+        engine::inspect_engine_candidate(&broken),
+        engine::EngineCandidate::Unusable(_)
+    ));
+    assert!(matches!(
+        engine::inspect_engine_candidate(&root.join("not-there")),
+        engine::EngineCandidate::Absent
+    ));
+
+    let message = engine::engine_not_found_message(&[
+        (
+            stale.clone(),
+            engine::EngineCandidate::WrongVersion("0.0.1-ancient".to_string()),
+        ),
+        (
+            broken.clone(),
+            engine::EngineCandidate::Unusable("--version exited 3".to_string()),
+        ),
+    ]);
+    assert!(message.contains(&stale.display().to_string()), "{message}");
+    assert!(message.contains("0.0.1-ancient"), "{message}");
+    assert!(message.contains(&broken.display().to_string()), "{message}");
+    assert!(message.contains(env!("CARGO_PKG_VERSION")), "{message}");
+
+    // With nothing to report, the message must not claim candidates it never saw.
+    let empty = engine::engine_not_found_message(&[]);
+    assert!(empty.contains("no candidate was present"), "{empty}");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn successful_project_runs_require_an_existing_reported_gridfile() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
