@@ -132,6 +132,9 @@ pub fn run_mkgrd_regional_clip_base_namelist(
                 None,
                 None,
                 config.isolated_ocean,
+                // Gridinit runs before any refinement, so nothing has been
+                // named yet.
+                None,
             )?;
             if kept > 0 {
                 gridinit.gridfile = unstructured_mesh_write_report_from_file(&masked)?;

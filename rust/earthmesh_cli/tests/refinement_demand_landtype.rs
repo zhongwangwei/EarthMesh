@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use earthmesh_cli::refinement_demand::{
-    landtype::{coastal_demand, landcover_heterogeneity_demand},
+    landtype::{
+        coastal_demand, dominant_class_demand, landcover_heterogeneity_demand, sea_ratio_demand,
+    },
     reduce_demand_to_circles, source_bounds_for_bbox,
 };
 use earthmesh_mesh::MethodCRefinementRegion;
@@ -214,5 +216,79 @@ fn a_window_on_the_rasters_edge_still_reads() {
         landcover_heterogeneity_demand(&path, 1, bounds, 3, 1)
             .unwrap_or_else(|error| panic!("{label} heterogeneity: {error}"));
     }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_sea_ratio_criterion_narrows_as_the_cell_shrinks() {
+    // The difference from `coastal_demand`: this asks what fraction of a cell
+    // is sea, so shrinking the cell pushes the fraction toward 0 or 1 and fewer
+    // cells qualify. A class-boundary detector gives the same answer at every
+    // scale; this one is why the namelist's coastal criterion is written as a
+    // ratio in the first place.
+    let root = temp_root("sea_ratio");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, meridional_coast(291));
+
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+    let wide = sea_ratio_demand(&path, 1, bounds, 4, 0.4, 0.6).expect("wide");
+    let narrow = sea_ratio_demand(&path, 1, bounds, 1, 0.4, 0.6).expect("narrow");
+    assert!(
+        narrow.demanded_count() < wide.demanded_count(),
+        "narrow {} vs wide {}",
+        narrow.demanded_count(),
+        wide.demanded_count()
+    );
+    assert!(!wide.is_empty(), "a coast must qualify at some scale");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn open_ocean_and_deep_inland_are_never_a_sea_ratio_mix() {
+    let root = temp_root("sea_ratio_uniform");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 0);
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+    assert!(sea_ratio_demand(&path, 1, bounds, 2, 0.4, 0.6)
+        .expect("all sea")
+        .is_empty());
+
+    write_landtype(&path, |_, _| 1);
+    assert!(sea_ratio_demand(&path, 1, bounds, 2, 0.4, 0.6)
+        .expect("all land")
+        .is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_dominant_class_criterion_fires_only_where_no_class_rules() {
+    let root = temp_root("dominant");
+    let path = root.join("landtype.nc");
+    // Three classes in equal stripes: no class holds 75% of any wide window.
+    write_landtype(&path, |lon, _lat| ((lon / 2) % 3) as i8 + 1);
+
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+    let mixed = dominant_class_demand(&path, 1, bounds, 4, 0.75).expect("mixed");
+    assert_eq!(mixed.demanded_count(), mixed.bounds_cell_count());
+
+    // One class everywhere: it holds all of it, so nothing qualifies.
+    write_landtype(&path, |_, _| 5);
+    let uniform = dominant_class_demand(&path, 1, bounds, 4, 0.75).expect("uniform");
+    assert!(uniform.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_new_criteria_reject_the_requests_they_cannot_answer() {
+    let root = temp_root("criteria_bounds");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 1);
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+
+    assert!(sea_ratio_demand(&path, 1, bounds, 0, 0.4, 0.6).is_err());
+    assert!(sea_ratio_demand(&path, 1, bounds, 2, 0.6, 0.4).is_err());
+    assert!(sea_ratio_demand(&path, 1, bounds, 2, f64::NAN, 0.6).is_err());
+    assert!(dominant_class_demand(&path, 1, bounds, 0, 0.75).is_err());
+    assert!(dominant_class_demand(&path, 1, bounds, 2, 1.5).is_err());
     let _ = fs::remove_dir_all(root);
 }

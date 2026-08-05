@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use earthmesh_cli::refinement_demand::{
     reduce_demand_to_circles, source_bounds_for_bbox, threshold::threshold_demand,
-    threshold::ThresholdSide,
+    threshold::threshold_stddev_demand, threshold::ThresholdSide,
 };
 
 static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -181,5 +181,101 @@ fn two_criteria_over_one_window_union_into_one_chain() {
     assert!(!reduce_demand_to_circles(&demand, 1, 200_000.0)
         .expect("reduce")
         .is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_flat_field_is_never_rough_however_large_it_is() {
+    // The distinction the two halves of a threshold flag draw: a field can sit
+    // far above its mean threshold everywhere and still ask nothing of its std
+    // threshold. Reading only the mean half collapsed these into one question,
+    // and a project asking for refinement where a field is *rough* got a
+    // uniform mesh with nothing said about it.
+    let root = temp_root("flat");
+    let path = root.join("slope.nc");
+    write_field(&path, "slope", |_, _| 500.0);
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+
+    let above = threshold_demand(&path, "slope", 1, bounds, ThresholdSide::Above, 100.0)
+        .expect("mean demand");
+    assert!(!above.is_empty(), "500 clears 100 everywhere");
+
+    let rough = threshold_stddev_demand(&path, "slope", 1, bounds, 2, 0.5).expect("std demand");
+    assert!(
+        rough.is_empty(),
+        "a constant field has no variation to demand refinement"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_rough_patch_is_demanded_and_flat_ground_is_not() {
+    let root = temp_root("rough");
+    let path = root.join("slope.nc");
+    // Source index 1 is 180 west, so 110 east is index 291; the window below
+    // spans 105 to 113 east. A checkerboard inside it, flat everywhere else.
+    write_field(&path, "slope", |lon, lat| {
+        if (289..=294).contains(&lon) && (66..=71).contains(&lat) {
+            if (lon + lat) % 2 == 0 {
+                100.0
+            } else {
+                0.0
+            }
+        } else {
+            10.0
+        }
+    });
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+
+    let rough = threshold_stddev_demand(&path, "slope", 1, bounds, 1, 20.0).expect("std demand");
+    assert!(!rough.is_empty(), "the checkerboard must be demanded");
+    assert!(
+        rough.is_demanded(291, 68),
+        "the middle of the patch must be demanded"
+    );
+    assert!(
+        !rough.is_demanded(bounds.minlon_source, bounds.minlat_source),
+        "the flat corner of the window must not be"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_wider_neighbourhood_spreads_the_demand() {
+    // Resolution dependence, which is why the radius is a parameter: a coarser
+    // pass judges a wider neighbourhood, so one rough spot pulls more of its
+    // surroundings in with it. This is what makes the criterion answer
+    // differently at each level instead of once for the whole run.
+    let root = temp_root("radius");
+    let path = root.join("slope.nc");
+    write_field(&path, "slope", |lon, lat| {
+        if lon == 291 && lat == 68 {
+            1000.0
+        } else {
+            0.0
+        }
+    });
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+
+    let tight = threshold_stddev_demand(&path, "slope", 1, bounds, 1, 1.0).expect("tight");
+    let wide = threshold_stddev_demand(&path, "slope", 1, bounds, 3, 1.0).expect("wide");
+    assert!(
+        wide.demanded_count() > tight.demanded_count(),
+        "wide {} must exceed tight {}",
+        wide.demanded_count(),
+        tight.demanded_count()
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_non_finite_std_threshold_is_rejected_too() {
+    let root = temp_root("bad_std_threshold");
+    let path = root.join("slope.nc");
+    write_field(&path, "slope", |_, _| 20.0);
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+    for threshold in [f64::NAN, f64::INFINITY] {
+        assert!(threshold_stddev_demand(&path, "slope", 1, bounds, 1, threshold).is_err());
+    }
     let _ = fs::remove_dir_all(root);
 }

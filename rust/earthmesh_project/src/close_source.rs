@@ -601,6 +601,71 @@ fn signed_area(ring: &[(f64, f64)]) -> f64 {
 mod tests {
     use super::*;
 
+    /// Minimal single-record Polygon shapefile with the given parts.
+    fn polygon_shapefile(parts: &[Vec<(f64, f64)>]) -> Vec<u8> {
+        let total_points: usize = parts.iter().map(Vec::len).sum();
+        let content_len = 44 + parts.len() * 4 + total_points * 16;
+        let mut file = vec![0u8; 100];
+        file[0..4].copy_from_slice(&9994i32.to_be_bytes());
+        file[28..32].copy_from_slice(&1000i32.to_le_bytes());
+        file[32..36].copy_from_slice(&5i32.to_le_bytes());
+
+        file.extend_from_slice(&1i32.to_be_bytes());
+        file.extend_from_slice(&((content_len / 2) as i32).to_be_bytes());
+        file.extend_from_slice(&5i32.to_le_bytes());
+        for value in [0.0f64, 0.0, 0.0, 0.0] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        file.extend_from_slice(&(parts.len() as i32).to_le_bytes());
+        file.extend_from_slice(&(total_points as i32).to_le_bytes());
+        let mut start = 0i32;
+        for part in parts {
+            file.extend_from_slice(&start.to_le_bytes());
+            start += part.len() as i32;
+        }
+        for part in parts {
+            for &(lon, lat) in part {
+                file.extend_from_slice(&lon.to_le_bytes());
+                file.extend_from_slice(&lat.to_le_bytes());
+            }
+        }
+        file
+    }
+
+    fn write_shapefile(name: &str, parts: &[Vec<(f64, f64)>]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("earthmesh_close_source_{name}.shp"));
+        fs::write(&path, polygon_shapefile(parts)).expect("write shapefile");
+        path
+    }
+
+    #[test]
+    fn a_hole_survives_the_public_shapefile_entry_point() {
+        // `assemble_polygon_rings` is unit-tested directly, but the path a
+        // project actually takes is this function -- parse, reproject, return.
+        // Without a test here nothing would notice if the bridging were dropped
+        // from that path: the run would succeed and quietly fill the hole in.
+        let outer = vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ];
+        let hole = vec![(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)];
+        let path = write_shapefile("hole", &[outer, hole]);
+
+        let rings = read_shapefile_polygon_rings(&path).expect("read rings");
+        assert!(
+            rings.iter().any(|ring| point_in_ring((1.0, 1.0), ring)),
+            "the domain itself must still be covered"
+        );
+        assert!(
+            !rings.iter().any(|ring| point_in_ring((5.0, 5.0), ring)),
+            "the hole must not be covered by any ring: {rings:?}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn detects_supported_prj_families() {
         assert_eq!(

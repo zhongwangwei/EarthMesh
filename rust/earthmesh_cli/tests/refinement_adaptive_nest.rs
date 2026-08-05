@@ -215,3 +215,39 @@ fn a_named_region_is_refined_even_when_no_criterion_asks() {
     assert_eq!(deepest, 2, "a named circle must reach mrlw 2");
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_named_region_deeper_than_the_run_is_refused_rather_than_dropped() {
+    // The per-level loop only picks up regions whose level it is refining, so a
+    // region asking for a level beyond the ceiling used to be filtered out in
+    // silence. The downstream "nothing refined" guard misses it whenever some
+    // other region does refine: the run succeeds, the mesh passes its checks,
+    // and the region the project named is simply absent.
+    let root = temp_root("named_too_deep");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 0);
+
+    let named = vec![
+        earthmesh_mesh::MethodCRefinementRegion::Circle {
+            center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
+            radius_meters: 400_000.0,
+            level: 1,
+        },
+        earthmesh_mesh::MethodCRefinementRegion::Circle {
+            center: earthmesh_mesh::LonLatDegrees::new(118.0, 22.0),
+            radius_meters: 400_000.0,
+            level: 3,
+        },
+    ];
+    let error = earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+        &base_mesh(),
+        &RefineConfig::default(),
+        &plan_inputs(&path, true),
+        &named,
+        base_cell_meters(),
+        2,
+    )
+    .expect_err("a region beyond the ceiling must be refused");
+    assert!(error.to_string().contains("level 3"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}

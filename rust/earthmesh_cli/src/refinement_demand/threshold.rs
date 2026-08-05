@@ -64,3 +64,89 @@ pub fn threshold_demand(
     }
     Ok(demand)
 }
+
+/// Mark every source cell whose neighbourhood standard deviation exceeds
+/// `threshold`.
+///
+/// The catalogue's threshold flags come in mean/std pairs — even slots compare
+/// the value itself, odd slots compare how much it varies — and the h-field
+/// honours both. The point+radius route read only the mean half, so a project
+/// that asked for refinement where a field is *rough* (steep terrain, a sharp
+/// SST front) got a uniform mesh there and no message saying why. This is the
+/// other half.
+///
+/// The neighbourhood is `radius_cells` of source grid either side, matching the
+/// cell the current pass is judging — the same scale the land-type criteria use,
+/// so a criterion's answer changes with resolution exactly as they do.
+pub fn threshold_stddev_demand(
+    threshold_file: impl AsRef<Path>,
+    var_name: &str,
+    gridnum_perdegree: usize,
+    bounds: AreaJudgeSourceBounds,
+    radius_cells: usize,
+    threshold: f64,
+) -> io::Result<RefinementDemand> {
+    if !threshold.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refinement threshold must be finite",
+        ));
+    }
+    let mut demand = RefinementDemand::new(bounds, gridnum_perdegree)?;
+    // Read a haloed window so a cell on the edge of the domain still has a full
+    // neighbourhood; without it the rim would be judged against a truncated
+    // sample and read as smoother than it is.
+    let halo = super::landtype::halo_within_source(bounds, gridnum_perdegree, radius_cells);
+    let field = data_read_onelayer_one_based(threshold_file, var_name, halo)?;
+    let width = field.values.len().saturating_sub(1);
+    let height = field
+        .values
+        .get(1)
+        .map(|column| column.len().saturating_sub(1))
+        .unwrap_or(0);
+
+    for lon_source in bounds.minlon_source..=bounds.maxlon_source {
+        for lat_source in bounds.maxlat_source..=bounds.minlat_source {
+            let mut count = 0usize;
+            let mut sum = 0.0_f64;
+            let mut sum_squares = 0.0_f64;
+            for lon in lon_source.saturating_sub(radius_cells)..=(lon_source + radius_cells) {
+                if lon < halo.minlon_source || lon > halo.maxlon_source {
+                    continue;
+                }
+                let lon_offset = lon - halo.minlon_source + 1;
+                if lon_offset > width {
+                    continue;
+                }
+                for lat in lat_source.saturating_sub(radius_cells)..=(lat_source + radius_cells) {
+                    if lat < halo.maxlat_source || lat > halo.minlat_source {
+                        continue;
+                    }
+                    let lat_offset = lat - halo.maxlat_source + 1;
+                    if lat_offset > height {
+                        continue;
+                    }
+                    let value = field.values[lon_offset][lat_offset];
+                    if !value.is_finite() {
+                        continue;
+                    }
+                    count += 1;
+                    sum += value;
+                    sum_squares += value * value;
+                }
+            }
+            if count < 2 {
+                continue;
+            }
+            let mean = sum / count as f64;
+            // Population variance, as the h-field's own statistic is, and
+            // clamped at zero because rounding can drive it slightly negative
+            // over a flat neighbourhood.
+            let variance = (sum_squares / count as f64 - mean * mean).max(0.0);
+            if variance.sqrt() > threshold {
+                demand.set(lon_source, lat_source, true);
+            }
+        }
+    }
+    Ok(demand)
+}

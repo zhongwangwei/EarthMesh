@@ -20,10 +20,14 @@ use std::path::Path;
 use earthmesh_core::RefineConfig;
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-use super::landtype::{coastal_demand, landcover_heterogeneity_demand};
-use super::threshold::{threshold_demand, ThresholdSide};
+use super::landtype::{
+    coastal_demand, dominant_class_demand, landcover_heterogeneity_demand, sea_ratio_demand,
+};
+use super::threshold::{threshold_demand, threshold_stddev_demand, ThresholdSide};
 use super::RefinementDemand;
-use crate::area_judge_threshold_inputs::enabled_mean_threshold_field_specs;
+use crate::area_judge_threshold_inputs::{
+    enabled_mean_threshold_field_specs, enabled_std_threshold_field_specs,
+};
 
 /// What a demand plan needs to know that the namelist does not say.
 #[derive(Clone, Debug)]
@@ -120,25 +124,81 @@ pub fn plan_demand_at_scale(
         )?;
     }
 
+    // The odd half of every mean/std flag pair: refine where the field varies,
+    // not where it is large. The h-field applies both halves; reading only the
+    // mean half here made the two routes disagree about what the same namelist
+    // asked for, in silence.
+    let stddev_radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0);
+    for spec in enabled_std_threshold_field_specs(refine, inputs.mesh_type) {
+        let file = threshold_dir.join(format!("{}.nc", spec.file_stem));
+        let contribution = threshold_stddev_demand(
+            &file,
+            &spec.var_name,
+            inputs.gridnum_perdegree,
+            inputs.bounds,
+            stddev_radius_cells,
+            spec.threshold,
+        )?;
+        add(
+            &mut demand,
+            &format!("{}_stddev", spec.var_name),
+            contribution,
+            &mut contributions,
+        )?;
+    }
+
     if let Some(landtype_file) = inputs.landtype_file {
         if inputs.refine_coastline {
             let contribution =
                 coastal_demand(landtype_file, inputs.gridnum_perdegree, inputs.bounds)?;
             add(&mut demand, "coastline", contribution, &mut contributions)?;
         }
-        if refine.refine_num_landtypes {
-            // Resolution-dependent: the neighbourhood is the cell this level
-            // would refine away, so the same raster gives different answers at
-            // different levels. That is the point.
-            let radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0);
-            let contribution = landcover_heterogeneity_demand(
-                landtype_file,
-                inputs.gridnum_perdegree,
-                inputs.bounds,
-                radius_cells,
-                refine.th_num_landtypes.max(0) as usize,
-            )?;
-            add(&mut demand, "landcover", contribution, &mut contributions)?;
+        // Resolution-dependent, all three: the neighbourhood is the cell this
+        // level would refine away, so the same raster gives different answers at
+        // different levels. That is the point of asking again per pass.
+        //
+        // The mesh-type gate mirrors the h-field's `supports_threshold_hfield`.
+        // Without it the two routes would disagree about whether a land-type
+        // criterion applies to a given mesh, and a project switching backends
+        // would silently get a different mesh for no stated reason.
+        let radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0);
+        if supports_landtype_criteria(inputs.mesh_type) {
+            if refine.refine_num_landtypes {
+                let contribution = landcover_heterogeneity_demand(
+                    landtype_file,
+                    inputs.gridnum_perdegree,
+                    inputs.bounds,
+                    radius_cells,
+                    refine.th_num_landtypes.max(0) as usize,
+                )?;
+                add(&mut demand, "landcover", contribution, &mut contributions)?;
+            }
+            if refine.refine_area_mainland {
+                let contribution = dominant_class_demand(
+                    landtype_file,
+                    inputs.gridnum_perdegree,
+                    inputs.bounds,
+                    radius_cells,
+                    refine.th_area_mainland,
+                )?;
+                add(
+                    &mut demand,
+                    "area_mainland",
+                    contribution,
+                    &mut contributions,
+                )?;
+            }
+            if refine.refine_sea_ratio {
+                let contribution = sea_ratio_demand(
+                    landtype_file,
+                    inputs.gridnum_perdegree,
+                    inputs.bounds,
+                    radius_cells,
+                    refine.th_sea_ratio[0],
+                    refine.th_sea_ratio[1],
+                )?;
+                add(&mut demand, "sea_ratio", contribution, &mut contributions)?;
+            }
         }
     }
 
@@ -147,6 +207,17 @@ pub fn plan_demand_at_scale(
         demand,
         contributions,
     })
+}
+
+/// Mesh types the land-type criteria apply to.
+///
+/// Kept identical to the h-field's `supports_threshold_hfield`; the two routes
+/// answering differently would be a difference nobody asked for.
+fn supports_landtype_criteria(mesh_type: &str) -> bool {
+    matches!(
+        mesh_type.trim(),
+        "landmesh" | "oceanmesh" | "atmos" | "atmosmesh" | "LOCmesh" | "earthmesh"
+    )
 }
 
 /// How many source cells span `meters`, at least one.
@@ -162,6 +233,86 @@ fn source_cells_for_meters(gridnum_perdegree: usize, meters: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every criterion the h-field consumes must reach this planner too.
+    ///
+    /// The two routes read the same `RefineConfig`. When one honours a flag and
+    /// the other ignores it, a project switching backends silently gets a
+    /// different mesh and nothing says why -- which is what happened: this
+    /// planner handled `refine_num_landtypes` and quietly dropped
+    /// `refine_area_mainland` and `refine_sea_ratio`.
+    #[test]
+    fn every_criterion_the_h_field_reads_is_read_here_too() {
+        let refine = RefineConfig {
+            refine_num_landtypes: true,
+            refine_area_mainland: true,
+            refine_sea_ratio: true,
+            ..RefineConfig::default()
+        };
+        let planned = criteria_this_planner_consumes(&refine, "earthmesh");
+        for flag in ["landcover", "area_mainland", "sea_ratio"] {
+            assert!(
+                planned.contains(&flag),
+                "{flag} is dropped, planned {planned:?}"
+            );
+        }
+
+        // And the mesh-type gate has to agree with the h-field's, or the same
+        // project gets different meshes from the two routes.
+        assert!(supports_landtype_criteria("landmesh"));
+        assert!(supports_landtype_criteria("oceanmesh"));
+        assert!(supports_landtype_criteria("atmosmesh"));
+        assert!(!supports_landtype_criteria("something_else"));
+    }
+
+    /// Which land-type criteria [`plan_demand_at_scale`] would act on.
+    ///
+    /// Mirrors the branch structure rather than running it, so the check needs
+    /// no raster; running it is what the end-to-end tests do.
+    fn criteria_this_planner_consumes(refine: &RefineConfig, mesh_type: &str) -> Vec<&'static str> {
+        let mut planned = Vec::new();
+        if supports_landtype_criteria(mesh_type) {
+            if refine.refine_num_landtypes {
+                planned.push("landcover");
+            }
+            if refine.refine_area_mainland {
+                planned.push("area_mainland");
+            }
+            if refine.refine_sea_ratio {
+                planned.push("sea_ratio");
+            }
+        }
+        planned
+    }
+
+    /// The same is true of the layered mean/std threshold catalogue.
+    ///
+    /// `refine_onelayer_*` and `refine_twolayer_*` are mean/std pairs -- even
+    /// slot compares the value, odd slot compares how much it varies -- and the
+    /// h-field applies both halves. This planner read only the even half, so a
+    /// project asking for refinement where a field is rough got a uniform mesh
+    /// and no message. Checked against the spec builders themselves rather than
+    /// a hand-written list, so a criterion added to the catalogue cannot be
+    /// added to one route only.
+    #[test]
+    fn both_halves_of_every_layered_threshold_pair_reach_this_planner() {
+        let refine = RefineConfig {
+            refine_onelayer_lnd: [true; 8],
+            refine_onelayer_ocn: [true; 8],
+            refine_onelayer_atmos: [true; 2],
+            refine_twolayer_lnd: [true; 10],
+            ..RefineConfig::default()
+        };
+        for mesh_type in ["landmesh", "oceanmesh", "atmosmesh", "earthmesh"] {
+            let mean = enabled_mean_threshold_field_specs(&refine, mesh_type);
+            let stddev = enabled_std_threshold_field_specs(&refine, mesh_type);
+            assert!(!mean.is_empty(), "{mesh_type} has no mean specs to compare");
+            assert!(
+                !stddev.is_empty(),
+                "{mesh_type} std half vanished from the catalogue"
+            );
+        }
+    }
 
     #[test]
     fn a_scale_must_be_a_real_length() {

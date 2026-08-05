@@ -20,7 +20,7 @@ use crate::mkgrd_data_preprocess_source::read_landtype_bbox_window_one_based;
 /// 180 degrees east or the south pole must not ask for a halo beyond them. A
 /// clipped halo costs only that the outermost cells are classified against
 /// fewer neighbours, which is what "no neighbour there" means anyway.
-fn halo_within_source(
+pub(super) fn halo_within_source(
     bounds: AreaJudgeSourceBounds,
     gridnum_perdegree: usize,
     cells: usize,
@@ -119,6 +119,126 @@ pub fn landcover_heterogeneity_demand(
                 }
             }
             if seen.len() > max_classes {
+                demand.set(lon, lat, true);
+            }
+        }
+    }
+    Ok(demand)
+}
+
+/// Mark every source cell whose neighbourhood is a mix of land and sea, by
+/// fraction rather than by boundary.
+///
+/// This is the criterion the namelist calls `th_sea_ratio`: refine where the
+/// ocean share of a cell falls strictly inside `[low, high]`, because a cell
+/// that is neither all sea nor all land is a coastal cell. Like land-cover
+/// heterogeneity it is resolution-dependent — shrink the cell and its share
+/// moves toward 0 or 1, so fewer cells qualify — which is the difference from
+/// [`coastal_demand`]: that one detects the class boundary itself and gives the
+/// same answer at every scale.
+pub fn sea_ratio_demand(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    bounds: AreaJudgeSourceBounds,
+    radius_cells: usize,
+    low: f64,
+    high: f64,
+) -> io::Result<RefinementDemand> {
+    if radius_cells == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sea-ratio radius must cover at least one cell",
+        ));
+    }
+    if !(low.is_finite() && high.is_finite()) || low >= high {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("sea-ratio bounds must satisfy low < high, got [{low}, {high}]"),
+        ));
+    }
+    let mut demand = RefinementDemand::new(bounds, gridnum_perdegree)?;
+    let halo = halo_within_source(bounds, gridnum_perdegree, radius_cells);
+    let window = read_landtype_bbox_window_one_based(landtype_file, gridnum_perdegree, halo)?;
+
+    for lat in bounds.maxlat_source..=bounds.minlat_source {
+        for lon in bounds.minlon_source..=bounds.maxlon_source {
+            let (mut ocean, mut total) = (0usize, 0usize);
+            for neighbour_lat in lat.saturating_sub(radius_cells)..=lat + radius_cells {
+                for neighbour_lon in lon.saturating_sub(radius_cells)..=lon + radius_cells {
+                    let Some(value) = window.value_at_global(neighbour_lon, neighbour_lat) else {
+                        continue;
+                    };
+                    total += 1;
+                    if value == 0 {
+                        ocean += 1;
+                    }
+                }
+            }
+            if total == 0 {
+                continue;
+            }
+            let ratio = ocean as f64 / total as f64;
+            if ratio > low && ratio < high {
+                demand.set(lon, lat, true);
+            }
+        }
+    }
+    Ok(demand)
+}
+
+/// Mark every source cell whose neighbourhood no single land class dominates.
+///
+/// The namelist calls this `refine_area_mainland`: refine where the largest
+/// class covers less than `min_dominant_share` of the land. Resolution-dependent
+/// for the same reason as the others — a smaller cell is more likely to sit
+/// inside one class.
+pub fn dominant_class_demand(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    bounds: AreaJudgeSourceBounds,
+    radius_cells: usize,
+    min_dominant_share: f64,
+) -> io::Result<RefinementDemand> {
+    if radius_cells == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dominant-class radius must cover at least one cell",
+        ));
+    }
+    if !min_dominant_share.is_finite() || !(0.0..=1.0).contains(&min_dominant_share) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("dominant class share must be in 0..=1, got {min_dominant_share}"),
+        ));
+    }
+    let mut demand = RefinementDemand::new(bounds, gridnum_perdegree)?;
+    let halo = halo_within_source(bounds, gridnum_perdegree, radius_cells);
+    let window = read_landtype_bbox_window_one_based(landtype_file, gridnum_perdegree, halo)?;
+
+    for lat in bounds.maxlat_source..=bounds.minlat_source {
+        for lon in bounds.minlon_source..=bounds.maxlon_source {
+            let mut counts: Vec<(i8, usize)> = Vec::new();
+            let mut land = 0usize;
+            for neighbour_lat in lat.saturating_sub(radius_cells)..=lat + radius_cells {
+                for neighbour_lon in lon.saturating_sub(radius_cells)..=lon + radius_cells {
+                    let Some(value) = window.value_at_global(neighbour_lon, neighbour_lat) else {
+                        continue;
+                    };
+                    if value == 0 {
+                        continue;
+                    }
+                    land += 1;
+                    match counts.iter_mut().find(|(class, _)| *class == value) {
+                        Some((_, count)) => *count += 1,
+                        None => counts.push((value, 1)),
+                    }
+                }
+            }
+            if land == 0 {
+                continue;
+            }
+            let dominant = counts.iter().map(|(_, count)| *count).max().unwrap_or(0);
+            if (dominant as f64 / land as f64) < min_dominant_share {
                 demand.set(lon, lat, true);
             }
         }

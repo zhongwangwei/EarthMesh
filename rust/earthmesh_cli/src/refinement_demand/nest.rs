@@ -78,6 +78,25 @@ pub fn spawn_nest_adaptive_with_named_regions(
             "base cell size must be positive and finite",
         ));
     }
+    // A named region is an instruction. One asking for a level this run will
+    // never reach would be filtered out by the per-level loop below and vanish
+    // without a word, leaving a mesh that is valid, passes its checks, and is
+    // coarser than the project asked for. The `deepest_level == 0` guard
+    // downstream only catches it when *nothing* refined; a run that also names a
+    // reachable level slips through. Refuse here instead.
+    if let Some(region) = named_regions
+        .iter()
+        .find(|region| region.level() == 0 || region.level() > max_level)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "a named refinement region asks for level {} but this run refines to level \
+                 {max_level}; raise the maximum level or lower the region's",
+                region.level()
+            ),
+        ));
+    }
     let radii = nested_circle_radii_meters(base_cell_meters, max_level)?;
     let mut current = mesh.clone();
     let mut passes = Vec::new();

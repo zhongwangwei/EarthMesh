@@ -217,6 +217,13 @@ pub fn run_refine_pipeline_namelist(
     let has_threshold_hfield_sources = use_hfield_regions
         && refine.refine_cal
         && crate::hfield_refine::has_threshold_hfield_sources(&refine, mesh_type);
+    // Whether *some* backend is going to consume the criteria itself. The
+    // legacy calculated-region reader must stand down for either of them, not
+    // just for the h-field: with the point+radius route the criteria are the
+    // demand planner's business, and letting the reader also run sends it to
+    // look for mask files that a criteria-driven run never has.
+    let backend_consumes_criteria =
+        has_threshold_hfield_sources || (adaptive_options.is_some() && refine.refine_cal);
 
     let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
     let mut regions = native_regions;
@@ -231,14 +238,14 @@ pub fn run_refine_pipeline_namelist(
     let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
     let has_configured_calculated_regions =
         !calculated_region_prefix.is_empty() && calculated_region_prefix != "/tmp";
-    if refine.refine_cal && (!has_threshold_hfield_sources || has_configured_calculated_regions) {
+    if refine.refine_cal && (!backend_consumes_criteria || has_configured_calculated_regions) {
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,
             max_cal_level,
         )?);
     }
     if regions.is_empty()
-        && !has_threshold_hfield_sources
+        && !backend_consumes_criteria
         && !native_surface_global_expansion
         && !has_hydro_hfield_source
     {
@@ -270,6 +277,8 @@ pub fn run_refine_pipeline_namelist(
                 w_refine_level_orig: (!source_levels.w_refine_level_orig.is_empty())
                     .then_some(source_levels.w_refine_level_orig.as_slice()),
                 w_ngr: (!source_levels.w_ngr.is_empty()).then_some(source_levels.w_ngr.as_slice()),
+                m_lineage: None,
+                w_lineage: None,
             },
             nxp,
             usize::try_from(config.niter).map_err(|_| {
@@ -675,8 +684,30 @@ pub fn run_refine_pipeline_namelist(
     // is clipped away stops descending without failing, and `max_level` alone
     // cannot show that.
     let realized_max_level = w_refine_levels.iter().copied().max().unwrap_or(0).max(0) as usize;
+    // Ancestry as the mesh tracked it through every pass and renumbering.
+    let m_lineages = mesh.gridfile_m_cell_lineages()?;
+    let w_lineages = mesh.gridfile_w_cell_lineages()?;
     let w_refine_levels_orig = method_c_w_refine_levels_orig_zero_based(&state)?;
     let w_ngr = method_c_w_ngr(&state)?;
+    // Which cells the run named outright. The carve's largest-component rule
+    // would otherwise delete a refinement circle sitting on a small bay, and
+    // nothing would report that the region asked for is gone.
+    //
+    // The carve indexes this by centre id, and which points are centres depends
+    // on the view: `hex` cells are centred on W points, `tri` cells on M points.
+    // Sampling the wrong array does not fail loudly -- the lookup is bounds
+    // checked -- it protects unrelated cells and leaves the demanded ones to be
+    // carved away, which is the failure this array exists to prevent.
+    let hard_center_demand = adaptive_run.as_ref().map(|(report, _, _, _)| {
+        let centers = match config.mode_grid.trim() {
+            "tri" => &output_mesh.m_points,
+            _ => &output_mesh.w_points,
+        };
+        centers
+            .iter()
+            .map(|point| report.target_level_at(point.lon, point.lat) > 0)
+            .collect::<Vec<bool>>()
+    });
     let outputs = write_method_c_refined_outputs(
         &contents,
         &config,
@@ -687,6 +718,8 @@ pub fn run_refine_pipeline_namelist(
         &output_mesh,
         domain_region.as_ref(),
         Some(MethodCMetadataSlices {
+            m_lineage: &m_lineages,
+            w_lineage: &w_lineages,
             m_refine_level: &m_refine_levels,
             m_refine_level_orig: &m_refine_levels_orig,
             m_ngr: &m_ngr,
@@ -694,6 +727,7 @@ pub fn run_refine_pipeline_namelist(
             w_refine_level_orig: &w_refine_levels_orig,
             w_ngr: &w_ngr,
         }),
+        hard_center_demand.as_deref(),
     )?;
 
     // Beside the final gridfile, where the quality step can find it: both it and
@@ -826,6 +860,12 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
 ///
 /// A regional run judges its own domain; a global run judges the whole sphere,
 /// which is what `source_bounds_for_bbox` returns for the full range.
+///
+/// Every regional shape has to be covered here. A shape that fell through to the
+/// global range would raster the whole planet for a domain a few degrees across:
+/// the demand grid is `nlons * nlats` at `gridnum_perdegree`, so the 120 per
+/// degree the shipped examples use is 43200 x 21600 -- about 930 million cells
+/// to allocate and scan before the first refinement pass.
 fn adaptive_demand_bounds(
     domain_region: Option<&GridRegion>,
     config: &EarthmeshConfig,
@@ -836,34 +876,75 @@ fn adaptive_demand_bounds(
             "NL%gridnum_perdegree must fit usize",
         )
     })?;
-    let (west, east, south, north) = match domain_region {
-        Some(GridRegion::Bbox {
+    let (west, east, south, north) = match domain_region.map(region_lonlat_bounds) {
+        Some(Some(bounds)) => bounds,
+        _ => (-180.0, 180.0, -90.0, 90.0),
+    };
+    crate::refinement_demand::source_bounds_for_bbox(west, east, south, north, gridnum_perdegree)
+}
+
+/// Enclosing lon/lat box of a regional shape, or `None` when it has no bound.
+fn region_lonlat_bounds(region: &GridRegion) -> Option<(f64, f64, f64, f64)> {
+    match region {
+        GridRegion::Bbox {
             west,
             east,
             south,
             north,
-        }) => (*west, *east, *south, *north),
-        Some(GridRegion::Circle {
+        } => Some((*west, *east, *south, *north)),
+        GridRegion::Circle {
             lon,
             lat,
             radius_km,
-        }) => {
+        } => {
             // A circle's enclosing box, clipped to the sphere. Demand outside
             // the circle is harmless: the reduction only emits circles where a
             // criterion actually asked for one.
             let degrees = radius_km / 111.195;
             let lat_pad = degrees;
             let lon_pad = degrees / lat.to_radians().cos().abs().max(0.05);
-            (
+            Some((
                 (lon - lon_pad).max(-180.0),
                 (lon + lon_pad).min(180.0),
                 (lat - lat_pad).max(-90.0),
                 (lat + lat_pad).min(90.0),
-            )
+            ))
         }
-        _ => (-180.0, 180.0, -90.0, 90.0),
-    };
-    crate::refinement_demand::source_bounds_for_bbox(west, east, south, north, gridnum_perdegree)
+        // A closed curve -- a watershed, a coastline traced by hand -- is the
+        // shape a project most often draws, and its box is just its extent.
+        GridRegion::Close { points } => {
+            let mut bounds: Option<(f64, f64, f64, f64)> = None;
+            for point in points {
+                if !point.lon.is_finite() || !point.lat.is_finite() {
+                    continue;
+                }
+                bounds = Some(match bounds {
+                    None => (point.lon, point.lon, point.lat, point.lat),
+                    Some((west, east, south, north)) => (
+                        west.min(point.lon),
+                        east.max(point.lon),
+                        south.min(point.lat),
+                        north.max(point.lat),
+                    ),
+                });
+            }
+            bounds
+        }
+        // A union covers each member, so its box covers all of them.
+        GridRegion::Any(regions) => {
+            regions
+                .iter()
+                .filter_map(region_lonlat_bounds)
+                .reduce(|left, right| {
+                    (
+                        left.0.min(right.0),
+                        left.1.max(right.1),
+                        left.2.min(right.2),
+                        left.3.max(right.3),
+                    )
+                })
+        }
+    }
 }
 
 /// Land-type raster for the adaptive route, or `None` when the run has none.
@@ -875,6 +956,70 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A demand grid is `nlons * nlats`, so this is the cost of the window.
+    fn demand_cells(region: Option<&GridRegion>, per_degree: i32) -> usize {
+        let config = EarthmeshConfig {
+            gridnum_perdegree: per_degree,
+            ..EarthmeshConfig::default()
+        };
+        let bounds = adaptive_demand_bounds(region, &config).expect("bounds");
+        (bounds.maxlon_source - bounds.minlon_source + 1)
+            * (bounds.minlat_source - bounds.maxlat_source + 1)
+    }
+
+    #[test]
+    fn a_closed_curve_domain_is_judged_over_itself_not_the_planet() {
+        // A shape with no arm of its own fell through to the whole sphere. At
+        // the 120 per degree the examples ship, that is a ~930 million cell
+        // grid allocated and scanned for a domain a few degrees across -- no
+        // error, just a run that will not finish.
+        let watershed = GridRegion::Close {
+            points: vec![
+                crate::LonLatPoint {
+                    lon: 104.0,
+                    lat: 16.0,
+                },
+                crate::LonLatPoint {
+                    lon: 120.0,
+                    lat: 16.0,
+                },
+                crate::LonLatPoint {
+                    lon: 120.0,
+                    lat: 32.0,
+                },
+                crate::LonLatPoint {
+                    lon: 104.0,
+                    lat: 32.0,
+                },
+            ],
+        };
+        let global = demand_cells(None, 120);
+        let regional = demand_cells(Some(&watershed), 120);
+        assert!(
+            regional * 100 < global,
+            "a 16 by 16 degree domain must not cost the globe: {regional} vs {global}"
+        );
+    }
+
+    #[test]
+    fn a_union_domain_is_judged_over_every_member() {
+        let west = GridRegion::Bbox {
+            west: 100.0,
+            east: 110.0,
+            south: 10.0,
+            north: 20.0,
+        };
+        let east = GridRegion::Bbox {
+            west: 130.0,
+            east: 140.0,
+            south: 30.0,
+            north: 40.0,
+        };
+        let union = GridRegion::Any(vec![west, east]);
+        let (w, e, s, n) = region_lonlat_bounds(&union).expect("union bounds");
+        assert_eq!((w, e, s, n), (100.0, 140.0, 10.0, 40.0));
+    }
     use earthmesh_core::{GridMemory, IjTabs, ItabM, ItabW};
 
     fn minimal_state(mrlm: i32, mrlw: i32) -> earthmesh_mesh::VoronoiGridState {
