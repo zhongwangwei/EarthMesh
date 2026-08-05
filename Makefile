@@ -140,6 +140,18 @@ release-check: check-architecture fmt test-fast
 	@echo 'Release fast gate PASSED: fmt clean + core/geometry/hfield/mesh/quality/refine_planner/project green.'
 	@echo 'Full gate (needs NetCDF): make test-full'
 
+# End-to-end acceptance on real meshes: run the case, measure quality, assert
+# every field, and re-run to prove the bytes repeat. Slower than the unit gates
+# and not part of them; run before releasing a refinement change.
+regression-boundary:
+	bash scripts/run_refinement_boundary_regression.sh
+
+regression-basin-hole:
+	bash scripts/run_basin_hole_regression.sh
+
+regression: regression-boundary regression-basin-hole
+	@echo 'End-to-end regressions PASSED: polar/dateline boundaries + basin hole.'
+
 check-method-c-neighbors:
 	bash rust/earthmesh_mesh/scripts/check-method-c-neighbors.sh
 

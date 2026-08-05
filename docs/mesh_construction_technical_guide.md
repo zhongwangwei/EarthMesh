@@ -46,6 +46,10 @@
 
 全库刻意保留 EarthMesh canonical algorithm 约定：数组长度 n+1，**槽位 0（部分表还有 1）为占位**，有效 id 从 2 起；id 以 `usize` 存储，0/1 或负值作哨兵。循环样式 `for i in 2..=n`。删除的三角形连通行写 `[1,1,1]` 占位。此约定使整数拓扑表可与 参考基线**逐位对拍**。
 
+**内存约定与文件边界的起点不同，这一点以前没写清。** 内存里遍历从 2 起；写进 gridfile 的逐单元元数据却是 `(1..=n)`——`m_refine_level`、`m_ngr`、`earthmesh_m_lineage` 都包含占位行 1。所以**占位行 1 必须携带一个自洽的值**，不能当成"不存在"：发射器里 `iwnew[1] = 1`、`imnew[1] = 1`，即占位行映射到自身。
+
+实现单元血缘时踩到过这个差异：按"有效 id 从 2 起"把 id<2 的血缘填 0，输出的第一行祖先就是 0——一个不存在的行，而下游解析血缘时无从判断那是占位还是数据损坏。回归测试（`tests/method_c_lineage.rs`）断言的正是"每一行的祖先都必须是一个存在过的行"，占位行指向自身满足它。新增任何逐单元的文件级元数据时，占位行同样要给出可解析的值。
+
 ### 1.2 Method-C Delaunay 三表（`icosahedron_types`）
 
 | 实体 | 字段 | 含义 |
@@ -406,6 +410,12 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    **粗粒度的深度报告本来就覆盖了这条路**：`realized_max_level` 是在分支之后**从产出的网格量出来的**，所以自适应分支自动继承，`refine_realized_max_level=` 照样打印。深度不足对这条路而言要么已被上面两道网报错，要么是"需求耗尽"这一合法情形（`cli_mkgrd_output/print.rs` 那条 shortfall 警告由 h 场专属条件门控，对自适应不会误报）。
 
+   **试过并放弃的一条：h 场的"硬需求未覆盖"门禁。** 参考实现里有个 Fail 级 gate `hfield_uncovered_hard_support_bin_count`——"有硬需求的 h 场格点最终没有任何单元以正面积覆盖它"。移植时接错了输入：那个 gate 要的是**梯度限制之前**的场（只有判据与显式区域直接钉住的格点），我喂的是梯度限制之后的完整场，于是每个 `h < base` 的格点都算硬需求，在一次全球极点算例上报出 279350 个"未覆盖"。
+
+   正确接法需要在 h 场构建时捕获梯度限制前的中间态，而 `limit_gradient` 在 `hfield_refine` 里有 5 处调用、散布在各判据的应用中——这是改造 h 场构建，不是接一个门禁。**已撤回**（gate 函数与 2149 行覆盖计算一并删除，不留无调用方的代码）。
+
+   不继续做的理由是优先级：h 场现在是**遗留路线**，为它新建诊断还要改造其构建流程，投入产出不合算。而默认路线的同类保护是**结构性**的——归约层保证"每个被需求的源格点必落在某个圆内"（块是半个半径宽，格点到块心最远约 0.35 个半径，有测试锁定），所以需求不会在"需求 → 圆"这一步丢失；"圆 → 网格"这一步由逐层物化检查兜底。
+
    **逐单元对账已接通**（2026-08）。细化步骤把它实际发出的圆写进 `<case>/result/adaptive_refinement.json`——与最终 gridfile、`namelist.save` 同目录，所以质量步骤从 namelist 路径就能找到；质量侧 `grid_quality_inputs/adaptive.rs` 读回后逐单元采样目标层级，交给 `earthmesh_quality::attach_adaptive_diagnostics`。读的是**运行时真正发出的圆**而不是重新规划，所以对不上必定是细化失败、不会是规划差异。
 
    两处与 h 场不同的地方，都是量出来的：
@@ -504,3 +514,17 @@ plan 通过 `hfield_target_cells_geojson + hfield_target_levels_json` 转成梯�
 - writers 的 NetCDF 变量布局本文未展开（属 `earthmesh_cli`，见各 `*_writer/*_io` 模块与对应测试）。
 - h 场已接入 namelist/ProjectConfig、Cartesian-XY 和地理阈值数据路径，并由 `hfield_refine`/`refine_pipeline` 测试覆盖。
 - **测试临时目录必须在进程内唯一**（2026-08 修）。`project_auto_refine_e2e` 原先用 `pid + SystemTime::now().as_nanos()` 命名临时根目录，而 macOS 上 `as_nanos()` 只有微秒粒度（实测遗留目录的 nonce 全部以 `000` 结尾），测试线程同微秒启动就会共用一个目录：一个测试写 `project.yaml` 时另一个读到半截内容（报 `unknown field 'ine'`），先跑完的 `remove_dir_all` 又会删掉另一个的产物（报 `Block quality report`）。实测复现率约 1/6（8 次 1 次、5 次 1 次），加进程内原子计数器后 10 次全绿。新增 e2e 测试沿用同一命名方式时须带唯一序号。
+
+### 11.1 深度排查（2026-08）：五类"沉默失败"
+
+一次系统性排查找到并修复的缺陷，都属同一族——**产物合法、质量检查通过、但不是被请求的那个网格**。列在这里是因为每一条都能再犯。
+
+- **新建行的血缘留 0**（`method_c_emit`）。细分在边中点新建 M 点，而血缘只对*已有*行做了搬迁（`for im in 2..=self.nmd`），新中点保持 0——指向不存在的行。实测一次单级细化即产生 72 个这样的行。已有测试没抓到，是因为它只查 `gridfile_m_cell_lineages()`（读 W 面），没查 W 侧。**规律：新增任何逐单元的文件级元数据，占位行和新建行都要给出可解析的值；测试要覆盖 M、W 两侧。**
+- **命名区域被按级过滤掉**（`refinement_demand::nest`）。逐级循环只取 `region.level() == level` 的区域，超出上限的命名圆圈无声消失。下游 `deepest_level == 0` 那道闸只在*什么都没细化*时才响，只要另有一个可达级别的区域细化成功就漏过去。**命名区域是指令不是判据，够不到就必须报错。**
+- **保护标记按错误的单元种类建立**（`refine_pipeline::global_source`）。`hard_center_demand` 一律按 `w_points` 构建，但 `hex` 的单元中心是 W 点、`tri` 是 M 点。查表是带边界检查的，所以不会崩——只会保护无关单元、把该保的丢掉，正是这个数组存在的目的的反面。
+- **保护只覆盖了一半流程**（`mask_postproc_components`）。`hard_demand` 传给了连通分量那一半，没传给紧接着的扇形剪枝；剪枝按"保留最大扇"删单元，会在同一轮循环里删掉前一半刚保住的单元。现在洞口保留优先看需求、再看大小。
+- **两条细化路径消费的判据不一致**（`refinement_demand::plan`）。`refine_onelayer_*` / `refine_twolayer_*` 是 mean/std 成对开关（偶数槽比值、奇数槽比变化幅度），h 场两半都用，点+半径路径只读了 mean 半边。于是"在场量变化剧烈处细化"这类要求（陡坡、SST 锋面）在默认路径下静默失效。已补 `threshold_stddev_demand`（邻域总体标准差，与 h 场同义），并加了对着 spec 构造器本身断言的不变量测试，使新判据无法只接一条路径。
+
+同批还修了两处非"沉默"问题：`adaptive_demand_bounds` 对 `Close`/`Any` 域回落到全球窗口（示例默认 `gridnum_perdegree = 120` 时是 43200×21600 ≈ 9.3 亿格，一个几度大的流域会先分配并扫完整个地球）；`scripts/run_basin_hole_regression.sh` 依赖仓库里并不存在的 shapefile，且引用了已撤销的 h 场 demand 产物变量——脚本改为自己生成 ESRI Polygon 域，现在能跑通，并真正验到 `boundary_loop_count == 2`。
+
+一条排查方法上的教训：曾判定"`GridRegion` 没有挖洞表示，带内环的 shapefile 会被静默填平"，写完拦截才发现 `read_polygon_record` 早已调用 `assemble_polygon_rings` 做环桥接，洞是对的，而那道拦截反而会误伤"洞中岛"这个已支持的用例。**看代码推出的缺陷，必须先写出能失败的测试再动手改**——那个测试没红，就是诊断错了。
