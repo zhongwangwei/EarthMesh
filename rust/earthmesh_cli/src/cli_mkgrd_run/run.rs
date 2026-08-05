@@ -642,6 +642,7 @@ fn run_prepared_mkgrd(
                 })?;
                 let refinement_parent = refinement_parent_gridfile(&report).unwrap_or(gridfile);
                 let hydro_dir = earthmesh_project::project_hydro_output_dir(gridfile);
+                let hydro_engine_dir = hydro_dir.join("engine");
                 let closed =
                     earthmesh_cli::project_hydro_closed_loop::run_project_hydro_closed_loop(
                         &spec.config,
@@ -650,7 +651,7 @@ fn run_prepared_mkgrd(
                         gridfile,
                         refinement_parent,
                         &hydro_dir,
-                        &workdir,
+                        &hydro_engine_dir,
                         max_tris,
                         source_gridnum_perdegree,
                     )
@@ -708,9 +709,29 @@ fn run_prepared_mkgrd(
                 authoritative_quality_report = Some(quality_report);
             }
         }
+        let delivery = project
+            .as_ref()
+            .map(|spec| {
+                let gridfile = final_gridfile(&report).ok_or_else(|| {
+                    "project delivery requires a completed gridfile-producing run".to_string()
+                })?;
+                deliver_project_outputs(spec, &config, gridfile, source_gridnum_perdegree)
+            })
+            .transpose()?;
         if !quiet {
             if let Some(path) = authoritative_quality_report {
                 println!("quality_report={}", path.display());
+            }
+            if let Some(delivery) = delivery {
+                println!("delivery={}", delivery.status);
+                println!("delivery_model={}", delivery.model);
+                println!("delivery_manifest={}", delivery.manifest.display());
+                for output in delivery.specialized_outputs {
+                    println!("specialized_output={}", output.display());
+                }
+                if let Some(reason) = delivery.skipped_adapter_reason {
+                    println!("skipped_adapter_reason={reason}");
+                }
             }
             match &report {
                 earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch(report) => {
@@ -885,6 +906,171 @@ fn run_prepared_mkgrd(
     }
 
     Err("internal error: explicit mkgrd execution mode was not dispatched".to_string())
+}
+
+struct ProjectDeliveryReport {
+    status: &'static str,
+    model: &'static str,
+    manifest: PathBuf,
+    specialized_outputs: Vec<PathBuf>,
+    skipped_adapter_reason: Option<String>,
+}
+
+fn deliver_project_outputs(
+    spec: &ProjectRunSpec,
+    config: &earthmesh_core::EarthmeshConfig,
+    gridfile: &std::path::Path,
+    source_gridnum_perdegree: Option<usize>,
+) -> Result<ProjectDeliveryReport, String> {
+    use earthmesh_project::{ModelFormat, ProjectOutputDelivery, ProjectTargetTriple};
+
+    let target = ProjectTargetTriple::from(&spec.config.target);
+    let model = spec.config.target.model_format.engine_str();
+    let standard_dir = gridfile
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("standard");
+    fs::create_dir_all(&standard_dir)
+        .map_err(|error| format!("create {}: {error}", standard_dir.display()))?;
+    let stem = gridfile
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("earthmesh_grid");
+    let mut specialized_outputs = Vec::new();
+    let mut skipped_adapter_reason = target.skipped_adapter_reason().map(str::to_string);
+
+    let specialized_result = (|| -> Result<(), String> {
+        if target.output_delivery() != ProjectOutputDelivery::Full {
+            return Ok(());
+        }
+        match spec.config.target.model_format {
+            ModelFormat::Icon => {
+                let output = standard_dir.join(format!("ICON_{stem}.nc"));
+                earthmesh_cli::mpas_gridfile_writers::write_standard_icon_from_gridfile(
+                    gridfile,
+                    &output,
+                    usize::try_from(config.nxp)
+                        .map_err(|_| "project NXP must be positive".to_string())?,
+                )
+                .map_err(|error| format!("ICON specialized export: {error}"))?;
+                specialized_outputs.push(output);
+            }
+            ModelFormat::Fvcom => {
+                let output = standard_dir.join(format!("FVCOM_{stem}.2dm"));
+                earthmesh_cli::regional_gridfile_writers::write_standard_fvcom_from_gridfile(
+                    gridfile, &output,
+                )
+                .map_err(|error| format!("FVCOM specialized export: {error}"))?;
+                specialized_outputs.push(output);
+            }
+            ModelFormat::Mpas => {
+                let mesh = standard_dir.join(format!("MPAS_{stem}.nc4"));
+                let graph = standard_dir.join(format!("MPAS_{stem}.graph.info"));
+                earthmesh_cli::mpas_gridfile_writers::write_standard_mpas_from_gridfile(
+                    gridfile,
+                    &mesh,
+                    &graph,
+                    usize::try_from(config.nxp)
+                        .map_err(|_| "project NXP must be positive".to_string())?,
+                )
+                .map_err(|error| format!("MPAS specialized export: {error}"))?;
+                specialized_outputs.extend([mesh, graph]);
+            }
+            ModelFormat::MpasOcean => {
+                let mesh = standard_dir.join(format!("MPAS-Ocean_{stem}.nc4"));
+                let graph = standard_dir.join(format!("MPAS-Ocean_{stem}.graph.info"));
+                earthmesh_cli::mpas_gridfile_writers::write_standard_mpas_ocean_from_gridfile(
+                    gridfile,
+                    &mesh,
+                    &graph,
+                    usize::try_from(config.nxp)
+                        .map_err(|_| "project NXP must be positive".to_string())?,
+                )
+                .map_err(|error| format!("MPAS-Ocean specialized export: {error}"))?;
+                specialized_outputs.extend([mesh, graph]);
+            }
+            ModelFormat::MpasSimple => {
+                let output = standard_dir.join(format!("MPAS-Simple_{stem}.nc4"));
+                earthmesh_cli::mpas_gridfile_writers::write_standard_mpas_simple_from_gridfile(
+                    gridfile,
+                    &output,
+                    usize::try_from(config.nxp)
+                        .map_err(|_| "project NXP must be positive".to_string())?,
+                )
+                .map_err(|error| format!("MPAS-Simple specialized export: {error}"))?;
+                specialized_outputs.push(output);
+            }
+            ModelFormat::CoLM => {
+                let landtype = std::path::Path::new(config.landtype_file.trim());
+                if !landtype.is_file() {
+                    skipped_adapter_reason = Some(
+                        "CoLM parameter export requires an enabled landcover source".to_string(),
+                    );
+                } else {
+                    let gridnum_perdegree = source_gridnum_perdegree
+                        .map(Ok)
+                        .unwrap_or_else(|| {
+                            earthmesh_cli::mkgrd_gridinit_driver::landtype_gridnum_perdegree(
+                                landtype,
+                            )
+                        })
+                        .map_err(|error| format!("CoLM landcover resolution: {error}"))?;
+                    let csv = standard_dir.join(format!("CoLM_{stem}_cells.csv"));
+                    earthmesh_cli::hydro_delivery_coupling_quality::write_colm_coupling_csv_from_mesh(
+                        gridfile,
+                        landtype,
+                        gridnum_perdegree,
+                        spec.config.metadata.name.as_str(),
+                        spec.config.target.cell.engine_str(),
+                        &csv,
+                    )
+                    .map_err(|error| format!("CoLM specialized export: {error}"))?;
+                    let netcdf = standard_dir.join(format!("CoLM_{stem}_coupling.nc4"));
+                    let netcdf_report =
+                        earthmesh_cli::colm_package_io::write_colm_coupling_netcdf_from_csv(
+                            &csv,
+                            &netcdf,
+                            spec.config.metadata.name.as_str(),
+                            standard_dir.join(format!("CoLM_{stem}_manifest.json")),
+                        )
+                        .map_err(|error| format!("CoLM specialized export: {error}"))?;
+                    specialized_outputs.extend([csv, netcdf_report.output]);
+                }
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = specialized_result {
+        eprintln!("earthmesh_cli: warning: {error}; keeping grid-only delivery");
+        specialized_outputs.clear();
+        skipped_adapter_reason = Some(error);
+    }
+
+    let status = if skipped_adapter_reason.is_none() {
+        "full"
+    } else {
+        "grid_only"
+    };
+    let manifest = standard_dir.join("earthmesh_delivery.json");
+    let json = serde_json::json!({
+        "gridfile": gridfile,
+        "delivery": status,
+        "model": model,
+        "specialized_outputs": specialized_outputs,
+        "skipped_adapter_reason": skipped_adapter_reason,
+    });
+    fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&json).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("write {}: {error}", manifest.display()))?;
+    Ok(ProjectDeliveryReport {
+        status,
+        model,
+        manifest,
+        specialized_outputs,
+        skipped_adapter_reason,
+    })
 }
 
 fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<usize, String> {

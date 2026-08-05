@@ -24,7 +24,7 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     fs::write(
         &source,
         format!(
-            "&mkgrd\n  NL%EXPNME='hydro_adapter'\n  NL%base_dir='{}/'\n  NL%NXP=81\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_origin_lon=110.5\n  NL%hfield_origin_lat=22.25\n  NL%hfield_nlon=360\n  NL%hfield_nlat=180\n/\n",
+            "&mkgrd\n  NL%EXPNME='hydro_adapter'\n  NL%base_dir='{}/'\n  NL%NXP=81\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_cal=3\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=1\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_origin_lon=110.5\n  NL%hfield_origin_lat=22.25\n  NL%hfield_nlon=360\n  NL%hfield_nlat=180\n/\n",
             root.display()
         ),
     )
@@ -90,6 +90,8 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     assert!(adapter_text.contains("hfield_origin_lon = 110.5"));
     assert!(adapter_text.contains("hfield_origin_lat = 22.25"));
     assert!(adapter_text.contains("NL%mode_file_description = 'EarthMesh'"));
+    assert!(adapter_text.contains("RL%refine_cal = .TRUE."));
+    assert!(adapter_text.contains("RL%max_iter_cal = 3"));
     assert!(
         adapter_text.contains("NL%hfield_g = 0.2"),
         "the normal adapter pass must preserve the source HField gradation"

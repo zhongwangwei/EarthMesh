@@ -7,7 +7,8 @@ use crate::dto::{
 use earthmesh_project::{
     criterion_catalog, default_mask_sea_ratio, threshold_criterion_catalog, CloseMaskFormat,
     DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshIntentPreset,
-    ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    ProjectConfig, ProjectLayerRole, ProjectOutputDelivery, ProjectTargetTriple, RegionShape,
+    ResolutionSpec,
     DEFAULT_LANDCOVER_CLASS_THRESHOLD, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
     KM_PER_DEGREE_EQUATOR, LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL,
     METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
@@ -77,11 +78,12 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
             })
             .collect(),
         target_compatibility: vec![
-            target_compatibility("land", &["CoLM"]),
-            target_compatibility("earth", &["CoLM"]),
-            target_compatibility("coupled", &["CoLM"]),
-            target_compatibility("ocean", &["FVCOM"]),
-            target_compatibility("atmosphere", &["MPAS", "MPAS-Simple"]),
+            target_compatibility("CoLM", &["tri", "hex"]),
+            target_compatibility("FVCOM", &["tri"]),
+            target_compatibility("ICON", &["tri"]),
+            target_compatibility("MPAS", &["hex"]),
+            target_compatibility("MPAS-Ocean", &["hex"]),
+            target_compatibility("MPAS-Simple", &["hex"]),
         ],
         default_sea_ratio: default_mask_sea_ratio(),
         default_min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
@@ -97,12 +99,12 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
     })
 }
 
-fn target_compatibility(kind: &str, model_formats: &[&str]) -> TargetCompatibilityInfo {
+fn target_compatibility(model_format: &str, specialized_cells: &[&str]) -> TargetCompatibilityInfo {
     TargetCompatibilityInfo {
-        kind: kind.to_string(),
-        model_formats: model_formats
+        model_format: model_format.to_string(),
+        specialized_cells: specialized_cells
             .iter()
-            .map(|format| (*format).to_string())
+            .map(|cell| (*cell).to_string())
             .collect(),
     }
 }
@@ -164,6 +166,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
     }
     .to_string();
     let on_violation = cfg.quality.on_violation.as_str().to_string();
+    let target = ProjectTargetTriple::from(&cfg.target);
     let specified_circle = cfg.refinement.specified_circle.as_ref();
     let specified_bbox = cfg.refinement.specified_bbox.as_ref();
     let specified_close = cfg.refinement.specified_close.as_ref();
@@ -230,6 +233,12 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         cell,
         quality_mode,
         model_format: cfg.target.model_format.engine_str().to_string(),
+        delivery_status: match target.output_delivery() {
+            ProjectOutputDelivery::Full => "full",
+            ProjectOutputDelivery::GridOnly => "grid_only",
+        }
+        .to_string(),
+        skipped_adapter_reason: target.skipped_adapter_reason().map(str::to_string),
         domain: domain.to_string(),
         domain_shape: domain_shape.to_string(),
         nxp,

@@ -229,6 +229,8 @@ pub(crate) fn hex_quality_cells_from_gridfile(
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
     let mut incident: Vec<Vec<usize>> = vec![Vec::new(); wn];
+    let has_authoritative_w_rings =
+        mesh.w_to_m_width != 0 || !mesh.w_to_m.is_empty() || !mesh.n_w.is_empty();
     if !mesh.m_to_w.is_empty() {
         let expected = mn
             .checked_mul(3)
@@ -240,17 +242,21 @@ pub(crate) fn hex_quality_cells_from_gridfile(
             )));
         }
     }
-    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
-        if !m_layout.is_physical_row(mi) {
-            continue;
-        }
-        for &v in tri {
-            let w_row = w_layout
-                .physical_row_for_canonical_id(v, wn)
-                .ok_or_else(|| {
-                    invalid(format!("M cell row {mi} contains invalid W vertex id {v}"))
-                })?;
-            incident[w_row].push(mi);
+    // Regional hex gridfiles retain legal boundary-dual M rows containing
+    // placeholder W ids. They are not needed when authoritative W rings exist.
+    if !has_authoritative_w_rings {
+        for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+            if !m_layout.is_physical_row(mi) {
+                continue;
+            }
+            for &v in tri {
+                let w_row = w_layout
+                    .physical_row_for_canonical_id(v, wn)
+                    .ok_or_else(|| {
+                        invalid(format!("M cell row {mi} contains invalid W vertex id {v}"))
+                    })?;
+                incident[w_row].push(mi);
+            }
         }
     }
 
@@ -658,6 +664,16 @@ mod tests {
                 boundary_dual_rows: 5,
             }
         );
+    }
+
+    #[test]
+    fn hex_quality_uses_authoritative_rings_for_open_boundary_duals() {
+        let (input, source_rows) =
+            quality_input_from_gridfile_hex_with_source_rows(&open_hex_dual_mesh()).unwrap();
+
+        assert_eq!(source_rows, vec![2, 3, 4, 5]);
+        assert_eq!(input.cells.len(), 4);
+        assert_eq!(input.cells[2].vertices.len(), 4);
     }
 
     #[test]

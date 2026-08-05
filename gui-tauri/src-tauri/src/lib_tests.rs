@@ -704,12 +704,12 @@ fn sidecar_success_reports_exit_and_gridfile() {
     let logs = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&logs);
     let child = spawn_test_sidecar(
-        "gridfile=/tmp/gui-success.nc\nquality_report=/tmp/quality_summary.json",
+        "gridfile=/tmp/gui-success.nc\nquality_report=/tmp/quality_summary.json\ndelivery=grid_only\nskipped_adapter_reason=MPAS specialized export requires hexagonal cells",
         "sidecar warning",
         0,
     );
 
-    let (ok, code, gridfile, quality_report) =
+    let (ok, code, gridfile, quality_report, delivery) =
         mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
             captured.lock().unwrap().push(line)
         })
@@ -719,6 +719,12 @@ fn sidecar_success_reports_exit_and_gridfile() {
     assert_eq!(code, Some(0));
     assert_eq!(gridfile.as_deref(), Some("/tmp/gui-success.nc"));
     assert_eq!(quality_report.as_deref(), Some("/tmp/quality_summary.json"));
+    assert_eq!(delivery.status.as_deref(), Some("grid_only"));
+    assert!(delivery.specialized_outputs.is_empty());
+    assert!(delivery
+        .skipped_adapter_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("hexagonal")));
     assert!(logs
         .lock()
         .unwrap()
@@ -734,7 +740,7 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
     let captured = Arc::clone(&logs);
     let child = spawn_test_sidecar("no grid", "synthetic failure", 7);
 
-    let (ok, code, gridfile, quality_report) =
+    let (ok, code, gridfile, quality_report, delivery) =
         mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
             captured.lock().unwrap().push(line)
         })
@@ -744,6 +750,7 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
     assert_eq!(code, Some(7));
     assert_eq!(gridfile, None);
     assert_eq!(quality_report, None);
+    assert_eq!(delivery.status, None);
     let logs = logs.lock().unwrap();
     assert!(logs.iter().any(|line| line == "[stderr] synthetic failure"));
     assert!(logs.iter().any(|line| line == "— exited with 7"));
@@ -826,15 +833,30 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(atmosphere.kind, "atmosphere");
     assert_eq!(atmosphere.cell, "hex");
     assert_eq!(atmosphere.model_format, "MPAS");
-    assert_eq!(
-        capabilities
-            .target_compatibility
-            .iter()
-            .find(|entry| entry.kind == "atmosphere")
-            .expect("atmosphere compatibility")
-            .model_formats,
-        vec!["MPAS".to_string(), "MPAS-Simple".to_string()]
-    );
+    let colm = capabilities
+        .target_compatibility
+        .iter()
+        .find(|entry| entry.model_format == "CoLM")
+        .expect("CoLM compatibility");
+    assert_eq!(colm.specialized_cells, vec!["tri", "hex"]);
+    let fvcom = capabilities
+        .target_compatibility
+        .iter()
+        .find(|entry| entry.model_format == "FVCOM")
+        .expect("FVCOM compatibility");
+    assert_eq!(fvcom.specialized_cells, vec!["tri"]);
+    let icon = capabilities
+        .target_compatibility
+        .iter()
+        .find(|entry| entry.model_format == "ICON")
+        .expect("ICON compatibility");
+    assert_eq!(icon.specialized_cells, vec!["tri"]);
+    let mpas_ocean = capabilities
+        .target_compatibility
+        .iter()
+        .find(|entry| entry.model_format == "MPAS-Ocean")
+        .expect("MPAS-Ocean compatibility");
+    assert_eq!(mpas_ocean.specialized_cells, vec!["hex"]);
 }
 
 #[test]
@@ -873,7 +895,16 @@ fn mesh_kind_rejects_invalid_values() {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_quality kind should fail"),
     }
-    match mesh_cell_polygons("missing.nc".to_string(), "square".to_string(), None) {
+    match mesh_cell_polygons(
+        "missing.nc".to_string(),
+        "tri".to_string(),
+        None,
+        Some("sideways".to_string()),
+    ) {
+        Err(e) => assert!(e.contains("unknown mesh seam mode 'sideways'"), "{e}"),
+        Ok(_) => panic!("invalid mesh_cell_polygons seam should fail"),
+    }
+    match mesh_cell_polygons("missing.nc".to_string(), "square".to_string(), None, None) {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_cell_polygons kind should fail"),
     }
@@ -1087,15 +1118,58 @@ fn every_gui_intent_exposes_the_full_disabled_threshold_catalog() {
 #[test]
 fn gui_target_profile_is_editable_with_the_backend_compatibility_matrix() {
     let yaml = preset_yaml("editable_target", MeshIntentPreset::AtmosphereMpas);
-    let yaml = set_project_target(yaml, "atmosphere".to_string(), "MPAS-Simple".to_string())
-        .expect("MPAS-Simple atmosphere target");
+    let yaml = set_project_target(
+        yaml,
+        "atmosphere".to_string(),
+        "hex".to_string(),
+        "MPAS-Simple".to_string(),
+    )
+    .expect("MPAS-Simple atmosphere target");
     let summary = project_summary(yaml.clone()).expect("target summary");
     assert_eq!(summary.target_kind, "atmosphere");
     assert_eq!(summary.model_format, "MPAS-Simple");
 
-    let error = set_project_target(yaml, "ocean".to_string(), "CoLM".to_string())
-        .expect_err("ocean/CoLM must remain invalid");
-    assert!(error.contains("ocean target model_format must be FVCOM"));
+    let yaml = set_project_target(
+        yaml,
+        "ocean".to_string(),
+        "hex".to_string(),
+        "MPAS-Ocean".to_string(),
+    )
+    .expect("MPAS-Ocean hex target");
+    let summary = project_summary(yaml.clone()).expect("MPAS-Ocean target summary");
+    assert_eq!(summary.model_format, "MPAS-Ocean");
+    assert_eq!(summary.delivery_status, "full");
+
+    let yaml = set_project_target(
+        yaml,
+        "ocean".to_string(),
+        "hex".to_string(),
+        "FVCOM".to_string(),
+    )
+    .expect("target migration preserves the independently selected cell");
+    let summary = project_summary(yaml.clone()).expect("ocean target summary");
+    assert_eq!(summary.cell, "hex");
+    assert_eq!(summary.delivery_status, "grid_only");
+
+    let yaml = set_project_target(
+        yaml,
+        "atmosphere".to_string(),
+        "tri".to_string(),
+        "ICON".to_string(),
+    )
+    .expect("ICON triangular target");
+    let summary = project_summary(yaml.clone()).expect("ICON target summary");
+    assert_eq!(summary.model_format, "ICON");
+    assert_eq!(summary.delivery_status, "full");
+
+    let yaml = set_project_target(
+        yaml,
+        "ocean".to_string(),
+        "tri".to_string(),
+        "CoLM".to_string(),
+    )
+    .expect("CoLM supports both cell views");
+    assert_eq!(project_summary(yaml).unwrap().delivery_status, "full");
 }
 
 #[test]
@@ -1483,18 +1557,14 @@ fn set_project_metadata_writes_visible_project_fields() {
 
 #[test]
 fn set_target_cell_updates_project_cell_shape() {
-    let yaml = hydrology_yaml("cell_shape");
-    let yaml = set_target_cell(yaml, "tri".to_string()).expect("set cell");
-    let summary = project_summary(yaml.clone()).expect("summary");
-    assert_eq!(summary.cell, "tri");
-    assert_eq!(summary.quality_mode, "tri-strict");
-    let yaml = set_target_cell(yaml, "hex".to_string()).expect("set hex cell");
-    let summary = project_summary(yaml.clone()).expect("summary");
-    assert_eq!(summary.cell, "hex");
-    assert_eq!(summary.quality_mode, "hex-cgrid");
-    let cfg = ProjectConfig::from_yaml(&yaml).expect("yaml");
-    assert_eq!(cfg.target.cell, earthmesh_project::MeshCellKind::Hex);
-    assert!(set_target_cell(yaml, "square".to_string()).is_err());
+    let land = hydrology_yaml("land_cell_shape");
+    assert!(set_target_cell(land.clone(), "tri".to_string()).is_ok());
+    assert!(set_target_cell(land, "hex".to_string()).is_ok());
+
+    let ocean = preset_yaml("ocean_cell_shape", MeshIntentPreset::CoastalOcean);
+    assert!(set_target_cell(ocean.clone(), "hex".to_string()).is_ok());
+    assert!(set_target_cell(ocean.clone(), "tri".to_string()).is_ok());
+    assert!(set_target_cell(ocean, "square".to_string()).is_err());
 }
 
 #[test]
@@ -1801,13 +1871,15 @@ fn hfield_defaults_on_and_discrete_can_disable_it() {
 }
 
 #[test]
-fn hfield_origin_survives_opened_project_compose_and_canonical_save() {
+fn hidden_hfield_spatial_config_survives_opened_project_compose_and_canonical_save() {
     let mut base = circle_project("opened_hfield_origin");
     base.refinement.hfield = Some(earthmesh_project::HfieldRefinementRecipe {
         enabled: true,
         g: 0.15,
         max_level: 3,
         base_m: Some(12_000.0),
+        nlon: Some(1800),
+        nlat: Some(900),
         origin_lon: Some(123.5),
         origin_lat: Some(-31.25),
     });
@@ -1836,6 +1908,8 @@ fn hfield_origin_survives_opened_project_compose_and_canonical_save() {
     assert_eq!(recipe.g, 0.25);
     assert_eq!(recipe.max_level, 4);
     assert_eq!(recipe.base_m, Some(10_000.0));
+    assert_eq!(recipe.nlon, Some(1800));
+    assert_eq!(recipe.nlat, Some(900));
     assert_eq!(recipe.origin_lon, Some(123.5));
     assert_eq!(recipe.origin_lat, Some(-31.25));
 }
@@ -2619,63 +2693,79 @@ fn gui_threshold_criterion_uses_the_role_when_a_source_has_a_custom_layer_id() {
 
 #[test]
 fn landcover_refinement_toggle_is_independent_from_the_mask_source() {
-    let yaml = hydrology_yaml("landcover_criterion");
-    let initial = project_summary(yaml.clone()).unwrap();
-    let layer = initial
-        .layers
-        .iter()
-        .find(|layer| layer.role_kind == "landcover")
-        .unwrap();
-    let criterion = initial
-        .threshold_criteria
-        .iter()
-        .find(|criterion| criterion.id == "landcover")
-        .unwrap();
-    assert!(
-        layer.enabled,
-        "landcover remains available as the mask source"
-    );
-    assert!(
-        !criterion.enabled,
-        "mask-only projects do not refine by class count"
-    );
+    let earth = set_project_target(
+        preset_yaml("landcover_earth", MeshIntentPreset::Custom),
+        "earth".to_string(),
+        "hex".to_string(),
+        "CoLM".to_string(),
+    )
+    .unwrap();
+    let cases = [
+        (
+            preset_yaml("landcover_land", MeshIntentPreset::HydrologyLand),
+            "land",
+        ),
+        (
+            preset_yaml("landcover_ocean", MeshIntentPreset::CoastalOcean),
+            "ocean",
+        ),
+        (
+            preset_yaml("landcover_atmosphere", MeshIntentPreset::AtmosphereMpas),
+            "atmosphere",
+        ),
+        (
+            preset_yaml("landcover_coupled", MeshIntentPreset::LandOceanCoupled),
+            "coupled",
+        ),
+        (earth, "earth"),
+    ];
 
-    let yaml = set_threshold_criterion(yaml, "landcover".to_string(), true, Some(9.0)).unwrap();
-    let enabled = project_summary(yaml.clone()).unwrap();
-    assert!(
-        enabled
+    for (yaml, expected_kind) in cases {
+        let initial = project_summary(yaml.clone()).unwrap();
+        assert_eq!(initial.target_kind, expected_kind);
+        assert!(initial
             .layers
             .iter()
             .find(|layer| layer.role_kind == "landcover")
             .unwrap()
-            .enabled
-    );
-    let criterion = enabled
-        .threshold_criteria
-        .iter()
-        .find(|criterion| criterion.id == "landcover")
-        .unwrap();
-    assert!(criterion.enabled);
-    assert_eq!(criterion.value, 9.0);
+            .enabled);
 
-    let yaml = set_threshold_criterion(yaml, "landcover".to_string(), false, Some(9.0)).unwrap();
-    let disabled = project_summary(yaml).unwrap();
-    assert!(
-        disabled
+        let yaml =
+            set_threshold_criterion(yaml, "landcover".to_string(), true, Some(9.0)).unwrap();
+        let enabled = project_summary(yaml.clone()).unwrap();
+        assert_eq!(enabled.target_kind, expected_kind);
+        assert!(enabled
             .layers
             .iter()
             .find(|layer| layer.role_kind == "landcover")
             .unwrap()
-            .enabled
-    );
-    assert!(
-        !disabled
+            .enabled);
+        let criterion = enabled
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == "landcover")
+            .unwrap();
+        assert!(criterion.enabled);
+        assert_eq!(criterion.value, 9.0);
+
+        let disabled = project_summary(
+            set_threshold_criterion(yaml, "landcover".to_string(), false, Some(9.0)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(disabled.target_kind, expected_kind);
+        assert!(disabled
+            .layers
+            .iter()
+            .find(|layer| layer.role_kind == "landcover")
+            .unwrap()
+            .enabled);
+        assert!(!disabled
             .threshold_criteria
             .iter()
             .find(|criterion| criterion.id == "landcover")
             .unwrap()
-            .enabled
-    );
+            .enabled);
+    }
 }
 
 #[test]

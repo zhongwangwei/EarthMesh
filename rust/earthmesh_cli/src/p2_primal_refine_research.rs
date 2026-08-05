@@ -412,7 +412,7 @@ fn shared_edge_midpoints_are_inserted_into_obc_order() {
         "earthmesh-p2-obc-propagation-{}.2dm",
         std::process::id()
     ));
-    let report = crate::write_fvcom_mesh_2dm(&output, &mesh, &order).unwrap();
+    let report = crate::fvcom_mesh_writer::write_fvcom_mesh_2dm(&output, &mesh, &order).unwrap();
     assert_eq!(report.boundary_segments, 1);
     assert!(fs::read_to_string(&output).unwrap().contains("\nNS "));
     let _ = fs::remove_file(output);
@@ -1084,7 +1084,7 @@ fn unmet_tri_case_conforming_primal_refinement_closes_hard_coverage() {
                 validate_obc_segments(&refined, &segments).expect("validate refined OBC order");
                 let order = fvcom_obc_order(&segments);
                 (
-                    crate::write_fvcom_mesh_2dm(output, &mesh, &order)
+                    crate::fvcom_mesh_writer::write_fvcom_mesh_2dm(output, &mesh, &order)
                         .expect("write FVCOM research adapter output with OBC"),
                     segments.len(),
                 )

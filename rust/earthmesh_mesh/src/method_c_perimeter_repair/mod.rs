@@ -2,15 +2,57 @@ use std::io;
 
 use super::*;
 
+#[derive(Debug, Clone)]
+pub struct MethodCParentSupportRequest {
+    pub lineages: Vec<usize>,
+}
+
+impl std::fmt::Display for MethodCParentSupportRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Method-C parent support required for {} stable W-face lineages",
+            self.lineages.len()
+        )
+    }
+}
+
+impl std::error::Error for MethodCParentSupportRequest {}
+
+pub fn method_c_parent_support_request(error: &io::Error) -> Option<&MethodCParentSupportRequest> {
+    error
+        .get_ref()?
+        .downcast_ref::<MethodCParentSupportRequest>()
+}
+
+pub(crate) fn method_c_parent_support_error(lineages: BTreeSet<usize>) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        MethodCParentSupportRequest {
+            lineages: lineages.into_iter().collect(),
+        },
+    )
+}
+
+fn method_c_non_triplet_perimeter_points(
+    perimeters: Vec<Vec<MethodCPerimeterPoint>>,
+) -> Vec<MethodCPerimeterPoint> {
+    perimeters
+        .into_iter()
+        .filter(|perimeter| !perimeter.len().is_multiple_of(3))
+        .flatten()
+        .collect()
+}
+
 impl MethodCDelaunayMesh {
     pub(crate) fn is_repairable_method_c_transition_error(error: &io::Error) -> bool {
         method_c_repairable_payload(error).is_some()
     }
 
-    pub(crate) fn method_c_valence_error_m_point(error: &io::Error) -> Option<usize> {
+    pub(crate) fn method_c_valence_error_parent_m_point(error: &io::Error) -> Option<usize> {
         let payload = method_c_repairable_payload(error)?;
         (payload.kind == MethodCRepairableKind::Valence)
-            .then_some(payload.m_point)
+            .then_some(payload.parent_m_point)
             .flatten()
     }
 
@@ -19,6 +61,21 @@ impl MethodCDelaunayMesh {
         selected: &mut [bool],
         m_neighbors: &[IcosahedronMPointNeighbors],
         child_level: usize,
+    ) -> io::Result<Vec<MethodCPerimeterPoint>> {
+        self.repair_method_c_non_triplet_perimeter_tracking_support(
+            selected,
+            m_neighbors,
+            child_level,
+            None,
+        )
+    }
+
+    pub(crate) fn repair_method_c_non_triplet_perimeter_tracking_support(
+        &self,
+        selected: &mut [bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        child_level: usize,
+        exact_materialization: Option<(usize, bool)>,
     ) -> io::Result<Vec<MethodCPerimeterPoint>> {
         const MAX_REPAIR_PASSES: usize = 12;
 
@@ -50,7 +107,7 @@ impl MethodCDelaunayMesh {
                         // current non-triplet perimeter so the outer repair
                         // loop can continue with its other operators.
                         last_error = None;
-                        Some(perimeters.into_iter().flatten().collect::<Vec<_>>())
+                        Some(method_c_non_triplet_perimeter_points(perimeters))
                     }
                     Err(error) => {
                         last_error = Some(error);
@@ -76,6 +133,7 @@ impl MethodCDelaunayMesh {
                 child_level,
                 perimeter.as_deref(),
                 None,
+                exact_materialization,
             )?;
             report("method_c-non-triplet-grow-end", attempt + 1)?;
             let Some((repaired, _)) = repaired else {
@@ -143,7 +201,9 @@ impl MethodCDelaunayMesh {
                          unsupported_witness_faces={}",
                         stale.len()
                     );
-                    record_post_drop_support(stale);
+                    if !stale.is_empty() {
+                        return Err(method_c_parent_support_error(stale));
+                    }
                 }
                 return Ok(perimeter);
             }
@@ -151,6 +211,12 @@ impl MethodCDelaunayMesh {
 
         let perimeters = self.method_c_perimeters_from_selected_faces(selected, m_neighbors)?;
         let perimeter_lengths = perimeters.iter().map(Vec::len).collect::<Vec<_>>();
+        self.dump_method_c_unrepaired_mask(
+            "repair-exhausted",
+            selected,
+            &perimeter_lengths,
+            child_level,
+        );
         Err(method_c_repairable_perimeter_error(
             MethodCRepairableKind::NonTripletPerimeter,
             perimeter_lengths.clone(),
@@ -160,6 +226,58 @@ impl MethodCDelaunayMesh {
                 perimeter_lengths
             ),
         ))
+    }
+
+    /// Write the mask repair gave up on, so its shape can be studied offline.
+    ///
+    /// Answering "how many faces would make this perimeter decomposable" takes
+    /// milliseconds against a saved mask and a quarter of an hour against a
+    /// pipeline run. Off unless `EARTHMESH_M0_UNREPAIRED_MASK_DUMP_DIR` names a
+    /// directory; failures to write are swallowed because a diagnostic must not
+    /// change which error the caller sees.
+    pub(crate) fn dump_method_c_unrepaired_mask(
+        &self,
+        label: &str,
+        selected: &[bool],
+        perimeter_lengths: &[usize],
+        child_level: usize,
+    ) {
+        let Some(dir) = std::env::var_os("EARTHMESH_M0_UNREPAIRED_MASK_DUMP_DIR") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let faces = selected
+            .iter()
+            .enumerate()
+            .filter_map(|(iw, &is_selected)| is_selected.then_some(iw))
+            .collect::<Vec<_>>();
+        let undecomposable = perimeter_lengths
+            .iter()
+            .filter(|length| *length % 3 != 0)
+            .copied()
+            .collect::<Vec<_>>();
+        let body = format!(
+            "{{\"kind\":\"earthmesh_method_c_unrepaired_mask\",\"label\":\"{label}\",\
+             \"child_level\":{child_level},\
+             \"nmd\":{},\"nwd\":{},\"selected_face_count\":{},\
+             \"perimeter_lengths\":{perimeter_lengths:?},\"undecomposable_lengths\":{undecomposable:?},\
+             \"selected_faces\":{faces:?}}}",
+            self.nmd,
+            self.nwd,
+            faces.len(),
+        );
+        let path = dir.join(format!("unrepaired-mask-{label}-level{child_level}.json"));
+        if std::fs::write(&path, body).is_ok() {
+            eprintln!(
+                "earthmesh_mesh: wrote unrepaired mask {label} child_level={child_level} faces={} \
+                 undecomposable={undecomposable:?} -> {}",
+                faces.len(),
+                path.display()
+            );
+        }
     }
 
     /// Deselect the connected components of `selected` whose own perimeter does
@@ -366,28 +484,79 @@ pub(crate) fn conceded_lineage_snapshot() -> BTreeSet<usize> {
         .unwrap_or_default()
 }
 
-/// Parent faces a concession left unsupported, keyed by stable W-face lineage.
-///
-/// The support oracle answers before a concession happens, so removing a
-/// component invalidates that answer: the boundary moves and `perim_fill3`
-/// consumes a different set of parent faces. Recording the difference lets the
-/// outer support loop request it instead of proceeding to an emit that will
-/// fail on it.
-fn post_drop_support() -> &'static Mutex<BTreeSet<usize>> {
-    static PENDING: OnceLock<Mutex<BTreeSet<usize>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(BTreeSet::new()))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub(crate) fn record_post_drop_support(lineages: BTreeSet<usize>) {
-    if let Ok(mut set) = post_drop_support().lock() {
-        set.extend(lineages);
+    fn perimeter_point(im: usize) -> MethodCPerimeterPoint {
+        MethodCPerimeterPoint {
+            im,
+            iu: im,
+            npoly: 6,
+            nwdiv: 2,
+            near_pentagon: false,
+        }
     }
-}
 
-/// Take the pending post-concession support requirements, clearing them.
-pub fn take_post_drop_support_lineages() -> Vec<usize> {
-    post_drop_support()
-        .lock()
-        .map(|mut set| std::mem::take(&mut *set).into_iter().collect())
-        .unwrap_or_default()
+    #[test]
+    fn repair_search_ignores_already_triplet_perimeters() {
+        let points = method_c_non_triplet_perimeter_points(vec![
+            (1..=6).map(perimeter_point).collect(),
+            (10..=14).map(perimeter_point).collect(),
+            (20..=22).map(perimeter_point).collect(),
+            (30..=36).map(perimeter_point).collect(),
+        ]);
+
+        assert_eq!(
+            points.iter().map(|point| point.im).collect::<Vec<_>>(),
+            vec![10, 11, 12, 13, 14, 30, 31, 32, 33, 34, 35, 36]
+        );
+    }
+
+    #[test]
+    fn parent_support_requests_are_typed_and_error_local() {
+        let first = method_c_parent_support_error(BTreeSet::from([3, 7]));
+        let second = method_c_parent_support_error(BTreeSet::from([11]));
+
+        assert_eq!(
+            method_c_parent_support_request(&first)
+                .expect("typed first request")
+                .lineages,
+            vec![3, 7]
+        );
+        assert_eq!(
+            method_c_parent_support_request(&second)
+                .expect("typed second request")
+                .lineages,
+            vec![11]
+        );
+        assert!(method_c_parent_support_request(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unrelated Method-C failure",
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn valence_repair_never_treats_a_child_m_id_as_a_parent_id() {
+        let child_only = method_c_repairable_error(
+            MethodCRepairableKind::Valence,
+            Some(42),
+            "child-space witness",
+        );
+        assert_eq!(
+            MethodCDelaunayMesh::method_c_valence_error_parent_m_point(&child_only),
+            None
+        );
+
+        let mapped = crate::method_c_table_helpers::method_c_repairable_error_with_parent_origin(
+            child_only,
+            Some(7),
+            None,
+        );
+        assert_eq!(
+            MethodCDelaunayMesh::method_c_valence_error_parent_m_point(&mapped),
+            Some(7)
+        );
+    }
 }

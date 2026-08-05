@@ -1644,9 +1644,8 @@ fn require_landtype_resolution_preserved(
     Ok(())
 }
 
-/// Stream a production landtype raster into an equal-or-finer HField.
-/// Coarser targets are rejected: production-resolution landcover must retain
-/// its native spatial information rather than being aggregated into HField bins.
+/// Stream every production landtype pixel into fixed-size HField bin statistics.
+/// Memory is bounded by the HField and one NetCDF tile; no source pixel is skipped.
 fn read_landtype_source_for_hfield(
     path: &Path,
     field: &HField,
@@ -1658,7 +1657,6 @@ fn read_landtype_source_for_hfield(
         .ok_or_else(|| invalid("missing landtype variable".to_string()))?;
     let (lat_lon, src_nlon, src_nlat, latitude_order, longitudes) =
         landtype_source_layout(&file, &variable)?;
-    require_landtype_resolution_preserved(src_nlon, src_nlat, field.nlon(), field.nlat())?;
     let dimensions = variable.dimensions();
     let longitude_dimension = dimensions[usize::from(lat_lon)].name();
     let latitude_dimension = dimensions[usize::from(!lat_lon)].name();
@@ -1857,9 +1855,13 @@ fn read_landtype_mask_source_for_hfield(path: &Path) -> io::Result<LandtypeMaskS
     })
 }
 
-pub(crate) fn landtype_source_shape_and_maxlc(path: &Path) -> io::Result<(usize, usize, i32)> {
-    read_landtype_mask_source_for_hfield(path)
-        .map(|source| (source.nlon, source.nlat, source.maxlc))
+pub(crate) fn landtype_source_shape(path: &Path) -> io::Result<(usize, usize)> {
+    let (file, _) = open_landtype_netcdf(path)?;
+    let variable = file
+        .variable("landtype")
+        .ok_or_else(|| invalid("missing landtype variable".to_string()))?;
+    let (_, nlon, nlat, _, _) = landtype_source_layout(&file, &variable)?;
+    Ok((nlon, nlat))
 }
 
 #[cfg(test)]
@@ -3001,7 +3003,7 @@ mod tests {
 
         let stats = threshold_stats_on_hfield_from_source(&source, 3, 2, &field);
 
-        assert!((stats.mean[1 * field.nlat() + 1] - 8.0).abs() < 1.0e-12);
+        assert!((stats.mean[field.nlat() + 1] - 8.0).abs() < 1.0e-12);
         assert!((stats.mean[2 * field.nlat() + 1] - 8.0).abs() < 1.0e-12);
 
         let geometry = SourceRasterGeometry::uniform(3, 2).unwrap();
@@ -3019,7 +3021,7 @@ mod tests {
                 }
             }
         }
-        assert!(bins.contains_class(1 * field.nlat() + 1, 2));
+        assert!(bins.contains_class(field.nlat() + 1, 2));
         assert!(bins.contains_class(2 * field.nlat() + 1, 2));
     }
 
@@ -4079,7 +4081,7 @@ mod tests {
     }
 
     #[test]
-    fn landtype_thresholds_reject_source_downsampling_for_both_axis_orders() {
+    fn streamed_landtype_basic_thresholds_match_dense_for_both_axis_orders() {
         let root = std::env::temp_dir().join(format!(
             "earthmesh_hfield_landtype_stream_{}",
             std::process::id()
@@ -4091,6 +4093,37 @@ mod tests {
             2, 1, 1, 1, 1, 1, 0, 1, // HField bin (2, 0): 50% ocean.
             1, 1, 1, 1, 1, 9, // maxlc is land but excluded as a class.
         ];
+        let dense = vec![
+            vec![0, 0, 0],
+            vec![0, 1, 1],
+            vec![0, 2, 1],
+            vec![0, 1, 1],
+            vec![0, 1, 1],
+            vec![0, 0, 1],
+            vec![0, 1, 1],
+            vec![0, 1, 1],
+            vec![0, 1, 9],
+        ];
+        let refine = RefineConfig {
+            refine_num_landtypes: true,
+            th_num_landtypes: 1,
+            refine_area_mainland: true,
+            th_area_mainland: 0.75,
+            refine_sea_ratio: true,
+            th_sea_ratio: [0.4, 0.6],
+            ..RefineConfig::default()
+        };
+
+        let mut expected = HField::uniform(4, 2, 100.0).unwrap();
+        apply_landtype_basic_thresholds_from_source(
+            &mut expected,
+            &dense,
+            9,
+            &refine,
+            "earthmesh",
+            25.0,
+        )
+        .unwrap();
         for lat_lon in [false, true] {
             let path = root.join(if lat_lon { "lat_lon.nc" } else { "lon_lat.nc" });
             let mut file = crate::create_netcdf_quiet(&path).unwrap();
@@ -4118,14 +4151,24 @@ mod tests {
                 .unwrap();
             drop(file);
 
-            let field = HField::uniform(4, 2, 100.0).unwrap();
-            let error = read_landtype_source_for_hfield(&path, &field, None).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("source downsampling is forbidden"),
-                "{error}"
-            );
+            let mut actual = HField::uniform(4, 2, 100.0).unwrap();
+            let stats = read_landtype_source_for_hfield(&path, &actual, None).unwrap();
+            let applied = apply_landtype_basic_thresholds_from_bins(
+                &mut actual,
+                &stats,
+                &refine,
+                "earthmesh",
+                25.0,
+                None,
+            )
+            .unwrap();
+
+            assert_eq!(applied, 3);
+            assert_eq!(actual.values(), expected.values());
+            assert_eq!(actual.get(0, 1), 25.0, "north distinct/mainland thresholds");
+            assert_eq!(actual.get(2, 1), 25.0, "north sea-ratio threshold");
+            assert_eq!(actual.get(0, 0), 100.0, "south must remain coarse");
+            assert_eq!(actual.get(1, 1), 100.0, "uniform land remains coarse");
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4765,7 +4808,7 @@ mod tests {
     }
 
     #[test]
-    fn composed_hfield_rejects_finer_landtype_sources() {
+    fn composed_hfield_reads_landtype_basic_sources_without_regions() {
         let path = std::env::temp_dir().join(format!(
             "earthmesh_hfield_landtype_basic_{}.nc",
             std::process::id()
@@ -4803,7 +4846,7 @@ mod tests {
             target_levels_json: None,
         };
 
-        let error = build_composed_hfield(
+        let field = build_composed_hfield(
             &[],
             &refine,
             "oceanmesh",
@@ -4813,13 +4856,10 @@ mod tests {
             1,
             None,
         )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("source downsampling is forbidden"),
-            "{error}"
-        );
+        .unwrap();
+
+        assert_eq!(field.get(2, 1), 50.0);
+        assert_eq!(field.get(0, 1), 100.0);
         let _ = std::fs::remove_file(path);
     }
 

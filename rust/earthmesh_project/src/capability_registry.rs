@@ -6,7 +6,7 @@ use crate::{
 };
 
 pub const PROJECT_DOMAIN_CLASS_COUNT: usize = 16;
-pub const PROJECT_TARGET_TRIPLE_COUNT: usize = 40;
+pub const PROJECT_TARGET_TRIPLE_COUNT: usize = 60;
 pub const PROJECT_SOURCE_PROFILE_COUNT: usize = 480;
 pub const PROJECT_RAW_CAPABILITY_KEY_COUNT: usize =
     PROJECT_DOMAIN_CLASS_COUNT * PROJECT_TARGET_TRIPLE_COUNT * PROJECT_SOURCE_PROFILE_COUNT;
@@ -19,9 +19,11 @@ const DOMAIN_KINDS: [MeshDomainKind; 5] = [
     MeshDomainKind::Earth,
 ];
 const CELL_KINDS: [MeshCellKind; 2] = [MeshCellKind::Hex, MeshCellKind::Tri];
-const MODEL_FORMATS: [ModelFormat; 4] = [
+const MODEL_FORMATS: [ModelFormat; 6] = [
     ModelFormat::CoLM,
+    ModelFormat::Icon,
     ModelFormat::Mpas,
+    ModelFormat::MpasOcean,
     ModelFormat::MpasSimple,
     ModelFormat::Fvcom,
 ];
@@ -134,47 +136,44 @@ impl From<&MeshTargetConfig> for ProjectTargetTriple {
 
 impl ProjectTargetTriple {
     pub fn rejection_reason(self) -> Option<ProjectRejectionReason> {
-        let expected_cell = match self.kind {
-            MeshDomainKind::Ocean => MeshCellKind::Tri,
-            MeshDomainKind::Land
-            | MeshDomainKind::Atmosphere
-            | MeshDomainKind::Coupled
-            | MeshDomainKind::Earth => MeshCellKind::Hex,
-        };
-        if self.cell != expected_cell {
-            return Some(match self.kind {
-                MeshDomainKind::Land => ProjectRejectionReason::LandRequiresHex,
-                MeshDomainKind::Ocean => ProjectRejectionReason::OceanRequiresTri,
-                MeshDomainKind::Atmosphere => ProjectRejectionReason::AtmosphereRequiresHex,
-                MeshDomainKind::Coupled => ProjectRejectionReason::CoupledRequiresHex,
-                MeshDomainKind::Earth => ProjectRejectionReason::EarthRequiresHex,
-            });
-        }
+        None
+    }
 
-        let format_supported = match self.kind {
-            MeshDomainKind::Land | MeshDomainKind::Coupled | MeshDomainKind::Earth => {
-                self.model_format == ModelFormat::CoLM
-            }
-            MeshDomainKind::Ocean => self.model_format == ModelFormat::Fvcom,
-            MeshDomainKind::Atmosphere => {
-                matches!(
-                    self.model_format,
-                    ModelFormat::Mpas | ModelFormat::MpasSimple
-                )
-            }
-        };
-        if format_supported {
-            None
-        } else {
-            Some(match self.kind {
-                MeshDomainKind::Land => ProjectRejectionReason::LandRequiresColm,
-                MeshDomainKind::Ocean => ProjectRejectionReason::OceanRequiresFvcom,
-                MeshDomainKind::Atmosphere => ProjectRejectionReason::AtmosphereRequiresMpas,
-                MeshDomainKind::Coupled => ProjectRejectionReason::CoupledRequiresColm,
-                MeshDomainKind::Earth => ProjectRejectionReason::EarthRequiresColm,
-            })
+    pub const fn output_delivery(self) -> ProjectOutputDelivery {
+        match (self.cell, self.model_format) {
+            (_, ModelFormat::CoLM)
+            | (MeshCellKind::Tri, ModelFormat::Icon)
+            | (MeshCellKind::Tri, ModelFormat::Fvcom)
+            | (
+                MeshCellKind::Hex,
+                ModelFormat::Mpas | ModelFormat::MpasOcean | ModelFormat::MpasSimple,
+            ) => ProjectOutputDelivery::Full,
+            _ => ProjectOutputDelivery::GridOnly,
         }
     }
+
+    pub const fn skipped_adapter_reason(self) -> Option<&'static str> {
+        match (self.cell, self.model_format) {
+            (MeshCellKind::Hex, ModelFormat::Fvcom) => {
+                Some("FVCOM specialized export requires triangular cells")
+            }
+            (MeshCellKind::Hex, ModelFormat::Icon) => {
+                Some("ICON specialized export requires triangular cells")
+            }
+            (
+                MeshCellKind::Tri,
+                ModelFormat::Mpas | ModelFormat::MpasOcean | ModelFormat::MpasSimple,
+            ) => Some("MPAS specialized export requires hexagonal cells"),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectOutputDelivery {
+    Full,
+    GridOnly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -288,52 +287,21 @@ pub enum ProjectParameterizedTestId {
 impl ProjectParameterizedTestId {
     fn accepts(self, key: ProjectCapabilityKey) -> bool {
         let ProjectCapabilityKey { domain, target, .. } = key;
-        let supported_atmosphere = target.kind == MeshDomainKind::Atmosphere
-            && target.cell == MeshCellKind::Hex
-            && matches!(
-                target.model_format,
-                ModelFormat::Mpas | ModelFormat::MpasSimple
-            );
+        let supported_atmosphere = target.kind == MeshDomainKind::Atmosphere;
         let supported_land_or_earth =
-            matches!(target.kind, MeshDomainKind::Land | MeshDomainKind::Earth)
-                && target.cell == MeshCellKind::Hex
-                && target.model_format == ModelFormat::CoLM;
+            matches!(target.kind, MeshDomainKind::Land | MeshDomainKind::Earth);
         match self {
             Self::ClosedAtmosHex => domain.is_global() && supported_atmosphere,
             Self::OpenAtmosHex => !domain.is_global() && supported_atmosphere,
-            Self::ClosedEarthHex => {
-                domain.is_global()
-                    && target.kind == MeshDomainKind::Earth
-                    && target.cell == MeshCellKind::Hex
-                    && target.model_format == ModelFormat::CoLM
-            }
-            Self::MaskedLandHex => {
-                domain.is_global()
-                    && target.kind == MeshDomainKind::Land
-                    && target.cell == MeshCellKind::Hex
-                    && target.model_format == ModelFormat::CoLM
-            }
+            Self::ClosedEarthHex => domain.is_global() && target.kind == MeshDomainKind::Earth,
+            Self::MaskedLandHex => domain.is_global() && target.kind == MeshDomainKind::Land,
             Self::OpenLandHex => {
                 !domain.is_global() && !domain.is_basin() && supported_land_or_earth
             }
             Self::BasinLandHex => domain.is_basin() && supported_land_or_earth,
-            Self::MaskedOceanTri => {
-                domain.is_global()
-                    && target.kind == MeshDomainKind::Ocean
-                    && target.cell == MeshCellKind::Tri
-                    && target.model_format == ModelFormat::Fvcom
-            }
-            Self::OpenOceanTri => {
-                !domain.is_global()
-                    && target.kind == MeshDomainKind::Ocean
-                    && target.cell == MeshCellKind::Tri
-                    && target.model_format == ModelFormat::Fvcom
-            }
-            Self::CoupledHex => {
-                target.kind == MeshDomainKind::Coupled
-                    && target.cell == MeshCellKind::Hex
-                    && target.model_format == ModelFormat::CoLM
-            }
+            Self::MaskedOceanTri => domain.is_global() && target.kind == MeshDomainKind::Ocean,
+            Self::OpenOceanTri => !domain.is_global() && target.kind == MeshDomainKind::Ocean,
+            Self::CoupledHex => target.kind == MeshDomainKind::Coupled,
         }
     }
 
@@ -391,7 +359,7 @@ impl ProjectValidationTestId {
                     && target.cell == expected_cell
                     && !matches!(
                         target.model_format,
-                        ModelFormat::Mpas | ModelFormat::MpasSimple
+                        ModelFormat::Mpas | ModelFormat::MpasOcean | ModelFormat::MpasSimple
                     )
             }
             Self::CoupledFormat => {
@@ -452,7 +420,7 @@ impl ProjectRejectionReason {
             Self::LandRequiresColm => "land target model_format must be CoLM",
             Self::OceanRequiresFvcom => "ocean target model_format must be FVCOM",
             Self::AtmosphereRequiresMpas => {
-                "atmosphere target model_format must be MPAS or MPAS-Simple"
+                "atmosphere target model_format must be MPAS, MPAS-Ocean, or MPAS-Simple"
             }
             Self::CoupledRequiresColm => "coupled target model_format must be CoLM",
             Self::EarthRequiresColm => "earth target model_format must be CoLM",
@@ -625,7 +593,7 @@ mod tests {
     };
 
     #[test]
-    fn project_registry_classifies_all_307_200_raw_keys_without_unknowns() {
+    fn project_registry_classifies_all_460_800_raw_keys_without_unknowns() {
         assert_eq!(project_domain_classes().count(), PROJECT_DOMAIN_CLASS_COUNT);
         assert_eq!(
             project_target_triples().count(),
@@ -661,7 +629,6 @@ mod tests {
 
         let mut total = 0;
         let mut supported = 0;
-        let mut rejected = 0;
         for entry in project_capability_registry() {
             total += 1;
             let reported = match entry.capability {
@@ -676,19 +643,15 @@ mod tests {
                 }
                 ProjectCapability::Rejected {
                     validation_test_id, ..
-                } => {
-                    rejected += 1;
-                    validation_test_id
-                        .report_key(entry.key)
-                        .expect("validation test id must report its declared key")
-                }
+                } => validation_test_id
+                    .report_key(entry.key)
+                    .expect("validation test id must report its declared key"),
             };
             assert_eq!(reported, entry.key);
         }
 
         assert_eq!(total, PROJECT_RAW_CAPABILITY_KEY_COUNT);
-        assert_eq!(supported + rejected, total);
-        assert_eq!(total - supported - rejected, 0, "Unknown must remain zero");
+        assert_eq!(supported, total);
     }
 
     #[test]
@@ -704,26 +667,8 @@ mod tests {
             ProjectParameterizedTestId::OpenOceanTri,
             ProjectParameterizedTestId::CoupledHex,
         ];
-        let rejected_reporters = [
-            ProjectValidationTestId::LandCell,
-            ProjectValidationTestId::OceanCell,
-            ProjectValidationTestId::AtmosphereCell,
-            ProjectValidationTestId::CoupledCell,
-            ProjectValidationTestId::EarthCell,
-            ProjectValidationTestId::LandFormat,
-            ProjectValidationTestId::OceanFormat,
-            ProjectValidationTestId::AtmosphereFormat,
-            ProjectValidationTestId::CoupledFormat,
-            ProjectValidationTestId::EarthFormat,
-        ];
-
         for entry in project_capability_registry() {
             let supported_matches = supported_reporters
-                .iter()
-                .copied()
-                .filter(|reporter| reporter.report_key(entry.key) == Some(entry.key))
-                .collect::<Vec<_>>();
-            let rejected_matches = rejected_reporters
                 .iter()
                 .copied()
                 .filter(|reporter| reporter.report_key(entry.key) == Some(entry.key))
@@ -739,27 +684,17 @@ mod tests {
                         "{:?}",
                         entry.key
                     );
-                    assert!(rejected_matches.is_empty(), "{:?}", entry.key);
                 }
-                ProjectCapability::Rejected {
-                    validation_test_id, ..
-                } => {
-                    assert!(supported_matches.is_empty(), "{:?}", entry.key);
-                    assert_eq!(
-                        rejected_matches,
-                        vec![validation_test_id],
-                        "{:?}",
-                        entry.key
-                    );
-                }
+                ProjectCapability::Rejected { .. } => panic!("{:?} must be supported", entry.key),
             }
         }
     }
 
     #[test]
-    fn only_the_six_declared_project_target_triples_validate() {
+    fn every_target_triple_validates_and_delivery_is_cell_writer_specific() {
         let mut supported = 0;
-        let mut rejected = 0;
+        let mut full = 0;
+        let mut grid_only = 0;
         for target in project_target_triples() {
             let mut project = ProjectConfig::scaffold(
                 "capability-target",
@@ -771,31 +706,25 @@ mod tests {
             project.target.cell = target.cell;
             project.target.model_format = target.model_format;
 
-            match target.rejection_reason() {
-                None => {
-                    supported += 1;
-                    project
-                        .validate()
-                        .unwrap_or_else(|error| panic!("{target:?} rejected: {error}"));
-                }
-                Some(reason) => {
-                    rejected += 1;
-                    let error = project.validate().expect_err("target must be rejected");
-                    assert_eq!(error, reason.message(), "{target:?}");
-                }
+            supported += 1;
+            project
+                .validate()
+                .unwrap_or_else(|error| panic!("{target:?} rejected: {error}"));
+            match target.output_delivery() {
+                ProjectOutputDelivery::Full => full += 1,
+                ProjectOutputDelivery::GridOnly => grid_only += 1,
             }
         }
-        assert_eq!(supported, 6);
-        assert_eq!(rejected, 34);
+        assert_eq!(supported, 60);
+        assert_eq!(full, 35);
+        assert_eq!(grid_only, 25);
     }
 
     #[test]
     fn supported_keys_map_to_the_nine_domain_topology_contracts() {
         let mut seen = [false; 9];
         for domain in project_domain_classes() {
-            for target in
-                project_target_triples().filter(|target| target.rejection_reason().is_none())
-            {
+            for target in project_target_triples() {
                 let key = ProjectCapabilityKey {
                     domain,
                     target,

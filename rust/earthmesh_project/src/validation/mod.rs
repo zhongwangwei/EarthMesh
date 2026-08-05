@@ -486,6 +486,12 @@ impl HfieldRefinementRecipe {
         if matches!(self.base_m, Some(base) if !base.is_finite() || base <= 0.0) {
             return Err("h-field base_m must be positive when set".to_string());
         }
+        match (self.nlon, self.nlat) {
+            (None, None) => {}
+            (Some(nlon), Some(nlat)) if nlon >= 4 && nlat >= 2 => {}
+            (Some(_), Some(_)) => return Err("h-field raster must be at least 4x2".to_string()),
+            _ => return Err("h-field nlon and nlat must be set together".to_string()),
+        }
         match (self.origin_lon, self.origin_lat) {
             (None, None) => {}
             (Some(lon), Some(lat))

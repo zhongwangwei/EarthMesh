@@ -16,9 +16,54 @@ pub struct GridfileCellExportReport {
     pub rejected_unsupported_cells: usize,
 }
 
+/// How a cell that crosses the antimeridian is written.
+///
+/// The two forms are not interchangeable, which is why this is a choice rather
+/// than a fix: RFC 7946 defines GeoJSON on a plane and requires the split, and
+/// strict OGC/GEOS consumers reject anything else. A sphere renderer needs the
+/// opposite — the split's cut edges are real polygon boundaries, so they stack
+/// up along the antimeridian and draw as a seam across the globe.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GridfileCellSeam {
+    /// Split crossing rings into a MultiPolygon at ±180 (RFC 7946).
+    #[default]
+    PlanarSplit,
+    /// Keep each ring continuous by letting its longitudes run past ±180.
+    SphericalUnwrapped,
+}
+
+/// Shift `lon` by whole turns until it is within half a turn of `anchor`, so a
+/// ring stays continuous instead of jumping the antimeridian.
+fn unwrap_lon_near(lon: f64, anchor: f64) -> f64 {
+    let mut unwrapped = lon;
+    while unwrapped - anchor > 180.0 {
+        unwrapped -= 360.0;
+    }
+    while unwrapped - anchor < -180.0 {
+        unwrapped += 360.0;
+    }
+    unwrapped
+}
+
+/// A single ring whose longitudes are continuous around `center_lon`. Cells are
+/// far narrower than half a turn, so anchoring every corner to the centre keeps
+/// the ring intact without needing to walk it edge by edge.
+fn unwrapped_polygon_geometry(corners: &[(f64, f64)], center_lon: f64) -> String {
+    let ring = corners
+        .iter()
+        .map(|&(lon, lat)| (unwrap_lon_near(lon, center_lon), lat))
+        .collect::<Vec<_>>();
+    polygon_geometry(&ring)
+}
+
 fn polygon_geometry(ring: &[(f64, f64)]) -> String {
     let coords = ring
         .iter()
+        .chain(
+            (ring.first() != ring.last())
+                .then(|| ring.first())
+                .flatten(),
+        )
         .map(|(x, y)| format!("[{x}, {y}]"))
         .collect::<Vec<_>>()
         .join(", ");
@@ -77,6 +122,37 @@ fn polar_cap_geometry(corners: &[(f64, f64)], pole_lat: f64) -> String {
     polygon_geometry(&ring)
 }
 
+/// Longitude is undefined at a pole, so a gridfile stores one arbitrary value
+/// there and every incident cell reuses it. Left alone, a wedge meeting at the
+/// pole spans that arbitrary longitude instead of its own two corners, and its
+/// winding can reach a full turn — which [`enclosing_pole_lat`] then mistakes
+/// for a cap that *contains* the pole, replacing one small wedge with a ring
+/// covering all 360 degrees.
+///
+/// Give the pole the two planar corners GeoJSON needs instead: the pole
+/// latitude at each ring neighbour's longitude. The wedge then spans only its
+/// real corners, and the winding test sees the shape the cell actually has.
+fn stitch_pole_corners(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    const POLE_LAT_EPSILON_DEG: f64 = 1.0e-4;
+    let at_pole = |lat: f64| (lat.abs() - 90.0).abs() <= POLE_LAT_EPSILON_DEG;
+    if !ring.iter().any(|&(_, lat)| at_pole(lat)) {
+        return ring.to_vec();
+    }
+    let mut stitched = Vec::with_capacity(ring.len() + 1);
+    for (index, &(lon, lat)) in ring.iter().enumerate() {
+        if !at_pole(lat) {
+            stitched.push((lon, lat));
+            continue;
+        }
+        let pole = if lat >= 0.0 { 90.0 } else { -90.0 };
+        let previous = ring[(index + ring.len() - 1) % ring.len()].0;
+        let next = ring[(index + 1) % ring.len()].0;
+        stitched.push((previous, pole));
+        stitched.push((next, pole));
+    }
+    stitched
+}
+
 fn enclosing_pole_lat(corners: &[(f64, f64)], center_lat: f64) -> Option<f64> {
     let longitude_winding = corners
         .iter()
@@ -130,6 +206,22 @@ pub fn gridfile_cell_polygons_geojson_with_report(
     bbox: Option<[f64; 4]>,
     max_cells: Option<usize>,
 ) -> io::Result<(String, GridfileCellExportReport)> {
+    gridfile_cell_polygons_geojson_with_seam(
+        mesh,
+        kind,
+        bbox,
+        max_cells,
+        GridfileCellSeam::PlanarSplit,
+    )
+}
+
+pub fn gridfile_cell_polygons_geojson_with_seam(
+    mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+    seam: GridfileCellSeam,
+) -> io::Result<(String, GridfileCellExportReport)> {
     validate_gridfile_cell_arrays(mesh, kind, bbox)?;
     let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
     let m_layout = gridfile_m_row_layout(mesh);
@@ -181,6 +273,7 @@ pub fn gridfile_cell_polygons_geojson_with_report(
                     .iter()
                     .map(|&i| (norm_lon(mesh.w_lon[i]), mesh.w_lat[i]))
                     .collect();
+                let ring = stitch_pole_corners(&ring);
                 let pole_lat = enclosing_pole_lat(&ring, clat);
                 let intersects_bbox = pole_lat.map_or_else(
                     || ring_intersects_directed_bbox(&ring, bbox),
@@ -195,6 +288,8 @@ pub fn gridfile_cell_polygons_geojson_with_report(
                 }
                 let geometry = if let Some(pole_lat) = pole_lat {
                     polar_cap_geometry(&ring, pole_lat)
+                } else if seam == GridfileCellSeam::SphericalUnwrapped {
+                    unwrapped_polygon_geometry(&ring, clon)
                 } else {
                     let Some(geometry) = seam_safe_polygon_geometry(&ring, clon) else {
                         continue;
@@ -271,6 +366,7 @@ pub fn gridfile_cell_polygons_geojson_with_report(
                     if corners.len() < 3 {
                         continue;
                     }
+                    let corners = stitch_pole_corners(&corners);
                     let pole_lat = enclosing_pole_lat(&corners, clat);
                     let intersects_bbox = pole_lat.map_or_else(
                         || ring_intersects_directed_bbox(&corners, bbox),
@@ -285,6 +381,8 @@ pub fn gridfile_cell_polygons_geojson_with_report(
                     }
                     let geometry = if let Some(pole_lat) = pole_lat {
                         polar_cap_geometry(&corners, pole_lat)
+                    } else if seam == GridfileCellSeam::SphericalUnwrapped {
+                        unwrapped_polygon_geometry(&corners, clon)
                     } else {
                         let Some(geometry) = seam_safe_polygon_geometry(&corners, clon) else {
                             continue;
@@ -464,8 +562,26 @@ pub fn write_gridfile_cell_polygons_geojson(
     bbox: Option<[f64; 4]>,
     max_cells: Option<usize>,
 ) -> io::Result<usize> {
+    write_gridfile_cell_polygons_geojson_with_seam(
+        gridfile,
+        output,
+        kind,
+        bbox,
+        max_cells,
+        GridfileCellSeam::PlanarSplit,
+    )
+}
+
+pub fn write_gridfile_cell_polygons_geojson_with_seam(
+    gridfile: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    max_cells: Option<usize>,
+    seam: GridfileCellSeam,
+) -> io::Result<usize> {
     let mesh = read_gridfile_mesh_points(gridfile)?;
-    let json = gridfile_cell_polygons_geojson(&mesh, kind, bbox, max_cells)?;
+    let (json, _) = gridfile_cell_polygons_geojson_with_seam(&mesh, kind, bbox, max_cells, seam)?;
     crate::ensure_parent_dir(output.as_ref())?;
     fs::write(output.as_ref(), json.as_bytes())?;
     Ok(json.matches("\"type\": \"Feature\"").count())
@@ -483,4 +599,108 @@ pub fn write_gridfile_cell_polygons_geojson_with_report(
     crate::ensure_parent_dir(output.as_ref())?;
     fs::write(output.as_ref(), json.as_bytes())?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The five triangles meeting at an icosahedral mesh's north pole, taken
+    /// from `gridfile_NXP0081_tri_oceanmesh.nc4`. All five reuse one arbitrary
+    /// pole longitude, and the first one's corners happen to wind a full turn.
+    fn pole_fan() -> Vec<Vec<(f64, f64)>> {
+        const POLE_LON: f64 = -175.263_487_964_686_96;
+        const POLE_LAT: f64 = 89.999_997_163_942_64;
+        const RIM_LAT: f64 = 89.222_528;
+        [
+            (-9.773_867_47e-6, 72.000_195_5),
+            (72.000_195_5, 144.0),
+            (144.0, -144.0),
+            (-144.0, -72.0),
+            (-72.0, -9.773_867_47e-6),
+        ]
+        .into_iter()
+        .map(|(first, second)| {
+            vec![
+                (POLE_LON, POLE_LAT),
+                (first, RIM_LAT),
+                (second, RIM_LAT),
+            ]
+        })
+        .collect()
+    }
+
+    #[test]
+    fn pole_fan_wedges_are_not_mistaken_for_caps() {
+        for (index, ring) in pole_fan().into_iter().enumerate() {
+            let stitched = stitch_pole_corners(&ring);
+            assert_eq!(
+                enclosing_pole_lat(&stitched, 89.5),
+                None,
+                "wedge {index} still reads as a cap: {stitched:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stitched_wedges_span_only_their_own_corners() {
+        // Before stitching, wedge 0 winds a full turn purely because the pole
+        // corner carries an arbitrary longitude.
+        let raw = pole_fan().remove(0);
+        assert_eq!(enclosing_pole_lat(&raw, 89.5), Some(90.0));
+
+        let stitched = stitch_pole_corners(&raw);
+        let lons = stitched.iter().map(|&(lon, _)| lon).collect::<Vec<_>>();
+        assert!(
+            !lons.contains(&-175.263_487_964_686_96),
+            "arbitrary pole longitude survived: {stitched:?}"
+        );
+        let span = lons.iter().cloned().fold(f64::MIN, f64::max)
+            - lons.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(span < 180.0, "wedge still spans {span} degrees: {stitched:?}");
+        assert_eq!(
+            stitched.iter().filter(|&&(_, lat)| lat == 90.0).count(),
+            2,
+            "the pole corner must become two planar corners: {stitched:?}"
+        );
+    }
+
+    #[test]
+    fn unwrapped_seam_keeps_a_dateline_cell_whole() {
+        // A cell straddling +/-180: the planar form must cut it, the spherical
+        // form must not, because the cut edges are what draw as a seam.
+        let ring = [(179.4, 12.0), (-179.6, 12.0), (-179.8, 12.6), (179.2, 12.6)];
+        let center = 179.9;
+
+        let split = seam_safe_polygon_geometry(&ring, center).expect("planar geometry");
+        assert!(split.contains("MultiPolygon"), "{split}");
+
+        let unwrapped = unwrapped_polygon_geometry(&ring, center);
+        assert!(unwrapped.contains("\"Polygon\""), "{unwrapped}");
+        assert!(!unwrapped.contains("MultiPolygon"), "{unwrapped}");
+        let geometry: serde_json::Value = serde_json::from_str(&unwrapped).unwrap();
+        let coordinates = geometry["coordinates"][0].as_array().unwrap();
+        assert_eq!(coordinates.first(), coordinates.last(), "{unwrapped}");
+        // The two western corners continue past +180 rather than jumping to -180.
+        assert!(unwrapped.contains("[180.4, 12]"), "{unwrapped}");
+        assert!(unwrapped.contains("[180.2, 12.6]"), "{unwrapped}");
+        assert!(!unwrapped.contains("-179"), "{unwrapped}");
+    }
+
+    #[test]
+    fn unwrapped_seam_leaves_cells_away_from_the_dateline_alone() {
+        let ring = [(10.0, 40.0), (11.0, 40.0), (11.0, 41.0), (10.0, 41.0)];
+        assert_eq!(
+            unwrapped_polygon_geometry(&ring, 10.5),
+            polygon_geometry(&ring)
+        );
+    }
+
+    #[test]
+    fn a_cap_that_truly_encloses_the_pole_is_left_alone() {
+        // No corner sits at the pole, so the winding test still sees a cap.
+        let cap = vec![(0.0, 89.0), (120.0, 89.0), (-120.0, 89.0)];
+        assert_eq!(stitch_pole_corners(&cap), cap);
+        assert_eq!(enclosing_pole_lat(&cap, 89.5), Some(90.0));
+    }
 }

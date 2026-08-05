@@ -295,12 +295,16 @@ fn run_mkgrd_gridinit_global_converts_existing_fvcom_mode_file() {
     for (actual, expected) in glonw.iter().zip([0.0, 10.0, -179.0, 179.0]) {
         assert_close(*actual, expected, 1.0e-10);
     }
+    // The fixture's second element winds the other way round the same three
+    // nodes, and the reader now flips a triangle whose signed spherical area
+    // comes out negative. So `[3, 2, 1]` arrives as `[4, 2, 3]` rather than
+    // `[4, 3, 2]`: same cell, orientation made to agree with its neighbour.
     assert_eq!(
         file.variable("itab_m%iw")
             .expect("itab_m%iw")
             .get_values::<i32, _>((.., ..))
             .expect("read itab_m%iw"),
-        vec![1, 1, 1, 2, 3, 4, 4, 3, 2]
+        vec![1, 1, 1, 2, 3, 4, 4, 2, 3]
     );
     assert_eq!(
         file.variable("itab_w%im")

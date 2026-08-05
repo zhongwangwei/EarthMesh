@@ -525,10 +525,12 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
         expected_iu45.iw[1] = iw31;
     }
     let mut expected_iu48 = u_edges[iu48];
-    if expected_iu48.iw[1] == iw27 {
-        expected_iu48.im[1] = im17;
-    } else {
-        expected_iu48.im[0] = im17;
+    if !expected_iu48.im.contains(&im17) {
+        if expected_iu48.iw[1] == iw27 {
+            expected_iu48.im[1] = im17;
+        } else {
+            expected_iu48.im[0] = im17;
+        }
     }
     let mut expected_iu49 = u_edges[iu49];
     if expected_iu49.im[1] == im24 {
@@ -545,10 +547,12 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
         expected_iu50.im[0] = im20;
     }
     let mut expected_iu51 = u_edges[iu51];
-    if expected_iu51.iw[1] == iw31 {
-        expected_iu51.im[0] = im20;
-    } else {
-        expected_iu51.im[1] = im20;
+    if !expected_iu51.im.contains(&im20) {
+        if expected_iu51.iw[1] == iw31 {
+            expected_iu51.im[0] = im20;
+        } else {
+            expected_iu51.im[1] = im20;
+        }
     }
     let mut expected_iu33 = u_edges[iu33];
     if expected_iu33.iw[1] == iw19 {

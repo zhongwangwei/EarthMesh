@@ -50,7 +50,7 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
-fn orient_hex_cells(mesh: &mut UnstructuredMesh) -> io::Result<()> {
+fn orient_hex_cells(mesh: &mut UnstructuredMesh, spherical: bool) -> io::Result<()> {
     let mut edges = BTreeMap::<(i32, i32), Vec<(usize, bool)>>::new();
     for (cell, row) in mesh.w_to_m.iter().enumerate() {
         let count = usize::try_from(*mesh.n_w_to_m.get(cell).unwrap_or(&0)).map_err(|_| {
@@ -69,6 +69,12 @@ fn orient_hex_cells(mesh: &mut UnstructuredMesh) -> io::Result<()> {
                     "hex cell {cell} vertex count {count} exceeds row width {}",
                     row.len()
                 ),
+            ));
+        }
+        if row[..count].iter().any(|&id| id <= 1) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("hex cell {cell} contains a placeholder inside its physical ring"),
             ));
         }
         for slot in 0..count {
@@ -155,13 +161,23 @@ fn orient_hex_cells(mesh: &mut UnstructuredMesh) -> io::Result<()> {
                             .map(|point| earthmesh_geometry::Point::new(point.lon, point.lat))
                     })
                     .collect::<Option<Vec<_>>>()?;
-                earthmesh_geometry::try_spherical_polygon_area(&ring)
-                    .ok()
-                    .and_then(|area| match area.winding {
-                        earthmesh_geometry::SphericalWinding::CounterClockwise => Some(false),
-                        earthmesh_geometry::SphericalWinding::Clockwise => Some(true),
-                        earthmesh_geometry::SphericalWinding::Indeterminate => None,
-                    })
+                if spherical {
+                    earthmesh_geometry::try_spherical_polygon_area(&ring)
+                        .ok()
+                        .and_then(|area| match area.winding {
+                            earthmesh_geometry::SphericalWinding::CounterClockwise => Some(false),
+                            earthmesh_geometry::SphericalWinding::Clockwise => Some(true),
+                            earthmesh_geometry::SphericalWinding::Indeterminate => None,
+                        })
+                } else {
+                    let area2 = ring
+                        .iter()
+                        .zip(ring.iter().cycle().skip(1))
+                        .take(ring.len())
+                        .map(|(a, b)| a.x * b.y - b.x * a.y)
+                        .sum::<f64>();
+                    (area2.is_finite() && area2 != 0.0).then_some(area2 < 0.0)
+                }
             })
             .ok_or_else(|| {
                 io::Error::new(
@@ -277,11 +293,12 @@ pub(super) fn write_method_c_refined_outputs(
     hfield_demand: Option<&crate::source_demand_artifact::PreparedHfieldDemand>,
     single_hfield_product_support: Option<&[bool]>,
     coupled_hfield_product_support: Option<(&[bool], &[bool])>,
+    cartesian_xy: bool,
 ) -> io::Result<MethodCRefinedOutputReports> {
     let mut oriented_output_mesh = None;
     if config.mode_grid.trim() == "hex" {
         let mut mesh = output_mesh.clone();
-        orient_hex_cells(&mut mesh)?;
+        orient_hex_cells(&mut mesh, !cartesian_xy)?;
         oriented_output_mesh = Some(mesh);
     }
     let output_mesh = oriented_output_mesh.as_ref().unwrap_or(output_mesh);
@@ -1049,7 +1066,7 @@ mod tests {
             n_w_to_m: vec![1, 3, 3],
         };
 
-        orient_hex_cells(&mut mesh).unwrap();
+        orient_hex_cells(&mut mesh, true).unwrap();
 
         let has_edge = |row: &[i32], start, end| {
             (0..row.len()).any(|slot| row[slot] == start && row[(slot + 1) % row.len()] == end)
@@ -1057,6 +1074,51 @@ mod tests {
         let first = has_edge(&mesh.w_to_m[1], 2, 3);
         let second = has_edge(&mesh.w_to_m[2], 3, 2);
         assert!(first && second);
+    }
+
+    #[test]
+    fn cartesian_hex_output_orients_cells_counterclockwise() {
+        let mut mesh = UnstructuredMesh {
+            m_points: vec![
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint { lon: 0.0, lat: 0.0 },
+                LonLatPoint {
+                    lon: 1_000_000.0,
+                    lat: 0.0,
+                },
+                LonLatPoint {
+                    lon: 0.0,
+                    lat: 1_000_000.0,
+                },
+            ],
+            w_points: Vec::new(),
+            m_to_w: Vec::new(),
+            w_to_m: vec![vec![1], vec![2, 4, 3]],
+            n_w_to_m: vec![1, 3],
+        };
+
+        orient_hex_cells(&mut mesh, false).unwrap();
+
+        assert_eq!(mesh.w_to_m[1], vec![3, 4, 2]);
+    }
+
+    #[test]
+    fn hex_output_rejects_placeholder_inside_physical_ring() {
+        let mut mesh = UnstructuredMesh {
+            m_points: vec![LonLatPoint { lon: 0.0, lat: 0.0 }; 4],
+            w_points: Vec::new(),
+            m_to_w: Vec::new(),
+            w_to_m: vec![vec![1], vec![2, 3, 1]],
+            n_w_to_m: vec![1, 3],
+        };
+
+        let error = orient_hex_cells(&mut mesh, false).expect_err("placeholder must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "hex cell 1 contains a placeholder inside its physical ring"
+        );
     }
 
     #[test]

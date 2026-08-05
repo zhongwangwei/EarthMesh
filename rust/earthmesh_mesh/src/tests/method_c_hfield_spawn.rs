@@ -1599,6 +1599,33 @@ fn pass_one_sub_lattice_face_demand_reaches_the_global_canonical_phase() {
 }
 
 #[test]
+fn empty_face_demand_skips_parent_support_and_spawn() {
+    let mesh = base_mesh();
+    let demand = vec![false; mesh.nwd + 1];
+
+    assert!(mesh
+        .required_parent_support_lineages_from_target_levels_and_face_demands(
+            |_, _| 0,
+            &demand,
+            3,
+            true,
+        )
+        .expect("empty support request")
+        .is_empty());
+    assert!(mesh
+        .spawn_nest_pass_from_target_levels_and_face_demands(
+            |_, _| 0,
+            &demand,
+            3,
+            4,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            true,
+        )
+        .expect("empty pass")
+        .is_none());
+}
+
+#[test]
 fn spring_diagnostics_do_not_change_hfield_spawn() {
     let mesh = base_mesh();
     let regular = mesh

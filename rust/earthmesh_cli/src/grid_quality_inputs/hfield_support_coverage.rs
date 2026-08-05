@@ -1521,9 +1521,9 @@ mod tests {
 
         let mask = intended_domain_support_mask(8, 4, &levels, Some(&region)).unwrap();
 
-        assert!(mask[1 * 8 + 1], "positive-area domain bin");
-        assert!(!mask[1 * 8 + 2], "longitude boundary touch is not support");
-        assert!(!mask[2 * 8 + 1], "latitude boundary touch is not support");
+        assert!(mask[9], "positive-area domain bin");
+        assert!(!mask[10], "longitude boundary touch is not support");
+        assert!(!mask[17], "latitude boundary touch is not support");
         assert!(!mask[0], "gradient apron outside the output domain");
     }
 

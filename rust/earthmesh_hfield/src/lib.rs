@@ -794,9 +794,7 @@ pub fn refine_level_for_cell_size(h_base_m: f64, h_m: f64, max_level: u8) -> u8 
 /// [`refine_level_for_cell_size`].
 pub fn refine_level_after_bisections(nesting_level: u8, bisections: u32, max_level: u8) -> u8 {
     let equivalent = u32::from(nesting_level).saturating_add(bisections / 2);
-    u8::try_from(equivalent)
-        .unwrap_or(u8::MAX)
-        .min(max_level)
+    u8::try_from(equivalent).unwrap_or(u8::MAX).min(max_level)
 }
 
 fn limit_metric_row(row: &mut [f64], distances: &[f64], g: f64) -> f64 {

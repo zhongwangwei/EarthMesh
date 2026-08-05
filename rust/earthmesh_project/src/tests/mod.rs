@@ -512,24 +512,42 @@ fn enabled_refinement_rejects_zero_expert_level_overrides() {
 }
 
 #[test]
-fn project_validation_rejects_engine_incompatible_target_format() {
+fn project_validation_keeps_target_cell_and_output_model_independent() {
     let mut p = sample();
     p.target.kind = MeshDomainKind::Atmosphere;
-    p.target.model_format = ModelFormat::CoLM;
-    let err = yaml_err(&p);
-    assert!(err.contains("atmosphere target model_format must be MPAS or MPAS-Simple"));
-
-    p.target.kind = MeshDomainKind::Ocean;
     p.target.cell = MeshCellKind::Tri;
     p.target.model_format = ModelFormat::CoLM;
-    let err = yaml_err(&p);
-    assert!(err.contains("ocean target model_format must be FVCOM"));
+    p.validate().expect("CoLM accepts both cell views");
 
-    p.target.kind = MeshDomainKind::Coupled;
+    p.target.kind = MeshDomainKind::Ocean;
     p.target.cell = MeshCellKind::Hex;
     p.target.model_format = ModelFormat::Fvcom;
-    let err = json_err(&p);
-    assert!(err.contains("coupled target model_format must be CoLM"));
+    p.validate()
+        .expect("incompatible specialized writers keep grid-only delivery");
+
+    p.target.kind = MeshDomainKind::Coupled;
+    p.target.cell = MeshCellKind::Tri;
+    p.target.model_format = ModelFormat::Mpas;
+    p.validate()
+        .expect("physical target does not select the writer");
+
+    p.target.kind = MeshDomainKind::Ocean;
+    p.target.cell = MeshCellKind::Hex;
+    p.target.model_format = ModelFormat::MpasOcean;
+    assert_eq!(
+        p.try_lower()
+            .expect("MPAS-Ocean target")
+            .mkgrd
+            .output_format,
+        "MPAS-Ocean"
+    );
+
+    p.target.cell = MeshCellKind::Tri;
+    p.target.model_format = ModelFormat::Icon;
+    assert_eq!(
+        p.try_lower().expect("ICON target").mkgrd.output_format,
+        "ICON"
+    );
 }
 
 #[test]
@@ -1335,7 +1353,10 @@ fn landtype_is_required_for_surface_targets_but_skipped_for_idle_atmosphere() {
 fn hfield_is_default_unless_explicit_compatibility() {
     let mut p = sample();
     p.refinement.hfield = None;
-    assert!(p.lower().to_namelist().contains("&hfield"));
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("&hfield"));
+    assert!(nml.contains("hfield_nlon = "));
+    assert!(nml.contains("hfield_nlat = "));
 
     p.refinement.hfield = Some(HfieldRefinementRecipe {
         enabled: false,
@@ -1348,6 +1369,24 @@ fn hfield_is_default_unless_explicit_compatibility() {
     assert_eq!(parsed.g, 0.3);
 
     p.refinement.hfield = Some(HfieldRefinementRecipe {
+        nlon: Some(1800),
+        nlat: Some(900),
+        ..HfieldRefinementRecipe::default()
+    });
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("hfield_nlon = 1800"));
+    assert!(nml.contains("hfield_nlat = 900"));
+
+    p.refinement.hfield = Some(HfieldRefinementRecipe {
+        nlon: Some(3600),
+        ..HfieldRefinementRecipe::default()
+    });
+    assert!(p
+        .validate()
+        .unwrap_err()
+        .contains("h-field nlon and nlat must be set together"));
+
+    p.refinement.hfield = Some(HfieldRefinementRecipe {
         origin_lon: Some(120.0),
         origin_lat: Some(30.0),
         ..HfieldRefinementRecipe::default()
@@ -1355,6 +1394,22 @@ fn hfield_is_default_unless_explicit_compatibility() {
     let nml = p.lower().to_namelist();
     assert!(nml.contains("hfield_origin_lon = 120"));
     assert!(nml.contains("hfield_origin_lat = 30"));
+}
+
+#[test]
+fn implicit_hfield_raster_tracks_finest_requested_level() {
+    let mut p = sample();
+    p.target.resolution = ResolutionSpec::Nxp(81);
+    p.refinement.max_passes = 2;
+    let level_two = p.lower().hfield.unwrap();
+    assert_eq!((level_two.nlon, level_two.nlat), (Some(1800), Some(900)));
+
+    p.refinement.max_passes = 3;
+    let level_three = p.lower().hfield.unwrap();
+    assert_eq!(
+        (level_three.nlon, level_three.nlat),
+        (Some(3600), Some(1800))
+    );
 }
 
 #[test]

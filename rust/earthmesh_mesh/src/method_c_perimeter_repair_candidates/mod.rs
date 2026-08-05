@@ -11,6 +11,16 @@ use rayon::prelude::*;
 
 use super::*;
 
+fn method_c_fill_boundary_key(
+    exact_accepted: bool,
+    added: usize,
+    remainder: usize,
+    perimeter_len: usize,
+    candidate: usize,
+) -> (bool, usize, usize, usize, usize) {
+    (!exact_accepted, added, remainder, perimeter_len, candidate)
+}
+
 impl MethodCDelaunayMesh {
     pub(crate) fn method_c_vertex_only_perimeter_contacts(
         &self,
@@ -222,6 +232,7 @@ impl MethodCDelaunayMesh {
             .map(
                 |im| -> io::Result<
                     Option<(
+                        bool,
                         usize,
                         usize,
                         usize,
@@ -260,8 +271,10 @@ impl MethodCDelaunayMesh {
                             changed.fetch_add(1, Ordering::Relaxed);
                         }
                     }
+                    let mut exact_accepted = false;
                     if changes_dependency || exact_scan {
                         let outcome = exact_outcome(&trial);
+                        exact_accepted = changes_dependency && outcome == "ok";
                         if changes_dependency {
                             if let Some(outcomes) = dependency_outcomes.as_ref() {
                                 outcomes
@@ -278,6 +291,7 @@ impl MethodCDelaunayMesh {
                         }
                     }
                     Ok(Some((
+                        exact_accepted,
                         added,
                         remainder,
                         trial_perimeter.len(),
@@ -292,9 +306,11 @@ impl MethodCDelaunayMesh {
                 |left, right| {
                     Ok(match (left, right) {
                         (Some(left), Some(right)) => {
-                            if (right.0, right.1, right.2, right.3)
-                                < (left.0, left.1, left.2, left.3)
-                            {
+                            if method_c_fill_boundary_key(
+                                right.0, right.1, right.2, right.3, right.4,
+                            ) < method_c_fill_boundary_key(
+                                left.0, left.1, left.2, left.3, left.4,
+                            ) {
                                 Some(right)
                             } else {
                                 Some(left)
@@ -320,14 +336,17 @@ impl MethodCDelaunayMesh {
                 })
                 .unwrap_or_default();
             dependency_outcomes.sort_unstable();
-            if let Some((added, remainder, perimeter_len, candidate, _, _)) = best.as_ref() {
+            if let Some((exact_accepted, added, remainder, perimeter_len, candidate, _, _)) =
+                best.as_ref()
+            {
                 eprintln!(
-                    "earthmesh_mesh: method_c fill-boundary candidates={} dependency_faces={} dependency_changed_candidates={} dependency_candidate_outcomes={:?} chosen_m={} added={} remainder={} perimeter_len={}",
+                    "earthmesh_mesh: method_c fill-boundary candidates={} dependency_faces={} dependency_changed_candidates={} dependency_candidate_outcomes={:?} chosen_m={} exact_accepted={} added={} remainder={} perimeter_len={}",
                     candidate_count,
                     dependency_faces.map_or(0, <[usize]>::len),
                     dependency_changed,
                     dependency_outcomes,
                     candidate,
+                    exact_accepted,
                     added,
                     remainder,
                     perimeter_len,
@@ -359,6 +378,19 @@ impl MethodCDelaunayMesh {
                 "earthmesh_mesh: method_c exact candidate scan outcomes={counts:?} first_ok_candidates={successful:?}"
             );
         }
-        Ok(best.map(|(_, _, _, _, trial, trial_perimeter)| (trial, trial_perimeter)))
+        Ok(best.map(|(_, _, _, _, _, trial, trial_perimeter)| (trial, trial_perimeter)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::method_c_fill_boundary_key;
+
+    #[test]
+    fn exact_fill_boundary_candidate_outranks_cheaper_known_failure() {
+        assert!(
+            method_c_fill_boundary_key(true, 20, 0, 60, 10)
+                < method_c_fill_boundary_key(false, 1, 0, 18, 2)
+        );
     }
 }

@@ -316,25 +316,6 @@ impl PreparedHfieldDemand {
         })
     }
 
-    /// Write the demand snapshot to an explicit path, without a gridfile.
-    ///
-    /// The demand is composed before Method-C materializes anything, so it
-    /// exists even when the run later fails. Anchoring the artifact to a
-    /// gridfile means exactly the runs worth diagnosing leave nothing behind:
-    /// a failed pass writes no gridfile, and a run with no demand writes an
-    /// artifact full of zeros. `gridfile_hash` is left empty because no
-    /// gridfile was produced.
-    pub(crate) fn persist_to_path(&self, path: &Path) -> io::Result<PathBuf> {
-        let mut persisted = self.persisted.clone();
-        persisted.gridfile_hash = String::new();
-        persisted.artifact_hash = artifact_hash(&persisted)?.to_hex();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, serde_json::to_vec_pretty(&persisted)?)?;
-        Ok(path.to_path_buf())
-    }
-
     pub(crate) fn persist_for_gridfile(&self, gridfile: &Path) -> io::Result<PathBuf> {
         let mut persisted = self.persisted.clone();
         persisted.gridfile_hash = earthmesh_project::file_content_hash(gridfile)?;
@@ -1568,7 +1549,7 @@ mod tests {
         field.set(1, 1, 50.0);
         field.set(7, 3, 50.0);
         let prepared = PreparedHfieldDemand::capture(&field, 100.0, 1, 0.2, namelist).unwrap();
-        assert!(prepared.persisted.intended_output_support[1 * 8 + 1]);
+        assert!(prepared.persisted.intended_output_support[9]);
         assert!(
             !prepared.persisted.intended_output_support[3 * 8 + 7],
             "hard gradient apron outside the output domain is not intended support"
@@ -1578,7 +1559,7 @@ mod tests {
         let artifact = source_demand_artifact_path(&gridfile).unwrap();
         let mut json: serde_json::Value =
             serde_json::from_slice(&fs::read(&artifact).unwrap()).unwrap();
-        json["intended_output_support"][1 * 8 + 1] = serde_json::Value::Bool(false);
+        json["intended_output_support"][9] = serde_json::Value::Bool(false);
         fs::write(&artifact, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
 
         let error = load_hfield_source_demand(&gridfile, namelist).unwrap_err();
@@ -1770,9 +1751,9 @@ mod tests {
             None,
         );
         let mut land_support = vec![false; 8];
-        land_support[1 * 4 + 2] = true;
+        land_support[6] = true;
         let mut ocean_support = vec![false; 8];
-        ocean_support[1 * 4 + 3] = true;
+        ocean_support[7] = true;
 
         let land_artifact = prepared
             .persist_for_product_gridfile(
@@ -1844,7 +1825,7 @@ mod tests {
             vec![true, true]
         );
         let mut product_support = vec![false; 8];
-        product_support[1 * 4 + 3] = true;
+        product_support[7] = true;
         assert_eq!(
             prepared
                 .hard_center_demand_for_product_gridfile(&gridfile, "tri", &product_support,)
@@ -1884,7 +1865,7 @@ mod tests {
             vec![true, true]
         );
         let mut product_support = vec![false; 8];
-        product_support[1 * 4 + 3] = true;
+        product_support[7] = true;
         assert_eq!(
             prepared
                 .hard_center_demand_for_product_gridfile(&gridfile, "hex", &product_support,)

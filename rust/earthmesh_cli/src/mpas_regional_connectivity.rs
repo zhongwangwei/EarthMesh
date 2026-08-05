@@ -1,6 +1,12 @@
+use crate::lonlat_degrees_from_points;
 use crate::n_edges_on_cell_usize_from_mesh;
 use crate::RegionalMpasConnectivity;
 use crate::UnstructuredMesh;
+use earthmesh_mesh::lonlat_points_to_unit_xyz;
+use earthmesh_mesh::order_vertex_arrays_one_based;
+use earthmesh_mesh::order_vertices_on_edge_one_based;
+use earthmesh_mesh::spherical_centroid_degrees;
+use earthmesh_mesh::GetEdgeProductionOutput;
 use std::collections::HashMap;
 use std::io;
 
@@ -121,5 +127,69 @@ pub fn build_regional_mpas_connectivity(
         edges_on_vertex,
         cells_on_edge,
         vertices_on_edge,
+    })
+}
+
+/// Build the edge payload used by the full MPAS writer for a bounded or
+/// cell-culled mesh. Interior edge points follow the existing EarthMesh
+/// cell-centroid convention; boundary edge points follow MpasMeshConverter.x
+/// and use the midpoint of the two edge vertices.
+pub(crate) fn build_regional_mpas_edge_output(
+    mesh: &UnstructuredMesh,
+) -> io::Result<GetEdgeProductionOutput> {
+    let connectivity = build_regional_mpas_connectivity(mesh)?;
+    let vertex_lonlat = lonlat_degrees_from_points(&mesh.m_points);
+    let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
+    let vertices_on_edge = order_vertices_on_edge_one_based(
+        &vertex_lonlat,
+        &cell_lonlat,
+        &connectivity.cells_on_edge,
+        &connectivity.vertices_on_edge,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to orient regional MPAS verticesOnEdge",
+        )
+    })?;
+
+    let mut edge_points =
+        vec![earthmesh_mesh::LonLatDegrees::new(0.0, 0.0); vertices_on_edge.len()];
+    for edge_id in 2..vertices_on_edge.len() {
+        let [cell1, cell2] = connectivity.cells_on_edge[edge_id];
+        let [vertex1, vertex2] = vertices_on_edge[edge_id];
+        let points = if cell2 == 0 {
+            [vertex_lonlat[vertex1], vertex_lonlat[vertex2]]
+        } else {
+            [cell_lonlat[cell1], cell_lonlat[cell2]]
+        };
+        edge_points[edge_id] = spherical_centroid_degrees(&points).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to compute regional MPAS edge point {edge_id}"),
+            )
+        })?;
+    }
+
+    let ordered = order_vertex_arrays_one_based(
+        &lonlat_points_to_unit_xyz(&vertex_lonlat),
+        &lonlat_points_to_unit_xyz(&edge_points),
+        &connectivity.edges_on_vertex,
+        &vertices_on_edge,
+        &connectivity.cells_on_edge,
+    )
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to order regional MPAS vertex connectivity",
+        )
+    })?;
+
+    Ok(GetEdgeProductionOutput {
+        cells_on_edge: connectivity.cells_on_edge,
+        vertices_on_edge,
+        edges_on_vertex: ordered.edges_on_vertex,
+        cells_on_vertex: ordered.cells_on_vertex,
+        edge_points,
     })
 }

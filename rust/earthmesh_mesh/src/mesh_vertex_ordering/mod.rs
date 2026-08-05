@@ -55,11 +55,26 @@ pub fn order_vertices_on_edge_one_based(
         let cells = cells_on_edge[edge_id];
         let vertices = ordered[edge_id];
         let cell1 = *cell_lonlat.get(cells[0])?;
-        let cell2 = *cell_lonlat.get(cells[1])?;
         let vertex1 = *point_lonlat.get(vertices[0])?;
         let vertex2 = *point_lonlat.get(vertices[1])?;
+        let swap = if cells[1] == 0 {
+            // MPAS uses 0 as the exterior cell on a limited-area boundary.
+            // Match MpasMeshConverter.x: orient against a midpoint ghost in
+            // three dimensions so polar and date-line boundaries are safe.
+            let ghost =
+                lonlat_degrees_to_unit_xyz(spherical_centroid_degrees(&[vertex1, vertex2])?);
+            let cell = lonlat_degrees_to_unit_xyz(cell1);
+            let v1 = lonlat_degrees_to_unit_xyz(vertex1);
+            let v2 = lonlat_degrees_to_unit_xyz(vertex2);
+            dot(
+                cross(vector_between(cell, ghost), vector_between(v1, v2)),
+                cell,
+            ) < 0.0
+        } else {
+            should_swap_vertices_on_edge(cell1, *cell_lonlat.get(cells[1])?, vertex1, vertex2)
+        };
 
-        if should_swap_vertices_on_edge(cell1, cell2, vertex1, vertex2) {
+        if swap {
             ordered[edge_id].swap(0, 1);
         }
     }

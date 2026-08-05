@@ -81,6 +81,49 @@ fn atmos_mpas_simple_dispatch_rejects_wrong_branch() {
     assert!(err.to_string().contains("MPAS-Simple"));
 }
 
+#[test]
+fn standard_mpas_simple_writer_needs_only_the_canonical_gridfile() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_standard_mpas_simple_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create root");
+    let gridfile = root.join("gridfile.nc4");
+    let output = root.join("MPAS-Simple.nc4");
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 90.0,
+                lat: 0.0,
+            },
+        ],
+        w_points: vec![
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 180.0,
+                lat: 0.0,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [1, 2, 1], [2, 1, 2]],
+        w_to_m: vec![vec![1], vec![1, 2], vec![2, 1]],
+        n_w_to_m: vec![1, 2, 2],
+    };
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write gridfile");
+
+    let report = earthmesh_cli::mpas_gridfile_writers::write_standard_mpas_simple_from_gridfile(
+        &gridfile, &output, 9,
+    )
+    .expect("write standard MPAS-Simple output");
+    assert_eq!(report.output, output);
+    assert!(report.output.is_file());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
     let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create cellwidth fixture");
     file.add_dimension("num_dbx", values.len())

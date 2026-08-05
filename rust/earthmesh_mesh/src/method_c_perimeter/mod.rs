@@ -10,18 +10,10 @@ impl MethodCDelaunayMesh {
         m_neighbors: &[IcosahedronMPointNeighbors],
     ) -> io::Result<Vec<MethodCPerimeterPoint>> {
         Ok(self
-            .perim_maps2_method_c(nest_wd, m_neighbors)?
+            .perim_maps2_method_c_over(nest_wd, m_neighbors, None)?
             .into_iter()
             .flatten()
             .collect())
-    }
-
-    pub(crate) fn perim_maps2_method_c(
-        &self,
-        nest_wd: &[MethodCNestWd],
-        m_neighbors: &[IcosahedronMPointNeighbors],
-    ) -> io::Result<Vec<Vec<MethodCPerimeterPoint>>> {
-        self.perim_maps2_method_c_over(nest_wd, m_neighbors, None)
     }
 
     /// Perimeter walk restricted to a candidate set of start points.

@@ -162,6 +162,11 @@ fn write_landtype_masked_gridfile_with_refine_levels_impl(
     // is isolated within one side is still coupled across the internal
     // interface, so per-side orphan deletion would break the partition.
     if !coupled_provenance {
+        let retention = if keep_land {
+            ComponentRetentionPolicy::KeepAllNonSingletons
+        } else {
+            ComponentRetentionPolicy::KeepLargest
+        };
         let allowed_before_cleanup = is_in_domain.clone();
         let seeds = vec![false; layout.ustr_points];
         let no_hard_demand = vec![false; layout.ustr_points];
@@ -174,7 +179,7 @@ fn write_landtype_masked_gridfile_with_refine_levels_impl(
                 seeds: &seeds,
                 cell_areas: &[],
                 minimum_component_area: 0.0,
-                retention: ComponentRetentionPolicy::KeepAllNonSingletons,
+                retention,
             },
         )
         .map_err(|error| {
@@ -211,7 +216,7 @@ fn write_landtype_masked_gridfile_with_refine_levels_impl(
             seeds: &seeds,
             cell_areas: &[],
             minimum_component_area: 0.0,
-            retention: ComponentRetentionPolicy::KeepAllNonSingletons,
+            retention,
         })?
         .active;
     }

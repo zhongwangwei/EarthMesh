@@ -553,11 +553,12 @@ const STATIC_BROWSER_CAPABILITIES={
     {intent:"MultiObjectiveBalanced",kind:"coupled",cell:"hex",model_format:"CoLM"},
   ],
   target_compatibility:[
-    {kind:"land",model_formats:["CoLM"]},
-    {kind:"earth",model_formats:["CoLM"]},
-    {kind:"coupled",model_formats:["CoLM"]},
-    {kind:"ocean",model_formats:["FVCOM"]},
-    {kind:"atmosphere",model_formats:["MPAS","MPAS-Simple"]},
+    {model_format:"CoLM",specialized_cells:["tri","hex"]},
+    {model_format:"FVCOM",specialized_cells:["tri"]},
+    {model_format:"ICON",specialized_cells:["tri"]},
+    {model_format:"MPAS",specialized_cells:["hex"]},
+    {model_format:"MPAS-Ocean",specialized_cells:["hex"]},
+    {model_format:"MPAS-Simple",specialized_cells:["hex"]},
   ],
   default_sea_ratio:0.5,
   default_min_angle_deg:25,
@@ -572,7 +573,8 @@ const STATIC_BROWSER_CAPABILITIES={
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
 let TARGET_PRESETS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_presets.map((p)=>[p.intent,p]));
-let TARGET_COMPATIBILITY=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.kind,p.model_formats]));
+let TARGET_MODELS=STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>p.model_format);
+let SPECIALIZED_CELLS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.model_format,p.specialized_cells]));
 let DEFAULT_SEA_RATIO_PCT=STATIC_BROWSER_CAPABILITIES.default_sea_ratio*100;
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
@@ -780,8 +782,9 @@ function renderStep(i){
         </div>
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
           ${field(lang?"目标类型":"Target kind",`<select class="select" id="targetKindOutput"><option value="land">${lang?"陆面":"Land"}</option><option value="ocean">${lang?"海洋":"Ocean"}</option><option value="atmosphere">${lang?"大气":"Atmosphere"}</option><option value="coupled">${lang?"耦合":"Coupled"}</option><option value="earth">${lang?"地球系统":"Earth"}</option></select>`,lang?"模板只提供初始预设":"template supplies the initial preset")}
-          ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"只显示与目标类型兼容的格式":"formats compatible with the target kind")}
-          ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
+          ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"所有模型均可选择；不兼容时仍保存通用网格":"all models remain selectable; incompatible adapters fall back to grid-only")}
+          ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"与物理目标独立":"independent of physical target")}
+          ${field(lang?"交付状态":"Delivery",`<b id="targetDeliveryOutput" style="font-size:15px"></b>`,lang?"通用 EarthMesh gridfile 始终保存":"canonical EarthMesh gridfile is always saved")}
           ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 弹性调整":"EXPERT — spring adjustment"}</span>
@@ -873,7 +876,7 @@ function renderStep(i){
   const watershedText=document.getElementById("watershedPathText"); if(watershedText) watershedText.textContent=watershedPath ? "📄 "+watershedPath : (lang?"📄 点击选择 .shp 文件":"📄 Choose a .shp file");
   const closeText=document.getElementById("closePathText"); if(closeText) closeText.textContent=closePath ? "📄 "+closePath : (lang?"📄 点击选择文件":"📄 Choose file");
   const readyDomain=document.getElementById("readyDomainOutput"); if(readyDomain) readyDomain.textContent=domainLabel();
-  const runOut=document.getElementById("runOutputSummary"); if(runOut&&runInfo){ const parts=[]; if(runInfo.outdir) parts.push((lang?"输出目录：":"output: ")+runInfo.outdir); if(!runInfo.ok&&runInfo.code!=null) parts.push("code "+runInfo.code); runOut.textContent=parts.join(" · "); }
+  const runOut=document.getElementById("runOutputSummary"); if(runOut&&runInfo){ const parts=[]; const skipped=runInfo.skipped_adapter_reason||runInfo.skippedAdapterReason; if(runInfo.outdir) parts.push((lang?"输出目录：":"output: ")+runInfo.outdir); if(runInfo.delivery) parts.push(runInfo.delivery==="full"?(lang?"完整专用交付":"full specialized delivery"):(lang?"仅通用网格":"grid-only")); if(skipped) parts.push(skipped); if(!runInfo.ok&&runInfo.code!=null) parts.push("code "+runInfo.code); runOut.textContent=parts.join(" · "); }
   // wire template + layer toggles
   w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>selectTemplate(+c.dataset.tpl));
   w.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>go(+b.dataset.go));
@@ -930,7 +933,7 @@ function meshRefineStyle(style,p){
   const level=Number(p.refine_level||0);
   if(level<1) return style;
   const color=level>=2?"#f43f5e":"#f59e0b";
-  return {...style,color,weight:level>=2?2:1.6,fillColor:style.fillColor||color,fillOpacity:Math.max(Number(style.fillOpacity||0),style.fillColor?0.18:(level>=2?0.52:0.34))};
+  return {...style,color,weight:level>=2?2:1.6,fillColor:color,fillOpacity:level>=2?0.52:0.34};
 }
 function meshFeatureStyle(f){
   const p=(f&&f.properties)||{};
@@ -972,6 +975,11 @@ function meshFeatureLabel(p){
   return `${refine>0?`L${refine} `:""}${primary}${river}${frac?` (${(frac*100).toFixed(1)}%)`:""}`.trim();
 }
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
+// The globe needs the same cells written without the antimeridian split, so its
+// cut edges do not stack into a seam. Fetched on first globe use only, because
+// it is a second full-size payload for a mesh that may never be shown on a globe.
+let _sphereMeshGeojson=null, _sphereMeshKey=null, _sphereMeshPending=null;
+let _meshSource={gridfile:null,kind:null};
 let _domainGeojson=null; // watershed/domain outline overlay
 let _coastalGeojson=null; // real MERIT-Hydro land/coast/ocean overlay
 let _hydroThresholds={r2WidthM:50,r2UpaKm2:5000,r3WidthM:300,r3UpaKm2:50000,coastBufferKm:50,coastLandEnabled:true,coastOceanEnabled:true};
@@ -988,6 +996,7 @@ function applyMesh(geojson){
   if(!changed) return;
   _coastalGeojson=null;
   _meshGeojson=geojson;
+  _sphereMeshGeojson=null; _sphereMeshKey=null; _sphereMeshPending=null;
   updateExistingOlMaps(true);
   syncMapWindow(["mesh","coastal"],true);
 }
@@ -1051,7 +1060,7 @@ function loadOlMapPrefs(){
 }
 let _olMapPrefs=loadOlMapPrefs();
 const _olGeoFrameCache=new WeakMap();
-const _olPolarReachCache=new WeakMap();
+const _olMercatorLimitCache=new WeakMap();
 function saveOlMapPrefs(patch){
   _olMapPrefs={..._olMapPrefs,...patch};
   try{ localStorage.setItem(OL_MAP_PREFS_KEY,JSON.stringify(_olMapPrefs)); }catch(e){}
@@ -1095,9 +1104,12 @@ function olGeojsonFrame(geojson){
   const west=start>180?start-360:start, east=west+Math.max(0,360-largestGap);
   const frame={west,east,south,north,crossesDateline:east>180}; _olGeoFrameCache.set(geojson,frame); return frame;
 }
-function globeMeshNeedsGeographicPlane(data){
+// True when the mesh reaches past the Web Mercator cutoff. This is a property of
+// EPSG:3857 alone: the MapLibre globe draws the poles natively, so only the plane
+// view needs to react to it.
+function meshExceedsMercatorLimit(data){
   if(!data||typeof data!=="object") return false;
-  if(_olPolarReachCache.has(data)) return _olPolarReachCache.get(data);
+  if(_olMercatorLimitCache.has(data)) return _olMercatorLimitCache.get(data);
   let reaches=false;
   const scan=(coordinates)=>{
     if(reaches||!Array.isArray(coordinates)) return;
@@ -1115,7 +1127,7 @@ function globeMeshNeedsGeographicPlane(data){
   };
   for(const feature of data.features||[]){ scanGeometry(feature.geometry); if(reaches) break; }
   if(!reaches&&data.type!=="FeatureCollection") scanGeometry(data.geometry||data);
-  _olPolarReachCache.set(data,reaches);
+  _olMercatorLimitCache.set(data,reaches);
   return reaches;
 }
 function currentOlDomainFrame(){
@@ -1290,10 +1302,10 @@ function globeRiverExpression(){ return ["upcase",["to-string",["coalesce",["get
 function globeMeshPaint(){
   const kind=globeKindExpression(),river=globeRiverExpression(),refine=["to-number",["coalesce",["get","refine_level"],0]],land=cssVarColor("--land","#78aa5a"),ocean=cssVarColor("--ocean","#3c78c8"),coast=cssVarColor("--coast","#dc963c"),opacity=Number(_olMapPrefs.meshOpacity??1);
   const color=["match",kind,"r3","#c0266b","r2","#7c3aed","coast",coast,"3",coast,"ocean",ocean,"2",ocean,"land",land,"1",land,"#22d3ee"];
-  const rawRefined=["all",[">",refine,0],["==",kind,""]];
-  const fillColor=["case",["all",rawRefined,[">=",refine,2]],"#fb7185",rawRefined,"#fbbf24",color];
+  const refined=[">",refine,0];
+  const fillColor=["case",[">=",refine,2],"#fb7185",refined,"#fbbf24",color];
   const lineColor=["case",[">=",refine,2],"#f43f5e",[">=",refine,1],"#f59e0b",["==",river,"R3"],"#c0266b",["==",river,"R2"],"#7c3aed",color];
-  return {fill:{"fill-color":fillColor,"fill-opacity":["*",opacity,["case",["all",rawRefined,[">=",refine,2]],0.52,rawRefined,0.34,["match",kind,"r3",0.40,"r2",0.32,"coast",0.30,"3",0.30,"ocean",0.12,"2",0.12,"land",0.12,"1",0.12,0.05]]]},line:{"line-color":lineColor,"line-opacity":opacity,"line-width":["case",[">=",refine,2],2,[">=",refine,1],1.6,["match",kind,"r3",1.4,"r2",1.2,"coast",1.5,"3",1.5,0.8]]}};
+  return {fill:{"fill-color":fillColor,"fill-opacity":["*",opacity,["case",[">=",refine,2],0.52,refined,0.34,["match",kind,"r3",0.40,"r2",0.32,"coast",0.30,"3",0.30,"ocean",0.12,"2",0.12,"land",0.12,"1",0.12,0.05]]]},line:{"line-color":lineColor,"line-opacity":opacity,"line-width":["case",[">=",refine,2],2,[">=",refine,1],1.6,["match",kind,"r3",1.4,"r2",1.2,"coast",1.5,"3",1.5,0.8]]}};
 }
 function globeGraticuleGeojson(){
   if(globeGraticuleGeojson.cache) return globeGraticuleGeojson.cache;
@@ -1399,9 +1411,39 @@ function ensureGlobeMap(map){
     return globe;
   }catch(error){ console.error("MapLibre globe:",error); return null; }
 }
+/// Ask the engine for the same cells with longitudes running past +/-180 instead
+/// of split at it. Classified (coastal) overlays keep the planar payload: they
+/// come from a different producer and have no unwrapped form.
+// Never throws and never returns anything but a usable FeatureCollection or
+// null. This runs on the globe's render path, so anything escaping here would
+// abort the update before a single source is set and blank the whole mesh.
+function ensureSphereMesh(map){
+  try{
+    if(hasGeojson(_coastalGeojson)) return null;
+    if(!hasGeojson(_meshGeojson)) return null;
+    const source=_meshSource||{}, gridfile=source.gridfile, kind=source.kind;
+    if(!gridfile||!kind) return null;
+    const key=gridfile+"::"+kind;
+    if(_sphereMeshKey===key) return hasGeojson(_sphereMeshGeojson)?_sphereMeshGeojson:null;
+    if(_sphereMeshPending===key) return null;
+    const invoke=window.__TAURI__&&window.__TAURI__.core&&window.__TAURI__.core.invoke;
+    if(typeof invoke!=="function") return null;
+    _sphereMeshPending=key;
+    invoke("mesh_cell_polygons",{gridfile,kind,maxCells:null,seam:"unwrapped"})
+      .then((txt)=>{
+        if(_sphereMeshPending!==key) return;
+        const parsed=JSON.parse(txt);
+        _sphereMeshPending=null;
+        if(!hasGeojson(parsed)) return;
+        _sphereMeshGeojson=parsed; _sphereMeshKey=key;
+        if(map&&map._globeActive) updateGlobeMap(map,false);
+      })
+      .catch((error)=>{ if(_sphereMeshPending===key) _sphereMeshPending=null; console.error("sphere mesh:",error); });
+  }catch(error){ console.error("sphere mesh:",error); }
+  return null;
+}
 function updateGlobeMap(map,doFit){
-  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson;
-  if(globeMeshNeedsGeographicPlane(mesh)){ useGeographicPlaneForPolarMesh(map,doFit); return; }
+  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:(ensureSphereMesh(map)||_meshGeojson);
   const globe=map._globe;
   if(!globe||!map._globeLoaded){ map._globePendingFit=map._globePendingFit||!!doFit; return; }
   syncGlobeSource(map,"mesh",mesh); syncGlobeSource(map,"boundary",_domainGeojson); syncGlobeSource(map,"domain",globeDomainGeojson(map));
@@ -1409,18 +1451,16 @@ function updateGlobeMap(map,doFit){
   setGlobeLayerVisible(map,"mesh",_olMapPrefs.mesh!==false); setGlobeLayerVisible(map,"boundary",_olMapPrefs.boundary!==false); setGlobeLayerVisible(map,"domain",_olMapPrefs.domain!==false); setGlobeLayerVisible(map,"graticule",_olMapPrefs.graticule===true);
   updateOlLegend(map); syncOlMapTools(map,true); if(doFit) fitGlobeMap(map,"region",0);
 }
-function useGeographicPlaneForPolarMesh(map,doFit){
-  setMapRenderer(map,"plane",false);
-  if(map._projectionChoice!=="EPSG:4326") changeOlProjection(map,"EPSG:4326");
-  else updateOlMap(map,doFit);
-  const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=lang?"网格包含 ±85.05° 外的极区单元；已切换到平面·地理坐标以精确显示":"The mesh reaches beyond ±85.05°; switched to Plane · Geographic for exact polar display";
+// Plane view only: Web Mercator silently clips the polar cells, so fall back to
+// Geographic the same way an unavailable local UTM zone does.
+function useGeographicPlaneForPolarMesh(map){
+  changeOlProjection(map,"EPSG:4326");
+  const status=document.getElementById("mapMeasureStatus"); if(status) status.textContent=lang?"网格包含 ±85.05° 外的极区单元；平面视图已切换到地理坐标以精确显示（球体视图不受此限制）":"The mesh reaches beyond ±85.05°; the plane view switched to Geographic for exact polar display (the globe view is unaffected)";
   return true;
 }
 function setMapRenderer(map,renderer,doFit=true){
   renderer=renderer==="globe"?"globe":"plane";
   if(map._exporting||map.getTargetElement().id!=="mapsvgModal") return false;
-  const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson;
-  if(renderer==="globe"&&globeMeshNeedsGeographicPlane(mesh)) return useGeographicPlaneForPolarMesh(map,doFit);
   const plane=map.getTargetElement(), globeContainer=document.getElementById("mapglobeModal"), select=document.getElementById("mapRendererSelect");
   if(renderer==="globe"){
     if(map._measureMode!=="none") setOlMeasureMode(map,"none");
@@ -1482,6 +1522,7 @@ function syncOlProjectionOption(map){
   if(option){ option.disabled=!available; option.textContent=lang?`本地 UTM（自动 · ${code.replace("EPSG:","")}）`:`Local UTM (auto · ${code})`; option.title=available?"":(lang?"仅适用于宽度不超过 12°、纬度 80°S–84°N 的区域":"Available for regional domains up to 12° wide between 80°S and 84°N"); }
   if(map._projectionChoice==="UTM:AUTO"&&!available){ changeOlProjection(map,"EPSG:3857"); return true; }
   if(map._projectionChoice==="UTM:AUTO"&&olProjectionCode(map)!==code){ changeOlProjection(map,"UTM:AUTO"); return true; }
+  if(olProjectionCode(map)==="EPSG:3857"&&meshExceedsMercatorLimit(hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson)) return useGeographicPlaneForPolarMesh(map);
   return false;
 }
 function updateOlMap(map,doFit){
@@ -1960,7 +2001,8 @@ if(MAP_WINDOW_MODE){
 
   if (MAP_WINDOW_MODE) {
     tauriEvent.listen("earthmesh-map-state", ({ payload }) => {
-      if ("mesh" in payload) _meshGeojson = payload.mesh;
+      if ("mesh" in payload) { _meshGeojson = payload.mesh; _sphereMeshGeojson=null; _sphereMeshKey=null; _sphereMeshPending=null; }
+      if ("meshSource" in payload) _meshSource = payload.meshSource || {gridfile:null,kind:null};
       if ("domain" in payload) _domainGeojson = payload.domain;
       if ("coastal" in payload) _coastalGeojson = payload.coastal;
       if ("hydroThresholds" in payload) _hydroThresholds = payload.hydroThresholds;
@@ -1980,7 +2022,7 @@ if(MAP_WINDOW_MODE){
   const ALL_MAP_STATE=["mesh","domain","coastal","settings"];
   const mapState = (parts=ALL_MAP_STATE,fit=false) => {
     const selected=new Set(parts), payload={fit};
-    if(selected.has("mesh")) payload.mesh=_meshGeojson;
+    if(selected.has("mesh")){ payload.mesh=_meshGeojson; payload.meshSource=_meshSource; }
     if(selected.has("domain")) payload.domain=_domainGeojson;
     if(selected.has("coastal")) payload.coastal=_coastalGeojson;
     if(selected.has("settings")) Object.assign(payload,{
@@ -2022,7 +2064,8 @@ if(MAP_WINDOW_MODE){
       .filter((intent) => !intentIds.has(intent));
     if (unsupported.length) throw new Error("unsupported gallery intents: " + unsupported.join(", "));
     TARGET_PRESETS = Object.fromEntries((capabilities.target_presets || []).map((preset) => [preset.intent, preset]));
-    TARGET_COMPATIBILITY = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.kind, entry.model_formats]));
+    TARGET_MODELS = (capabilities.target_compatibility || []).map((entry) => entry.model_format);
+    SPECIALIZED_CELLS = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.model_format, entry.specialized_cells]));
     DEFAULT_SEA_RATIO_PCT = capabilities.default_sea_ratio * 100;
     DEFAULT_MIN_ANGLE_DEG = capabilities.default_min_angle_deg;
     METHOD_C_MIN_BASE_NXP = capabilities.method_c_min_base_nxp;
@@ -2213,11 +2256,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (baseProjectYaml) {
       yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !!hiddenDomainShape });
     }
-    if (targetEdit) {
-      yaml = await invoke("set_project_target", { yaml, kind: targetEdit.kind, modelFormat: targetEdit.modelFormat });
-    }
-    if (cellEdit) {
-      yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
+    if (targetEdit || cellEdit) {
+      const target = selectedTarget(lastSummary);
+      yaml = await invoke("set_project_target", { yaml, kind: target.kind, cell: target.cell, modelFormat: target.modelFormat });
     }
     const layerIds = Object.keys(layerEdits).sort((a,b) => Number(!!layerEdits[b].enabled) - Number(!!layerEdits[a].enabled));
     for (const id of layerIds) {
@@ -2294,7 +2335,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     listCriteria: () => invoke("list_criteria"),
     validate:   (yaml) => invoke("validate_project", { yaml }),
     summary:    (yaml) => invoke("project_summary", { yaml }),
-    setProjectTarget: (yaml, kind, modelFormat) => invoke("set_project_target", { yaml, kind, modelFormat }),
+    setProjectTarget: (yaml, kind, cell, modelFormat) => invoke("set_project_target", { yaml, kind, cell, modelFormat }),
     setTargetCell: (yaml, cell) => invoke("set_target_cell", { yaml, cell }),
     setThresholdCriterion: (yaml, id, enabled, value) => invoke("set_threshold_criterion", { yaml, id, enabled, value }),
     setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
@@ -3391,29 +3432,35 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       : (zh() ? "六边形" : "Hexagonal");
   }
 
-  function compatibleTargetModels(kind) {
-    const models = TARGET_COMPATIBILITY[kind];
-    return Array.isArray(models) && models.length ? models : [templateDefaultTarget().model_format || "CoLM"];
+  function compatibleTargetModels() {
+    return TARGET_MODELS.length ? TARGET_MODELS : ["CoLM", "FVCOM", "ICON", "MPAS", "MPAS-Ocean", "MPAS-Simple"];
+  }
+
+  function deliveryStatus(model, cell) {
+    const cells = SPECIALIZED_CELLS[model] || [];
+    return cells.includes(cell) ? "full" : "grid_only";
   }
 
   function selectedTarget(summary) {
     const preset = templateDefaultTarget();
     const kind = (targetEdit && targetEdit.kind) || (summary && summary.target_kind) || preset.kind || "land";
-    const models = compatibleTargetModels(kind);
+    const models = compatibleTargetModels();
     const requested = (targetEdit && targetEdit.modelFormat) || (summary && summary.model_format) || preset.model_format;
-    return { kind, modelFormat: models.includes(requested) ? requested : models[0], models };
+    const cell = cellEdit || (summary && summary.cell) || preset.cell || "hex";
+    return { kind, cell, modelFormat: models.includes(requested) ? requested : models[0], models };
   }
 
   function paintTargetOutputs(summary) {
     const s = summary || lastSummary;
     const target = selectedTarget(s);
     const model = target.modelFormat;
-    const cell = String(cellEdit || (s && s.cell) || templateDefaultCell()).toLowerCase() === "tri" ? "tri" : "hex";
+    const cell = target.cell;
     const mode = (s && s.quality_mode) || (cell === "tri" ? "tri-strict" : "hex-cgrid");
     const kindIn = document.getElementById("targetKindOutput");
     const modelIn = document.getElementById("targetModelOutput");
     const cellIn = document.getElementById("targetCellOutput");
     const modeIn = document.getElementById("targetQualityModeOutput");
+    const deliveryIn = document.getElementById("targetDeliveryOutput");
     const ready = document.getElementById("readyModelOutput");
     const readyMode = document.getElementById("readyQualityModeOutput");
     const refine = document.getElementById("readyRefinementOutput");
@@ -3428,8 +3475,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       });
       modelIn.value = model;
     }
-    if (cellIn) cellIn.value = cell;
+    if (cellIn) { cellIn.value = cell; cellIn.disabled = false; }
     if (modeIn) modeIn.textContent = qualityModeLabel(mode, cell);
+    if (deliveryIn) {
+      const status = (s && s.delivery_status) || deliveryStatus(model, cell);
+      deliveryIn.textContent = status === "full"
+        ? (zh() ? `EarthMesh 网格 + ${model} 专用输出` : `EarthMesh grid + ${model} specialized output`)
+        : (zh() ? `仅 EarthMesh 网格（跳过 ${model} 专用输出）` : `EarthMesh grid only (${model} adapter skipped)`);
+    }
     if (ready) ready.textContent = model;
     if (readyMode) readyMode.textContent = qualityModeLabel(mode, cell);
     if (refine) refine.textContent = s && s.refine_enabled
@@ -3522,8 +3575,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (kindIn) {
       kindIn.onchange = async () => {
         const kind = kindIn.value;
-        const models = compatibleTargetModels(kind);
-        const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
+        const currentModel = modelIn ? modelIn.value : selectedTarget(lastSummary).modelFormat;
         targetEdit = { kind: kind, modelFormat: currentModel };
         clearRunArtifacts();
         paintTargetOutputs(await refreshSummary());
@@ -3532,15 +3584,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (modelIn) {
       modelIn.onchange = async () => {
         const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
-        const models = compatibleTargetModels(kind);
-        targetEdit = { kind: kind, modelFormat: models.includes(modelIn.value) ? modelIn.value : models[0] };
+        targetEdit = { kind: kind, modelFormat: modelIn.value };
         clearRunArtifacts();
         paintTargetOutputs(await refreshSummary());
       };
     }
     if (cellIn) {
       cellIn.onchange = async () => {
-        cellEdit = cellIn.value === "tri" ? "tri" : "hex";
+        cellEdit = cellIn.value;
         clearRunArtifacts();
         paintTargetOutputs(await refreshSummary());
       };
@@ -3955,10 +4006,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     (knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile))
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
-    invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })
+    invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null, seam: "split" })
       .then((txt) => {
         const mesh=JSON.parse(txt),refined=(mesh.features||[]).filter((feature)=>Number(feature&&feature.properties&&feature.properties.refine_level)>0).length;
         applyMesh(mesh);
+        _meshSource={gridfile,kind};
+        syncMapWindow(["mesh"],false);
         logLine((zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map")+(refined?` · ${refined} ${zh()?"个细化单元":"refined cells"}`:""));
         loadMeshMeritCells(gridfile, kind);
       })

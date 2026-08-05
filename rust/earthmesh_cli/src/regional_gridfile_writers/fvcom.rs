@@ -3,7 +3,6 @@ use crate::unstructured_mesh_support::{
     mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id,
 };
 use crate::validate_unstructured_mesh;
-use crate::write_fvcom_mesh_2dm;
 use crate::write_fvcom_ns_records;
 use crate::FvcomMesh2dmWriteReport;
 use crate::LonLatPoint;
@@ -104,10 +103,15 @@ pub(crate) fn write_fvcom_2dm_from_carved(
 
 /// Write the standard FVCOM `.2dm` mesh straight from a base gridfile, in pure
 /// Rust. Open-boundary segments are omitted (none for a from-scratch mesh).
+///
+/// A gridfile carries whichever placeholder layout Method-C emitted, so this
+/// goes through the layout-aware carved writer rather than
+/// `write_fvcom_mesh_2dm`, which assumes a single leading placeholder row and
+/// rejects the two-row form with `expected Canonical index 2..`.
 pub fn write_standard_fvcom_from_gridfile(
     gridfile: impl AsRef<Path>,
     output_2dm: impl AsRef<Path>,
 ) -> io::Result<FvcomMesh2dmWriteReport> {
     let mesh = read_unstructured_mesh_netcdf(gridfile)?;
-    write_fvcom_mesh_2dm(output_2dm, &mesh, &[])
+    write_fvcom_2dm_from_carved(&mesh, &[], output_2dm.as_ref())
 }

@@ -86,13 +86,13 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
 | `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
-| `project_summary` | `yaml` | `{name,authors,description,intent,target_kind,cell,model_format,domain,domain_shape,nxp,approx_km,approx_degree,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,threshold_criteria:[{id,source_id,statistic,source_enabled,enabled,value}],hydro_river_width_refine_enabled,hydro_river_upstream_area_refine_enabled,hydro_river_width_threshold_m,hydro_river_upstream_area_threshold_km2,hydro_coast_refine_enabled,hydro_coast_buffer_km,hydro_coast_land_refine_enabled,hydro_coast_ocean_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,source_field,role,path,enabled,threshold_value,wants_folder}]}` |
+| `project_summary` | `yaml` | `{name,authors,description,intent,target_kind,cell,model_format,delivery_status,skipped_adapter_reason,domain,domain_shape,nxp,approx_km,approx_degree,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,threshold_criteria:[{id,source_id,statistic,source_enabled,enabled,value}],hydro_river_width_refine_enabled,hydro_river_upstream_area_refine_enabled,hydro_river_width_threshold_m,hydro_river_upstream_area_threshold_km2,hydro_coast_refine_enabled,hydro_coast_buffer_km,hydro_coast_land_refine_enabled,hydro_coast_ocean_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,source_field,role,path,enabled,threshold_value,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
 | `set_threshold_value` | `yaml, id, value?` | updated **YAML** (legacy/shared source threshold; null uses the catalog default) |
 | `set_threshold_criterion` | `yaml, id, enabled, value?` | updated **YAML** (one independent `<source>_mean` or `<source>_std` switch/value; source path remains in `data_layers`) |
 | `set_hydro_refinement` | `yaml, riverWidthEnabled, riverUpstreamAreaEnabled, coastEnabled, coastBufferKm, coastLandEnabled, coastOceanEnabled, riverWidthThresholdM, riverUpstreamAreaThresholdKm2` | updated **YAML** (independent river-width/upstream-area demand plus the coast-distance demand) |
 | `autofill_data_layers_from_folder` | `yaml, folder` | updated **YAML** with matching NetCDF layer paths |
-| `set_project_target` | `yaml, kind, modelFormat` | updated **YAML** after enforcing the backend kind/model compatibility matrix |
+| `set_project_target` | `yaml, kind, cell, modelFormat` | updated **YAML** with independent physical target, cell topology, and model format |
 | `set_target_cell` | `yaml, cell` | updated **YAML** (`hex` or `tri`) |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
@@ -111,7 +111,7 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `save_map_png` | raw PNG IPC body | validated PNG → native save path (or `null`) |
 | `read_project` | `path` | `{path, yaml}` for recent-project reopen |
 | `open_path` | `path` | open output/report path in the OS file browser |
-| `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile,auto_refine_decisions}`; each decision includes pass, selection reason, selected paths/verdict, structured guarded regressions, and its artifact path |
+| `run_project` | `yaml, outdir?` | spawn the discovered mesh engine, stream `mkgrd://log` events, return `{ok,code,outdir,gridfile,delivery,specialized_outputs,skipped_adapter_reason,auto_refine_decisions}`; each decision includes pass, selection reason, selected paths/verdict, structured guarded regressions, and its artifact path |
 | `kill_run` | – | terminate the running engine child if one exists |
 | `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard; `kind` is `tri` or `hex` and maps to report `cell_view` (omitted defaults to `hex`) |
 | `mesh_cell_polygons` | `gridfile, kind, maxCells?` | GeoJSON mesh overlay for the map |
@@ -199,6 +199,10 @@ automatically.
   through the shared `earthmesh_project` model.
 - Data layers, domain, quality, refinement, target output, and run state are
   reflected from `ProjectConfig` instead of duplicated frontend tables.
+- Physical target, Tri/Hex cell view, and output model are independent controls.
+  The canonical EarthMesh gridfile is always delivered. FVCOM and ICON specialization are
+  Tri-only, MPAS/MPAS-Ocean/MPAS-Simple specialization is Hex-only, and CoLM supports both;
+  incompatible selections complete as explicit `grid_only` deliveries.
 - Runs are explicit: the backend stages the engine, writes `mkgrd.nml`, streams
   stdout/stderr to the Log pane, supports kill, and reports the output directory.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the

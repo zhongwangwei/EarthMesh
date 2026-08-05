@@ -139,3 +139,83 @@ fn sample_mesh() -> UnstructuredMesh {
         n_w_to_m: vec![0, 2, 1, 2, 1],
     }
 }
+
+/// A Method-C gridfile can carry two leading placeholder rows, which the
+/// single-placeholder `write_fvcom_mesh_2dm` rejects with
+/// `triangle 1 canonicals vertex 1`. The standard delivery path must accept it.
+#[test]
+fn standard_fvcom_delivery_accepts_two_placeholder_gridfiles() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_fvcom_two_placeholder_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+
+    let gridfile = root.join("gridfile.nc4");
+    let mesh = two_placeholder_mesh();
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write two-placeholder gridfile");
+
+    let output = root.join("FVCOM_two_placeholder.2dm");
+    let report =
+        earthmesh_cli::regional_gridfile_writers::write_standard_fvcom_from_gridfile(
+            &gridfile, &output,
+        )
+        .expect("two-placeholder gridfile must deliver FVCOM");
+
+    assert_eq!(report.triangles, 2);
+    assert_eq!(report.nodes, 4);
+    let content = fs::read_to_string(&output).expect("read 2dm");
+    // Elements are renumbered 1-based and reference renumbered 1-based nodes;
+    // neither placeholder row may leak into the element table.
+    assert!(content.contains("E3T 1 1 2 3 1\n"), "{content}");
+    assert!(content.contains("E3T 2 1 3 4 1\n"), "{content}");
+    assert_eq!(content.matches("E3T ").count(), 2, "{content}");
+    assert_eq!(content.matches("ND ").count(), 4, "{content}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Same geometry as [`sample_mesh`], shifted so both row 0 and row 1 are
+/// explicit `(0, 0)` placeholders and canonical ids equal row numbers.
+fn two_placeholder_mesh() -> UnstructuredMesh {
+    let origin = LonLatPoint { lon: 0.0, lat: 0.0 };
+    UnstructuredMesh {
+        m_points: vec![
+            origin,
+            origin,
+            LonLatPoint {
+                lon: 113.5,
+                lat: 22.3,
+            },
+            LonLatPoint {
+                lon: 113.4,
+                lat: 22.7,
+            },
+        ],
+        w_points: vec![
+            origin,
+            origin,
+            LonLatPoint {
+                lon: 113.0,
+                lat: 22.0,
+            },
+            LonLatPoint {
+                lon: 114.0,
+                lat: 22.0,
+            },
+            LonLatPoint {
+                lon: 114.0,
+                lat: 23.0,
+            },
+            LonLatPoint {
+                lon: 113.0,
+                lat: 23.0,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [1, 1, 1], [2, 3, 4], [2, 4, 5]],
+        w_to_m: vec![vec![1], vec![1], vec![2], vec![2, 3], vec![2, 3], vec![3]],
+        n_w_to_m: vec![0, 0, 1, 2, 2, 1],
+    }
+}

@@ -187,14 +187,36 @@ fn earthmesh_config_rejects_invalid_read_nl_gridnum_perdegree() {
 }
 
 #[test]
-fn earthmesh_config_rejects_invalid_read_nl_mesh_output_combo() {
-    let err = EarthmeshConfig::from_mkgrd_namelist(
-        "&mkgrd\n NL%mesh_type = 'landmesh'\n NL%output_format = 'MPAS'\n/\n",
-    )
-    .expect_err("landmesh should only allow CoLM output like read_nl");
+fn earthmesh_config_accepts_independent_mesh_and_output_format() {
+    for mesh_type in [
+        "landmesh",
+        "earthmesh",
+        "oceanmesh",
+        "atmos",
+        "atmosmesh",
+        "LOCmesh",
+    ] {
+        for output_format in ["CoLM", "FVCOM", "ICON", "MPAS", "MPAS-Ocean", "MPAS-Simple"] {
+            let namelist = format!(
+                "&mkgrd\n NL%mesh_type = '{mesh_type}'\n NL%output_format = '{output_format}'\n/\n"
+            );
+            let parsed = EarthmeshConfig::from_mkgrd_namelist(&namelist)
+                .expect("physical target and delivery format are independent");
+            assert_eq!(parsed.mesh_type, mesh_type);
+            assert_eq!(parsed.output_format, output_format);
+        }
+    }
+}
 
-    assert!(err.contains("landmesh"));
-    assert!(err.contains("CoLM"));
+#[test]
+fn earthmesh_config_rejects_unknown_output_format() {
+    let err = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n NL%mesh_type = 'landmesh'\n NL%output_format = 'Unknown'\n/\n",
+    )
+    .expect_err("unknown model formats must still be rejected");
+
+    assert!(err.contains("unsupported output_format"));
+    assert!(err.contains("Unknown"));
 }
 
 #[test]

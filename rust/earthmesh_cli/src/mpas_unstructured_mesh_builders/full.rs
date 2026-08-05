@@ -2,6 +2,7 @@ use crate::cells_on_triangle_one_based_from_mesh;
 use crate::get_edge_from_unstructured_mesh;
 use crate::lonlat_degrees_from_points;
 use crate::mpas_lat_lon_radians;
+use crate::mpas_regional_connectivity::build_regional_mpas_edge_output;
 use crate::n_edges_on_cell_usize_from_mesh;
 use crate::pad_f64_rows;
 use crate::split_cartesian_components;
@@ -16,7 +17,7 @@ use crate::MpasMesh;
 use crate::UnstructuredMesh;
 use earthmesh_mesh::connect_on_cell_one_based;
 use earthmesh_mesh::edge_distance_angle_one_based;
-use earthmesh_mesh::get_area_production_one_based;
+use earthmesh_mesh::get_area_unit_one_based;
 use earthmesh_mesh::lonlat_points_to_unit_xyz;
 use earthmesh_mesh::order_vertices_on_cell_by_shared_edges_one_based;
 use earthmesh_mesh::order_vertices_on_cell_one_based;
@@ -81,7 +82,21 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
     let n_edges_on_cell = n_edges_on_cell_usize_from_mesh(mesh)?;
     let triangle_lonlat = lonlat_degrees_from_points(&mesh.m_points);
     let cell_lonlat = lonlat_degrees_from_points(&mesh.w_points);
-    let edge_output = get_edge_from_unstructured_mesh(mesh)?;
+    let has_boundary = mesh
+        .m_to_w
+        .iter()
+        .skip(2)
+        .any(|row| row.iter().any(|cell| *cell < 2));
+    let edge_output = if has_boundary {
+        build_regional_mpas_edge_output(mesh)?
+    } else {
+        get_edge_from_unstructured_mesh(mesh)?
+    };
+    let cells_on_vertex = if has_boundary {
+        edge_output.cells_on_vertex.as_slice()
+    } else {
+        cells_on_triangle.as_slice()
+    };
 
     let vertices = lonlat_points_to_unit_xyz(&triangle_lonlat);
     let cells = lonlat_points_to_unit_xyz(&cell_lonlat);
@@ -134,11 +149,11 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         )
     })?;
 
-    let area = get_area_production_one_based(GetAreaUnitInput {
+    let area = get_area_unit_one_based(GetAreaUnitInput {
         vertices: &vertices,
         edge_points: &edge_points,
         cell_points: &cells,
-        cells_on_vertex: &cells_on_triangle,
+        cells_on_vertex,
         edges_on_vertex: &edge_output.edges_on_vertex,
         cells_on_edge: &edge_output.cells_on_edge,
         vertices_on_cell: &ordered_vertices_on_cell,
@@ -183,13 +198,13 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
     })?;
 
     let weights = set_weights_on_edge_one_based(
-        &area.unit.area_cell,
+        &area.area_cell,
         &edge_metrics.angle_edge,
         &edge_metrics.dc_edge,
         &edge_metrics.dv_edge,
-        &area.unit.kite_areas_on_vertex,
+        &area.kite_areas_on_vertex,
         &cell_connectivity.edges_on_cell,
-        &cells_on_triangle,
+        cells_on_vertex,
         &edge_output.cells_on_edge,
         &ordered_vertices_on_cell,
         &edge_output.vertices_on_edge,
@@ -256,10 +271,9 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         vertices_on_edge: zero_based_pair_rows("vertices_on_edge", &edge_output.vertices_on_edge)?,
         n_edges_on_edge: usize_values_to_i32("n_edges_on_edge", &weights.n_edges_on_edge)?,
         edges_on_edge: zero_based_padded_rows("edges_on_edge", &weights.edges_on_edge, 20)?,
-        area_cell: area.unit.area_cell,
-        area_triangle: area.unit.area_triangle,
+        area_cell: area.area_cell,
+        area_triangle: area.area_triangle,
         kite_areas_on_vertex: area
-            .unit
             .kite_areas_on_vertex
             .into_iter()
             .map(|row| row.to_vec())

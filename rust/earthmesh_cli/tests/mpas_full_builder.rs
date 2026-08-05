@@ -38,6 +38,61 @@ fn mpas_full_builder_composes_geometry_payload_and_writer() {
 }
 
 #[test]
+fn icon_writer_matches_the_official_core_grid_contract() {
+    let root =
+        std::env::temp_dir().join(format!("earthmesh_cli_icon_writer_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create ICON root");
+    let mesh = canonical_single_placeholder_fixture_mesh();
+    let gridfile = root.join("gridfile.nc4");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write ICON source gridfile");
+    let output = root.join("icon_grid.nc");
+    let report = earthmesh_cli::mpas_gridfile_writers::write_standard_icon_from_gridfile(
+        &gridfile, &output, 9,
+    )
+    .expect("write ICON grid");
+    assert_eq!((report.cells, report.vertices, report.edges), (4, 4, 6));
+    assert!(report.global_grid);
+
+    let file = netcdf::open(&output).expect("open ICON grid");
+    for (name, len) in [
+        ("cell", 4),
+        ("vertex", 4),
+        ("edge", 6),
+        ("nc", 2),
+        ("nv", 3),
+        ("ne", 6),
+    ] {
+        assert_eq!(file.dimension(name).expect(name).len(), len);
+    }
+    for name in [
+        "clon",
+        "clat",
+        "edge_of_cell",
+        "vertex_of_cell",
+        "adjacent_cell_of_edge",
+        "cells_of_vertex",
+        "orientation_of_normal",
+        "refin_c_ctrl",
+    ] {
+        assert!(
+            file.variable(name).is_some(),
+            "missing ICON variable {name}"
+        );
+    }
+    let radius: f64 = file
+        .attribute("semi_major_axis")
+        .expect("semi_major_axis")
+        .value()
+        .expect("read semi_major_axis")
+        .try_into()
+        .expect("f64 semi_major_axis");
+    assert_eq!(radius, earthmesh_cli::ICON_SPHERE_RADIUS_METERS);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn mpas_full_builder_restores_canonical_single_placeholder_payload_shape() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_mpas_full_canonical_placeholder_{}",
@@ -188,4 +243,137 @@ fn mpas_full_builder_nominal_min_dc_uses_canonical_integer_nxp_division() {
     let expected =
         (7680 / 112 / 2_usize.pow(3)) as f64 / earthmesh_core::EARTH_RADIUS_METERS * 1000.0;
     assert_eq!(mpas.nominal_min_dc, expected);
+}
+
+#[test]
+fn mpas_full_builder_supports_limited_area_boundary_metrics_and_weights() {
+    let mesh = regional_two_cell_patch();
+    let cellwidth = vec![100.0; mesh.w_points.len()];
+    let mpas = earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(
+        &mesh,
+        &cellwidth,
+        9,
+        1,
+    )
+    .expect("build regional MPAS payload");
+
+    let topology = earthmesh_cli::mpas_topology::check_mpas_mesh_topology(&mpas);
+    assert!(topology.is_consistent(), "{:?}", topology.violations);
+    assert_eq!(topology.euler_characteristic, 1);
+    assert_eq!(topology.boundary_edges, 4);
+
+    for edge in 1..mpas.cells_on_edge.len() {
+        assert!(mpas.dv_edge[edge].is_finite() && mpas.dv_edge[edge] > 0.0);
+        assert!(mpas.dc_edge[edge].is_finite() && mpas.dc_edge[edge] > 0.0);
+        assert!(mpas.angle_edge[edge].is_finite());
+        if mpas.cells_on_edge[edge][1] == 0 {
+            assert!((mpas.dc_edge[edge] - 3.0_f64.sqrt() * mpas.dv_edge[edge]).abs() < 1.0e-12);
+            assert_eq!(mpas.n_edges_on_edge[edge], 2);
+            assert!(mpas.weights_on_edge[edge][..2]
+                .iter()
+                .all(|weight| weight.is_finite()));
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_regional_mpas_full_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create regional MPAS root");
+    let gridfile = root.join("gridfile.nc4");
+    let output = root.join("regional_mpas.nc4");
+    let graph = root.join("regional.graph.info");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write regional source gridfile");
+    let report = earthmesh_cli::mpas_gridfile_writers::write_standard_mpas_from_gridfile(
+        &gridfile, &output, &graph, 9,
+    )
+    .expect("write full regional MPAS product");
+    assert_eq!(report.mesh.n_cells, 2);
+    assert_eq!(report.mesh.n_edges, 5);
+    assert!(report.mesh.output.is_file());
+    assert!(report.graph_info.output.is_file());
+    let file = netcdf::open(&report.mesh.output).expect("open regional MPAS product");
+    let cells_on_edge = file
+        .variable("cellsOnEdge")
+        .expect("cellsOnEdge")
+        .get_values::<i32, _>(..)
+        .expect("read cellsOnEdge");
+    assert_eq!(cells_on_edge.iter().filter(|cell| **cell == 0).count(), 4);
+    let boundary_vertex = file
+        .variable("boundaryVertex")
+        .expect("boundaryVertex")
+        .get_values::<i32, _>(..)
+        .expect("read boundaryVertex");
+    assert_eq!(boundary_vertex, vec![0, 0, 1, 1]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn icon_writer_serializes_limited_area_open_vertex_fans() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_regional_icon_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create regional ICON root");
+    let output = root.join("regional_icon.nc");
+    let mesh = canonical_single_placeholder_fixture_mesh();
+    let cellwidth = vec![100.0; mesh.w_points.len()];
+    let global = earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(
+        &mesh,
+        &cellwidth,
+        9,
+        1,
+    )
+    .expect("build global MPAS payload");
+    let mut keep = vec![false; global.lat_cell.len()];
+    keep[1..=3].fill(true);
+    let regional = earthmesh_cli::mpas_topology::subset_mpas_mesh(&global, &keep)
+        .expect("subset limited-area MPAS payload");
+    let report = earthmesh_cli::write_icon_grid_netcdf(&output, &regional)
+        .expect("write regional ICON product");
+    assert!(!report.global_grid);
+
+    let file = netcdf::open(&output).expect("open regional ICON product");
+    let cells = file.dimension("cell").expect("cell").len();
+    let vertices = file.dimension("vertex").expect("vertex").len();
+    let cells_of_vertex = file
+        .variable("cells_of_vertex")
+        .expect("cells_of_vertex")
+        .get_values::<i32, _>(..)
+        .expect("read cells_of_vertex");
+    let edges_of_vertex = file
+        .variable("edges_of_vertex")
+        .expect("edges_of_vertex")
+        .get_values::<i32, _>(..)
+        .expect("read edges_of_vertex");
+    assert_eq!(cells, report.cells);
+    assert_eq!(vertices, report.vertices);
+    assert_eq!(cells_of_vertex.len(), 6 * vertices);
+    assert_eq!(edges_of_vertex.len(), 6 * vertices);
+    assert!(cells_of_vertex.contains(&-1));
+    assert!(edges_of_vertex.contains(&-1));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn regional_two_cell_patch() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    let point = |lon, lat| earthmesh_cli::coordinate_types::LonLatPoint { lon, lat };
+    // One physical placeholder row. Connectivity retains Canonical ids (2+);
+    // the MPAS builder inserts its compatibility row before calculation.
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![
+            point(0.0, 0.0),
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(0.5, 1.0),
+            point(0.5, -1.0),
+        ],
+        w_points: vec![point(0.0, 0.0), point(0.4, 0.3), point(0.6, -0.3)],
+        m_to_w: vec![[1, 1, 1], [2, 3, 1], [2, 3, 1], [2, 1, 1], [3, 1, 1]],
+        w_to_m: vec![vec![1], vec![2, 3, 4], vec![3, 2, 5]],
+        n_w_to_m: vec![0, 3, 3],
+    }
 }

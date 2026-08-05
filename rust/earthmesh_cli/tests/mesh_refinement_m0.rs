@@ -728,7 +728,7 @@ fn diagnostics_gridfile_parity(
 fn mesh_refinement_m0_measurements() {
     let nxp = env_usize("EARTHMESH_M0_NXP", 81);
     assert!(
-        nxp > 0 && nxp % 3 == 0,
+        nxp > 0 && nxp.is_multiple_of(3),
         "M0 NXP must be positive and divisible by 3"
     );
     let global_niter = env_usize("EARTHMESH_M0_GLOBAL_NITER", 5000);

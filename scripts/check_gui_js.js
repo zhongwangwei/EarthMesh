@@ -275,33 +275,63 @@ check(
     html.includes('map._globeGeoRefs[key]===data') &&
     html.includes('map._globeGeoRefs[key]=data; source.setData(globeGeojson(data))') &&
     html.includes('while(longitude-previous>180) longitude-=360') &&
-    html.includes('const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson') &&
+    html.includes(
+      'const mesh=hasGeojson(_coastalGeojson)?_coastalGeojson:(ensureSphereMesh(map)||_meshGeojson)',
+    ) &&
     !html.includes('globe.setStyle(') &&
     !html.includes('map._globe.setStyle('),
   "the independent map must switch to a fixed vertical-perspective globe without rebuilding unchanged raw GeoJSON",
 );
-log("globe rendering preserves raw GeoJSON identities and updates existing MapLibre sources");
+
+// unwrapGlobeLine only keeps a ring continuous if the ring arrives whole, so the
+// globe must ask the engine for the unsplit cells. Without this the split's cut
+// edges stack up along the antimeridian and draw as a seam across the globe.
+// A stray control byte survives a Chrome parse but can truncate the document in
+// the WKWebView Tauri ships on macOS, silently killing every script after it.
+check(
+  !/[\x00-\x08\x0e-\x1f]/.test(html),
+  "the frontend must contain no control bytes outside tab/newline/carriage-return",
+);
+log("frontend is free of stray control bytes");
 
 check(
-  html.includes('function globeMeshNeedsGeographicPlane(data)') &&
-    html.includes('const _olPolarReachCache=new WeakMap()') &&
-    html.includes('_olPolarReachCache.has(data)') &&
+  html.includes('function ensureSphereMesh(map)') &&
+    html.includes('seam:"unwrapped"') &&
+    html.includes('seam: "split"') &&
+    html.includes('if(hasGeojson(_coastalGeojson)) return null') &&
+    html.includes('payload.meshSource=_meshSource'),
+  "the globe must request unsplit cells while the plane keeps the RFC 7946 split",
+);
+log("globe requests unsplit cells; plane keeps the planar split");
+log("globe rendering preserves raw GeoJSON identities and updates existing MapLibre sources");
+
+// The +/-85.05 cutoff belongs to Web Mercator, not to the mesh: the MapLibre globe
+// draws the poles natively. Gating the globe on it made "Globe" unselectable for
+// every global mesh, so the fallback must stay on the planar Mercator path only.
+check(
+  html.includes('function meshExceedsMercatorLimit(data)') &&
+    html.includes('const _olMercatorLimitCache=new WeakMap()') &&
+    html.includes('_olMercatorLimitCache.has(data)') &&
     html.includes('lat < -85.0511287798066||lat > 85.0511287798066') &&
-    html.includes('_olPolarReachCache.set(data,reaches)') &&
-    html.includes('function useGeographicPlaneForPolarMesh(map,doFit)') &&
+    html.includes('_olMercatorLimitCache.set(data,reaches)') &&
+    html.includes('function useGeographicPlaneForPolarMesh(map)') &&
     html.includes('changeOlProjection(map,"EPSG:4326")') &&
-    html.includes('if(globeMeshNeedsGeographicPlane(mesh)){ useGeographicPlaneForPolarMesh(map,doFit); return; }') &&
-    html.includes('if(renderer==="globe"&&globeMeshNeedsGeographicPlane(mesh)) return useGeographicPlaneForPolarMesh(map,doFit)') &&
+    html.includes(
+      'if(olProjectionCode(map)==="EPSG:3857"&&meshExceedsMercatorLimit(hasGeojson(_coastalGeojson)?_coastalGeojson:_meshGeojson)) return useGeographicPlaneForPolarMesh(map)',
+    ) &&
+    !html.includes('renderer==="globe"&&meshExceedsMercatorLimit') &&
     !html.includes('Math.max(-85.0511287798066') &&
     !html.includes('Math.min(85.0511287798066'),
-  "meshes reaching the poles must use exact EPSG:4326 planar rendering without coordinate clamping",
+  "polar meshes must fall back to exact EPSG:4326 on the plane path only, never by blocking the globe",
 );
-log("polar meshes fall back to exact geographic planar rendering");
+log("polar meshes fall back to geographic plane; the globe stays selectable");
 
 check(
   html.includes('const ALL_MAP_STATE=["mesh","domain","coastal","settings"]') &&
-    html.includes('if(selected.has("mesh")) payload.mesh=_meshGeojson') &&
-    html.includes('if ("mesh" in payload) _meshGeojson = payload.mesh') &&
+    html.includes(
+      'if(selected.has("mesh")){ payload.mesh=_meshGeojson; payload.meshSource=_meshSource; }',
+    ) &&
+    html.includes('if ("mesh" in payload) { _meshGeojson = payload.mesh;') &&
     html.includes('syncMapWindow(["settings"])') &&
     html.includes('syncMapWindow(["mesh","coastal"],true)') &&
     html.includes('publishMapState(["settings"],false)'),
@@ -381,6 +411,9 @@ check(
   html.includes("function updateOlLegend(map)") &&
     html.includes("function meshRefineStyle(style,p)") &&
     html.includes("p.refine_level||0") &&
+    html.includes("fillColor:color,fillOpacity:level>=2?0.52:0.34") &&
+    html.includes('const refined=[">",refine,0];') &&
+    !html.includes("rawRefined") &&
     html.includes('["get","refine_level"]') &&
     html.includes('"个细化单元":"refined cells"') &&
     html.includes('map._meshLayer.getFeatures(event.pixel)') &&
@@ -460,12 +493,16 @@ check(
     !html.includes('id="targetModelOutput" value="—" readonly') &&
     html.includes('invoke("set_project_target"') &&
     html.includes("targetEdit = { kind:") &&
-    html.includes("TARGET_COMPATIBILITY") &&
+    html.includes("TARGET_MODELS") &&
+    html.includes("SPECIALIZED_CELLS") &&
+    html.includes("cellIn.disabled = false") &&
+    html.includes('id="targetDeliveryOutput"') &&
+    html.includes("grid_only") &&
     html.includes("sum.target_kind") &&
     html.includes("sum.model_format"),
-  "target kind/model must be editable canonical ProjectConfig state",
+  "target kind/cell/model must be independently editable with explicit delivery state",
 );
-log("target kind/model are editable canonical state");
+log("target kind/cell/model are independent and delivery is explicit");
 
 {
   const compose = section(html, /async function composeYaml\(\) \{([\s\S]*?)\n  \}/, "composeYaml body");

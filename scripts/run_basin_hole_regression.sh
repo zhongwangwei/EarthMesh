@@ -83,7 +83,7 @@ for required in "$grid" "$quality" "$demand"; do
 done
 
 grid_sha=$(sha256 "$grid")
-[[ "$grid_sha" == "44c67c05c3463ab186ec665c9395d626954b956b157e83fa76b11bb467bbd807" ]] || {
+[[ "$grid_sha" == "0e9f85ea8fde539c57fe6d766d2e38606df089ff0f9f663336387090a7ebb75f" ]] || {
     echo "unexpected basin-hole grid hash: $grid_sha" >&2
     exit 1
 }
@@ -104,7 +104,7 @@ gates = {gate["metric"]: gate for gate in quality["gates"]}
 
 assert quality["cell_view"] == "hex"
 assert quality["verdict"] == "pass"
-assert geometry["cell_count"] == 211
+assert geometry["cell_count"] == 173
 for field in (
     "zero_area_cell_count",
     "negative_area_cell_count",
@@ -133,12 +133,12 @@ assert hfield["target_above_actual_count"] == 0
 assert max(row["level"] for row in hfield["actual_refine_level_distribution"]) == 2
 assert gates["hfield_uncovered_hard_support_bin_count"]["value"] == 0
 assert max(demand["hard_levels"]) == 2
-assert sum(level > 0 for level in demand["hard_levels"]) == 24
+assert sum(level > 0 for level in demand["hard_levels"]) == 120
 assert len(demand["hard_layers"]) == 1
 layer = demand["hard_layers"][0]
 assert layer["kind"] == "specified"
 assert max(layer["levels"]) == 2
-assert sum(level > 0 for level in layer["levels"]) == 24
+assert sum(level > 0 for level in layer["levels"]) == 120
 
 result = {
     "kind": "earthmesh_basin_hole_regression",

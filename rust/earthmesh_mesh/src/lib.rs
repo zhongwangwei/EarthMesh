@@ -375,7 +375,7 @@ mod method_c_patch;
 mod method_c_perimeter;
 mod method_c_perimeter_mrows;
 mod method_c_perimeter_repair;
-pub use method_c_perimeter_repair::take_post_drop_support_lineages;
+pub use method_c_perimeter_repair::{method_c_parent_support_request, MethodCParentSupportRequest};
 mod method_c_perimeter_repair_candidates;
 mod method_c_perimeter_repair_grow;
 mod method_c_perimeter_repair_shrink;
@@ -457,7 +457,8 @@ pub(crate) use method_c_spring_iteration::{
 };
 pub(crate) use method_c_table_helpers::{
     canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_parent_level_mismatch_error,
-    method_c_parent_level_mismatch_payload, method_c_repairable_error, method_c_repairable_payload,
+    method_c_parent_level_mismatch_payload, method_c_repairable_error,
+    method_c_repairable_error_with_missing_split_outer_faces, method_c_repairable_payload,
     method_c_repairable_perimeter_error, method_c_split_outer_edges, other_edge_face,
     set_first_two, MethodCRepairableKind,
 };

@@ -171,23 +171,35 @@ pub(crate) fn quality_namelist_for_gui(
 
 /// Run `mkgrd.x --gridfile-cell-polygons <gridfile> <out.geojson> --kind <hex|tri>`
 /// and return the GeoJSON text for the frontend to overlay on the map.
+///
+/// `seam` selects how cells crossing the antimeridian are written: the default
+/// planar split for the OpenLayers plane view, or `unwrapped` for the MapLibre
+/// globe, which would otherwise draw the split's cut edges as a seam.
 #[tauri::command]
 pub(crate) fn mesh_cell_polygons(
     gridfile: String,
     kind: String,
     max_cells: Option<u32>,
+    seam: Option<String>,
 ) -> Result<String, String> {
     let kind = checked_mesh_kind(Some(&kind))?;
+    let seam = match seam.as_deref() {
+        None | Some("split") => "split",
+        Some("unwrapped") => "unwrapped",
+        Some(other) => return Err(format!("unknown mesh seam mode '{other}'")),
+    };
     let dir = gridfile_dir(&gridfile)?;
     with_analysis_scratch(&dir, "cells", |scratch| {
-        let out_geojson = scratch.join("mesh_cells.geojson");
+        let out_geojson = scratch.join(format!("mesh_cells_{seam}.geojson"));
         let bin = resolve_mkgrd()?;
         let mut cmd = Command::new(&bin);
         cmd.arg("--gridfile-cell-polygons")
             .arg(&gridfile)
             .arg(&out_geojson)
             .arg("--kind")
-            .arg(kind);
+            .arg(kind)
+            .arg("--seam")
+            .arg(seam);
         if let Some(mc) = max_cells {
             cmd.arg("--max-cells").arg(mc.to_string());
         }

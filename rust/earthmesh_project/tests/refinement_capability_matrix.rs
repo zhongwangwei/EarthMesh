@@ -2,10 +2,9 @@ use earthmesh_project::{
     classify_project_capability, CloseBoundaryMode, CloseMaskFormat, DomainConfig,
     HydroCoastConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, ModelFormat,
     ProjectCapability, ProjectCapabilityKey, ProjectCloseBoundaryMode, ProjectContractId,
-    ProjectCoordinateMode, ProjectDomainClass, ProjectParameterizedTestId, ProjectRejectionReason,
-    ProjectSourceProfile, ProjectSpecifiedSource, ProjectTargetTriple, ProjectValidationTestId,
-    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCloseRefinement,
+    ProjectCoordinateMode, ProjectDomainClass, ProjectOutputDelivery, ProjectParameterizedTestId,
+    ProjectSourceProfile, ProjectSpecifiedSource, ProjectTargetTriple, RegionShape, ResolutionSpec,
+    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
 };
 
 #[derive(Clone, Copy)]
@@ -327,83 +326,40 @@ fn geometric_edge_projects_validate_and_lower_without_running_the_engine() {
 }
 
 #[test]
-fn unsupported_target_matrix_matches_validation_reason_codes() {
+fn cell_writer_matrix_classifies_full_and_grid_only_without_rejecting_projects() {
     use MeshCellKind::{Hex, Tri};
-    use MeshDomainKind::{Atmosphere, Coupled, Earth, Land, Ocean};
-    use ModelFormat::{CoLM, Fvcom, Mpas};
+    use MeshDomainKind::Ocean;
+    use ModelFormat::{CoLM, Fvcom, Icon, Mpas, MpasSimple};
 
     let cases = [
-        (
-            target(Land, Tri, CoLM),
-            ProjectRejectionReason::LandRequiresHex,
-            ProjectValidationTestId::LandCell,
-        ),
-        (
-            target(Ocean, Hex, Fvcom),
-            ProjectRejectionReason::OceanRequiresTri,
-            ProjectValidationTestId::OceanCell,
-        ),
-        (
-            target(Atmosphere, Tri, Mpas),
-            ProjectRejectionReason::AtmosphereRequiresHex,
-            ProjectValidationTestId::AtmosphereCell,
-        ),
-        (
-            target(Coupled, Tri, CoLM),
-            ProjectRejectionReason::CoupledRequiresHex,
-            ProjectValidationTestId::CoupledCell,
-        ),
-        (
-            target(Earth, Tri, CoLM),
-            ProjectRejectionReason::EarthRequiresHex,
-            ProjectValidationTestId::EarthCell,
-        ),
-        (
-            target(Land, Hex, Fvcom),
-            ProjectRejectionReason::LandRequiresColm,
-            ProjectValidationTestId::LandFormat,
-        ),
-        (
-            target(Ocean, Tri, CoLM),
-            ProjectRejectionReason::OceanRequiresFvcom,
-            ProjectValidationTestId::OceanFormat,
-        ),
-        (
-            target(Atmosphere, Hex, CoLM),
-            ProjectRejectionReason::AtmosphereRequiresMpas,
-            ProjectValidationTestId::AtmosphereFormat,
-        ),
-        (
-            target(Coupled, Hex, Mpas),
-            ProjectRejectionReason::CoupledRequiresColm,
-            ProjectValidationTestId::CoupledFormat,
-        ),
-        (
-            target(Earth, Hex, Mpas),
-            ProjectRejectionReason::EarthRequiresColm,
-            ProjectValidationTestId::EarthFormat,
-        ),
+        (Tri, CoLM, ProjectOutputDelivery::Full),
+        (Hex, CoLM, ProjectOutputDelivery::Full),
+        (Tri, Fvcom, ProjectOutputDelivery::Full),
+        (Hex, Fvcom, ProjectOutputDelivery::GridOnly),
+        (Tri, Icon, ProjectOutputDelivery::Full),
+        (Hex, Icon, ProjectOutputDelivery::GridOnly),
+        (Tri, Mpas, ProjectOutputDelivery::GridOnly),
+        (Hex, Mpas, ProjectOutputDelivery::Full),
+        (Tri, MpasSimple, ProjectOutputDelivery::GridOnly),
+        (Hex, MpasSimple, ProjectOutputDelivery::Full),
     ];
 
-    for (target, reason, validation_test_id) in cases {
+    for (cell, model_format, expected_delivery) in cases {
+        let target = target(Ocean, cell, model_format);
         let key = ProjectCapabilityKey {
             domain: ProjectDomainClass::Global,
             target,
             sources: ProjectSourceProfile::none(),
             coordinate_mode: ProjectCoordinateMode::SphericalLonLat,
         };
-        assert_eq!(
+        assert!(matches!(
             classify_project_capability(key),
-            ProjectCapability::Rejected {
-                reason_code: reason,
-                validation_test_id,
-            },
-            "{target:?}"
-        );
-        assert_eq!(validation_test_id.report_key(key), Some(key), "{target:?}");
+            ProjectCapability::Supported { .. }
+        ));
+        assert_eq!(target.output_delivery(), expected_delivery);
 
         let mut project = earthmesh_project::ProjectConfig::scaffold(
-            "unsupported-target",
+            "cell-writer-matrix",
             MeshIntentPreset::Custom,
             DomainConfig::Global,
             ResolutionSpec::Nxp(81),
@@ -411,10 +367,8 @@ fn unsupported_target_matrix_matches_validation_reason_codes() {
         project.target.kind = target.kind;
         project.target.cell = target.cell;
         project.target.model_format = target.model_format;
-        assert_eq!(
-            project.validate().expect_err("target must be rejected"),
-            reason.message(),
-            "{target:?}"
-        );
+        project
+            .validate()
+            .expect("every combination keeps the gridfile path valid");
     }
 }

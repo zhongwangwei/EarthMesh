@@ -13,6 +13,7 @@ pub(crate) struct MethodCRepairableError {
     pub(crate) m_point: Option<usize>,
     pub(crate) parent_m_point: Option<usize>,
     pub(crate) parent_u_edge: Option<usize>,
+    pub(crate) missing_split_outer_faces: Option<[usize; 2]>,
     pub(crate) parent_m_valence_witnesses: Vec<usize>,
     pub(crate) perimeter_lengths: Vec<usize>,
     pub(crate) repair_attempts: usize,
@@ -39,6 +40,7 @@ pub(crate) fn method_c_repairable_error(
             m_point,
             parent_m_point: None,
             parent_u_edge: None,
+            missing_split_outer_faces: None,
             parent_m_valence_witnesses: Vec::new(),
             perimeter_lengths: Vec::new(),
             repair_attempts: 0,
@@ -60,6 +62,7 @@ pub(crate) fn method_c_repairable_perimeter_error(
             m_point: None,
             parent_m_point: None,
             parent_u_edge: None,
+            missing_split_outer_faces: None,
             parent_m_valence_witnesses: Vec::new(),
             perimeter_lengths,
             repair_attempts,
@@ -95,6 +98,18 @@ pub(crate) fn method_c_repairable_error_with_parent_m_valence_witnesses(
     };
     let mut payload = payload.clone();
     payload.parent_m_valence_witnesses = parent_m_valence_witnesses;
+    io::Error::new(error.kind(), payload)
+}
+
+pub(crate) fn method_c_repairable_error_with_missing_split_outer_faces(
+    error: io::Error,
+    w_faces: [usize; 2],
+) -> io::Error {
+    let Some(payload) = method_c_repairable_payload(&error) else {
+        return error;
+    };
+    let mut payload = payload.clone();
+    payload.missing_split_outer_faces = Some(w_faces);
     io::Error::new(error.kind(), payload)
 }
 

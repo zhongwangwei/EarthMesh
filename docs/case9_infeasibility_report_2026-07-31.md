@@ -21,8 +21,46 @@ SHA256 `89bde86be2436f8762bd9d2b9bcfa727193e74299941e9d1545222b54e41be2a`
 > 需要**两个面**才到余 `0`）；(2) 见证面回灌通道（支撑预言器是跨 pass 前置预测，
 > repair 发现问题时父层已定型，**repair 晚了一层**）。详见研究文档 §38–§40。
 >
-> **以下正文保留作为记录**，其枚举数据与否证结论仍然有效，但 §2 的「不可满足」
-> 与 §8 的交付语义**已作废**。
+> **以下正文保留作为记录**，其枚举数据与否证结论只说明旧有限搜索域失败。旧文中“全部 repair 各向同性”“不可满足”以及交付语义均已作废；不能据此推断当前模板族或当前 HEAD 的 Case 9 无解。
+
+> **当前工作树复验（2026-08-02）**：最新未提交工作树再次完成原生 15″ Case 9，
+> 证据目录为 `target/case9-empty-checkpoint-guard-1785621946/`。运行退出码 `0`，耗时
+> `2078 s`；最终 pass 3 demand 为 `0/1190318`，质量 `verdict: pass`，
+> `hfield_target_above_actual_count=0`、`hfield_uncovered_hard_support_bin_count=0`，
+> self-intersection、invalid polygon 与 topology issue 均为 `0`。输出为 `842399`
+> 个 Tri cells，gridfile SHA256 为
+> `c5cadcbddc97e46431c8f44c92f33a1abe5c050748a53c569807ac1e9a7f4ff6`。
+> 同一可执行文件的第二次独立运行记录在 `target/case9-determinism-1785625826/`：
+> 退出码 `0`、耗时 `2063 s`，gridfile SHA256 与六个 legalization checkpoint
+> SHA256 序列均逐字节一致。当前工作树的确定性因此已锁定；本次产物仍与较早
+> `842241`-cell 成功产物不同，不能把旧哈希外推到当前选择/支撑语义。
+
+> **产品路径复验（2026-08-02）**：当前生产建议不再让 15″ landcover 参与 HField
+> 细化，而是采用“独立 HField → Method-C → 原生 landcover 最终 mask”。mask-only
+> LandType 的 product support 已改为从最终 masked grid 绑定，不再投影到较粗 HField。
+> `target/case9-hfield-mask-1785681843/` 的 NXP=81、`max_level=2`、2500 km circle
+> release 运行在 `57.68 s` 内退出 `0`：raw Tri 为 `219731` cells，原生
+> `86400×43200` landcover mask 后为 `137981` cells；hard-support 欠覆盖为 `0`，
+> self-intersection、invalid polygon 与全部 topology issue 均为 `0`，仅未校准的
+> angle-deviation 门给出 `warn`。最终 gridfile SHA256 为
+> `489ca6cf622ebb2a90bd238d44dfec34928c048d8ea3df2440ff1d595044a53f`。
+> 同一 circle 的 `max_level=3` 在 `11.82 s` 后于 pass-2 过渡构造中触发
+> `Valence`（M point 35301 超过 7-edge ring）；这是该 HField 规格的独立
+> 可生成性限制，不是 `TransitionPatch` 分类，也不是 landcover mask 问题。
+> 另以 NXP=162、`max_level=2` 保持近似目标细分尺度的对照已完成两次 Method-C
+> spawn，但完整流水线在 `600 s` 上限内未完成（`run-finebase-level2-10min.log`），
+> 因此不作为当前低成本生产替代路线。
+>
+> **产品路径更新（2026-08-03）**：上述 NXP=81、`max_level=3` 的失败由欠采样的
+> `720×360` HField 触发；同一 circle、同一 Method-C 参数改用自动预算上限
+> `3600×1800` 后，三层均在首轮 materialize 成功，整网在 `438.063 s` 内退出 `0`。
+> 原生 15″ landcover 仍只用于最终 ocean mask，没有被降采样或用于驱动 HField。
+> 初次输出保留了 `92` 个 edge-connected ocean components；最终 mask cleanup 现只保留
+> 最大海洋分量，移除 `1450` 个孤立水体 cells，最终为 `264810` 个 Tri cells、单一连通
+> 分量、`target_above_actual=0`、实际相邻层级跳变不超过 1、全部 topology issue 为 0，
+> 质量结果由 `fail` 改为仅 provisional angle-deviation 的 `warn`。gridfile SHA256 为
+> `99bef3cde3b18ee77b01a23a7b196c082bb079e946da40997085afc2935f796c`；证据目录为
+> `target/case9-hfield-mask-1785681843/level3-hfield-3600x1800-largest-1785687736/`。
 
 > **这不是机器可验证的 UNSAT 证明。** 它是一份带穷举证据的**不可满足性报告**：对若干
 > **明确界定的有限域**给出 `0 SAT` 的穷举结果，并明列哪些域**未**穷举。结论相对于

@@ -1,3 +1,5 @@
+//! Experimental native per-face Landcover refinement retained outside the production HField path.
+
 use std::{collections::BTreeMap, io};
 
 use earthmesh_core::RefineConfig;

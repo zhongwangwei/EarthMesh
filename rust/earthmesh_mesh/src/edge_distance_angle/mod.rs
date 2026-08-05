@@ -62,16 +62,25 @@ pub fn edge_distance_angle_one_based(
     for edge_id in 2..vertices_on_edge.len() {
         let vertex_ids = vertices_on_edge[edge_id];
         let cell_ids = cells_on_edge[edge_id];
+        if vertex_ids[0] == 0 || vertex_ids[1] == 0 || cell_ids[0] == 0 {
+            return None;
+        }
         let vertex1 = *vertices.get(vertex_ids[0])?;
         let vertex2 = *vertices.get(vertex_ids[1])?;
         let cell1 = *cells.get(cell_ids[0])?;
-        let cell2 = *cells.get(cell_ids[1])?;
 
         dv_edge[edge_id] = arc_length_unit_sphere(vertex1, vertex2);
-        dc_edge[edge_id] = arc_length_unit_sphere(cell1, cell2);
         if dv_edge[edge_id] == 0.0 {
             return None;
         }
+        dc_edge[edge_id] = if cell_ids[1] == 0 {
+            // Match MpasMeshConverter.x for a non-periodic boundary edge,
+            // where the exterior cell is represented by a midpoint ghost.
+            3.0_f64.sqrt() * dv_edge[edge_id]
+        } else {
+            let cell2 = *cells.get(cell_ids[1])?;
+            arc_length_unit_sphere(cell1, cell2)
+        };
 
         let mut angle = (deg_to_rad(*lat_vertex_degrees.get(vertex_ids[1])?)
             - deg_to_rad(*lat_vertex_degrees.get(vertex_ids[0])?))

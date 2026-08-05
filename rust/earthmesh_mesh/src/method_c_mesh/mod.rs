@@ -133,6 +133,8 @@ impl MethodCDelaunayMesh {
         method_c_gridfile_lineages("M cell", &self.w_lineage, self.nwd)
     }
 
+    /// Lineages of the faces touching the ones `lineages` names.
+    ///
     /// File-boundary lineages for final polygonal/hexagonal cells
     /// (`itab_w` rows).
     ///

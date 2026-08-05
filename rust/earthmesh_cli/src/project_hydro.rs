@@ -1045,7 +1045,7 @@ fn domain_components_from_record(
         }
     }
     Ok((0..rings.len())
-        .filter(|&index| depths[index] % 2 == 0)
+        .filter(|&index| depths[index].is_multiple_of(2))
         .map(|shell| HydroDomainComponent {
             shell: rings[shell].clone(),
             holes: (0..rings.len())

@@ -32,7 +32,6 @@ impl MethodCPerimeterProbe {
         self.marked.push(iw);
         self.m_candidates.extend_from_slice(&corners);
     }
-
 }
 
 impl MethodCDelaunayMesh {
@@ -77,11 +76,9 @@ impl MethodCDelaunayMesh {
 
     /// Perimeter length of the selection one canonical seed would produce.
     ///
-    /// Answers, without materializing anything, whether a single demand point
-    /// can be served at all: the seed's rad3 footprint plus concavity closure
-    /// is exactly what selection would hand to `perim_fill3`, and a length that
-    /// is not a multiple of three cannot be decomposed into transition triples
-    /// no matter what the repair loop does afterwards.
+    /// Answers, without materializing anything, whether one canonical seed is
+    /// already directly decomposable. Repair may still add faces and make a
+    /// non-multiple-of-three footprint legal later.
     pub fn seed_footprint_perimeter_length(&self, im: usize) -> io::Result<Option<usize>> {
         if im < 2 || im > self.nmd {
             return Ok(None);

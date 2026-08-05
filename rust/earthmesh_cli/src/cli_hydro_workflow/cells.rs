@@ -57,15 +57,22 @@ pub(crate) fn run_mpas_cell_polygons(args: impl Iterator<Item = String>) -> Resu
 }
 
 /// `--gridfile-cell-polygons <gridfile.nc4> <out.geojson> [--kind hex|tri] [--bbox W S E N]
-/// [--max-cells N]`: read an EarthMesh gridfile (GLONM/GLONW + itab connectivity) and write
-/// cell-polygon GeoJSON in degrees. `hex` (default) draws W cells from their M corners;
-/// `tri` draws one triangle per M cell. For map overlay of either mesh type.
+/// [--max-cells N] [--seam split|unwrapped]`: read an EarthMesh gridfile
+/// (GLONM/GLONW + itab connectivity) and write cell-polygon GeoJSON in degrees.
+/// `hex` (default) draws W cells from their M corners; `tri` draws one triangle
+/// per M cell. For map overlay of either mesh type.
+///
+/// `--seam split` (default) obeys RFC 7946 and cuts cells at ±180 for planar
+/// consumers; `--seam unwrapped` keeps each cell whole with longitudes running
+/// past ±180, which a sphere renderer needs to avoid drawing the cut edges as a
+/// seam along the antimeridian.
 pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> Result<(), String> {
     let rest = args.collect::<Vec<_>>();
     let mut positional: Vec<PathBuf> = Vec::new();
     let mut bbox: Option<[f64; 4]> = None;
     let mut max_cells: Option<usize> = None;
     let mut kind = earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex;
+    let mut seam = earthmesh_cli::hydro_delivery_cells::GridfileCellSeam::PlanarSplit;
     let mut i = 0usize;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -96,6 +103,18 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
                         .ok_or_else(|| usage("--max-cells requires an integer"))?,
                 );
             }
+            "--seam" => {
+                i += 1;
+                seam = match rest.get(i).map(String::as_str) {
+                    Some("split") => {
+                        earthmesh_cli::hydro_delivery_cells::GridfileCellSeam::PlanarSplit
+                    }
+                    Some("unwrapped") => {
+                        earthmesh_cli::hydro_delivery_cells::GridfileCellSeam::SphericalUnwrapped
+                    }
+                    _ => return Err(usage("--seam needs split|unwrapped")),
+                };
+            }
             other if other.starts_with("--") => {
                 return Err(usage(&format!(
                     "unknown --gridfile-cell-polygons option: {other}"
@@ -110,14 +129,16 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
             "--gridfile-cell-polygons needs <gridfile.nc4> <out.geojson> [--kind hex|tri]",
         ));
     }
-    let count = earthmesh_cli::hydro_delivery_cells::write_gridfile_cell_polygons_geojson(
-        &positional[0],
-        &positional[1],
-        kind,
-        bbox,
-        max_cells,
-    )
-    .map_err(|err| format!("gridfile cell polygons: {err}"))?;
+    let count =
+        earthmesh_cli::hydro_delivery_cells::write_gridfile_cell_polygons_geojson_with_seam(
+            &positional[0],
+            &positional[1],
+            kind,
+            bbox,
+            max_cells,
+            seam,
+        )
+        .map_err(|err| format!("gridfile cell polygons: {err}"))?;
     println!("gridfile_cell_features={count}");
     println!("gridfile_cell_output={}", positional[1].display());
     Ok(())

@@ -45,11 +45,11 @@ pub(crate) struct TargetPresetInfo {
     pub(crate) model_format: String,
 }
 
-/// Output formats accepted by the project validator for one target kind.
+/// Specialized writer support for one output model.
 #[derive(Serialize)]
 pub(crate) struct TargetCompatibilityInfo {
-    pub(crate) kind: String,
-    pub(crate) model_formats: Vec<String>,
+    pub(crate) model_format: String,
+    pub(crate) specialized_cells: Vec<String>,
 }
 
 /// A loaded project: canonical YAML plus the path it came from.
@@ -98,6 +98,8 @@ pub(crate) struct ProjectSummary {
     pub(crate) cell: String,
     pub(crate) quality_mode: String,
     pub(crate) model_format: String,
+    pub(crate) delivery_status: String,
+    pub(crate) skipped_adapter_reason: Option<String>,
     pub(crate) domain: String,
     pub(crate) domain_shape: String,
     pub(crate) nxp: Option<i32>,
@@ -170,6 +172,9 @@ pub(crate) struct RunResult {
     /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
+    pub(crate) delivery: Option<String>,
+    pub(crate) specialized_outputs: Vec<String>,
+    pub(crate) skipped_adapter_reason: Option<String>,
     /// Authoritative Project-aware quality report emitted by the engine.
     pub(crate) final_quality: Option<MeshQuality>,
     /// Every candidate-selection decision produced by the shared AutoRefine

@@ -27,7 +27,19 @@ static RUN_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 type CapturedGridfile = Arc<Mutex<Option<(u8, String)>>>;
 type CapturedQualityReport = Arc<Mutex<Option<String>>>;
-type MeshChildOutcome = (bool, Option<i32>, Option<String>, Option<String>);
+#[derive(Default)]
+pub(crate) struct CapturedDelivery {
+    pub(crate) status: Option<String>,
+    pub(crate) specialized_outputs: Vec<String>,
+    pub(crate) skipped_adapter_reason: Option<String>,
+}
+type MeshChildOutcome = (
+    bool,
+    Option<i32>,
+    Option<String>,
+    Option<String>,
+    CapturedDelivery,
+);
 
 /// Stage the complete Project and execute the canonical CLI project workflow.
 #[tauri::command]
@@ -86,7 +98,7 @@ async fn run_project_cli(
             )
         })?;
     let log_app = app.clone();
-    let (ok, code, gridfile, quality_report) =
+    let (ok, code, gridfile, quality_report, delivery) =
         capture_mesh_child_with_logger(child, run.id(), move |line| {
             let _ = log_app.emit("mkgrd://log", line);
         })?;
@@ -115,6 +127,9 @@ async fn run_project_cli(
         code,
         outdir: run_dir.to_string_lossy().into_owned(),
         gridfile,
+        delivery: delivery.status,
+        specialized_outputs: delivery.specialized_outputs,
+        skipped_adapter_reason: delivery.skipped_adapter_reason,
         final_quality,
         auto_refine_decisions: scan.decisions,
     })
@@ -420,6 +435,27 @@ fn capture_reported_quality_report(
     Ok(())
 }
 
+fn capture_reported_delivery(
+    captured: &Arc<Mutex<CapturedDelivery>>,
+    line: &str,
+    stream: &str,
+) -> Result<(), String> {
+    if stream != "stdout" {
+        return Ok(());
+    }
+    let mut state = captured
+        .lock()
+        .map_err(|_| "run delivery state lock poisoned".to_string())?;
+    if let Some(value) = line.strip_prefix("delivery=") {
+        state.status = Some(value.trim().to_string());
+    } else if let Some(value) = line.strip_prefix("specialized_output=") {
+        state.specialized_outputs.push(value.trim().to_string());
+    } else if let Some(value) = line.strip_prefix("skipped_adapter_reason=") {
+        state.skipped_adapter_reason = Some(value.trim().to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn capture_mesh_child_with_logger<F>(
     mut child: Child,
     run_id: RunId,
@@ -447,14 +483,17 @@ where
 
     let gridfile_seen: CapturedGridfile = Arc::new(Mutex::new(None));
     let quality_report_seen: CapturedQualityReport = Arc::new(Mutex::new(None));
+    let delivery_seen = Arc::new(Mutex::new(CapturedDelivery::default()));
 
     let stdout_log = log.clone();
     let stdout_gridfile = Arc::clone(&gridfile_seen);
     let stdout_quality_report = Arc::clone(&quality_report_seen);
+    let stdout_delivery = Arc::clone(&delivery_seen);
     let stdout_thread = thread::spawn(move || {
         read_child_lines(BufReader::new(stdout), "stdout", |line| {
             capture_reported_gridfile(&stdout_gridfile, line, "stdout")?;
             capture_reported_quality_report(&stdout_quality_report, line, "stdout")?;
+            capture_reported_delivery(&stdout_delivery, line, "stdout")?;
             stdout_log(line.to_string());
             Ok(())
         })
@@ -493,7 +532,12 @@ where
         .lock()
         .map_err(|_| "run quality-report state lock poisoned".to_string())?
         .clone();
-    Ok((status.success(), code, gridfile, quality_report))
+    let delivery = std::mem::take(
+        &mut *delivery_seen
+            .lock()
+            .map_err(|_| "run delivery state lock poisoned".to_string())?,
+    );
+    Ok((status.success(), code, gridfile, quality_report, delivery))
 }
 
 #[tauri::command]

@@ -44,9 +44,15 @@ impl LoweredProject {
                     ),
                     _ => String::new(),
                 };
+                let raster_lines = match (recipe.nlon, recipe.nlat) {
+                    (Some(nlon), Some(nlat)) => {
+                        format!("   NL%hfield_nlon = {nlon}\n   NL%hfield_nlat = {nlat}\n")
+                    }
+                    _ => String::new(),
+                };
                 format!(
-                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n{}{}/\n\n",
-                    recipe.g, recipe.max_level, base_line, origin_lines
+                    "&hfield\n   NL%hfield_on = .true.\n   NL%hfield_g = {}\n   NL%hfield_max_level = {}\n{}{}{}/\n\n",
+                    recipe.g, recipe.max_level, base_line, origin_lines, raster_lines
                 )
             }
             _ => String::new(),
@@ -60,6 +66,25 @@ impl LoweredProject {
             self.data_layers.to_datalayers_namelist()
         )
     }
+}
+
+pub fn recommended_hfield_raster_dimensions(
+    nxp: i32,
+    max_level: usize,
+    base_m: Option<f64>,
+) -> (usize, usize) {
+    let base_m = base_m.unwrap_or_else(|| {
+        2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS
+            / (5.0 * f64::from(nxp.max(1)))
+    });
+    let finest_m = base_m / 2.0_f64.powi(max_level as i32);
+    let required_nlon =
+        (2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / finest_m * 1.1).ceil();
+    // ponytail: cap implicit rasters at the measured 3600x1800 budget;
+    // explicit larger dimensions remain the escape hatch.
+    let requested = required_nlon.clamp(720.0, 3600.0) as usize;
+    let nlon = requested.div_ceil(360).saturating_mul(360).min(3600);
+    (nlon, nlon / 2)
 }
 
 impl ProjectConfig {
@@ -293,7 +318,7 @@ impl ProjectConfig {
             mkgrd.relax = relax;
         }
 
-        let hfield = if mkgrd.refine {
+        let mut hfield = if mkgrd.refine {
             match &self.refinement.hfield {
                 Some(recipe) if recipe.enabled => Some(recipe.clone()),
                 Some(_) => None,
@@ -320,6 +345,20 @@ impl ProjectConfig {
                 .nxp
                 .checked_add(increment)
                 .ok_or_else(|| "Method-C effective NXP overflows i32".to_string())?;
+        }
+
+        if let Some(recipe) = hfield.as_mut() {
+            if recipe.nlon.is_none() && recipe.nlat.is_none() {
+                let max_level = usize::from(if recipe.max_level == 0 {
+                    self.refinement.max_passes
+                } else {
+                    recipe.max_level
+                });
+                let (nlon, nlat) =
+                    recommended_hfield_raster_dimensions(mkgrd.nxp, max_level, recipe.base_m);
+                recipe.nlon = Some(nlon);
+                recipe.nlat = Some(nlat);
+            }
         }
 
         Ok(LoweredProject {

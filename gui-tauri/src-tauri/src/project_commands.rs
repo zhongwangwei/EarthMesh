@@ -80,6 +80,8 @@ pub(crate) fn preserve_unexposed_project_fields(
 
     if let Some(base_hfield) = base.refinement.hfield.as_ref() {
         let hfield = cfg.refinement.hfield.get_or_insert_with(Default::default);
+        hfield.nlon = base_hfield.nlon;
+        hfield.nlat = base_hfield.nlat;
         hfield.origin_lon = base_hfield.origin_lon;
         hfield.origin_lat = base_hfield.origin_lat;
     }

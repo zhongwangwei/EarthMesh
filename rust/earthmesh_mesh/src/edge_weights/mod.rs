@@ -50,17 +50,17 @@ pub fn set_weights_on_edge_one_based(
         let [cell1, cell2] = cells_on_edge[edge_id];
         let edge_vertices = vertices_on_edge[edge_id];
         if cell1 == 0
-            || cell2 == 0
             || edge_vertices[0] == 0
             || edge_vertices[1] == 0
             || cell1 >= n_edges_on_cell.len()
-            || cell2 >= n_edges_on_cell.len()
+            || (cell2 > 0 && cell2 >= n_edges_on_cell.len())
         {
             continue;
         }
         let mut nw1 = 0usize;
 
-        for side in 0..2 {
+        let side_count = if cell2 == 0 { 1 } else { 2 };
+        for side in 0..side_count {
             let (cell_id, vertex_start, tev2) = if side == 0 {
                 (cell1, vertices_on_edge[edge_id][1], -1.0)
             } else {

@@ -9,6 +9,12 @@ use std::{fs, path::PathBuf};
 
 static NETCDF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn netcdf_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    NETCDF_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Debug)]
 struct MethodCAtmosLandLikeCaseResult {
     base_lbx_points: usize,
@@ -113,7 +119,7 @@ fn run_method_c_atmos_landlike_case(
 
 #[test]
 fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_hfield_threshold_no_regions");
     let threshold_dir = root.join("threshold");
     fs::create_dir_all(&threshold_dir).expect("create threshold dir");
@@ -224,7 +230,7 @@ fn method_c_atmos_and_surface_constants_match_canonical_defaults() {
 
 #[test]
 fn default_atmos_and_landlike_meshes_use_different_transition_widths() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_transition_width_comparison");
 
     let atmos = run_method_c_atmos_landlike_case(
@@ -266,7 +272,7 @@ fn default_atmos_and_landlike_meshes_use_different_transition_widths() {
 
 #[test]
 fn default_atmos_global_specified_refine_uses_method_c_spawn_nest() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_global_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -338,7 +344,7 @@ fn default_atmos_global_specified_refine_uses_method_c_spawn_nest() {
 
 #[test]
 fn default_atmos_specified_refine_ignores_zero_degree_masks() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_specified_zero_degree");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -380,7 +386,7 @@ fn default_atmos_specified_refine_ignores_zero_degree_masks() {
 
 #[test]
 fn default_atmos_native_method_c_ngrids_uses_method_c_region() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_ngrids");
     let namelist = root.join("mkgrd_native_grid_ngrids.nml");
     let base_dir = format!("{}/", root.display());
@@ -411,7 +417,7 @@ fn default_atmos_native_method_c_ngrids_uses_method_c_region() {
 
 #[test]
 fn default_atmos_native_method_c_spawn_nest_springs_even_when_mkrefine_global_spring_disabled() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_spring_ignores_mkrefine_flag");
     let namelist = root.join("mkgrd_native_grid_spring_ignores_mkrefine_flag.nml");
     let base_dir = format!("{}/", root.display());
@@ -441,7 +447,7 @@ fn default_atmos_native_method_c_spawn_nest_springs_even_when_mkrefine_global_sp
 
 #[test]
 fn default_atmos_native_method_c_makegrid_plot_uses_canonical_plot_spring_iterations() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_makegrid_plot_spring");
     let namelist = root.join("mkgrd_native_grid_makegrid_plot_spring.nml");
     let base_dir = format!("{}/", root.display());
@@ -471,7 +477,7 @@ fn default_atmos_native_method_c_makegrid_plot_uses_canonical_plot_spring_iterat
 
 #[test]
 fn default_atmos_native_method_c_ngrids_three_spawns_each_canonical_grid_once() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_ngrids_three_once");
     let namelist = root.join("mkgrd_native_grid_ngrids_three_once.nml");
     let base_dir = format!("{}/", root.display());
@@ -511,7 +517,7 @@ fn default_atmos_native_method_c_ngrids_three_spawns_each_canonical_grid_once() 
 
 #[test]
 fn default_atmos_native_method_c_ngrids_above_six_uses_canonical_maxgrds_not_refine_level_limit() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_ngrids_canonical_maxgrds");
     let namelist = root.join("mkgrd_native_grid_ngrids_canonical_maxgrds.nml");
     let base_dir = format!("{}/", root.display());
@@ -536,7 +542,7 @@ fn default_atmos_native_method_c_ngrids_above_six_uses_canonical_maxgrds_not_ref
 
 #[test]
 fn default_atmos_native_method_c_ngrids_does_not_require_refine_flag() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_ngrids_no_refine");
     let namelist = root.join("mkgrd_native_grid_ngrids_no_refine.nml");
     let base_dir = format!("{}/", root.display());
@@ -566,7 +572,7 @@ fn default_atmos_native_method_c_ngrids_does_not_require_refine_flag() {
 
 #[test]
 fn default_atmos_native_method_c_rejects_out_of_range_latitude_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_bad_latitude");
     let namelist = root.join("mkgrd_native_grid_bad_latitude.nml");
     let base_dir = format!("{}/", root.display());
@@ -591,7 +597,7 @@ fn default_atmos_native_method_c_rejects_out_of_range_latitude_like_canonical() 
 
 #[test]
 fn default_atmos_native_method_c_rejects_radius_larger_than_double_earth_radius_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_large_radius");
     let namelist = root.join("mkgrd_native_grid_large_radius.nml");
     let base_dir = format!("{}/", root.display());
@@ -616,7 +622,7 @@ fn default_atmos_native_method_c_rejects_radius_larger_than_double_earth_radius_
 
 #[test]
 fn default_atmos_native_method_c_rejects_radius_below_canonical_dzxmin() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_small_radius");
     let namelist = root.join("mkgrd_native_grid_small_radius.nml");
     let base_dir = format!("{}/", root.display());
@@ -645,7 +651,7 @@ fn default_atmos_native_method_c_rejects_radius_below_canonical_dzxmin() {
 
 #[test]
 fn default_atmos_native_method_c_rejects_zero_ngrids_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_zero_ngrids");
     let namelist = root.join("mkgrd_native_grid_zero_ngrids.nml");
     let base_dir = format!("{}/", root.display());
@@ -670,7 +676,7 @@ fn default_atmos_native_method_c_rejects_zero_ngrids_like_canonical() {
 
 #[test]
 fn default_atmos_native_method_c_rejects_ngrids_above_canonical_maxgrds() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_many_ngrids");
     let namelist = root.join("mkgrd_native_grid_many_ngrids.nml");
     let base_dir = format!("{}/", root.display());
@@ -695,7 +701,7 @@ fn default_atmos_native_method_c_rejects_ngrids_above_canonical_maxgrds() {
 
 #[test]
 fn default_atmos_native_method_c_rejects_gridplot_base_below_canonical_lower_bound() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_bad_gridplot_base");
     let namelist = root.join("mkgrd_native_grid_bad_gridplot_base.nml");
     let base_dir = format!("{}/", root.display());
@@ -720,7 +726,7 @@ fn default_atmos_native_method_c_rejects_gridplot_base_below_canonical_lower_bou
 
 #[test]
 fn default_atmos_native_method_c_rejects_mdomain_above_canonical_upper_bound() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_bad_mdomain");
     let namelist = root.join("mkgrd_native_grid_bad_mdomain.nml");
     let base_dir = format!("{}/", root.display());
@@ -745,7 +751,7 @@ fn default_atmos_native_method_c_rejects_mdomain_above_canonical_upper_bound() {
 
 #[test]
 fn default_atmos_native_method_c_rejects_ngrdll_above_canonical_maxngrdll() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_many_ngrdll");
     let namelist = root.join("mkgrd_native_grid_many_ngrdll.nml");
     let base_dir = format!("{}/", root.display());
@@ -770,7 +776,7 @@ fn default_atmos_native_method_c_rejects_ngrdll_above_canonical_maxngrdll() {
 
 #[test]
 fn default_atmos_native_method_c_rejects_ngrdll_index_above_canonical_maxgrds() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_ngrdll_bad_index");
     let namelist = root.join("mkgrd_native_grid_ngrdll_bad_index.nml");
     let base_dir = format!("{}/", root.display());
@@ -795,7 +801,7 @@ fn default_atmos_native_method_c_rejects_ngrdll_index_above_canonical_maxgrds() 
 
 #[test]
 fn default_atmos_native_method_c_rejects_zero_ngrdll_index_like_canonical_array() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_ngrdll_zero_index");
     let namelist = root.join("mkgrd_native_grid_ngrdll_zero_index.nml");
     let base_dir = format!("{}/", root.display());
@@ -824,7 +830,7 @@ fn default_atmos_native_method_c_rejects_zero_ngrdll_index_like_canonical_array(
 
 #[test]
 fn default_atmos_native_method_c_rejects_coordinate_point_index_above_canonical_maxngrdll() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_grdrad_bad_point_index");
     let namelist = root.join("mkgrd_native_grid_grdrad_bad_point_index.nml");
     let base_dir = format!("{}/", root.display());
@@ -849,7 +855,7 @@ fn default_atmos_native_method_c_rejects_coordinate_point_index_above_canonical_
 
 #[test]
 fn default_atmos_native_method_c_rejects_global_nxp_not_divisible_by_three_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_bad_nxp");
     let namelist = root.join("mkgrd_native_grid_bad_nxp.nml");
     let base_dir = format!("{}/", root.display());
@@ -872,7 +878,7 @@ fn default_atmos_native_method_c_rejects_global_nxp_not_divisible_by_three_like_
 #[test]
 fn default_atmos_native_method_c_allows_non_global_domain_nxp_not_divisible_by_three_like_canonical(
 ) {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_regional_nxp5");
     let namelist = root.join("mkgrd_native_grid_regional_nxp5.nml");
     let base_dir = format!("{}/", root.display());
@@ -897,7 +903,7 @@ fn default_atmos_native_method_c_allows_non_global_domain_nxp_not_divisible_by_t
 
 #[test]
 fn default_atmos_native_method_c_allows_non_global_domain_cartesian_coordinates_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_regional_cartesian");
     let namelist = root.join("mkgrd_native_grid_regional_cartesian.nml");
     let base_dir = format!("{}/", root.display());
@@ -922,7 +928,7 @@ fn default_atmos_native_method_c_allows_non_global_domain_cartesian_coordinates_
 
 #[test]
 fn default_atmos_native_method_c_mdomain_five_overrides_compatibility_global_flag_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_mdomain_five");
     let namelist = root.join("mkgrd_native_grid_mdomain_five.nml");
     let base_dir = format!("{}/", root.display());
@@ -975,7 +981,7 @@ fn default_atmos_native_method_c_mdomain_five_overrides_compatibility_global_fla
 
 #[test]
 fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_cartesian_explicit_hfield");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create Cartesian hfield sources");
@@ -1024,7 +1030,7 @@ fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
 
 #[test]
 fn cartesian_native_method_c_samples_geographic_threshold_hfield_from_origin() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_cartesian_geographic_threshold_hfield");
     let threshold_dir = root.join("threshold");
     fs::create_dir_all(&threshold_dir).expect("create threshold dir");
@@ -1069,7 +1075,7 @@ fn cartesian_native_method_c_samples_geographic_threshold_hfield_from_origin() {
 
 #[test]
 fn default_atmos_native_method_c_mdomain_two_does_not_spawn_ngrids_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_native_mdomain_two_no_spawn");
     let namelist = root.join("mkgrd_native_grid_mdomain_two_no_spawn.nml");
     let base_dir = format!("{}/", root.display());
@@ -1093,7 +1099,7 @@ fn default_atmos_native_method_c_mdomain_two_does_not_spawn_ngrids_like_canonica
 
 #[test]
 fn default_surface_native_method_c_rejects_out_of_range_latitude_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_bad_latitude");
     let namelist = root.join("mkgrd_method_c_surface_bad_latitude.nml");
     let base_dir = format!("{}/", root.display());
@@ -1118,7 +1124,7 @@ fn default_surface_native_method_c_rejects_out_of_range_latitude_like_canonical(
 
 #[test]
 fn default_surface_native_method_c_rejects_radius_larger_than_double_earth_radius_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_large_radius");
     let namelist = root.join("mkgrd_method_c_surface_large_radius.nml");
     let base_dir = format!("{}/", root.display());
@@ -1143,7 +1149,7 @@ fn default_surface_native_method_c_rejects_radius_larger_than_double_earth_radiu
 
 #[test]
 fn default_surface_native_method_c_rejects_radius_below_canonical_dzxmin() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_small_radius");
     let namelist = root.join("mkgrd_method_c_surface_small_radius.nml");
     let base_dir = format!("{}/", root.display());
@@ -1172,7 +1178,7 @@ fn default_surface_native_method_c_rejects_radius_below_canonical_dzxmin() {
 
 #[test]
 fn default_surface_native_method_c_rejects_regional_nsfcgrids_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_regional_nsfc");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create regional surface source dir");
@@ -1213,7 +1219,7 @@ fn default_surface_native_method_c_rejects_regional_nsfcgrids_like_canonical() {
 
 #[test]
 fn default_surface_native_method_c_rejects_regional_inherited_atmos_ngrids_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_regional_atmos");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create regional surface source dir");
@@ -1253,7 +1259,7 @@ fn default_surface_native_method_c_rejects_regional_inherited_atmos_ngrids_like_
 
 #[test]
 fn default_surface_native_method_c_rejects_sfcgridplot_base_below_canonical_lower_bound() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_bad_sfcgridplot_base");
     let namelist = root.join("mkgrd_method_c_surface_bad_sfcgridplot_base.nml");
     let base_dir = format!("{}/", root.display());
@@ -1278,7 +1284,7 @@ fn default_surface_native_method_c_rejects_sfcgridplot_base_below_canonical_lowe
 
 #[test]
 fn default_surface_native_method_c_rejects_zero_coordinate_point_index_like_canonical_array() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_sfcgrdrad_zero_point_index");
     let namelist = root.join("mkgrd_method_c_surface_sfcgrdrad_zero_point_index.nml");
     let base_dir = format!("{}/", root.display());
@@ -1307,7 +1313,7 @@ fn default_surface_native_method_c_rejects_zero_coordinate_point_index_like_cano
 
 #[test]
 fn default_surface_native_method_c_rejects_nsfcgrdll_index_above_canonical_maxgrds() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_nsfcgrdll_bad_index");
     let namelist = root.join("mkgrd_method_c_surface_nsfcgrdll_bad_index.nml");
     let base_dir = format!("{}/", root.display());
@@ -1332,7 +1338,7 @@ fn default_surface_native_method_c_rejects_nsfcgrdll_index_above_canonical_maxgr
 
 #[test]
 fn default_surface_native_method_c_rejects_nsfcgrids_above_canonical_maxgrds() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_many_nsfcgrids");
     let namelist = root.join("mkgrd_method_c_surface_many_nsfcgrids.nml");
     let base_dir = format!("{}/", root.display());
@@ -1357,7 +1363,7 @@ fn default_surface_native_method_c_rejects_nsfcgrids_above_canonical_maxgrds() {
 
 #[test]
 fn default_surface_native_method_c_rejects_nsfcgrdll_above_canonical_maxngrdll() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_many_nsfcgrdll");
     let namelist = root.join("mkgrd_method_c_surface_many_nsfcgrdll.nml");
     let base_dir = format!("{}/", root.display());
@@ -1382,7 +1388,7 @@ fn default_surface_native_method_c_rejects_nsfcgrdll_above_canonical_maxngrdll()
 
 #[test]
 fn default_surface_native_method_c_inherits_atmos_ngrids_before_nsfcgrids() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_atmos_then_sfc");
     let namelist = root.join("mkgrd_method_c_surface_native_atmos_then_sfc.nml");
     let base_dir = format!("{}/", root.display());
@@ -1414,7 +1420,7 @@ fn default_surface_native_method_c_inherits_atmos_ngrids_before_nsfcgrids() {
 
 #[test]
 fn default_surface_native_method_c_uses_atmos_and_surface_spring_defaults_by_stage() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_stage_spring_defaults");
     let namelist = root.join("mkgrd_method_c_surface_native_stage_spring_defaults.nml");
     let base_dir = format!("{}/", root.display());
@@ -1445,7 +1451,7 @@ fn default_surface_native_method_c_uses_atmos_and_surface_spring_defaults_by_sta
 
 #[test]
 fn default_surface_native_method_c_ngrids_without_nsfcgrids_matches_atmos_spawn() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_atmos_only");
     let atmos_namelist = root.join("mkgrd_method_c_atmos_native_only.nml");
     let land_namelist = root.join("mkgrd_method_c_land_native_atmos_only.nml");
@@ -1518,7 +1524,7 @@ fn default_surface_native_method_c_ngrids_without_nsfcgrids_matches_atmos_spawn(
 
 #[test]
 fn default_surface_native_method_c_sfcgrid_res_factor_expands_global_surface() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_sfcgrid_res_factor");
     let namelist = root.join("mkgrd_method_c_surface_sfcgrid_res_factor.nml");
     let base_dir = format!("{}/", root.display());
@@ -1569,7 +1575,7 @@ fn default_surface_native_method_c_sfcgrid_res_factor_expands_global_surface() {
 
 #[test]
 fn default_surface_native_method_c_sfcgrid_res_factor_does_not_require_refine_flag() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_sfcgrid_res_no_refine");
     let namelist = root.join("mkgrd_method_c_surface_sfcgrid_res_no_refine.nml");
     let base_dir = format!("{}/", root.display());
@@ -1601,7 +1607,7 @@ fn default_surface_native_method_c_sfcgrid_res_factor_does_not_require_refine_fl
 
 #[test]
 fn default_surface_native_method_c_allows_sfcgrid_res_factor_four_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_sfcgrid_res_four");
     let namelist = root.join("mkgrd_method_c_surface_sfcgrid_res_four.nml");
     let base_dir = format!("{}/", root.display());
@@ -1634,7 +1640,7 @@ fn default_surface_native_method_c_allows_sfcgrid_res_factor_four_like_canonical
 #[test]
 fn default_surface_native_method_c_rejects_sfcgrid_res_factor_with_prime_factor_other_than_two_or_three_like_canonical(
 ) {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_bad_sfcgrid_res");
     let namelist = root.join("mkgrd_method_c_surface_bad_sfcgrid_res.nml");
     let base_dir = format!("{}/", root.display());
@@ -1659,7 +1665,7 @@ fn default_surface_native_method_c_rejects_sfcgrid_res_factor_with_prime_factor_
 
 #[test]
 fn default_surface_native_method_c_rejects_zero_sfcgrid_res_factor_like_canonical() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_zero_sfcgrid_res");
     let namelist = root.join("mkgrd_method_c_surface_zero_sfcgrid_res.nml");
     let base_dir = format!("{}/", root.display());
@@ -1684,7 +1690,7 @@ fn default_surface_native_method_c_rejects_zero_sfcgrid_res_factor_like_canonica
 
 #[test]
 fn default_surface_native_method_c_nsfcgrids_does_not_require_refine_flag() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_nsfc_no_refine");
     let namelist = root.join("mkgrd_method_c_surface_nsfc_no_refine.nml");
     let base_dir = format!("{}/", root.display());
@@ -1715,7 +1721,7 @@ fn default_surface_native_method_c_nsfcgrids_does_not_require_refine_flag() {
 
 #[test]
 fn default_surface_native_method_c_makegrid_plot_uses_canonical_plot_spring_iterations() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_makegrid_plot_spring");
     let namelist = root.join("mkgrd_method_c_surface_makegrid_plot_spring.nml");
     let base_dir = format!("{}/", root.display());
@@ -1745,7 +1751,7 @@ fn default_surface_native_method_c_makegrid_plot_uses_canonical_plot_spring_iter
 
 #[test]
 fn default_surface_native_method_c_expands_surface_before_nsfcgrids_spawn() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_surface_native_expand_then_nsfc");
     let expansion_only = root.join("mkgrd_method_c_surface_expand_only.nml");
     let expansion_then_nest = root.join("mkgrd_method_c_surface_expand_then_nsfc.nml");
@@ -1813,7 +1819,7 @@ fn default_surface_native_method_c_expands_surface_before_nsfcgrids_spawn() {
 
 #[test]
 fn default_land_global_specified_refine_with_landtype_masks_method_c_output() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_land_global_refine_landtype");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -1898,8 +1904,8 @@ fn default_land_global_specified_refine_with_landtype_masks_method_c_output() {
 }
 
 #[test]
-fn default_ocean_global_specified_refine_with_landtype_masks_method_c_output() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+fn hfield_ocean_global_specified_refine_defers_finer_landtype_to_final_mask() {
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_ocean_global_refine_landtype");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -1925,7 +1931,7 @@ fn default_ocean_global_specified_refine_with_landtype_masks_method_c_output() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_method_c_ocean_circle_refine_landtype'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='FVCOM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=2\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=4,4,3,0,0,0,0,0,0\n  RL%max_transition_row=4,4,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+            "&mkgrd\n  NL%EXPNME='case_method_c_ocean_circle_refine_landtype'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%gridnum_perdegree=120\n  NL%landtype_file='{landtype_path}'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='FVCOM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=1\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=2\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=4,4,3,0,0,0,0,0,0\n  RL%max_transition_row=4,4,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_max_level=1\n  NL%hfield_base_m=100000.0\n  NL%hfield_nlon=180\n  NL%hfield_nlat=90\n/\n",
         ),
     )
     .expect("write namelist");
@@ -1985,7 +1991,7 @@ fn default_ocean_global_specified_refine_with_landtype_masks_method_c_output() {
 
 #[test]
 fn default_loc_global_specified_refine_with_landtype_writes_coupled_outputs() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_loc_global_refine_landtype");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2125,7 +2131,7 @@ fn default_loc_global_specified_refine_with_landtype_writes_coupled_outputs() {
 
 #[test]
 fn default_land_global_specified_refine_without_landtype_uses_method_c_spawn_nest() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_land_global_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2192,7 +2198,7 @@ fn default_land_global_specified_refine_without_landtype_uses_method_c_spawn_nes
 
 #[test]
 fn default_ocean_global_specified_refine_without_landtype_uses_method_c_spawn_nest() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_ocean_global_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2259,7 +2265,7 @@ fn default_ocean_global_specified_refine_without_landtype_uses_method_c_spawn_ne
 
 #[test]
 fn default_regional_specified_refine_uses_method_c_and_subsets_domain() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_regional_refine_bbox_domain");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2356,7 +2362,7 @@ fn default_regional_specified_refine_uses_method_c_and_subsets_domain() {
 
 #[test]
 fn default_atmos_close_specified_refine_uses_method_c_polygon_region() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_atmos_close_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2431,7 +2437,7 @@ fn default_atmos_close_specified_refine_uses_method_c_polygon_region() {
 
 #[test]
 fn default_land_calculated_refine_uses_method_c_region_source() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_land_calculated_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2494,7 +2500,7 @@ fn default_land_calculated_refine_uses_method_c_region_source() {
 
 #[test]
 fn default_land_calculated_circle_refine_filters_degrees_by_active_max_level() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_land_calculated_circle_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2570,7 +2576,7 @@ fn default_land_calculated_circle_refine_filters_degrees_by_active_max_level() {
 
 #[test]
 fn default_land_calculated_close_refine_promotes_zero_degree_to_max_level() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_land_calculated_close_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2647,7 +2653,7 @@ fn default_land_calculated_close_refine_promotes_zero_degree_to_max_level() {
 
 #[test]
 fn refine_pipeline_refine_uses_existing_mode_file_as_method_c_source() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_refine_uses_mode_file");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2717,7 +2723,7 @@ fn refine_pipeline_refine_uses_existing_mode_file_as_method_c_source() {
 
 #[test]
 fn top_level_dispatcher_routes_refine_namelist_to_refine_pipeline_report() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_top_level_dispatcher_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");
@@ -2767,7 +2773,7 @@ fn top_level_dispatcher_routes_refine_namelist_to_refine_pipeline_report() {
 
 #[test]
 fn top_level_dispatcher_compatibility_atmos_mesh_name_routes_to_refine_pipeline_report() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let _guard = netcdf_test_lock();
     let root = temp_root("method_c_top_level_dispatcher_compatibility_atmos_meshname_refine");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).expect("create sources");

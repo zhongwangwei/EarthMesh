@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
+const METHOD_C_LOCAL_LEGALIZATION_MAX_STEPS: usize = 64;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MethodCHfieldPassDiagnostics {
     pub pass: usize,
@@ -292,6 +294,7 @@ pub struct MethodCHfieldLegalizationPatchBoundaryCheck {
     pub exact_materializable: bool,
     pub exact_failure_kind: Option<MethodCHfieldFailureKind>,
     pub exact_failure_message: Option<String>,
+    pub exact_failure_dependency_faces: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2643,7 +2646,7 @@ impl MethodCDelaunayMesh {
         )
     }
 
-    fn required_parent_support_lineages_from_selected_and_perimeter(
+    pub(crate) fn required_parent_support_lineages_from_selected_and_perimeter(
         &self,
         selected: &[bool],
         perimeter: &[MethodCPerimeterPoint],
@@ -2701,7 +2704,7 @@ impl MethodCDelaunayMesh {
         if pass <= 1 {
             return Ok(Vec::new());
         }
-        let (selected_faces, coverage, _) = self
+        let (mut selected_faces, coverage, _) = self
             .selected_faces_and_coverage_from_target_levels_with_policy(
                 &target_level,
                 Some(face_demand),
@@ -2711,12 +2714,14 @@ impl MethodCDelaunayMesh {
                 false,
                 true,
             )?;
+        let m_neighbors = self.method_c_m_neighbors()?;
+        self.clear_method_c_conceded_margin(&mut selected_faces, &m_neighbors, 2)?;
+        coverage.validate(&selected_faces)?;
         if selected_faces.iter().skip(2).all(|selected| !*selected) {
             return Ok(Vec::new());
         }
 
         let mut selected = selected_faces;
-        let m_neighbors = self.method_c_m_neighbors()?;
         self.close_method_c_concavities_for_level_with_neighbors(&mut selected, &m_neighbors)?;
         coverage.validate(&selected)?;
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, pass + 1)?;
@@ -2727,29 +2732,39 @@ impl MethodCDelaunayMesh {
                     &selected, &perimeter,
                 )
             }
-            Err(error) if support_oracle_best_effort_enabled() => {
-                // Which parent faces `perim_fill3` would consume is answerable
-                // from the perimeter as it stands: consumption reads the faces
-                // just outside the selection and does not depend on the
-                // perimeter being decomposable. Repairing first is a
-                // convenience, not a precondition, and letting its failure
-                // propagate leaves the pass with no support request at all --
-                // support cannot be computed because repair failed, and repair
-                // failed for want of support.
-                eprintln!(
-                    "earthmesh_mesh: method_c support oracle best-effort pass={pass} \
-                     repair_error={error}"
-                );
-                let perimeter = self
-                    .method_c_perimeters_from_selected_faces(&selected, &m_neighbors)?
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>();
-                self.required_parent_support_lineages_from_selected_and_perimeter(
-                    &selected, &perimeter,
-                )
+            Err(error) => {
+                if let Some(request) = crate::method_c_parent_support_request(&error) {
+                    return Ok(request
+                        .lineages
+                        .iter()
+                        .filter_map(|&lineage| i64::try_from(lineage).ok())
+                        .collect());
+                }
+                if support_oracle_best_effort_enabled() {
+                    // Which parent faces `perim_fill3` would consume is answerable
+                    // from the perimeter as it stands: consumption reads the faces
+                    // just outside the selection and does not depend on the
+                    // perimeter being decomposable. Repairing first is a
+                    // convenience, not a precondition, and letting its failure
+                    // propagate leaves the pass with no support request at all --
+                    // support cannot be computed because repair failed, and repair
+                    // failed for want of support.
+                    eprintln!(
+                        "earthmesh_mesh: method_c support oracle best-effort pass={pass} \
+                         repair_error={error}"
+                    );
+                    let perimeter = self
+                        .method_c_perimeters_from_selected_faces(&selected, &m_neighbors)?
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>();
+                    self.required_parent_support_lineages_from_selected_and_perimeter(
+                        &selected, &perimeter,
+                    )
+                } else {
+                    Err(error)
+                }
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -3821,12 +3836,13 @@ impl MethodCDelaunayMesh {
                     .map(|(ordinal, key)| (key.clone(), ordinal))
                     .collect::<BTreeMap<_, _>>();
                 dump.into_iter()
-                    .map(|(value_mask, outcome, key)| MethodCHfieldAssignmentOutcomeRecord {
-                        value_mask,
-                        outcome,
-                        exact_state_ordinal: key
-                            .and_then(|key| ordinals.get(&key).copied()),
-                    })
+                    .map(
+                        |(value_mask, outcome, key)| MethodCHfieldAssignmentOutcomeRecord {
+                            value_mask,
+                            outcome,
+                            exact_state_ordinal: key.and_then(|key| ordinals.get(&key).copied()),
+                        },
+                    )
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -4337,15 +4353,28 @@ impl MethodCDelaunayMesh {
             &mutable_m_points,
             &mutable_u_edges,
         );
-        let (exact_materializable, exact_failure_kind, exact_failure_message) = match self
-            .spawn_nest_pass_method_c_without_mask_repair(&trial, child_level, max_mrows, true)
-        {
-            Ok(_) => (true, None, None),
-            Err(error) => (
-                false,
-                Some(method_c_hfield_failure_kind(&error)),
-                Some(error.to_string()),
-            ),
+        let (
+            exact_materializable,
+            exact_failure_kind,
+            exact_failure_message,
+            exact_failure_dependency_faces,
+        ) = match self.spawn_nest_pass_method_c_without_mask_repair(
+            &trial,
+            child_level,
+            max_mrows,
+            true,
+        ) {
+            Ok(_) => (true, None, None, Vec::new()),
+            Err(error) => {
+                let dependency_faces =
+                    self.method_c_repair_witness_dependency_faces(&error, &m_neighbors);
+                (
+                    false,
+                    Some(method_c_hfield_failure_kind(&error)),
+                    Some(error.to_string()),
+                    dependency_faces,
+                )
+            }
         };
 
         Ok(MethodCHfieldLegalizationPatchBoundaryCheck {
@@ -4367,7 +4396,292 @@ impl MethodCDelaunayMesh {
             exact_materializable,
             exact_failure_kind,
             exact_failure_message,
+            exact_failure_dependency_faces,
         })
+    }
+
+    fn try_legalize_hfield_selection_locally(
+        &self,
+        checkpoint: &MethodCHfieldSelectionCheckpoint,
+        preflight: &MethodCHfieldLegalizationPreflight,
+        child_level: usize,
+        max_mrows: usize,
+    ) -> io::Result<Option<Vec<bool>>> {
+        if preflight.patches.is_empty() {
+            return Ok(None);
+        }
+        let baseline_self_loops = preflight.self_loop_witnesses.len();
+        let mut assignments = Vec::with_capacity(preflight.patches.len());
+        for patch in &preflight.patches {
+            let baseline = patch
+                .selected_candidate_seed_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let mut found = None;
+            for &seed in &patch.candidate_seed_ids {
+                let mut assignment = baseline.clone();
+                if !assignment.insert(seed) {
+                    assignment.remove(&seed);
+                }
+                let assignment = assignment.into_iter().collect::<Vec<_>>();
+                let Ok(check) = self.legalization_patch_boundary_check(
+                    checkpoint,
+                    preflight,
+                    patch,
+                    &assignment,
+                    child_level,
+                    max_mrows,
+                ) else {
+                    continue;
+                };
+                if check.is_closed()
+                    && check.vertex_only_contact_count == 0
+                    && check.perimeter_lengths.iter().all(|length| length % 3 == 0)
+                    && check.predicted_transition_self_loop_count < baseline_self_loops
+                {
+                    found = Some(assignment);
+                    break;
+                }
+            }
+            let Some(assignment) = found else {
+                return Ok(None);
+            };
+            assignments.push((patch, assignment));
+        }
+
+        let mut combined = MethodCHfieldLegalizationPatch {
+            cluster_index: usize::MAX,
+            witness_indices: Vec::new(),
+            witness_perimeter_components: Vec::new(),
+            perimeter_components: Vec::new(),
+            perimeter_interfaces: Vec::new(),
+            dependency_faces: Vec::new(),
+            dependency_face_lineages: Vec::new(),
+            candidate_seed_ids: Vec::new(),
+            candidate_seed_lineages: Vec::new(),
+            selected_candidate_seed_ids: Vec::new(),
+            mutable_faces: Vec::new(),
+            mutable_face_lineages: Vec::new(),
+        };
+        for (patch, assignment) in assignments {
+            combined
+                .candidate_seed_ids
+                .extend(&patch.candidate_seed_ids);
+            combined.selected_candidate_seed_ids.extend(assignment);
+            combined.mutable_faces.extend(&patch.mutable_faces);
+            combined
+                .perimeter_interfaces
+                .extend(patch.perimeter_interfaces.clone());
+        }
+        combined.candidate_seed_ids.sort_unstable();
+        combined.candidate_seed_ids.dedup();
+        combined.selected_candidate_seed_ids.sort_unstable();
+        combined.selected_candidate_seed_ids.dedup();
+        combined.mutable_faces.sort_unstable();
+        combined.mutable_faces.dedup();
+        let fixed_candidates = combined
+            .candidate_seed_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        let mut assignment = combined
+            .selected_candidate_seed_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut seen_failure_dependencies = BTreeSet::new();
+        let mut last_progress = None;
+        let mut legalization_steps = 0usize;
+        loop {
+            if legalization_steps == METHOD_C_LOCAL_LEGALIZATION_MAX_STEPS {
+                eprintln!(
+                    "earthmesh_mesh: Method-C local legalization exhausted its {METHOD_C_LOCAL_LEGALIZATION_MAX_STEPS}-step budget"
+                );
+                break;
+            }
+            legalization_steps += 1;
+            let Ok(check) = self.legalization_patch_boundary_check(
+                checkpoint,
+                preflight,
+                &combined,
+                &assignment.iter().copied().collect::<Vec<_>>(),
+                child_level,
+                max_mrows,
+            ) else {
+                break;
+            };
+            if std::env::var_os("EARTHMESH_M0_LOCAL_LEGALIZATION_TRACE").is_some() {
+                eprintln!(
+                    "earthmesh_mesh: local legalization step {legalization_steps} failure={:?} dependencies={:?} perimeters={:?}",
+                    check.exact_failure_kind,
+                    check.exact_failure_dependency_faces,
+                    check.perimeter_lengths
+                );
+            }
+            let mut selected = vec![false; self.nwd + 1];
+            for &iw in &check.selected_face_ids {
+                selected[iw] = true;
+            }
+            if check.exact_materializable {
+                eprintln!(
+                    "earthmesh_mesh: Method-C local legalization exact SAT after {legalization_steps} steps"
+                );
+                return Ok(Some(selected));
+            }
+            if check.exact_failure_kind == Some(MethodCHfieldFailureKind::TransitionPatch) {
+                let perimeter = check
+                    .ordered_perimeter_components
+                    .iter()
+                    .flat_map(|component| component.points.iter())
+                    .map(|point| MethodCPerimeterPoint {
+                        im: point.parent_m_point,
+                        iu: point.parent_u_edge,
+                        npoly: point.npoly,
+                        nwdiv: point.nwdiv,
+                        near_pentagon: point.near_pentagon,
+                    })
+                    .collect::<Vec<_>>();
+                let support = self
+                    .required_parent_support_lineages_from_selected_and_perimeter(
+                        &selected, &perimeter,
+                    )?
+                    .into_iter()
+                    .filter_map(|lineage| usize::try_from(lineage).ok())
+                    .collect::<BTreeSet<_>>();
+                if !support.is_empty() {
+                    eprintln!(
+                        "earthmesh_mesh: Method-C local legalization requested {} parent supports after {legalization_steps} steps",
+                        support.len()
+                    );
+                    return Err(
+                        crate::method_c_perimeter_repair::method_c_parent_support_error(support),
+                    );
+                }
+            }
+            if check.predicted_transition_self_loop_count < baseline_self_loops {
+                last_progress = Some(selected);
+            }
+            let current_dependencies = check.exact_failure_dependency_faces.clone();
+            if !matches!(
+                check.exact_failure_kind,
+                Some(MethodCHfieldFailureKind::Valence | MethodCHfieldFailureKind::TransitionPatch)
+            ) || check.exact_failure_dependency_faces.is_empty()
+                || !seen_failure_dependencies.insert(current_dependencies.clone())
+            {
+                break;
+            }
+
+            let dependencies = check
+                .exact_failure_dependency_faces
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let mut direct = Vec::new();
+            for &seed in &checkpoint.legal_seed_ids {
+                let footprint = self.selected_faces_from_method_c_seed_ids(&[seed])?;
+                if footprint
+                    .iter()
+                    .enumerate()
+                    .any(|(iw, selected)| *selected && dependencies.contains(&iw))
+                {
+                    direct.push(seed);
+                }
+            }
+            let failure_patch = MethodCHfieldLegalizationPatch {
+                candidate_seed_ids: direct,
+                perimeter_interfaces: check.ordered_perimeter_components.clone(),
+                dependency_faces: check.exact_failure_dependency_faces,
+                ..combined.clone()
+            };
+            let expanded =
+                self.expand_legalization_patch_one_ring(checkpoint, preflight, &failure_patch)?;
+            let existing_candidates = combined
+                .candidate_seed_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let local = expanded
+                .candidate_seed_ids
+                .iter()
+                .copied()
+                .filter(|seed| !fixed_candidates.contains(seed))
+                .collect::<BTreeSet<_>>();
+            let baseline_selected = checkpoint
+                .selected_seed_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            assignment.extend(local.iter().copied().filter(|seed| {
+                !existing_candidates.contains(seed) && baseline_selected.contains(seed)
+            }));
+            combined
+                .candidate_seed_ids
+                .extend(&expanded.candidate_seed_ids);
+            combined.mutable_faces.extend(&expanded.mutable_faces);
+            combined.candidate_seed_ids.sort_unstable();
+            combined.candidate_seed_ids.dedup();
+            combined.mutable_faces.sort_unstable();
+            combined.mutable_faces.dedup();
+            combined.perimeter_interfaces = check.ordered_perimeter_components;
+
+            let mut trials = Vec::with_capacity(local.len() + 1);
+            let mut all = assignment.clone();
+            all.extend(&local);
+            trials.push(all);
+            for seed in local {
+                let mut trial = assignment.clone();
+                if !trial.insert(seed) {
+                    trial.remove(&seed);
+                }
+                trials.push(trial);
+            }
+            let mut next = None;
+            let mut evaluated = 0usize;
+            for trial in trials {
+                evaluated += 1;
+                let Ok(candidate) = self.legalization_patch_boundary_check(
+                    checkpoint,
+                    preflight,
+                    &combined,
+                    &trial.iter().copied().collect::<Vec<_>>(),
+                    child_level,
+                    max_mrows,
+                ) else {
+                    continue;
+                };
+                if candidate.exact_materializable
+                    || (matches!(
+                        candidate.exact_failure_kind,
+                        Some(
+                            MethodCHfieldFailureKind::Valence
+                                | MethodCHfieldFailureKind::TransitionPatch
+                        )
+                    ) && !candidate.exact_failure_dependency_faces.is_empty()
+                        && candidate.exact_failure_dependency_faces != current_dependencies
+                        && !seen_failure_dependencies
+                            .contains(&candidate.exact_failure_dependency_faces))
+                {
+                    next = Some(trial);
+                    break;
+                }
+            }
+            let Some(next) = next else {
+                if std::env::var_os("EARTHMESH_M0_LOCAL_LEGALIZATION_TRACE").is_some() {
+                    eprintln!(
+                        "earthmesh_mesh: local legalization exhausted {evaluated} new-domain assignments"
+                    );
+                }
+                break;
+            };
+            assignment = next;
+        }
+        eprintln!(
+            "earthmesh_mesh: Method-C local legalization stopped after {legalization_steps} steps with exact progress={} ",
+            last_progress.is_some()
+        );
+        Ok(last_progress)
     }
 
     pub fn spawn_nest_pass_from_target_levels_and_face_demands<F: Fn(f64, f64) -> u8>(
@@ -4385,7 +4699,7 @@ impl MethodCDelaunayMesh {
                 "Method-C face-demand pass must be positive",
             ));
         }
-        let (selected_faces, coverage, _) = self
+        let (mut selected_faces, coverage, _) = self
             .selected_faces_and_coverage_from_target_levels_with_policy(
                 &target_level,
                 Some(face_demand),
@@ -4395,8 +4709,35 @@ impl MethodCDelaunayMesh {
                 false,
                 true,
             )?;
+        let m_neighbors = self.method_c_m_neighbors()?;
+        self.clear_method_c_conceded_margin(&mut selected_faces, &m_neighbors, 2)?;
+        coverage.validate(&selected_faces)?;
         if selected_faces.iter().skip(2).all(|selected| !*selected) {
             return Ok(None);
+        }
+        if std::env::var_os("EARTHMESH_M0_CROSS_LEVEL_SUPPORT").is_some() {
+            let mut checkpoint = self.selection_checkpoint_from_target_levels_and_face_demands(
+                &target_level,
+                face_demand,
+                pass,
+                preserve_all_demands,
+            )?;
+            checkpoint.selected_faces.clone_from(&selected_faces);
+            let preflight = self.legalization_preflight_from_selected_faces(
+                &selected_faces,
+                &checkpoint.legal_seed_ids,
+                &checkpoint.selected_seed_ids,
+                child_grid_number,
+            )?;
+            if let Some(legalized) = self.try_legalize_hfield_selection_locally(
+                &checkpoint,
+                &preflight,
+                child_grid_number,
+                max_mrows,
+            )? {
+                coverage.validate(&legalized)?;
+                selected_faces = legalized;
+            }
         }
         self.spawn_nest_pass_method_c_preserving_demands(
             &selected_faces,

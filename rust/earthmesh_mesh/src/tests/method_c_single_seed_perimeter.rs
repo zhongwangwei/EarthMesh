@@ -113,7 +113,8 @@ fn inward_growth_perimeter_remainders() {
         {
             continue;
         }
-        if let Ok(perimeters) = mesh.method_c_perimeters_from_selected_faces(&selected, &m_neighbors)
+        if let Ok(perimeters) =
+            mesh.method_c_perimeters_from_selected_faces(&selected, &m_neighbors)
         {
             let total = perimeters.iter().map(Vec::len).sum::<usize>();
             if total % 3 != 0 {
@@ -192,7 +193,8 @@ fn multi_seed_adaptive_growth_remainders() {
     let m_neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
 
     let footprint_of = |im: usize| -> Option<Vec<usize>> {
-        mesh.method_c_rad3_faces_with_neighbors(im, &m_neighbors).ok()
+        mesh.method_c_rad3_faces_with_neighbors(im, &m_neighbors)
+            .ok()
     };
     let perimeter_len = |selected: &[bool]| -> Option<usize> {
         mesh.method_c_perimeters_from_selected_faces(selected, &m_neighbors)
@@ -229,8 +231,14 @@ fn multi_seed_adaptive_growth_remainders() {
     // Adjacent seeds share footprints and merge immediately; spread ones stay
     // separate for longer. Test both so interference is visible either way.
     for (label, seeds) in [
-        ("2 adjacent", bad.iter().copied().take(2).collect::<Vec<_>>()),
-        ("4 adjacent", bad.iter().copied().take(4).collect::<Vec<_>>()),
+        (
+            "2 adjacent",
+            bad.iter().copied().take(2).collect::<Vec<_>>(),
+        ),
+        (
+            "4 adjacent",
+            bad.iter().copied().take(4).collect::<Vec<_>>(),
+        ),
         (
             "4 spread",
             bad.iter().copied().step_by(bad.len() / 4).take(4).collect(),
@@ -378,6 +386,7 @@ const CASE9_PASS2_DEMAND: &[(f64, f64)] = &[
 /// whether they are triplet-decomposable. Read-only: nothing is materialized and
 /// no production path is touched.
 #[test]
+#[ignore = "read-only Case 9 exploration; run explicitly"]
 fn case9_demand_projected_onto_regular_base() {
     let mesh = MethodCDelaunayMesh::from_icosahedron(243, 0, 1.0, 0.25, 0)
         .expect("NXP=243 base Method-C mesh");
@@ -475,9 +484,7 @@ fn case9_demand_projected_onto_regular_base() {
     // A deferred scheme also needs the finer region nested inside the coarser
     // one, or the levels cannot be materialized together.
     if let ([(_, coarse)], [(_, fine)]) = (&closed_regions[..1], &closed_regions[1..]) {
-        let outside = (2..=mesh.nwd)
-            .filter(|&iw| fine[iw] && !coarse[iw])
-            .count();
+        let outside = (2..=mesh.nwd).filter(|&iw| fine[iw] && !coarse[iw]).count();
         eprintln!(
             "\nnesting: {} pass-2 faces fall outside the pass-1 region",
             outside
@@ -498,6 +505,7 @@ fn case9_demand_projected_onto_regular_base() {
 /// This takes one regular seed and sweeps a second across the mesh, recording
 /// the perimeter of whatever the pair produces. Read-only.
 #[test]
+#[ignore = "read-only Case 9 exploration; run explicitly"]
 fn merged_footprint_perimeter_remainders() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(12, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
@@ -522,8 +530,10 @@ fn merged_footprint_perimeter_remainders() {
         .method_c_rad3_faces_with_neighbors(anchor, &m_neighbors)
         .expect("anchor footprint");
 
-    let mut by_components: std::collections::BTreeMap<usize, std::collections::BTreeMap<usize, usize>> =
-        std::collections::BTreeMap::new();
+    let mut by_components: std::collections::BTreeMap<
+        usize,
+        std::collections::BTreeMap<usize, usize>,
+    > = std::collections::BTreeMap::new();
     let mut merged_lengths = std::collections::BTreeMap::new();
     let mut merged_total = 0usize;
     let mut merged_decomposable = 0usize;
@@ -594,6 +604,7 @@ fn merged_footprint_perimeter_remainders() {
 /// components whose perimeter is undecomposable, and re-measures every
 /// component after each ring. Read-only.
 #[test]
+#[ignore = "read-only Case 9 exploration; run explicitly"]
 fn case9_bad_component_local_growth() {
     let mesh = MethodCDelaunayMesh::from_icosahedron(243, 0, 1.0, 0.25, 0)
         .expect("NXP=243 base Method-C mesh");
@@ -705,6 +716,7 @@ fn case9_bad_component_local_growth() {
 /// This adds a single face at a time to a bad component, re-closes concavities,
 /// and records which perimeter lengths are reachable. Read-only.
 #[test]
+#[ignore = "read-only Case 9 exploration; run explicitly"]
 fn case9_bad_component_single_face_edits() {
     let mesh = MethodCDelaunayMesh::from_icosahedron(243, 0, 1.0, 0.25, 0)
         .expect("NXP=243 base Method-C mesh");
@@ -832,6 +844,7 @@ fn case9_bad_component_single_face_edits() {
 /// capped in width, and reports the first depth reaching a multiple of three.
 /// Read-only.
 #[test]
+#[ignore = "read-only Case 9 exploration; run explicitly"]
 fn case9_bad_component_minimal_repair_depth() {
     const WIDTH: usize = 24;
     const MAX_DEPTH: usize = 4;
@@ -897,7 +910,10 @@ fn case9_bad_component_minimal_repair_depth() {
         if base_len % 3 == 0 {
             continue;
         }
-        eprintln!("\ncomponent of {} faces, perimeter {base_len}", component.len());
+        eprintln!(
+            "\ncomponent of {} faces, perimeter {base_len}",
+            component.len()
+        );
 
         let mut frontier = vec![(base_mask, base_len)];
         let mut repaired = None;
@@ -926,7 +942,10 @@ fn case9_bad_component_minimal_repair_depth() {
                     let mut grown = mask.clone();
                     grown[candidate] = true;
                     if mesh
-                        .close_method_c_concavities_for_level_with_neighbors(&mut grown, &m_neighbors)
+                        .close_method_c_concavities_for_level_with_neighbors(
+                            &mut grown,
+                            &m_neighbors,
+                        )
                         .is_err()
                     {
                         continue;
@@ -958,9 +977,9 @@ fn case9_bad_component_minimal_repair_depth() {
         }
 
         match repaired {
-            Some((depth, length, added)) => eprintln!(
-                "  repaired at depth {depth}: perimeter {length}, {added} faces added"
-            ),
+            Some((depth, length, added)) => {
+                eprintln!("  repaired at depth {depth}: perimeter {length}, {added} faces added")
+            }
             None => eprintln!("  no repair within depth {MAX_DEPTH} at width {WIDTH}"),
         }
     }
@@ -1141,13 +1160,13 @@ fn candidate_scan_matches_full_scan() {
             };
             if !same {
                 if differing < 3 {
-                    let describe = |result: &io::Result<Vec<Vec<MethodCPerimeterPoint>>>| match result
-                    {
-                        Ok(perimeters) => {
-                            format!("{:?}", perimeters.iter().map(Vec::len).collect::<Vec<_>>())
-                        }
-                        Err(error) => format!("Err({error})"),
-                    };
+                    let describe =
+                        |result: &io::Result<Vec<Vec<MethodCPerimeterPoint>>>| match result {
+                            Ok(perimeters) => {
+                                format!("{:?}", perimeters.iter().map(Vec::len).collect::<Vec<_>>())
+                            }
+                            Err(error) => format!("Err({error})"),
+                        };
                     eprintln!(
                         "  nxp={nxp} seed {im}: full={} restricted={} candidates={}",
                         describe(&full),
@@ -1165,4 +1184,221 @@ fn candidate_scan_matches_full_scan() {
              {differing} of {compared} results at nxp={nxp}"
         );
     }
+}
+
+#[test]
+fn beam_can_close_a_perimeter_that_one_growth_step_cannot() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let m_neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+    let footprint = mesh
+        .method_c_rad3_faces_with_neighbors(3, &m_neighbors)
+        .expect("fixed two-step fixture footprint");
+    let mut selected = vec![false; mesh.nwd + 1];
+    for iw in footprint {
+        if iw >= 2 && iw <= mesh.nwd {
+            selected[iw] = true;
+        }
+    }
+    mesh.close_method_c_concavities_for_level_with_neighbors(&mut selected, &m_neighbors)
+        .expect("close seed footprint");
+    let perimeter = mesh
+        .method_c_perimeters_from_selected_faces(&selected, &m_neighbors)
+        .expect("fixture perimeter")
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert!(!perimeter.len().is_multiple_of(3));
+
+    let one_step = mesh
+        .try_grow_method_c_non_triplet_perimeter_once(
+            &selected,
+            &m_neighbors,
+            1,
+            Some(&perimeter),
+            None,
+        )
+        .expect("one-step repair");
+    assert!(!one_step
+        .as_ref()
+        .is_some_and(|(_, perimeter)| perimeter.len().is_multiple_of(3)));
+
+    let (repaired, repaired_perimeter) = mesh
+        .try_grow_method_c_non_triplet_perimeter_beam(
+            &selected,
+            &m_neighbors,
+            1,
+            Some(&perimeter),
+            None,
+            16,
+            2,
+            None,
+        )
+        .expect("two-step Beam")
+        .expect("fixed fixture has a two-step repair");
+    assert!(repaired_perimeter.len().is_multiple_of(3));
+    assert!(
+        mesh.emit_method_c_selected_faces(
+            &repaired,
+            &m_neighbors,
+            1,
+            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            true,
+        )
+        .is_err(),
+        "decomposable does not imply exactly materializable"
+    );
+    assert!(
+        repaired
+            .iter()
+            .zip(&selected)
+            .filter(|(after, before)| **after && !**before)
+            .count()
+            >= 2
+    );
+
+    if let Some((exact_mask, exact_perimeter)) = mesh
+        .try_grow_method_c_non_triplet_perimeter_beam(
+            &selected,
+            &m_neighbors,
+            1,
+            Some(&perimeter),
+            None,
+            16,
+            2,
+            Some((MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE, true)),
+        )
+        .expect("exact-gated Beam")
+    {
+        if exact_perimeter.len().is_multiple_of(3) {
+            mesh.emit_method_c_selected_faces(
+                &exact_mask,
+                &m_neighbors,
+                1,
+                MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                true,
+            )
+            .expect("exact-gated Beam must not return an invalid decomposable mask");
+        }
+    }
+}
+
+/// Can the perimeter residue be read off the counts instead of walked?
+///
+/// A triangulated disk satisfies `t = 2i + b - 2` for `t` triangles, `i`
+/// interior vertices and `b` boundary vertices, so `b = t - 2i + 2`. If that
+/// holds for Method-C selections then `b mod 3` is available from two counts
+/// the selector already has, with no perimeter walk and no trial edits — which
+/// is what a repair would need to plan an edit rather than search for one.
+///
+/// Checks the identity across single seeds, grown regions and merged pairs.
+/// Read-only.
+#[test]
+#[ignore = "read-only Euler-identity sweep; run explicitly"]
+fn perimeter_length_follows_from_face_and_interior_counts() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(12, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let m_neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
+
+    let regular = (2..=mesh.nmd)
+        .filter(|&im| m_neighbors[im].npoly == 6)
+        .collect::<Vec<_>>();
+
+    // An M point is interior when every face around it is selected.
+    let interior_count = |selected: &[bool]| -> usize {
+        (2..=mesh.nmd)
+            .filter(|&im| {
+                let neighbors = m_neighbors[im];
+                neighbors
+                    .iw
+                    .iter()
+                    .take(neighbors.npoly)
+                    .all(|&iw| selected.get(iw).copied().unwrap_or(false))
+            })
+            .count()
+    };
+
+    let mut checked = 0usize;
+    let mut matched = 0usize;
+    let mut mismatches = Vec::new();
+
+    for (label, seeds) in [
+        (
+            "single",
+            regular
+                .iter()
+                .copied()
+                .map(|im| vec![im])
+                .take(60)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "pair",
+            regular
+                .windows(2)
+                .map(<[usize]>::to_vec)
+                .take(60)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "spread-pair",
+            regular
+                .iter()
+                .copied()
+                .zip(regular.iter().copied().skip(7))
+                .map(|(a, b)| vec![a, b])
+                .take(60)
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        for seed_set in seeds {
+            let mut selected = vec![false; mesh.nwd + 1];
+            for &im in &seed_set {
+                let Ok(footprint) = mesh.method_c_rad3_faces_with_neighbors(im, &m_neighbors)
+                else {
+                    continue;
+                };
+                for iw in footprint {
+                    if iw >= 2 && iw <= mesh.nwd {
+                        selected[iw] = true;
+                    }
+                }
+            }
+            if mesh
+                .close_method_c_concavities_for_level_with_neighbors(&mut selected, &m_neighbors)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok(perimeters) =
+                mesh.method_c_perimeters_from_selected_faces(&selected, &m_neighbors)
+            else {
+                continue;
+            };
+            // The identity is per disk, so only single-component selections
+            // are comparable without tracking each component separately.
+            if perimeters.len() != 1 {
+                continue;
+            }
+            let faces = selected.iter().filter(|&&item| item).count();
+            let interior = interior_count(&selected);
+            let walked = perimeters[0].len();
+            let predicted = faces + 2 - 2 * interior;
+            checked += 1;
+            if walked == predicted {
+                matched += 1;
+            } else if mismatches.len() < 5 {
+                mismatches.push((label, faces, interior, walked, predicted));
+            }
+        }
+    }
+
+    eprintln!("{matched}/{checked} selections match b = t - 2i + 2");
+    for (label, faces, interior, walked, predicted) in &mismatches {
+        eprintln!(
+            "  {label}: t={faces} i={interior} walked={walked} predicted={predicted} diff={}",
+            *walked as isize - *predicted as isize
+        );
+    }
+    assert!(checked > 0, "no single-component selections were measured");
 }

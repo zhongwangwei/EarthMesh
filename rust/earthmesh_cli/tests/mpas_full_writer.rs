@@ -94,6 +94,7 @@ fn mpas_full_writer_preserves_canonical_schema_and_placeholder_slices() {
         [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 201, 202]
     );
     assert_eq!(read_i32(&file, "cellsOnVertex"), vec![1, 2, 0, 2, 1, 0]);
+    assert_eq!(read_i32(&file, "boundaryVertex"), vec![0, 0]);
     assert_eq!(read_i32(&file, "cellsOnEdge"), vec![1, 2, 2, 0, 0, 1]);
     assert_eq!(read_i32(&file, "edgesOnEdge")[0..4], [701, 702, 703, 704]);
     assert_eq!(read_f64(&file, "areaCell"), vec![1000.0, 2000.0]);
@@ -115,6 +116,54 @@ fn mpas_full_writer_preserves_canonical_schema_and_placeholder_slices() {
         .expect("string attr");
     assert_eq!(mesh_spec, "1.0");
 
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mpas_ocean_writer_scales_physical_metrics_and_marks_boundary_vertices() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mpas_ocean_writer_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp root");
+    let output = root.join("MPAS-Ocean.nc4");
+    let mut mesh = sample_full_mpas_mesh();
+    mesh.cells_on_vertex[2] = vec![2, 0, 0];
+    mesh.edges_on_cell[1] = vec![1, 2, 3, 0, 0, 0, 0, 0, 0, 0];
+    mesh.edges_on_cell[2] = vec![2, 3, 0, 0, 0, 0, 0, 0, 0, 0];
+    // This ordering makes angle2 the largest angle, so the expected value
+    // distinguishes MPAS-Tools' historical b*c term from the cosine law's b*b.
+    mesh.dc_edge = vec![0.0, 3.0, 5.0, 4.0];
+
+    earthmesh_cli::write_mpas_ocean_mesh_netcdf(&output, &mesh).expect("write MPAS-Ocean mesh");
+    let file = netcdf::open(&output).expect("open MPAS-Ocean mesh");
+    let radius = earthmesh_cli::MPAS_OCEAN_SPHERE_RADIUS_METERS;
+    let radius_value: f64 = file
+        .attribute("sphere_radius")
+        .expect("sphere_radius")
+        .value()
+        .expect("read sphere_radius")
+        .try_into()
+        .expect("f64 attr");
+    assert_eq!(radius_value, radius);
+    assert_eq!(read_i32(&file, "boundaryVertex"), vec![0, 1]);
+    assert_eq!(read_f64(&file, "xCell"), vec![10.0 * radius, 20.0 * radius]);
+    assert_eq!(
+        read_f64(&file, "areaCell"),
+        vec![1000.0 * radius * radius, 2000.0 * radius * radius]
+    );
+    assert_eq!(read_f64(&file, "dvEdge")[0], 5.1 * radius);
+    assert_eq!(read_f64(&file, "angleEdge")[0], 7.1);
+    assert_eq!(read_f64(&file, "weightsOnEdge")[0], 10.0);
+    assert_eq!(read_f64(&file, "cellQuality"), vec![5.1 / 5.3, 5.2 / 5.3]);
+    assert_f64_close(&read_f64(&file, "gridSpacing"), &[4.0, 4.5]);
+    assert_eq!(read_f64(&file, "triangleQuality"), vec![3.0 / 5.0; 2]);
+    assert_f64_close(
+        &read_f64(&file, "triangleAngleQuality"),
+        &[0.4728407233878185, 0.5639696094406146],
+    );
+    assert_eq!(read_i32(&file, "obtuseTriangle"), vec![0, 0]);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -148,4 +197,11 @@ fn read_f64(file: &netcdf::File, name: &str) -> Vec<f64> {
         .unwrap_or_else(|| panic!("missing variable {name}"))
         .get_values::<f64, _>(..)
         .unwrap_or_else(|err| panic!("read {name}: {err}"))
+}
+
+fn assert_f64_close(actual: &[f64], expected: &[f64]) {
+    assert_eq!(actual.len(), expected.len());
+    for (&actual, &expected) in actual.iter().zip(expected) {
+        assert!((actual - expected).abs() <= expected.abs().max(1.0) * 1.0e-12);
+    }
 }

@@ -179,7 +179,10 @@ impl MethodCDelaunayMesh {
             let im20 = nest_ud[ju3].im;
             let iu43 = iunew[ju2];
 
-            let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, u_edges, "iw6", jm2)?;
+            let [iu25, iu15] = method_c_split_outer_edges(nest_wd[iw6o].iu, u_edges, "iw6", jm2)
+                .map_err(|error| {
+                    method_c_repairable_error_with_missing_split_outer_faces(error, [iw6o, iw9o])
+                })?;
             let iw7 = other_edge_face(u_edges[iu15], iw6)?;
             let (iw19, im12) = if u_edges[iu25].iw[0] == iw6 {
                 (u_edges[iu25].iw[1], u_edges[iu25].im[1])
@@ -187,7 +190,10 @@ impl MethodCDelaunayMesh {
                 (u_edges[iu25].iw[0], u_edges[iu25].im[0])
             };
 
-            let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, u_edges, "iw9", jm2)?;
+            let [iu16, iu26] = method_c_split_outer_edges(nest_wd[iw9o].iu, u_edges, "iw9", jm2)
+                .map_err(|error| {
+                    method_c_repairable_error_with_missing_split_outer_faces(error, [iw6o, iw9o])
+                })?;
             let iw8 = other_edge_face(u_edges[iu16], iw9)?;
             let (iw21, im13) = if u_edges[iu26].iw[0] == iw9 {
                 (u_edges[iu26].iw[1], u_edges[iu26].im[0])
@@ -251,10 +257,12 @@ impl MethodCDelaunayMesh {
             } else {
                 u_edges[iu45].iw[1] = iw31;
             }
-            if u_edges[iu48].iw[1] == iw27 {
-                u_edges[iu48].im[1] = im17;
-            } else {
-                u_edges[iu48].im[0] = im17;
+            if !u_edges[iu48].im.contains(&im17) {
+                if u_edges[iu48].iw[1] == iw27 {
+                    u_edges[iu48].im[1] = im17;
+                } else {
+                    u_edges[iu48].im[0] = im17;
+                }
             }
             if u_edges[iu49].im[1] == im24 {
                 u_edges[iu49].im[0] = im17;
@@ -268,10 +276,12 @@ impl MethodCDelaunayMesh {
             } else {
                 u_edges[iu50].im[0] = im20;
             }
-            if u_edges[iu51].iw[1] == iw31 {
-                u_edges[iu51].im[0] = im20;
-            } else {
-                u_edges[iu51].im[1] = im20;
+            if !u_edges[iu51].im.contains(&im20) {
+                if u_edges[iu51].iw[1] == iw31 {
+                    u_edges[iu51].im[0] = im20;
+                } else {
+                    u_edges[iu51].im[1] = im20;
+                }
             }
 
             replace_w_face_edge_after(w_faces, iw8, iu16, iu34, "iw8/iu16->iu34")?;
@@ -287,6 +297,45 @@ impl MethodCDelaunayMesh {
             replace_w_face_edge_before(w_faces, iw27, iu48, iu41, "iw27/iu48->iu41")?;
             replace_w_face_edges_at(w_faces, iw29, iu50, [iu44, iu43], "iw29/iu50")?;
             replace_w_face_edge_after(w_faces, iw31, iu51, iu45, "iw31/iu51->iu45")?;
+
+            let touched_edges = [
+                ("iu15", iu15),
+                ("iu16", iu16),
+                ("iu25", iu25),
+                ("iu26", iu26),
+                ("iu33", iu33),
+                ("iu34", iu34),
+                ("iu35", iu35),
+                ("iu41", iu41),
+                ("iu42", iu42),
+                ("iu43", iu43),
+                ("iu44", iu44),
+                ("iu45", iu45),
+                ("iu48", iu48),
+                ("iu49", iu49),
+                ("iu50", iu50),
+                ("iu51", iu51),
+            ];
+            if let Some((_, self_loop_iu)) = touched_edges.iter().find(|(_, iu)| {
+                let edge = u_edges[*iu];
+                edge.im[0] > 1 && edge.im[0] == edge.im[1]
+            }) {
+                let aliases = touched_edges
+                    .iter()
+                    .filter_map(|(label, iu)| (*iu == *self_loop_iu).then_some(*label))
+                    .collect::<Vec<_>>();
+                return Err(crate::method_c_table_helpers::method_c_repairable_error_with_parent_origin(
+                    method_c_repairable_error(
+                        MethodCRepairableKind::TransitionPatch,
+                        None,
+                        format!(
+                            "Method-C transition patch created self-loop U edge {self_loop_iu} from logical edges {aliases:?}"
+                        ),
+                    ),
+                    Some(jm2),
+                    Some(ju2),
+                ));
+            }
 
             for im in [im22, im23, im24, im25, im26] {
                 m_metadata[im].ngr = child_level;

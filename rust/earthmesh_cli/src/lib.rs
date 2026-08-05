@@ -202,9 +202,7 @@ mod mesh_conversion_iap;
 pub(crate) use mesh_conversion_iap::derive_iap_w_to_m_one_based;
 pub mod fvcom_mesh_writer;
 pub(crate) use fvcom_mesh_writer::write_fvcom_ns_records;
-use fvcom_mesh_writer::{
-    fvcom_mesh_2dm_output_path, write_fvcom_mesh_2dm, FvcomMesh2dmWriteReport,
-};
+use fvcom_mesh_writer::{fvcom_mesh_2dm_output_path, FvcomMesh2dmWriteReport};
 pub mod obc_boundary_io;
 use obc_boundary_io::{
     obc_boundary_output_path, obcv2_boundary_output_path, read_obc_order_netcdf,
@@ -351,7 +349,9 @@ use mpas_simple_writer::{
     write_mpas_simple_mesh_netcdf, MpasSimpleMesh, MpasSimpleMeshWriteReport,
 };
 mod mpas_full_writer;
-pub use mpas_full_writer::write_mpas_mesh_netcdf;
+pub use mpas_full_writer::{
+    write_mpas_mesh_netcdf, write_mpas_ocean_mesh_netcdf, MPAS_OCEAN_SPHERE_RADIUS_METERS,
+};
 pub mod mpas_unstructured_mesh_builders;
 use mpas_unstructured_mesh_builders::{
     build_mpas_mesh_from_unstructured_one_based, build_mpas_simple_mesh_from_unstructured_one_based,
@@ -360,7 +360,9 @@ pub mod gridfile_output_writers;
 use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
+mod icon_writer;
 pub mod mpas_gridfile_writers;
+pub use icon_writer::{write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS};
 pub mod regional_gridfile_writers;
 use regional_gridfile_writers::{
     write_clean_regional_ocean_gridfile, write_clean_regional_ocean_gridfile_with_hard_demand,
@@ -444,7 +446,8 @@ pub use hfield_refine::{
     build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
 };
 mod m1_topology_frozen;
-mod native_landcover_refine;
+#[cfg(test)]
+mod extends;
 mod refine_pipeline;
 mod source_demand_artifact;
 pub use refine_pipeline::run_refine_pipeline_namelist;

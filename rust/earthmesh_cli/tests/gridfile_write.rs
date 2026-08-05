@@ -332,6 +332,27 @@ fn gridfile_mesh_from_one_based_state_rejects_missing_one_based_tail() {
 }
 
 #[test]
+fn gridfile_mesh_from_one_based_state_preserves_active_empty_boundary_dual() {
+    let mut grid = GridMemory {
+        nma: 1,
+        nwa: 2,
+        ..GridMemory::default()
+    };
+    grid.allocate_grid_lonlatmw(2, 0, 3);
+    let mut tabs = IjTabs::allocate(2, 0, 3);
+    tabs.w[2].iwp = 2;
+    tabs.w[2].npoly = 0;
+    tabs.w[2].im = [1; 7];
+
+    let mesh = earthmesh_cli::mesh_conversion_gridfile_state::gridfile_mesh_from_one_based_state(
+        &grid, &tabs,
+    )
+    .expect("preserve active empty boundary dual");
+
+    assert_eq!(mesh.n_w_to_m, vec![1, 0]);
+}
+
+#[test]
 fn write_gridfile_from_one_based_state_uses_canonical_output_name() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_gridfile_one_based_{}",

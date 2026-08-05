@@ -87,10 +87,12 @@ pub fn read_shapefile_polygon_components(
 /// A record's rings use even/odd nesting; records are independent polygon
 /// features whose areas are unioned. Keeping this boundary prevents a polygon
 /// nested inside a different record from being misclassified as a hole.
+#[allow(clippy::type_complexity)]
 pub fn read_shapefile_polygon_parts(path: &Path) -> io::Result<Vec<Vec<Vec<(f64, f64)>>>> {
     read_shapefile_polygon_records(path)
 }
 
+#[allow(clippy::type_complexity)]
 fn read_shapefile_polygon_records(path: &Path) -> io::Result<Vec<Vec<Vec<(f64, f64)>>>> {
     let bytes = fs::read(path)?;
     if bytes.len() < 100 || be_i32(&bytes, 0)? != 9994 || le_i32(&bytes, 28)? != 1000 {
@@ -386,6 +388,7 @@ fn validate_lonlat(lon: f64, lat: f64) -> io::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 fn read_polygon_record(content: &[u8]) -> io::Result<Option<Vec<Vec<(f64, f64)>>>> {
     if content.len() < 4 {
         return Err(io::Error::new(
@@ -583,11 +586,11 @@ fn polygon_components_from_record(
             .min_by(|&left, &right| areas[left].total_cmp(&areas[right]));
     }
     let mut depths = vec![0usize; rings.len()];
-    for index in 0..rings.len() {
+    for (index, ring_depth) in depths.iter_mut().enumerate() {
         let mut cursor = index;
         for depth in 0..rings.len() {
             let Some(parent) = parents[cursor] else {
-                depths[index] = depth;
+                *ring_depth = depth;
                 break;
             };
             cursor = parent;
@@ -600,7 +603,7 @@ fn polygon_components_from_record(
         }
     }
     Ok((0..rings.len())
-        .filter(|&index| depths[index] % 2 == 0)
+        .filter(|&index| depths[index].is_multiple_of(2))
         .map(|shell| ShapefilePolygonComponent {
             shell: rings[shell].clone(),
             holes: (0..rings.len())
@@ -1098,6 +1101,23 @@ mod tests {
         assert!(point_in_ring((172.0, 0.0), &bridged));
         assert!(!point_in_ring((179.0, 0.0), &bridged));
         assert!(point_in_ring((-172.0, 0.0), &bridged));
+    }
+
+    #[test]
+    fn polar_polygon_is_rejected_before_planar_close_lowering() {
+        let component = ShapefilePolygonComponent {
+            shell: vec![
+                (-135.0, -80.0),
+                (-45.0, -80.0),
+                (45.0, -80.0),
+                (135.0, -80.0),
+            ],
+            holes: Vec::new(),
+        };
+
+        let error = assemble_polygon_component(component)
+            .expect_err("a polar cap cannot use the planar close-ring path");
+        assert!(error.to_string().contains("polar SHP polygons"));
     }
 
     #[test]

@@ -138,11 +138,11 @@ done
 
 polar_sha=$(sha256 "$polar_grid")
 dateline_sha=$(sha256 "$dateline_grid")
-[[ "$polar_sha" == "9eb298241a6820f3941f5c143cb5f129cbc25aea6e27131afad793d78a27db8f" ]] || {
+[[ "$polar_sha" == "89194bc066042e3d4a9d8a1f0cb8bce732a10af49ea70342bf35d72cb187f6e5" ]] || {
     echo "unexpected polar grid hash: $polar_sha" >&2
     exit 1
 }
-[[ "$dateline_sha" == "8d766758de6c953d96d0c32745a9a05620cdfc5bed0779be6dbdba0479f1b979" ]] || {
+[[ "$dateline_sha" == "cfae78054dffb4e58b6a68dff494fa7360e6e3acf104d405babe0a9dcdb1df5d" ]] || {
     echo "unexpected dateline grid hash: $dateline_sha" >&2
     exit 1
 }
@@ -205,8 +205,8 @@ def grid_rows(path):
         arrays[name] = [cast(float(value)) if cast is int else cast(value) for value in values]
     return list(zip(arrays["GLONW"][1:], arrays["GLATW"][1:], arrays["earthmesh_w_refine_level"][1:]))
 
-polar = load_quality(polar_quality, 70337)
-dateline = load_quality(dateline_quality, 90107)
+polar = load_quality(polar_quality, 69818)
+dateline = load_quality(dateline_quality, 89945)
 polar_rows = grid_rows(polar_grid)
 dateline_rows = grid_rows(dateline_grid)
 polar_refined = [row for row in polar_rows if row[2] >= 2]
@@ -214,10 +214,10 @@ dateline_refined = [row for row in dateline_rows if row[2] >= 2]
 
 assert min(row[1] for row in polar_rows) < -89.99
 assert max(row[1] for row in polar_rows) > 89.99
-assert len(polar_refined) == 3475
+assert len(polar_refined) == 3061
 assert min(row[1] for row in polar_refined) > 82.0
 assert max(row[1] for row in polar_refined) > 89.99
-assert len(dateline_refined) == 22447
+assert len(dateline_refined) == 22231
 assert sum(row[0] > 170.0 for row in dateline_refined) > 10000
 assert sum(row[0] < -170.0 for row in dateline_refined) > 10000
 assert min(row[1] for row in dateline_refined) > -22.0

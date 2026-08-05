@@ -26,7 +26,9 @@ impl ModelFormat {
     pub fn engine_str(self) -> &'static str {
         match self {
             ModelFormat::CoLM => "CoLM",
+            ModelFormat::Icon => "ICON",
             ModelFormat::Mpas => "MPAS",
+            ModelFormat::MpasOcean => "MPAS-Ocean",
             ModelFormat::MpasSimple => "MPAS-Simple",
             ModelFormat::Fvcom => "FVCOM",
         }

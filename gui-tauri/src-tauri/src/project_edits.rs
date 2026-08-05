@@ -268,6 +268,7 @@ fn threshold_stems(field: ThresholdField) -> &'static [&'static str] {
 pub(crate) fn set_project_target(
     yaml: String,
     kind: String,
+    cell: String,
     model_format: String,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
@@ -279,10 +280,17 @@ pub(crate) fn set_project_target(
         "earth" => MeshDomainKind::Earth,
         other => return Err(format!("unknown target kind '{other}'")),
     };
+    cfg.target.cell = match cell.trim().to_ascii_lowercase().as_str() {
+        "hex" => MeshCellKind::Hex,
+        "tri" => MeshCellKind::Tri,
+        other => return Err(format!("unknown cell shape '{other}'")),
+    };
     cfg.target.model_format = match model_format.trim().to_ascii_lowercase().as_str() {
         "colm" => ModelFormat::CoLM,
         "fvcom" => ModelFormat::Fvcom,
+        "icon" => ModelFormat::Icon,
         "mpas" => ModelFormat::Mpas,
+        "mpas-ocean" | "mpasocean" => ModelFormat::MpasOcean,
         "mpas-simple" | "mpassimple" => ModelFormat::MpasSimple,
         other => return Err(format!("unknown target model format '{other}'")),
     };
@@ -521,12 +529,19 @@ pub(crate) fn set_hfield_refinement(
     base_m: Option<f64>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
-    let (origin_lon, origin_lat) = cfg
+    let (nlon, nlat, origin_lon, origin_lat) = cfg
         .refinement
         .hfield
         .as_ref()
-        .map(|recipe| (recipe.origin_lon, recipe.origin_lat))
-        .unwrap_or((None, None));
+        .map(|recipe| {
+            (
+                recipe.nlon,
+                recipe.nlat,
+                recipe.origin_lon,
+                recipe.origin_lat,
+            )
+        })
+        .unwrap_or((None, None, None, None));
     if matches!(base_m, Some(base) if !base.is_finite() || base <= 0.0) {
         return Err("h-field base_m must be positive when set".to_string());
     }
@@ -544,12 +559,16 @@ pub(crate) fn set_hfield_refinement(
             g,
             max_level,
             base_m,
+            nlon,
+            nlat,
             origin_lon,
             origin_lat,
         })
     } else {
         Some(HfieldRefinementRecipe {
             enabled: false,
+            nlon,
+            nlat,
             origin_lon,
             origin_lat,
             ..HfieldRefinementRecipe::default()

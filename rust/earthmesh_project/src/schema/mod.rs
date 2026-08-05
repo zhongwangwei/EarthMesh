@@ -190,7 +190,9 @@ pub enum ResolutionSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModelFormat {
     CoLM,
+    Icon,
     Mpas,
+    MpasOcean,
     MpasSimple,
     Fvcom,
 }
@@ -300,6 +302,12 @@ pub struct HfieldRefinementRecipe {
     pub max_level: u8,
     #[serde(default)]
     pub base_m: Option<f64>,
+    /// Optional HField raster dimensions. When omitted, lowering chooses a
+    /// bounded raster from the finest requested cell size.
+    #[serde(default)]
+    pub nlon: Option<usize>,
+    #[serde(default)]
+    pub nlat: Option<usize>,
     /// Geographic origin used to sample lon/lat threshold rasters from a
     /// native Cartesian-XY mesh. Both values must be set together.
     #[serde(default)]
@@ -315,6 +323,8 @@ impl Default for HfieldRefinementRecipe {
             g: default_hfield_g(),
             max_level: 0,
             base_m: None,
+            nlon: None,
+            nlat: None,
             origin_lon: None,
             origin_lat: None,
         }

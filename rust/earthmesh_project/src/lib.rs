@@ -32,10 +32,11 @@ pub use capability_registry::{
     project_domain_classes, project_source_profiles, project_specified_sources,
     project_target_triples, threshold_topology_source_atom, ProjectCapability,
     ProjectCapabilityEntry, ProjectCapabilityKey, ProjectCloseBoundaryMode, ProjectContractId,
-    ProjectCoordinateMode, ProjectDomainClass, ProjectParameterizedTestId, ProjectRejectionReason,
-    ProjectSourceAtom, ProjectSourceProfile, ProjectSpecifiedSource, ProjectTargetTriple,
-    ProjectValidationTestId, PROJECT_DOMAIN_CLASS_COUNT, PROJECT_RAW_CAPABILITY_KEY_COUNT,
-    PROJECT_SOURCE_PROFILE_COUNT, PROJECT_TARGET_TRIPLE_COUNT, PROJECT_THRESHOLD_FIELDS,
+    ProjectCoordinateMode, ProjectDomainClass, ProjectOutputDelivery, ProjectParameterizedTestId,
+    ProjectRejectionReason, ProjectSourceAtom, ProjectSourceProfile, ProjectSpecifiedSource,
+    ProjectTargetTriple, ProjectValidationTestId, PROJECT_DOMAIN_CLASS_COUNT,
+    PROJECT_RAW_CAPABILITY_KEY_COUNT, PROJECT_SOURCE_PROFILE_COUNT, PROJECT_TARGET_TRIPLE_COUNT,
+    PROJECT_THRESHOLD_FIELDS,
 };
 mod criteria;
 pub use criteria::{
@@ -64,7 +65,7 @@ pub use geometry_ir::{
 mod hydro_plan;
 pub use hydro_plan::{project_hydro_output_dir, HydroExecutionPlan};
 mod lowering;
-pub use lowering::LoweredProject;
+pub use lowering::{recommended_hfield_raster_dimensions, LoweredProject};
 mod presets;
 pub use presets::{PresetDefaults, DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID};
 mod stage_cache;

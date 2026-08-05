@@ -33,6 +33,17 @@ complete Cargo dependency graph. Shared physical constants live in
 - `ProjectConfig::try_lower` is the shared Project-to-engine lowering contract.
 - `mkgrd.x --project` owns production CLI orchestration, including the project
   quality policy and reproducibility manifest.
+- Physical target, cell topology, and model format are independent Project
+  choices. Every valid combination produces the canonical EarthMesh gridfile.
+  CoLM has specialized Tri and Hex delivery; FVCOM and ICON specialization require Tri;
+  MPAS, MPAS-Ocean, and MPAS-Simple specialization require Hex. Other combinations complete
+  as `grid_only` and record why the specialized adapter was skipped. Full MPAS
+  delivery supports both closed and bounded/masked Hex topology; boundary edges
+  use the regional connectivity path and MPAS-compatible one-sided metrics and
+  reconstruction weights. MPAS-Ocean writes the same topology with the official
+  physical sphere radius and metre/m² metrics.
+  ICON delivery writes the triangular C-grid topology, metre/m² metrics, regional
+  refinement-control ranges, and ICON's 1-based/`-1` connectivity convention.
 - EarthMesh Studio uses the same project schema and lowering. It still stages
   GUI-created regional mask files and its run directory before launching the
   engine; it must not override lowering defaults or quality thresholds.

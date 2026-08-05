@@ -1,8 +1,43 @@
 use std::time::Instant;
 
+use crate::method_c_perimeter_repair::method_c_parent_support_error;
+
 use super::*;
 
 impl MethodCDelaunayMesh {
+    fn method_c_parent_support_for_mask(
+        &self,
+        selected: &[bool],
+        perimeter: &[MethodCPerimeterPoint],
+    ) -> io::Result<BTreeSet<usize>> {
+        self.required_parent_support_lineages_from_selected_and_perimeter(selected, perimeter)?
+            .into_iter()
+            .map(|lineage| {
+                usize::try_from(lineage).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Method-C parent support lineage {lineage} is negative"),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn method_c_parent_support_for_current_mask(
+        &self,
+        selected: &[bool],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> io::Result<BTreeSet<usize>> {
+        let Ok(perimeters) = self.method_c_perimeters_from_selected_faces(selected, m_neighbors)
+        else {
+            return Ok(BTreeSet::new());
+        };
+        self.method_c_parent_support_for_mask(
+            selected,
+            &perimeters.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    }
+
     pub(crate) fn method_c_parent_u_dependency_faces(
         &self,
         parent_u: usize,
@@ -97,6 +132,12 @@ impl MethodCDelaunayMesh {
             self.method_c_perimeters_from_selected_faces(selected, method_c_m_neighbors)?;
         if !Self::method_c_perimeters_are_triplets(&perimeters) {
             let perimeter_lengths = perimeters.iter().map(Vec::len).collect::<Vec<_>>();
+            self.dump_method_c_unrepaired_mask(
+                "no-repair-attempted",
+                selected,
+                &perimeter_lengths,
+                child_level,
+            );
             return Err(method_c_repairable_perimeter_error(
                 MethodCRepairableKind::NonTripletPerimeter,
                 perimeter_lengths.clone(),
@@ -253,6 +294,7 @@ impl MethodCDelaunayMesh {
         }
 
         let mut selected = selected_faces.to_vec();
+        let cross_level_support = std::env::var_os("EARTHMESH_M0_CROSS_LEVEL_SUPPORT").is_some();
         let method_c_m_neighbors = self.method_c_m_neighbors()?;
         // Keep this pass clear of anything an earlier pass conceded. A conceded
         // region stays a generation behind for good, so a transition band that
@@ -273,15 +315,11 @@ impl MethodCDelaunayMesh {
         let mut attempted_masks = std::collections::HashSet::new();
         let detailed_trace = std::env::var("EARTHMESH_M0_REPAIR_TRACE")
             .is_ok_and(|value| matches!(value.as_str(), "1" | "on" | "true"));
-        let max_repair_attempts = if detailed_trace {
+        let max_repair_attempts = method_c_repair_attempt_limit(
             std::env::var("EARTHMESH_M0_REPAIR_MAX_ATTEMPTS")
                 .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .filter(|&value| (1..=64).contains(&value))
-                .unwrap_or(64)
-        } else {
-            64
-        };
+                .as_deref(),
+        );
         let report = |phase, done, total| {
             if earthmesh_core::progress::report(phase, done, total) {
                 Ok(())
@@ -327,11 +365,28 @@ impl MethodCDelaunayMesh {
                 max_repair_attempts,
             )?;
             let stage_started = start_stage();
-            let perimeter = self.repair_method_c_non_triplet_perimeter(
+            let perimeter = match self.repair_method_c_non_triplet_perimeter_tracking_support(
                 &mut selected,
                 &method_c_m_neighbors,
                 child_level,
-            )?;
+                Some((max_mrows, project_to_radius)),
+            ) {
+                Ok(perimeter) => perimeter,
+                Err(error) => {
+                    let can_request_support = method_c_repairable_payload(&error)
+                        .is_some_and(|payload| payload.kind != MethodCRepairableKind::Valence);
+                    if cross_level_support && can_request_support {
+                        let support = self.method_c_parent_support_for_current_mask(
+                            &selected,
+                            &method_c_m_neighbors,
+                        )?;
+                        if !support.is_empty() {
+                            return Err(method_c_parent_support_error(support));
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             report_stage("non-triplet", attempt, stage_started);
             trace(
                 "method_c-mask-repair-non-triplet-end",
@@ -342,6 +397,32 @@ impl MethodCDelaunayMesh {
                 coverage.validate(&selected)?;
             }
             if !attempted_masks.insert(selected.clone()) {
+                if cross_level_support
+                    && last_repairable_error.as_ref().is_some_and(|error| {
+                        method_c_repairable_payload(error)
+                            .is_some_and(|payload| payload.kind != MethodCRepairableKind::Valence)
+                    })
+                {
+                    let support = self.method_c_parent_support_for_mask(&selected, &perimeter)?;
+                    if !support.is_empty() {
+                        return Err(method_c_parent_support_error(support));
+                    }
+                }
+                if let Some(error) = last_repairable_error.as_ref() {
+                    if let Some(im) = Self::method_c_valence_error_parent_m_point(error) {
+                        if let Some((repaired, _)) = self.try_fill_method_c_specific_m_point(
+                            &selected,
+                            &method_c_m_neighbors,
+                            child_level,
+                            im,
+                        )? {
+                            if !attempted_masks.contains(&repaired) {
+                                selected = repaired;
+                                continue;
+                            }
+                        }
+                    }
+                }
                 return Err(last_repairable_error.unwrap_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -419,6 +500,17 @@ impl MethodCDelaunayMesh {
                     return Ok(mesh);
                 }
                 Err(error) if Self::is_repairable_method_c_transition_error(&error) => {
+                    if cross_level_support
+                        && method_c_repairable_payload(&error).is_some_and(|payload| {
+                            payload.kind == MethodCRepairableKind::TransitionPatch
+                        })
+                    {
+                        let support =
+                            self.method_c_parent_support_for_mask(&selected, &perimeter)?;
+                        if !support.is_empty() {
+                            return Err(method_c_parent_support_error(support));
+                        }
+                    }
                     let dependency_faces = detailed_trace.then(|| {
                         self.method_c_repair_witness_dependency_faces(&error, &method_c_m_neighbors)
                     });
@@ -499,8 +591,10 @@ impl MethodCDelaunayMesh {
                             );
                         }
                     }
-                    let valence_m = Self::method_c_valence_error_m_point(&error);
-                    let mut repaired = if valence_m.is_some() {
+                    let is_valence = method_c_repairable_payload(&error)
+                        .is_some_and(|payload| payload.kind == MethodCRepairableKind::Valence);
+                    let valence_m = Self::method_c_valence_error_parent_m_point(&error);
+                    let mut repaired = if is_valence {
                         trace(
                             "method_c-mask-repair-shrink-start",
                             attempt + 1,
@@ -589,6 +683,7 @@ impl MethodCDelaunayMesh {
                             child_level,
                             Some(&perimeter),
                             coverage,
+                            Some((max_mrows, project_to_radius)),
                         )?;
                         report_stage("grow", attempt, stage_started);
                         trace(
@@ -612,6 +707,18 @@ impl MethodCDelaunayMesh {
             }
         }
 
+        if cross_level_support
+            && last_repairable_error.as_ref().is_some_and(|error| {
+                method_c_repairable_payload(error)
+                    .is_some_and(|payload| payload.kind != MethodCRepairableKind::Valence)
+            })
+        {
+            let support =
+                self.method_c_parent_support_for_current_mask(&selected, &method_c_m_neighbors)?;
+            if !support.is_empty() {
+                return Err(method_c_parent_support_error(support));
+            }
+        }
         Err(last_repairable_error.unwrap_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -667,5 +774,55 @@ impl MethodCDelaunayMesh {
             max_mrows,
             project_to_radius,
         )
+    }
+}
+
+/// How many outer repair rounds one pass may run.
+///
+/// A request may only lower the ceiling, never raise it, so shortening the
+/// search stays a diagnostic choice and no setting can buy a pass more attempts
+/// than production allows. Anything unparseable or out of range keeps the
+/// ceiling. This used to be read only when `EARTHMESH_M0_REPAIR_TRACE` was on,
+/// which left the documented knob silently inert on every ordinary run.
+fn method_c_repair_attempt_limit(requested: Option<&str>) -> usize {
+    requested
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=METHOD_C_REPAIR_ATTEMPT_CEILING).contains(value))
+        .unwrap_or(METHOD_C_REPAIR_ATTEMPT_CEILING)
+}
+
+const METHOD_C_REPAIR_ATTEMPT_CEILING: usize = 64;
+
+#[cfg(test)]
+mod repair_attempt_limit_tests {
+    use super::{method_c_repair_attempt_limit, METHOD_C_REPAIR_ATTEMPT_CEILING};
+
+    #[test]
+    fn repair_attempt_limit_defaults_to_the_ceiling() {
+        assert_eq!(
+            method_c_repair_attempt_limit(None),
+            METHOD_C_REPAIR_ATTEMPT_CEILING
+        );
+    }
+
+    #[test]
+    fn repair_attempt_limit_honours_a_lower_request() {
+        assert_eq!(method_c_repair_attempt_limit(Some("1")), 1);
+    }
+
+    #[test]
+    fn repair_attempt_limit_rejects_a_request_above_the_ceiling() {
+        assert_eq!(
+            method_c_repair_attempt_limit(Some("65")),
+            METHOD_C_REPAIR_ATTEMPT_CEILING
+        );
+    }
+
+    #[test]
+    fn repair_attempt_limit_rejects_an_unparseable_request() {
+        assert_eq!(
+            method_c_repair_attempt_limit(Some("many")),
+            METHOD_C_REPAIR_ATTEMPT_CEILING
+        );
     }
 }

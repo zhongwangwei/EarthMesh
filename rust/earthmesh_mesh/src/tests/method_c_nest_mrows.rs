@@ -84,7 +84,8 @@ fn method_c_perim_mrow_rejects_crossing_existing_border_like_canonical() {
         .apply_method_c_perimeter_mrows(2, MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE)
         .expect_err("Canonical perim_mrow rejects crossing or too-close nested boundaries");
     assert!(
-        err.to_string().contains("crosses the parent boundary"),
+        method_c_parent_support_request(&err).is_none()
+            && err.to_string().contains("crosses the parent boundary"),
         "unexpected perim_mrow error: {err}"
     );
 }

@@ -90,7 +90,7 @@ pub fn gridfile_mesh_from_one_based_state(
         let explicit_npoly = tabs.w[iw].npoly;
         let count = if iw == 1 {
             1
-        } else if explicit_npoly > 0 {
+        } else if tabs.w[iw].iwp == iw as i32 || explicit_npoly != 0 {
             let count = usize::try_from(explicit_npoly).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,

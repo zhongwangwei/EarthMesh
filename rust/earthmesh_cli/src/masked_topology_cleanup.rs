@@ -10,6 +10,8 @@ use crate::MaskPostprocLayout;
 pub enum ComponentRetentionPolicy {
     /// Retain every edge-connected component with at least two cells.
     KeepAllNonSingletons,
+    /// Retain only the largest edge-connected component.
+    KeepLargest,
     /// Retain only the component(s) containing an explicit seed.
     KeepSeedConnected,
     /// Retain components whose summed cell area reaches the configured floor.
@@ -163,6 +165,15 @@ pub fn cleanup_masked_topology_one_based(
     }
 
     let components = active_components(&active, &adjacency);
+    let largest_component_index = components
+        .iter()
+        .enumerate()
+        .max_by(|(left_index, left), (right_index, right)| {
+            left.len()
+                .cmp(&right.len())
+                .then_with(|| right_index.cmp(left_index))
+        })
+        .map(|(index, _)| index);
     let mut keep_component = vec![false; components.len()];
     for (component_index, component) in components.iter().enumerate() {
         let has_hard_demand = component
@@ -170,6 +181,9 @@ pub fn cleanup_masked_topology_one_based(
             .any(|&center_id| input.hard_demand[center_id]);
         let policy_keeps = match input.retention {
             ComponentRetentionPolicy::KeepAllNonSingletons => component.len() >= 2,
+            ComponentRetentionPolicy::KeepLargest => {
+                largest_component_index == Some(component_index)
+            }
             ComponentRetentionPolicy::KeepSeedConnected => {
                 component.iter().any(|&center_id| input.seeds[center_id])
             }
@@ -731,6 +745,28 @@ mod tests {
         .unwrap();
         assert_eq!(report.active[2..], [1, 1, 1, -1, -1]);
         assert_eq!(report.removed_cells, vec![5, 6]);
+    }
+
+    #[test]
+    fn largest_policy_drops_smaller_components() {
+        let mut layout = chain_layout(5);
+        layout.center_neighbors[5] = vec![30, 31, 32];
+        layout.center_neighbors[6] = vec![31, 32, 33];
+        let allowed = [0, 0, 1, 1, 1, 1, 1];
+        let report = cleanup_masked_topology_one_based(input(
+            &layout,
+            &allowed,
+            &allowed,
+            &[false; 7],
+            ComponentRetentionPolicy::KeepLargest,
+            &[false; 7],
+            &[],
+            0.0,
+        ))
+        .unwrap();
+
+        assert_eq!(report.active[2..], [1, 1, 1, -1, -1]);
+        assert_eq!(report.retained_component_count, 1);
     }
 
     #[test]
