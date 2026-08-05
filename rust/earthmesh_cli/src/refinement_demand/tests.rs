@@ -197,10 +197,21 @@ fn an_unusable_radius_is_rejected() {
 }
 
 #[test]
-fn the_materializable_floor_stays_four_tenths_of_a_base_cell() {
-    // Measured against spawn_nest, not derived from the ring count; see the
-    // note on materializable_radius_meters.
-    assert!((materializable_radius_meters(381_000.0) - 152_400.0).abs() < 1.0);
+fn the_materializable_floor_clears_half_the_seed_spacing() {
+    // Seeds sit three base cells apart on the stride-3 lattice, and selection
+    // only steps to a neighbouring seed that is itself inside a circle. So a
+    // radius has to cover the gap for a chain of circles to refine a band
+    // rather than a speck -- measured at 2.5 base cells over twelve positions
+    // at three resolutions; see the note on materializable_radius_meters.
+    let base = 381_000.0;
+    assert!((materializable_radius_meters(base) - 2.5 * base).abs() < 1.0);
+    // Two circles blocked at half a radius must together span the seed spacing,
+    // which is what makes the chain continuous rather than a row of specks.
+    let radius = materializable_radius_meters(base);
+    assert!(
+        radius + radius / 2.0 > 3.0 * base,
+        "a circle and its neighbour must reach the next seed"
+    );
 }
 
 #[test]

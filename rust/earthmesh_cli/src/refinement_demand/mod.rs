@@ -274,17 +274,40 @@ impl RefinementDemand {
     }
 }
 
-/// Smallest circle radius that can host a rad3 footprint on a mesh whose base
-/// cells are `base_cell_meters` across.
+/// Smallest circle radius at which a chain of circles refines a continuous band.
 ///
-/// rad3 marks three rings around a seed, so the circle has to admit a seed with
-/// room to spread. Measured against `spawn_nest` on real coastal demand: at
-/// NXP 21 (base cells ~381 km) a 150 km radius refines, which is 0.4 base cells.
-/// This keeps that ratio rather than deriving it from the ring count, because
-/// the selection marks faces by centre containment and then grows the footprint
-/// outward — the circle does not have to contain the whole footprint itself.
+/// The earlier value, 0.4 base cells, answered a different question: whether a
+/// *single* circle can seed. It can -- measured at 100% over a sweep of
+/// positions. But selection expands along a stride-3 lattice, and it only steps
+/// to a neighbouring seed if that seed is *also* inside some circle. Seeds sit
+/// three base cells apart, so a circle 0.8 base cells across cannot reach the
+/// next one however many circles are laid beside it: a chain refines one seed's
+/// footprint and stops. Measured on a real global coastal case, 114566 circles
+/// grew the mesh by 144 faces -- one seed's worth.
+///
+/// 2.5 comes from a sweep of twelve positions at NXP 21, 81 and 162, laying a
+/// chain along ten base cells and asking whether the band comes out continuous:
+///
+/// | k | NXP 21 | NXP 81 | NXP 162 |
+/// |---|---|---|---|
+/// | 1.5 | 3/12 | 5/12 | 2/12 |
+/// | 2.0 | 9/12 | 7/12 | 7/12 |
+/// | 2.2 | 11/12 | — | 11/12 |
+/// | 2.5 | 12/12 | 12/12 | 11/12 |
+/// | 3.0 | 11/12 | 12/12 | 12/12 |
+///
+/// The threshold does not move with resolution, which is what marks it as a
+/// property of the lattice rather than of a particular grid. And as with
+/// [`ladder::MEASURED_PARENT_HALO_ROWS`], the admissible set is not upward
+/// closed -- NXP 21 loses a position going from 2.5 to 3.0 -- so a larger value
+/// is not safe by being larger, and only the sweep settles it.
+///
+/// What this costs is honesty about granularity: refinement cannot be finer
+/// than the lattice it is laid on, so demand narrower than a few base cells is
+/// served by a band that wide. The previous value hid that by producing
+/// disconnected specks instead.
 pub fn materializable_radius_meters(base_cell_meters: f64) -> f64 {
-    0.4 * base_cell_meters
+    2.5 * base_cell_meters
 }
 
 /// Cover demand with a chain of circles at `level`.
