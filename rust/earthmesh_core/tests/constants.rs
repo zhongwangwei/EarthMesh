@@ -187,14 +187,44 @@ fn earthmesh_config_rejects_invalid_read_nl_gridnum_perdegree() {
 }
 
 #[test]
-fn earthmesh_config_rejects_invalid_read_nl_mesh_output_combo() {
-    let err = EarthmeshConfig::from_mkgrd_namelist(
-        "&mkgrd\n NL%mesh_type = 'landmesh'\n NL%output_format = 'MPAS'\n/\n",
+fn every_model_stays_selectable_and_only_unknown_names_are_refused() {
+    // The canonical EarthMesh gridfile is written whatever the pairing, and a
+    // combination with no adapter simply delivers no model-specific file.
+    // Refusing the pairing here made a user commit to a mesh type before
+    // knowing which model would consume it, and produced nothing when they
+    // guessed wrong.
+    EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n NL%mesh_type = 'landmesh'\n NL%output_format = 'MPAS'\n NL%gridnum_perdegree = 120\n/\n",
     )
-    .expect_err("landmesh should only allow CoLM output like read_nl");
+    .expect("an adapterless pairing still parses");
 
-    assert!(err.contains("landmesh"));
-    assert!(err.contains("CoLM"));
+    // Names that no adapter could ever mean are still refused, because those
+    // are typos rather than choices.
+    let err = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n NL%mesh_type = 'landmesh'\n NL%output_format = 'NotAModel'\n/\n",
+    )
+    .expect_err("an unknown output_format is a typo, not a choice");
+    assert!(err.contains("NotAModel"), "{err}");
+
+    let err = EarthmeshConfig::from_mkgrd_namelist(
+        "&mkgrd\n NL%mesh_type = 'notamesh'\n NL%output_format = 'CoLM'\n/\n",
+    )
+    .expect_err("an unknown mesh_type is a typo, not a choice");
+    assert!(err.contains("notamesh"), "{err}");
+}
+
+#[test]
+fn the_new_output_formats_are_accepted() {
+    for (mesh_type, output_format) in [
+        ("oceanmesh", "MPAS-Ocean"),
+        ("atmosmesh", "ICON"),
+        ("atmos", "ICON"),
+    ] {
+        EarthmeshConfig::from_mkgrd_namelist(&format!(
+            "&mkgrd\n NL%mesh_type = '{mesh_type}'\n NL%output_format = '{output_format}'\n NL%gridnum_perdegree = 120\n/\n"
+        ))
+        .unwrap_or_else(|error| panic!("{mesh_type} + {output_format}: {error}"));
+    }
 }
 
 #[test]

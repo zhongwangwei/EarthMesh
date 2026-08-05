@@ -190,7 +190,9 @@ pub enum ResolutionSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModelFormat {
     CoLM,
+    Icon,
     Mpas,
+    MpasOcean,
     MpasSimple,
     Fvcom,
 }

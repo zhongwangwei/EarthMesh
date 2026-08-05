@@ -11,7 +11,20 @@
 
 pub use earthmesh_core::KM_PER_DEGREE_EQUATOR;
 
+mod capability_registry;
 mod schema;
+pub use capability_registry::{
+    classify_project_capability, preset_capability_key, project_capability_registry,
+    project_domain_classes, project_source_profiles, project_specified_sources,
+    project_target_triples, threshold_topology_source_atom, ProjectCapability,
+    ProjectCapabilityEntry, ProjectCapabilityKey, ProjectCloseBoundaryMode, ProjectContractId,
+    ProjectCoordinateMode, ProjectDomainClass, ProjectOutputDelivery, ProjectParameterizedTestId,
+    ProjectRejectionReason, ProjectSourceAtom, ProjectSourceProfile, ProjectSpecifiedSource,
+    ProjectTargetTriple, ProjectValidationTestId, PROJECT_DOMAIN_CLASS_COUNT,
+    PROJECT_RAW_CAPABILITY_KEY_COUNT, PROJECT_SOURCE_PROFILE_COUNT, PROJECT_TARGET_TRIPLE_COUNT,
+    PROJECT_THRESHOLD_FIELDS,
+};
+
 pub use schema::{
     auto_refine_level_cap, default_mask_sea_ratio, degree_to_nxp, effective_auto_refine_pass,
     km_to_nxp, next_auto_refine_pass, nxp_to_km, AdaptiveRefinementRecipe, CloseMaskFormat,

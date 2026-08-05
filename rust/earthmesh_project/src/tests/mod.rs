@@ -514,22 +514,43 @@ fn enabled_refinement_rejects_zero_expert_level_overrides() {
 }
 
 #[test]
-fn project_validation_rejects_engine_incompatible_target_format() {
+fn every_target_and_model_pairing_is_accepted_and_says_what_it_delivers() {
+    // The canonical EarthMesh gridfile is written whatever the pairing, so a
+    // combination with no adapter is a delivery fact, not a configuration
+    // error. Refusing it made a user commit to a model before they knew which
+    // one would consume the mesh, and produced nothing when they guessed wrong.
     let mut p = sample();
-    p.target.kind = MeshDomainKind::Atmosphere;
-    p.target.model_format = ModelFormat::CoLM;
-    let err = yaml_err(&p);
-    assert!(err.contains("atmosphere target model_format must be MPAS or MPAS-Simple"));
+    for (kind, model_format) in [
+        (MeshDomainKind::Atmosphere, ModelFormat::CoLM),
+        (MeshDomainKind::Ocean, ModelFormat::CoLM),
+        (MeshDomainKind::Coupled, ModelFormat::Fvcom),
+        (MeshDomainKind::Land, ModelFormat::Icon),
+        (MeshDomainKind::Ocean, ModelFormat::MpasOcean),
+    ] {
+        p.target.kind = kind;
+        p.target.model_format = model_format;
+        yaml_round_trip(&p);
+    }
 
-    p.target.kind = MeshDomainKind::Ocean;
-    p.target.model_format = ModelFormat::CoLM;
-    let err = yaml_err(&p);
-    assert!(err.contains("ocean target model_format must be FVCOM"));
+    // What a pairing costs is stated instead of refused. Cell shape is what
+    // decides: the MPAS adapters need hexagons, ICON and FVCOM need triangles.
+    p.target.cell = MeshCellKind::Hex;
+    p.target.model_format = ModelFormat::Icon;
+    let triple = ProjectTargetTriple::from(&p.target);
+    assert_eq!(triple.output_delivery(), ProjectOutputDelivery::GridOnly);
+    assert!(
+        triple
+            .skipped_adapter_reason()
+            .is_some_and(|reason| reason.contains("triangular")),
+        "{:?}",
+        triple.skipped_adapter_reason()
+    );
 
-    p.target.kind = MeshDomainKind::Coupled;
-    p.target.model_format = ModelFormat::Fvcom;
-    let err = json_err(&p);
-    assert!(err.contains("coupled target model_format must be CoLM"));
+    p.target.cell = MeshCellKind::Tri;
+    p.target.model_format = ModelFormat::Icon;
+    let triple = ProjectTargetTriple::from(&p.target);
+    assert_eq!(triple.output_delivery(), ProjectOutputDelivery::Full);
+    assert_eq!(triple.skipped_adapter_reason(), None);
 }
 
 #[test]

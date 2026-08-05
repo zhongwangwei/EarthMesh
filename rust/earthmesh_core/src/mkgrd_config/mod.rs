@@ -270,39 +270,32 @@ impl EarthmeshConfig {
             }
         }
 
-        match (self.mesh_type.as_str(), self.output_format.as_str()) {
-            ("landmesh", "CoLM")
-            | ("earthmesh", "CoLM")
-            | ("oceanmesh", "FVCOM")
-            | ("atmos", "MPAS")
-            | ("atmos", "MPAS-Simple")
-            | ("atmosmesh", "MPAS")
-            | ("atmosmesh", "MPAS-Simple")
-            | ("LOCmesh", "CoLM") => Ok(()),
-            ("landmesh", _) => Err(format!(
-                "landmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
-                self.output_format
-            )),
-            ("earthmesh", _) => Err(format!(
-                "earthmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
-                self.output_format
-            )),
-            ("oceanmesh", _) => Err(format!(
-                "oceanmesh output_format must be FVCOM like mkgrd.F90:read_nl, got {}",
-                self.output_format
-            )),
-            ("atmos" | "atmosmesh", _) => Err(format!(
-                "atmos/atmosmesh output_format must be MPAS or MPAS-Simple like mkgrd.F90:read_nl, got {}",
-                self.output_format
-            )),
-            ("LOCmesh", _) => Err(format!(
-                "LOCmesh output_format must be CoLM like mkgrd.F90:read_nl, got {}",
-                self.output_format
-            )),
-            (mesh_type, _) => Err(format!(
-                "unsupported mesh_type {mesh_type} like mkgrd.F90:read_nl"
-            )),
+        // Every model stays selectable and the canonical EarthMesh gridfile is
+        // always written; a combination with no adapter delivers the gridfile
+        // and no model-specific file. Refusing the pairing outright made a user
+        // commit to a mesh type before knowing which model would consume it,
+        // and produced nothing at all when they guessed wrong.
+        if !matches!(
+            self.mesh_type.as_str(),
+            "landmesh" | "earthmesh" | "oceanmesh" | "atmos" | "atmosmesh" | "LOCmesh"
+        ) {
+            return Err(format!(
+                "unsupported mesh_type {} like mkgrd.F90:read_nl",
+                self.mesh_type
+            ));
         }
+
+        if !matches!(
+            self.output_format.as_str(),
+            "CoLM" | "FVCOM" | "ICON" | "MPAS" | "MPAS-Ocean" | "MPAS-Simple"
+        ) {
+            return Err(format!(
+                "unsupported output_format {}; expected CoLM, FVCOM, ICON, MPAS, MPAS-Ocean, or MPAS-Simple",
+                self.output_format
+            ));
+        }
+
+        Ok(())
     }
 }
 
