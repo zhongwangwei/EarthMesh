@@ -308,6 +308,14 @@ pub fn run_refine_pipeline_namelist(
     // Captured out of the h-field branch so every arm of this chain keeps the
     // same tuple shape; stays at its default for the geometric region paths.
     let mut hfield_diagnostics = earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default();
+    // Same shape as `hfield_diagnostics`: assigned inside the branch that owns
+    // it, carried out to the layer that knows where the run's outputs land.
+    let mut adaptive_run: Option<(
+        crate::refinement_demand::nest::AdaptiveNestReport,
+        usize,
+        f64,
+        bool,
+    )> = None;
     let (mesh, spring_nest_passes) = if !is_atmosmesh
         && (native_only_spawn || native_surface_global_expansion)
         && !refine.refine_spc
@@ -449,6 +457,7 @@ pub fn run_refine_pipeline_namelist(
                 pass.faces_after
             );
         }
+        adaptive_run = Some((report.clone(), depth, base_m, adaptive.coastline));
         if report.deepest_level == 0 {
             // A run that asked to refine and refined nothing is the failure that
             // stays quiet: the mesh is valid, passes its quality checks, and is
@@ -686,6 +695,17 @@ pub fn run_refine_pipeline_namelist(
             w_ngr: &w_ngr,
         }),
     )?;
+
+    // Beside the final gridfile, where the quality step can find it: both it and
+    // the saved namelist live in `<case>/result/`.
+    if let Some((report, depth, base_m, coastline)) = &adaptive_run {
+        if let Some(directory) = outputs.output.output.parent() {
+            let path = directory.join(crate::refinement_demand::nest::ADAPTIVE_REFINEMENT_FILE);
+            std::fs::write(&path, report.to_json(*depth, *base_m, *coastline)).map_err(
+                |error| io::Error::new(error.kind(), format!("write {}: {error}", path.display())),
+            )?;
+        }
+    }
 
     let mut runtime_state =
         EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());

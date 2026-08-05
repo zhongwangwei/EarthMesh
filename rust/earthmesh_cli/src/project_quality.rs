@@ -174,6 +174,15 @@ pub fn write_project_quality_report_with_namelist(
             &namelist,
         )
         .map_err(|err| format!("project quality attach h-field diagnostics: {err}"))?;
+        // A run refines one way or the other, so at most one of these attaches.
+        crate::grid_quality_pipeline::attach_adaptive_diagnostics_from_namelist_path(
+            &mut report,
+            &input,
+            &mesh,
+            cell_view,
+            path,
+        )
+        .map_err(|err| format!("project quality attach point+radius diagnostics: {err}"))?;
     }
     earthmesh_quality::io::write_all(&report, out_dir)
         .map_err(|err| format!("project quality write report: {err}"))?;

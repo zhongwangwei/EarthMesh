@@ -377,13 +377,17 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    仍是近似的一点：判据是在**源栅格的等尺度邻域**上求的，不是在细化后网格的真实单元上求的（那需要未移植的 `getref_mean_std`）。所以**尺度对了、位置是网格对齐的方块而非真实单元**。
 
-   **点+半径已是默认路线**（2026-08）。namelist 侧新增 `&adaptive` 组（`adaptive_on` / `adaptive_max_level` / `adaptive_base_m` / `adaptive_coastline`），与 `&hfield` 一样是 opt-in；Project 侧 `refinement.adaptive` 缺省即启用，而 `refinement.hfield` 改为**纯显式**——不再"缺省就发 h 场"。
+   **点+半径已是默认路线**（2026-08）。代码里这条路叫 **adaptive**（`&adaptive` 组、`AdaptiveRefinementRecipe`、`spawn_nest_adaptive`）——**"点+半径"与"adaptive"是同一条路的两个名字**：前者说的是形状（需求归约成圆），后者说的是行为（每层细化前重新求判据）。namelist 侧 `&adaptive`（`adaptive_on` / `adaptive_max_level` / `adaptive_base_m` / `adaptive_coastline`）与 `&hfield` 一样是 opt-in；Project 侧 `refinement.adaptive` 缺省即启用，而 `refinement.hfield` 改为**纯显式**——不再"缺省就发 h 场"。
 
-   | 工程写法 | 实际路线 |
-   |---|---|
-   | 都不写 | 点+半径（`&adaptive`） |
-   | `hfield.enabled: true` | H 场（`&hfield`），自适应自动让位 |
-   | `adaptive.enabled: false` 且不写 hfield | 都不发，退回普通区域路径 |
+   引擎里因此有三条细化路，`refine_pipeline/global_source.rs` 的分支链按此顺序选择：
+
+   | 工程写法 | namelist | 引擎走哪条 | 需求来源 | 层级下发 | 逐轮重算 |
+   |---|---|---|---|---|---|
+   | 都不写 | 发 `&adaptive` | 点+半径 | 显式区域 + 判据 → 圆链 | 逐层 | **有** |
+   | `hfield.enabled: true` | 发 `&hfield` | H 场 | 显式区域 + 判据 → 连续 h 场 | 量化后一次给 | 无 |
+   | `adaptive.enabled: false` 且不写 hfield | 两组都不发 | **直接区域路径** | 只有显式区域，判据不参与 | 一次给全部层级 | 无 |
+
+   第三条不是新东西，是这两条路出现之前 v3 本来就有的默认行为：match 末尾的 `mesh.spawn_nest(&regions, max_level)`（及 `as_atmosmesh` / `cartesian_xy` 变体），`regions` 就是从配置直接读出的 `specified_circle`/bbox/闭合曲线与 `refine_cal` 掩膜文件。
 
    关掉一个后端不会静默换上另一个——禁用就是禁用。GUI 的"细化方案"选择器相应改为三选一（点+半径 / H 场 / discrete），并新增 `set_adaptive_refinement` 命令；摘要里 `hfield_enabled` 现在只在工程真的要求 h 场时为真，否则面板会显示一组运行时并不生效的设置。
 
@@ -402,7 +406,15 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    **粗粒度的深度报告本来就覆盖了这条路**：`realized_max_level` 是在分支之后**从产出的网格量出来的**，所以自适应分支自动继承，`refine_realized_max_level=` 照样打印。深度不足对这条路而言要么已被上面两道网报错，要么是"需求耗尽"这一合法情形（`cli_mkgrd_output/print.rs` 那条 shortfall 警告由 h 场专属条件门控，对自适应不会误报）。
 
-   **仍缺的是逐单元对账**，且刻意没有先把接口摆上。h 场把"每个单元的目标层级 vs 实际层级"写进 `quality_summary.json` 并挂三个 gate，比"最深到了几层"细一档；点+半径没有。缺的一环是把逐层圆链从细化步骤传到质量步骤——质量是独立步骤，从 namelist 和 gridfile 路径出发，拿不到运行时的 `AdaptiveNestReport`。
+   **逐单元对账已接通**（2026-08）。细化步骤把它实际发出的圆写进 `<case>/result/adaptive_refinement.json`——与最终 gridfile、`namelist.save` 同目录，所以质量步骤从 namelist 路径就能找到；质量侧 `grid_quality_inputs/adaptive.rs` 读回后逐单元采样目标层级，交给 `earthmesh_quality::attach_adaptive_diagnostics`。读的是**运行时真正发出的圆**而不是重新规划，所以对不上必定是细化失败、不会是规划差异。
+
+   两处与 h 场不同的地方，都是量出来的：
+
+   **采样取单元中心，不取角点最大值。** h 场那套对角点取 max，适合平滑变化的场；圆有硬边界，角点在圆内而中心在圆外的单元会被系统性高估，而 **Method-C 选面本来就是按中心包含**。实测同一次运行：角点采样报 140/1643 少细化，中心采样报 97。
+
+   **只对"差距超过一层"设 gate。** 圆的硬边界必然造成一批"中心刚进圆、但 Method-C 无法合法细化"的单元。实测那次运行 `max_target_actual_delta = 1`——每一处差距都恰好一层，正是边界效应的形态。`> 0 就告警`会在每次运行都触发，而每次都触发的 gate 没人会看；随手定个百分比阈值又是编造常数。差超过一层用硬边界解释不了，那才是 gate 的判据。计数（`target_above_actual_count` 等）照常写进报告，供跨运行比较和与 h 场对照。
+
+   实测三个 gate 在真实两层海岸运行上全 `pass`；该次运行的 `verdict: fail` 来自既有的 `orphan_cell_count` 与 `aspect_ratio_max`，与这条路无关。
 
    路径关系已实测（`cases/<case>/` 下)：
 

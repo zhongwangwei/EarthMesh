@@ -287,6 +287,49 @@ pub struct HfieldDiagnostics {
     pub actual_level_jump_gt_one_count: usize,
 }
 
+/// What the point+radius route asked for and what the mesh delivered.
+///
+/// The reconciliation is the question the h-field's diagnostics answer — did
+/// every cell reach the level something asked it to — so the counts carry the
+/// same names. `pass_count` and `circle_count` are what only this route has: it
+/// refines one level at a time and can say how much each pass emitted.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdaptiveDiagnostics {
+    pub enabled: bool,
+    pub max_level: Option<u32>,
+    pub base_m: Option<f64>,
+    pub coastline: bool,
+    /// Levels actually refined. Fewer than `max_level` means the loop stopped
+    /// because nothing asked for more, which is a normal outcome.
+    pub pass_count: usize,
+    pub circle_count: usize,
+    pub cell_count: usize,
+    pub target_level_distribution: Vec<LevelCount>,
+    pub actual_refine_level_distribution: Vec<LevelCount>,
+    pub missing_target_level_count: usize,
+    pub extra_target_level_count: usize,
+    pub missing_actual_refine_level_count: usize,
+    pub target_actual_mismatch_count: usize,
+    pub target_above_actual_count: usize,
+    pub actual_above_target_count: usize,
+    pub max_target_actual_delta: u32,
+    pub max_adjacent_target_level_jump: u32,
+    pub target_level_jump_gt_one_count: usize,
+    pub max_adjacent_actual_level_jump: u32,
+    pub actual_level_jump_gt_one_count: usize,
+}
+
+/// How a run configured the point+radius route.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AdaptiveConfigDiagnostics {
+    pub enabled: bool,
+    pub max_level: Option<u32>,
+    pub base_m: Option<f64>,
+    pub coastline: bool,
+    pub pass_count: usize,
+    pub circle_count: usize,
+}
+
 /// A worst-offending cell for the GeoJSON layer.
 #[derive(Clone, Debug)]
 pub struct WorstCell {
@@ -374,6 +417,9 @@ pub struct MeshQualityReport {
     /// Optional h-field target-vs-actual diagnostics, attached by callers that
     /// have sampled target levels for the measured cell view.
     pub hfield: Option<HfieldDiagnostics>,
+    /// Optional point+radius target-vs-actual diagnostics. Only one of this and
+    /// `hfield` is ever set: a run refines one way or the other.
+    pub adaptive: Option<AdaptiveDiagnostics>,
     pub gates: Vec<GateResult>,
     pub worst_cells: Vec<WorstCell>,
     /// Geometry defects that can be repaired by one bounded local refinement
@@ -1329,6 +1375,7 @@ pub fn compute_with_options(
         topology: topo,
         refine_level_groups,
         hfield: None,
+        adaptive: None,
         gates,
         worst_cells,
         repair_cells,
@@ -1456,6 +1503,106 @@ pub fn compute_hfield_diagnostics(
 /// or discontinuous levels. Conforming refinement may legitimately place a
 /// cell one level above its sampled target; that safe over-refinement remains
 /// observable in `actual_above_target_count` but is not a quality violation.
+/// Reconcile what the point+radius route asked for against what it delivered.
+///
+/// Computed through the h-field routine because the question is the same one;
+/// only the configuration and the per-pass counts differ. Keeping one
+/// implementation is what makes the two backends answerable in the same terms.
+pub fn compute_adaptive_diagnostics(
+    input: &QualityMeshInput,
+    target_levels: &[u32],
+    config: AdaptiveConfigDiagnostics,
+) -> AdaptiveDiagnostics {
+    let shared = compute_hfield_diagnostics(
+        input,
+        target_levels,
+        HfieldConfigDiagnostics {
+            enabled: config.enabled,
+            g: None,
+            max_level: config.max_level,
+            base_m: config.base_m,
+        },
+    );
+    AdaptiveDiagnostics {
+        enabled: config.enabled,
+        max_level: config.max_level,
+        base_m: config.base_m,
+        coastline: config.coastline,
+        pass_count: config.pass_count,
+        circle_count: config.circle_count,
+        cell_count: shared.cell_count,
+        target_level_distribution: shared.target_level_distribution,
+        actual_refine_level_distribution: shared.actual_refine_level_distribution,
+        missing_target_level_count: shared.missing_target_level_count,
+        extra_target_level_count: shared.extra_target_level_count,
+        missing_actual_refine_level_count: shared.missing_actual_refine_level_count,
+        target_actual_mismatch_count: shared.target_actual_mismatch_count,
+        target_above_actual_count: shared.target_above_actual_count,
+        actual_above_target_count: shared.actual_above_target_count,
+        max_target_actual_delta: shared.max_target_actual_delta,
+        max_adjacent_target_level_jump: shared.max_adjacent_target_level_jump,
+        target_level_jump_gt_one_count: shared.target_level_jump_gt_one_count,
+        max_adjacent_actual_level_jump: shared.max_adjacent_actual_level_jump,
+        actual_level_jump_gt_one_count: shared.actual_level_jump_gt_one_count,
+    }
+}
+
+/// Attach the point+radius diagnostics and the gate that reads them.
+///
+/// Only one thing is gated, and the reason is measured. A circle has a hard
+/// edge, so cells whose centre sits just inside one and which Method-C cannot
+/// legally refine are a fixed feature of the geometry, not a defect: on a real
+/// two-level coastal run, 97 of 1017 cells asked for the deeper level and came
+/// back one short, and `max_target_actual_delta` was 1 — every shortfall was
+/// exactly one level, which is what a boundary produces. Warning on any
+/// shortfall would warn on every run, and a gate that always fires is a gate
+/// nobody reads.
+///
+/// Falling short by *more* than one level cannot be explained that way, so that
+/// is what fires. The counts are reported either way, for anyone comparing runs
+/// or comparing this route against the h-field.
+pub fn attach_adaptive_diagnostics(
+    report: &mut MeshQualityReport,
+    input: &QualityMeshInput,
+    target_levels: &[u32],
+    config: AdaptiveConfigDiagnostics,
+) {
+    let diagnostics = compute_adaptive_diagnostics(input, target_levels, config);
+    let mut add_gate = |metric: &str, value: usize, detail: &str| {
+        let level = if value > 0 {
+            QualityLevel::Warn
+        } else {
+            QualityLevel::Pass
+        };
+        report.gates.push(GateResult {
+            metric: metric.to_string(),
+            value: value as f64,
+            level,
+            detail: detail.to_string(),
+        });
+        report.verdict = report.verdict.worse(level);
+    };
+    add_gate(
+        "adaptive_target_short_by_more_than_one_level",
+        usize::from(diagnostics.max_target_actual_delta > 1),
+        "a circle asked for a level the mesh missed by more than one, which a \
+         hard circle edge cannot explain",
+    );
+    add_gate(
+        "adaptive_missing_level_count",
+        diagnostics.missing_target_level_count
+            + diagnostics.extra_target_level_count
+            + diagnostics.missing_actual_refine_level_count,
+        "point+radius target/actual level mapping is incomplete",
+    );
+    add_gate(
+        "adaptive_actual_level_jump_gt_one_count",
+        diagnostics.actual_level_jump_gt_one_count,
+        "adjacent actual refinement level jump > 1",
+    );
+    report.adaptive = Some(diagnostics);
+}
+
 pub fn attach_hfield_diagnostics(
     report: &mut MeshQualityReport,
     input: &QualityMeshInput,

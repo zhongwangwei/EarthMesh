@@ -221,3 +221,52 @@ impl AdaptiveNestReport {
         self.passes.iter().map(|pass| pass.circle_count).sum()
     }
 }
+
+/// Name of the file a run leaves beside its gridfile describing what the
+/// point+radius route asked for.
+///
+/// The quality step runs separately, from a namelist and a gridfile path, so it
+/// cannot see the run's [`AdaptiveNestReport`]. Both the final gridfile and the
+/// saved namelist land in `<case>/result/`, so a sibling file there is reachable
+/// from either — measured, not assumed: gridinit writes into `<case>/gridfile/`,
+/// which is a different directory and would not be found.
+pub const ADAPTIVE_REFINEMENT_FILE: &str = "adaptive_refinement.json";
+
+impl AdaptiveNestReport {
+    /// Serialize the circles this run emitted, for the quality step to read.
+    pub fn to_json(&self, max_level: usize, base_meters: f64, coastline: bool) -> String {
+        let passes = self
+            .passes
+            .iter()
+            .map(|pass| {
+                let circles = pass
+                    .regions
+                    .iter()
+                    .filter_map(|region| match region {
+                        MethodCRefinementRegion::Circle {
+                            center,
+                            radius_meters,
+                            ..
+                        } => Some(format!(
+                            "{{\"lon\":{},\"lat\":{},\"radius_m\":{}}}",
+                            center.lon_degrees, center.lat_degrees, radius_meters
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{{\"level\":{},\"cell_meters\":{},\"demanded_cells\":{},\"circles\":[{circles}]}}",
+                    pass.level, pass.cell_meters, pass.demanded_cells
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{{\"enabled\":true,\"max_level\":{max_level},\"base_m\":{base_meters},\
+             \"coastline\":{coastline},\"deepest_level\":{},\
+             \"stopped_on_empty_demand\":{},\"passes\":[{passes}]}}",
+            self.deepest_level, self.stopped_on_empty_demand
+        )
+    }
+}

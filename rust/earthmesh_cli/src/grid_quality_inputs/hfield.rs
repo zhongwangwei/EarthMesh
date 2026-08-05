@@ -191,7 +191,7 @@ pub fn attach_hfield_diagnostics_from_gridfile_namelist(
     attach_hfield_diagnostics_from_namelist(report, input, &mesh, kind, namelist_contents)
 }
 
-fn hfield_target_levels_for_quality_cells(
+pub(super) fn hfield_target_levels_for_quality_cells(
     mesh: &GridfileMeshPoints,
     kind: &str,
     mut level_at: impl FnMut(f64, f64) -> u32,

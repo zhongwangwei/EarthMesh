@@ -97,6 +97,21 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
             println!("mesh_quality_hfield=1");
         }
     }
+    if let Some(path) = &quality_cfg_path {
+        // A run refines one way or the other, so at most one of these attaches.
+        let attached =
+            earthmesh_cli::grid_quality_pipeline::attach_adaptive_diagnostics_from_namelist_path(
+                &mut report,
+                &input,
+                &mesh,
+                kind,
+                path,
+            )
+            .map_err(|e| format!("attach point+radius diagnostics: {e}"))?;
+        if attached {
+            println!("mesh_quality_adaptive=1");
+        }
+    }
     let written = earthmesh_quality::io::write_all(&report, &out_dir)
         .map_err(|e| format!("write quality report to {}: {e}", out_dir.display()))?;
     println!("mesh_quality_kind={kind}");

@@ -6,8 +6,8 @@ use std::io;
 use std::path::Path;
 
 use crate::{
-    GeometryMetrics, HfieldDiagnostics, LevelCount, MeshQualityReport, RefineLevelQualitySummary,
-    Stat5, TopologyMetrics,
+    AdaptiveDiagnostics, GeometryMetrics, HfieldDiagnostics, LevelCount, MeshQualityReport,
+    RefineLevelQualitySummary, Stat5, TopologyMetrics,
 };
 
 fn esc(v: &str) -> String {
@@ -125,6 +125,40 @@ fn hfield_json(h: &HfieldDiagnostics) -> String {
         h.target_level_jump_gt_one_count,
         h.max_adjacent_actual_level_jump,
         h.actual_level_jump_gt_one_count
+    )
+}
+
+fn adaptive_json(a: &AdaptiveDiagnostics) -> String {
+    format!(
+        "{{\"enabled\":{},\"max_level\":{},\"base_m\":{},\"coastline\":{},\
+         \"pass_count\":{},\"circle_count\":{},\"cell_count\":{},\
+         \"target_level_distribution\":{},\"actual_refine_level_distribution\":{},\
+         \"missing_target_level_count\":{},\"extra_target_level_count\":{},\
+         \"missing_actual_refine_level_count\":{},\"target_actual_mismatch_count\":{},\
+         \"target_above_actual_count\":{},\"actual_above_target_count\":{},\
+         \"max_target_actual_delta\":{},\"max_adjacent_target_level_jump\":{},\
+         \"target_level_jump_gt_one_count\":{},\"max_adjacent_actual_level_jump\":{},\
+         \"actual_level_jump_gt_one_count\":{}}}",
+        if a.enabled { "true" } else { "false" },
+        opt_u32_json(a.max_level),
+        opt_f64_json(a.base_m),
+        if a.coastline { "true" } else { "false" },
+        a.pass_count,
+        a.circle_count,
+        a.cell_count,
+        level_counts_json(&a.target_level_distribution),
+        level_counts_json(&a.actual_refine_level_distribution),
+        a.missing_target_level_count,
+        a.extra_target_level_count,
+        a.missing_actual_refine_level_count,
+        a.target_actual_mismatch_count,
+        a.target_above_actual_count,
+        a.actual_above_target_count,
+        a.max_target_actual_delta,
+        a.max_adjacent_target_level_jump,
+        a.target_level_jump_gt_one_count,
+        a.max_adjacent_actual_level_jump,
+        a.actual_level_jump_gt_one_count
     )
 }
 
@@ -360,6 +394,11 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         s.push_str(&format!("  \"hfield\": {},\n", hfield_json(hfield)));
     } else {
         s.push_str("  \"hfield\": null,\n");
+    }
+    if let Some(adaptive) = &r.adaptive {
+        s.push_str(&format!("  \"adaptive\": {},\n", adaptive_json(adaptive)));
+    } else {
+        s.push_str("  \"adaptive\": null,\n");
     }
     s.push_str("  \"gates\": [\n");
     for (i, gate) in r.gates.iter().enumerate() {

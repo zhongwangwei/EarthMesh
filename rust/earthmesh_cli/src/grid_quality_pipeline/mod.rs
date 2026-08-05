@@ -6,6 +6,7 @@ pub use crate::grid_quality_global::{
     global_quality_mesh_from_grid_quality, write_grid_quality_global_netcdf,
 };
 pub use crate::grid_quality_inputs::{
+    attach_adaptive_diagnostics_from_namelist_path,
     attach_hfield_diagnostics_from_gridfile_namelist, attach_hfield_diagnostics_from_namelist,
     quality_input_from_gridfile, quality_input_from_gridfile_hex, read_gridfile_mesh_points,
 };
