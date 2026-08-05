@@ -5,8 +5,8 @@ use earthmesh_project::{
     CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind,
     MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole, RegionShape,
     SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
-    SpecifiedCloseRefinement,
-    ThresholdCriterionConfig, ThresholdField, ViolationPolicy, LANDCOVER_CRITERION_ID,
+    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ViolationPolicy,
+    LANDCOVER_CRITERION_ID,
 };
 use std::path::{Path, PathBuf};
 
@@ -457,13 +457,12 @@ pub(crate) fn set_specified_refinement(
                 "this project refines with a chain of {existing_circle_count} circles, which the single-circle control cannot edit; edit specified_circle in the project file, or switch the refinement source"
             ));
         }
-        cfg.refinement.specified_circle = Some(SpecifiedCircleRefinements::One(
-            SpecifiedCircleRefinement {
+        cfg.refinement.specified_circle =
+            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
                 lon: lon.unwrap_or(0.0),
                 lat: lat.unwrap_or(0.0),
                 radius_km: radius_km.unwrap_or(100.0),
-            },
-        ));
+            }));
     } else if enabled && kind == "close" {
         cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
             path: path.unwrap_or_default(),

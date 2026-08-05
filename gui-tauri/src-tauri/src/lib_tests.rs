@@ -1639,8 +1639,8 @@ fn a_circle_chain_is_visible_in_the_summary() {
     .expect("seed one circle");
     // Grow it into a chain the way a project file or the CLI would.
     let mut cfg = earthmesh_project::ProjectConfig::from_yaml(&yaml).expect("parse");
-    cfg.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::Many(
-        vec![
+    cfg.refinement.specified_circle =
+        Some(earthmesh_project::SpecifiedCircleRefinements::Many(vec![
             earthmesh_project::SpecifiedCircleRefinement {
                 lon: 113.5,
                 lat: 22.0,
@@ -1651,8 +1651,7 @@ fn a_circle_chain_is_visible_in_the_summary() {
                 lat: 22.6,
                 radius_km: 80.0,
             },
-        ],
-    ));
+        ]));
     let chained = cfg.to_yaml().expect("chain yaml");
 
     let summary = project_summary(chained.clone()).expect("summary");
@@ -1802,8 +1801,8 @@ fn point_radius_is_the_default_route_and_the_h_field_is_opt_in() {
     assert!(nml.contains("&hfield"), "{nml}");
     assert!(!nml.contains("&adaptive"), "{nml}");
 
-    let yaml = set_hfield_refinement(with_hfield, false, None, None, None)
-        .expect("discrete hfield off");
+    let yaml =
+        set_hfield_refinement(with_hfield, false, None, None, None).expect("discrete hfield off");
     let summary = project_summary(yaml.clone()).expect("summary");
     assert!(!summary.hfield_enabled);
     let lowered = ProjectConfig::from_yaml(&yaml).expect("yaml").lower();
