@@ -20,16 +20,36 @@ impl MethodCDelaunayMesh {
         m_neighbors: &[IcosahedronMPointNeighbors],
         child_level: usize,
     ) -> io::Result<Vec<MethodCPerimeterPoint>> {
-        const MAX_REPAIR_PASSES: usize = 12;
+        // Twelve passes per offending block, not twelve for the whole mesh. A
+        // global coastal case came out of selection with 27 refined blocks, of
+        // which three had a perimeter one short of a multiple of three; the
+        // budget was spent long before the search reached them.
+        const MAX_REPAIR_PASSES_PER_BLOCK: usize = 12;
 
         let mut last_error = None;
-        for _ in 0..MAX_REPAIR_PASSES {
+        let block_count = self
+            .method_c_perimeters_from_selected_faces(selected, m_neighbors)
+            .map(|perimeters| perimeters.len())
+            .unwrap_or(1)
+            .max(1);
+        let max_passes = MAX_REPAIR_PASSES_PER_BLOCK.saturating_mul(block_count);
+        for _ in 0..max_passes {
+            // Search around the blocks that are not yet a multiple of three.
+            // Handing the grower every perimeter buries the ones that need work:
+            // the scoring is global, so a pass keeps picking candidates near a
+            // block that is already fine.
             let perimeter =
                 match self.method_c_perimeters_from_selected_faces(selected, m_neighbors) {
                     Ok(perimeters) if Self::method_c_perimeters_are_triplets(&perimeters) => {
                         return Ok(perimeters.into_iter().flatten().collect());
                     }
-                    Ok(perimeters) => Some(perimeters.into_iter().flatten().collect::<Vec<_>>()),
+                    Ok(perimeters) => Some(
+                        perimeters
+                            .into_iter()
+                            .filter(|perimeter| !perimeter.len().is_multiple_of(3))
+                            .flatten()
+                            .collect::<Vec<_>>(),
+                    ),
                     Err(error) => {
                         last_error = Some(error);
                         None

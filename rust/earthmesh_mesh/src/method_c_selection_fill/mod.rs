@@ -89,8 +89,22 @@ impl MethodCDelaunayMesh {
             self.nmd + 1,
         )?;
 
+        // The mask holds one generation by contract, and the seed footprint
+        // that built it filters to that generation -- this fill has to as well.
+        // Unfiltered, a concavity next to a block refined earlier in the same
+        // pass pulled that block's finer faces into the mask, and the
+        // shared-parent validation then refused the whole group: measured on a
+        // global run as "crosses (or is too close to) the next coarser grid
+        // boundary", refusing the continental groups that held 98% of the
+        // circles.
+        let mask_mrlw = (2..=self.nwd)
+            .find(|&iw| selected_faces[iw])
+            .map(|iw| self.w_faces[iw].mrlw);
         let mut changed = false;
         for iw in self.method_c_rad3_faces_with_neighbors(im, m_neighbors)? {
+            if mask_mrlw.is_some_and(|mrlw| self.w_faces[iw].mrlw != mrlw) {
+                continue;
+            }
             changed |= !selected_faces[iw];
             selected_faces[iw] = true;
         }
