@@ -135,16 +135,146 @@ pub fn spawn_nest_adaptive_with_named_regions(
             break;
         }
         let faces_before = face_count(&current);
-        current = current.spawn_nest(&regions, level).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "adaptive refinement level {level} with {} circles of radius {:.0} m: {error}",
+        // A single call unions every group's mask and emits once, which is the
+        // cheap path -- but on a global demand field the blocks can sit close
+        // enough that one block's transition patch lands on faces another block
+        // already subdivided, and the whole pass dies for a collision between
+        // two of hundreds of blocks. Refining group by group makes a collision
+        // cost exactly the group that collided, named and counted; the rest of
+        // the level still refines. Serial cost is one emit per group, which the
+        // measured radius floor keeps affordable: it cut the circle count from
+        // 114566 to 8190, so the groups are hundreds, not tens of thousands.
+        let mut groups = earthmesh_mesh::method_c_connected_region_groups(&regions, false);
+        // Largest groups first. Serial refinement makes every earlier block a
+        // wall for later ones: run small islands first and a continental band
+        // arrives to ground already pocked with finer blocks -- its mask gets
+        // carved around each one and shreds into fragments no repair can make
+        // legal. Measured: the ten continental groups, 97% of the circles,
+        // refused in size-ascending order; largest-first gives each big band
+        // virgin ground, and the islands that follow only ever concede a strip
+        // that their big neighbour already refined.
+        groups.sort_by_key(|group| std::cmp::Reverse(group.len()));
+        if groups.len() > 1 {
+            eprintln!(
+                "adaptive refine level {level}: {} circles in {} disjoint groups, refining each \
+                 on its own",
+                regions.len(),
+                groups.len()
+            );
+            let mut refused_groups = 0usize;
+            let mut refused_circles = 0usize;
+            let mut first_reason: Option<String> = None;
+            let report_every = (groups.len() / 20).max(1);
+            for (index, group) in groups.iter().enumerate() {
+                if index > 0 && index.is_multiple_of(report_every) {
+                    eprintln!(
+                        "adaptive refine level {level}: group {index}/{} ({} faces so far)",
+                        groups.len(),
+                        face_count(&current)
+                    );
+                }
+                match current.spawn_nest(group, level) {
+                    Ok(next) => current = next,
+                    Err(error) => {
+                        refused_groups += 1;
+                        refused_circles += group.len();
+                        if first_reason.is_none() {
+                            first_reason = Some(error.to_string());
+                        }
+                        // Leave the refused circles where a diagnosis can pick
+                        // them up: replaying one group locally takes seconds,
+                        // re-running the globe to reach the same failure takes
+                        // forty minutes.
+                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("refused_groups.jsonl")
+                        {
+                            use std::io::Write;
+                            let circles: Vec<String> = group
+                                .iter()
+                                .filter_map(|region| match region {
+                                    MethodCRefinementRegion::Circle {
+                                        center,
+                                        radius_meters,
+                                        ..
+                                    } => Some(format!(
+                                        "{{\"lon\":{},\"lat\":{},\"r\":{}}}",
+                                        center.lon_degrees, center.lat_degrees, radius_meters
+                                    )),
+                                    _ => None,
+                                })
+                                .collect();
+                            let _ = writeln!(
+                                file,
+                                "{{\"level\":{level},\"reason\":{:?},\"circles\":[{}]}}",
+                                error.to_string(),
+                                circles.join(",")
+                            );
+                        }
+                    }
+                }
+            }
+            if refused_groups == groups.len() {
+                let reason = first_reason.unwrap_or_default();
+                if level > 1 {
+                    eprintln!(
+                        "adaptive refine level {level}: stopping at level {} -- every region \
+                         group was refused: {reason}",
+                        level - 1
+                    );
+                    break;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "adaptive refinement level {level}: all {} region groups were refused; \
+                         first: {reason}",
+                        groups.len()
+                    ),
+                ));
+            }
+            if refused_groups > 0 {
+                eprintln!(
+                    "adaptive refine level {level}: {refused_groups} of {} groups refused \
+                     ({refused_circles} of {} circles); first reason: {}",
+                    groups.len(),
+                    regions.len(),
+                    first_reason.unwrap_or_default()
+                );
+            }
+        } else {
+            current = match current.spawn_nest(&regions, level) {
+                Ok(refined) => refined,
+                // A level the geometry cannot carry ends the run at the depth it
+                // reached, rather than throwing away the levels that did work. The
+                // mesh so far is valid and is what the criteria asked for down to
+                // here; the ceiling is the icosahedral frame refusing to bend
+                // further at this place, not a fault in the plan. Level 1 is
+                // different -- nothing was refined at all, and that is a failure.
+                Err(error) if level > 1 => {
+                    eprintln!(
+                    "adaptive refine level {level}: stopping at level {} -- {} circles of radius \
+                     {:.0} m could not be nested: {error}",
+                    level - 1,
                     regions.len(),
                     radii[level - 1]
-                ),
-            )
-        })?;
+                );
+                    break;
+                }
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "adaptive refinement level {level} with {} circles of radius {:.0} m: \
+                         {error}",
+                            regions.len(),
+                            radii[level - 1]
+                        ),
+                    ))
+                }
+            };
+        }
         // A pass that emitted circles and produced no face at its level did not
         // refine anything, and nothing downstream would notice: the mesh is
         // valid, just coarser than the run asked for. Say so here rather than
