@@ -324,6 +324,14 @@ pub fn to_summary_json(r: &MeshQualityReport) -> String {
         t.boundary_edge_count
     ));
     s.push_str(&format!(
+        "    \"boundary_loop_count\": {},\n",
+        t.boundary_loop_count
+    ));
+    s.push_str(&format!(
+        "    \"boundary_vertex_degree_violation_count\": {},\n",
+        t.boundary_vertex_degree_violation_count
+    ));
+    s.push_str(&format!(
         "    \"misoriented_shared_edge_count\": {},\n",
         t.misoriented_shared_edge_count
     ));
@@ -542,6 +550,16 @@ pub fn to_summary_csv(r: &MeshQualityReport) -> String {
             "topology",
             "boundary_edge_count",
             t.boundary_edge_count as f64,
+        ),
+        (
+            "topology",
+            "boundary_loop_count",
+            t.boundary_loop_count as f64,
+        ),
+        (
+            "topology",
+            "boundary_vertex_degree_violation_count",
+            t.boundary_vertex_degree_violation_count as f64,
         ),
         (
             "topology",

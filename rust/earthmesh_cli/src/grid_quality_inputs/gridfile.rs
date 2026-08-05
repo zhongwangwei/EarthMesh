@@ -1,6 +1,7 @@
 use crate::gridfile_m_row_layout;
 use crate::gridfile_w_row_layout;
 use crate::netcdf_to_io_error;
+use crate::required_dimension_len;
 use crate::required_values_f64;
 use crate::required_values_i32;
 use crate::required_values_i32_matrix;
@@ -443,6 +444,39 @@ fn optional_values_i32_exact(
     };
     let values = variable
         .get_values::<i32, _>(..)
+        .map_err(netcdf_to_io_error)?;
+    if values.len() == expected_len {
+        Ok(values)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} length {} must equal {expected_len}", values.len()),
+        ))
+    }
+}
+
+pub fn read_gridfile_cell_lineages(
+    path: impl AsRef<Path>,
+) -> io::Result<crate::MethodCGridfileLineages> {
+    let file = crate::open_netcdf(path.as_ref()).map_err(netcdf_to_io_error)?;
+    let m_rows = required_dimension_len(&file, "sjx_points")?;
+    let w_rows = required_dimension_len(&file, "lbx_points")?;
+    Ok(crate::MethodCGridfileLineages {
+        m: optional_values_i64_exact(&file, "earthmesh_m_lineage", m_rows)?,
+        w: optional_values_i64_exact(&file, "earthmesh_w_lineage", w_rows)?,
+    })
+}
+
+fn optional_values_i64_exact(
+    file: &netcdf::File,
+    name: &str,
+    expected_len: usize,
+) -> io::Result<Vec<i64>> {
+    let Some(variable) = file.variable(name) else {
+        return Ok(Vec::new());
+    };
+    let values = variable
+        .get_values::<i64, _>(..)
         .map_err(netcdf_to_io_error)?;
     if values.len() == expected_len {
         Ok(values)

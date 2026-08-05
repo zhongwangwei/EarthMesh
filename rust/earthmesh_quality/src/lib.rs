@@ -212,6 +212,18 @@ pub struct TopologyMetrics {
     pub dangling_edge_count: usize,
     /// Edges with exactly one incident cell; informational for regional meshes.
     pub boundary_edge_count: usize,
+    /// Closed components in the graph formed by single-incidence edges.
+    ///
+    /// A closed global mesh has none. More than one means the domain has
+    /// several separate rims -- an interior hole, or a piece the carve detached
+    /// -- which the edge count alone cannot distinguish from one long coastline.
+    pub boundary_loop_count: usize,
+    /// Boundary vertices whose single-incidence edge degree is not two.
+    ///
+    /// A rim passes through each of its vertices once, so degree two is the
+    /// only well-formed case. Anything else is a rim that branches or pinches,
+    /// which downstream tools read as a broken boundary.
+    pub boundary_vertex_degree_violation_count: usize,
     /// Shared edges traversed in the same direction by both incident cells.
     pub misoriented_shared_edge_count: usize,
     /// Closed cells whose declared neighbors do not match edge-derived neighbors.
@@ -1227,6 +1239,9 @@ pub fn compute_with_options(
     // non-manifold edges (shared by > 2 cells)
     topo.duplicate_edge_count = edge_cells.values().filter(|c| c.len() > 2).count();
     topo.boundary_edge_count = edge_cells.values().filter(|c| c.len() == 1).count();
+    let boundary = topology::boundary_topology(input);
+    topo.boundary_loop_count = boundary.loops.len();
+    topo.boundary_vertex_degree_violation_count = boundary.invalid_vertex_degrees.len();
     topo.misoriented_shared_edge_count = edge_orientations
         .values()
         .filter(|occ| occ.len() == 2 && occ[0].1 == occ[1].1 && occ[0].2 == occ[1].2)
@@ -1695,6 +1710,13 @@ fn evaluate(
         (
             "abnormal_polygon_edge_count",
             topo.abnormal_polygon_edge_count,
+        ),
+        // A rim passes through each of its vertices once, so any other degree
+        // is a boundary that branches or pinches -- malformed in the same way
+        // the other entries here are, not a matter of degree.
+        (
+            "boundary_vertex_degree_violation_count",
+            topo.boundary_vertex_degree_violation_count,
         ),
         ("self_intersection_count", geom.self_intersection_count),
         ("invalid_polygon_count", geom.invalid_polygon_count),

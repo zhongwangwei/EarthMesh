@@ -52,6 +52,8 @@ fn quality_json_output_has_required_fields() {
         "\"triangle_nsr_local\"",
         "\"duplicate_edge_count\": 0",
         "\"boundary_edge_count\": 6",
+        "\"boundary_loop_count\": 1",
+        "\"boundary_vertex_degree_violation_count\": 0",
         "\"misoriented_shared_edge_count\": 0",
         "\"neighbor_degree_mismatch_count\": 0",
         "\"neighbor_reciprocity_failure_count\": 0",
@@ -685,4 +687,24 @@ fn quality_area_is_dateline_safe_and_spherical() {
     assert!(eq.geometry.cell_area.mean > hi.geometry.cell_area.mean);
     assert!((dl.geometry.cell_area.mean / eq.geometry.cell_area.mean - 2.0).abs() < 0.02);
     assert_eq!(dl.geometry.negative_area_cell_count, 0);
+}
+
+#[test]
+fn two_squares_have_one_rim_and_no_degree_violations() {
+    // Six boundary edges could be one rim or two; only the loop count says
+    // which, and a carve that detaches a piece is exactly the case where the
+    // edge count alone reads as healthy.
+    let report = compute(&two_square_mesh(), &QualityThresholds::default());
+    assert_eq!(report.topology.boundary_edge_count, 6);
+    assert_eq!(report.topology.boundary_loop_count, 1);
+    assert_eq!(report.topology.boundary_vertex_degree_violation_count, 0);
+
+    // And a well-formed rim must not trip the gate.
+    let gate = report
+        .gates
+        .iter()
+        .find(|gate| gate.metric == "boundary_vertex_degree_violation_count")
+        .expect("the boundary degree gate must be reported");
+    assert_eq!(gate.value, 0.0);
+    assert_eq!(gate.level, QualityLevel::Pass);
 }

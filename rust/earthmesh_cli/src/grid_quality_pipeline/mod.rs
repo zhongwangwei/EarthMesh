@@ -8,7 +8,8 @@ pub use crate::grid_quality_global::{
 pub use crate::grid_quality_inputs::{
     attach_adaptive_diagnostics_from_namelist_path,
     attach_hfield_diagnostics_from_gridfile_namelist, attach_hfield_diagnostics_from_namelist,
-    quality_input_from_gridfile, quality_input_from_gridfile_hex, read_gridfile_mesh_points,
+    quality_input_from_gridfile, quality_input_from_gridfile_hex, read_gridfile_cell_lineages,
+    read_gridfile_mesh_points,
 };
 pub use crate::springjustment_gridfile_adapters::{
     run_springjustment_global_from_unstructured_gridfile,

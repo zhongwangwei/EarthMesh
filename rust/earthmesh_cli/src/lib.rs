@@ -31,8 +31,8 @@ pub(crate) use unstructured_mesh_support::{
     validate_unstructured_mesh, GridfileRowLayout,
 };
 use unstructured_mesh_support::{
-    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileMetadataSlices,
-    UnstructuredMesh, UnstructuredMeshWriteReport,
+    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
+    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 pub mod merit_tile_selection;
 use merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
@@ -352,8 +352,12 @@ pub mod mpas_simple_writer;
 use mpas_simple_writer::{
     write_mpas_simple_mesh_netcdf, MpasSimpleMesh, MpasSimpleMeshWriteReport,
 };
+mod icon_writer;
+pub use icon_writer::{write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS};
 mod mpas_full_writer;
-pub use mpas_full_writer::write_mpas_mesh_netcdf;
+pub use mpas_full_writer::{
+    write_mpas_mesh_netcdf, write_mpas_ocean_mesh_netcdf, MPAS_OCEAN_SPHERE_RADIUS_METERS,
+};
 pub mod mpas_unstructured_mesh_builders;
 use mpas_unstructured_mesh_builders::{
     build_mpas_mesh_from_unstructured_one_based, build_mpas_simple_mesh_from_unstructured_one_based,
@@ -385,7 +389,7 @@ mod grid_quality_global;
 mod grid_quality_inputs;
 pub mod grid_quality_pipeline;
 pub(crate) use grid_quality_pipeline::{
-    get_edge_from_unstructured_mesh, read_gridfile_mesh_points,
+    get_edge_from_unstructured_mesh, read_gridfile_cell_lineages, read_gridfile_mesh_points,
 };
 mod springjustment_gridfile_adapters;
 pub mod workspace_apply;
