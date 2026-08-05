@@ -76,13 +76,10 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
                 }
             })
             .collect(),
-        target_compatibility: vec![
-            target_compatibility("land", &["CoLM"]),
-            target_compatibility("earth", &["CoLM"]),
-            target_compatibility("coupled", &["CoLM"]),
-            target_compatibility("ocean", &["FVCOM"]),
-            target_compatibility("atmosphere", &["MPAS", "MPAS-Simple"]),
-        ],
+        // Derived from the capability registry rather than restated here: a
+        // second hand-written list is a second thing to forget when a model or
+        // a writer is added.
+        target_compatibility: model_specialized_cells(),
         default_sea_ratio: default_mask_sea_ratio(),
         default_min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
         method_c_min_base_nxp: METHOD_C_MIN_BASE_NXP,
@@ -97,14 +94,40 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
     })
 }
 
-fn target_compatibility(kind: &str, model_formats: &[&str]) -> TargetCompatibilityInfo {
-    TargetCompatibilityInfo {
-        kind: kind.to_string(),
-        model_formats: model_formats
-            .iter()
-            .map(|format| (*format).to_string())
-            .collect(),
-    }
+/// For each output model, the cell shapes that have a specialized writer.
+fn model_specialized_cells() -> Vec<TargetCompatibilityInfo> {
+    use earthmesh_project::{
+        MeshCellKind, MeshDomainKind, ModelFormat, ProjectOutputDelivery, ProjectTargetTriple,
+    };
+    const MODELS: [ModelFormat; 6] = [
+        ModelFormat::CoLM,
+        ModelFormat::Fvcom,
+        ModelFormat::Icon,
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+    ];
+    MODELS
+        .into_iter()
+        .map(|model_format| TargetCompatibilityInfo {
+            model_format: model_format.engine_str().to_string(),
+            specialized_cells: [MeshCellKind::Tri, MeshCellKind::Hex]
+                .into_iter()
+                .filter(|cell| {
+                    ProjectTargetTriple {
+                        // Delivery depends on cell shape and model only; the
+                        // kind is here because the triple carries one.
+                        kind: MeshDomainKind::Land,
+                        cell: *cell,
+                        model_format,
+                    }
+                    .output_delivery()
+                        == ProjectOutputDelivery::Full
+                })
+                .map(|cell| cell.engine_str().to_string())
+                .collect(),
+        })
+        .collect()
 }
 
 /// Summarize a project YAML for the UI (name, intent, resolution, data layers).
@@ -186,6 +209,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
     // The h-field is opt-in now: absent means the run refines by point+radius,
     // not that the h-field is on with defaults. Showing the defaults as if they
     // were live is how a panel tells the user something the run will not do.
+    let target_triple = earthmesh_project::ProjectTargetTriple::from(&cfg.target);
     let hfield_requested = cfg
         .refinement
         .hfield
@@ -249,6 +273,14 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         cell,
         quality_mode,
         model_format: cfg.target.model_format.engine_str().to_string(),
+        delivery_status: match target_triple.output_delivery() {
+            earthmesh_project::ProjectOutputDelivery::Full => "full",
+            earthmesh_project::ProjectOutputDelivery::GridOnly => "grid_only",
+        }
+        .to_string(),
+        delivery_skipped_reason: target_triple
+            .skipped_adapter_reason()
+            .map(|reason| reason.to_string()),
         domain: domain.to_string(),
         domain_shape: domain_shape.to_string(),
         nxp,

@@ -43,11 +43,16 @@ pub(crate) struct TargetPresetInfo {
     pub(crate) model_format: String,
 }
 
-/// Output formats accepted by the project validator for one target kind.
+/// Which cell shapes one output model has a specialized writer for.
+///
+/// Every model stays selectable whatever the target kind; this says what a
+/// choice delivers. A model with no writer for the chosen cell shape still gets
+/// the canonical EarthMesh gridfile, just no model-specific file, so the panel
+/// can state that instead of the validator refusing the project.
 #[derive(Serialize)]
 pub(crate) struct TargetCompatibilityInfo {
-    pub(crate) kind: String,
-    pub(crate) model_formats: Vec<String>,
+    pub(crate) model_format: String,
+    pub(crate) specialized_cells: Vec<String>,
 }
 
 /// A loaded project: canonical YAML plus the path it came from.
@@ -96,6 +101,13 @@ pub(crate) struct ProjectSummary {
     pub(crate) cell: String,
     pub(crate) quality_mode: String,
     pub(crate) model_format: String,
+    /// What this target and model actually deliver: `full` when a specialized
+    /// writer exists for the chosen cell shape, `grid_only` when only the
+    /// canonical EarthMesh gridfile is written. Every pairing is allowed, so
+    /// this is what tells a user which one they picked.
+    pub(crate) delivery_status: String,
+    /// Why the specialized writer is skipped, when it is.
+    pub(crate) delivery_skipped_reason: Option<String>,
     pub(crate) domain: String,
     pub(crate) domain_shape: String,
     pub(crate) nxp: Option<i32>,

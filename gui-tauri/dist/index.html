@@ -328,6 +328,7 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
           <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
             <span class="rdot" id="logDot" style="flex:none"></span>
             <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
+            <span class="btn-ghost" id="copyLogBtn" title="copy log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">⧉ <span data-i18n="log.copy">Copy</span></span>
             <span class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">🗑 <span data-i18n="log.clear">Clear</span></span>
           </div>
         </div>
@@ -439,7 +440,7 @@ const I = {
  "map.layers":["Layers","图层"],"map.layer.mesh":["Mesh","网格"],"map.layer.boundary":["Project boundary","项目边界"],"map.layer.domain":["Domain frame","区域框"],"map.layer.graticule":["Graticule","经纬网"],"map.layer.legend":["Legend","图例"],
  "map.measure":["Measure","量测"],"map.measure.none":["Pointer","指针"],"map.measure.distance":["Distance","距离"],"map.measure.area":["Area","面积"],"map.measure.clear":["Clear","清除"],
  "map.export.scope":["Export","导出"],"map.export.region":["Project region","项目区域"],"map.export.view":["Current view","当前视图"],"map.export.global":["Full extent","全域"],"map.export.size":["Size","尺寸"],"map.export.png":["Save PNG","保存 PNG"],
- "log.clear":["Clear","清空"],
+ "log.copy":["Copy","复制"],"log.clear":["Clear","清空"],
  "q.pass":["PASS","通过"],"q.cells":["Cells","单元"],"q.verts":["Vertices","顶点"],
  "q.minangle":["Min angle","最小角"],"q.aspect":["Aspect ratio","纵横比"],
  "q.note":["Full dashboard appears in Run / Results after a run.","运行后在「运行 / 结果」中显示完整仪表盘。"],
@@ -547,11 +548,12 @@ const STATIC_BROWSER_CAPABILITIES={
     {intent:"MultiObjectiveBalanced",kind:"coupled",cell:"hex",model_format:"CoLM"},
   ],
   target_compatibility:[
-    {kind:"land",model_formats:["CoLM"]},
-    {kind:"earth",model_formats:["CoLM"]},
-    {kind:"coupled",model_formats:["CoLM"]},
-    {kind:"ocean",model_formats:["FVCOM"]},
-    {kind:"atmosphere",model_formats:["MPAS","MPAS-Simple"]},
+    {model_format:"CoLM",specialized_cells:["tri","hex"]},
+    {model_format:"FVCOM",specialized_cells:["tri"]},
+    {model_format:"ICON",specialized_cells:["tri"]},
+    {model_format:"MPAS",specialized_cells:["hex"]},
+    {model_format:"MPAS-Ocean",specialized_cells:["hex"]},
+    {model_format:"MPAS-Simple",specialized_cells:["hex"]},
   ],
   default_sea_ratio:0.5,
   default_min_angle_deg:25,
@@ -566,7 +568,7 @@ const STATIC_BROWSER_CAPABILITIES={
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
 let TARGET_PRESETS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_presets.map((p)=>[p.intent,p]));
-let TARGET_COMPATIBILITY=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.kind,p.model_formats]));
+let SPECIALIZED_CELLS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.model_format,p.specialized_cells]));
 let DEFAULT_SEA_RATIO_PCT=STATIC_BROWSER_CAPABILITIES.default_sea_ratio*100;
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
@@ -774,8 +776,9 @@ function renderStep(i){
         </div>
         <div class="card"><h3>${lang?"输出":"Output"}</h3>
           ${field(lang?"目标类型":"Target kind",`<select class="select" id="targetKindOutput"><option value="land">${lang?"陆面":"Land"}</option><option value="ocean">${lang?"海洋":"Ocean"}</option><option value="atmosphere">${lang?"大气":"Atmosphere"}</option><option value="coupled">${lang?"耦合":"Coupled"}</option><option value="earth">${lang?"地球系统":"Earth"}</option></select>`,lang?"模板只提供初始预设":"template supplies the initial preset")}
-          ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"只显示与目标类型兼容的格式":"formats compatible with the target kind")}
+          ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"所有模型均可选择；不兼容时仍保存通用网格":"all models remain selectable; incompatible adapters fall back to grid-only")}
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
+          ${field(lang?"交付状态":"Delivery",`<b id="targetDeliveryOutput" style="font-size:15px"></b>`,lang?"通用 EarthMesh gridfile 始终保存":"canonical EarthMesh gridfile is always saved")}
           ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 弹性调整":"EXPERT — spring adjustment"}</span>
@@ -1756,6 +1759,19 @@ async function saveOlMapPng(map){
 function clearLog(){const lb=document.getElementById("logbox"); if(lb) lb.textContent="";}
 document.getElementById("mapEnlargeBtn").onclick=()=>openMapWindow();
 document.getElementById("mapModalCloseBtn").onclick=closeMapModal;
+async function copyLog(){
+  const lb=document.getElementById("logbox"); if(!lb) return;
+  const text=lb.innerText;
+  try{
+    if(!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+  }catch(_){
+    const area=document.createElement("textarea"); area.value=text; area.style.cssText="position:fixed;opacity:0"; document.body.appendChild(area); area.select();
+    try{document.execCommand("copy");}finally{area.remove();}
+  }
+}
+
+document.getElementById("copyLogBtn").onclick=copyLog;
 document.getElementById("clearLogBtn").onclick=clearLog;
 document.getElementById("mapModal").onclick=e=>{if(e.target===e.currentTarget)closeMapModal();};
 function setLogStatus(text, ok){
@@ -1960,7 +1976,7 @@ if(MAP_WINDOW_MODE){
       .filter((intent) => !intentIds.has(intent));
     if (unsupported.length) throw new Error("unsupported gallery intents: " + unsupported.join(", "));
     TARGET_PRESETS = Object.fromEntries((capabilities.target_presets || []).map((preset) => [preset.intent, preset]));
-    TARGET_COMPATIBILITY = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.kind, entry.model_formats]));
+    SPECIALIZED_CELLS = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.model_format, entry.specialized_cells]));
     DEFAULT_SEA_RATIO_PCT = capabilities.default_sea_ratio * 100;
     DEFAULT_MIN_ANGLE_DEG = capabilities.default_min_angle_deg;
     METHOD_C_MIN_BASE_NXP = capabilities.method_c_min_base_nxp;
@@ -2814,6 +2830,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"discrete 默认 4,4,3":"discrete default 4,4,3")}
         ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"discrete 距离分布函数":"discrete distance distribution")}
         ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"discrete 默认 0":"discrete default 0")}
+        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"discrete 默认 1":"discrete default 1")}
+        ${field("RL%weak_concav_eliminate",`<select class="select" id="expertWeakConcav"><option value="">${z?"默认（引擎决定）":"default (engine decides)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"未设置时用引擎默认；打开的项目原样保留":"engine default when unset; preserved exactly for opened projects")}
         ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"仅保留最大连通水体，剔除孤立单元与捏合顶点":"keep only the largest connected water body; drops orphan cells and pinched vertices")}
       </div>
     </div>`;
@@ -3010,6 +3028,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const erRows = document.getElementById("expertMaxTransitionRow");
     const erSetDis = document.getElementById("expertSetDisType");
     const erNumRc = document.getElementById("expertNumRc");
+    const erVertexLayers = document.getElementById("expertVertexPretectLayers");
+    const erWeakConcav = document.getElementById("expertWeakConcav");
     const erSpring = document.getElementById("expertRefineSpringStrategy");
     const erIsolatedOcean = document.getElementById("expertIsolatedOcean");
     if (erNiter) erNiter.value = expertEdit.niterRefine ?? "";
@@ -3017,6 +3037,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (erRows) erRows.value = Array.isArray(expertEdit.maxTransitionRow) ? expertEdit.maxTransitionRow.join(",") : "";
     if (erSetDis) erSetDis.value = expertEdit.setDisType ?? "";
     if (erNumRc) erNumRc.value = expertEdit.numRc ?? "";
+    if (erVertexLayers) erVertexLayers.value = expertEdit.vertexPretectLayers ?? "";
+    if (erWeakConcav) erWeakConcav.value = expertEdit.weakConcavEliminate === true ? "on" : expertEdit.weakConcavEliminate === false ? "off" : "";
     if (erSpring) erSpring.value = expertEdit.springStrategy ?? "";
     if (erIsolatedOcean) erIsolatedOcean.value = expertEdit.isolatedOcean === true ? "on" : expertEdit.isolatedOcean === false ? "off" : "";
     const syncExpertRefine = () => {
@@ -3025,12 +3047,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       expertEdit.maxTransitionRow = readOptionalIntList("expertMaxTransitionRow");
       expertEdit.setDisType = erSetDis && erSetDis.value ? erSetDis.value : null;
       expertEdit.numRc = readOptionalInt("expertNumRc");
+      expertEdit.vertexPretectLayers = readOptionalInt("expertVertexPretectLayers");
+      const weakConcav = document.getElementById("expertWeakConcav");
+      expertEdit.weakConcavEliminate = !weakConcav || weakConcav.value === ""
+        ? null
+        : weakConcav.value === "on";
       expertEdit.springStrategy = erSpring && erSpring.value ? erSpring.value : null;
       expertEdit.isolatedOcean = erIsolatedOcean && erIsolatedOcean.value ? erIsolatedOcean.value === "on" : null;
       expertEdit.enabled = expertEnabled();
       clearRunArtifacts();
     };
-    [erNiter, erHalo, erRows, erSetDis, erNumRc, erSpring, erIsolatedOcean].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
+    [erNiter, erHalo, erRows, erSetDis, erNumRc, erVertexLayers, erWeakConcav, erSpring, erIsolatedOcean].forEach((el) => { if (el) el.oninput = syncExpertRefine; if (el) el.onchange = syncExpertRefine; });
     const specOn = document.getElementById("specifiedRefineOn");
     const specKind = document.getElementById("specifiedKind");
     const specLon = document.getElementById("specifiedLon");
@@ -3342,15 +3369,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       : (zh() ? "六边形" : "Hexagonal");
   }
 
-  function compatibleTargetModels(kind) {
-    const models = TARGET_COMPATIBILITY[kind];
-    return Array.isArray(models) && models.length ? models : [templateDefaultTarget().model_format || "CoLM"];
+  // Every model stays selectable whatever the target kind; a pairing with no
+  // specialized writer still gets the canonical gridfile, and `deliveryStatus`
+  // is what says so. Filtering the list instead made the cost invisible by
+  // hiding the choice.
+  function compatibleTargetModels() {
+    const models = Object.keys(SPECIALIZED_CELLS);
+    return models.length ? models : ["CoLM", "FVCOM", "ICON", "MPAS", "MPAS-Ocean", "MPAS-Simple"];
+  }
+
+  function deliveryStatus(model, cell) {
+    const cells = SPECIALIZED_CELLS[model] || [];
+    return cells.includes(cell) ? "full" : "grid_only";
   }
 
   function selectedTarget(summary) {
     const preset = templateDefaultTarget();
     const kind = (targetEdit && targetEdit.kind) || (summary && summary.target_kind) || preset.kind || "land";
-    const models = compatibleTargetModels(kind);
+    const models = compatibleTargetModels();
     const requested = (targetEdit && targetEdit.modelFormat) || (summary && summary.model_format) || preset.model_format;
     return { kind, modelFormat: models.includes(requested) ? requested : models[0], models };
   }
@@ -3380,6 +3416,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       modelIn.value = model;
     }
     if (cellIn) cellIn.value = cell;
+    const deliveryIn = document.getElementById("targetDeliveryOutput");
+    if (deliveryIn) {
+      // The backend states it for a loaded project; the local rule covers the
+      // panel before one is saved.
+      const status = (s && s.delivery_status) || deliveryStatus(model, cell);
+      const skipped = s && s.delivery_skipped_reason;
+      deliveryIn.textContent = status === "full"
+        ? (zh() ? `EarthMesh 网格 + ${model} 专用输出` : `EarthMesh grid + ${model} specialized output`)
+        : (zh() ? `仅 EarthMesh 网格（跳过 ${model} 专用输出）` : `EarthMesh grid only (${model} adapter skipped)`);
+      deliveryIn.title = status === "full" ? "" : (skipped || "");
+    }
     if (modeIn) modeIn.textContent = qualityModeLabel(mode, cell);
     if (ready) ready.textContent = model;
     if (readyMode) readyMode.textContent = qualityModeLabel(mode, cell);
@@ -3474,7 +3521,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (kindIn) {
       kindIn.onchange = async () => {
         const kind = kindIn.value;
-        const models = compatibleTargetModels(kind);
+        const models = compatibleTargetModels();
         const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
         targetEdit = { kind: kind, modelFormat: currentModel };
         clearRunArtifacts();
@@ -3484,7 +3531,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (modelIn) {
       modelIn.onchange = async () => {
         const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
-        const models = compatibleTargetModels(kind);
+        const models = compatibleTargetModels();
         targetEdit = { kind: kind, modelFormat: models.includes(modelIn.value) ? modelIn.value : models[0] };
         clearRunArtifacts();
         paintTargetOutputs(await refreshSummary());

@@ -283,7 +283,9 @@ pub(crate) fn set_project_target(
     cfg.target.model_format = match model_format.trim().to_ascii_lowercase().as_str() {
         "colm" => ModelFormat::CoLM,
         "fvcom" => ModelFormat::Fvcom,
+        "icon" => ModelFormat::Icon,
         "mpas" => ModelFormat::Mpas,
+        "mpas-ocean" | "mpasocean" => ModelFormat::MpasOcean,
         "mpas-simple" | "mpassimple" => ModelFormat::MpasSimple,
         other => return Err(format!("unknown target model format '{other}'")),
     };

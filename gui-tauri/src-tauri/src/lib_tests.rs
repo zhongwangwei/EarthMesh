@@ -724,14 +724,25 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(atmosphere.kind, "atmosphere");
     assert_eq!(atmosphere.cell, "hex");
     assert_eq!(atmosphere.model_format, "MPAS");
-    assert_eq!(
+    // Compatibility now says what a model delivers, not which target kinds may
+    // choose it: every model stays selectable and a pairing with no specialized
+    // writer still gets the canonical gridfile.
+    let compatibility = |model: &str| {
         capabilities
             .target_compatibility
             .iter()
-            .find(|entry| entry.kind == "atmosphere")
-            .expect("atmosphere compatibility")
-            .model_formats,
-        vec!["MPAS".to_string(), "MPAS-Simple".to_string()]
+            .find(|entry| entry.model_format == model)
+            .unwrap_or_else(|| panic!("{model} compatibility"))
+            .specialized_cells
+            .clone()
+    };
+    assert_eq!(compatibility("MPAS"), vec!["hex".to_string()]);
+    assert_eq!(compatibility("MPAS-Ocean"), vec!["hex".to_string()]);
+    assert_eq!(compatibility("ICON"), vec!["tri".to_string()]);
+    assert_eq!(compatibility("FVCOM"), vec!["tri".to_string()]);
+    assert_eq!(
+        compatibility("CoLM"),
+        vec!["tri".to_string(), "hex".to_string()]
     );
 }
 
@@ -991,9 +1002,14 @@ fn gui_target_profile_is_editable_with_the_backend_compatibility_matrix() {
     assert_eq!(summary.target_kind, "atmosphere");
     assert_eq!(summary.model_format, "MPAS-Simple");
 
-    let error = set_project_target(yaml, "ocean".to_string(), "CoLM".to_string())
-        .expect_err("ocean/CoLM must remain invalid");
-    assert!(error.contains("ocean target model_format must be FVCOM"));
+    // Every pairing is accepted now: the canonical gridfile is written either
+    // way, and a combination with no specialized writer simply delivers no
+    // model-specific file. What it costs is reported, not refused.
+    let yaml = set_project_target(yaml, "ocean".to_string(), "CoLM".to_string())
+        .expect("every model stays selectable");
+    let summary = project_summary(yaml).expect("target summary");
+    assert_eq!(summary.target_kind, "ocean");
+    assert_eq!(summary.model_format, "CoLM");
 }
 
 #[test]
@@ -2834,4 +2850,41 @@ fn png_output_path_enforces_png_extension() {
         ensure_png_extension(PathBuf::from("/tmp/map.PNG")),
         PathBuf::from("/tmp/map.PNG")
     );
+}
+
+#[test]
+fn the_summary_says_what_a_target_and_model_pairing_delivers() {
+    // Every pairing is accepted, so the panel has to state the cost instead of
+    // the validator refusing it. Without this the user picks a model with no
+    // writer for their cell shape and finds out only by inspecting the outputs.
+    let yaml = preset_yaml("delivery_status", MeshIntentPreset::AtmosphereMpas);
+
+    let hex_mpas = project_summary(yaml.clone()).expect("summary");
+    assert_eq!(hex_mpas.cell, "hex");
+    assert_eq!(hex_mpas.model_format, "MPAS");
+    assert_eq!(hex_mpas.delivery_status, "full");
+    assert_eq!(hex_mpas.delivery_skipped_reason, None);
+
+    // ICON needs triangles, so a hex mesh gets the canonical gridfile only --
+    // and is told why.
+    let icon = set_project_target(yaml.clone(), "atmosphere".to_string(), "ICON".to_string())
+        .expect("ICON stays selectable");
+    let summary = project_summary(icon).expect("summary");
+    assert_eq!(summary.model_format, "ICON");
+    assert_eq!(summary.delivery_status, "grid_only");
+    assert!(
+        summary
+            .delivery_skipped_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("triangular")),
+        "{:?}",
+        summary.delivery_skipped_reason
+    );
+
+    // MPAS-Ocean is a hex writer, so the same hex mesh delivers in full.
+    let ocean = set_project_target(yaml, "ocean".to_string(), "MPAS-Ocean".to_string())
+        .expect("MPAS-Ocean stays selectable");
+    let summary = project_summary(ocean).expect("summary");
+    assert_eq!(summary.model_format, "MPAS-Ocean");
+    assert_eq!(summary.delivery_status, "full");
 }

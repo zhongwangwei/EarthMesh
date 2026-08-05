@@ -440,7 +440,10 @@ check(
     !html.includes('id="targetModelOutput" value="—" readonly') &&
     html.includes('invoke("set_project_target"') &&
     html.includes("targetEdit = { kind:") &&
-    html.includes("TARGET_COMPATIBILITY") &&
+    // Model-to-cell capability, not kind-to-model: every model stays
+    // selectable and the delivery field is what states the cost.
+    html.includes("SPECIALIZED_CELLS") &&
+    html.includes('id="targetDeliveryOutput"') &&
     html.includes("sum.target_kind") &&
     html.includes("sum.model_format"),
   "target kind/model must be editable canonical ProjectConfig state",
