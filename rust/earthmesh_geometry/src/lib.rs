@@ -472,11 +472,12 @@ fn segment_intersection_x(p1: Point, p2: Point, p3: Point, p4: Point) -> Option<
     }
 }
 
-/// Exact area of the union of a set of simple polygons (overlaps counted once),
-/// via vertical-slab decomposition + even-odd coverage. Slab boundaries are every
+/// Exact area of the union of a set of polygons (overlaps counted once), via
+/// vertical-slab decomposition + even-odd coverage. Slab boundaries are every
 /// vertex x and every edge-edge intersection x, so within a slab the covered length
-/// is linear in x and the midpoint rule is exact. Handles arbitrary (non-convex)
-/// simple polygons and overlaps; no external GIS dependency.
+/// is linear in x and the midpoint rule is exact. Handles arbitrary non-convex
+/// simple polygons and the zero-width doubled bridges used to encode close-mask
+/// holes; no external GIS dependency.
 pub fn polygon_union_area(polygons: &[Vec<Point>]) -> f64 {
     let polys: Vec<&Vec<Point>> = polygons.iter().filter(|p| p.len() >= 3).collect();
     if polys.is_empty() {
@@ -551,6 +552,24 @@ pub fn polygon_union_area(polygons: &[Vec<Point>]) -> f64 {
         area += covered * width;
     }
     area
+}
+
+/// Exact common area of three even-odd polygon rings.
+pub fn polygon_triple_intersection_area_even_odd(
+    first: &[Point],
+    second: &[Point],
+    third: &[Point],
+) -> f64 {
+    let first = first.to_vec();
+    let second = second.to_vec();
+    let third = third.to_vec();
+    let singles = polygon_union_area(std::slice::from_ref(&first))
+        + polygon_union_area(std::slice::from_ref(&second))
+        + polygon_union_area(std::slice::from_ref(&third));
+    let pairs = polygon_union_area(&[first.clone(), second.clone()])
+        + polygon_union_area(&[first.clone(), third.clone()])
+        + polygon_union_area(&[second.clone(), third.clone()]);
+    (polygon_union_area(&[first, second, third]) + singles - pairs).max(0.0)
 }
 
 /// Dissolve a set of axis-aligned boxes `(x0, y0, x1, y1)` (e.g. equal grid cells)
@@ -946,7 +965,8 @@ fn line_intersection(a0: Point, a1: Point, b0: Point, b1: Point) -> Point {
 #[cfg(test)]
 mod tests {
     use super::{
-        intersection_area, normalize_delta_lon_radians, polygon_area, polygon_union_area,
+        intersection_area, normalize_delta_lon_radians, polygon_area,
+        polygon_triple_intersection_area_even_odd, polygon_union_area,
         signed_spherical_polygon_excess, spherical_polygon_area_km2, try_spherical_polygon_area,
         try_spherical_polygon_excess, Point, SphericalAreaBranch, SphericalPolygonError,
         SphericalWinding, EARTH_RADIUS_KM,
@@ -1039,6 +1059,41 @@ mod tests {
         let b = rect(1.0, 0.0, 3.0, 2.0);
         let c = rect(2.0, 0.0, 4.0, 2.0);
         assert!((polygon_union_area(&[a, b, c]) - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn even_odd_triple_intersection_preserves_a_doubled_bridge_hole() {
+        let bridged_donut = vec![
+            Point::new(0.0, 0.0),
+            Point::new(4.0, 0.0),
+            Point::new(4.0, 3.0),
+            Point::new(3.0, 3.0),
+            Point::new(3.0, 1.0),
+            Point::new(1.0, 1.0),
+            Point::new(1.0, 3.0),
+            Point::new(3.0, 3.0),
+            Point::new(4.0, 3.0),
+            Point::new(4.0, 4.0),
+            Point::new(0.0, 4.0),
+        ];
+        assert!((polygon_union_area(std::slice::from_ref(&bridged_donut)) - 12.0).abs() < 1e-9);
+        assert!(
+            (polygon_triple_intersection_area_even_odd(
+                &bridged_donut,
+                &rect(0.0, 0.0, 2.0, 4.0),
+                &rect(0.0, 0.0, 4.0, 2.0),
+            ) - 3.0)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(
+            polygon_triple_intersection_area_even_odd(
+                &bridged_donut,
+                &rect(1.25, 1.25, 2.75, 2.75),
+                &rect(1.5, 1.5, 2.5, 2.5),
+            ),
+            0.0
+        );
     }
 
     #[test]

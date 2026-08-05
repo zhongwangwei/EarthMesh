@@ -36,6 +36,9 @@ pub(super) struct MethodCRefinedOutputReports {
 }
 
 pub(super) struct MethodCMetadataSlices<'a> {
+    /// Which face of the pre-refinement mesh each final cell descends from.
+    pub m_lineage: &'a [i64],
+    pub w_lineage: &'a [i64],
     pub m_refine_level: &'a [i32],
     pub m_refine_level_orig: &'a [i32],
     pub m_ngr: &'a [i32],
@@ -53,6 +56,8 @@ impl<'a> MethodCMetadataSlices<'a> {
             w_refine_level: Some(self.w_refine_level),
             w_refine_level_orig: Some(self.w_refine_level_orig),
             w_ngr: Some(self.w_ngr),
+            m_lineage: Some(self.m_lineage),
+            w_lineage: Some(self.w_lineage),
         }
     }
 }
@@ -68,6 +73,7 @@ pub(super) fn write_method_c_refined_outputs(
     output_mesh: &UnstructuredMesh,
     domain_region: Option<&GridRegion>,
     metadata: Option<MethodCMetadataSlices<'_>>,
+    hard_center_demand: Option<&[bool]>,
 ) -> io::Result<MethodCRefinedOutputReports> {
     let output_path = file_dir.join("result").join(format!(
         "gridfile_NXP{nxp:04}_{}.nc4",
@@ -153,6 +159,7 @@ pub(super) fn write_method_c_refined_outputs(
             None,
             None,
             config.isolated_ocean,
+            hard_center_demand,
         )?;
         let masked_mesh = read_unstructured_mesh_netcdf(&output_path)?;
         let output = UnstructuredMeshWriteReport {
@@ -209,6 +216,7 @@ pub(super) fn write_method_c_refined_outputs(
             None,
             None,
             false,
+            hard_center_demand,
         )?;
         let ocean_kept = write_landtype_masked_gridfile_with_refine_levels(
             &output.output,
@@ -220,6 +228,7 @@ pub(super) fn write_method_c_refined_outputs(
             None,
             None,
             config.isolated_ocean,
+            hard_center_demand,
         )?;
         let land_mesh = read_unstructured_mesh_netcdf(&land_output_path)?;
         let ocean_mesh = read_unstructured_mesh_netcdf(&ocean_output_path)?;

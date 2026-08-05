@@ -7,8 +7,11 @@ pub(crate) use indexing::{
     mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id, GridfileRowLayout,
 };
 pub use topology::check_unstructured_mesh_topology;
-pub(crate) use topology::{unstructured_dimc, validate_unstructured_mesh};
+pub(crate) use topology::{
+    split_non_manifold_triangle_vertex_fans, unstructured_dimc, validate_unstructured_mesh,
+};
 pub use types::{
-    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileMetadataSlices,
-    UnstructuredMesh, UnstructuredMeshTopologyReport, UnstructuredMeshWriteReport,
+    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
+    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshTopologyReport,
+    UnstructuredMeshWriteReport,
 };

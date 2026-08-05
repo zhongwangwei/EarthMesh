@@ -44,6 +44,35 @@ pub fn retain_largest_edge_connected_component_one_based(
     vertex_neighbors: &[Vec<usize>],
     vertex_neighbor_counts: &[usize],
 ) -> io::Result<LargestComponentRetention> {
+    retain_edge_connected_components_with_hard_demand_one_based(
+        is_in_domain,
+        center_neighbors,
+        center_neighbor_counts,
+        vertex_neighbors,
+        vertex_neighbor_counts,
+        &[],
+    )
+}
+
+/// As [`retain_largest_edge_connected_component_one_based`], but a component
+/// holding hard demand is kept whatever its size.
+///
+/// Component size is a proxy for "this piece is worth simulating", and it is
+/// the wrong answer where a run has said outright which cells it wants: a
+/// refinement circle over a small bay produces exactly the disjoint piece the
+/// largest-component rule deletes, and nothing reports that the region the user
+/// named is gone. Demand is not a proxy, so it wins.
+///
+/// `hard_demand` is indexed by one-based centre id and may be shorter than the
+/// domain or empty; anything it does not cover is simply not demanded.
+pub fn retain_edge_connected_components_with_hard_demand_one_based(
+    is_in_domain: &mut [i32],
+    center_neighbors: &[Vec<usize>],
+    center_neighbor_counts: &[usize],
+    vertex_neighbors: &[Vec<usize>],
+    vertex_neighbor_counts: &[usize],
+    hard_demand: &[bool],
+) -> io::Result<LargestComponentRetention> {
     if center_neighbor_counts.len() < center_neighbors.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -72,6 +101,7 @@ pub fn retain_largest_edge_connected_component_one_based(
             center_neighbor_counts,
             vertex_neighbors,
             vertex_neighbor_counts,
+            hard_demand,
         )?;
         removed_cell_ids.extend(pass.removed_cell_ids.iter().copied());
         initial_component_count.get_or_insert(pass.component_count);
@@ -83,6 +113,7 @@ pub fn retain_largest_edge_connected_component_one_based(
             center_neighbor_counts,
             vertex_neighbors,
             vertex_neighbor_counts,
+            hard_demand,
         )?;
         non_manifold_removed_cell_count += fan_removed.len();
         removed_cell_ids.extend(fan_removed.iter().copied());
@@ -107,6 +138,7 @@ fn retain_largest_component_pass_one_based(
     center_neighbor_counts: &[usize],
     vertex_neighbors: &[Vec<usize>],
     vertex_neighbor_counts: &[usize],
+    hard_demand: &[bool],
 ) -> io::Result<LargestComponentRetention> {
     let domain_cells: Vec<usize> = (0..is_in_domain.len())
         .filter(|&cell_id| is_in_domain[cell_id] == 1)
@@ -159,9 +191,20 @@ fn retain_largest_component_pass_one_based(
         .map(|(component_id, _)| component_id)
         .expect("non-empty domain yields at least one component");
 
-    let mut removed_cell_ids = Vec::new();
+    let demanded = |cell_id: usize| hard_demand.get(cell_id).copied().unwrap_or(false);
+    let mut component_has_demand = vec![false; component_sizes.len()];
     for (&cell_id, &component_id) in &component_of {
-        if component_id != retained_component {
+        if demanded(cell_id) {
+            component_has_demand[component_id] = true;
+        }
+    }
+
+    let mut removed_cell_ids = Vec::new();
+    let mut retained_cell_count = 0usize;
+    for (&cell_id, &component_id) in &component_of {
+        if component_id == retained_component || component_has_demand[component_id] {
+            retained_cell_count += 1;
+        } else {
             is_in_domain[cell_id] = -1;
             removed_cell_ids.push(cell_id);
         }
@@ -169,7 +212,7 @@ fn retain_largest_component_pass_one_based(
 
     Ok(LargestComponentRetention {
         component_count: component_sizes.len(),
-        retained_cell_count: component_sizes[retained_component],
+        retained_cell_count,
         removed_cell_ids,
         non_manifold_removed_cell_count: 0,
     })
@@ -187,6 +230,7 @@ fn split_non_manifold_vertex_fans_one_based(
     center_neighbor_counts: &[usize],
     vertex_neighbors: &[Vec<usize>],
     vertex_neighbor_counts: &[usize],
+    hard_demand: &[bool],
 ) -> io::Result<Vec<usize>> {
     let mut removed_cell_ids = BTreeSet::new();
     for vertex_id in 0..vertex_neighbors.len() {
@@ -255,10 +299,20 @@ fn split_non_manifold_vertex_fans_one_based(
             continue;
         }
 
+        // Only one fan can survive a pinch, so demand decides which before size
+        // does. Choosing purely by size would delete the cells the component
+        // pass had just protected -- the caller promises a demanded region
+        // survives, and this runs inside the same loop.
         let kept_fan = fans
             .iter()
             .enumerate()
-            .max_by_key(|(fan_id, members)| (members.len(), std::cmp::Reverse(*fan_id)))
+            .max_by_key(|(fan_id, members)| {
+                let demanded = members
+                    .iter()
+                    .filter(|&&cell_id| hard_demand.get(cell_id).copied().unwrap_or(false))
+                    .count();
+                (demanded, members.len(), std::cmp::Reverse(*fan_id))
+            })
             .map(|(fan_id, _)| fan_id)
             .expect("at least two fans");
         for (fan_id, members) in fans.iter().enumerate() {

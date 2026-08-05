@@ -16,6 +16,10 @@ pub struct UnstructuredMesh {
 pub struct UnstructuredMeshTopologyReport {
     pub m_rows: usize,
     pub w_rows: usize,
+    pub boundary_loop_count: usize,
+    pub boundary_vertex_degree_violation_count: usize,
+    pub euler_characteristic: Option<isize>,
+    pub expected_euler_characteristic: Option<isize>,
     pub violations: Vec<String>,
 }
 
@@ -42,14 +46,27 @@ pub struct UnstructuredMeshWriteReport {
     pub dimc: usize,
 }
 
+/// Stable Method-C final-cell lineages read from an EarthMesh gridfile.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MethodCGridfileLineages {
+    /// Delaunay W-face lineage for final triangular M-cell rows.
+    pub m: Vec<i64>,
+    /// Delaunay M-point lineage for final polygonal W-cell rows.
+    pub w: Vec<i64>,
+}
+
 /// Optional Method-C fields carried alongside compact gridfile connectivity.
 /// Refinement levels are zero-based at the file boundary; `ngr` retains its
 /// native one-based Method-C value (placeholder rows may be zero).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MethodCGridfileMetadataSlices<'a> {
+    /// Stable Delaunay W-face lineage for each final triangular M-cell row.
+    pub m_lineage: Option<&'a [i64]>,
     pub m_refine_level: Option<&'a [i32]>,
     pub m_refine_level_orig: Option<&'a [i32]>,
     pub m_ngr: Option<&'a [i32]>,
+    /// Stable Delaunay M-point lineage for each final polygonal W-cell row.
+    pub w_lineage: Option<&'a [i64]>,
     pub w_refine_level: Option<&'a [i32]>,
     pub w_refine_level_orig: Option<&'a [i32]>,
     pub w_ngr: Option<&'a [i32]>,

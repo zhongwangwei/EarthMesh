@@ -6,7 +6,7 @@ use crate::read_unstructured_mesh_netcdf;
 use crate::sample_landtype_values_for_points_one_based;
 use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
 use crate::AreaJudgeLandtypeClass;
-use earthmesh_mesh::retain_largest_edge_connected_component_one_based;
+use earthmesh_mesh::retain_edge_connected_components_with_hard_demand_one_based;
 use std::io;
 use std::path::Path;
 
@@ -37,10 +37,17 @@ pub fn write_landtype_masked_gridfile(
         None,
         None,
         false,
+        None,
     )
 }
 
 /// As [`write_landtype_masked_gridfile`], plus the carve-time topology cleanup.
+///
+/// `hard_center_demand` marks cell centres a run named outright, by one-based
+/// centre id. A component holding one survives whatever its size: a refinement
+/// circle over a small bay produces exactly the disjoint piece the
+/// largest-component rule deletes, and nothing would report that the region the
+/// run asked for is gone.
 ///
 /// `retain_largest_ocean_component` drops every `oceanmesh` cell outside the
 /// largest edge-connected piece of the carved domain — the narrow bays and river
@@ -58,6 +65,7 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
     m_refine_level: Option<&[i32]>,
     w_refine_level: Option<&[i32]>,
     retain_largest_ocean_component: bool,
+    hard_center_demand: Option<&[bool]>,
 ) -> io::Result<usize> {
     let keep_land = match mesh_type.trim() {
         "landmesh" => true,
@@ -104,12 +112,13 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
         ));
     }
     if retain_largest_ocean_component && !keep_land {
-        let retention = retain_largest_edge_connected_component_one_based(
+        let retention = retain_edge_connected_components_with_hard_demand_one_based(
             &mut is_in_domain,
             &layout.center_neighbors,
             &layout.center_neighbor_counts,
             &layout.vertex_neighbors,
             &layout.vertex_neighbor_counts,
+            hard_center_demand.unwrap_or(&[]),
         )?;
         if !retention.removed_cell_ids.is_empty() {
             eprintln!(
@@ -123,7 +132,7 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
         }
         kept = retention.retained_cell_count;
     }
-    let report =
+    let mut report =
         finalize_mask_postproc_layout_with_reindex_report(&layout, &is_in_domain, mode_grid)?;
     let mut source_metadata = refine_levels_from_gridfile(input_gridfile)?;
     if let Some(levels) = m_refine_level {
@@ -132,13 +141,27 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
     if let Some(levels) = w_refine_level {
         source_metadata.w = levels.to_vec();
     }
-    let final_metadata = final_method_c_metadata_for_mask_postproc(
+    let mut final_metadata = final_method_c_metadata_for_mask_postproc(
         mode_grid,
         &report,
         &is_in_domain,
         layout.ustr_points,
         &source_metadata,
     )?;
+    if mode_grid.trim() == "tri" {
+        // A carve can leave a vertex where the surviving cells fall into more
+        // than one fan -- the mesh pinches to a point there, which the
+        // `non_manifold_vertex_fan` gate rejects. Duplicating the vertex splits
+        // the fans apart and keeps every cell; deleting the smaller fan also
+        // clears the pinch but throws away cells the carve had decided to keep,
+        // and on a demanded region that is the loss this whole path exists to
+        // prevent.
+        let duplicate_sources =
+            crate::unstructured_mesh_support::split_non_manifold_triangle_vertex_fans(
+                &mut report.mesh,
+            )?;
+        final_metadata.duplicate_w_vertices(&duplicate_sources)?;
+    }
     write_unstructured_mesh_netcdf_with_method_c_metadata(
         output_gridfile,
         &report.mesh,
