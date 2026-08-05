@@ -89,6 +89,27 @@ is not where the v3 line lives.
 (`git@github.com:zhongwangwei/EarthMesh.git`) works and is what `gh` is
 configured for anyway. `gh auth refresh -s workflow` fixes the HTTPS path.
 
+## When a run seems stuck
+
+Sample it before reading code: `sample <pid> 4 -f /tmp/out.txt`, then look at the
+main thread's frames. A global run that appeared hung was spending every sample
+in one neighbourhood loop whose cost scaled with the *mesh* generation, not the
+raster — 1.7e14 reads for one criterion, days rather than minutes, and perfectly
+fast on every small test. Guide section 11.3 has the numbers and the fix.
+
+Two traps that follow from that case:
+
+- **Radius-dependent costs hide in small tests.** The demand producers take
+  `radius_cells` from the cell size being refined; at production raster
+  resolution that is ~107 cells, and a fixture at 1 cell per degree never shows
+  it. Estimate the production number before assuming a loop is affordable.
+- **Passing tests are not equivalence.** When rewriting an algorithm for speed,
+  keep the old implementation as a test oracle and compare cell for cell. The
+  existing land-type tests all stayed green across a rewrite that would have
+  changed results; the oracle test caught the one real discrepancy — which
+  turned out to be the oracle's own bug, and only a direct comparison could
+  have told the difference.
+
 ## Reading the code
 
 `docs/mesh_construction_technical_guide.md` is the algorithm reference —

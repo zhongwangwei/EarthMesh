@@ -25,16 +25,50 @@ pub(crate) fn run_mkgrd_or_project(
             }
         }
     }
-    if result.is_err() {
+    if let Err(message) = &result {
+        // A failed run used to take its whole directory with it, including the
+        // quality report the failure had just pointed at -- "report=<path>"
+        // followed by nothing at that path. Diagnostics are what a failure is
+        // for, so the directory stays and the message says where.
         if let Some(path) = project_run_dir {
-            if let Err(err) = fs::remove_dir_all(&path) {
+            if quality_report_paths(&path).next().is_some() {
+                eprintln!(
+                    "earthmesh_cli: run directory kept for diagnosis: {}",
+                    path.display()
+                );
+            } else if let Err(err) = fs::remove_dir_all(&path) {
                 if err.kind() != std::io::ErrorKind::NotFound {
                     eprintln!("earthmesh_cli: warning: cleanup {}: {err}", path.display());
                 }
             }
         }
+        let _ = message;
     }
     result
+}
+
+/// Quality reports under a run directory, if the run got far enough to write
+/// any. Their presence is what makes a failed run worth keeping.
+fn quality_report_paths(run_dir: &std::path::Path) -> impl Iterator<Item = PathBuf> + use<> {
+    let mut found = Vec::new();
+    let mut stack = vec![run_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|name| {
+                name.to_string_lossy().starts_with("quality_summary")
+                    || name.to_string_lossy() == "run_manifest.json"
+            }) {
+                found.push(path);
+            }
+        }
+    }
+    found.into_iter()
 }
 
 fn run_prepared_mkgrd(

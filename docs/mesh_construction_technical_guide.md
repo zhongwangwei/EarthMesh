@@ -599,3 +599,61 @@ v3.0.0-alpha3 的 CI 就栽在这里：本轮改了 `gui-tauri/src-tauri/src/*.r
 动过 `gui-tauri/` 之后必须单独跑这四条（正是 CI `gui` job 的全部内容）：`make check-gui-js`、`make fmt-gui`、`make clippy-gui`、`make test-gui`。`make test-full` 会把引擎与 GUI 一起带上；根目录的 `cargo test` 不会。
 
 Makefile 的 `fmt` / `clippy` 逐个列出 crate 而不是用 `--workspace`（因为 `earthmesh_cli` 需要 NetCDF，而 fast job 没有），所以**往 workspace 里加 crate 不会自动进入这些闸**，得同时改 Makefile 的列表。
+
+### 11.3 自适应需求规划的代价（2026-08 实测与修复）
+
+**症状**：一个真实工程（全球海洋、NXP 81、生产 IGBP 栅格、开 landcover 判据）跑了一小时
+没有任何进展，也没有报错。
+
+**定位方式**：`sample <pid>` 采样运行中的进程，而不是读代码猜。**全部采样帧落在同一处**：
+
+```
+plan_demand_at_scale (plan.rs:167)
+  landcover_heterogeneity_demand  landtype.rs:112   1560
+  landcover_heterogeneity_demand  landtype.rs:113   1025
+  landcover_heterogeneity_demand  landtype.rs:116    356
+```
+
+即邻域嵌套循环与 `seen.contains()` 的线性查找。
+
+**根因是复杂度，不是常数**。邻域半径取自**正在细化的那一代格子**，与源栅格无关：
+
+| 量 | 值 |
+|---|---|
+| 源格边长（240 格/度） | 463 m |
+| 半径 = 第 1 级格边长 / 2 = 49.4 km | **107 格** |
+| 每个输出格的邻域 | (2·107+1)² = **46,225** |
+| 全球输出格数 | 37.3 亿 |
+| 单判据单遍 | **1.7×10¹⁴** 次读 |
+
+单线程约需两天。**这不是"慢"，是跑不完**——而且它在小算例上完全正常，因为半径小。
+
+**三处修复，全部精确而非近似**：
+
+1. **逐类前缀和**（`refinement_demand::class_counts`）。窗口内某类的计数 =
+   `S[b][r] − S[t][r] − S[b][l] + S[t][l]`，四次读。复杂度 O(n·r²) → O(n·C)，C 为类别数
+   （IGBP < 20），**与半径无关**。三个邻域判据（heterogeneity / sea_ratio / dominant_class）
+   共用这张表。
+2. **需求栅格改位图**（`RefinementDemand` 内部 `Vec<u64>`）。`Vec<bool>` 每格一字节，区域算例
+   看不出来，全球算例决定生死：3.48 GB/判据 → 445 MB。`demanded_count` 用 `count_ones`，
+   并集是整字 `|=`。
+3. **按纬度行并行**（`RefinementDemand::fill_par`）。rayon 本就在依赖树里，采样时其工作线程
+   全部停在 `wait_until_cold`。
+
+**为什么无损**：前 1、2 项全程整数——数的是同一批格子（裁剪与 `value_at_global` 逐条对齐，
+窗口外的格子同样不计入 total），只有求和顺序变了；第 3 项每格的位只写一次、只依赖自己的
+输入，划分方式不影响结果。
+
+**std 判据只并行、不换算法**。前缀和要对 `f64` 累加，求和顺序改变会动到浮点末位——那是
+"另一个答案"，不是"更快的答案"。它仍是 O(n·r²)，但只在 `refine_onelayer_*` /
+`refine_twolayer_*` 开启时才走。要把它也降到 O(n)，必须先接受末位差异（影响只落在恰好卡在
+阈值上的格子）。
+
+**验证方式值得记下**：每一项都对拍它所替代的东西——前缀和对拍原嵌套循环（逐格、多个半径、
+含各种越界裁剪）、位图对拍填充位不变量、并行对拍串行。**前缀和的对拍第一次是红的**
+（154 vs 142）：我的 oracle 只在 `bounds` 内取样，而真实判据读的是**带 halo 的窗口**。是测试
+写错了，不是实现错了。而既有的 10 个 landtype 测试全绿、没抓到这个差异——它们检验的是判据
+的语义，不是"改写前后是否等价"。**改写既有算法时，既有测试通过不等于等价**。
+
+实测（同一份数据，半径 10 / 30 / 60，邻域大小相差 33 倍）：用时 1.2 ms / 0.77 ms / 0.71 ms
+——**不随半径增长**。
