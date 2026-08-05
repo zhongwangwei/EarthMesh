@@ -302,6 +302,8 @@ impl MethodCDelaunayMesh {
             u_prognostic,
             w_prognostic,
             boundary_rows: Vec::new(),
+            w_lineage: (0..=nwd).collect(),
+            m_lineage: (0..=nmd).collect(),
         })
     }
 }

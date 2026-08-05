@@ -118,6 +118,21 @@ impl MethodCDelaunayMesh {
             m_metadata[imn] = self.m_metadata[im];
         }
 
+        // Lineage travels with the row. A subdivided parent hands its own
+        // lineage to all four children, so "where did this cell come from"
+        // survives both the split and the renumbering that follows it.
+        let mut w_lineage = vec![0usize; nwd0 + 1];
+        let mut m_lineage = vec![0usize; nmd0 + 1];
+        // The placeholder row maps to itself, as `iwnew[1]`/`imnew[1]` do.
+        w_lineage[1] = 1;
+        m_lineage[1] = 1;
+        for im in 2..=self.nmd {
+            let imn = imnew[im];
+            if imn < m_lineage.len() {
+                m_lineage[imn] = self.m_lineage.get(im).copied().unwrap_or(im);
+            }
+        }
+
         let mut parent_mrlm = 0usize;
         for iu in 2..=self.nud {
             let iun = iunew[iu];
@@ -145,6 +160,22 @@ impl MethodCDelaunayMesh {
                 m_metadata[im1].ngr = child_level;
                 m_metadata[im2].ngr = child_level;
                 m_metadata[im_mid].ngr = child_level;
+                // A midpoint is new: it descends from the edge it split, so it
+                // takes the ancestry of that edge's endpoints. The smaller of
+                // the two keeps the choice deterministic. Leaving it unset would
+                // write ancestor 0 -- a row that does not exist -- which is the
+                // same defect the placeholder row had.
+                if im_mid < m_lineage.len() {
+                    let ends = [
+                        m_lineage.get(im1).copied().unwrap_or(0),
+                        m_lineage.get(im2).copied().unwrap_or(0),
+                    ];
+                    m_lineage[im_mid] = ends
+                        .into_iter()
+                        .filter(|id| *id > 0)
+                        .min()
+                        .unwrap_or(im_mid);
+                }
             }
         }
 
@@ -152,6 +183,18 @@ impl MethodCDelaunayMesh {
         for iw in 2..=self.nwd {
             let iwn = iwnew[iw];
             let old = self.w_faces[iw];
+            let parent_lineage = self.w_lineage.get(iw).copied().unwrap_or(iw);
+            if iwn < w_lineage.len() {
+                w_lineage[iwn] = parent_lineage;
+            }
+            if nest_wd[iw].is_subdivided() {
+                for slot in 0..3 {
+                    let child = nest_wd[iw].iw[slot] as usize;
+                    if child < w_lineage.len() {
+                        w_lineage[child] = parent_lineage;
+                    }
+                }
+            }
             w_faces[iwn] = IcosahedronWFace {
                 npoly: old.npoly,
                 im: old.im.map(|im| imnew[im]),
@@ -311,6 +354,8 @@ impl MethodCDelaunayMesh {
             u_prognostic,
             w_prognostic,
             boundary_rows: Vec::new(),
+            w_lineage,
+            m_lineage,
         };
         mesh.apply_method_c_perimeter_mrows(child_level, max_mrows)?;
         // Defense in depth: this function performs the densest parent->child

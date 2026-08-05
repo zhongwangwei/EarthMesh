@@ -479,6 +479,8 @@ fn gridfile_writer_round_trips_full_method_c_metadata() {
             w_refine_level: Some(&w_levels),
             w_refine_level_orig: Some(&w_orig),
             w_ngr: Some(&w_ngr),
+            m_lineage: None,
+            w_lineage: None,
         },
     )
     .expect("write mesh");
@@ -530,6 +532,8 @@ fn regional_clip_preserves_method_c_metadata_after_inserted_placeholder() {
             w_refine_level: Some(&[0, 7, 8, 9]),
             w_refine_level_orig: Some(&[0, 4, 5, 6]),
             w_ngr: Some(&[0, 10, 11, 12]),
+            m_lineage: None,
+            w_lineage: None,
         },
     )
     .expect("write input");

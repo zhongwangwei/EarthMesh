@@ -157,6 +157,7 @@ mod mask_postproc_isolated;
 pub use mask_postproc_isolated::{remove_isolated_ocean_one_based, IsolatedOceanRenewal};
 mod mask_postproc_components;
 pub use mask_postproc_components::{
+    retain_edge_connected_components_with_hard_demand_one_based,
     retain_largest_edge_connected_component_one_based, LargestComponentRetention,
 };
 mod mask_postproc;

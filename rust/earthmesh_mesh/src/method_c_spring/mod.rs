@@ -155,6 +155,10 @@ impl MethodCDelaunayMesh {
         }
 
         let adjusted = Self {
+            // Spring moves points; it does not create or merge rows, so the
+            // ancestry carries over unchanged.
+            w_lineage: self.w_lineage.clone(),
+            m_lineage: self.m_lineage.clone(),
             nmd: self.nmd,
             nud: self.nud,
             nwd: self.nwd,

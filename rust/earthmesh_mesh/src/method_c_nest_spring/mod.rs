@@ -115,6 +115,9 @@ impl MethodCDelaunayMesh {
         }
 
         let adjusted = Self {
+            // Nest spring moves points only; ancestry carries over.
+            w_lineage: self.w_lineage.clone(),
+            m_lineage: self.m_lineage.clone(),
             nmd: self.nmd,
             nud: self.nud,
             nwd: self.nwd,
@@ -235,6 +238,9 @@ impl MethodCDelaunayMesh {
         }
 
         let adjusted = Self {
+            // Nest spring moves points only; ancestry carries over.
+            w_lineage: self.w_lineage.clone(),
+            m_lineage: self.m_lineage.clone(),
             nmd: self.nmd,
             nud: self.nud,
             nwd: self.nwd,

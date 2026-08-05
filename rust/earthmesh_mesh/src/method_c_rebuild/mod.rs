@@ -120,6 +120,11 @@ fn method_c_mesh_from_triangle_seeds_with_boundary_rows(
         u_prognostic: method_c_identity_prognostic_map(nud),
         w_prognostic: method_c_identity_prognostic_map(nwd),
         boundary_rows,
+        // Rebuilt from external tables, so there is no earlier mesh to descend
+        // from: every row is its own ancestor until a refinement pass says
+        // otherwise.
+        w_lineage: (0..=nwd).collect(),
+        m_lineage: (0..=nmd).collect(),
     };
     mesh.validate_topology()?;
     Ok(mesh)

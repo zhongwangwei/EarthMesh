@@ -30,6 +30,26 @@ pub struct MethodCDelaunayMesh {
     pub u_prognostic: Vec<usize>,
     pub w_prognostic: Vec<usize>,
     pub(crate) boundary_rows: Vec<usize>,
+    /// For each W face, the id it descended from in the mesh this one was
+    /// refined out of. Indexed one-based like the faces; slot 0/1 are the
+    /// canonical placeholders.
+    ///
+    /// A face that was never subdivided keeps its own id, so on an unrefined
+    /// mesh the lineage is the identity. Refinement is the only thing that
+    /// makes it differ, which is what makes it answer "where did this cell come
+    /// from" after several passes and a renumbering have moved every row.
+    pub(crate) w_lineage: Vec<usize>,
+    /// The same for M points.
+    pub(crate) m_lineage: Vec<usize>,
+}
+
+/// `[0, 1, 2, ..., count]`: every row descends from itself.
+///
+/// Row 1 is the canonical placeholder and stays one through refinement
+/// (`iwnew[1] = 1` in the emitter), so naming itself is what keeps the lineage
+/// total — every row the gridfile carries resolves to a row that existed.
+fn identity_lineage(count: usize) -> Vec<usize> {
+    (0..=count).collect()
 }
 
 impl MethodCDelaunayMesh {
@@ -58,6 +78,8 @@ impl MethodCDelaunayMesh {
             u_prognostic: method_c_identity_prognostic_map(relaxed.nud),
             w_prognostic: method_c_identity_prognostic_map(relaxed.nwd),
             boundary_rows: Vec::new(),
+            w_lineage: identity_lineage(relaxed.nwd),
+            m_lineage: identity_lineage(relaxed.nmd),
         }
     }
 
@@ -88,6 +110,8 @@ impl MethodCDelaunayMesh {
             u_prognostic: method_c_identity_prognostic_map(initial.nud),
             w_prognostic: method_c_identity_prognostic_map(initial.nwd),
             boundary_rows: Vec::new(),
+            w_lineage: identity_lineage(initial.nwd),
+            m_lineage: identity_lineage(initial.nmd),
         };
         mesh.validate_topology().ok()?;
         if niter == 0 {
@@ -108,4 +132,50 @@ impl MethodCDelaunayMesh {
     pub fn m_point_metadata(&self) -> &[IcosahedronMPointMetadata] {
         &self.m_metadata
     }
+
+    /// File-boundary lineages for final triangular cells (`itab_m` rows).
+    ///
+    /// A final triangular M cell is a Delaunay W face, so its ancestry is the
+    /// W lineage.
+    pub fn gridfile_m_cell_lineages(&self) -> io::Result<Vec<i64>> {
+        method_c_gridfile_lineages("M cell", &self.w_lineage, self.nwd)
+    }
+
+    /// File-boundary lineages for final polygonal cells (`itab_w` rows).
+    ///
+    /// A final polygonal W cell is centred on a Delaunay M point.
+    pub fn gridfile_w_cell_lineages(&self) -> io::Result<Vec<i64>> {
+        method_c_gridfile_lineages("W cell", &self.m_lineage, self.nmd)
+    }
+}
+
+/// Lineage rows for ids `1..=active_count`, as the gridfile carries them.
+fn method_c_gridfile_lineages(
+    role: &str,
+    lineages: &[usize],
+    active_count: usize,
+) -> io::Result<Vec<i64>> {
+    if lineages.len() < active_count + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Method-C {role} lineage has {} rows for {} active ids",
+                lineages.len(),
+                active_count
+            ),
+        ));
+    }
+    (1..=active_count)
+        .map(|id| {
+            i64::try_from(lineages[id]).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Method-C {role} lineage {} at id {id} exceeds i64",
+                        lineages[id]
+                    ),
+                )
+            })
+        })
+        .collect()
 }
