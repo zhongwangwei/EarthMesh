@@ -144,7 +144,11 @@ pub fn spawn_nest_adaptive_with_named_regions(
         // the level still refines. Serial cost is one emit per group, which the
         // measured radius floor keeps affordable: it cut the circle count from
         // 114566 to 8190, so the groups are hundreds, not tens of thousands.
-        let mut groups = earthmesh_mesh::method_c_connected_region_groups(&regions, false);
+        let mut groups: Vec<Vec<MethodCRefinementRegion>> =
+            earthmesh_mesh::method_c_connected_region_groups(&regions, false)
+                .into_iter()
+                .flat_map(split_oversized_group)
+                .collect();
         // Largest groups first. Serial refinement makes every earlier block a
         // wall for later ones: run small islands first and a continental band
         // arrives to ground already pocked with finer blocks -- its mask gets
@@ -423,4 +427,66 @@ impl AdaptiveNestReport {
             self.deepest_level, self.stopped_on_empty_demand
         )
     }
+}
+
+/// Largest group size one selection walk handles reliably.
+///
+/// Groups of a few hundred circles refine dependably -- on the global coastal
+/// case, all 28 of them did. The one group of 7022 did not, twice over: walked
+/// as a single globe-spanning band it either covered two seeds and stopped
+/// (the start's local phase decides everything at that span) or covered a
+/// continent and then met itself at a vertex whose valence no mesh may carry.
+/// Both failures are properties of the span, not the demand, so demand beyond
+/// this size is split before walking.
+const MAX_GROUP_CIRCLES: usize = 500;
+
+/// Split an oversized group into spatial tiles by median bisection.
+///
+/// Each tile is walked from its own start and emitted on its own, which is the
+/// size class that works; where a tile meets ground an earlier tile refined,
+/// the standoff concedes a strip a few cells wide -- bounded, and beside a
+/// block that already serves the demand. Bisection is by the wider axis at the
+/// sorted midpoint, so the tiling is deterministic.
+fn split_oversized_group(group: Vec<MethodCRefinementRegion>) -> Vec<Vec<MethodCRefinementRegion>> {
+    if group.len() <= MAX_GROUP_CIRCLES {
+        return vec![group];
+    }
+    let all_circles = group
+        .iter()
+        .all(|region| matches!(region, MethodCRefinementRegion::Circle { .. }));
+    if !all_circles {
+        return vec![group];
+    }
+    let center = |region: &MethodCRefinementRegion| -> (f64, f64) {
+        match region {
+            MethodCRefinementRegion::Circle { center, .. } => {
+                (center.lon_degrees, center.lat_degrees)
+            }
+            _ => (0.0, 0.0),
+        }
+    };
+    let lons: Vec<f64> = group.iter().map(|r| center(r).0).collect();
+    let lats: Vec<f64> = group.iter().map(|r| center(r).1).collect();
+    let span = |values: &[f64]| -> f64 {
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for &value in values {
+            lo = lo.min(value);
+            hi = hi.max(value);
+        }
+        hi - lo
+    };
+    let by_lon = span(&lons) >= span(&lats);
+    let mut sorted = group;
+    sorted.sort_by(|a, b| {
+        let (ka, kb) = if by_lon {
+            (center(a).0, center(b).0)
+        } else {
+            (center(a).1, center(b).1)
+        };
+        ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let second = sorted.split_off(sorted.len() / 2);
+    let mut tiles = split_oversized_group(sorted);
+    tiles.extend(split_oversized_group(second));
+    tiles
 }
