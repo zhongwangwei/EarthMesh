@@ -13,7 +13,7 @@ fn weak_concav_lop_judge_builds_pair_only_segments() {
     let mut weak_segment = vec![vec![]];
     let weak_segment_old = vec![vec![]];
     let n_weak_segment = vec![0];
-    let weak_pair = vec![[0, 0], [2, 6]];
+    let weak_pair = vec![[2, 6]];
     let mut ref_temp = vec![vec![0; 6]; 3];
     let mut n_ref_temp = vec![0; 3];
     let mut num_ref = 0;
@@ -37,8 +37,8 @@ fn weak_concav_lop_judge_builds_pair_only_segments() {
     )
     .expect("pair-only weak concavity LOP segment");
 
-    assert_eq!(ref_temp[2][1..=2], [20, 61]);
-    assert_eq!(n_ref_temp[2], 2);
+    assert_eq!(ref_temp[1][0..2], [20, 61]);
+    assert_eq!(n_ref_temp[1], 2);
     assert_eq!(num_ref, 2);
 }
 
@@ -58,10 +58,10 @@ fn weak_concav_lop_judge_builds_intersegment_and_internal_pairs() {
     sjx_child[3] = [30, 31];
     sjx_child[6] = [60, 61];
     sjx_child[8] = [80, 81];
-    let mut weak_segment = vec![vec![], vec![7], vec![1]];
-    let weak_segment_old = vec![vec![], vec![3, 2], vec![6]];
-    let n_weak_segment = vec![0, 1, 0];
-    let weak_pair = vec![[0, 0]];
+    let mut weak_segment = vec![vec![7], vec![1]];
+    let weak_segment_old = vec![vec![3, 2], vec![6]];
+    let n_weak_segment = vec![1, 0];
+    let weak_pair: Vec<[usize; 2]> = Vec::new();
     let mut ref_temp = vec![vec![0; 8]; 4];
     let mut n_ref_temp = vec![0; 4];
     let mut num_ref = 0;
@@ -85,8 +85,8 @@ fn weak_concav_lop_judge_builds_intersegment_and_internal_pairs() {
     )
     .expect("weak concavity intersegment and internal LOP pairs");
 
-    assert_eq!(ref_temp[2][1..=4], [20, 61, 30, 81]);
-    assert_eq!(n_ref_temp[2], 4);
+    assert_eq!(ref_temp[1][0..4], [20, 61, 30, 81]);
+    assert_eq!(n_ref_temp[1], 4);
     assert_eq!(num_ref, 4);
 }
 
@@ -100,10 +100,10 @@ fn weak_concav_lop_judge_clears_empty_odd_segment_pair_after_intersegment_pair()
     let mut sjx_child = vec![[0, 0]; 10];
     sjx_child[2] = [20, 21];
     sjx_child[6] = [60, 61];
-    let mut weak_segment = vec![vec![], vec![9], vec![8]];
-    let weak_segment_old = vec![vec![], vec![2], vec![6]];
-    let n_weak_segment = vec![0, 0, 0];
-    let weak_pair = vec![[0, 0]];
+    let mut weak_segment = vec![vec![9], vec![8]];
+    let weak_segment_old = vec![vec![2], vec![6]];
+    let n_weak_segment = vec![0, 0];
+    let weak_pair: Vec<[usize; 2]> = Vec::new();
     let mut ref_temp = vec![vec![0; 6]; 4];
     let mut n_ref_temp = vec![0; 4];
     let mut num_ref = 0;
@@ -127,9 +127,9 @@ fn weak_concav_lop_judge_clears_empty_odd_segment_pair_after_intersegment_pair()
     )
     .expect("empty odd weak-concavity pair is cleared after intersegment mapping");
 
-    assert_eq!(ref_temp[2][1..=2], [20, 61]);
+    assert_eq!(ref_temp[1][0..2], [20, 61]);
+    assert_eq!(weak_segment[0][0], 1);
     assert_eq!(weak_segment[1][0], 1);
-    assert_eq!(weak_segment[2][0], 1);
-    assert_eq!(n_ref_temp[2], 2);
+    assert_eq!(n_ref_temp[1], 2);
     assert_eq!(num_ref, 2);
 }

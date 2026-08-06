@@ -26,22 +26,20 @@ pub fn refine_weak_concav_lop_judge_one_based(
     ref_sjx_segment_temp: &mut [Vec<usize>],
     n_ref_sjx_segment_temp: &mut [usize],
 ) -> io::Result<()> {
-    // STILL ONE-BASED, unlike `refine_lop_sharp` and `refine_lop_weak_pair`.
+    // Zero-based on the *outer* index, as `MOD_refine.F90:1849` allocates:
+    // `do i = 1, num` over tables sized by that count.
     //
-    // `MOD_refine.F90:1833` walks these `do i = 1, num` over tables sized by
-    // that count, so this carries the same drift its siblings were converted
-    // out of. Converting it is not the same edit: three index families move at
-    // once -- the pair loop, the segment loop, and the `kk` slot cursor writing
-    // `ref_sjx_lop_temp(kk+1:kk+2, m)` -- and two parities invert with the base
-    // (`mod(i, 2) /= 0` is true exactly when the zero-based index is even, and
+    // The inner axes were already mixed and stay that way, which is what makes
+    // this look inconsistent and is nevertheless correct: `weak_concav_segment`
+    // and its `_old` are read zero-based (`(n(i)+1, i)` in Fortran is slot `n`
+    // here), while `ref_sjx_segment_temp` was one-based and is converted, so it
+    // agrees with `refine_lop_sharp` -- the driver hands both the same table.
+    //
+    // Both parities invert with the base. Fortran's `mod(i, 2) /= 0` is true
+    // exactly when the zero-based index is even, and
     // `weak_concav_segment_old(j - mod(i,2) + 1, i)` reaches one slot further
-    // on an odd one). An attempt that moved all three at once did not converge
-    // and was reverted rather than left half-done.
-    //
-    // Nothing calls this yet -- `close_transition_rows` does not build the weak
-    // half at all -- so the drift is inert. Convert it together with wiring
-    // that half, one index family at a time, against the Fortran.
-    if num_weak_concav_pair >= weak_concav_pair.len() {
+    // on an odd one.
+    if num_weak_concav_pair > weak_concav_pair.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "num_weak_concav_pair must address weak_concav_pair",
@@ -49,7 +47,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
     }
 
     let num_end = if num_weak_concav_pair != 0 {
-        for pair_id in 1..=num_weak_concav_pair {
+        for pair_id in 0..num_weak_concav_pair {
             let [m1, w1] = weak_concav_pair[pair_id];
             let Some((m11, w11)) = refine_m1w1_to_m11w11_one_based(m1, w1, sjx_child, ngrmw_new)?
             else {
@@ -58,7 +56,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
             let segment_id = num_bdy_refine_segment + num_weak_concav_segment + pair_id;
             if segment_id >= n_ref_sjx_segment_temp.len()
                 || segment_id >= ref_sjx_segment_temp.len()
-                || ref_sjx_segment_temp[segment_id].len() <= 2
+                || ref_sjx_segment_temp[segment_id].len() < 2
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -67,8 +65,8 @@ pub fn refine_weak_concav_lop_judge_one_based(
             }
             n_ref_sjx_segment_temp[segment_id] = 2;
             *num_ref += 2;
-            ref_sjx_segment_temp[segment_id][1] = m11;
-            ref_sjx_segment_temp[segment_id][2] = w11;
+            ref_sjx_segment_temp[segment_id][0] = m11;
+            ref_sjx_segment_temp[segment_id][1] = w11;
         }
         num_weak_concav_segment
     } else {
@@ -78,9 +76,9 @@ pub fn refine_weak_concav_lop_judge_one_based(
     if num_weak_concav_segment == 0 {
         return Ok(());
     }
-    if num_end >= weak_concav_segment.len()
-        || num_end >= weak_concav_segment_old.len()
-        || num_end >= n_weak_concav_segment.len()
+    if num_end > weak_concav_segment.len()
+        || num_end > weak_concav_segment_old.len()
+        || num_end > n_weak_concav_segment.len()
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -88,7 +86,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
         ));
     }
 
-    for segment_id_weak in 1..=num_end {
+    for segment_id_weak in 0..num_end {
         if weak_concav_segment[segment_id_weak].is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -108,7 +106,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
         let mut kk = 0_usize;
         let n_segment = n_weak_concav_segment[segment_id_weak];
 
-        if segment_id_weak % 2 != 0 {
+        if segment_id_weak % 2 == 0 {
             if segment_id_weak + 1 >= weak_concav_segment_old.len()
                 || weak_concav_segment_old[segment_id_weak].len() <= n_segment
                 || weak_concav_segment_old[segment_id_weak + 1].is_empty()
@@ -122,7 +120,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
             let w1 = weak_concav_segment_old[segment_id_weak + 1][0];
             if let Some((m11, w11)) = refine_m1w1_to_m11w11_one_based(m1, w1, sjx_child, ngrmw_new)?
             {
-                if ref_sjx_segment_temp[segment_id].len() <= kk + 2 {
+                if ref_sjx_segment_temp[segment_id].len() < kk + 2 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!("LOP segment {segment_id} lacks intersegment output slots"),
@@ -130,8 +128,8 @@ pub fn refine_weak_concav_lop_judge_one_based(
                 }
                 n_ref_sjx_segment_temp[segment_id] = 2;
                 *num_ref += 2;
-                ref_sjx_segment_temp[segment_id][kk + 1] = m11;
-                ref_sjx_segment_temp[segment_id][kk + 2] = w11;
+                ref_sjx_segment_temp[segment_id][kk] = m11;
+                ref_sjx_segment_temp[segment_id][kk + 1] = w11;
                 kk += 2;
             } else {
                 continue;
@@ -149,10 +147,10 @@ pub fn refine_weak_concav_lop_judge_one_based(
             }
         }
 
-        for j in 1..=n_segment {
-            let old_slot = if segment_id_weak % 2 == 0 { j } else { j - 1 };
+        for j in 0..n_segment {
+            let old_slot = if segment_id_weak % 2 == 1 { j + 1 } else { j };
             if weak_concav_segment_old[segment_id_weak].len() <= old_slot
-                || weak_concav_segment[segment_id_weak].len() < j
+                || weak_concav_segment[segment_id_weak].len() <= j
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -160,7 +158,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
                 ));
             }
             let m1 = weak_concav_segment_old[segment_id_weak][old_slot];
-            let w0 = weak_concav_segment[segment_id_weak][j - 1];
+            let w0 = weak_concav_segment[segment_id_weak][j];
             if w0 == 0 || w0 >= triangle_neighbors.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -185,7 +183,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
             else {
                 continue;
             };
-            if ref_sjx_segment_temp[segment_id].len() <= kk + 2 {
+            if ref_sjx_segment_temp[segment_id].len() < kk + 2 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("LOP segment {segment_id} lacks internal output slots"),
@@ -193,8 +191,8 @@ pub fn refine_weak_concav_lop_judge_one_based(
             }
             n_ref_sjx_segment_temp[segment_id] += 2;
             *num_ref += 2;
-            ref_sjx_segment_temp[segment_id][kk + 1] = m11;
-            ref_sjx_segment_temp[segment_id][kk + 2] = w11;
+            ref_sjx_segment_temp[segment_id][kk] = m11;
+            ref_sjx_segment_temp[segment_id][kk + 1] = w11;
             kk += 2;
         }
     }
