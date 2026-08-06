@@ -698,19 +698,52 @@ pub fn run_refine_pipeline_namelist(
 
     let file_dir = PathBuf::from(config.file_dir());
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-    let m_refine_levels = method_c_m_refine_levels_zero_based(&state)?;
-    let m_refine_levels_orig = method_c_m_refine_levels_orig_zero_based(&state)?;
-    let m_ngr = method_c_m_ngr(&state)?;
-    let w_refine_levels = method_c_w_refine_levels_zero_based(&state)?;
+
+    /// Everything the gridfile carries that only Method-C can say.
+    ///
+    /// Owned rather than borrowed, and bound before the backend branch, because
+    /// `MethodCMetadataSlices` borrows all of it and has to outlive the call
+    /// that consumes it. A backend with no generations or ancestry to report
+    /// leaves this `None` and the writer serves it just the same.
+    struct MethodCMetadataOwned {
+        m_refine_levels: Vec<i32>,
+        m_refine_levels_orig: Vec<i32>,
+        m_ngr: Vec<i32>,
+        w_refine_levels: Vec<i32>,
+        w_refine_levels_orig: Vec<i32>,
+        w_ngr: Vec<i32>,
+        m_lineages: Vec<i64>,
+        w_lineages: Vec<i64>,
+    }
+
+    let method_c_metadata = Some(MethodCMetadataOwned {
+        m_refine_levels: method_c_m_refine_levels_zero_based(&state)?,
+        m_refine_levels_orig: method_c_m_refine_levels_orig_zero_based(&state)?,
+        m_ngr: method_c_m_ngr(&state)?,
+        w_refine_levels: method_c_w_refine_levels_zero_based(&state)?,
+        w_refine_levels_orig: method_c_w_refine_levels_orig_zero_based(&state)?,
+        w_ngr: method_c_w_ngr(&state)?,
+        // Ancestry as the mesh tracked it through every pass and renumbering.
+        m_lineages: mesh.gridfile_m_cell_lineages()?,
+        w_lineages: mesh.gridfile_w_cell_lineages()?,
+    });
+
     // Measured from the produced mesh, not from the request: a pass whose demand
     // is clipped away stops descending without failing, and `max_level` alone
-    // cannot show that.
-    let realized_max_level = w_refine_levels.iter().copied().max().unwrap_or(0).max(0) as usize;
-    // Ancestry as the mesh tracked it through every pass and renumbering.
-    let m_lineages = mesh.gridfile_m_cell_lineages()?;
-    let w_lineages = mesh.gridfile_w_cell_lineages()?;
-    let w_refine_levels_orig = method_c_w_refine_levels_orig_zero_based(&state)?;
-    let w_ngr = method_c_w_ngr(&state)?;
+    // cannot show that. A backend that reports no levels has nothing measured
+    // here, which is honest -- zero says "not known from this mesh", and the
+    // requested `max_level` travels separately.
+    let realized_max_level = method_c_metadata
+        .as_ref()
+        .map(|meta| {
+            meta.w_refine_levels
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(0)
+                .max(0) as usize
+        })
+        .unwrap_or(0);
     // Which cells the run named outright. The carve's largest-component rule
     // would otherwise delete a refinement circle sitting on a small bay, and
     // nothing would report that the region asked for is gone.
@@ -750,16 +783,18 @@ pub fn run_refine_pipeline_namelist(
         max_level,
         &output_mesh,
         domain_region.as_ref(),
-        Some(MethodCMetadataSlices {
-            m_lineage: &m_lineages,
-            w_lineage: &w_lineages,
-            m_refine_level: &m_refine_levels,
-            m_refine_level_orig: &m_refine_levels_orig,
-            m_ngr: &m_ngr,
-            w_refine_level: &w_refine_levels,
-            w_refine_level_orig: &w_refine_levels_orig,
-            w_ngr: &w_ngr,
-        }),
+        method_c_metadata
+            .as_ref()
+            .map(|meta| MethodCMetadataSlices {
+                m_lineage: &meta.m_lineages,
+                w_lineage: &meta.w_lineages,
+                m_refine_level: &meta.m_refine_levels,
+                m_refine_level_orig: &meta.m_refine_levels_orig,
+                m_ngr: &meta.m_ngr,
+                w_refine_level: &meta.w_refine_levels,
+                w_refine_level_orig: &meta.w_refine_levels_orig,
+                w_ngr: &meta.w_ngr,
+            }),
         hard_center_demand.as_deref(),
     )?;
 
