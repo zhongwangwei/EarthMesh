@@ -256,6 +256,26 @@ pub fn run_refine_pipeline_namelist(
     let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
     let has_configured_calculated_regions =
         !calculated_region_prefix.is_empty() && calculated_region_prefix != "/tmp";
+    // `refine_cal` says a criterion decides where to refine, and both routes
+    // that read one in-process are Method-C's. Red-green refines named regions:
+    // mask *files* it serves fine, since a mask file is a named region by
+    // another name, but a criterion with no file behind it has no reader here.
+    //
+    // Said now rather than at the backend branch, because the reader below runs
+    // first -- and on the unconfigured prefix it fails with a message about
+    // Method-C and a `/tmp` path nobody typed.
+    if config.refine_backend.trim() == "red_green"
+        && refine.refine_cal
+        && !has_configured_calculated_regions
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "NL%refine_backend = red_green has no reader for calculated criteria: it refines \
+             named regions, and the routes that read a criterion (&hfield, &adaptive) are \
+             Method-C's. Point RL%mask_refine_cal_fprefix at mask files, which red-green serves \
+             as named regions, or use method_c",
+        ));
+    }
     if refine.refine_cal && (!backend_consumes_criteria || has_configured_calculated_regions) {
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,

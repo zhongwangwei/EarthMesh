@@ -2962,3 +2962,36 @@ fn redgreen_backend_is_not_stopped_by_method_cs_adaptive_section() {
         run.gridinit.gridfile.lbx_points
     );
 }
+
+/// Criteria with nowhere to go are refused, not walked into the region reader.
+///
+/// `refine_cal` means "a criterion decides where to refine". Both routes that
+/// read a criterion in-process -- the h-field and point+radius -- are
+/// Method-C's; red-green refines named regions. Mask *files* it serves fine,
+/// because a mask file is a named region by another name. With the prefix left
+/// at the engine's `/tmp` sentinel there is no file and no reader, and the
+/// calculated-region reader would go looking anyway and fail with a message
+/// about Method-C and a path nobody typed.
+#[test]
+fn redgreen_backend_refuses_criteria_it_has_no_reader_for() {
+    let root = temp_root("redgreen_refine_cal_no_masks");
+    let namelist = root.join("redgreen_refine_cal.nml");
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='redgreen_refine_cal'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='red_green'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%niter_refine=0\n  RL%refine_num_landtypes=.true.\n  RL%th_num_landtypes=3\n  RL%mask_refine_cal_fprefix='/tmp'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n/\n",
+        ),
+    )
+    .expect("write red-green calculated-criteria namelist");
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect_err("criteria with no reader must be refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("no reader for calculated criteria"),
+        "unexpected error: {error}"
+    );
+}

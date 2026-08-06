@@ -3,8 +3,14 @@ use crate::LonLatPoint;
 
 /// Gridfile row identity has two independent dimensions: canonical-id mapping
 /// and the first physical row. Compact Method-C output stores canonical id 1 in
-/// row 0 as a sentinel, while older files can retain two explicit placeholder
-/// rows where canonical ids equal row numbers.
+/// row 0 as a sentinel; the other layout keeps two explicit placeholder rows
+/// where canonical ids equal row numbers.
+///
+/// The second is not only a legacy shape: red-green output carries both slot 0
+/// and the canonical placeholder, so it is written that way today. Note also
+/// that the choice is made **per array** -- a producer that leaves slot 0 of one
+/// array off the origin gets the two read differently, and every connectivity id
+/// resolves one row off in a file that otherwise opens fine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GridfileRowLayout {
     pub(crate) first_physical_row: usize,
