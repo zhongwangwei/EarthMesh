@@ -257,7 +257,20 @@ fn method_c_anneals_nxp7_two_corridor_after_repaired_parent() {
 }
 
 #[test]
-fn method_c_rejects_reduced_canonical_nxp6_two_circle_too_close_boundary() {
+fn method_c_moves_the_parent_halo_where_the_reduced_canonical_probe_gives_up() {
+    // This case used to be pinned as a refusal, matching the reduced Canonical
+    // probe: the level-2 circle sits too close to the level-1 boundary and the
+    // pass reports "crosses the parent boundary".
+    //
+    // Growing the parent is the remedy for exactly that complaint -- it is the
+    // boundary the child is too close to, and moving it away is what the error
+    // asks for. Measured over sixty three-level cases at NXP 21, a larger parent
+    // rescued all fourteen refusals and a smaller parent rescued none, so the
+    // retry sweeps upward now and reaches cases whose parent built cleanly.
+    //
+    // Only upward. Shrinking the parent also rescues some configurations and
+    // refines less than the run asked for while doing it, which is the failure
+    // that leaves a valid mesh nobody wanted.
     let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Circle {
@@ -272,19 +285,20 @@ fn method_c_rejects_reduced_canonical_nxp6_two_circle_too_close_boundary() {
         },
     ];
 
-    let error = mesh.spawn_nest_as_atmosmesh(&regions, 2).expect_err(
-        "reduced Canonical probe rejects this two-level circle as too close to the parent boundary",
+    let refined = mesh
+        .spawn_nest_as_atmosmesh(&regions, 2)
+        .expect("a larger parent halo builds what the probe gives up on");
+
+    assert!(refined.nwd > mesh.nwd);
+    let deepest = (2..=refined.nwd)
+        .map(|iw| refined.w_faces[iw].mrlw)
+        .max()
+        .expect("faces");
+    assert_eq!(
+        deepest, 3,
+        "both levels have to land; a rescue that drops the inner one is not a rescue"
     );
-    let message = error.to_string();
-    assert!(
-            message.contains("crosses")
-                || message.contains("too close")
-                || message.contains("parent boundary")
-                || message.contains("next coarser grid boundary"),
-            "Rust should reject the same invalid two-level circle as the reduced Canonical probe; got {error}"
-        );
-    assert!(
-            !message.contains("cannot be grouped into transition triples"),
-            "Rust should reject this invalid two-level circle before Method-C perimeter triple grouping; got {error}"
-        );
+    refined
+        .validate_topology()
+        .expect("the rescued mesh is a mesh");
 }

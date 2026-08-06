@@ -111,6 +111,14 @@ fn multilevel_failures_are_counted_by_the_gate_that_produced_them() {
             .collect();
         println!("{nxp:<4}{levels:<7}{ok:<4}{err:<5}{}", detail.join(" "));
     }
+    // Two levels is the depth the upward retry reaches, since the checkpoint
+    // holds one pass back. It was 33 and 39 of 40 before that retry looked
+    // upward; anything less than complete now is a regression.
+    for (nxp, levels, ok, _err, _gates) in &rows {
+        if *levels == 2 {
+            assert_eq!(*ok, 40, "nxp {nxp} at two levels regressed to {ok} of 40");
+        }
+    }
     let unclassified: usize = rows
         .iter()
         .filter_map(|(_, _, _, _, gates)| gates.get(&Gate::Unclassified))
@@ -169,5 +177,64 @@ fn the_inter_level_clearance_is_swept_against_the_gate_that_fails() {
                 .collect();
             println!("{nxp:<4}{halo_rows:<11}{ok:<4}{err:<5}{}", detail.join(" "));
         }
+    }
+}
+
+/// E0-1c: the retry only shrinks. Does growing rescue cases shrinking cannot?
+///
+/// `retry_child_with_scaled_parent_region` sweeps the parent radius downward,
+/// 0.95 to 0.40. That is a search over half the space, and the half it skips is
+/// not obviously the worse one: the admissible set is not upward closed, so a
+/// factor above one is a different alignment rather than a looser constraint.
+/// This counts, for the cases `spawn_nest` refuses, which side rescues them.
+#[test]
+fn refused_cases_are_offered_a_larger_parent_as_well_as_a_smaller_one() {
+    println!("E0-1c rescue by direction (levels = 3, 60 cases per row)");
+    println!("nxp  refused  rescued_by_smaller  rescued_by_larger  only_larger  neither");
+    for nxp in [21usize, 40] {
+        let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mut rng = Lcg(0xE0_1C00_u64 + nxp as u64);
+        let (mut refused, mut smaller, mut larger, mut only_larger, mut neither) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
+        for _ in 0..60 {
+            let lon = rng.unit() * 360.0 - 180.0;
+            let lat = rng.unit() * 140.0 - 70.0;
+            let outer = 800_000.0 + rng.unit() * 2_200_000.0;
+            let chain = |scale: f64| -> Vec<RefinementRegion> {
+                (1..=3usize)
+                    .map(|level| RefinementRegion::Circle {
+                        center: LonLatDegrees::new(lon, lat),
+                        // Only the coarser levels move; the deepest level is
+                        // what the run actually asked for.
+                        radius_meters: outer / 2f64.powi(level as i32 - 1)
+                            * if level < 3 { scale } else { 1.0 },
+                        level,
+                    })
+                    .collect()
+            };
+            if mesh.spawn_nest(&chain(1.0), 3).is_ok() {
+                continue;
+            }
+            refused += 1;
+            let down = (1..=12)
+                .map(|step| 1.0 - step as f64 * 0.05)
+                .any(|factor| mesh.spawn_nest(&chain(factor), 3).is_ok());
+            let up = (1..=12)
+                .map(|step| 1.0 + step as f64 * 0.05)
+                .any(|factor| mesh.spawn_nest(&chain(factor), 3).is_ok());
+            if down {
+                smaller += 1;
+            }
+            if up {
+                larger += 1;
+            }
+            if up && !down {
+                only_larger += 1;
+            }
+            if !up && !down {
+                neither += 1;
+            }
+        }
+        println!("{nxp:<5}{refused:<9}{smaller:<20}{larger:<19}{only_larger:<13}{neither}");
     }
 }

@@ -143,19 +143,42 @@ impl TriangularMesh {
                                 parent_required_repair,
                             )) = previous_pass_checkpoint.as_ref()
                             {
-                                if *parent_required_repair {
-                                    if let Some(refined) = parent_base
-                                        .retry_child_with_eroded_parent_mask(
-                                            parent_selected,
-                                            *parent_grid_number,
-                                            parent_region,
-                                            &pass_regions,
-                                            grid_number,
-                                            max_mrows,
-                                            !use_cartesian_xy,
-                                            use_cartesian_xy,
-                                        )?
-                                    {
+                                // A parent that built cleanly used to end the
+                                // matter, on the reading that a good parent mask
+                                // has nothing to answer for. It does: the child
+                                // fails on how the parent's boundary landed, not
+                                // on whether the parent needed mending. Measured
+                                // over sixty three-level cases at NXP 21, all
+                                // fourteen refusals were rescued by moving the
+                                // parent, and none of those parents had needed
+                                // repair. A clean parent gets the rescaling try
+                                // alone, which is the cheap one; the mask
+                                // erosion sequences stay for the parent that did
+                                // need mending.
+                                let rescued = if *parent_required_repair {
+                                    parent_base.retry_child_with_eroded_parent_mask(
+                                        parent_selected,
+                                        *parent_grid_number,
+                                        parent_region,
+                                        &pass_regions,
+                                        grid_number,
+                                        max_mrows,
+                                        !use_cartesian_xy,
+                                        use_cartesian_xy,
+                                    )?
+                                } else {
+                                    parent_base.retry_child_with_scaled_parent_region(
+                                        parent_region,
+                                        *parent_grid_number,
+                                        &pass_regions,
+                                        grid_number,
+                                        max_mrows,
+                                        !use_cartesian_xy,
+                                        use_cartesian_xy,
+                                    )?
+                                };
+                                {
+                                    if let Some(refined) = rescued {
                                         mesh = refined;
                                         previous_pass_checkpoint = Some((
                                             mesh_before_pass,
