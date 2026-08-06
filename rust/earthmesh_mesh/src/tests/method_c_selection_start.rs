@@ -550,3 +550,91 @@ fn cartesian_distance(a: CartesianPoint, b: CartesianPoint) -> f64 {
     let dz = a.z - b.z;
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
+
+/// A tile pressed against one refined moments earlier must not be refused for
+/// touching ground nobody has touched.
+///
+/// The walk takes its generation from its start point, and the start point is
+/// the M point nearest the region. A block refined earlier in the same pass
+/// carries four times the point density of the ground around it, so any anchor
+/// near its edge finds one of *its* points first. The walk then runs at the
+/// child generation, every ordinary unrefined edge beside it reads as coarser,
+/// and `crosses the parent boundary` fires against a boundary that is not
+/// there. The refusal is provably false: `crosses` is `edge < mrlo` over edges
+/// of generation one or more, so a pass over unrefined ground cannot reach it.
+#[test]
+fn method_c_start_leaves_ground_an_earlier_tile_in_this_pass_refined() {
+    let mesh =
+        MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let first = mesh
+        .spawn_nest(
+            &[MethodCRefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 1_500_000.0,
+                level: 1,
+            }],
+            1,
+        )
+        .expect("first tile of this pass");
+
+    // A neighbour whose anchor the first tile's denser points now own, but
+    // which still has unrefined ground of its own -- the tile-beside-a-tile
+    // case. A region that sits *wholly* inside the first block is a different
+    // thing: there the second generation is the ground, and starting on it is
+    // the canonical nested behaviour rather than the fault. Scanned rather than
+    // hard-coded, since which offset lands there is a property of the lattice.
+    let scan_radius = active_mesh_radius(&first).expect("mesh radius");
+    let mut poisoned = None;
+    for lon_offset in 1..=60 {
+        let region = MethodCRefinementRegion::Circle {
+            center: LonLatDegrees::new(lon_offset as f64 * 0.5, 0.0),
+            radius_meters: 1_200_000.0,
+            level: 1,
+        };
+        let anchor = first
+            .closest_m_point_to_region_anchor(&region, false)
+            .expect("anchor point");
+        if first.m_metadata[anchor].mrlm == 1 {
+            continue;
+        }
+        let holds_unrefined_ground = (2..=first.nmd).any(|im| {
+            first.m_metadata[im].mrlm == 1
+                && region.contains_cartesian(first.m_points[im], scan_radius)
+        });
+        if holds_unrefined_ground {
+            poisoned = Some((region, anchor));
+            break;
+        }
+    }
+    let (region, anchor) =
+        poisoned.expect("a tile whose anchor the earlier one owns but whose ground it does not");
+    assert_eq!(
+        first.m_metadata[anchor].mrlm, 2,
+        "the case only bites when the nearest point is the earlier tile's child ground"
+    );
+
+    let radius = active_mesh_radius(&first).expect("mesh radius");
+    let method_c_m_neighbors =
+        derive_icosahedron_m_neighbors_canonical_checked(first.nmd, &first.u_edges, &first.w_faces)
+            .expect("Method-C test neighbors");
+    let start = first
+        .method_c_refinement_start_point_with_neighbors(
+            &region,
+            radius,
+            &method_c_m_neighbors,
+            false,
+        )
+        .expect("Method-C start point");
+    assert_eq!(
+        first.m_metadata[start].mrlm, 1,
+        "the walk must start on the generation this pass is refining, not on the tile beside it"
+    );
+
+    let selected = first
+        .selected_region_faces(&region, 1, false)
+        .expect("a tile beside an earlier one must not be refused for touching it");
+    assert!(
+        selected.iter().skip(2).any(|selected| *selected),
+        "the neighbour still has unrefined ground of its own to take"
+    );
+}
