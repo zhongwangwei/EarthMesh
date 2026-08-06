@@ -78,17 +78,25 @@ pub struct RedGreenSettings {
     /// `weak_concav_eliminate`: absorb weak concavities by refining them out
     /// rather than carrying them through the transition rounds.
     ///
-    /// **Only half wired.** Turning this on reaches `iterG` in the judge chain,
-    /// which is what grows the marking over a weak concavity. It does *not*
-    /// reach the transition rounds' half: `MOD_refine.F90:355,477` also call
-    /// `weak_concav_segment_make`, `weak_concav_lop_judge` and
-    /// `weak_concav_pair_special`, and `close_transition_rows` calls none of
-    /// them. Two of those ports (`refine_lop_weak`, `refine_lop_weak_pair`)
-    /// additionally carry the same one-based drift this crate's
-    /// `refine_lop_sharp` was just converted out of, so wiring them means
-    /// converting them first -- the recipe is the same table.
+    /// **Only one of two branches is built, and the flag reads as if both
+    /// were.** In `MOD_refine.F90` this is not a switch between "handle weak
+    /// concavities" and "do not" -- it chooses *which* of two treatments runs:
     ///
-    /// Left `false` until both halves are there, so it cannot half-run.
+    /// - true: `iterG` grows the marking until the concavity is refined away.
+    ///   That is the branch here.
+    /// - false: `iterG`'s count becomes `num_ref_weak_concav`, and the
+    ///   concavity is carried through the transition rounds instead, by
+    ///   `weak_concav_segment_make` (line 355), `weak_concav_pair_special` and
+    ///   `weak_concav_lop_judge` (line 477). `close_transition_rows` calls none
+    ///   of the three.
+    ///
+    /// So finishing this is not three extra calls: `iterG` has to run either
+    /// way and its result has to fork. The three kernels themselves are ready
+    /// -- all of `refine_lop_sharp`, `refine_lop_weak` and
+    /// `refine_lop_weak_pair` are now zero-based and agree with the Fortran.
+    ///
+    /// Left `false` until the fork is built, so the half that exists cannot be
+    /// mistaken for the whole.
     pub eliminate_weak_concavity: bool,
     /// `HALO`: how far inside the previous level's refined region this level
     /// must stay.
