@@ -117,66 +117,84 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
     );
 }
 
-/// A region over a pole does not close, and the run says so instead of writing
-/// it.
+/// A refined region closes wherever it sits -- over a pole, across the
+/// antimeridian, at mid-latitude.
 ///
-/// This is an open defect in the red-green driver, not in the wiring: the
-/// transition rows around a refined region that contains one of the
-/// icosahedron's twelve pentagons leave triangle edges with no neighbouring
-/// triangle. Measured from NXP 21 up; the antimeridian does the same from NXP
-/// 33, and so does the ring of coastal demand around an island.
+/// It did not. Each of the three subdivision steps rotated a triangle spanning
+/// the antimeridian by 180 degrees of longitude, computed in that frame, and
+/// rotated back -- what planar lon/lat averaging needs, and a mathematical
+/// identity for the unit-vector centroid that replaced it. Only its arithmetic
+/// survived: whether a triangle took the branch was decided per triangle, so of
+/// the two triangles sharing an edge one could take it and the other not, and
+/// their midpoints for that shared edge came out one ULP apart -- 2.8e-14
+/// degrees. New vertices merge by exact equality, so the two did not merge, the
+/// shared edge lost its neighbour, and the mesh came out with a hole.
 ///
-/// Pinned here because the failure is invisible to a test placed anywhere else:
-/// the same circle at mid-latitude refines to two levels and closes. Only the
-/// level *after* the one that opened the edges would otherwise notice, and a
-/// single-level run has no next level -- it writes a gridfile that opens and
-/// carries a hole.
+/// The test sweeps the places the branch fired: a pole (spuriously, because
+/// cells fan out in longitude there), and the seam itself. Mid-latitude is kept
+/// as the control, because it always worked and is how this hid.
 #[test]
-fn a_polar_region_is_refused_rather_than_written_with_a_hole() {
+fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
     let refine = earthmesh_core::RefineConfig {
         is_transition: true,
         halo: [3; 10],
         max_transition_row: [3; 10],
         ..earthmesh_core::RefineConfig::default()
     };
-    let circle = |lon: f64, lat: f64| earthmesh_mesh::RefinementRegion::Circle {
-        center: earthmesh_mesh::LonLatDegrees::new(lon, lat),
-        radius_meters: 600_000.0,
-        level: 1,
-    };
-    let base =
-        earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25, 0).expect("base mesh");
-    let neighbors = base.m_neighbors.clone();
-    let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
-        .expect("bridge in");
-
-    let open_edges = |region: earthmesh_mesh::RefinementRegion| {
-        let (_, outcome) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
-            &mesh,
-            &[region],
-            &refine,
-            1,
-            None,
-        )
-        .expect("the round itself succeeds; it is the mesh that is wrong");
+    let open_edges = |mesh: &earthmesh_refine_redgreen::RedGreenMesh| {
         let rows = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
-            &outcome.mesh.cells_on_triangle,
-            &outcome.mesh.triangles_on_cell,
-            &outcome.mesh.n_triangles_on_cell,
+            &mesh.cells_on_triangle,
+            &mesh.triangles_on_cell,
+            &mesh.n_triangles_on_cell,
         )
-        .expect("membership resolves");
-        (outcome.mesh.num_vertex + 1..=outcome.mesh.triangle_count())
+        .expect("cell membership resolves");
+        (mesh.num_vertex + 1..=mesh.triangle_count())
             .filter(|&triangle| rows[triangle].contains(&0))
             .count()
     };
 
-    assert_eq!(
-        open_edges(circle(45.0, 45.0)),
-        0,
-        "a mid-latitude circle closes, which is why this defect hides"
-    );
-    assert!(
-        open_edges(circle(30.0, 89.0)) > 0,
-        "the polar defect is fixed -- drop this test and the pipeline guard's polar wording"
-    );
+    for (place, lon, lat) in [
+        ("north pole", 30.0, 89.0),
+        ("south pole", 0.0, -89.0),
+        ("antimeridian", 180.0, 0.0),
+        ("mid-latitude", 45.0, 45.0),
+    ] {
+        // NXP 33: the smallest size at which every one of these failed before.
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+            .expect("bridge in");
+        let regions: Vec<earthmesh_mesh::RefinementRegion> = (1..=2)
+            .map(|level| earthmesh_mesh::RefinementRegion::Circle {
+                center: earthmesh_mesh::LonLatDegrees::new(lon, lat),
+                radius_meters: 600_000.0,
+                level,
+            })
+            .collect();
+
+        let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+            &mesh, &regions, &refine, 1, None,
+        )
+        .unwrap_or_else(|error| panic!("{place} level 1: {error}"));
+        assert_eq!(open_edges(&first.mesh), 0, "{place} level 1 left a hole");
+
+        // The second level is what used to report the first level's hole, as
+        // "ngrmm row N has invalid neighbor 0" -- so it is half the test.
+        let previous =
+            earthmesh_cli::redgreen_bridge::redgreen_marking_from_regions(&first.mesh, &regions, 1);
+        let (_, second) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+            &first.mesh,
+            &regions,
+            &refine,
+            2,
+            Some(&previous),
+        )
+        .unwrap_or_else(|error| panic!("{place} level 2: {error}"));
+        assert!(
+            second.refined_triangle_count > 0,
+            "{place} level 2 refined nothing"
+        );
+        assert_eq!(open_edges(&second.mesh), 0, "{place} level 2 left a hole");
+    }
 }

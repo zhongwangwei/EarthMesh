@@ -639,16 +639,15 @@ struct RefinedGrid {
 /// Triangles left holding an edge no other triangle owns.
 ///
 /// A mesh of the whole sphere has none: every edge is shared by exactly two
-/// triangles. Red-green can leave them, and three shapes have been measured
-/// doing it: a region over a pole (NXP 21 and up), a region crossing the
-/// antimeridian (NXP 33 and up), and the ring of coastal demand around an
-/// island. A compact disc away from those is fine at every size tried -- a
-/// 3500 km circle at 30N refines to two levels at NXP 45 and closes -- so this
-/// is about the region's shape and where it sits, not how much it covers.
+/// triangles. The subdivision steps used to leave them wherever their per
+/// triangle antimeridian rotation fired for one of two triangles sharing an
+/// edge but not the other, which is fixed -- see
+/// `refine_onedivide_four_renew`.
 ///
-/// The level *after* the one that opened them says so, as "ngrmm row N has
-/// invalid neighbor 0". A single-level run says nothing at all: the gridfile is
-/// written, opens, and carries a hole.
+/// Kept because of how that failed rather than because one is expected: only
+/// the level *after* the one that opened the edges would say so, as "ngrmm row
+/// N has invalid neighbor 0", and a single-level run has no next level. It
+/// writes the gridfile, and the gridfile opens.
 fn redgreen_open_edges(mesh: &earthmesh_refine_redgreen::RedGreenMesh) -> usize {
     let Some(rows) = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
         &mesh.cells_on_triangle,
@@ -761,11 +760,9 @@ fn refine_with_redgreen(
                 io::ErrorKind::InvalidData,
                 format!(
                     "red-green level {level} left {open_edges} triangle edge(s) with no \
-                     neighbouring triangle, so the mesh does not close. Measured for a region \
-                     over a pole, a region crossing the antimeridian, and the ring of coastal \
-                     demand around an island; a compact region away from those refines and \
-                     closes. Move the region, or use method_c for this run. Writing it would \
-                     produce a gridfile that opens and carries a hole"
+                     neighbouring triangle, so the mesh does not close. Writing it would produce \
+                     a gridfile that opens and carries a hole, and only a level after this one \
+                     would otherwise notice"
                 ),
             ));
         }

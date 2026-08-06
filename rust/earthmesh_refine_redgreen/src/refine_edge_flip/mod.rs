@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::{average_lonlat3, check_crossing_canonical_lonlat, LonLatDegrees};
+use crate::{average_lonlat3, LonLatDegrees};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CheckedEdgeFlip {
@@ -55,25 +55,16 @@ pub fn checked_lop_edge_flip(
         }
     }
 
-    let mut quad_points = [
+    // Unshifted, for the same reason as the two subdivision steps: the rotation
+    // is an identity for a centroid taken over unit vectors, and all it left
+    // behind was a last-bit difference between two ways of naming one point.
+    let quad_points = [
         cell_points[left_opposite],
         cell_points[shared[0]],
         cell_points[right_opposite],
         cell_points[shared[1]],
     ];
-    let crosses_dateline = quad_points
-        .iter()
-        .map(|point| point.lon_degrees)
-        .fold(f64::NEG_INFINITY, f64::max)
-        - quad_points
-            .iter()
-            .map(|point| point.lon_degrees)
-            .fold(f64::INFINITY, f64::min)
-        > 180.0;
-    if crosses_dateline {
-        check_crossing_canonical_lonlat(&mut quad_points);
-    }
-    let mut centroids = [
+    let centroids = [
         average_lonlat3(quad_points[0], quad_points[1], quad_points[2]).ok_or_else(|| {
             shared_edge_error(
                 left_id,
@@ -89,9 +80,6 @@ pub fn checked_lop_edge_flip(
             )
         })?,
     ];
-    if crosses_dateline {
-        check_crossing_canonical_lonlat(&mut centroids);
-    }
 
     Ok(CheckedEdgeFlip {
         triangles,

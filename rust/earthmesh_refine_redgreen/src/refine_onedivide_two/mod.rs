@@ -1,8 +1,8 @@
 use std::io;
 
 use crate::{
-    average_lonlat3, check_crossing_canonical_lonlat, crossline_check_canonical, midpoint_lonlat,
-    validate_triangle_neighbor_rows, LonLatDegrees,
+    average_lonlat3, crossline_check_canonical, midpoint_lonlat, validate_triangle_neighbor_rows,
+    LonLatDegrees,
 };
 
 /// Port of `MOD_refine.F90:OnedivideTwo`.
@@ -132,41 +132,34 @@ pub fn refine_onedivide_two_one_based(
                 ));
             }
         }
-        let mut split_points = [cell_points[w1], cell_points[w2], cell_points[w3]];
-        let crosses_dateline = split_points
-            .iter()
-            .map(|point| point.lon_degrees)
-            .fold(f64::NEG_INFINITY, f64::max)
-            - split_points
-                .iter()
-                .map(|point| point.lon_degrees)
-                .fold(f64::INFINITY, f64::min)
-            > 180.0;
-        if crosses_dateline {
-            check_crossing_canonical_lonlat(&mut split_points);
-        }
+        // Unshifted, and it matters most here. The edge this halves is shared
+        // with a triangle the red step may have split into four, and that step
+        // computes the same midpoint. The two have to agree to the last bit or
+        // the vertex fails to merge and the edge between them opens -- see the
+        // note in `refine_onedivide_four_renew`.
+        let split_points = [cell_points[w1], cell_points[w2], cell_points[w3]];
 
-        let mut new_cell_point =
+        let new_cell_point =
             midpoint_lonlat(split_points[1], split_points[2]).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "split edge has no unique spherical midpoint",
                 )
             })?;
-        let mut child_point_a = average_lonlat3(split_points[0], new_cell_point, split_points[1])
+        let child_point_a = average_lonlat3(split_points[0], new_cell_point, split_points[1])
             .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "first child centroid is degenerate",
-            )
-        })?;
-        let mut child_point_b = average_lonlat3(split_points[0], new_cell_point, split_points[2])
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "first child centroid is degenerate",
+                )
+            })?;
+        let child_point_b = average_lonlat3(split_points[0], new_cell_point, split_points[2])
             .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "second child centroid is degenerate",
-            )
-        })?;
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "second child centroid is degenerate",
+                )
+            })?;
         let m1 = num_mp[iter - 1] + refed_iter * 2 + 1;
         let m2 = num_mp[iter - 1] + refed_iter * 2 + 2;
         let w4 = num_wp[iter - 1] + refed_iter + 1;
@@ -182,11 +175,6 @@ pub fn refine_onedivide_two_one_based(
 
         cells_on_triangle_new[m1] = [w1, w2, w4];
         cells_on_triangle_new[m2] = [w1, w3, w4];
-        if crosses_dateline {
-            check_crossing_canonical_lonlat(std::slice::from_mut(&mut child_point_a));
-            check_crossing_canonical_lonlat(std::slice::from_mut(&mut child_point_b));
-            check_crossing_canonical_lonlat(std::slice::from_mut(&mut new_cell_point));
-        }
         triangle_points[m1] = child_point_a;
         triangle_points[m2] = child_point_b;
         cell_points[w4] = new_cell_point;

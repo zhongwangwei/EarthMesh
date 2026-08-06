@@ -853,25 +853,38 @@ gridfile 自身的行数。
    可以超过它(一层细化进上一层的过渡带就会产出),而"到达上限"不等于"允许越界索
    引一张按上限开的表"——那是进程中止,不是错误答案。
 
-**已知缺陷:某些区域形状下网格不闭合(2026-08-06 实测)。** 红绿的过渡行会留下"没有对面
-三角形"的边,实测三种形状会触发:
+**已修:极点与日界线处网格不闭合(2026-08-06)。** 症状是红绿输出留下"没有对面三角形"
+的边——覆盖极点的区域 NXP 21 起、跨日界线 NXP 33 起、岛周围的海岸判据环也会。
 
-| 形状 | 起始规模 |
-|---|---|
-| 覆盖极点(即某个 pentagon)的区域 | NXP 21 起 |
-| 跨越日界线的区域 | NXP 33 起 |
-| 一座岛周围的海岸判据环 | NXP 45 实测(全球 landmesh) |
+**根因是一段平面时代的脚手架。** 三个细分步骤(`refine_onedivide_four_renew`、
+`refine_onedivide_two`、`refine_edge_flip`)都会在三角形经度跨度 > 180° 时把角点整体绕
+极轴旋转 180°、在那个坐标系里算、再转回来——这是**平面经纬度求平均**才需要的。而 Rust
+早已换成 `spherical_centroid_degrees`(单位向量求和归一化),**在 xyz 里日界线不存在**,
+所以这个旋转是数学恒等变换,只剩下算术噪声。
 
-**不是范围问题**:同一位置 3500 km 的圆在 NXP 45 两层照样闭合(Euler=2、单连通分量、
-无非流形顶点扇),中纬 NXP 81 两层也闭合。是区域的形状和落点。
+噪声要命在于:**是否走这个分支是逐三角形判定的**。共享一条边的两个三角形,可能一个走、
+一个不走,同一条边的中点就差一个 ULP(实测 2.842e-14 度)。而 `refine_ngr_renew_core`
+**按 f64 精确相等合并新顶点**,于是不合并、共享边丢邻居、网格出洞。
 
-这个缺陷**只有下一层会发现**——表现为 `ngrmm row N has invalid neighbor 0`——而**单层
-跑没有下一层**,会把带洞的 gridfile 写出去,而且它打得开。所以 `refine_with_redgreen`
-每层之后都数一遍开边,不为零就报错。护栏在 `redgreen_open_edges`,缺陷本身钉在
-`tests/redgreen_criteria_demand.rs::a_polar_region_is_refused_rather_than_written_with_a_hole`
-——那个测试同时断言中纬同款圆是闭合的,因为这正是缺陷藏起来的方式。
+极点是**误触发**:极区附近各单元经度呈扇形铺开,三角形经度跨度轻易超过 180°,离日界线
+十万八千里也会命中。
 
-修它是红绿驱动内部的活(pentagon 处与 ±180 缝处的过渡行闭合),不是接线的活。
+删掉三处旋转即可。实测:NXP 21/33/45/63/81 × 北极/南极/日界线/赤道/中纬,两层,
+**25/25 全部 open_edges=0 且拓扑一致**;`examples/default/atmosphere_hex_global.nml`
+原样加 `NL%refine_backend='red_green'` 端到端通过。
+
+护栏保留(`redgreen_open_edges`,每层数一遍开边):不是因为还预期有洞,而是因为它当初的
+失败方式——**只有下一层会发现,而单层跑没有下一层**,会把带洞的 gridfile 写出去,而且
+它打得开。
+
+**未解决:红绿的六边形对偶会出现 8 邻居单元。** `examples/default/land_hex_global.nml`
+与 `ocean_hex_global.nml` 加红绿后,两层细化都闭合,然后倒在雕刻阶段的
+`center N neighbor count 8 exceeds available width`。7 是 **Method-C 的保证**(顶点价
+∈{5,6,7}),而红绿只靠事后的 Lawson 翻边约束价数——`mask_postproc_neighbor_widths` 的
+`hex => (7, 3)`、以及桥接层的 `npoly.min(7)` 都建立在那条保证上。atmosmesh 不走雕刻,
+所以通过。要么放宽格式的价数上限,要么约束红绿的价数,是设计决策。
+(另注:实测所有红绿运行 `flipped_triangle_count` 恒为 0,而翻边正是约束价数的那一步
+——值得先查这个。)
 
 **测试落点**:具名区域端到端在 `tests/refine_pipeline.rs` 的
 `redgreen_backend_refines_a_named_circle_end_to_end`(NXP=21,两层,读回 gridfile 做

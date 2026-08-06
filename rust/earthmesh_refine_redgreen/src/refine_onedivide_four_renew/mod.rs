@@ -1,9 +1,6 @@
 use std::io;
 
-use crate::{
-    average_lonlat3, check_crossing_canonical_lonlat, crossline_check_canonical, midpoint_lonlat,
-    LonLatDegrees,
-};
+use crate::{average_lonlat3, crossline_check_canonical, midpoint_lonlat, LonLatDegrees};
 
 /// Port of `MOD_refine.F90:OnedivideFour_renew`.
 ///
@@ -74,23 +71,27 @@ pub fn refine_onedivide_four_renew_one_based(
                 ));
             }
         }
-        let mut split = [
+        // Taken as they are, in no shifted frame.
+        //
+        // This used to rotate a triangle spanning the antimeridian by 180
+        // degrees of longitude, compute in that frame, and rotate the results
+        // back -- which is what planar lon/lat averaging needs. The points below
+        // are averaged as unit vectors instead (`spherical_centroid_degrees`),
+        // where the seam does not exist, so the rotation was a mathematical
+        // identity and only its arithmetic survived.
+        //
+        // That arithmetic was the defect. Whether a triangle takes the branch is
+        // decided per triangle, so of the two triangles sharing an edge one
+        // could take it and the other not; their midpoints for that shared edge
+        // then differed in the last bit. `refine_ngr_renew_core_one_based`
+        // merges new vertices by exact equality, so the two did not merge, the
+        // shared edge lost its neighbour, and the mesh came out with a hole --
+        // over a pole from NXP 21 up, over the antimeridian from NXP 33.
+        let split = [
             cell_points[corners[0]],
             cell_points[corners[1]],
             cell_points[corners[2]],
         ];
-        let crosses_dateline = split
-            .iter()
-            .map(|point| point.lon_degrees)
-            .fold(f64::NEG_INFINITY, f64::max)
-            - split
-                .iter()
-                .map(|point| point.lon_degrees)
-                .fold(f64::INFINITY, f64::min)
-            > 180.0;
-        if crosses_dateline {
-            check_crossing_canonical_lonlat(&mut split);
-        }
 
         // Each new cell point is the midpoint of the edge *opposite* the corner
         // of the same index, which is what makes the four children come out in
@@ -103,7 +104,7 @@ pub fn refine_onedivide_four_renew_one_based(
                 )
             })
         };
-        let mut new_cells = [
+        let new_cells = [
             opposite_midpoint(split[1], split[2])?,
             opposite_midpoint(split[0], split[2])?,
             opposite_midpoint(split[0], split[1])?,
@@ -117,17 +118,12 @@ pub fn refine_onedivide_four_renew_one_based(
                 )
             })
         };
-        let mut new_triangles = [
+        let new_triangles = [
             centroid(split[0], new_cells[1], new_cells[2])?,
             centroid(split[1], new_cells[0], new_cells[2])?,
             centroid(split[2], new_cells[0], new_cells[1])?,
             centroid(new_cells[2], new_cells[0], new_cells[1])?,
         ];
-
-        if crosses_dateline {
-            check_crossing_canonical_lonlat(&mut new_triangles);
-            check_crossing_canonical_lonlat(&mut new_cells);
-        }
 
         let m0 = sjx_points + refined * 4;
         let w0 = lbx_points + refined * 3;
