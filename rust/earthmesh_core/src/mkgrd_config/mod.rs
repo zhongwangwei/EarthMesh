@@ -11,6 +11,13 @@ pub struct EarthmeshConfig {
     pub nxp: i32,
     pub base_dir: String,
     pub mesh_type: String,
+    /// Which refinement algorithm builds the mesh: `method_c` or `red_green`.
+    ///
+    /// The choice is a project-level one, and the runner only ever sees a
+    /// namelist, so it has to travel in the namelist or it does not travel at
+    /// all -- settling it during lowering and stopping there is how it came to
+    /// be unreachable from a run.
+    pub refine_backend: String,
     pub mode_grid: String,
     pub mode_file_description: String,
     pub mode_file: String,
@@ -48,6 +55,7 @@ impl Default for EarthmeshConfig {
             nxp: 0,
             base_dir: " /tmp".to_string(),
             mesh_type: "/tmp".to_string(),
+            refine_backend: "method_c".to_string(),
             mode_grid: "/tmp".to_string(),
             mode_file_description: "/tmp".to_string(),
             mode_file: " /tmp".to_string(),
@@ -106,6 +114,7 @@ impl EarthmeshConfig {
                 "nxp" => config.nxp = parse_i32(field, value)?,
                 "base_dir" => config.base_dir = parse_canonical_string(value),
                 "mesh_type" => config.mesh_type = parse_canonical_string(value),
+                "refine_backend" => config.refine_backend = parse_canonical_string(value),
                 "mode_grid" => config.mode_grid = parse_canonical_string(value),
                 "mode_file_description" => {
                     config.mode_file_description = parse_canonical_string(value)
@@ -173,6 +182,10 @@ impl EarthmeshConfig {
         out.push_str(&format!("  NL%runtype = {}\n", q(&self.runtype)));
         out.push_str(&format!("  NL%base_dir = {}\n", q(&self.base_dir)));
         out.push_str(&format!("  NL%mesh_type = {}\n", q(&self.mesh_type)));
+        out.push_str(&format!(
+            "  NL%refine_backend = {}\n",
+            q(&self.refine_backend)
+        ));
         out.push_str(&format!("  NL%mode_grid = {}\n", q(&self.mode_grid)));
         out.push_str(&format!("  NL%mode_file = {}\n", q(&self.mode_file)));
         out.push_str(&format!(

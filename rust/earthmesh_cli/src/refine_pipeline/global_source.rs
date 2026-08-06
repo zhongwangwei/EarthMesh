@@ -451,6 +451,18 @@ pub fn run_refine_pipeline_namelist(
             mesh_type,
             refine_coastline: adaptive.coastline,
         };
+        // The choice now reaches here, which is where routing belongs. Only one
+        // route is built: the red-green algorithm is complete and tested in
+        // earthmesh_refine_redgreen, and the five steps from a marking to a
+        // gridfile are in crate::redgreen_bridge, but nothing joins them to
+        // this pipeline yet. Refusing at the branch says exactly that, instead
+        // of a project failing to compile over a backend it is allowed to name.
+        if config.refine_backend.trim() == "red_green" {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "NL%refine_backend = red_green is not routed through the refinement pipeline yet;                  the algorithm and the marking-to-gridfile steps are built and tested, what is                  missing is this branch calling them. Use method_c until then",
+            ));
+        }
         let (refined, report) =
             crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
                 &mesh, &refine, &inputs, &regions, base_m, depth,

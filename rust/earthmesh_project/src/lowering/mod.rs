@@ -350,21 +350,15 @@ impl ProjectConfig {
         // the run is a namelist, and "red-green" would have to be inferred from
         // the absence of something.
         let backend = self.refinement.backend;
-        if mkgrd.refine && backend == crate::RefinementBackend::RedGreen {
-            return Err(
-                "refinement.backend: the red-green algorithm is complete and tested in \
-                        earthmesh_refine_redgreen -- red step, green closure, forward and reverse \
-                        transition rounds, both weak-concavity treatments, halo nesting, \
-                        renumbering -- and is not reachable from a run yet. The runner consumes a \
-                        namelist, and the backend is settled during lowering without being \
-                        emitted into one, so nothing downstream can see the choice. Wiring it \
-                        means giving the namelist the field and branching refine_pipeline on it; \
-                        the five steps between a marking and a gridfile are in \
-                        earthmesh_cli::redgreen_bridge, each with its own test. Use MethodC \
-                        until then"
-                    .to_string(),
-            );
+        // Carried into the namelist rather than settled and dropped here. The
+        // runner only ever sees a namelist, so a choice that stops at lowering
+        // is a choice nothing downstream can act on -- which is how this one
+        // came to be unreachable from a run.
+        mkgrd.refine_backend = match backend {
+            crate::RefinementBackend::MethodC => "method_c",
+            crate::RefinementBackend::RedGreen => "red_green",
         }
+        .to_string();
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
         let adaptive = if mkgrd.refine && !hfield_requested {
             match &self.refinement.adaptive {
