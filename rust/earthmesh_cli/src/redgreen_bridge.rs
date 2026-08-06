@@ -270,3 +270,76 @@ mod marking_tests {
             .all(|&value| value == 0));
     }
 }
+
+/// One red-green level, from the regions that asked for it to a mesh the
+/// gridfile writer takes.
+///
+/// `previous_level_marks` is the level above's marking **in this mesh's
+/// numbering**. A round renumbers, so a caller chaining levels has to carry it
+/// through `RefineNgrRenewCore::vertex_mapping` rather than reusing the array
+/// it built last time -- which is why this takes one level and returns, instead
+/// of looping internally over a mapping it would have to guess at.
+pub fn refine_redgreen_level(
+    mesh: &earthmesh_refine_redgreen::RedGreenMesh,
+    regions: &[earthmesh_mesh::MethodCRefinementRegion],
+    refine: &earthmesh_core::RefineConfig,
+    level: usize,
+    previous_level_marks: Option<&[i32]>,
+) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
+    let marking = redgreen_marking_from_regions(mesh, regions, level);
+    let settings = redgreen_settings_for_level(refine, level);
+    let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+        mesh,
+        &marking,
+        &settings,
+        previous_level_marks,
+    )?;
+    let written = unstructured_mesh_from_redgreen(&outcome.mesh)?;
+    Ok((written, outcome))
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+    use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+
+    #[test]
+    fn a_named_circle_refines_and_arrives_as_a_writable_mesh() {
+        // The chain end to end: regions -> marking -> round -> gridfile tables.
+        // Every link has its own test; this is the one that says they compose.
+        let base = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_method_c(&base, &neighbors)
+            .expect("bridge in");
+        let before = mesh.triangle_count();
+
+        let (written, outcome) = refine_redgreen_level(
+            &mesh,
+            &[MethodCRefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 3_000_000.0,
+                level: 1,
+            }],
+            &earthmesh_core::RefineConfig::default(),
+            1,
+            None,
+        )
+        .expect("one red-green level");
+
+        assert!(
+            outcome.refined_triangle_count > 0,
+            "the circle asked for triangles: {outcome:?}"
+        );
+        assert!(
+            outcome.mesh.triangle_count() > before,
+            "a refined mesh has more triangles: {} vs {before}",
+            outcome.mesh.triangle_count()
+        );
+        assert_eq!(
+            written.m_to_w.len(),
+            outcome.mesh.cells_on_triangle.len(),
+            "and arrives whole"
+        );
+    }
+}
