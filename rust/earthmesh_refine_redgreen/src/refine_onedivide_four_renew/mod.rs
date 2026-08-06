@@ -298,7 +298,7 @@ mod tests {
             &num_mp,
             &num_wp,
             &cells_on_triangle,
-            &vec![0; 3],
+            &[0; 3],
             &mut triangle_points,
             &mut cell_points,
             &mut new_table,
