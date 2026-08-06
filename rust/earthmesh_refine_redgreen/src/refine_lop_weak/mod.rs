@@ -26,6 +26,21 @@ pub fn refine_weak_concav_lop_judge_one_based(
     ref_sjx_segment_temp: &mut [Vec<usize>],
     n_ref_sjx_segment_temp: &mut [usize],
 ) -> io::Result<()> {
+    // STILL ONE-BASED, unlike `refine_lop_sharp` and `refine_lop_weak_pair`.
+    //
+    // `MOD_refine.F90:1833` walks these `do i = 1, num` over tables sized by
+    // that count, so this carries the same drift its siblings were converted
+    // out of. Converting it is not the same edit: three index families move at
+    // once -- the pair loop, the segment loop, and the `kk` slot cursor writing
+    // `ref_sjx_lop_temp(kk+1:kk+2, m)` -- and two parities invert with the base
+    // (`mod(i, 2) /= 0` is true exactly when the zero-based index is even, and
+    // `weak_concav_segment_old(j - mod(i,2) + 1, i)` reaches one slot further
+    // on an odd one). An attempt that moved all three at once did not converge
+    // and was reverted rather than left half-done.
+    //
+    // Nothing calls this yet -- `close_transition_rows` does not build the weak
+    // half at all -- so the drift is inert. Convert it together with wiring
+    // that half, one index family at a time, against the Fortran.
     if num_weak_concav_pair >= weak_concav_pair.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

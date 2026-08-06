@@ -33,8 +33,10 @@ fn base_inputs() -> (
     cells_on_triangle[11] = [500, 600, 601]; // shares with paired weak triangle -> segment slot.
     cells_on_triangle[12] = [700, 701, 702]; // disjoint -> deferred mrl_new renewal.
 
-    let weak_concav_pair = vec![[0, 0], [2, 0], [3, 0]];
-    let weak_concav_segment = vec![vec![0; 2]; 5];
+    // Zero-based and exactly as long as the count, the shape
+    // `MOD_refine.F90:1723` allocates -- no placeholder column.
+    let weak_concav_pair = vec![[2, 0], [3, 0]];
+    let weak_concav_segment = vec![vec![0; 2]; 4];
 
     (
         triangle_neighbors,
@@ -69,12 +71,13 @@ fn weak_concav_pair_special_marks_outward_triangles_segments_and_deferred_refine
     )
     .expect("weak concavity special-case state update");
 
-    assert_eq!(weak_concav_pair[1], [2, 5]);
-    assert_eq!(weak_concav_pair[2], [3, 10]);
+    assert_eq!(weak_concav_pair[0], [2, 5]);
+    assert_eq!(weak_concav_pair[1], [3, 10]);
     assert_eq!(ref_sjx[5], 1);
     assert_eq!(ref_sjx[10], 1);
-    assert_eq!(weak_concav_segment[3][0], 7);
-    assert_eq!(weak_concav_segment[4][0], 11);
+    // mm = num_ref_weak_concav - num_weak_concav_pair + k, zero-based.
+    assert_eq!(weak_concav_segment[2][0], 7);
+    assert_eq!(weak_concav_segment[3][0], 11);
     assert_eq!(
         mrl_new[1], 1,
         "deferred renewal must not reuse sentinel slot 1"
@@ -93,8 +96,10 @@ fn weak_concav_pair_special_uses_even_pair_partner_from_previous_column() {
         mut weak_concav_pair,
         mut weak_concav_segment,
     ) = base_inputs();
-    // If k=2 incorrectly paired with itself or next slot, triangle 11 would be
-    // treated as disjoint.  Sharing only with pair-1 triangle proves even k uses k-1.
+    // Parity inverts with the base: Fortran's `mod(k,2)==0` is true exactly
+    // when the zero-based index is odd. If k=1 paired with itself or the next
+    // slot, triangle 11 would come out disjoint; sharing only with slot 0's
+    // triangle proves an odd zero-based index reaches back one.
     cells_on_triangle[11] = [501, 900, 901];
 
     refine_weak_concav_pair_special_one_based(
@@ -109,7 +114,7 @@ fn weak_concav_pair_special_uses_even_pair_partner_from_previous_column() {
     )
     .expect("even pair uses previous weak-concavity triangle");
 
-    assert_eq!(weak_concav_segment[4][0], 11);
+    assert_eq!(weak_concav_segment[3][0], 11);
 }
 
 #[test]

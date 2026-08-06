@@ -17,7 +17,7 @@ pub fn refine_weak_concav_pair_special_one_based(
     weak_concav_pair: &mut [[usize; 2]],
     weak_concav_segment: &mut [Vec<usize>],
 ) -> io::Result<()> {
-    if num_weak_concav_pair >= weak_concav_pair.len() {
+    if num_weak_concav_pair > weak_concav_pair.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("num_weak_concav_pair {num_weak_concav_pair} must address weak_concav_pair"),
@@ -30,22 +30,24 @@ pub fn refine_weak_concav_pair_special_one_based(
         ));
     }
 
-    // NOTE, before converting this to zero-based the way `refine_lop_sharp` was:
-    // the pairing below turns on the *parity* of a one-based index, and parity
-    // inverts when the base does -- one-based even is zero-based odd. Getting it
-    // backwards pairs each triangle with the wrong partner and returns no error
-    // at all; the mesh comes out valid and wrong, which is the failure class
-    // section 11.1 of the technical guide is about. Check the rule against
-    // `MOD_refine.F90:1712` before touching the loop, not after.
-    let mut mrl_renew = vec![None; num_weak_concav_pair + 1];
-    for k in 1..=num_weak_concav_pair {
+    // `MOD_refine.F90:1723` allocates `mrl_renew(num_weak_concav_pair)` and
+    // walks `do k = 1, num` over tables whose size is that count -- no
+    // placeholder column, the same shape `refine_lop_sharp` was converted to.
+    //
+    // The pairing turns on the *parity* of the index, and parity inverts with
+    // the base: Fortran's `mod(k, 2) == 0` with `k = k0 + 1` is true exactly
+    // when `k0` is odd. Reading it the other way pairs every triangle with the
+    // wrong partner and returns no error at all, so the check is against the
+    // Fortran rather than against intuition.
+    let mut mrl_renew = vec![None; num_weak_concav_pair];
+    for k in 0..num_weak_concav_pair {
         let m1 = weak_concav_pair[k][0];
-        let pair_index = if k % 2 == 0 {
+        let pair_index = if k % 2 == 1 {
             k.checked_sub(1)
         } else {
             k.checked_add(1)
         }
-        .filter(|&idx| idx >= 1 && idx <= num_weak_concav_pair)
+        .filter(|&idx| idx < num_weak_concav_pair)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -120,7 +122,7 @@ pub fn refine_weak_concav_pair_special_one_based(
         }
     }
 
-    for triangle in mrl_renew.iter().skip(1).flatten().copied() {
+    for triangle in mrl_renew.iter().flatten().copied() {
         if triangle >= mrl_new.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
