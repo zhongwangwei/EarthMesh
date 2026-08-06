@@ -34,9 +34,11 @@
 
 两条细化路线共享初始网格与输出端，方法论差异见 `docs/mesh_refinement_method_research_2026-07-02.md`；h 场层（第 8 节）是二者共同的上游。
 
-**集成状态：生产路径当前只走 Method-C，正在改为双后端。** 上图左支（red-green 三角细化，第 3 节）位于 **`rust/earthmesh_refine_redgreen`**（27 个模块 + 24 个测试文件），2026-08-06 起由"验证资产"改造为生产默认后端，Method-C 退为第二后端并在 GUI 中可选。依赖方向是单向的：该 crate 依赖 `earthmesh_mesh`，而 `earthmesh_mesh` / `earthmesh_cli` / `earthmesh_project` / EarthMesh Studio **均不依赖它**——迁出后主程序零错误零警告编译通过，这是隔离性的编译期证据。`refine_pipeline` 的每个分支落点都是 `spawn_nest_*`。
+**集成状态：两条路线都是运行时路径，由 `NL%refine_backend` 选择。** 上图左支（red-green 三角细化，第 3 节）位于 **`rust/earthmesh_refine_redgreen`**（27 个模块 + 24 个测试文件）。2026-08-06 起它不再只是"验证资产"：`refine_pipeline/global_source.rs` 按 `config.refine_backend` 分支，`"red_green"` 走 red-green 一路到 gridfile，其余走 Method-C 的 `spawn_nest_*` 与 Voronoi/PCVT 尾段。两条路线的能力**不对等**，red-green 当前只读具名区域——边界见 11.6。
 
-左支作为**逐位对拍的内核库**保留——离散整数拓扑才能对参考实现做表级精确比对（第 6 节验收层级的 compat 模式），这份验证能力是连续/构造式内核给不了的。阅读第 3 节时请按"可测试的算法资产"而非"运行时可选路径"理解。
+依赖方向仍是单向的：该 crate 依赖 `earthmesh_mesh`，而 `earthmesh_mesh` / `earthmesh_project` / EarthMesh Studio **均不依赖它**；只有 `earthmesh_cli` 依赖它（桥接层 `redgreen_bridge` 与管线分支）。
+
+左支同时作为**逐位对拍的内核库**保留——离散整数拓扑才能对参考实现做表级精确比对（第 6 节验收层级的 compat 模式），这份验证能力是连续/构造式内核给不了的。
 
 ---
 
@@ -782,3 +784,54 @@ M 132536 是**发射新造的点**,现有定点修复 `try_fill_method_c_specifi
 
 **写作提醒**:细化面积 = 覆盖种子数 × 54 面,与圆半径无关(k 0.4→2.5 实测恒定);
 过渡行净减面(-18/块)。"半径加大导致过度细化"是本轮曾犯的错误结论,勿再引用。
+
+### 11.6 red-green 后端的运行时契约(2026-08-06 接线)
+
+分支点在 `refine_pipeline/global_source.rs`,`match config.refine_backend.trim()`。
+两个臂都产出同一个 `RefinedGrid`,差别在于**红绿臂填不了的字段留空,而不是编造**。
+
+**它读什么。** 只读具名区域:`redgreen_marking_from_regions` 按三角形中心做包含
+测试,一层一次,`refine_redgreen_level` 逐层推进。中心采样与海洋雕刻同规则,所以
+一个单元要么细化并保留,要么两者都不。
+
+**它拒什么(而不是悄悄少做)。** 标记只来自具名区域,下面每一项若被忽略,跑出来
+的网格都会有效、通过全部质量检查、并且不是项目要的那张——所以在分支入口直接报错:
+
+| 请求 | 为什么红绿臂服务不了 |
+|---|---|
+| `&hfield` | 目标层场根本不在这条路上被读 |
+| `&adaptive` | 点+半径判据由需求规划器产出,尚未接到标记 |
+| Cartesian-XY | 红绿网格在经纬度上工作,x/y 米的点转经纬度是无意义的 |
+| `NL%sfcgrid_res_factor` | 地表扩张是另一种操作,不是细化 |
+| `max_level ≥ 2` 且 `RL%Istransition=.false.` | 不建过渡行的一轮会留下悬挂节点,下一层连三角邻居都导不出来 |
+
+最后一条若不前置说明,会在第 2 层中途以 `ngrmm row N has invalid neighbor 0` 冒出来,
+读起来像网格缺陷而不像配置错误。
+
+**它报不了什么。** `state = None`(网格已在经纬度上,不经 Voronoi/PCVT)、
+`method_c_metadata = None`(没有 mrlm/ngr/lineage)、`realized_max_level = 0`、
+`transition_faces = 0`。**零在这里是"本网格上未测量",不是"测量结果为零"**——红绿
+确实建了过渡带,只是不以 Method-C 的 `boundary_rows` 计数。请求的深度另有 `max_level`
+承载,不要为了让日志好看而合成一个层数。运行记录的 `nma`/`nwa` 在无 state 时取自
+gridfile 自身的行数。
+
+**逐层链接的规则。** 上一层的标记要**在细化后的网格上重新问一次区域**,不能沿用上
+一轮建好的数组,也**不能**过 `RedGreenOutcome::cell_renumbering`——那是逐单元的映射,
+而标记是逐三角形的,两个数组连长度都不同。重新计算还偏安全一侧:判决链把上一层的
+区域长到了请求之外,所以重算出的内部是两者中较小的那个,下一层只会被压得更靠里,
+不会更靠外。
+
+**接线时暴露的两个缺陷**(均已修,见 `8a32713`),都属于 11.1 的沉默失败族:
+
+1. `refine_renewal_core` 把单元数组的 0 号槽留在 9999 哨兵上。0 号槽不是单元,但下游
+   把它当单元读:gridfile 读者靠"第 0、1 行是否在原点"在紧凑布局(id = 行 + 1)与
+   双占位布局(id = 行)之间二选一,**且逐数组各选各的**。于是单元数组读成紧凑、三角
+   数组读成双占位,文件照常打开,每个连通性 id 错一行。
+2. `refine_iter_c` 的 `ref_lbx_in` 固定 7 列,因为 7 是其度数规则分叉的边数上限。单元
+   可以超过它(一层细化进上一层的过渡带就会产出),而"到达上限"不等于"允许越界索
+   引一张按上限开的表"——那是进程中止,不是错误答案。
+
+**测试落点**:端到端在 `tests/refine_pipeline.rs` 的
+`redgreen_backend_refines_a_named_circle_end_to_end`(NXP=21,两层,读回 gridfile 做
+拓扑检查——只断言"单元变多"抓不到上面第 1 条);链接规则与行布局在
+`redgreen_bridge` 的单元测试;越界那条在 `refine_loop` 里。
