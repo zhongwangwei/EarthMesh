@@ -127,6 +127,15 @@ pub struct RedGreenOutcome {
     pub halo_cancelled_count: usize,
     /// Triangles rebuilt by Lawson flips while closing the seams.
     pub flipped_triangle_count: usize,
+    /// Where each cell of the mesh that went in ended up in the mesh that came
+    /// out, indexed by its old id.
+    ///
+    /// A round renumbers, so anything a caller holds in the old numbering --
+    /// most of all the marking, when a deeper level has to stay inside this
+    /// one -- is only meaningful once it has been carried through here.
+    /// Dropping it made multi-level refinement impossible to chain without
+    /// rebuilding the marking from geometry each time.
+    pub cell_renumbering: Vec<usize>,
 }
 
 /// Triangle-neighbour slots (`ngrmm`) in the shape the judges want.
@@ -307,6 +316,8 @@ pub fn refine_redgreen_round_inside(
             isolated_dropped_count,
             halo_cancelled_count,
             flipped_triangle_count: 0,
+            // Nothing moved, so every cell is where it was.
+            cell_renumbering: (0..=mesh.cell_count()).collect(),
         });
     }
 
@@ -565,6 +576,7 @@ pub fn refine_redgreen_round_inside(
         isolated_dropped_count,
         halo_cancelled_count,
         flipped_triangle_count,
+        cell_renumbering: renewed.vertex_mapping,
     })
 }
 
@@ -885,6 +897,37 @@ mod tests {
         assert!(
             held.refined_triangle_count < free.refined_triangle_count,
             "and so refine less: {held:?} vs {free:?}"
+        );
+    }
+
+    #[test]
+    fn a_round_says_where_every_cell_went() {
+        // Without this a caller cannot chain levels: the marking it holds is in
+        // the old numbering, and a round renumbers. An unrefined round is the
+        // identity, which is the case that would hide a dropped mapping.
+        let mesh = icosahedron(6);
+        let quiet = refine_redgreen_round_one_based(
+            &mesh,
+            &vec![0i32; mesh.triangle_count() + 1],
+            &RedGreenSettings::default(),
+        )
+        .expect("nothing to do");
+        assert_eq!(
+            quiet.cell_renumbering,
+            (0..=mesh.cell_count()).collect::<Vec<_>>(),
+            "an untouched mesh maps each cell to itself"
+        );
+
+        let mut marking = vec![0i32; mesh.triangle_count() + 1];
+        for triangle in 40..56 {
+            marking[triangle] = 1;
+        }
+        let refined =
+            refine_redgreen_round_one_based(&mesh, &marking, &RedGreenSettings::default())
+                .expect("a refined round");
+        assert!(
+            refined.cell_renumbering.len() > 1,
+            "a refined round must carry a mapping, not an empty one"
         );
     }
 
