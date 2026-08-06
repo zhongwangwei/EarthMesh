@@ -401,6 +401,7 @@ use data_preprocess_types::{DataPreprocessAreaJudgeSourceReport, MkgrdDataPrepro
 pub mod adaptive_refine;
 pub mod coast_refinement_regions;
 pub mod mkgrd_data_preprocess_source;
+pub mod redgreen_bridge;
 pub mod refinement_demand;
 use mkgrd_data_preprocess_source::sample_landtype_values_for_points_one_based;
 pub mod mkgrd_restart_types;

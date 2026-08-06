@@ -162,6 +162,7 @@ dependencies = [
  "earthmesh_project",
  "earthmesh_quality",
  "earthmesh_refine_planner",
+ "earthmesh_refine_redgreen",
  "flate2",
  "hdf5-metno-sys",
  "netcdf",
