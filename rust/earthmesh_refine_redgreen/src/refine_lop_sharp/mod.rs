@@ -20,10 +20,16 @@ pub fn refine_sharp_concav_lop_judge_one_based(
     ref_sjx_segment_temp: &mut [Vec<usize>],
     n_ref_sjx_segment_temp: &mut [usize],
 ) -> io::Result<()> {
-    if num_bdy_refine_segment >= bdy_refine_segment.len()
-        || num_bdy_refine_segment >= bdy_refine_segment_old.len()
-        || num_bdy_refine_segment >= ref_sjx_segment_temp.len()
-        || num_bdy_refine_segment >= n_ref_sjx_segment_temp.len()
+    // `MOD_refine.F90:1411` allocates the segment tables with the column
+    // dimension *equal* to the count, so Fortran's valid columns are `1..num`
+    // and `size == num` -- there is no placeholder column. Both dimensions here
+    // are counts, so the canonical `n + 1` convention, which is for tables
+    // indexed by an entity id, does not apply. Guarding on `>=` rejected
+    // exactly the shape the Fortran allocates and the segment maker produces.
+    if num_bdy_refine_segment > bdy_refine_segment.len()
+        || num_bdy_refine_segment > bdy_refine_segment_old.len()
+        || num_bdy_refine_segment > ref_sjx_segment_temp.len()
+        || num_bdy_refine_segment > n_ref_sjx_segment_temp.len()
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -31,14 +37,16 @@ pub fn refine_sharp_concav_lop_judge_one_based(
         ));
     }
 
-    for segment_id in 1..=num_bdy_refine_segment {
+    for segment_id in 0..num_bdy_refine_segment {
         let tran_degree = n_ref_sjx_segment_temp[segment_id] + 1;
         if tran_degree == 1 {
             continue;
         }
-        if bdy_refine_segment[segment_id].len() < tran_degree
-            || bdy_refine_segment_old[segment_id].len() <= tran_degree
-            || ref_sjx_segment_temp[segment_id].len() <= 4 * (tran_degree - 1)
+        // Zero-based reach: `j` runs `0..tran_degree-1`, so this row is read to
+        // `tran_degree - 2` and the `old` row to `tran_degree - 1`.
+        if bdy_refine_segment[segment_id].len() < tran_degree - 1
+            || bdy_refine_segment_old[segment_id].len() < tran_degree
+            || ref_sjx_segment_temp[segment_id].len() < 4 * (tran_degree - 1)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -47,7 +55,7 @@ pub fn refine_sharp_concav_lop_judge_one_based(
         }
 
         let mut valid_pairs = 0_usize;
-        for j in 1..=(tran_degree - 1) {
+        for j in 0..(tran_degree - 1) {
             let m1 = bdy_refine_segment_old[segment_id][j];
             let w0 = bdy_refine_segment[segment_id][j];
             let m2 = bdy_refine_segment_old[segment_id][j + 1];
@@ -98,7 +106,7 @@ pub fn refine_sharp_concav_lop_judge_one_based(
             }
 
             valid_pairs += 1;
-            let out = 4 * valid_pairs - 3;
+            let out = 4 * (valid_pairs - 1);
             ref_sjx_segment_temp[segment_id][out] = m11;
             ref_sjx_segment_temp[segment_id][out + 1] = w11;
             ref_sjx_segment_temp[segment_id][out + 2] = w22;
@@ -116,8 +124,10 @@ pub fn refine_sharp_concav_lop_judge_one_based(
         if effective_tran_degree == 2 {
             continue;
         }
-        for k in (1..=n_ref_sjx_segment_temp[segment_id]).step_by(4) {
-            let src = num_end.checked_sub(k).ok_or_else(|| {
+        // `ref_sjx_lop_temp(k+2:k+3, i) = ref_sjx_lop_temp(num_end-k:num_end-k+1, i)`
+        // with Fortran `k = k0 + 1`, so the source starts two before `num_end - k0`.
+        for k in (0..n_ref_sjx_segment_temp[segment_id]).step_by(4) {
+            let src = num_end.checked_sub(k + 2).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "invalid sharp-concavity mirror source",

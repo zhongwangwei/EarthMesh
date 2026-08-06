@@ -26,10 +26,11 @@ use std::io;
 
 use crate::{
     refine_array_length_calculation_one_based, refine_boundary_segments_make_one_based,
-    refine_delaunay_lop_one_based, refine_iter_b_judge_one_based, refine_iter_c_judge_one_based,
-    refine_iter_g_judge_one_based, refine_ngr_renew_one_based, refine_num_ref_cal_one_based,
-    refine_onedivide_four_connection_one_based, refine_onedivide_four_renew_one_based,
-    refine_onedivide_two_one_based, refine_sharp_concav_lop_judge_one_based, LonLatDegrees,
+    refine_delaunay_lop_one_based, refine_isreverse_judge_one_based, refine_iter_b_judge_one_based,
+    refine_iter_c_judge_one_based, refine_iter_g_judge_one_based, refine_ngr_renew_one_based,
+    refine_num_ref_cal_one_based, refine_onedivide_four_connection_one_based,
+    refine_onedivide_four_renew_one_based, refine_onedivide_two_one_based,
+    refine_sharp_concav_lop_judge_one_based, LonLatDegrees,
 };
 
 /// A triangular mesh in the tables this pipeline works in.
@@ -483,6 +484,16 @@ fn close_transition_rows(
     if segments.num_bdy_refine_segment == 0 {
         return Ok(0);
     }
+    // `MOD_refine.F90:1411` gives the segment table a *fixed* row dimension of
+    // `set_dis_in`, padded with the "triangle id 1" placeholder where a segment
+    // is shorter than the band is wide. The maker returns ragged rows instead,
+    // which the reverse judge rejects outright and the forward pass only
+    // survives by clamping its own loop. Padding here keeps the driver correct;
+    // the maker emitting fixed-width rows -- and its fixtures moving with it --
+    // is the tidier place for it.
+    for row in &mut segments.bdy_refine_segment {
+        row.resize(settings.max_transition_row.max(row.len()), 1);
+    }
 
     let mut sjx_child = vec![[0usize; 2]; sjx_points + 1];
     let mut flipped = 0usize;
@@ -502,7 +513,7 @@ fn close_transition_rows(
             // boundary carries fewer rows, and reading past it is reading
             // another segment's storage.
             let row = &segments.bdy_refine_segment[index];
-            for slot in 0..settings.max_transition_row.min(row.len()) {
+            for slot in 0..settings.max_transition_row {
                 let triangle = row[slot];
                 if triangle == 1 {
                     break;
@@ -543,14 +554,57 @@ fn close_transition_rows(
             }
         }
 
+        // `MOD_refine.F90:446`: which triangles split the *other* way next
+        // round. Without it the band only ever grows forward and the segments
+        // never present their reverse side, so the row after this one has
+        // nothing to halve.
+        let reverse_marking = refine_isreverse_judge_one_based(
+            settings.max_transition_row,
+            segments.num_bdy_refine_segment,
+            triangle_neighbors,
+            mrl_new,
+            &mut segments.bdy_refine_segment,
+            &segments.n_bdy_refine_segment,
+        )?;
+        let reverse_count = (mesh.num_vertex + 1..=sjx_points)
+            .filter(|&triangle| reverse_marking[triangle] == 1)
+            .count();
+        if reverse_count > 0 {
+            let last_mp = *num_mp.last().expect("seeded");
+            let last_wp = *num_wp.last().expect("seeded");
+            num_mp.push(last_mp + 2 * reverse_count);
+            num_wp.push(last_wp + reverse_count);
+            refine_onedivide_two_one_based(
+                num_mp.len() - 1,
+                true,
+                mesh.num_vertex,
+                num_mp,
+                num_wp,
+                triangle_neighbors,
+                &mesh.cells_on_triangle,
+                &reverse_marking,
+                mrl_new,
+                triangle_points,
+                cell_points,
+                cells_on_triangle_new,
+                &mut sjx_child,
+            )?;
+            for triangle in mesh.num_vertex + 1..=sjx_points {
+                if reverse_marking[triangle] == 1 {
+                    mrl_new[triangle] = 4;
+                }
+            }
+        }
+
         // Sharp corners the row left behind, taken back by Lawson flips.
-        // `num_end` and the one-based row count are the Fortran's, which sizes
-        // these as (num_end, num_bdy_refine_segment + num_ref_weak_concav);
-        // weak concavities are not carried here, so the second term is zero.
+        // `MOD_refine.F90:341,487` -- num_end, and one row per segment plus one
+        // per weak concavity. Weak concavities are not carried here, so the
+        // second term is zero, and the row count is the segment count exactly:
+        // these tables are indexed by a count, not by an entity id.
         let num_end = 4.max(4 * settings.max_transition_row.saturating_sub(1));
         let mut lop_candidates = vec![1usize; 0];
-        let mut lop_counts = vec![0usize; segments.num_bdy_refine_segment + 1];
-        let mut lop_rows = vec![vec![1usize; num_end]; segments.num_bdy_refine_segment + 1];
+        let mut lop_counts = vec![0usize; segments.num_bdy_refine_segment];
+        let mut lop_rows = vec![vec![1usize; num_end]; segments.num_bdy_refine_segment];
         let mut flips = 0usize;
         refine_sharp_concav_lop_judge_one_based(
             &mut flips,
@@ -567,7 +621,7 @@ fn close_transition_rows(
         )?;
         if flips > 0 {
             for (index, count) in lop_counts.iter().enumerate() {
-                lop_candidates.extend_from_slice(&lop_rows[index][..*count]);
+                lop_candidates.extend_from_slice(&lop_rows[index][..(*count).min(num_end)]);
             }
             let last_mp = *num_mp.last().expect("seeded");
             let last_wp = *num_wp.last().expect("seeded");
@@ -700,65 +754,20 @@ mod tests {
         assert_eq!(outcome.refined_triangle_count, 0);
     }
 
-    /// The property the whole path exists for -- blocked on three kernels that
-    /// drifted from the Fortran, and on one call this driver has not made yet.
+    /// The property the whole path exists for: a patch nobody shaped for the
+    /// algorithm refines, rather than being refused for its shape.
     ///
-    /// `MOD_refine.F90` settles which side drifted, and it is not the one the
-    /// first reading of this suggested:
+    /// This was blocked on three LOP judges that had transcribed Fortran's
+    /// `do i = 1, num` as `1..=num` without the array gaining a slot to spare.
+    /// `MOD_refine.F90:1411` allocates the segment tables with the column
+    /// dimension *equal* to the count, so `size == num` and there is no
+    /// placeholder column; the canonical `n + 1` convention applies to tables
+    /// indexed by an entity id, and both dimensions of a segment table are
+    /// counts.
     ///
-    /// ```text
-    /// allocate(bdy_refine_segment(set_dis_in, num_bdy_refine_segment))  ! 1411
-    /// do i = 1, num_bdy_refine_segment, 1                               ! 1786
-    /// ```
-    ///
-    /// The column dimension *is* the count, so with Fortran's one-based
-    /// indexing the valid columns are `1..num` and `size == num` -- there is no
-    /// placeholder column. `refine_boundary_segments_make_one_based` matches
-    /// that; `refine_sharp_concav_lop_judge_one_based` guards on
-    /// `num >= len` and so rejects exactly the shape the Fortran allocates.
-    /// The three LOP judges (`refine_lop_sharp`, `refine_lop_weak`,
-    /// `refine_lop_weak_pair`) transcribed `do i = 1, num` as `1..=num`
-    /// without the array gaining a slot to spare, which leaves them neither
-    /// zero-based nor wholly one-based.
-    ///
-    /// The canonical `n + 1` convention the rest of this crate uses applies to
-    /// tables indexed by an *entity id* -- `mrl_new`, `ngrmm`, `ngrmw` -- where
-    /// ids start at two. Both of a segment table's dimensions are counts, so it
-    /// does not apply, and reading it as if it did is how the drift got in.
-    ///
-    /// The conversion, verified line by line against v2 and mechanical to
-    /// apply. In `refine_lop_sharp` (then the same shape in `refine_lop_weak`
-    /// and `refine_lop_weak_pair`):
-    ///
-    /// | now | should be | why |
-    /// |---|---|---|
-    /// | guard `num >= len` | `num > len` | `size == num`, no spare column |
-    /// | `for segment_id in 1..=num` | `0..num` | F `do i = 1, num` over `size == num` |
-    /// | `for j in 1..=(tran_degree-1)` | `0..(tran_degree-1)` | F `do j = 1, tran_degree-1`, reads `(j)` and `(j+1)` |
-    /// | guard `bdy[seg].len() < tran_degree` | `< tran_degree - 1` | zero-based reach is `tran_degree - 2` |
-    /// | guard `bdy_old[seg].len() <= tran_degree` | `< tran_degree` | reach is `tran_degree - 1` |
-    /// | guard `temp[seg].len() <= 4*(tran_degree-1)` | `< 4*(tran_degree-1)` | last write is `4*valid_pairs - 1` |
-    /// | `out = 4*valid_pairs - 3` | `4*(valid_pairs - 1)` | F one-based start minus one |
-    /// | `for k in (1..=n).step_by(4)` | `(0..n).step_by(4)` | F `do k = 1, n, 4` |
-    /// | `src = num_end - k` | `num_end - k - 2` | F `num_end-k` with `k = k0 + 1`, minus one |
-    ///
-    /// Their fixtures move with them: drop the leading placeholder row *and*
-    /// the leading placeholder slot inside each row, since both dimensions are
-    /// counts. `vec![vec![], vec![0, 4]]` becomes `vec![vec![4]]`, `n_ref_temp`
-    /// `vec![0, 1]` becomes `vec![1]`, and `ref_temp[1][1..=4]` becomes
-    /// `ref_temp[0][0..4]`.
-    ///
-    /// Second gap, this driver's own: `MOD_refine.F90:446` calls
-    /// `ref_sjx_isreverse_judge` between the forward and reverse halves of each
-    /// transition round, deciding which triangles split the other way.
-    /// `close_transition_rows` does the forward half and the flips and stops.
-    /// The port exists and is in the right base; it is simply not called.
-    ///
-    /// Everything before the transition rows works: the judges grow the
-    /// marking, the red step subdivides, and the two tests above cover the
-    /// paths that reach an answer.
+    /// The driver also had to call `ref_sjx_isreverse_judge` between the
+    /// forward and reverse halves of each transition round, which it did not.
     #[test]
-    #[ignore = "blocked: three LOP judges want a placeholder column MOD_refine does not allocate; reverse 1-to-2 not called"]
     fn an_arbitrary_patch_is_grown_until_it_is_legal_rather_than_refused() {
         // The property this whole path exists for. Method-C would judge the
         // shape of this patch and could refuse it; here the judges add whatever

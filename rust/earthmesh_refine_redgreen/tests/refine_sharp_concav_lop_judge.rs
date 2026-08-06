@@ -24,11 +24,11 @@ fn sharp_concav_lop_judge_builds_single_transition_pair() {
     sjx_child[2] = [20, 21];
     sjx_child[3] = [30, 31];
     sjx_child[6] = [60, 61];
-    let bdy_refine_segment = vec![vec![], vec![0, 4]];
-    let bdy_refine_segment_old = vec![vec![], vec![0, 2, 3]];
-    let n_bdy_refine_segment = vec![0, 2];
-    let mut ref_temp = vec![vec![0; 9]; 2];
-    let mut n_ref_temp = vec![0, 1];
+    let bdy_refine_segment = vec![vec![4]];
+    let bdy_refine_segment_old = vec![vec![2, 3]];
+    let n_bdy_refine_segment = vec![2];
+    let mut ref_temp = vec![vec![0; 9]; 1];
+    let mut n_ref_temp = vec![1];
     let mut num_ref = 0;
 
     refine_sharp_concav_lop_judge_one_based(
@@ -46,8 +46,8 @@ fn sharp_concav_lop_judge_builds_single_transition_pair() {
     )
     .expect("strong concavity LOP segment generation");
 
-    assert_eq!(ref_temp[1][1..=4], [20, 61, 60, 30]);
-    assert_eq!(n_ref_temp[1], 4);
+    assert_eq!(ref_temp[0][0..4], [20, 61, 60, 30]);
+    assert_eq!(n_ref_temp[0], 4);
     assert_eq!(num_ref, 4);
 }
 
@@ -65,11 +65,11 @@ fn sharp_concav_lop_judge_mirrors_other_end_for_longer_transition_degree() {
     sjx_child[4] = [40, 41];
     sjx_child[5] = [50, 51];
     sjx_child[6] = [60, 61];
-    let bdy_refine_segment = vec![vec![], vec![0, 7, 8]];
-    let bdy_refine_segment_old = vec![vec![], vec![0, 2, 3, 4]];
-    let n_bdy_refine_segment = vec![0, 3];
-    let mut ref_temp = vec![vec![0; 12]; 2];
-    let mut n_ref_temp = vec![0, 2];
+    let bdy_refine_segment = vec![vec![7, 8]];
+    let bdy_refine_segment_old = vec![vec![2, 3, 4]];
+    let n_bdy_refine_segment = vec![3];
+    let mut ref_temp = vec![vec![0; 12]; 1];
+    let mut n_ref_temp = vec![2];
     let mut num_ref = 0;
     let mut vertices = child_vertices();
     vertices[40] = [80, 81, 62];
@@ -92,8 +92,8 @@ fn sharp_concav_lop_judge_mirrors_other_end_for_longer_transition_degree() {
     )
     .expect("strong concavity LOP longer segment generation");
 
-    assert_eq!(ref_temp[1][1..=4], [20, 51, 60, 40]);
-    assert_eq!(n_ref_temp[1], 4);
+    assert_eq!(ref_temp[0][0..4], [20, 51, 60, 40]);
+    assert_eq!(n_ref_temp[0], 4);
     assert_eq!(num_ref, 4);
 }
 
@@ -102,11 +102,11 @@ fn sharp_concav_lop_judge_terminates_placeholder_segment() {
     let mrl_new = vec![1; 8];
     let triangle_neighbors = vec![vec![1, 1, 1]; 8];
     let sjx_child = vec![[0, 0]; 8];
-    let bdy_refine_segment = vec![vec![], vec![0, 1, 1]];
-    let bdy_refine_segment_old = vec![vec![], vec![0, 2, 3, 4]];
-    let n_bdy_refine_segment = vec![0, 3];
-    let mut ref_temp = vec![vec![0; 12]; 2];
-    let mut n_ref_temp = vec![0, 2];
+    let bdy_refine_segment = vec![vec![1, 1]];
+    let bdy_refine_segment_old = vec![vec![2, 3, 4]];
+    let n_bdy_refine_segment = vec![3];
+    let mut ref_temp = vec![vec![0; 12]; 1];
+    let mut n_ref_temp = vec![2];
     let mut num_ref = 0;
 
     refine_sharp_concav_lop_judge_one_based(
@@ -124,9 +124,9 @@ fn sharp_concav_lop_judge_terminates_placeholder_segment() {
     )
     .expect("placeholder segment should terminate LOP generation");
 
-    assert_eq!(n_ref_temp[1], 0);
+    assert_eq!(n_ref_temp[0], 0);
     assert_eq!(num_ref, 0);
-    assert!(ref_temp[1].iter().all(|&value| value == 0));
+    assert!(ref_temp[0].iter().all(|&value| value == 0));
 }
 
 #[test]
@@ -139,11 +139,11 @@ fn sharp_concav_lop_judge_skips_missing_child_adjacency() {
     sjx_child[2] = [20, 21];
     sjx_child[3] = [30, 31];
     sjx_child[6] = [60, 61];
-    let bdy_refine_segment = vec![vec![], vec![0, 4]];
-    let bdy_refine_segment_old = vec![vec![], vec![0, 2, 3]];
-    let n_bdy_refine_segment = vec![0, 2];
-    let mut ref_temp = vec![vec![0; 9]; 2];
-    let mut n_ref_temp = vec![0, 1];
+    let bdy_refine_segment = vec![vec![4]];
+    let bdy_refine_segment_old = vec![vec![2, 3]];
+    let n_bdy_refine_segment = vec![2];
+    let mut ref_temp = vec![vec![0; 9]; 1];
+    let mut n_ref_temp = vec![1];
     let mut num_ref = 0;
     let vertices = (0..80)
         .map(|idx| [idx * 3 + 1000, idx * 3 + 1001, idx * 3 + 1002])
@@ -165,6 +165,6 @@ fn sharp_concav_lop_judge_skips_missing_child_adjacency() {
     .expect("missing child adjacency candidate should be skipped");
 
     assert_eq!(num_ref, 0);
-    assert_eq!(n_ref_temp[1], 0);
-    assert!(ref_temp[1].iter().all(|&value| value == 0));
+    assert_eq!(n_ref_temp[0], 0);
+    assert!(ref_temp[0].iter().all(|&value| value == 0));
 }
