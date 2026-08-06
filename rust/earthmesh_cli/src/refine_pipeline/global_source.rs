@@ -82,6 +82,24 @@ pub fn run_refine_pipeline_namelist(
     }
     let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
     let adaptive_options = crate::adaptive_refine::read_adaptive_refine_options(&contents)?;
+    // The point+radius route is one of *Method-C's* two ways of turning criteria
+    // into refinement, not a stage above the backends. Red-green grows its own
+    // marking and has no reader for it, so past this line the section is not
+    // visible to a red-green run at all.
+    //
+    // Dropped rather than refused because the project layer defaults it on for
+    // every refining run: refusing would fail every red-green project that
+    // never asked for it. Dropped here rather than ignored at the branch
+    // because it is not inert on the way down -- left visible it stands down
+    // the calculated-region reader below, for a route that will not run, and
+    // the mesh comes out missing those regions with nothing said.
+    //
+    // Parsed first either way, so a malformed `&adaptive` is still an error
+    // whichever backend the run selects.
+    let adaptive_options = match config.refine_backend.trim() {
+        "red_green" => None,
+        _ => adaptive_options,
+    };
     if hfield_options.is_some() && config.nxp % 3 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -336,10 +354,12 @@ pub fn run_refine_pipeline_namelist(
             // nothing else, so any of these would simply be dropped -- and the
             // run would still write a valid mesh that passes every quality
             // check it has and is not the mesh that was asked for.
+            //
+            // `&adaptive` is not on this list: it is Method-C's own route, it is
+            // on by default, and it was dropped at the top of this function
+            // rather than carried down to be refused here.
             let unsupported = if active_hfield_options.is_some() {
                 Some("an h-field (&hfield)")
-            } else if adaptive_options.is_some() {
-                Some("the adaptive point+radius criteria (&adaptive)")
             } else if native_cartesian_xy {
                 Some("a Cartesian-XY mesh")
             } else if native_surface_global_expansion {

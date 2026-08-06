@@ -673,12 +673,16 @@ pub(crate) fn set_expert(
 
 /// Choose the refinement algorithm.
 ///
-/// This is a different question from `set_adaptive_refinement`, which chooses
-/// how the *request* is expressed (point+radius, h-field, discrete mask). This
-/// chooses what builds the mesh from it: Method-C subdivides a closed region and
-/// surrounds it with transition rows, refusing a region it cannot build;
-/// red-green splits any marked triangle and closes the seams, growing a marking
-/// it cannot take as given rather than rejecting it.
+/// Method-C subdivides a closed region and surrounds it with transition rows,
+/// refusing a region it cannot build; red-green splits any marked triangle and
+/// closes the seams, growing a marking it cannot take as given rather than
+/// rejecting it.
+///
+/// Not orthogonal to `set_adaptive_refinement`, despite reading that way: the
+/// point+radius route is one of *Method-C's* two ways of turning criteria into
+/// refinement, and lowering does not emit `&adaptive` for a red-green project.
+/// So selecting red-green here leaves a run driven by named regions alone, and
+/// whatever the adaptive controls say is not what will build the mesh.
 #[tauri::command]
 pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;

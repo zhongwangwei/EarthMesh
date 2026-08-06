@@ -158,13 +158,14 @@ pub enum MeshDomainKind {
 /// care.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefinementBackend {
-    /// Nested regions with transition rows. The default while the red-green
-    /// driver is still being wired: it is the one that currently builds a mesh
-    /// end to end.
+    /// Nested regions with transition rows. The default because it is the one
+    /// that reads every route into refinement a project can ask for: the
+    /// point+radius criteria and the h-field are both its own.
     #[default]
     MethodC,
-    /// Split any marked triangle into four and close the seams. Selectable, and
-    /// refuses with a clear message until its driver loop lands.
+    /// Split any marked triangle into four and close the seams. Builds a mesh
+    /// end to end from **named regions**; the criteria routes are Method-C's
+    /// and are not lowered into a red-green run.
     RedGreen,
 }
 

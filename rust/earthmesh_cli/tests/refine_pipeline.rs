@@ -2914,3 +2914,51 @@ fn redgreen_backend_refuses_a_request_it_would_have_to_ignore() {
         "unexpected error: {error}"
     );
 }
+
+/// Method-C's adaptive section does not stop a red-green run.
+///
+/// `&adaptive` is one of Method-C's two ways of turning criteria into
+/// refinement, and the project layer defaults it on for any refining run. A
+/// backend that has no reader for it must treat it as not its business rather
+/// than refuse -- refusing would fail every red-green project that carries the
+/// default, which is all of them.
+#[test]
+fn redgreen_backend_is_not_stopped_by_method_cs_adaptive_section() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("redgreen_with_adaptive_section");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    write_circle_mask_netcdf(
+        sources.join("refine_circle_001.nc4"),
+        &CircleMask {
+            refine_degree: 1,
+            points: vec![LonLatPoint {
+                lon: 115.0,
+                lat: 25.0,
+            }],
+            radius_km: vec![2_000.0],
+        },
+    )
+    .expect("write circle specified refine source");
+
+    let namelist = root.join("mkgrd_redgreen_adaptive.nml");
+    let base_dir = format!("{}/", root.display());
+    let refine_prefix = sources.join("refine_circle").display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_redgreen_adaptive'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='red_green'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n&adaptive\n  NL%adaptive_on=.true.\n  NL%adaptive_coastline=.true.\n/\n",
+        ),
+    )
+    .expect("write red-green namelist carrying the adaptive default");
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect("the adaptive default must not refuse a red-green run");
+
+    assert!(
+        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        "and the named circle must still refine: {} vs {}",
+        run.output.lbx_points,
+        run.gridinit.gridfile.lbx_points
+    );
+}

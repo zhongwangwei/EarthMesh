@@ -1350,6 +1350,24 @@ fn landtype_is_required_for_surface_targets_but_skipped_for_idle_atmosphere() {
 }
 
 #[test]
+fn a_red_green_project_does_not_carry_method_cs_adaptive_route() {
+    // The point+radius route is how *Method-C* turns criteria into refinement;
+    // red-green has no reader for it. It is also emitted by default for any
+    // refining project without an h-field, so if the backend does not gate it
+    // every red-green project reaches the runner carrying a section its backend
+    // cannot serve -- and the runner is entitled to say so.
+    let mut p = sample();
+    p.refinement.hfield = None;
+    p.refinement.adaptive = None;
+    p.refinement.backend = crate::RefinementBackend::RedGreen;
+
+    let nml = p.lower().to_namelist();
+
+    assert!(nml.contains("red_green"), "{nml}");
+    assert!(!nml.contains("&adaptive"), "{nml}");
+}
+
+#[test]
 fn point_radius_is_the_default_and_the_h_field_is_opt_in() {
     // A run refines one way or the other, and point+radius is the one that can
     // re-ask a criterion after the cells it judges exist.

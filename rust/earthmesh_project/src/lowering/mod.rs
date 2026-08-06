@@ -360,7 +360,14 @@ impl ProjectConfig {
         }
         .to_string();
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
-        let adaptive = if mkgrd.refine && !hfield_requested {
+        // Point+radius is one of *Method-C's* two ways of turning criteria into
+        // refinement, not a stage above the backends -- red-green has no reader
+        // for it and grows its own marking instead. So it is gated on the
+        // backend as well as on the h-field: this arm defaults it *on*, and an
+        // ungated default would put an unservable section into every red-green
+        // project that never asked for one.
+        let method_c = matches!(backend, crate::RefinementBackend::MethodC);
+        let adaptive = if mkgrd.refine && !hfield_requested && method_c {
             match &self.refinement.adaptive {
                 Some(recipe) if recipe.enabled => Some(recipe.clone()),
                 Some(_) => None,
