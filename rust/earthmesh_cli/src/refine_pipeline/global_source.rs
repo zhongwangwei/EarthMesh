@@ -314,371 +314,38 @@ pub fn run_refine_pipeline_namelist(
     } else {
         method_c_spring_iterations(&refine, is_atmosmesh)?
     };
-    // Captured out of the h-field branch so every arm of this chain keeps the
-    // same tuple shape; stays at its default for the geometric region paths.
-    let mut hfield_diagnostics = earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default();
-    // Same shape as `hfield_diagnostics`: assigned inside the branch that owns
-    // it, carried out to the layer that knows where the run's outputs land.
-    let mut adaptive_run: Option<(
-        crate::refinement_demand::nest::AdaptiveNestReport,
-        usize,
-        f64,
-        bool,
-    )> = None;
-    let (mesh, spring_nest_passes) = if !is_atmosmesh
-        && (native_only_spawn || native_surface_global_expansion)
-        && !refine.refine_spc
-        && !refine.refine_cal
-    {
-        let atmosphere_max_level = native_atmosphere_regions
-            .iter()
-            .map(method_c_refinement_region_level)
-            .max()
-            .unwrap_or(0);
-        let surface_max_level = native_surface_regions
-            .iter()
-            .map(method_c_refinement_region_level)
-            .max()
-            .unwrap_or(0);
-        let atmosphere_spring_iterations =
-            native_spawn_spring_iterations(&refine, true, &config.runtype)?;
-        let surface_spring_iterations =
-            native_spawn_spring_iterations(&refine, false, &config.runtype)?;
-        let (mesh, atmosphere_spring_passes) = if atmosphere_max_level > 0 {
-            if atmosphere_spring_iterations > 0 {
-                if native_cartesian_xy {
-                    mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
-                        &native_atmosphere_regions,
-                        atmosphere_max_level,
-                        TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
-                        nxp,
-                        atmosphere_spring_iterations,
-                        native_deltax,
-                    )?
-                } else {
-                    mesh.spawn_nest_with_spring_as_atmosmesh(
-                        &native_atmosphere_regions,
-                        atmosphere_max_level,
-                        nxp,
-                        atmosphere_spring_iterations,
-                    )?
-                }
-            } else {
-                (
-                    if native_cartesian_xy {
-                        mesh.spawn_nest_cartesian_xy_with_max_mrows(
-                            &native_atmosphere_regions,
-                            atmosphere_max_level,
-                            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
-                        )?
-                    } else {
-                        mesh.spawn_nest_as_atmosmesh(
-                            &native_atmosphere_regions,
-                            atmosphere_max_level,
-                        )?
-                    },
-                    0,
-                )
-            }
-        } else {
-            (mesh, 0)
-        };
-        let mesh = if native_surface_global_expansion {
-            mesh.expand_by_factor(native_sfcgrid_res_factor)?
-        } else {
-            mesh
-        };
-        let surface_nxp = nxp.checked_mul(native_sfcgrid_res_factor).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Method-C native nxp_sfc overflows usize",
-            )
-        })?;
-        let (mesh, surface_spring_passes) = if native_surface_regions.is_empty() {
-            (mesh, 0)
-        } else if surface_spring_iterations > 0 {
-            if native_cartesian_xy {
-                mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
-                    &native_surface_regions,
-                    surface_max_level,
-                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
-                    surface_nxp,
-                    surface_spring_iterations,
-                    native_deltax,
-                )?
-            } else {
-                mesh.spawn_nest_with_spring(
-                    &native_surface_regions,
-                    surface_max_level,
-                    surface_nxp,
-                    surface_spring_iterations,
-                )?
-            }
-        } else {
-            (
-                if native_cartesian_xy {
-                    mesh.spawn_nest_cartesian_xy_with_max_mrows(
-                        &native_surface_regions,
-                        surface_max_level,
-                        TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
-                    )?
-                } else {
-                    mesh.spawn_nest_as_surface(&native_surface_regions, surface_max_level)?
-                },
-                0,
-            )
-        };
-        (mesh, atmosphere_spring_passes + surface_spring_passes)
-    } else if let Some(adaptive) = adaptive_options {
-        // Point+radius mode: ask every enabled criterion again before each pass,
-        // cover what it demands with circles, and refine one level. The h-field
-        // reads the same criteria but settles them all up front, so a criterion
-        // whose answer depends on the cell size can only be honoured here.
-        let base_m = adaptive.base_m.unwrap_or_else(|| {
-            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
-                / (5.0 * method_c_nxp as f64)
-        });
-        let depth = adaptive.max_level.unwrap_or(max_level).clamp(1, 5);
-        let inputs = crate::refinement_demand::plan::DemandPlanInputs {
-            bounds: adaptive_demand_bounds(domain_region.as_ref(), &config)?,
-            gridnum_perdegree: usize::try_from(config.gridnum_perdegree).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "NL%gridnum_perdegree must fit usize",
-                )
-            })?,
-            landtype_file: adaptive_landtype_file(&config),
+    let MethodCRefineOutcome {
+        mesh,
+        spring_nest_passes,
+        hfield_diagnostics,
+        adaptive_run,
+    } = refine_with_method_c(
+        mesh,
+        MethodCRefineRequest {
+            config: &config,
+            refine: &refine,
             mesh_type,
-            refine_coastline: adaptive.coastline,
-        };
-        // The choice reaches here, which is where routing belongs. Only one
-        // route is built.
-        //
-        // The seam for the other one is `write_refined_outputs`: it
-        // takes `&UnstructuredMesh` and an *optional* `MethodCMetadataSlices`,
-        // which is exactly what `redgreen_bridge::unstructured_mesh_from_redgreen`
-        // produces and what red-green cannot supply. So this branch does not
-        // have to fake Method-C's tables -- it runs
-        // `redgreen_mesh_from_triangular`, then `refine_redgreen_level` per level
-        // (carrying the previous level's marking through
-        // `RedGreenOutcome::cell_renumbering`, since a round renumbers), and
-        // hands the result to that writer with `metadata: None`.
-        //
-        // What stands in the way is the hundred lines between: they are typed
-        // on `TriangularMesh` and compute mrlm/ngr/lineage that red-green
-        // has no equivalent for. Splitting them is the work, not the call.
-        if config.refine_backend.trim() == "red_green" {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "NL%refine_backend = red_green is not routed through the refinement pipeline yet;                  the algorithm and the marking-to-gridfile steps are built and tested, what is                  missing is this branch calling them. Use method_c until then",
-            ));
-        }
-        let (refined, report) =
-            crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
-                &mesh, &refine, &inputs, &regions, base_m, depth,
-            )?;
-        for pass in &report.passes {
-            eprintln!(
-                "adaptive refine level {} judging {:.0} m cells: {} circles over {} demanded source cells, {} -> {} faces",
-                pass.level,
-                pass.cell_meters,
-                pass.circle_count,
-                pass.demanded_cells,
-                pass.faces_before,
-                pass.faces_after
-            );
-        }
-        adaptive_run = Some((report.clone(), depth, base_m, adaptive.coastline));
-        if report.deepest_level == 0 {
-            // A run that asked to refine and refined nothing is the failure that
-            // stays quiet: the mesh is valid, passes its quality checks, and is
-            // simply not the mesh that was requested. It is only acceptable when
-            // nothing was named and no criterion is on -- then "uniform" is the
-            // right answer.
-            if refine.refine_spc || refine.refine_cal || !regions.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "adaptive refinement was requested ({} named regions, refine_spc={}, \
-                         refine_cal={}) but no level refined; check that the criteria have data \
-                         over the domain and that named regions carry a level in 1..={depth}",
-                        regions.len(),
-                        refine.refine_spc,
-                        refine.refine_cal
-                    ),
-                ));
-            }
-            eprintln!("adaptive refine: nothing asked for refinement; mesh left uniform");
-        }
-        (refined, 0)
-    } else if let Some(hfield) = active_hfield_options {
-        // H-field mode: compose the same specified regions into a
-        // gradient-limited cell-width field and let quantized target levels
-        // drive Method-C ("split between levels" with legality by
-        // construction). Spherical runs sample lon/lat rasters; Cartesian-XY
-        // runs sample the same region constraints analytically in x/y meters.
-        let base_m = hfield.base_m.unwrap_or_else(|| {
-            if native_cartesian_xy {
-                native_deltax
-            } else {
-                2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
-                    / (5.0 * nxp as f64)
-            }
-        });
-        let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
-        let max_mrows = if is_atmosmesh {
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
-        } else {
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
-        };
-        if native_cartesian_xy && has_hydro_hfield_source {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "hydro target-cell h-field requires a spherical lon/lat Method-C run",
-            ));
-        }
-        if native_cartesian_xy {
-            let geographic_threshold_field = if has_threshold_hfield_sources {
-                hfield.geographic_origin.ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Cartesian-XY geographic threshold rasters require hfield_origin_lon and hfield_origin_lat",
-                    )
-                })?;
-                Some(crate::hfield_refine::build_composed_hfield(
-                    &[],
-                    &refine,
-                    mesh_type,
-                    Some(&config),
-                    base_m,
-                    hfield,
-                    max_cal_level.clamp(1, field_max_level),
-                    None,
-                )?)
-            } else {
-                None
-            };
-            for region in &regions {
-                region.validate_cartesian_xy()?;
-            }
-            // An explicit h-field is a mkrefine request, not the implicit
-            // native ngrids-only path; honor its niter_refine controls instead
-            // of forcing Method-C's 5000-iteration native spawn default.
-            let hfield_spring_iterations = method_c_spring_iterations(&refine, is_atmosmesh)?;
-            let (refined, passes, diagnostics) = mesh
-                .spawn_nest_from_cartesian_xy_target_levels_with_spring_deltax(
-                    |x, y| {
-                        let region_level = crate::hfield_refine::cartesian_hfield_level_at(
-                            &regions,
-                            x,
-                            y,
-                            base_m,
-                            hfield.g,
-                            field_max_level,
-                        );
-                        let threshold_level = geographic_threshold_field
-                            .as_ref()
-                            .map(|field| {
-                                let (origin_lon, origin_lat) =
-                                    hfield.geographic_origin.expect("origin checked above");
-                                let (lon, lat) = crate::hfield_refine::cartesian_xy_to_lonlat(
-                                    x, y, origin_lon, origin_lat,
-                                );
-                                field.level_at(lon, lat, base_m, field_max_level as u8)
-                            })
-                            .unwrap_or(0);
-                        region_level.max(threshold_level)
-                    },
-                    field_max_level,
-                    max_mrows,
-                    nxp,
-                    hfield_spring_iterations,
-                    native_deltax,
-                )?;
-            hfield_diagnostics = diagnostics;
-            (refined, passes)
-        } else {
-            let mut field = crate::hfield_refine::build_composed_hfield(
-                &regions,
-                &refine,
-                mesh_type,
-                Some(&config),
-                base_m,
-                hfield,
-                max_cal_level.clamp(1, field_max_level),
-                domain_region.as_ref(),
-            )?;
-            crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-                &mut field,
-                hfield,
-                base_m,
-                domain_region.as_ref(),
-            )?;
-            crate::hfield_refine::constrain_hfield_to_domain(
-                &mut field,
-                domain_region.as_ref(),
-                base_m,
-                hfield.g,
-            )?;
-            let (refined, passes, diagnostics) = mesh.spawn_nest_from_target_levels_with_spring(
-                |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
-                field_max_level,
-                max_mrows,
-                nxp,
-                spring_nest_iterations,
-            )?;
-            hfield_diagnostics = diagnostics;
-            (refined, passes)
-        }
-    } else if spring_nest_iterations > 0 {
-        if native_cartesian_xy {
-            mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
-                &regions,
-                max_level,
-                if is_atmosmesh {
-                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
-                } else {
-                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
-                },
-                nxp,
-                spring_nest_iterations,
-                native_deltax,
-            )?
-        } else if is_atmosmesh {
-            mesh.spawn_nest_with_spring_and_max_mrows(
-                &regions,
-                max_level,
-                TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
-                nxp,
-                spring_nest_iterations,
-            )?
-        } else {
-            mesh.spawn_nest_with_spring_and_max_mrows(
-                &regions,
-                max_level,
-                TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
-                nxp,
-                spring_nest_iterations,
-            )?
-        }
-    } else if native_cartesian_xy {
-        (
-            mesh.spawn_nest_cartesian_xy_with_max_mrows(
-                &regions,
-                max_level,
-                if is_atmosmesh {
-                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
-                } else {
-                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
-                },
-            )?,
-            0,
-        )
-    } else if is_atmosmesh {
-        (mesh.spawn_nest_as_atmosmesh(&regions, max_level)?, 0)
-    } else {
-        (mesh.spawn_nest(&regions, max_level)?, 0)
-    };
+            regions: &regions,
+            native_atmosphere_regions: &native_atmosphere_regions,
+            native_surface_regions: &native_surface_regions,
+            domain_region: domain_region.as_ref(),
+            hfield_options: active_hfield_options,
+            adaptive_options: adaptive_options.as_ref(),
+            is_atmosmesh,
+            native_only_spawn,
+            native_surface_global_expansion,
+            native_cartesian_xy,
+            native_deltax,
+            native_sfcgrid_res_factor,
+            nxp,
+            method_c_nxp,
+            max_level,
+            max_cal_level,
+            has_hydro_hfield_source,
+            has_threshold_hfield_sources,
+            spring_nest_iterations,
+        },
+    )?;
     let transition_faces = mesh.boundary_rows().len();
     // The twelve pentagons are the icosahedron's, and refinement never moves
     // them, so taking them here rather than off the refined `state` costs
@@ -866,6 +533,453 @@ pub fn run_refine_pipeline_namelist(
         coupled_outputs: outputs.coupled_outputs,
         output: outputs.output,
         runtime_state,
+    })
+}
+
+/// Everything the Method-C refinement chain reads.
+///
+/// One struct rather than two dozen parameters: the chain used to be a single
+/// expression in the middle of the pipeline, and what it closed over is what it
+/// now takes. Gathering them is what let the choice of backend become a branch
+/// at this call rather than a condition threaded through the chain.
+struct MethodCRefineRequest<'a> {
+    config: &'a EarthmeshConfig,
+    refine: &'a RefineConfig,
+    mesh_type: &'a str,
+    regions: &'a [earthmesh_mesh::RefinementRegion],
+    native_atmosphere_regions: &'a [earthmesh_mesh::RefinementRegion],
+    native_surface_regions: &'a [earthmesh_mesh::RefinementRegion],
+    domain_region: Option<&'a GridRegion>,
+    hfield_options: Option<&'a crate::hfield_refine::HfieldRefineOptions>,
+    adaptive_options: Option<&'a crate::adaptive_refine::AdaptiveRefineOptions>,
+    is_atmosmesh: bool,
+    native_only_spawn: bool,
+    native_surface_global_expansion: bool,
+    native_cartesian_xy: bool,
+    native_deltax: f64,
+    native_sfcgrid_res_factor: usize,
+    nxp: usize,
+    method_c_nxp: usize,
+    max_level: usize,
+    max_cal_level: usize,
+    has_hydro_hfield_source: bool,
+    has_threshold_hfield_sources: bool,
+    spring_nest_iterations: usize,
+}
+
+/// What a Method-C refinement produced, and the three things the pipeline tail
+/// reports about how it got there.
+struct MethodCRefineOutcome {
+    mesh: TriangularMesh,
+    spring_nest_passes: usize,
+    hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
+    adaptive_run: Option<AdaptiveRunRecord>,
+}
+
+/// The adaptive route's report, and the three settings needed to write it out.
+type AdaptiveRunRecord = (
+    crate::refinement_demand::nest::AdaptiveNestReport,
+    usize,
+    f64,
+    bool,
+);
+
+/// Refine `mesh` the Method-C way: native spawn, adaptive point+radius, h-field
+/// target levels, or plain specified regions, whichever the request selects.
+fn refine_with_method_c(
+    mesh: TriangularMesh,
+    request: MethodCRefineRequest<'_>,
+) -> io::Result<MethodCRefineOutcome> {
+    let MethodCRefineRequest {
+        config,
+        refine,
+        mesh_type,
+        regions,
+        native_atmosphere_regions,
+        native_surface_regions,
+        domain_region,
+        hfield_options,
+        adaptive_options,
+        is_atmosmesh,
+        native_only_spawn,
+        native_surface_global_expansion,
+        native_cartesian_xy,
+        native_deltax,
+        native_sfcgrid_res_factor,
+        nxp,
+        method_c_nxp,
+        max_level,
+        max_cal_level,
+        has_hydro_hfield_source,
+        has_threshold_hfield_sources,
+        spring_nest_iterations,
+    } = request;
+    // Captured out of the h-field branch so every arm of this chain keeps the
+    // same tuple shape; stays at its default for the geometric region paths.
+    let mut hfield_diagnostics = earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default();
+    // Same shape as `hfield_diagnostics`: assigned inside the branch that owns
+    // it, carried out to the layer that knows where the run's outputs land.
+    let mut adaptive_run: Option<AdaptiveRunRecord> = None;
+    let (mesh, spring_nest_passes) = if !is_atmosmesh
+        && (native_only_spawn || native_surface_global_expansion)
+        && !refine.refine_spc
+        && !refine.refine_cal
+    {
+        let atmosphere_max_level = native_atmosphere_regions
+            .iter()
+            .map(method_c_refinement_region_level)
+            .max()
+            .unwrap_or(0);
+        let surface_max_level = native_surface_regions
+            .iter()
+            .map(method_c_refinement_region_level)
+            .max()
+            .unwrap_or(0);
+        let atmosphere_spring_iterations =
+            native_spawn_spring_iterations(refine, true, &config.runtype)?;
+        let surface_spring_iterations =
+            native_spawn_spring_iterations(refine, false, &config.runtype)?;
+        let (mesh, atmosphere_spring_passes) = if atmosphere_max_level > 0 {
+            if atmosphere_spring_iterations > 0 {
+                if native_cartesian_xy {
+                    mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                        native_atmosphere_regions,
+                        atmosphere_max_level,
+                        TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+                        nxp,
+                        atmosphere_spring_iterations,
+                        native_deltax,
+                    )?
+                } else {
+                    mesh.spawn_nest_with_spring_as_atmosmesh(
+                        native_atmosphere_regions,
+                        atmosphere_max_level,
+                        nxp,
+                        atmosphere_spring_iterations,
+                    )?
+                }
+            } else {
+                (
+                    if native_cartesian_xy {
+                        mesh.spawn_nest_cartesian_xy_with_max_mrows(
+                            native_atmosphere_regions,
+                            atmosphere_max_level,
+                            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+                        )?
+                    } else {
+                        mesh.spawn_nest_as_atmosmesh(
+                            native_atmosphere_regions,
+                            atmosphere_max_level,
+                        )?
+                    },
+                    0,
+                )
+            }
+        } else {
+            (mesh, 0)
+        };
+        let mesh = if native_surface_global_expansion {
+            mesh.expand_by_factor(native_sfcgrid_res_factor)?
+        } else {
+            mesh
+        };
+        let surface_nxp = nxp.checked_mul(native_sfcgrid_res_factor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Method-C native nxp_sfc overflows usize",
+            )
+        })?;
+        let (mesh, surface_spring_passes) = if native_surface_regions.is_empty() {
+            (mesh, 0)
+        } else if surface_spring_iterations > 0 {
+            if native_cartesian_xy {
+                mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                    native_surface_regions,
+                    surface_max_level,
+                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                    surface_nxp,
+                    surface_spring_iterations,
+                    native_deltax,
+                )?
+            } else {
+                mesh.spawn_nest_with_spring(
+                    native_surface_regions,
+                    surface_max_level,
+                    surface_nxp,
+                    surface_spring_iterations,
+                )?
+            }
+        } else {
+            (
+                if native_cartesian_xy {
+                    mesh.spawn_nest_cartesian_xy_with_max_mrows(
+                        native_surface_regions,
+                        surface_max_level,
+                        TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                    )?
+                } else {
+                    mesh.spawn_nest_as_surface(native_surface_regions, surface_max_level)?
+                },
+                0,
+            )
+        };
+        (mesh, atmosphere_spring_passes + surface_spring_passes)
+    } else if let Some(adaptive) = adaptive_options {
+        // Point+radius mode: ask every enabled criterion again before each pass,
+        // cover what it demands with circles, and refine one level. The h-field
+        // reads the same criteria but settles them all up front, so a criterion
+        // whose answer depends on the cell size can only be honoured here.
+        let base_m = adaptive.base_m.unwrap_or_else(|| {
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                / (5.0 * method_c_nxp as f64)
+        });
+        let depth = adaptive.max_level.unwrap_or(max_level).clamp(1, 5);
+        let inputs = crate::refinement_demand::plan::DemandPlanInputs {
+            bounds: adaptive_demand_bounds(domain_region, config)?,
+            gridnum_perdegree: usize::try_from(config.gridnum_perdegree).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "NL%gridnum_perdegree must fit usize",
+                )
+            })?,
+            landtype_file: adaptive_landtype_file(config),
+            mesh_type,
+            refine_coastline: adaptive.coastline,
+        };
+        // The choice reaches here, which is where routing belongs. Only one
+        // route is built.
+        //
+        // The seam for the other one is `write_refined_outputs`: it
+        // takes `&UnstructuredMesh` and an *optional* `MethodCMetadataSlices`,
+        // which is exactly what `redgreen_bridge::unstructured_mesh_from_redgreen`
+        // produces and what red-green cannot supply. So this branch does not
+        // have to fake Method-C's tables -- it runs
+        // `redgreen_mesh_from_triangular`, then `refine_redgreen_level` per level
+        // (carrying the previous level's marking through
+        // `RedGreenOutcome::cell_renumbering`, since a round renumbers), and
+        // hands the result to that writer with `metadata: None`.
+        //
+        // What stands in the way is the hundred lines between: they are typed
+        // on `TriangularMesh` and compute mrlm/ngr/lineage that red-green
+        // has no equivalent for. Splitting them is the work, not the call.
+        if config.refine_backend.trim() == "red_green" {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "NL%refine_backend = red_green is not routed through the refinement pipeline yet;                  the algorithm and the marking-to-gridfile steps are built and tested, what is                  missing is this branch calling them. Use method_c until then",
+            ));
+        }
+        let (refined, report) =
+            crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+                &mesh, refine, &inputs, regions, base_m, depth,
+            )?;
+        for pass in &report.passes {
+            eprintln!(
+                "adaptive refine level {} judging {:.0} m cells: {} circles over {} demanded source cells, {} -> {} faces",
+                pass.level,
+                pass.cell_meters,
+                pass.circle_count,
+                pass.demanded_cells,
+                pass.faces_before,
+                pass.faces_after
+            );
+        }
+        adaptive_run = Some((report.clone(), depth, base_m, adaptive.coastline));
+        if report.deepest_level == 0 {
+            // A run that asked to refine and refined nothing is the failure that
+            // stays quiet: the mesh is valid, passes its quality checks, and is
+            // simply not the mesh that was requested. It is only acceptable when
+            // nothing was named and no criterion is on -- then "uniform" is the
+            // right answer.
+            if refine.refine_spc || refine.refine_cal || !regions.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "adaptive refinement was requested ({} named regions, refine_spc={}, \
+                         refine_cal={}) but no level refined; check that the criteria have data \
+                         over the domain and that named regions carry a level in 1..={depth}",
+                        regions.len(),
+                        refine.refine_spc,
+                        refine.refine_cal
+                    ),
+                ));
+            }
+            eprintln!("adaptive refine: nothing asked for refinement; mesh left uniform");
+        }
+        (refined, 0)
+    } else if let Some(hfield) = hfield_options {
+        // H-field mode: compose the same specified regions into a
+        // gradient-limited cell-width field and let quantized target levels
+        // drive Method-C ("split between levels" with legality by
+        // construction). Spherical runs sample lon/lat rasters; Cartesian-XY
+        // runs sample the same region constraints analytically in x/y meters.
+        let base_m = hfield.base_m.unwrap_or_else(|| {
+            if native_cartesian_xy {
+                native_deltax
+            } else {
+                2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                    / (5.0 * nxp as f64)
+            }
+        });
+        let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
+        let max_mrows = if is_atmosmesh {
+            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
+        } else {
+            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
+        };
+        if native_cartesian_xy && has_hydro_hfield_source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "hydro target-cell h-field requires a spherical lon/lat Method-C run",
+            ));
+        }
+        if native_cartesian_xy {
+            let geographic_threshold_field = if has_threshold_hfield_sources {
+                hfield.geographic_origin.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Cartesian-XY geographic threshold rasters require hfield_origin_lon and hfield_origin_lat",
+                    )
+                })?;
+                Some(crate::hfield_refine::build_composed_hfield(
+                    &[],
+                    refine,
+                    mesh_type,
+                    Some(config),
+                    base_m,
+                    hfield,
+                    max_cal_level.clamp(1, field_max_level),
+                    None,
+                )?)
+            } else {
+                None
+            };
+            for region in regions {
+                region.validate_cartesian_xy()?;
+            }
+            // An explicit h-field is a mkrefine request, not the implicit
+            // native ngrids-only path; honor its niter_refine controls instead
+            // of forcing Method-C's 5000-iteration native spawn default.
+            let hfield_spring_iterations = method_c_spring_iterations(refine, is_atmosmesh)?;
+            let (refined, passes, diagnostics) = mesh
+                .spawn_nest_from_cartesian_xy_target_levels_with_spring_deltax(
+                    |x, y| {
+                        let region_level = crate::hfield_refine::cartesian_hfield_level_at(
+                            regions,
+                            x,
+                            y,
+                            base_m,
+                            hfield.g,
+                            field_max_level,
+                        );
+                        let threshold_level = geographic_threshold_field
+                            .as_ref()
+                            .map(|field| {
+                                let (origin_lon, origin_lat) =
+                                    hfield.geographic_origin.expect("origin checked above");
+                                let (lon, lat) = crate::hfield_refine::cartesian_xy_to_lonlat(
+                                    x, y, origin_lon, origin_lat,
+                                );
+                                field.level_at(lon, lat, base_m, field_max_level as u8)
+                            })
+                            .unwrap_or(0);
+                        region_level.max(threshold_level)
+                    },
+                    field_max_level,
+                    max_mrows,
+                    nxp,
+                    hfield_spring_iterations,
+                    native_deltax,
+                )?;
+            hfield_diagnostics = diagnostics;
+            (refined, passes)
+        } else {
+            let mut field = crate::hfield_refine::build_composed_hfield(
+                regions,
+                refine,
+                mesh_type,
+                Some(config),
+                base_m,
+                hfield,
+                max_cal_level.clamp(1, field_max_level),
+                domain_region,
+            )?;
+            crate::hydro_refinement_adapter::apply_hydro_target_to_field(
+                &mut field,
+                hfield,
+                base_m,
+                domain_region,
+            )?;
+            crate::hfield_refine::constrain_hfield_to_domain(
+                &mut field,
+                domain_region,
+                base_m,
+                hfield.g,
+            )?;
+            let (refined, passes, diagnostics) = mesh.spawn_nest_from_target_levels_with_spring(
+                |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
+                field_max_level,
+                max_mrows,
+                nxp,
+                spring_nest_iterations,
+            )?;
+            hfield_diagnostics = diagnostics;
+            (refined, passes)
+        }
+    } else if spring_nest_iterations > 0 {
+        if native_cartesian_xy {
+            mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
+                regions,
+                max_level,
+                if is_atmosmesh {
+                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
+                } else {
+                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
+                },
+                nxp,
+                spring_nest_iterations,
+                native_deltax,
+            )?
+        } else if is_atmosmesh {
+            mesh.spawn_nest_with_spring_and_max_mrows(
+                regions,
+                max_level,
+                TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+                nxp,
+                spring_nest_iterations,
+            )?
+        } else {
+            mesh.spawn_nest_with_spring_and_max_mrows(
+                regions,
+                max_level,
+                TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                nxp,
+                spring_nest_iterations,
+            )?
+        }
+    } else if native_cartesian_xy {
+        (
+            mesh.spawn_nest_cartesian_xy_with_max_mrows(
+                regions,
+                max_level,
+                if is_atmosmesh {
+                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
+                } else {
+                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
+                },
+            )?,
+            0,
+        )
+    } else if is_atmosmesh {
+        (mesh.spawn_nest_as_atmosmesh(regions, max_level)?, 0)
+    } else {
+        (mesh.spawn_nest(regions, max_level)?, 0)
+    };
+
+    Ok(MethodCRefineOutcome {
+        mesh,
+        spring_nest_passes,
+        hfield_diagnostics,
+        adaptive_run,
     })
 }
 
