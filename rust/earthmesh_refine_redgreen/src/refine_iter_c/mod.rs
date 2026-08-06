@@ -206,3 +206,52 @@ pub fn refine_iter_c_judge_one_based(
 
     Ok(ref_sjx)
 }
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    /// A cell wider than the seven-edge cap the degree rules fork on does not
+    /// index off the end of the table sized for it.
+    ///
+    /// `ref_lbx_in` was seven columns wide because seven is what Method-C
+    /// guarantees. Reaching the cap is not the same as being allowed to index
+    /// past a table sized for it, and the difference was an abort rather than a
+    /// wrong answer.
+    ///
+    /// Driven directly because the driver no longer produces such a cell: the
+    /// transition rows take back the degree they add now that the Lawson flips
+    /// run. The guard stays because nothing here promises they always will.
+    #[test]
+    fn a_cell_past_the_degree_cap_does_not_index_off_the_end() {
+        // Nine triangles, eight of them around one cell. Neighbour rows only
+        // have to be addressable, not geometric -- what is under test is the
+        // table width, not the judgement.
+        let mut triangle_neighbors = vec![vec![1usize; 3]; 10];
+        triangle_neighbors[2] = vec![4, 5, 6];
+        triangle_neighbors[3] = vec![6, 7, 8];
+        triangle_neighbors[9] = vec![4, 5, 2];
+        let mut mrl_new = vec![1i32; 10];
+        // Two refined triangles put their neighbours in transition, which is
+        // what gives triangle 9 something to be judged about.
+        mrl_new[2] = 4;
+        mrl_new[3] = 4;
+        let triangles_on_cell = vec![Vec::new(), Vec::new(), vec![2, 3, 4, 5, 6, 7, 8, 9]];
+        let edge_counts = vec![0, 0, 8];
+        let ref_lbx = vec![0i32; 3];
+
+        let marking = refine_iter_c_judge_one_based(
+            2,
+            1,
+            1,
+            2,
+            &triangle_neighbors,
+            &triangles_on_cell,
+            &edge_counts,
+            &mrl_new,
+            &ref_lbx,
+        )
+        .expect("a cell past the cap is judged, not aborted on");
+        assert_eq!(marking.len(), mrl_new.len());
+    }
+}

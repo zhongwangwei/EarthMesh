@@ -16,7 +16,7 @@ pub fn refine_sharp_concav_lop_judge_one_based(
     sjx_child: &[[usize; 2]],
     bdy_refine_segment: &[Vec<usize>],
     bdy_refine_segment_old: &[Vec<usize>],
-    _n_bdy_refine_segment: &[usize],
+    n_bdy_refine_segment: &[usize],
     ref_sjx_segment_temp: &mut [Vec<usize>],
     n_ref_sjx_segment_temp: &mut [usize],
 ) -> io::Result<()> {
@@ -37,8 +37,29 @@ pub fn refine_sharp_concav_lop_judge_one_based(
         ));
     }
 
+    if num_bdy_refine_segment > n_bdy_refine_segment.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "num_bdy_refine_segment must address the segment row counts",
+        ));
+    }
+
     for segment_id in 0..num_bdy_refine_segment {
-        let tran_degree = n_ref_sjx_segment_temp[segment_id] + 1;
+        // How far along this segment there are consecutive triangles to pair
+        // up. The caller has already eaten this round's head and decremented
+        // the count, so the segment as it was is one longer -- and a segment
+        // eaten to nothing arrives as zero, which the guard below turns into
+        // the skip it means.
+        //
+        // Read from `n_ref_sjx_segment_temp` before, which is this function's
+        // *output* count and is freshly zeroed every round -- so `tran_degree`
+        // was always 1, every segment was skipped, and the judge never proposed
+        // a flip. The 1-into-2 splits that build the transition rows each add
+        // one to the degree of the corner they split away from, and the flips
+        // are what take that back; without them a hexagonal cell reached degree
+        // 8, which is past what the gridfile's dual and the mask post-process
+        // are built for.
+        let tran_degree = n_bdy_refine_segment[segment_id] + 1;
         if tran_degree == 1 {
             continue;
         }

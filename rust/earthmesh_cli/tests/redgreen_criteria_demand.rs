@@ -198,3 +198,81 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
         assert_eq!(open_edges(&second.mesh), 0, "{place} level 2 left a hole");
     }
 }
+
+/// The transition rows take back the degree they add, so no cell passes seven.
+///
+/// Building a transition row splits a triangle in two, which adds one to the
+/// degree of the corner it splits away from; the Lawson flips afterwards are
+/// what take that back. The flips never ran: the judge read its walk bound from
+/// its own output count, which is freshly zeroed every round, so every segment
+/// was skipped and `flipped_triangle_count` was zero in every run.
+///
+/// Cells reached degree 8. Nothing said so until the carve, and only for a mesh
+/// that has one -- `center N neighbor count 8 exceeds available width` from the
+/// land and ocean examples, while the atmosphere example wrote its mesh and
+/// exited clean. Seven is what Method-C guarantees and what every reader below
+/// is sized for.
+#[test]
+fn the_transition_rows_take_back_the_degree_they_add() {
+    let refine = earthmesh_core::RefineConfig {
+        is_transition: true,
+        // The width the shipped examples use.
+        halo: [4, 4, 3, 0, 0, 0, 0, 0, 0, 0],
+        max_transition_row: [4, 4, 3, 0, 0, 0, 0, 0, 0, 0],
+        ..earthmesh_core::RefineConfig::default()
+    };
+    let base =
+        earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25, 0).expect("base mesh");
+    let neighbors = base.m_neighbors.clone();
+    let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+        .expect("bridge in");
+    let widest = |mesh: &earthmesh_refine_redgreen::RedGreenMesh| {
+        (mesh.num_center + 1..=mesh.cell_count())
+            .map(|cell| mesh.n_triangles_on_cell[cell])
+            .max()
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        widest(&mesh),
+        6,
+        "an unrefined mesh is hexagons and pentagons"
+    );
+
+    let regions: Vec<earthmesh_mesh::RefinementRegion> = (1..=2)
+        .map(|level| earthmesh_mesh::RefinementRegion::Circle {
+            center: earthmesh_mesh::LonLatDegrees::new(120.0, 40.0),
+            radius_meters: 2_000_000.0,
+            level,
+        })
+        .collect();
+
+    let (_, first) =
+        earthmesh_cli::redgreen_bridge::refine_redgreen_level(&mesh, &regions, &refine, 1, None)
+            .expect("level one");
+    assert!(
+        first.flipped_triangle_count > 0,
+        "a transition band leaves sharp corners; flipping them is not optional"
+    );
+    assert!(
+        widest(&first.mesh) <= 7,
+        "level one reached degree {}",
+        widest(&first.mesh)
+    );
+
+    let previous =
+        earthmesh_cli::redgreen_bridge::redgreen_marking_from_regions(&first.mesh, &regions, 1);
+    let (_, second) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+        &first.mesh,
+        &regions,
+        &refine,
+        2,
+        Some(&previous),
+    )
+    .expect("level two");
+    assert!(second.flipped_triangle_count > 0);
+    assert!(
+        widest(&second.mesh) <= 7,
+        "level two reached degree {}",
+        widest(&second.mesh)
+    );
+}

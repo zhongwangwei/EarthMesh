@@ -877,14 +877,34 @@ gridfile 自身的行数。
 失败方式——**只有下一层会发现,而单层跑没有下一层**,会把带洞的 gridfile 写出去,而且
 它打得开。
 
-**未解决:红绿的六边形对偶会出现 8 邻居单元。** `examples/default/land_hex_global.nml`
-与 `ocean_hex_global.nml` 加红绿后,两层细化都闭合,然后倒在雕刻阶段的
-`center N neighbor count 8 exceeds available width`。7 是 **Method-C 的保证**(顶点价
-∈{5,6,7}),而红绿只靠事后的 Lawson 翻边约束价数——`mask_postproc_neighbor_widths` 的
-`hex => (7, 3)`、以及桥接层的 `npoly.min(7)` 都建立在那条保证上。atmosmesh 不走雕刻,
-所以通过。要么放宽格式的价数上限,要么约束红绿的价数,是设计决策。
-(另注:实测所有红绿运行 `flipped_triangle_count` 恒为 0,而翻边正是约束价数的那一步
-——值得先查这个。)
+**已修:过渡行抬高的价数没有被翻边收回(2026-08-06)。** 症状是红绿的六边形对偶出现 **8
+邻居**单元,撞上 `mask_postproc_neighbor_widths` 的 `hex => (7, 3)`——那个 7 是 **Method-C
+的保证**(顶点价 ∈{5,6,7}),下游一切都按它开表。
+
+机制:建过渡行的 1→2 分裂会给"被分开的那个角"加 1 价,而随后的 Lawson 翻边正是把它收
+回来的一步。**翻边从来没跑过**——`refine_sharp_concav_lop_judge` 顶部的 `tran_degree`
+读的是**它自己的输出计数**数组,而调用方每轮都新建全零的 `lop_counts`,于是 `tran_degree`
+恒为 1、每个 segment 直接 `continue`,`flipped_triangle_count` 在所有运行里都是 0。
+线索是同一个参数表里躺着一个带下划线、**完全没用**的 `_n_bdy_refine_segment`。
+
+绑到 segment 的行数即可(`+1` 因为调用方吃掉本轮头部后已经递减过;吃空的 segment 以 0
+到达,正好落进既有的 `== 1` 跳过分支)。实测 NXP 21/33/45/64/81 × 北极/南极/日界线/
+赤道/中纬,两层:**50/50 全部 `maxdeg=7`、`over7=0`、`open=0`**,翻边数 72–1052。
+
+顺带暴露并修掉一处:两个 segment 在交界处会看见同一对角,于是同一对被提两次,而翻边会
+消耗它重建的两个三角形。`refine_delaunay_lop_one_based` 现在跳过已被消耗的对,与它本来
+就跳过空槽位是同一个答案。
+
+**三个 shipped 示例现在两个后端都通过**(`--max-tris 2000000`),拓扑一致:
+
+| 示例 | red_green | method_c |
+|---|---|---|
+| land | euler=88 comp=109 | euler=89 comp=109 |
+| atmosphere | euler=2 comp=1 | euler=2 comp=1 |
+| ocean | euler=-86 comp=22 | euler=-87 comp=21 |
+
+价数上限也进了护栏(`REDGREEN_MAX_CELL_DEGREE`):没有雕刻的运行(大气网格)否则会把读不了
+的单元写出去而一声不吭。
 
 **测试落点**:具名区域端到端在 `tests/refine_pipeline.rs` 的
 `redgreen_backend_refines_a_named_circle_end_to_end`(NXP=21,两层,读回 gridfile 做

@@ -26,9 +26,11 @@ fn sharp_concav_lop_judge_builds_single_transition_pair() {
     sjx_child[6] = [60, 61];
     let bdy_refine_segment = vec![vec![4]];
     let bdy_refine_segment_old = vec![vec![2, 3]];
-    let n_bdy_refine_segment = vec![2];
+    // One less than the row it snapshots: the caller decrements as it eats the
+    // head, and the judge adds the one back.
+    let n_bdy_refine_segment = vec![1];
     let mut ref_temp = vec![vec![0; 9]; 1];
-    let mut n_ref_temp = vec![1];
+    let mut n_ref_temp = vec![0];
     let mut num_ref = 0;
 
     refine_sharp_concav_lop_judge_one_based(
@@ -67,9 +69,9 @@ fn sharp_concav_lop_judge_mirrors_other_end_for_longer_transition_degree() {
     sjx_child[6] = [60, 61];
     let bdy_refine_segment = vec![vec![7, 8]];
     let bdy_refine_segment_old = vec![vec![2, 3, 4]];
-    let n_bdy_refine_segment = vec![3];
+    let n_bdy_refine_segment = vec![2];
     let mut ref_temp = vec![vec![0; 12]; 1];
-    let mut n_ref_temp = vec![2];
+    let mut n_ref_temp = vec![0];
     let mut num_ref = 0;
     let mut vertices = child_vertices();
     vertices[40] = [80, 81, 62];
@@ -104,9 +106,9 @@ fn sharp_concav_lop_judge_terminates_placeholder_segment() {
     let sjx_child = vec![[0, 0]; 8];
     let bdy_refine_segment = vec![vec![1, 1]];
     let bdy_refine_segment_old = vec![vec![2, 3, 4]];
-    let n_bdy_refine_segment = vec![3];
+    let n_bdy_refine_segment = vec![2];
     let mut ref_temp = vec![vec![0; 12]; 1];
-    let mut n_ref_temp = vec![2];
+    let mut n_ref_temp = vec![0];
     let mut num_ref = 0;
 
     refine_sharp_concav_lop_judge_one_based(
@@ -141,9 +143,11 @@ fn sharp_concav_lop_judge_skips_missing_child_adjacency() {
     sjx_child[6] = [60, 61];
     let bdy_refine_segment = vec![vec![4]];
     let bdy_refine_segment_old = vec![vec![2, 3]];
-    let n_bdy_refine_segment = vec![2];
+    // One less than the row it snapshots: the caller decrements as it eats the
+    // head, and the judge adds the one back.
+    let n_bdy_refine_segment = vec![1];
     let mut ref_temp = vec![vec![0; 9]; 1];
-    let mut n_ref_temp = vec![1];
+    let mut n_ref_temp = vec![0];
     let mut num_ref = 0;
     let vertices = (0..80)
         .map(|idx| [idx * 3 + 1000, idx * 3 + 1001, idx * 3 + 1002])

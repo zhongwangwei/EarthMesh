@@ -8,6 +8,9 @@ use crate::{checked_lop_edge_flip, crossline_check_canonical, LonLatDegrees};
 /// `ref_sjx_segment` array, writes replacement triangles after
 /// `num_mp[iter-1]`, clears old triangle connectivity to Canonical placeholder
 /// `1`, and preserves the Canonical dateline/crossline cleanup behavior.
+/// Connectivity a triangle carries once something has consumed it.
+const DELETED_TRIANGLE: [usize; 3] = [1, 1, 1];
+
 pub fn refine_delaunay_lop_one_based(
     iter: usize,
     num_ref: usize,
@@ -51,6 +54,15 @@ pub fn refine_delaunay_lop_one_based(
         let i = ref_sjx_segment[2 * k];
         let j = ref_sjx_segment[2 * k + 1];
         if i == 0 || j == 0 {
+            continue;
+        }
+        // Two boundary segments that meet at a corner both see the pair there,
+        // so the same pair can be proposed twice -- and a flip consumes the two
+        // triangles it rebuilds, leaving them with the deleted marker. Flipping
+        // a consumed pair is not a request that can be honoured, and is not a
+        // defect in the proposal either; skipping is the same answer the loop
+        // already gives for a slot that names no triangle.
+        if cells_on_triangle[i] == DELETED_TRIANGLE || cells_on_triangle[j] == DELETED_TRIANGLE {
             continue;
         }
         if i >= cells_on_triangle.len() || j >= cells_on_triangle.len() {

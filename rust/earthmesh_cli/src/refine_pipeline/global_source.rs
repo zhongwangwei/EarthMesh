@@ -636,6 +636,14 @@ struct RefinedGrid {
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
+/// Most incident triangles a cell may have.
+///
+/// Method-C holds vertex degree to {5, 6, 7} by construction, and everything
+/// downstream is sized for it: `mask_postproc_neighbor_widths` gives 7 for the
+/// polygon side either way round, and `IcosahedronMPointNeighbors` carries
+/// seven slots.
+const REDGREEN_MAX_CELL_DEGREE: usize = 7;
+
 /// Triangles left holding an edge no other triangle owns.
 ///
 /// A mesh of the whole sphere has none: every edge is shared by exactly two
@@ -751,6 +759,26 @@ fn refine_with_redgreen(
             outcome.flipped_triangle_count,
             outcome.mesh.triangle_count(),
         );
+        // The degree the gridfile's dual and the mask post-process are built
+        // for. Method-C guarantees {5, 6, 7} by construction; red-green only
+        // reaches it by taking back, with Lawson flips, the degree each
+        // transition split adds. Checked rather than trusted because a run
+        // without a carve -- an atmosphere mesh -- would otherwise write a cell
+        // the readers cannot address and say nothing.
+        let widest_cell = (outcome.mesh.num_center + 1..=outcome.mesh.cell_count())
+            .map(|cell| outcome.mesh.n_triangles_on_cell[cell])
+            .max()
+            .unwrap_or(0);
+        if widest_cell > REDGREEN_MAX_CELL_DEGREE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "red-green level {level} produced a cell with {widest_cell} incident \
+                     triangles; the gridfile's dual and the mask post-process address at most \
+                     {REDGREEN_MAX_CELL_DEGREE}"
+                ),
+            ));
+        }
         // Checked here rather than trusted, because the next level is the only
         // thing that would otherwise notice -- and a run that stops at this
         // level has no next level.
