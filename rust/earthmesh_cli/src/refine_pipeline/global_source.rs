@@ -636,6 +636,34 @@ struct RefinedGrid {
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
+/// Triangles left holding an edge no other triangle owns.
+///
+/// A mesh of the whole sphere has none: every edge is shared by exactly two
+/// triangles. Red-green can leave them, and three shapes have been measured
+/// doing it: a region over a pole (NXP 21 and up), a region crossing the
+/// antimeridian (NXP 33 and up), and the ring of coastal demand around an
+/// island. A compact disc away from those is fine at every size tried -- a
+/// 3500 km circle at 30N refines to two levels at NXP 45 and closes -- so this
+/// is about the region's shape and where it sits, not how much it covers.
+///
+/// The level *after* the one that opened them says so, as "ngrmm row N has
+/// invalid neighbor 0". A single-level run says nothing at all: the gridfile is
+/// written, opens, and carries a hole.
+fn redgreen_open_edges(mesh: &earthmesh_refine_redgreen::RedGreenMesh) -> usize {
+    let Some(rows) = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
+        &mesh.cells_on_triangle,
+        &mesh.triangles_on_cell,
+        &mesh.n_triangles_on_cell,
+    ) else {
+        // Membership that does not resolve at all is worse than an open edge,
+        // not better; report it as every triangle being suspect.
+        return mesh.triangle_count();
+    };
+    (mesh.num_vertex + 1..=mesh.triangle_count())
+        .filter(|&triangle| rows[triangle].contains(&0))
+        .count()
+}
+
 /// The criteria half of the point+radius route, as red-green consumes it.
 struct RedGreenAdaptive<'a> {
     inputs: crate::refinement_demand::plan::DemandPlanInputs<'a>,
@@ -724,6 +752,23 @@ fn refine_with_redgreen(
             outcome.flipped_triangle_count,
             outcome.mesh.triangle_count(),
         );
+        // Checked here rather than trusted, because the next level is the only
+        // thing that would otherwise notice -- and a run that stops at this
+        // level has no next level.
+        let open_edges = redgreen_open_edges(&outcome.mesh);
+        if open_edges > 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "red-green level {level} left {open_edges} triangle edge(s) with no \
+                     neighbouring triangle, so the mesh does not close. Measured for a region \
+                     over a pole, a region crossing the antimeridian, and the ring of coastal \
+                     demand around an island; a compact region away from those refines and \
+                     closes. Move the region, or use method_c for this run. Writing it would \
+                     produce a gridfile that opens and carries a hole"
+                ),
+            ));
+        }
         split_triangles += outcome.refined_triangle_count;
         // What this level refined, in the numbering the *next* level will ask
         // about. Not the array just handed in: that one indexes the triangles

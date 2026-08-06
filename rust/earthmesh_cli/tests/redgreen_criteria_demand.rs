@@ -116,3 +116,67 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
         &topology.violations[..topology.violations.len().min(4)]
     );
 }
+
+/// A region over a pole does not close, and the run says so instead of writing
+/// it.
+///
+/// This is an open defect in the red-green driver, not in the wiring: the
+/// transition rows around a refined region that contains one of the
+/// icosahedron's twelve pentagons leave triangle edges with no neighbouring
+/// triangle. Measured from NXP 21 up; the antimeridian does the same from NXP
+/// 33, and so does the ring of coastal demand around an island.
+///
+/// Pinned here because the failure is invisible to a test placed anywhere else:
+/// the same circle at mid-latitude refines to two levels and closes. Only the
+/// level *after* the one that opened the edges would otherwise notice, and a
+/// single-level run has no next level -- it writes a gridfile that opens and
+/// carries a hole.
+#[test]
+fn a_polar_region_is_refused_rather_than_written_with_a_hole() {
+    let refine = earthmesh_core::RefineConfig {
+        is_transition: true,
+        halo: [3; 10],
+        max_transition_row: [3; 10],
+        ..earthmesh_core::RefineConfig::default()
+    };
+    let circle = |lon: f64, lat: f64| earthmesh_mesh::RefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(lon, lat),
+        radius_meters: 600_000.0,
+        level: 1,
+    };
+    let base =
+        earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25, 0).expect("base mesh");
+    let neighbors = base.m_neighbors.clone();
+    let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+        .expect("bridge in");
+
+    let open_edges = |region: earthmesh_mesh::RefinementRegion| {
+        let (_, outcome) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+            &mesh,
+            &[region],
+            &refine,
+            1,
+            None,
+        )
+        .expect("the round itself succeeds; it is the mesh that is wrong");
+        let rows = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
+            &outcome.mesh.cells_on_triangle,
+            &outcome.mesh.triangles_on_cell,
+            &outcome.mesh.n_triangles_on_cell,
+        )
+        .expect("membership resolves");
+        (outcome.mesh.num_vertex + 1..=outcome.mesh.triangle_count())
+            .filter(|&triangle| rows[triangle].contains(&0))
+            .count()
+    };
+
+    assert_eq!(
+        open_edges(circle(45.0, 45.0)),
+        0,
+        "a mid-latitude circle closes, which is why this defect hides"
+    );
+    assert!(
+        open_edges(circle(30.0, 89.0)) > 0,
+        "the polar defect is fixed -- drop this test and the pipeline guard's polar wording"
+    );
+}

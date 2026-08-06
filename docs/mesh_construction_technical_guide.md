@@ -853,6 +853,26 @@ gridfile 自身的行数。
    可以超过它(一层细化进上一层的过渡带就会产出),而"到达上限"不等于"允许越界索
    引一张按上限开的表"——那是进程中止,不是错误答案。
 
+**已知缺陷:某些区域形状下网格不闭合(2026-08-06 实测)。** 红绿的过渡行会留下"没有对面
+三角形"的边,实测三种形状会触发:
+
+| 形状 | 起始规模 |
+|---|---|
+| 覆盖极点(即某个 pentagon)的区域 | NXP 21 起 |
+| 跨越日界线的区域 | NXP 33 起 |
+| 一座岛周围的海岸判据环 | NXP 45 实测(全球 landmesh) |
+
+**不是范围问题**:同一位置 3500 km 的圆在 NXP 45 两层照样闭合(Euler=2、单连通分量、
+无非流形顶点扇),中纬 NXP 81 两层也闭合。是区域的形状和落点。
+
+这个缺陷**只有下一层会发现**——表现为 `ngrmm row N has invalid neighbor 0`——而**单层
+跑没有下一层**,会把带洞的 gridfile 写出去,而且它打得开。所以 `refine_with_redgreen`
+每层之后都数一遍开边,不为零就报错。护栏在 `redgreen_open_edges`,缺陷本身钉在
+`tests/redgreen_criteria_demand.rs::a_polar_region_is_refused_rather_than_written_with_a_hole`
+——那个测试同时断言中纬同款圆是闭合的,因为这正是缺陷藏起来的方式。
+
+修它是红绿驱动内部的活(pentagon 处与 ±180 缝处的过渡行闭合),不是接线的活。
+
 **测试落点**:具名区域端到端在 `tests/refine_pipeline.rs` 的
 `redgreen_backend_refines_a_named_circle_end_to_end`(NXP=21,两层,读回 gridfile 做
 拓扑检查——只断言"单元变多"抓不到上面第 1 条);判据链在
