@@ -680,18 +680,22 @@ pub fn run_refine_pipeline_namelist(
         (mesh.spawn_nest(&regions, max_level)?, 0)
     };
     let transition_faces = mesh.boundary_rows().len();
+    // The twelve pentagons are the icosahedron's, and refinement never moves
+    // them, so taking them here rather than off the refined `state` costs
+    // nothing and removes one of the two things that tied the run record to
+    // Method-C's Voronoi step. The other is `output_mesh`, which a backend can
+    // supply itself.
+    let pentagon_indices = mesh.impent;
 
-    // Measured: past this point `state` has exactly two consumers that are not
-    // the Method-C metadata -- `output_mesh`, which red-green produces directly
-    // through `redgreen_bridge::unstructured_mesh_from_redgreen`, and
-    // `state.impent`, the twelve pentagon ids, which come off the *base*
-    // icosahedron and so can be taken before any refinement runs.
+    // Past this point `state` now has exactly one consumer that is not the
+    // Method-C metadata: `output_mesh`, which red-green produces directly
+    // through `redgreen_bridge::unstructured_mesh_from_redgreen`. The pentagon
+    // ids used to be the other one and are taken from the base mesh above.
     //
     // So the tail is thinner than it reads. Making it serve both backends is:
-    // capture `impent` up front, make `state` itself the thing that becomes
-    // optional, and let the branch at the refinement decide whether the mesh
-    // continues as a `TriangularMesh` through the Voronoi step or arrives
-    // already in lon/lat.
+    // make `state` itself the thing that becomes optional, and let the branch at
+    // the refinement decide whether the mesh continues as a `TriangularMesh`
+    // through the Voronoi step or arrives already in lon/lat.
     //
     // Where the backend branch has to go, and the decision it forces.
     //
@@ -841,7 +845,7 @@ pub fn run_refine_pipeline_namelist(
     runtime_state.grid = state.grid;
     runtime_state.ijtabs = state.tabs;
     runtime_state
-        .record_pentagon_indices_from_icosahedron(state.impent)
+        .record_pentagon_indices_from_icosahedron(pentagon_indices)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     runtime_state
         .record_mesh_counts_for_step(max_level, runtime_state.grid.nma, runtime_state.grid.nwa)
