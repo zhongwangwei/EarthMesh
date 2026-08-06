@@ -34,7 +34,7 @@ use earthmesh_mesh::{
     voronoi_grid_from_method_c_delaunay_mesh_cartesian, MethodCDelaunayMesh,
 };
 
-use super::outputs::{write_method_c_refined_outputs, MethodCMetadataSlices};
+use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 
 /// Execute global specified refinement directly through the Method-C
 /// Delaunay/Voronoi mesh layer.
@@ -454,7 +454,7 @@ pub fn run_refine_pipeline_namelist(
         // The choice reaches here, which is where routing belongs. Only one
         // route is built.
         //
-        // The seam for the other one is `write_method_c_refined_outputs`: it
+        // The seam for the other one is `write_refined_outputs`: it
         // takes `&UnstructuredMesh` and an *optional* `MethodCMetadataSlices`,
         // which is exactly what `redgreen_bridge::unstructured_mesh_from_redgreen`
         // produces and what red-green cannot supply. So this branch does not
@@ -730,7 +730,7 @@ pub fn run_refine_pipeline_namelist(
             .map(|point| report.target_level_at(point.lon, point.lat) > 0)
             .collect::<Vec<bool>>()
     });
-    let outputs = write_method_c_refined_outputs(
+    let outputs = write_refined_outputs(
         &contents,
         &config,
         source_gridnum_perdegree,

@@ -63,7 +63,13 @@ impl<'a> MethodCMetadataSlices<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn write_method_c_refined_outputs(
+/// Write a refined mesh and everything that goes with it.
+///
+/// Not Method-C's, despite where it grew up: it takes an `UnstructuredMesh` and
+/// an *optional* `MethodCMetadataSlices`, so a backend with no mrlm/ngr/lineage
+/// to offer passes `None` and is served the same. That is the seam the
+/// red-green route attaches through, and the old name said the opposite.
+pub(super) fn write_refined_outputs(
     namelist_contents: &str,
     config: &EarthmeshConfig,
     source_gridnum_perdegree: Option<usize>,
