@@ -281,10 +281,13 @@ fn split_domain() -> Fixture {
 }
 
 #[test]
-fn a_demanded_component_survives_however_small_it_is() {
-    // The defect this closes: a refinement circle over a small bay produces
-    // exactly the disjoint piece the largest-component rule deletes, and
-    // nothing reports that the region the run named is gone.
+fn a_demanded_component_is_dropped_with_the_rest_and_counted() {
+    // Demand used to buy a small component a reprieve. It produced a domain in
+    // pieces -- a global coastal run kept 1 + 49 of 229 components and failed
+    // `disconnected_mesh` while every other gate passed -- and a model that
+    // wants one connected domain cannot use that. So the reprieve is gone, and
+    // what replaces it is the count: dropping a water body somebody named is a
+    // real loss and has to be said out loud.
     let mut fixture = split_domain();
     let report = fixture.retain_with_demand(&[5]);
 
@@ -294,12 +297,16 @@ fn a_demanded_component_survives_however_small_it_is() {
     }
     for cell_id in [5, 6] {
         assert!(
-            fixture.in_domain(cell_id),
-            "cell {cell_id} carries hard demand and must survive"
+            !fixture.in_domain(cell_id),
+            "cell {cell_id} is not connected to the domain and must go"
         );
     }
-    assert!(report.removed_cell_ids.is_empty(), "{report:?}");
-    assert_eq!(report.retained_cell_count, 5);
+    assert!(
+        report.demanded_component_removed_cell_count > 0,
+        "the demanded body that was dropped must be reported: {report:?}"
+    );
+    assert_eq!(report.removed_cell_ids, vec![5, 6], "{report:?}");
+    assert_eq!(report.retained_cell_count, 3);
 }
 
 #[test]
@@ -355,7 +362,7 @@ fn a_demand_index_past_the_domain_is_simply_not_demanded() {
 }
 
 #[test]
-fn a_pinch_keeps_the_demanded_fan_even_when_it_is_the_smaller_one() {
+fn a_demanded_fan_across_a_pinch_goes_with_its_component_and_is_counted() {
     // Vertex 12 carries two fans: cells 2,3,4 one side and cell 5 the other.
     // The caller's contract is that a demanded region survives the carve, but
     // the pinch cleanup ran without ever seeing the demand -- so it kept the
@@ -374,17 +381,30 @@ fn a_pinch_keeps_the_demanded_fan_even_when_it_is_the_smaller_one() {
 
     let report = fixture.retain_with_demand(&[5]);
 
-    assert!(fixture.in_domain(5), "the demanded fan must survive");
-    assert!(fixture.in_domain(6), "its neighbour holds it in the domain");
+    // Demand no longer decides which fan wins -- keeping the smaller one is how
+    // a domain ends up in pieces. The larger fan stays, and what the demand
+    // lost is counted instead of being quietly kept.
     assert!(
-        report.non_manifold_removed_cell_count > 0,
-        "the pinch still has to be resolved: {report:?}"
+        fixture.in_domain(2) && fixture.in_domain(3) && fixture.in_domain(4),
+        "the larger fan stays"
     );
     assert!(
-        !fixture.in_domain(2) && !fixture.in_domain(3) && !fixture.in_domain(4),
-        "only one fan may remain at a pinch"
+        !fixture.in_domain(5),
+        "the demanded fan is the smaller one and goes"
     );
-    assert_eq!(report.demanded_isolated_removed_cell_count, 0, "{report:?}");
+    // The pinch cleanup never runs on this fixture any more, and that is the
+    // point rather than a gap: the two fans are separate components, so the
+    // component pass removes the smaller one before a pinch can exist. What
+    // used to need the fan rule now falls out of the connectivity rule.
+    assert_eq!(report.non_manifold_removed_cell_count, 0, "{report:?}");
+    assert!(
+        report.removed_cell_ids.contains(&5),
+        "the cell the demand lost is named, not merely absent: {report:?}"
+    );
+    assert!(
+        report.demanded_component_removed_cell_count > 0,
+        "and counted: {report:?}"
+    );
 }
 
 #[test]
@@ -429,12 +449,18 @@ fn a_demanded_cell_left_entirely_alone_still_goes_and_is_counted() {
 }
 
 #[test]
-fn a_demanded_pair_is_small_but_usable_and_stays() {
-    // The line is "has an edge neighbour", not "is big". Two cells sharing an
-    // edge pass the orphan gate, so demand keeps them.
+fn a_demanded_pair_is_reported_as_a_body_not_as_orphans() {
+    // Two demanded cells sharing an edge are a water body, not orphans, and the
+    // two counts mean different things: one says "the domain does not reach
+    // this", the other says "this came out as a single cell and could not be
+    // kept at all". Collapsing them would hide which repair the run needs.
     let mut fixture = split_domain();
     let report = fixture.retain_with_demand(&[5]);
 
-    assert!(fixture.in_domain(5) && fixture.in_domain(6));
+    assert!(!fixture.in_domain(5) && !fixture.in_domain(6));
     assert_eq!(report.demanded_isolated_removed_cell_count, 0, "{report:?}");
+    assert_eq!(
+        report.demanded_component_removed_cell_count, 2,
+        "{report:?}"
+    );
 }

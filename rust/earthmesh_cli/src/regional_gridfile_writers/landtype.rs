@@ -130,6 +130,18 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
                 retention.retained_cell_count
             );
         }
+        if retention.demanded_component_removed_cell_count > 0 {
+            // A named water body the domain does not reach. Only the largest
+            // connected body is kept, because a model that wants one domain
+            // cannot use fifty; saying how much was given up is what keeps that
+            // from reading as success.
+            eprintln!(
+                "earthmesh_cli: ocean carve dropped {} demanded cell(s) in water bodies not \
+                 connected to the main domain; refine them as a separate regional mesh if they \
+                 are needed",
+                retention.demanded_component_removed_cell_count
+            );
+        }
         if retention.demanded_isolated_removed_cell_count > 0 {
             // Named regions that came out of the carve as single cells. They
             // cannot be kept -- a cell with no edge neighbour fails the orphan

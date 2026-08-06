@@ -11,6 +11,9 @@ pub struct LargestComponentRetention {
     pub removed_cell_ids: Vec<usize>,
     /// How many of the dropped cells came from splitting non-manifold vertex fans.
     pub non_manifold_removed_cell_count: usize,
+    /// Cells dropped with a component that held demanded ground but was not the
+    /// largest. A named water body that the domain simply does not reach.
+    pub demanded_component_removed_cell_count: usize,
     /// Demanded cells dropped anyway because they were left alone.
     ///
     /// Demand keeps a component whatever its size, but it cannot make a lone
@@ -97,6 +100,7 @@ pub fn retain_edge_connected_components_with_hard_demand_one_based(
     let mut removed_cell_ids: BTreeSet<usize> = BTreeSet::new();
     let mut non_manifold_removed_cell_count = 0usize;
     let mut demanded_isolated_removed_cell_count = 0usize;
+    let mut demanded_component_removed_cell_count = 0usize;
     // Reported as the domain's own component count, so it stays a diagnostic of
     // what the carve produced rather than of what pruning converged to.
     let mut initial_component_count = None;
@@ -125,6 +129,10 @@ pub fn retain_edge_connected_components_with_hard_demand_one_based(
             hard_demand,
         )?;
         demanded_isolated_removed_cell_count += pass.demanded_isolated_removed_cell_count;
+        // Accumulated across passes like its sibling: the last pass runs on a
+        // domain the earlier ones already pruned, so reading the count from it
+        // reports zero however much was given up.
+        demanded_component_removed_cell_count += pass.demanded_component_removed_cell_count;
         non_manifold_removed_cell_count += fan_removed.len();
         removed_cell_ids.extend(fan_removed.iter().copied());
 
@@ -139,6 +147,7 @@ pub fn retain_edge_connected_components_with_hard_demand_one_based(
         removed_cell_ids: removed_cell_ids.into_iter().collect(),
         non_manifold_removed_cell_count,
         demanded_isolated_removed_cell_count,
+        demanded_component_removed_cell_count,
     })
 }
 
@@ -161,6 +170,7 @@ fn retain_largest_component_pass_one_based(
             removed_cell_ids: Vec::new(),
             non_manifold_removed_cell_count: 0,
             demanded_isolated_removed_cell_count: 0,
+            demanded_component_removed_cell_count: 0,
         });
     }
 
@@ -214,17 +224,27 @@ fn retain_largest_component_pass_one_based(
     let mut removed_cell_ids = Vec::new();
     let mut retained_cell_count = 0usize;
     let mut demanded_isolated_removed_cell_count = 0usize;
+    let mut demanded_component_removed_cell_count = 0usize;
     for (&cell_id, &component_id) in &component_of {
-        // A one-cell component is an orphan by definition. Demand is why a
-        // small component survives at all, but it cannot buy this one a
-        // neighbour, and keeping it only moves the failure to the quality gate.
+        // Only the largest component survives. Demand used to buy a smaller one
+        // a reprieve as long as it had two cells, which kept the water bodies a
+        // project named -- and produced a domain in fifty pieces: a global
+        // coastal run kept 1 + 49 of 229 components and failed
+        // `disconnected_mesh` while every other gate passed. A model that wants
+        // one connected domain cannot use that, so the reprieve is gone.
+        //
+        // What is left is the reporting. Dropping a water body somebody asked
+        // for is a real loss, and the counts below are what keeps it from
+        // reading as success.
         let alone = component_sizes[component_id] < 2;
         let demanded = component_has_demand[component_id];
-        if component_id == retained_component || (demanded && !alone) {
+        if component_id == retained_component {
             retained_cell_count += 1;
         } else {
             if demanded && alone {
                 demanded_isolated_removed_cell_count += 1;
+            } else if demanded {
+                demanded_component_removed_cell_count += 1;
             }
             is_in_domain[cell_id] = -1;
             removed_cell_ids.push(cell_id);
@@ -237,6 +257,7 @@ fn retain_largest_component_pass_one_based(
         removed_cell_ids,
         non_manifold_removed_cell_count: 0,
         demanded_isolated_removed_cell_count,
+        demanded_component_removed_cell_count,
     })
 }
 
