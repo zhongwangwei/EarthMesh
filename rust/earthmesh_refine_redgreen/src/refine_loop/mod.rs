@@ -726,6 +726,28 @@ mod tests {
     /// ids start at two. Both of a segment table's dimensions are counts, so it
     /// does not apply, and reading it as if it did is how the drift got in.
     ///
+    /// The conversion, verified line by line against v2 and mechanical to
+    /// apply. In `refine_lop_sharp` (then the same shape in `refine_lop_weak`
+    /// and `refine_lop_weak_pair`):
+    ///
+    /// | now | should be | why |
+    /// |---|---|---|
+    /// | guard `num >= len` | `num > len` | `size == num`, no spare column |
+    /// | `for segment_id in 1..=num` | `0..num` | F `do i = 1, num` over `size == num` |
+    /// | `for j in 1..=(tran_degree-1)` | `0..(tran_degree-1)` | F `do j = 1, tran_degree-1`, reads `(j)` and `(j+1)` |
+    /// | guard `bdy[seg].len() < tran_degree` | `< tran_degree - 1` | zero-based reach is `tran_degree - 2` |
+    /// | guard `bdy_old[seg].len() <= tran_degree` | `< tran_degree` | reach is `tran_degree - 1` |
+    /// | guard `temp[seg].len() <= 4*(tran_degree-1)` | `< 4*(tran_degree-1)` | last write is `4*valid_pairs - 1` |
+    /// | `out = 4*valid_pairs - 3` | `4*(valid_pairs - 1)` | F one-based start minus one |
+    /// | `for k in (1..=n).step_by(4)` | `(0..n).step_by(4)` | F `do k = 1, n, 4` |
+    /// | `src = num_end - k` | `num_end - k - 2` | F `num_end-k` with `k = k0 + 1`, minus one |
+    ///
+    /// Their fixtures move with them: drop the leading placeholder row *and*
+    /// the leading placeholder slot inside each row, since both dimensions are
+    /// counts. `vec![vec![], vec![0, 4]]` becomes `vec![vec![4]]`, `n_ref_temp`
+    /// `vec![0, 1]` becomes `vec![1]`, and `ref_temp[1][1..=4]` becomes
+    /// `ref_temp[0][0..4]`.
+    ///
     /// Second gap, this driver's own: `MOD_refine.F90:446` calls
     /// `ref_sjx_isreverse_judge` between the forward and reverse halves of each
     /// transition round, deciding which triangles split the other way.
