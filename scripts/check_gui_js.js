@@ -672,14 +672,20 @@ log("CaMa label check passed");
 }
 
 {
+  // Method-C was once offered as a project output format and is not one; that
+  // is what this bans. It *is* one of the two refinement algorithms, and the
+  // picker that chooses between them has to say its name, so the picker's own
+  // markup is taken out before the check rather than the check being dropped.
+  const withoutAlgorithmPicker = (text) =>
+    text.replace(/\$\{field\([^]*?id="refineAlgorithm"[^]*?\)\}/g, "");
   const hits = [
     ["gui-tauri/README.md", readme],
     ["gui-tauri/dist/index.html", html],
   ]
-    .filter(([, text]) => /\bMethod-C\b/.test(text))
+    .filter(([, text]) => /\bMethod-C\b/.test(withoutAlgorithmPicker(text)))
     .map(([file]) => file);
   check(!hits.length, "GUI/docs must not expose Method-C as a project output format", hits);
-  log("GUI/docs hide deprecated Method-C project output");
+  log("GUI/docs hide deprecated Method-C project output; the algorithm picker may name it");
 }
 
 {

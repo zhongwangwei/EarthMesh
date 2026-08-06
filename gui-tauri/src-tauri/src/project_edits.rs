@@ -670,3 +670,26 @@ pub(crate) fn set_expert(
     cfg.expert.isolated_ocean = isolated_ocean;
     validated_yaml(cfg)
 }
+
+/// Choose the refinement algorithm.
+///
+/// This is a different question from `set_adaptive_refinement`, which chooses
+/// how the *request* is expressed (point+radius, h-field, discrete mask). This
+/// chooses what builds the mesh from it: Method-C subdivides a closed region and
+/// surrounds it with transition rows, refusing a region it cannot build;
+/// red-green splits any marked triangle and closes the seams, growing a marking
+/// it cannot take as given rather than rejecting it.
+#[tauri::command]
+pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.refinement.backend = match backend.as_str() {
+        "method_c" => earthmesh_project::RefinementBackend::MethodC,
+        "red_green" => earthmesh_project::RefinementBackend::RedGreen,
+        other => {
+            return Err(format!(
+                "unknown refinement backend {other}: expected method_c or red_green"
+            ))
+        }
+    };
+    cfg.to_yaml()
+}

@@ -700,26 +700,43 @@ mod tests {
         assert_eq!(outcome.refined_triangle_count, 0);
     }
 
-    /// The property the whole path exists for -- blocked on a base mismatch
-    /// between two kernels that had never been composed before.
+    /// The property the whole path exists for -- blocked on three kernels that
+    /// drifted from the Fortran, and on one call this driver has not made yet.
     ///
-    /// `refine_boundary_segments_make_one_based` returns its segment rows
-    /// zero-based (`num_bdy_refine_segment` rows, indices `0..n`), while
-    /// `refine_sharp_concav_lop_judge_one_based` guards on
-    /// `num_bdy_refine_segment < bdy_refine_segment.len()`, which is the
-    /// one-based convention the rest of this crate uses. Each kernel's own
-    /// tests pass, because each builds its own fixture in its own base; the
-    /// disagreement only exists between them, and nothing composed them until
-    /// the driver did.
+    /// `MOD_refine.F90` settles which side drifted, and it is not the one the
+    /// first reading of this suggested:
     ///
-    /// Fixing it means reading both ports against `MOD_refine.F90` to decide
-    /// which one drifted -- not adding an offset at the call site, which would
-    /// leave the next caller to find the same thing again. Everything before
-    /// the transition rows works: the judges grow the marking, the red step
-    /// subdivides, and the two tests above cover the paths that reach an
-    /// answer.
+    /// ```text
+    /// allocate(bdy_refine_segment(set_dis_in, num_bdy_refine_segment))  ! 1411
+    /// do i = 1, num_bdy_refine_segment, 1                               ! 1786
+    /// ```
+    ///
+    /// The column dimension *is* the count, so with Fortran's one-based
+    /// indexing the valid columns are `1..num` and `size == num` -- there is no
+    /// placeholder column. `refine_boundary_segments_make_one_based` matches
+    /// that; `refine_sharp_concav_lop_judge_one_based` guards on
+    /// `num >= len` and so rejects exactly the shape the Fortran allocates.
+    /// The three LOP judges (`refine_lop_sharp`, `refine_lop_weak`,
+    /// `refine_lop_weak_pair`) transcribed `do i = 1, num` as `1..=num`
+    /// without the array gaining a slot to spare, which leaves them neither
+    /// zero-based nor wholly one-based.
+    ///
+    /// The canonical `n + 1` convention the rest of this crate uses applies to
+    /// tables indexed by an *entity id* -- `mrl_new`, `ngrmm`, `ngrmw` -- where
+    /// ids start at two. Both of a segment table's dimensions are counts, so it
+    /// does not apply, and reading it as if it did is how the drift got in.
+    ///
+    /// Second gap, this driver's own: `MOD_refine.F90:446` calls
+    /// `ref_sjx_isreverse_judge` between the forward and reverse halves of each
+    /// transition round, deciding which triangles split the other way.
+    /// `close_transition_rows` does the forward half and the flips and stops.
+    /// The port exists and is in the right base; it is simply not called.
+    ///
+    /// Everything before the transition rows works: the judges grow the
+    /// marking, the red step subdivides, and the two tests above cover the
+    /// paths that reach an answer.
     #[test]
-    #[ignore = "blocked: segment arrays are zero-based from the maker and one-based at the judge"]
+    #[ignore = "blocked: three LOP judges want a placeholder column MOD_refine does not allocate; reverse 1-to-2 not called"]
     fn an_arbitrary_patch_is_grown_until_it_is_legal_rather_than_refused() {
         // The property this whole path exists for. Method-C would judge the
         // shape of this patch and could refuse it; here the judges add whatever

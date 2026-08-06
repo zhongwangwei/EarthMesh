@@ -2052,7 +2052,7 @@ if(MAP_WINDOW_MODE){
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
 let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
-  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
@@ -2236,6 +2236,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
       maxPasses: refinementPasses
     });
+    yaml = await invoke("set_refinement_backend", {
+      yaml, backend: specifiedRefine.algorithm || "method_c"
+    });
     yaml = await invoke("set_adaptive_refinement", {
       yaml, enabled: (specifiedRefine.route || "adaptive") === "adaptive",
       maxLevel: specifiedRefine.adaptiveMaxLevel ?? null,
@@ -2358,7 +2361,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
       if (t.maxPasses != null) maxPasses = t.maxPasses;
       if (t.specifiedClosePath) {
-        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
       }
       if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       clearRunArtifacts();
@@ -2823,6 +2826,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 细化方案" : "EXPERT — refinement backend"}</span>
       <div class="grid2" style="margin-top:10px">
+        ${field(z?"细化算法":"Refinement algorithm",`<select class="select" id="refineAlgorithm"><option value="method_c" ${(specifiedRefine.algorithm||"method_c")==="method_c"?"selected":""}>Method-C${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="red_green" ${specifiedRefine.algorithm==="red_green"?"selected":""}>Red-Green${z?"（任意区域，接线中）":" (arbitrary regions, being wired)"}</option></select>`,z?"Method-C 只细化它造得出的块形，判据驱动的形状会被拒绝；Red-Green 把标记集扩张到可行，从不拒绝形状——其驱动尚在接线，选中会报错说明":"Method-C refines only shapes it can build and refuses one that came from the data; Red-Green grows a marking until it is legal and never refuses a shape -- its driver is still being wired, so selecting it reports the blocker")}
         ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点+半径（默认）":"Point+radius (default)"}</option><option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场":"H-field"}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"discrete 硬掩膜":"discrete mask"}</option></select>`,z?"默认点+半径：每细化一层前重新判据；H 场一次性定完；discrete 只为复现实验":"default point+radius: criteria re-asked before each pass; H-field settles once; discrete only for parity")}
       </div>
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
@@ -2953,6 +2957,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         clearRunArtifacts();
       };
       if (backendSel) backendSel.onchange = syncBackend;
+      const algoSel = document.getElementById("refineAlgorithm");
+      if (algoSel) algoSel.onchange = () => {
+        specifiedRefine.algorithm = algoSel.value;
+        expertEdit.enabled = expertEnabled();
+        clearRunArtifacts();
+      };
       const hfG = document.getElementById("hfieldG");
       if (hfG) hfG.addEventListener("input", () => { const v = parseFloat(hfG.value); specifiedRefine.hfieldG = Number.isFinite(v) ? v : null; });
       const hfMax = document.getElementById("hfieldMaxLevel");
@@ -3354,7 +3364,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     thresholdRefine = { enabled: false };
     hydroRefine = defaultHydroRefine();
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
-    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
     metadataEdit = { authors: [], description: "" };

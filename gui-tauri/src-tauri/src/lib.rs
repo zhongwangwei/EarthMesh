@@ -59,6 +59,7 @@ pub fn run() {
             set_refinement,
             set_specified_refinement,
             set_adaptive_refinement,
+            set_refinement_backend,
             set_hfield_refinement,
             set_expert,
             pick_data_file,
