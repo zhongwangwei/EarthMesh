@@ -681,6 +681,18 @@ pub fn run_refine_pipeline_namelist(
     };
     let transition_faces = mesh.boundary_rows().len();
 
+    // Measured: past this point `state` has exactly two consumers that are not
+    // the Method-C metadata -- `output_mesh`, which red-green produces directly
+    // through `redgreen_bridge::unstructured_mesh_from_redgreen`, and
+    // `state.impent`, the twelve pentagon ids, which come off the *base*
+    // icosahedron and so can be taken before any refinement runs.
+    //
+    // So the tail is thinner than it reads. Making it serve both backends is:
+    // capture `impent` up front, make `state` itself the thing that becomes
+    // optional, and let the branch at the refinement decide whether the mesh
+    // continues as a `TriangularMesh` through the Voronoi step or arrives
+    // already in lon/lat.
+    //
     // Where the backend branch has to go, and the decision it forces.
     //
     // With the metadata now optional, `state` has exactly one remaining
