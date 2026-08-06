@@ -135,6 +135,10 @@ pub struct RedGreenOutcome {
     pub halo_cancelled_count: usize,
     /// Triangles rebuilt by Lawson flips while closing the seams.
     pub flipped_triangle_count: usize,
+    /// Weak concavities this round found and did not refine away, because the
+    /// flag said to carry them through the transition rows. Nothing carries
+    /// them yet, so this is how often the unbuilt half would have been needed.
+    pub weak_concavity_count: usize,
     /// Where each cell of the mesh that went in ended up in the mesh that came
     /// out, indexed by its old id.
     ///
@@ -324,6 +328,7 @@ pub fn refine_redgreen_round_inside(
             isolated_dropped_count,
             halo_cancelled_count,
             flipped_triangle_count: 0,
+            weak_concavity_count: 0,
             // Nothing moved, so every cell is where it was.
             cell_renumbering: (0..=mesh.cell_count()).collect(),
         });
@@ -383,6 +388,7 @@ pub fn refine_redgreen_round_inside(
     // added for iterB's reason can create the configuration iterC objects to.
     // Bounded because every round strictly grows a finite marking.
     let mut grown_triangle_count = 0usize;
+    let mut weak_concavity_count = 0usize;
     for _ in 0..(sjx_points + 1) {
         let mut grew = false;
 
@@ -448,9 +454,10 @@ pub fn refine_redgreen_round_inside(
         if grew {
             continue;
         }
-        if !settings.eliminate_weak_concavity {
-            break;
-        }
+        // iterG runs either way. `MOD_refine.F90:229-250` does not gate the
+        // judge on the flag, it forks on what the judge *found*, and gating it
+        // is how the second treatment came to be missing rather than merely
+        // unbuilt: with the flag off the concavities were never even counted.
         marking = refine_iter_g_judge_one_based(
             mesh.num_center,
             lbx_points,
@@ -458,6 +465,23 @@ pub fn refine_redgreen_round_inside(
             &mesh.n_triangles_on_cell,
             &mrl_new,
         )?;
+        let weak = (mesh.num_vertex + 1..=sjx_points)
+            .filter(|&triangle| marking[triangle] == 1)
+            .count();
+        if weak == 0 {
+            // No concavity, so neither treatment has anything to do.
+            break;
+        }
+        if !settings.eliminate_weak_concavity {
+            // Carried, not absorbed. The count is what the transition rounds'
+            // weak-segment machinery would be sized by; that machinery is not
+            // built (see `eliminate_weak_concavity`), so for now this is a
+            // measurement rather than an instruction -- and a measurement is
+            // still worth more than the silence it replaces, because it says
+            // how often the unbuilt half would have been needed.
+            weak_concavity_count = weak;
+            break;
+        }
         let added =
             refine_num_ref_cal_one_based(mesh.num_vertex, sjx_points, &marking, &mut segment)?;
         if added == 0 {
@@ -584,6 +608,7 @@ pub fn refine_redgreen_round_inside(
         isolated_dropped_count,
         halo_cancelled_count,
         flipped_triangle_count,
+        weak_concavity_count,
         cell_renumbering: renewed.vertex_mapping,
     })
 }
