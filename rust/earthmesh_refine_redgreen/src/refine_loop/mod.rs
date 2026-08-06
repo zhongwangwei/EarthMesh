@@ -587,16 +587,6 @@ fn close_transition_rows(
     if segments.num_bdy_refine_segment == 0 {
         return Ok(0);
     }
-    // `MOD_refine.F90:1411` gives the segment table a *fixed* row dimension of
-    // `set_dis_in`, padded with the "triangle id 1" placeholder where a segment
-    // is shorter than the band is wide. The maker returns ragged rows instead,
-    // which the reverse judge rejects outright and the forward pass only
-    // survives by clamping its own loop. Padding here keeps the driver correct;
-    // the maker emitting fixed-width rows -- and its fixtures moving with it --
-    // is the tidier place for it.
-    for row in &mut segments.bdy_refine_segment {
-        row.resize(settings.max_transition_row.max(row.len()), 1);
-    }
 
     let mut sjx_child = vec![[0usize; 2]; sjx_points + 1];
     let mut flipped = 0usize;

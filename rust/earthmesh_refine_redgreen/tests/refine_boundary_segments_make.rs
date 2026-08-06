@@ -69,9 +69,12 @@ fn boundary_segments_make_rotates_from_first_turn_and_splits_long_runs() {
 
     assert_eq!(segments.num_bdy_refine_segment, 2);
     assert_eq!(segments.n_bdy_refine_segment, vec![3, 2]);
+    // Rows are the band's width, as `MOD_refine.F90:1411` allocates them; the
+    // short segment's spare slot carries the "triangle id 1" placeholder, and
+    // `n_bdy_refine_segment` is what says how much of the row is real.
     assert_eq!(
         segments.bdy_refine_segment,
-        vec![vec![22, 23, 24], vec![20, 21]]
+        vec![vec![22, 23, 24], vec![20, 21, 1]]
     );
 }
 

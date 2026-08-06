@@ -29,6 +29,17 @@ pub fn refine_boundary_segments_make_one_based(
         mrl_new,
     )?;
     let n_bdy_refine_segment = bdy_refine_segment.iter().map(Vec::len).collect::<Vec<_>>();
+    // `MOD_refine.F90:1411` gives the table a fixed row dimension of
+    // `set_dis_in`, with the "triangle id 1" placeholder standing for a slot a
+    // shorter segment does not fill. `n_bdy_refine_segment` already carries the
+    // real length, so padding costs nothing and spares every consumer a bounds
+    // check the Fortran never had -- the reverse judge rejects a ragged row
+    // outright, and the forward pass was only surviving one by clamping its own
+    // loop.
+    let mut bdy_refine_segment = bdy_refine_segment;
+    for row in &mut bdy_refine_segment {
+        row.resize(set_dis_in.max(row.len()), 1);
+    }
     Ok(RefineBoundarySegments {
         num_bdy_refine_segment: bdy_refine_segment.len(),
         bdy_refine_segment,
