@@ -72,8 +72,14 @@ impl RedGreenMesh {
 pub struct RedGreenSettings {
     /// `max_transition_row`: rounds of 1→2 closure outside the refined region.
     pub max_transition_row: usize,
-    /// `Istransition`: build the transition rows at all. False leaves hanging
-    /// nodes and is only meaningful for hexagonal output.
+    /// `Istransition`: build the transition rows at all.
+    ///
+    /// False leaves hanging nodes, and the engine accepts it only for
+    /// `mode_grid = 'tri'` -- hexagonal output is refused outright ("not
+    /// Istransition can only use in the tri"). Method-C still closes in that
+    /// mode; red-green does not, because these rows *are* its closure step, so
+    /// the pipeline refuses the combination rather than writing a mesh with
+    /// hanging nodes.
     pub build_transition_rows: bool,
     /// `weak_concav_eliminate`: absorb weak concavities by refining them out
     /// rather than carrying them through the transition rounds.

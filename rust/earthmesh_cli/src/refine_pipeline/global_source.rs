@@ -692,14 +692,20 @@ fn refine_with_redgreen(
     max_level: usize,
     adaptive: Option<RedGreenAdaptive<'_>>,
 ) -> io::Result<RefinedGrid> {
-    if max_level > 1 && !refine.is_transition {
-        // Said here rather than met halfway through level 2, where it surfaces
-        // as "ngrmm row N has invalid neighbor 0" and reads like a mesh defect.
+    if !refine.is_transition {
+        // Not only for a second level: the transition rows *are* red-green's
+        // closure step, so without them even one level comes out with hanging
+        // nodes -- 345 open edges on the shipped atmosphere example in tri mode.
+        //
+        // The engine allows the setting for `mode_grid = 'tri'` alone, and
+        // Method-C closes without it, so this is red-green's limit rather than
+        // the configuration's. Said here rather than met later as an open-edge
+        // count or, at a second level, as "ngrmm row N has invalid neighbor 0".
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "red-green refinement past one level requires RL%Istransition = .true.; without the \
-             transition rows a round leaves hanging nodes and the next level cannot derive the \
-             triangle neighbours it needs",
+            "red-green refinement requires RL%Istransition = .true.: the transition rows are what \
+             close the seams a 1-into-4 split leaves, so without them the mesh has hanging nodes \
+             at any depth. Method-C closes without them; use it for this run",
         ));
     }
     let mut redgreen =

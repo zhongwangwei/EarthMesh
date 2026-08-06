@@ -2995,3 +2995,49 @@ fn redgreen_backend_refuses_criteria_it_has_no_reader_for() {
         "unexpected error: {error}"
     );
 }
+
+/// Red-green refuses to run without its transition rows.
+///
+/// `RL%Istransition = .false.` is a setting the engine accepts for
+/// `mode_grid = 'tri'` alone, and Method-C produces a closed mesh under it. For
+/// red-green those rows *are* the closure step -- the green half of red-green --
+/// so without them a single level already comes out with hanging nodes: 345
+/// triangle edges with no neighbouring triangle, on the shipped atmosphere
+/// example switched to tri.
+#[test]
+fn redgreen_backend_refuses_to_run_without_its_transition_rows() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("redgreen_no_transition");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    write_circle_mask_netcdf(
+        sources.join("refine_circle_001.nc4"),
+        &CircleMask {
+            refine_degree: 1,
+            points: vec![LonLatPoint {
+                lon: 115.0,
+                lat: 25.0,
+            }],
+            radius_km: vec![2_000.0],
+        },
+    )
+    .expect("write circle specified refine source");
+
+    let namelist = root.join("redgreen_no_transition.nml");
+    let base_dir = format!("{}/", root.display());
+    let refine_prefix = sources.join("refine_circle").display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='redgreen_no_transition'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='tri'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='red_green'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='MPAS'\n/\n&mkrefine\n  RL%Istransition=.false.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+        ),
+    )
+    .expect("write red-green no-transition namelist");
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect_err("a mesh with hanging nodes must not be written");
+    assert!(
+        error.to_string().contains("requires RL%Istransition"),
+        "unexpected error: {error}"
+    );
+}

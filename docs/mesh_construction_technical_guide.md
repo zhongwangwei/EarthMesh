@@ -819,11 +819,17 @@ M 132536 是**发射新造的点**,现有定点修复 `try_fill_method_c_specifi
 | Cartesian-XY | 红绿网格在经纬度上工作,x/y 米的点转经纬度是无意义的 |
 | `NL%sfcgrid_res_factor` | 地表扩张是另一种操作,不是细化 |
 | `refine_cal` 且 `&adaptive` 关、又没有 mask 文件 | 判据无人可读。mask **文件**照常服务(mask 文件就是换个名字的具名区域),只有"判据背后既没文件也没点+半径"才没地方去 |
-| `max_level ≥ 2` 且 `RL%Istransition=.false.` | 不建过渡行的一轮会留下悬挂节点,下一层连三角邻居都导不出来 |
+| `RL%Istransition=.false.` | 过渡行**就是**红绿的收边步骤(red-green 的 green 那一半),不建它连单层都留悬挂节点——tri 模式下的大气示例实测 345 条开边。Method-C 在同样设置下照样闭合,所以这是红绿的能力边界而不是配置的问题 |
 
-最后一条若不前置说明,会在第 2 层中途以 `ngrmm row N has invalid neighbor 0` 冒出来,
-读起来像网格缺陷而不像配置错误。倒数第二条若不前置说明,会撞进 calculated 区域读取器,
-以一句提 Method-C、还带着没人打过的 `/tmp` 路径的话失败。
+`RL%Istransition=.false.` 这条若不前置说明,会先以开边计数、到第 2 层再以
+`ngrmm row N has invalid neighbor 0` 冒出来,读起来像网格缺陷而不像配置错误。注意引擎
+**只在 `mode_grid='tri'` 下接受** `Istransition=.false.`(hex 会被自己的校验拒:"not
+Istransition can only use in the tri"),所以这条拒绝实际只会碰到 tri 运行。
+calculated 那条若不前置说明,会撞进区域读取器,以一句提 Method-C、还带着没人打过的
+`/tmp` 路径的话失败。
+
+**`tri` 模式已验**(2026-08-06):`atmosphere_hex_global.nml` 改 `mode_grid='tri'`,红绿与
+Method-C 都 euler=2、单连通、无非流形、零边界环——**两者输出一致**。
 
 **GUI 的 `algorithm` × `route` 现在确实是两个独立选择**,除了一种组合:红绿 + h 场
 会被引擎拒。点+半径两个后端都服务。
