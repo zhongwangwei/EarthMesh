@@ -30,6 +30,13 @@ pub fn refine_weak_concav_pair_special_one_based(
         ));
     }
 
+    // NOTE, before converting this to zero-based the way `refine_lop_sharp` was:
+    // the pairing below turns on the *parity* of a one-based index, and parity
+    // inverts when the base does -- one-based even is zero-based odd. Getting it
+    // backwards pairs each triangle with the wrong partner and returns no error
+    // at all; the mesh comes out valid and wrong, which is the failure class
+    // section 11.1 of the technical guide is about. Check the rule against
+    // `MOD_refine.F90:1712` before touching the loop, not after.
     let mut mrl_renew = vec![None; num_weak_concav_pair + 1];
     for k in 1..=num_weak_concav_pair {
         let m1 = weak_concav_pair[k][0];
