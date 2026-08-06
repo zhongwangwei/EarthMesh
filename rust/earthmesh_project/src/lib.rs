@@ -31,7 +31,7 @@ pub use schema::{
     CoupledMeshConfig, DomainConfig, ExpertOverrides, FractionMethod, HfieldRefinementRecipe,
     HydroCoastConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, MeshTargetConfig,
     ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig,
-    RefinementRecipe, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
+    RefinementBackend, RefinementRecipe, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
     SpecifiedCircleRefinement, SpecifiedCircleRefinements, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_AUTO_REFINE_BATCH_CELLS,
     DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,

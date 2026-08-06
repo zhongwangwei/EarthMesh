@@ -41,6 +41,7 @@ fn sample() -> ProjectConfig {
             },
         ],
         refinement: RefinementRecipe {
+            backend: crate::RefinementBackend::default(),
             enabled: true,
             threshold_enabled: true,
             max_passes: 3,

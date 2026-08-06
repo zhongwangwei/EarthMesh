@@ -1,8 +1,8 @@
 use crate::{
     criterion_catalog, DomainConfig, ExpertOverrides, MeshCellKind, MeshDomainKind,
     MeshIntentPreset, MeshTargetConfig, ModelFormat, ProjectConfig, ProjectDataLayer,
-    ProjectLayerRole, ProjectMetadata, QualityConfig, RefinementRecipe, ResolutionSpec,
-    ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    ProjectLayerRole, ProjectMetadata, QualityConfig, RefinementBackend, RefinementRecipe,
+    ResolutionSpec, ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
 };
 
 pub const DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID: &str = "AtmosphereTyphoonPrecip";
@@ -171,6 +171,7 @@ impl ProjectConfig {
             },
             data_layers,
             refinement: RefinementRecipe {
+                backend: RefinementBackend::default(),
                 enabled: false,
                 threshold_enabled: false,
                 max_passes: 0,

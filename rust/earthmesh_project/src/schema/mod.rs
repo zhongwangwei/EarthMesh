@@ -138,6 +138,36 @@ pub enum MeshDomainKind {
     Earth,
 }
 
+/// The algorithm that turns a refinement request into a finer mesh.
+///
+/// The two differ in what they do with a request they cannot take as given.
+///
+/// `MethodC` subdivides a closed region and surrounds it with transition rows
+/// (Walko & Avissar 2011). It holds vertex degree to {5, 6, 7}, which is what
+/// keeps the hexagonal dual usable -- and it refuses a region it cannot build:
+/// its seed lattice steps three cells at a time and its perimeter must be a
+/// multiple of three. Named regions are shapes it can build; a region whose
+/// shape comes from the data is not, which is why criteria-driven refinement is
+/// suspended on it.
+///
+/// `RedGreen` splits marked triangles into four and closes the seams by halving
+/// the neighbours left hanging. Its judge chain *grows* a marking it cannot take
+/// as given and never rejects a shape, so an arbitrary coastal region refines.
+/// The price is that vertex degree is only bounded by the Lawson flips
+/// afterwards; a model reading the triangles directly, as FVCOM does, does not
+/// care.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefinementBackend {
+    /// Nested regions with transition rows. The default while the red-green
+    /// driver is still being wired: it is the one that currently builds a mesh
+    /// end to end.
+    #[default]
+    MethodC,
+    /// Split any marked triangle into four and close the seams. Selectable, and
+    /// refuses with a clear message until its driver loop lands.
+    RedGreen,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MeshCellKind {
     Hex,
@@ -283,6 +313,9 @@ pub struct RefinementRecipe {
     pub specified_bbox: Option<SpecifiedBboxRefinement>,
     #[serde(default)]
     pub specified_close: Option<SpecifiedCloseRefinement>,
+    /// Which refinement algorithm builds the mesh.
+    #[serde(default)]
+    pub backend: RefinementBackend,
     /// Default refinement backend: ask every enabled criterion again before
     /// each pass and cover what it demands with circles (emits the `&adaptive`
     /// namelist group). Absent means enabled.

@@ -15,6 +15,8 @@ pub struct LoweredProject {
     pub refine: RefineConfig,
     pub data_layers: DataLayersNamelist,
     pub quality: QualityNamelist,
+    /// Which refinement algorithm the run asked for.
+    pub backend: crate::RefinementBackend,
     /// Emitted as a standalone `&adaptive` group when enabled.
     pub adaptive: Option<AdaptiveRefinementRecipe>,
     /// Emitted as a standalone `&hfield` group when enabled.
@@ -343,6 +345,21 @@ impl ProjectConfig {
         // A run refines one way or the other. Point+radius is the default
         // because it is the only route that can re-ask a criterion after the
         // cells it judges exist; the h-field stays reachable by asking for it.
+        // The backend is settled here rather than deeper down, because this is
+        // the last place that still knows what the project asked for -- past it
+        // the run is a namelist, and "red-green" would have to be inferred from
+        // the absence of something.
+        let backend = self.refinement.backend;
+        if mkgrd.refine && backend == crate::RefinementBackend::RedGreen {
+            return Err(
+                "refinement.backend: the red-green backend is selectable but not yet \
+                        wired to the runner. Its kernels and driver are in \
+                        earthmesh_refine_redgreen; the one remaining blocker is a base mismatch \
+                        between refine_boundary_segments_make (zero-based rows) and \
+                        refine_sharp_concav_lop_judge (one-based). Use MethodC until then"
+                    .to_string(),
+            );
+        }
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
         let adaptive = if mkgrd.refine && !hfield_requested {
             match &self.refinement.adaptive {
@@ -384,6 +401,7 @@ impl ProjectConfig {
         Ok(LoweredProject {
             mkgrd,
             refine,
+            backend,
             adaptive,
             hfield,
             data_layers: lowering_layers,
