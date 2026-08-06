@@ -250,7 +250,6 @@ fn refine_config_defaults_match_canonical_refine_vars_state_defaults() {
     assert_eq!(cfg.threshold_dir, "/tmp");
     assert_eq!(cfg.set_dis_type, "/tmp");
     assert_eq!(cfg.mask_refine_ndm, [0; 10]);
-    assert_eq!(cfg.max_iter, 0);
     assert_eq!(cfg.max_iter_spc, 0);
     assert_eq!(cfg.max_iter_cal, 0);
     assert_eq!(cfg.halo, [0; 10]);
@@ -280,7 +279,6 @@ fn refine_config_defaults_match_canonical_refine_vars_state_defaults() {
     assert_eq!(cfg.refine_onelayer_ocn, [false; 8]);
     assert_eq!(cfg.refine_onelayer_atmos, [false; 2]);
     assert_eq!(cfg.refine_twolayer_lnd, [false; 10]);
-    assert_eq!(cfg.exit_loop_step, [false; 10]);
 }
 
 #[test]

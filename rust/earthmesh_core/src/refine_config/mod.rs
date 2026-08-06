@@ -17,7 +17,6 @@ pub struct RefineConfig {
     pub threshold_dir: String,
     pub set_dis_type: String,
     pub mask_refine_ndm: [i32; 10],
-    pub max_iter: i32,
     pub max_iter_spc: i32,
     pub max_iter_cal: i32,
     pub halo: [i32; 10],
@@ -47,7 +46,6 @@ pub struct RefineConfig {
     pub refine_onelayer_ocn: [bool; 8],
     pub refine_onelayer_atmos: [bool; 2],
     pub refine_twolayer_lnd: [bool; 10],
-    pub exit_loop_step: [bool; 10],
 }
 
 impl Default for RefineConfig {
@@ -62,7 +60,6 @@ impl Default for RefineConfig {
             threshold_dir: "/tmp".to_string(),
             set_dis_type: "/tmp".to_string(),
             mask_refine_ndm: [0; 10],
-            max_iter: 0,
             max_iter_spc: 0,
             max_iter_cal: 0,
             halo: [0; 10],
@@ -92,7 +89,6 @@ impl Default for RefineConfig {
             refine_onelayer_ocn: [false; 8],
             refine_onelayer_atmos: [false; 2],
             refine_twolayer_lnd: [false; 10],
-            exit_loop_step: [false; 10],
         }
     }
 }

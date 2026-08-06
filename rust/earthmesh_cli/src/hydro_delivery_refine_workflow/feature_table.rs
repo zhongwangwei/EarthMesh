@@ -21,6 +21,15 @@ pub(crate) struct HydroRefineFeatureSet {
 pub(crate) struct HydroRefinementPolicy {
     pub river_width: bool,
     pub river_upstream_area: bool,
+    /// Let the `R3`/`R2` class alone drive river demand when a feature carries
+    /// no `river_width_triggered` / `river_upstream_area_triggered` property.
+    ///
+    /// Not vestigial: it is how GeoJSON written before those properties existed
+    /// still refines its rivers, and the generic CLI entry point keeps it on for
+    /// exactly that. The two project paths turn it off because they produce the
+    /// GeoJSON themselves and always write the explicit flags -- there the class
+    /// is a label, and letting it decide would refine rivers the criteria did
+    /// not ask for.
     pub legacy_river_classes: bool,
     pub coast_land: bool,
     pub coast_ocean: bool,

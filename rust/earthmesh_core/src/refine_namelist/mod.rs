@@ -6,9 +6,9 @@ impl RefineConfig {
     /// `from_mkrefine_namelist(&x.to_mkrefine_namelist(), mesh_type, mode_grid)`
     /// reproduces `x`.
     ///
-    /// Derived/internal fields (`refine_setting`, `max_iter`, `mask_refine_ndm`,
-    /// `exit_loop_step`) are not namelist keys and are intentionally omitted; they
-    /// are recomputed during re-parse. `HALO`/`max_transition_row` are Canonical
+    /// Derived/internal fields (`refine_setting`, `mask_refine_ndm`) are not
+    /// namelist keys and are intentionally omitted; they are recomputed during
+    /// re-parse. `HALO`/`max_transition_row` are Canonical
     /// 1-based arrays, so index 0 is the reserved sentinel and only indices 1..=9
     /// are emitted.
     pub fn to_mkrefine_namelist(&self) -> String {
