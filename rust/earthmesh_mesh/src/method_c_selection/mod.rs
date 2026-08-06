@@ -256,21 +256,47 @@ impl MethodCDelaunayMesh {
             // 10 of 43 groups refused, holding 98% of the circles.
             let mut borders_already_refined = false;
             let mut crosses_parent = false;
+            let mut coarser_edges: Vec<(usize, usize)> = Vec::new();
             for &iu in neighbors.iu.iter().take(neighbors.npoly) {
                 require_method_c_id("Method-C refinement boundary U edge", iu, self.nud)?;
                 let edge_generation = self.u_edges[iu].mrlu;
-                if edge_generation < mrlo {
+                if edge_generation != 0 && edge_generation < mrlo {
+                    coarser_edges.push((iu, edge_generation));
+                }
+                if edge_generation == 0 {
+                    // Not a generation at all: the patch builds its transition
+                    // edges without ever assigning mrlu, so zero marks ground a
+                    // previous pass rebuilt. Reading it as "coarser than any
+                    // generation" refused 25 tiles for touching an earlier
+                    // tile's apron; it is occupied ground, and the point is
+                    // skipped like any other already-served neighbour.
+                    borders_already_refined = true;
+                } else if edge_generation < mrlo {
                     crosses_parent = true;
                 } else if edge_generation > mrlo {
                     borders_already_refined = true;
                 }
             }
             if crosses_parent {
+                // The refusal is right only if the walk is running at the
+                // generation of the ground it is selecting. When it is not --
+                // when the start point sat on ground an earlier tile in this
+                // same pass had already made finer -- every ordinary unrefined
+                // edge reads as coarser and the whole tile is refused for
+                // touching nothing at all. The two cases produce the same
+                // sentence, and a global run reports it 25 times without saying
+                // which, so the numbers that separate them travel with it.
+                let offending = coarser_edges
+                    .iter()
+                    .map(|(iu, generation)| format!("u{iu}:mrlu{generation}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(method_c_repairable_error(
                     MethodCRepairableKind::NonTripletPerimeter,
                     Some(im),
                     format!(
-                        "Method-C perimeter length invalid: Current nested grid crosses the parent boundary / next coarser grid boundary at M point {im}"
+                        "Method-C perimeter length invalid: Current nested grid crosses the parent boundary / next coarser grid boundary at M point {im}                          (walk generation {mrlo} from start M point {start} whose mrlm is {}; coarser edges {offending})",
+                        self.m_metadata[start].mrlm
                     ),
                 ));
             }

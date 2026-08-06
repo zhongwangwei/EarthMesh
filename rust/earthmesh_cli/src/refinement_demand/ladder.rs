@@ -108,8 +108,16 @@ pub fn nested_circle_radii_meters_with_halo_rows(
 ///
 /// The innermost radius is the floor for the cell size the last pass refines,
 /// and the rest follows [`MEASURED_PARENT_HALO_ROWS`].
+///
+/// The cell the last pass refines is not the base cell. Level `L` subdivides
+/// generation-`L` ground, whose spacing is `base / 2^(L-1)`, and the floor is a
+/// multiple of *that* -- the stride-3 seed lattice the floor exists to reach
+/// gets denser with every level in exactly the same proportion. Sizing the
+/// innermost circle off the base cell instead over-sizes level 3 by four, which
+/// is refined area nothing asked for.
 pub fn nested_circle_radii_meters(base_cell_meters: f64, max_level: usize) -> io::Result<Vec<f64>> {
-    let innermost = materializable_radius_meters(base_cell_meters);
+    let deepest_cell_meters = base_cell_meters / 2f64.powi(max_level.saturating_sub(1) as i32);
+    let innermost = materializable_radius_meters(deepest_cell_meters);
     nested_circle_radii_meters_with_halo_rows(
         base_cell_meters,
         max_level,
@@ -124,6 +132,23 @@ mod tests {
 
     /// NXP 21: 2 pi R / (5 * 21).
     const NXP21_BASE_M: f64 = 381_000.0;
+
+    #[test]
+    fn the_innermost_radius_follows_the_deepest_level_cell_not_the_base_cell() {
+        // Level 3 refines quarter-base ground, so its seed lattice is four
+        // times denser and the floor that exists to reach it is four times
+        // smaller. Sizing off the base cell was refining four times the area
+        // the demand asked for.
+        for max_level in 1..=4usize {
+            let radii = nested_circle_radii_meters(NXP21_BASE_M, max_level).expect("radii");
+            let deepest = NXP21_BASE_M / 2f64.powi(max_level as i32 - 1);
+            let innermost = *radii.last().expect("at least one level");
+            assert!(
+                (innermost - materializable_radius_meters(deepest)).abs() < 1.0,
+                "level {max_level}: innermost {innermost} vs deepest-cell floor for {deepest}"
+            );
+        }
+    }
 
     #[test]
     fn one_level_is_just_the_innermost_radius() {

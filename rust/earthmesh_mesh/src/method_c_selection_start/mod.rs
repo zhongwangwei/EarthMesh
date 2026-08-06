@@ -17,7 +17,71 @@ impl MethodCDelaunayMesh {
         )
     }
 
+    /// The canonical start point, corrected when it lands off the generation
+    /// this pass is refining.
+    ///
+    /// Everything about how the start is *found* is left alone -- the pentagon
+    /// containment, the generation-matched nearby pentagon, the march. Only the
+    /// answer is checked, and only against the generation the regions
+    /// themselves are standing on.
     pub(crate) fn method_c_refinement_start_point_for_regions_with_neighbors(
+        &self,
+        regions: &[MethodCRefinementRegion],
+        radius: f64,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+        use_cartesian_xy: bool,
+    ) -> io::Result<usize> {
+        let start = self.method_c_refinement_start_point_for_regions_unadjusted(
+            regions,
+            radius,
+            m_neighbors,
+            use_cartesian_xy,
+        )?;
+        if use_cartesian_xy {
+            return Ok(start);
+        }
+        let Some(target_generation) =
+            self.method_c_generation_to_refine(regions, radius, use_cartesian_xy)
+        else {
+            return Ok(start);
+        };
+        if self.m_metadata[start].mrlm == target_generation {
+            return Ok(start);
+        }
+        // The canonical search answered with ground an earlier tile in this
+        // same pass had already refined. Its generation would become the
+        // walk's, and every ordinary unrefined edge beside it would then read
+        // as coarser -- the test for stepping off the parent -- so the tile
+        // would be refused for touching ground nobody had touched. Step to the
+        // nearest point of the generation the regions are actually standing on.
+        let anchor = lonlat_degrees_to_unit_xyz(regions[0].anchor_lonlat());
+        let mut best_im = 0usize;
+        let mut best_score = f64::NEG_INFINITY;
+        for im in 2..=self.nmd {
+            if self.m_metadata[im].mrlm != target_generation {
+                continue;
+            }
+            let point = self.m_points[im];
+            let point_radius = magnitude(point);
+            if point_radius == 0.0 {
+                continue;
+            }
+            let score = dot(point, anchor) / point_radius;
+            if score > best_score {
+                best_score = score;
+                best_im = im;
+            }
+        }
+        // No such point is not a failure: the canonical answer is still the
+        // canonical answer, and the walk will judge it on its own terms.
+        if best_im == 0 {
+            Ok(start)
+        } else {
+            Ok(best_im)
+        }
+    }
+
+    fn method_c_refinement_start_point_for_regions_unadjusted(
         &self,
         regions: &[MethodCRefinementRegion],
         radius: f64,
@@ -91,6 +155,56 @@ impl MethodCDelaunayMesh {
             }
         }
         Ok(imcent)
+    }
+
+    /// The generation of the ground this pass still has to refine.
+    ///
+    /// Method-C takes the walk's generation from its start point, and the start
+    /// point is just the M point nearest the region -- with no regard for
+    /// whether an earlier tile in this same pass already made it finer. When it
+    /// has, the walk runs one generation too fine and reads every ordinary
+    /// unrefined edge around it as coarser, which is its test for stepping off
+    /// the parent.
+    ///
+    /// That the refusals were false follows from the test itself. `crosses` is
+    /// `edge < mrlo` over edges whose generation is at least one, so it can
+    /// only fire when `mrlo` is two or more -- a first-level pass over
+    /// unrefined ground can never reach it. A global run reported it nine
+    /// times at level one, which is nine proofs that the walk had started on
+    /// ground it was not refining.
+    ///
+    /// The coarsest generation the regions themselves contain is the ground the
+    /// pass is there to refine, and it keeps the canonical rule that mrlo comes
+    /// from the mesh rather than from a pass counter: a nested region sits
+    /// wholly inside its parent, so every point it holds carries the parent's
+    /// generation and the minimum is that. Only a tile pressed against a
+    /// neighbour refined moments earlier sees two generations at once, and
+    /// there the coarser one is the half nobody has served yet.
+    fn method_c_generation_to_refine(
+        &self,
+        regions: &[MethodCRefinementRegion],
+        radius: f64,
+        use_cartesian_xy: bool,
+    ) -> Option<usize> {
+        let mut coarsest: Option<usize> = None;
+        for im in 2..=self.nmd {
+            let generation = self.m_metadata[im].mrlm;
+            if generation == 0 || coarsest.is_some_and(|best| generation >= best) {
+                continue;
+            }
+            if refine_regions_contain_method_c(regions, self.m_points[im], radius, use_cartesian_xy)
+            {
+                coarsest = Some(generation);
+                // One is the coarsest a mesh can be, so nothing later can win
+                // and the containment tests -- the expensive half of this --
+                // stop here. Without it a group of several hundred circles
+                // costs one stereographic distance per circle per M point.
+                if generation == 1 {
+                    break;
+                }
+            }
+        }
+        coarsest
     }
 
     pub(crate) fn closest_m_point_to_region_anchor(

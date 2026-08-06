@@ -44,3 +44,6 @@ docs/perf/
 
 # Local dev convenience: a symlink to data outside the repo.
 gui-tauri/src-tauri/input
+
+# Refinement diagnostics a run drops beside its working directory.
+refused_groups.jsonl

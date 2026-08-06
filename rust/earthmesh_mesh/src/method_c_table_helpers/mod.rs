@@ -1,5 +1,7 @@
 use std::io;
 
+use crate::MethodCNestWd;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MethodCRepairableKind {
     TransitionPatch,
@@ -78,13 +80,39 @@ pub(crate) fn fill_missing_endpoint(edge: &mut IcosahedronUEdge, im: usize) {
     }
 }
 
+/// The two open edges of the patch's second-order neighbour, given its
+/// `nest_wd` row.
+///
+/// The row is taken whole rather than just its `iu` triple so the failure can
+/// say *why* there is nothing to split. A face only gets edge ids when it is
+/// subdivided, so an all-zero triple is not corruption -- it means the patch
+/// reached a face this pass is not subdividing, and the flag separates the two
+/// ways that happens: `< 0` is the face suppressed by another perimeter triple
+/// (two triples' suppression zones met, so the mask has a neck there), `0` is a
+/// face the mask never selected (the mask is one face thick there). They call
+/// for opposite repairs, and the old message named neither.
 pub(crate) fn method_c_split_outer_edges(
-    candidates: [usize; 3],
+    neighbour: MethodCNestWd,
     u_edges: &[IcosahedronUEdge],
     label: &str,
     m_point: usize,
 ) -> io::Result<[usize; 2]> {
-    let [ku1, ku2, ku3] = candidates;
+    let [ku1, ku2, ku3] = neighbour.iu;
+    if !neighbour.is_subdivided() {
+        let cause = if neighbour.is_suppressed() {
+            "it is the face suppressed by another perimeter triple, so the mask necks down here"
+        } else {
+            "the mask does not select it, so the mask is one face thick here"
+        };
+        return Err(method_c_repairable_error(
+            MethodCRepairableKind::TransitionPatch,
+            Some(m_point),
+            format!(
+                "Method-C {label} transition patch neighbour is not subdivided ({cause}; nest_wd flag {})",
+                neighbour.flag()
+            ),
+        ));
+    }
     for (solid, first_open, second_open) in [(ku1, ku2, ku3), (ku2, ku3, ku1), (ku3, ku1, ku2)] {
         let edge = u_edges.get(solid).copied().ok_or_else(|| {
             io::Error::new(

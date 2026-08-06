@@ -114,9 +114,20 @@ fn nested_rings_closer_than_a_parent_cell_are_rejected() {
         .spawn_nest(&regions, 2)
         .expect_err("rings this close must be rejected, not silently mis-meshed");
     let message = error.to_string();
+    // Which constraint gives out first is geometry, not policy. This used to
+    // name the parent boundary, but that reading came from the walk starting on
+    // ground the level-1 pass had just refined and so running a generation too
+    // fine -- a misattribution, since a ring 150 km wide against 381 km cells
+    // has a real problem of its own: there is not enough room across it to hold
+    // a mask two faces thick, which is what the transition patch consumes.
+    // Both sentences are the same rejection; the test is that it happens and
+    // says something true about the geometry.
     assert!(
-        message.contains("parent boundary") || message.contains("coarser grid boundary"),
-        "rejection must name the parent boundary; got {message}"
+        message.contains("parent boundary")
+            || message.contains("coarser grid boundary")
+            || message.contains("one face thick")
+            || message.contains("necks down"),
+        "rejection must name the geometry that ran out; got {message}"
     );
 }
 
